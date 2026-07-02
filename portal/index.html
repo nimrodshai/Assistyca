@@ -6,10 +6,10 @@
     <title>Assistyca</title>
     <meta
       name="description"
-      content="Enter your email to receive a one-time code and continue into Assistyca."
+      content="Registered users sign in with a one-time code to continue into Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=32" />
+    <link rel="stylesheet" href="./styles.css?v=33" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -20,7 +20,7 @@
       <section class="auth-story">
         <div class="auth-story-head">
           <h1>Lets build your own personal assistant</h1>
-          <p class="lede">Sign in with the code we email you.</p>
+          <p class="lede">Registered users sign in with the code we email them.</p>
         </div>
       </section>
 
@@ -153,8 +153,8 @@
 
         <nav class="tab-strip" aria-label="Assistyca tabs">
           <button class="tab-button is-active" data-tab="features" type="button">Tools</button>
-          <button class="tab-button" data-tab="preview" type="button">Preview</button>
-          <button class="tab-button" data-tab="simulator" type="button">Simulator</button>
+          <button class="tab-button" data-tab="preview" type="button" hidden>Preview</button>
+          <button class="tab-button" data-tab="simulator" type="button" hidden>Simulator</button>
         </nav>
 
         <div class="topbar-actions">
@@ -177,6 +177,7 @@
             </button>
 
             <div id="accountMenu" class="menu-popover is-hidden" role="menu">
+              <button class="menu-item" type="button" data-menu-action="billing">Billing</button>
               <button class="menu-item" type="button" data-menu-action="account">Account</button>
               <button class="menu-item" type="button" data-menu-action="settings">Settings</button>
               <div class="menu-divider" aria-hidden="true"></div>
@@ -521,6 +522,71 @@ Owner said afternoons are easier."
         </div>
       </section>
 
+      <section id="billingPanel" class="tab-panel billing-page is-hidden">
+        <div class="panel-intro">
+          <div>
+            <p class="eyebrow">Billing</p>
+            <h1>Track tokens by model, month by month.</h1>
+            <p class="lede compact">
+              See the current month, every previous month, and the model mix behind each bill.
+            </p>
+          </div>
+          <div class="panel-spotlight">
+            <span id="billingSourcePill" class="status-pill">
+              <span class="status-dot"></span>
+              <span class="billing-source-label">Loading billing</span>
+            </span>
+          </div>
+        </div>
+
+        <section class="billing-hero glass-card">
+          <div class="billing-hero-copy">
+            <p class="eyebrow">Current month</p>
+            <h2 id="billingCurrentMonthLabel">Current month</h2>
+            <p id="billingCurrentSummary" class="billing-summary">
+              Loading billing data...
+            </p>
+          </div>
+
+          <div class="billing-hero-metrics">
+            <div class="billing-metric">
+              <span>Tokens used</span>
+              <strong id="billingCurrentTokens">0</strong>
+            </div>
+            <div class="billing-metric">
+              <span>Amount paid</span>
+              <strong id="billingCurrentCharge">$0.00</strong>
+            </div>
+            <div class="billing-metric">
+              <span>Policy</span>
+              <strong id="billingPolicyValue">1.5x input · 1.5x output · $29 minimum</strong>
+            </div>
+          </div>
+
+          <div id="billingMix" class="billing-mix" aria-hidden="true"></div>
+        </section>
+
+        <div class="billing-grid">
+          <article class="glass-card billing-card">
+            <div class="card-head">
+              <h3>By model</h3>
+              <span id="billingModelCount" class="feature-status">0 models</span>
+            </div>
+
+            <div id="billingModelList" class="billing-model-list"></div>
+          </article>
+
+          <article class="glass-card billing-card">
+            <div class="card-head">
+              <h3>History</h3>
+              <span id="billingHistoryCount" class="feature-status">0 months</span>
+            </div>
+
+            <div id="billingHistoryList" class="billing-history-list"></div>
+          </article>
+        </div>
+      </section>
+
       <section
         id="settingsPanel"
         class="settings-overlay is-hidden"
@@ -608,6 +674,6 @@ Owner said afternoons are easier."
       </section>
     </section>
 
-    <script src="./app.js?v=35"></script>
+    <script src="./app.js?v=36"></script>
   </body>
 </html>

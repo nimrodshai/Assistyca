@@ -15,7 +15,7 @@ migrateLegacyStorage();
 const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
-const VALID_TABS = new Set(["features", "preview", "simulator", "settings"]);
+const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "settings"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
@@ -24,11 +24,14 @@ const TAB_LABELS = {
   features: "Tools",
   preview: "Preview",
   simulator: "Simulator",
+  billing: "Billing",
   settings: "Settings",
 };
 const VALID_SETTINGS_MODES = new Set(["account", "preferences"]);
 const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
+const DEFAULT_BILLING_MULTIPLIER = 1.5;
+const DEFAULT_BILLING_MINIMUM = 29;
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
   "WhatsApp Reply Approval Bot",
@@ -37,6 +40,7 @@ const LEGACY_DEFAULT_FEATURE_MODES = new Set([
   "suggestion_only",
   "Approval bot",
 ]);
+const BILLING_MODEL_COLORS = ["#17958a", "#2f7de1", "#d49a3a", "#8c96a3"];
 
 const DEFAULT_PROMPT = {
   toneGuidance: "Warm, direct, and practical. Keep replies human, short, and grounded.",
@@ -185,6 +189,9 @@ const state = {
   menuOpen: false,
   selectedFeatureId: null,
   selectedSimulatorId: null,
+  billingReport: null,
+  billingLoading: false,
+  billingError: "",
   lastPrimaryTab: normalizeTab(loadJson(LAST_PRIMARY_TAB_KEY, "features")) || "features",
 };
 
@@ -229,7 +236,19 @@ const elements = {
   featuresPanel: document.querySelector("#featuresPanel"),
   previewPanel: document.querySelector("#previewPanel"),
   simulatorPanel: document.querySelector("#simulatorPanel"),
+  billingPanel: document.querySelector("#billingPanel"),
   settingsPanel: document.querySelector("#settingsPanel"),
+  billingSourcePill: document.querySelector("#billingSourcePill"),
+  billingCurrentMonthLabel: document.querySelector("#billingCurrentMonthLabel"),
+  billingCurrentSummary: document.querySelector("#billingCurrentSummary"),
+  billingCurrentTokens: document.querySelector("#billingCurrentTokens"),
+  billingCurrentCharge: document.querySelector("#billingCurrentCharge"),
+  billingPolicyValue: document.querySelector("#billingPolicyValue"),
+  billingMix: document.querySelector("#billingMix"),
+  billingModelCount: document.querySelector("#billingModelCount"),
+  billingModelList: document.querySelector("#billingModelList"),
+  billingHistoryCount: document.querySelector("#billingHistoryCount"),
+  billingHistoryList: document.querySelector("#billingHistoryList"),
   closeSettingsButton: document.querySelector("#closeSettingsButton"),
   toneGuidance: document.querySelector("#toneGuidance"),
   responseStyle: document.querySelector("#responseStyle"),
@@ -276,14 +295,15 @@ const elements = {
 
 const storedAuthSession = loadJson(AUTH_SESSION_KEY, null);
 const storedAuthChallenge = loadJson(AUTH_CHALLENGE_KEY, null);
-let authSession = normalizeStoredSession(storedAuthSession);
+const initialAuthSession = normalizeStoredSession(storedAuthSession);
+let authSession = null;
 let authChallenge = normalizeStoredChallenge(storedAuthChallenge);
 let authBusy = false;
-let activeEmail = normalizeEmail(authSession?.email || authChallenge?.email || "");
-let clientState = loadClientState(activeEmail);
+let activeEmail = normalizeEmail(initialAuthSession?.email || authChallenge?.email || "");
+let clientState = loadClientState("");
 state.selectedSimulatorId = clientState.simulator.selectedApprovalId || null;
 
-if (storedAuthSession && !authSession) {
+if (storedAuthSession && !initialAuthSession) {
   persistJson(AUTH_SESSION_KEY, null);
 }
 
@@ -767,6 +787,293 @@ function capitalizeWords(value) {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function formatCurrency(value, currency = "USD") {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
+}
+
+function formatTokenCount(value) {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 0,
+  }).format(Math.max(0, Math.round(Number(value || 0))));
+}
+
+function formatCompactTokenCount(value) {
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(Math.max(0, Number(value || 0)));
+}
+
+function formatBillingMonthLabel(monthKey) {
+  const value = String(monthKey || "").trim();
+  if (!value) {
+    return "Unknown month";
+  }
+
+  const match = value.match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return value;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const parsed = new Date(Date.UTC(year, month - 1, 1));
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(parsed);
+}
+
+function formatUsageDate(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(parsed);
+}
+
+function formatUsageDateSummary(dates = []) {
+  const uniqueDates = Array.from(
+    new Set(
+      (Array.isArray(dates) ? dates : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (!uniqueDates.length) {
+    return "";
+  }
+
+  const visibleDates = uniqueDates.slice(0, 3).map(formatUsageDate).filter(Boolean);
+  const extraCount = Math.max(0, uniqueDates.length - visibleDates.length);
+  const suffix = extraCount > 0 ? ` +${extraCount} more` : "";
+  return `Used on ${visibleDates.join(", ")}${suffix}`;
+}
+
+function formatModelName(value) {
+  const model = String(value || "").trim();
+  if (!model) {
+    return "Unknown model";
+  }
+
+  return model.replace(/^gpt-/i, "GPT-").replace(/^gpt/i, "GPT");
+}
+
+function normalizeBillingModel(model = {}) {
+  const usageDatesSource = Array.isArray(model.usageDates) ? model.usageDates : [];
+  return {
+    model: String(model.model || model.name || "Unknown model").trim() || "Unknown model",
+    tokensUsed: Math.max(0, Math.round(Number(model.tokensUsed ?? model.tokens ?? model.token_count ?? 0))),
+    baseCostUsd: Number(model.baseCostUsd ?? model.base_cost_usd ?? 0) || 0,
+    inputTokensUsed: Math.max(0, Math.round(Number(model.inputTokensUsed ?? model.input_tokens ?? 0))),
+    outputTokensUsed: Math.max(0, Math.round(Number(model.outputTokensUsed ?? model.output_tokens ?? 0))),
+    inputChargeUsd: Number(model.inputChargeUsd ?? model.input_charge_usd ?? 0) || 0,
+    outputChargeUsd: Number(model.outputChargeUsd ?? model.output_charge_usd ?? 0) || 0,
+    usageCount: Math.max(0, Math.round(Number(model.usageCount ?? model.usage_count ?? usageDatesSource.length ?? 0))),
+    usageDates: usageDatesSource
+      .map((date) => String(date || "").trim())
+      .filter(Boolean),
+    firstUsedAt: String(model.firstUsedAt ?? model.first_used_at ?? "").trim(),
+    lastUsedAt: String(model.lastUsedAt ?? model.last_used_at ?? "").trim(),
+  };
+}
+
+function normalizeBillingMonth(month = {}) {
+  const modelsSource = Array.isArray(month.models) ? month.models : [];
+  const models = modelsSource.map(normalizeBillingModel).filter(Boolean);
+  const currentMonthLabel = formatBillingMonthLabel(month.month);
+  const tokensUsed = models.reduce((sum, model) => sum + Math.max(0, Number(model.tokensUsed || 0)), 0);
+  const baseCostUsd = models.reduce((sum, model) => sum + Math.max(0, Number(model.baseCostUsd || 0)), 0);
+  const inputTokensUsed = models.reduce((sum, model) => sum + Math.max(0, Number(model.inputTokensUsed || 0)), 0);
+  const outputTokensUsed = models.reduce((sum, model) => sum + Math.max(0, Number(model.outputTokensUsed || 0)), 0);
+  const inputChargeUsd = models.reduce((sum, model) => sum + Math.max(0, Number(model.inputChargeUsd || 0)), 0);
+  const outputChargeUsd = models.reduce((sum, model) => sum + Math.max(0, Number(model.outputChargeUsd || 0)), 0);
+  const usageDates = Array.isArray(month.usageDates)
+    ? month.usageDates
+    : Array.from(new Set(models.flatMap((model) => model.usageDates || [])));
+
+  return {
+    month: String(month.month || "").trim(),
+    label: String(month.label || currentMonthLabel).trim() || currentMonthLabel,
+    tokensUsed,
+    baseCostUsd: Number(baseCostUsd.toFixed(2)),
+    inputTokensUsed,
+    outputTokensUsed,
+    inputChargeUsd: Number(inputChargeUsd.toFixed(2)),
+    outputChargeUsd: Number(outputChargeUsd.toFixed(2)),
+    chargeUsd: Number(Number(month.chargeUsd ?? 0).toFixed(2)),
+    minimumApplied: Boolean(month.minimumApplied),
+    currency: String(month.currency || "USD").trim() || "USD",
+    usageCount: Math.max(0, Math.round(Number(month.usageCount ?? usageDates.length ?? 0))),
+    usageDates: usageDates.map((date) => String(date || "").trim()).filter(Boolean),
+    models: models
+      .sort((left, right) => right.tokensUsed - left.tokensUsed || left.model.localeCompare(right.model)),
+  };
+}
+
+function normalizeBillingReport(report = {}) {
+  const currentMonth = normalizeBillingMonth(report.currentMonth || {});
+  const history = Array.isArray(report.history) ? report.history.map(normalizeBillingMonth) : [];
+  const billingPlan = report && typeof report.billingPlan === "object" ? report.billingPlan : {};
+  const markupMultiplier = Number(report.markupMultiplier ?? billingPlan.markupMultiplier ?? 1.5) || 1.5;
+  const inputTokenPriceMultiplier = Number(
+    report.inputTokenPriceMultiplier ?? billingPlan.inputTokenPriceMultiplier ?? markupMultiplier,
+  ) || markupMultiplier;
+  const outputTokenPriceMultiplier = Number(
+    report.outputTokenPriceMultiplier ?? billingPlan.outputTokenPriceMultiplier ?? markupMultiplier,
+  ) || markupMultiplier;
+  const billingPlanMinimumCents = Number(billingPlan.monthlyMinimumCents ?? NaN);
+  const minimumMonthlyCharge = Number(
+    report.minimumMonthlyCharge ?? (Number.isFinite(billingPlanMinimumCents) ? billingPlanMinimumCents / 100 : 29),
+  ) || 29;
+  const currency = String(report.currency || billingPlan.currency || currentMonth.currency || "USD").trim() || "USD";
+  const usageDates = Array.isArray(report.usageDates) ? report.usageDates : [];
+
+  return {
+    ok: Boolean(report.ok),
+    email: normalizeEmail(report.email || activeEmail),
+    currency,
+    markupMultiplier,
+    inputTokenPriceMultiplier,
+    outputTokenPriceMultiplier,
+    minimumMonthlyCharge,
+    source: String(report.source || "empty"),
+    sourceLabel: String(report.sourceLabel || "").trim()
+      || (report.source === "database" ? "Database ledger" : report.source === "defaults" ? "Sample ledger" : "Billing ledger"),
+    currentMonth: {
+      ...currentMonth,
+      currency,
+      chargeUsd: Number(Number(report.currentMonth?.chargeUsd ?? currentMonth.chargeUsd ?? minimumMonthlyCharge).toFixed(2)),
+    },
+    history: history
+      .filter(Boolean)
+      .sort((left, right) => right.month.localeCompare(left.month)),
+    usageDates: usageDates.map((date) => String(date || "").trim()).filter(Boolean),
+    billingPlan: {
+      currency,
+      monthlyMinimumCents: Number.isFinite(billingPlanMinimumCents) ? Math.max(0, Math.round(billingPlanMinimumCents)) : Math.round(minimumMonthlyCharge * 100),
+      inputTokenPriceMultiplier,
+      outputTokenPriceMultiplier,
+    },
+    asOf: String(report.asOf || "").trim(),
+  };
+}
+
+function getBillingPolicyLabel(report) {
+  const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
+  const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
+  const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
+  if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
+    return `${inputMultiplier.toFixed(1)}x token price · ${minimum} minimum`;
+  }
+
+  return `${inputMultiplier.toFixed(1)}x input · ${outputMultiplier.toFixed(1)}x output · ${minimum} minimum`;
+}
+
+function getBillingPricingLabel(report) {
+  const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
+  const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
+  if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
+    return `${inputMultiplier.toFixed(1)}x token price`;
+  }
+
+  return `${inputMultiplier.toFixed(1)}x input · ${outputMultiplier.toFixed(1)}x output`;
+}
+
+function buildBillingSummaryText(report) {
+  const currentMonth = report?.currentMonth;
+  if (!currentMonth || !currentMonth.models.length) {
+    return `No usage has been recorded yet. The monthly minimum of ${formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD")} applies until tokens arrive.`;
+  }
+
+  const modelCopy = currentMonth.models
+    .map((model) => `${formatTokenCount(model.tokensUsed)} tokens on ${formatModelName(model.model)}`)
+    .join(" · ");
+
+  const baseSpend = formatCurrency(currentMonth.baseCostUsd, report?.currency || "USD");
+  const charged = formatCurrency(currentMonth.chargeUsd, report?.currency || "USD");
+  const minimumApplied = currentMonth.minimumApplied ? " The minimum charge applied." : "";
+  const pricingLabel = getBillingPricingLabel(report);
+
+  return `${modelCopy}. Base spend ${baseSpend} before the ${pricingLabel}, charged at ${charged}.${minimumApplied}`;
+}
+
+function getBillingStatusLabel(report) {
+  if (!report) {
+    return "Loading billing";
+  }
+
+  if (report.source === "database" || report.source === "account") {
+    return "Live ledger";
+  }
+
+  if (report.source === "defaults") {
+    return "Sample ledger";
+  }
+
+  if (state.billingLoading) {
+    return "Loading billing";
+  }
+
+  if (state.billingError) {
+    return "Billing unavailable";
+  }
+
+  return "No ledger";
+}
+
+function setBillingError(message) {
+  state.billingError = String(message || "").trim();
+  state.billingLoading = false;
+}
+
+function ensureBillingMenuItem() {
+  if (!elements.accountMenu) {
+    return;
+  }
+
+  const existing = elements.accountMenu.querySelector('[data-menu-action="billing"]');
+  if (existing) {
+    return;
+  }
+
+  const billingButton = document.createElement("button");
+  billingButton.className = "menu-item";
+  billingButton.type = "button";
+  billingButton.dataset.menuAction = "billing";
+  billingButton.textContent = "Billing";
+
+  const accountButton = elements.accountMenu.querySelector('[data-menu-action="account"]');
+  if (accountButton && accountButton.parentElement === elements.accountMenu) {
+    elements.accountMenu.insertBefore(billingButton, accountButton);
+    return;
+  }
+
+  const firstAction = elements.accountMenu.querySelector("[data-menu-action]");
+  if (firstAction && firstAction.parentElement === elements.accountMenu) {
+    elements.accountMenu.insertBefore(billingButton, firstAction);
+    return;
+  }
+
+  elements.accountMenu.prepend(billingButton);
 }
 
 function deriveDisplayName(email) {
@@ -1535,6 +1842,301 @@ function updateSimulatorPanel() {
   updateSimulatorDetail();
 }
 
+function createBillingNotice(message, tone = "neutral") {
+  const notice = document.createElement("article");
+  notice.className = `empty-state billing-empty ${tone === "warn" ? "is-warn" : ""}`.trim();
+  const title = document.createElement("h3");
+  title.textContent = tone === "warn" ? "Billing unavailable" : "Billing data";
+  const copy = document.createElement("p");
+  copy.textContent = String(message || "No billing data is available yet.");
+  notice.append(title, copy);
+  return notice;
+}
+
+function createBillingModelRow(model, index = 0, currency = "USD") {
+  const row = document.createElement("div");
+  row.className = "billing-model-row";
+  row.style.setProperty("--billing-model-color", BILLING_MODEL_COLORS[index % BILLING_MODEL_COLORS.length]);
+
+  const swatch = document.createElement("span");
+  swatch.className = "billing-model-swatch";
+
+  const copy = document.createElement("div");
+  copy.className = "billing-model-copy";
+
+  const title = document.createElement("strong");
+  title.textContent = formatModelName(model.model);
+
+  const meta = document.createElement("p");
+  const usageSummary = formatUsageDateSummary(model.usageDates);
+  meta.textContent = [`${formatTokenCount(model.tokensUsed)} tokens`, usageSummary].filter(Boolean).join(" · ");
+
+  copy.append(title, meta);
+
+  const stats = document.createElement("div");
+  stats.className = "billing-model-stats";
+
+  const cost = document.createElement("strong");
+  cost.textContent = formatCurrency(model.baseCostUsd, currency);
+
+  const label = document.createElement("span");
+  label.textContent = "Base spend";
+
+  stats.append(cost, label);
+
+  row.append(swatch, copy, stats);
+  return row;
+}
+
+function createBillingMonthDetail(month, index = 0, currency = "USD", report = null) {
+  const details = document.createElement("details");
+  details.className = "billing-month";
+
+  const summary = document.createElement("summary");
+
+  const labelBlock = document.createElement("div");
+  labelBlock.className = "billing-month-label";
+
+  const title = document.createElement("strong");
+  title.textContent = month.label || formatBillingMonthLabel(month.month);
+
+  const subtitle = document.createElement("span");
+  subtitle.textContent = month.models.length
+    ? month.models.map((model) => formatModelName(model.model)).join(" · ")
+    : "No model activity";
+
+  labelBlock.append(title, subtitle);
+
+  const tokenBlock = document.createElement("div");
+  tokenBlock.className = "billing-month-stat";
+
+  const tokenLabel = document.createElement("span");
+  tokenLabel.textContent = "Tokens";
+
+  const tokenValue = document.createElement("strong");
+  tokenValue.textContent = formatTokenCount(month.tokensUsed);
+
+  tokenBlock.append(tokenLabel, tokenValue);
+
+  const paidBlock = document.createElement("div");
+  paidBlock.className = "billing-month-stat";
+
+  const paidLabel = document.createElement("span");
+  paidLabel.textContent = "Paid";
+
+  const paidValue = document.createElement("strong");
+  paidValue.textContent = formatCurrency(month.chargeUsd, currency);
+
+  paidBlock.append(paidLabel, paidValue);
+
+  const caret = document.createElement("span");
+  caret.className = "billing-month-caret";
+  caret.setAttribute("aria-hidden", "true");
+  caret.textContent = "▸";
+
+  summary.append(labelBlock, tokenBlock, paidBlock, caret);
+
+  const body = document.createElement("div");
+  body.className = "billing-month-body";
+
+  const note = document.createElement("p");
+  note.className = "billing-month-note";
+  const pricingLabel = getBillingPricingLabel(report);
+  note.textContent = month.minimumApplied
+    ? `The ${formatCurrency(month.chargeUsd, currency)} minimum charge applied for this month.`
+    : `Base spend was ${formatCurrency(month.baseCostUsd, currency)} before the ${pricingLabel}.`;
+
+  body.append(note);
+
+  if (!month.models.length) {
+    body.append(createBillingNotice("No model usage was recorded for this month yet."));
+  } else {
+    const modelList = document.createElement("div");
+    modelList.className = "billing-model-list billing-model-list-nested";
+    modelList.append(...month.models.map((model, modelIndex) => createBillingModelRow(model, modelIndex, currency)));
+    body.append(modelList);
+  }
+
+  details.append(summary, body);
+  return details;
+}
+
+function updateBillingPanel() {
+  const report = state.billingReport ? normalizeBillingReport(state.billingReport) : null;
+  const hasError = Boolean(state.billingError);
+  const isLoading = state.billingLoading && !report;
+  const currency = report?.currency || "USD";
+
+  if (elements.billingSourcePill) {
+    elements.billingSourcePill.classList.toggle("is-warn", hasError);
+    elements.billingSourcePill.classList.toggle("is-loading", isLoading);
+    const label = elements.billingSourcePill.querySelector(".billing-source-label");
+    if (label) {
+      label.textContent = hasError
+        ? "Billing unavailable"
+        : isLoading
+          ? "Loading billing"
+          : report?.sourceLabel || "Billing ledger";
+    }
+  }
+
+  if (!report) {
+    const fallbackSummary = hasError
+      ? state.billingError
+      : isLoading
+        ? "Loading billing data..."
+        : "No billing data has been loaded yet.";
+
+    if (elements.billingCurrentMonthLabel) {
+      elements.billingCurrentMonthLabel.textContent = "Current month";
+    }
+    if (elements.billingCurrentSummary) {
+      elements.billingCurrentSummary.textContent = fallbackSummary;
+    }
+    if (elements.billingCurrentTokens) {
+      elements.billingCurrentTokens.textContent = "0";
+      elements.billingCurrentTokens.title = "0 tokens";
+    }
+    if (elements.billingCurrentCharge) {
+      elements.billingCurrentCharge.textContent = formatCurrency(DEFAULT_BILLING_MINIMUM, currency);
+    }
+    if (elements.billingPolicyValue) {
+      elements.billingPolicyValue.textContent = `${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x input · ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x output · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
+    }
+    if (elements.billingModelCount) {
+      elements.billingModelCount.textContent = "0 models";
+    }
+    if (elements.billingHistoryCount) {
+      elements.billingHistoryCount.textContent = "0 months";
+    }
+    if (elements.billingModelList) {
+      elements.billingModelList.replaceChildren(
+        createBillingNotice(
+          hasError
+            ? state.billingError
+            : "Billing activity will appear here once the ledger is connected.",
+          hasError ? "warn" : "neutral",
+        ),
+      );
+    }
+    if (elements.billingHistoryList) {
+      elements.billingHistoryList.replaceChildren(
+        createBillingNotice(
+          hasError
+            ? "The history could not be loaded."
+            : "Previous months will appear here once they are available.",
+          hasError ? "warn" : "neutral",
+        ),
+      );
+    }
+    if (elements.billingMix) {
+      elements.billingMix.replaceChildren();
+    }
+    return;
+  }
+
+  const currentMonth = report.currentMonth || {
+    label: "Current month",
+    tokensUsed: 0,
+    baseCostUsd: 0,
+    chargeUsd: report.minimumMonthlyCharge || 29,
+    minimumApplied: true,
+    models: [],
+  };
+
+  if (elements.billingCurrentMonthLabel) {
+    elements.billingCurrentMonthLabel.textContent = currentMonth.label || "Current month";
+  }
+  if (elements.billingCurrentSummary) {
+    elements.billingCurrentSummary.textContent = buildBillingSummaryText(report);
+  }
+  if (elements.billingCurrentTokens) {
+    elements.billingCurrentTokens.textContent = formatCompactTokenCount(currentMonth.tokensUsed);
+    elements.billingCurrentTokens.title = `${formatTokenCount(currentMonth.tokensUsed)} tokens`;
+  }
+  if (elements.billingCurrentCharge) {
+    elements.billingCurrentCharge.textContent = formatCurrency(currentMonth.chargeUsd, currency);
+  }
+  if (elements.billingPolicyValue) {
+    elements.billingPolicyValue.textContent = getBillingPolicyLabel(report);
+  }
+  if (elements.billingModelCount) {
+    elements.billingModelCount.textContent = `${currentMonth.models.length} model${currentMonth.models.length === 1 ? "" : "s"}`;
+  }
+  if (elements.billingHistoryCount) {
+    elements.billingHistoryCount.textContent = `${report.history.length} month${report.history.length === 1 ? "" : "s"}`;
+  }
+  if (elements.billingModelList) {
+    if (!currentMonth.models.length) {
+      elements.billingModelList.replaceChildren(
+        createBillingNotice("No model usage has been recorded for the current month yet."),
+      );
+    } else {
+      elements.billingModelList.replaceChildren(
+        ...currentMonth.models.map((model, index) => createBillingModelRow(model, index, currency)),
+      );
+    }
+  }
+  if (elements.billingHistoryList) {
+    if (!report.history.length) {
+      elements.billingHistoryList.replaceChildren(
+        createBillingNotice("Previous months will appear here once they are available."),
+      );
+    } else {
+      elements.billingHistoryList.replaceChildren(
+        ...report.history.map((month, index) => createBillingMonthDetail(month, index, currency, report)),
+      );
+    }
+  }
+  if (elements.billingMix) {
+    const totalTokens = Math.max(0, Number(currentMonth.tokensUsed || 0));
+    if (!totalTokens || !currentMonth.models.length) {
+      elements.billingMix.replaceChildren();
+    } else {
+      const segments = currentMonth.models.map((model, index) => {
+        const segment = document.createElement("div");
+        segment.className = "billing-mix-segment";
+        segment.style.setProperty("--billing-model-color", BILLING_MODEL_COLORS[index % BILLING_MODEL_COLORS.length]);
+        segment.style.flexGrow = String(Math.max(0.001, Number(model.tokensUsed || 0)));
+        segment.title = `${formatModelName(model.model)} · ${formatTokenCount(model.tokensUsed)} tokens`;
+        return segment;
+      });
+
+      elements.billingMix.replaceChildren(...segments);
+    }
+  }
+}
+
+async function refreshBillingReport() {
+  if (!authSession?.token) {
+    state.billingReport = null;
+    state.billingLoading = false;
+    state.billingError = "";
+    return;
+  }
+
+  state.billingLoading = true;
+  state.billingError = "";
+  renderApp();
+
+  try {
+    const response = await apiRequest("/api/billing", {
+      headers: {
+        Authorization: `Bearer ${authSession.token}`,
+      },
+    });
+
+    state.billingReport = normalizeBillingReport(response);
+    state.billingError = "";
+  } catch (error) {
+    state.billingReport = null;
+    setBillingError(formatApiErrorMessage(error, "We couldn’t load billing data right now."));
+  } finally {
+    state.billingLoading = false;
+    renderApp();
+  }
+}
+
 function updateHeader() {
   const displayName = getDisplayName();
   const workspaceName = getWorkspaceName();
@@ -1686,6 +2288,7 @@ function updatePanelVisibility() {
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
   elements.previewPanel.classList.toggle("is-hidden", state.activeTab !== "preview");
   elements.simulatorPanel.classList.toggle("is-hidden", state.activeTab !== "simulator");
+  elements.billingPanel.classList.toggle("is-hidden", state.activeTab !== "billing");
   syncSettingsPanelState();
 }
 
@@ -1760,23 +2363,25 @@ function renderApp() {
   updatePromptFields();
   updatePreview();
   updateSimulatorPanel();
+  updateBillingPanel();
   updateSettingsButtons();
   updateSettingsFields();
   setStatus("Autosaved locally");
 }
 
-function renderAuth(preferredEmail = "") {
+function renderAuth(preferredEmail = "", messageOverride = "") {
   const challengeEmail = normalizeEmail(authChallenge?.email || "");
   const showChallenge = Boolean(challengeEmail);
   const stage = showChallenge ? "code" : "email";
+  const defaultMessage = showChallenge
+    ? `A 6-digit code was sent to ${challengeEmail}.`
+    : "We’ll send a code to your email.";
 
   elements.authCard.dataset.authStage = stage;
   elements.emailInput.value = challengeEmail || normalizeEmail(authSession?.email || preferredEmail || "");
   elements.otpPanel.setAttribute("aria-hidden", String(!showChallenge));
   elements.sendCodeButton.setAttribute("aria-label", showChallenge ? "Verify code" : "Send code");
-  elements.authMessage.textContent = showChallenge
-    ? `A 6-digit code was sent to ${challengeEmail}.`
-    : "We’ll send a code to your email.";
+  elements.authMessage.textContent = String(messageOverride || defaultMessage);
   elements.demoCodeText.textContent = showChallenge
     ? `Check ${challengeEmail} for the code. It expires in 10 minutes.`
     : "";
@@ -2065,13 +2670,17 @@ async function startOtpFlow() {
     });
   } catch (error) {
     authBusy = false;
+    const payload = error?.payload || {};
+    const message = formatApiErrorMessage(error, "We couldn’t send the code. Please try again.");
     clearAuthChallenge();
+    if (payload.error === "not_registered") {
+      renderAuth(email, message);
+      openAuthAlert("Not registered", message, { returnFocus: "email" });
+      return;
+    }
+
     renderAuth(email);
-    openAuthAlert(
-      "Couldn’t send code",
-      formatApiErrorMessage(error, "We couldn’t send the code. Please try again."),
-      { returnFocus: "email" },
-    );
+    openAuthAlert("Couldn’t send code", message, { returnFocus: "email" });
   }
 }
 
@@ -2104,9 +2713,13 @@ function completeSignIn(session) {
   state.settingsOpen = false;
   state.lastPrimaryTab = "features";
   persistLastPrimaryTab();
+  state.billingReport = null;
+  state.billingLoading = true;
+  state.billingError = "";
   setHashForTab("features");
   setView("app");
   renderApp();
+  void refreshBillingReport();
 }
 
 async function verifyOtpFlow() {
@@ -2211,6 +2824,9 @@ async function signOut() {
   activeEmail = "";
   clientState = loadClientState(activeEmail);
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+  state.billingReport = null;
+  state.billingLoading = false;
+  state.billingError = "";
   state.settingsOpen = false;
   state.lastPrimaryTab = "features";
   persistLastPrimaryTab();
@@ -2250,6 +2866,11 @@ function syncSettingsField(key) {
 }
 
 function handleMenuAction(action) {
+  if (action === "billing") {
+    setActiveTab("billing");
+    return;
+  }
+
   if (action === "account") {
     openSettings("account");
     return;
@@ -2266,53 +2887,68 @@ function handleMenuAction(action) {
 }
 
 async function bootstrapAuthState() {
-  authSession = normalizeStoredSession(loadJson(AUTH_SESSION_KEY, null));
+  const storedSession = normalizeStoredSession(loadJson(AUTH_SESSION_KEY, null));
   authChallenge = normalizeStoredChallenge(loadJson(AUTH_CHALLENGE_KEY, null));
+  activeEmail = normalizeEmail(storedSession?.email || authChallenge?.email || "");
+  clientState = loadClientState("");
+  state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
 
-  if (authSession?.token) {
-    activeEmail = normalizeEmail(authSession.email || "");
-    clientState = loadClientState(activeEmail);
-    state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
-    refreshView();
+  if (storedSession?.token) {
+    setView("auth");
+    renderAuth(activeEmail);
 
     try {
       const response = await apiRequest("/api/auth/session", {
         headers: {
-          Authorization: `Bearer ${authSession.token}`,
+          Authorization: `Bearer ${storedSession.token}`,
         },
       });
 
       authSession = normalizeStoredSession({
-        email: response.email || authSession.email,
-        token: response.token || authSession.token,
-        signedInAt: response.issuedAt || authSession.signedInAt || Date.now(),
-        expiresAt: response.expiresAt || authSession.expiresAt || 0,
+        email: response.email || storedSession.email,
+        token: response.token || storedSession.token,
+        signedInAt: response.issuedAt || storedSession.signedInAt || Date.now(),
+        expiresAt: response.expiresAt || storedSession.expiresAt || 0,
       });
       activeEmail = normalizeEmail(authSession?.email || "");
       clientState = loadClientState(activeEmail);
       state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
       clearAuthChallenge();
       persistJson(AUTH_SESSION_KEY, authSession);
+      state.billingReport = null;
+      state.billingLoading = true;
+      state.billingError = "";
+      refreshView();
+      void refreshBillingReport();
+      return;
     } catch (error) {
       const status = Number(error?.status || 0);
       if (status === 401 || status === 403) {
-        const previousEmail = normalizeEmail(authSession?.email || authChallenge?.email || "");
         clearAuthSession();
-        activeEmail = normalizeEmail(authChallenge?.email || previousEmail);
-        clientState = loadClientState(activeEmail);
-        state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+      } else {
+        authSession = null;
+        openAuthAlert(
+          "Couldn’t verify session",
+          formatApiErrorMessage(error, "We couldn’t verify your session. Please sign in again."),
+          { returnFocus: "email" },
+        );
       }
     }
-  } else {
-    activeEmail = normalizeEmail(authChallenge?.email || "");
-    clientState = loadClientState(activeEmail);
-    state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
   }
 
+  activeEmail = normalizeEmail(authChallenge?.email || storedSession?.email || "");
+  clientState = loadClientState("");
+  state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+  state.billingReport = null;
+  state.billingLoading = true;
+  state.billingError = "";
   refreshView();
+  void refreshBillingReport();
 }
 
 function bindEvents() {
+  ensureBillingMenuItem();
+
   elements.sendCodeButton.addEventListener("click", () => {
     void handlePrimaryAuthAction();
   });

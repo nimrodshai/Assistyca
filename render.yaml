@@ -13,9 +13,19 @@ services:
         value: resend
       - key: PORTAL_PRODUCT_NAME
         value: Assistyca
+      - key: PORTAL_DB_PATH
+        value: portal/portal.db
+      - key: PORTAL_DB_SEED_REGISTERED_EMAILS
+        value: nimrod.shai@gmail.com
       - key: PORTAL_RESEND_FROM_NAME
         value: Assistyca
+      - key: PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER
+        value: "1.5"
+      - key: PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER
+        value: "1.5"
       - key: PORTAL_RESEND_API_KEY
         sync: false
       - key: PORTAL_RESEND_FROM_EMAIL
         sync: false
+      - key: PORTAL_SUPPORT_PHONE
+        value: "+972-50-7322341"

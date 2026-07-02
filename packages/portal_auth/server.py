@@ -29,9 +29,16 @@ from html import escape
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+
+from packages.billing_ledger import load_billing_report
+from packages.portal_db import DEFAULT_CURRENCY
+from packages.portal_db import DEFAULT_DB_PATH
+from packages.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
+from packages.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
+from packages.portal_db import PortalDatabase
 
 
 EMAIL_RE = re.compile(r"^\S+@\S+\.\S+$")
@@ -41,6 +48,8 @@ DEFAULT_OTP_TTL_SECONDS = 10 * 60
 DEFAULT_SESSION_TTL_SECONDS = 180 * 24 * 60 * 60
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_SMTP_PORT = 587
+DEFAULT_BILLING_MULTIPLIER = 1.5
+DEFAULT_BILLING_MINIMUM = 29.0
 RESEND_API_URL = "https://api.resend.com/emails"
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 SESSION_TOKEN_VERSION = 1
@@ -82,6 +91,15 @@ class PortalConfig:
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     session_secret: str = ""
+    db_path: Path = DEFAULT_DB_PATH
+    seed_registered_emails: frozenset[str] = field(default_factory=frozenset)
+    support_phone: str = ""
+    billing_data_path: Path = Path("portal/billing.sample.json")
+    billing_markup_multiplier: float = DEFAULT_BILLING_MULTIPLIER
+    billing_input_token_price_multiplier: float = DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
+    billing_output_token_price_multiplier: float = DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
+    billing_minimum_monthly_charge: float = DEFAULT_BILLING_MINIMUM
+    billing_currency: str = DEFAULT_CURRENCY
     smtp: SmtpConfig = field(default_factory=SmtpConfig)
     resend: ResendConfig = field(default_factory=ResendConfig)
 
@@ -112,15 +130,21 @@ class PortalAuthStore:
         session_ttl_seconds: int,
         max_attempts: int,
         session_secret: str,
+        registered_email_lookup: Callable[[str], bool],
     ) -> None:
         self.otp_ttl_seconds = otp_ttl_seconds
         self.session_ttl_seconds = session_ttl_seconds
         self.max_attempts = max_attempts
         self.session_secret = session_secret.encode("utf-8") if session_secret else b""
+        self.registered_email_lookup = registered_email_lookup
         self._challenges: dict[str, OtpChallenge] = {}
         self._sessions: dict[str, PortalSession] = {}
         self._revoked_tokens: dict[str, float] = {}
         self._lock = threading.Lock()
+
+    def is_registered_email(self, email: str) -> bool:
+        normalized_email = normalize_email(email)
+        return bool(self.registered_email_lookup(normalized_email))
 
     def issue_challenge(self, email: str) -> tuple[str, OtpChallenge]:
         normalized_email = normalize_email(email)
@@ -153,6 +177,9 @@ class PortalAuthStore:
         now = time.time()
 
         with self._lock:
+            if not self.is_registered_email(normalized_email):
+                return False, "not_registered", None
+
             self._purge_expired_locked(now)
             challenge = self._challenges.get(normalized_email)
             if challenge is None:
@@ -214,11 +241,16 @@ class PortalAuthStore:
 
             if self.session_secret:
                 session = parse_session_token(normalized_token, self.session_secret)
-                if session is not None:
+                if session is not None and self.is_registered_email(session.email):
                     return session
+                if session is not None:
+                    return None
 
             session = self._sessions.get(normalized_token)
             if session is None:
+                return None
+
+            if not self.is_registered_email(session.email):
                 return None
 
             if now > session.expires_at:
@@ -419,6 +451,31 @@ def read_int_env(name: str, default: int) -> int:
         return default
 
 
+def read_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def read_email_list_env(name: str) -> frozenset[str]:
+    raw = os.getenv(name, "")
+    if not raw.strip():
+        return frozenset()
+
+    emails: set[str] = set()
+    for chunk in re.split(r"[,;\n]+", raw):
+        email = extract_email_address(chunk)
+        if email:
+            emails.add(normalize_email(email))
+
+    return frozenset(emails)
+
+
 def load_config() -> PortalConfig:
     provider = normalize_mail_provider(os.getenv("PORTAL_MAIL_PROVIDER", DEFAULT_MAIL_PROVIDER))
     smtp = SmtpConfig(
@@ -443,6 +500,31 @@ def load_config() -> PortalConfig:
         resend=resend,
     )
 
+    db_path = Path(os.getenv("PORTAL_DB_PATH", str(DEFAULT_DB_PATH)).strip() or str(DEFAULT_DB_PATH))
+    if not db_path.is_absolute():
+        db_path = Path.cwd() / db_path
+
+    billing_data_path = Path(
+        os.getenv("PORTAL_BILLING_DATA_PATH", "portal/billing.sample.json").strip()
+        or "portal/billing.sample.json"
+    )
+    if not billing_data_path.is_absolute():
+        billing_data_path = Path.cwd() / billing_data_path
+
+    legacy_markup_multiplier = read_float_env("PORTAL_BILLING_MULTIPLIER", DEFAULT_BILLING_MULTIPLIER)
+    input_token_price_multiplier = read_float_env(
+        "PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER",
+        legacy_markup_multiplier,
+    )
+    output_token_price_multiplier = read_float_env(
+        "PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER",
+        legacy_markup_multiplier,
+    )
+    seed_registered_emails = frozenset().union(
+        read_email_list_env("PORTAL_DB_SEED_REGISTERED_EMAILS"),
+        read_email_list_env("PORTAL_REGISTERED_EMAILS"),
+    )
+
     return PortalConfig(
         product_name=os.getenv("PORTAL_PRODUCT_NAME", DEFAULT_PRODUCT_NAME).strip() or DEFAULT_PRODUCT_NAME,
         mail_provider=provider,
@@ -450,6 +532,15 @@ def load_config() -> PortalConfig:
         session_ttl_seconds=read_int_env("PORTAL_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS),
         max_attempts=read_int_env("PORTAL_OTP_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS),
         session_secret=session_secret,
+        db_path=db_path,
+        seed_registered_emails=seed_registered_emails,
+        support_phone=os.getenv("PORTAL_SUPPORT_PHONE", "").strip(),
+        billing_data_path=billing_data_path,
+        billing_markup_multiplier=legacy_markup_multiplier,
+        billing_input_token_price_multiplier=input_token_price_multiplier,
+        billing_output_token_price_multiplier=output_token_price_multiplier,
+        billing_minimum_monthly_charge=read_float_env("PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE", DEFAULT_BILLING_MINIMUM),
+        billing_currency=os.getenv("PORTAL_BILLING_CURRENCY", DEFAULT_CURRENCY).strip() or DEFAULT_CURRENCY,
         smtp=smtp,
         resend=resend,
     )
@@ -474,6 +565,14 @@ def resolve_session_secret(*, explicit_secret: str, smtp: SmtpConfig, resend: Re
         return smtp.password
 
     return ""
+
+
+def build_not_registered_message(config: PortalConfig) -> str:
+    support_phone = str(config.support_phone or "").strip()
+    if support_phone:
+        return f"You are not registered to use this portal. If you want to register, contact me at {support_phone}."
+
+    return "You are not registered to use this portal. If you want to register, contact me."
 
 
 def build_otp_email_subject(config: PortalConfig) -> str:
@@ -772,6 +871,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def store(self) -> PortalAuthStore:
         return self.server.store  # type: ignore[attr-defined]
 
+    @property
+    def database(self) -> PortalDatabase:
+        return self.server.database  # type: ignore[attr-defined]
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         return
 
@@ -784,7 +887,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/"):
+        if self.path.startswith("/api/auth/") or self.path.startswith("/api/billing/"):
             self.send_response(HTTPStatus.NO_CONTENT)
             send_api_headers(self)
             self.end_headers()
@@ -793,14 +896,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/"):
+        if self.path.startswith("/api/auth/") or self.path.startswith("/api/billing/"):
             self._handle_api_get()
             return
 
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/"):
+        if self.path.startswith("/api/auth/") or self.path.startswith("/api/billing/"):
             self._handle_api_post()
             return
 
@@ -826,6 +929,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "issuedAt": to_millis(session.issued_at),
                 "expiresAt": to_millis(session.expires_at),
             })
+            return
+
+        if self.path.startswith("/api/billing"):
+            token = self._extract_session_token()
+            session = self.store.get_session(token) if token else None
+            if session is None:
+                json_response(self, HTTPStatus.UNAUTHORIZED, {
+                    "ok": False,
+                    "message": "No valid session.",
+                })
+                return
+
+            report: dict[str, Any] | None
+            try:
+                report = self.database.build_billing_report(session.email)
+            except Exception:
+                report = None
+
+            if report is None:
+                report = load_billing_report(
+                    self.config.billing_data_path,
+                    session.email,
+                    markup_multiplier=self.config.billing_markup_multiplier,
+                    minimum_monthly_charge=self.config.billing_minimum_monthly_charge,
+                    currency=self.config.billing_currency,
+                )
+                report["sourceLabel"] = "Sample ledger" if report.get("source") == "defaults" else "Billing ledger"
+            json_response(self, HTTPStatus.OK, report)
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -861,7 +992,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        if not self.store.is_registered_email(email):
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "not_registered",
+                "message": build_not_registered_message(self.config),
+            })
+            return
+
         try:
+            try:
+                self.database.record_otp_requested(email)
+            except Exception:
+                pass
             code, challenge = self.store.issue_challenge(email)
             send_otp_email(self.config, email, code)
         except Exception as exc:  # pragma: no cover - surfaced to the UI
@@ -908,6 +1051,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 message = "Send a fresh code first."
             elif error == "expired":
                 message = "That code expired. Send a new one."
+            elif error == "not_registered":
+                message = build_not_registered_message(self.config)
 
             status_map = {
                 "missing_challenge": HTTPStatus.BAD_REQUEST,
@@ -915,6 +1060,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "invalid_code": HTTPStatus.BAD_REQUEST,
                 "incorrect": HTTPStatus.UNAUTHORIZED,
                 "too_many_attempts": HTTPStatus.TOO_MANY_REQUESTS,
+                "not_registered": HTTPStatus.FORBIDDEN,
             }
             json_response(self, status_map.get(error, HTTPStatus.BAD_REQUEST), {
                 "ok": False,
@@ -925,6 +1071,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         assert result is not None
+        try:
+            self.database.record_login(email)
+        except Exception:
+            pass
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "email": result["email"],
@@ -966,11 +1116,20 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     handler = partial(PortalAuthHandler, directory=str(root))
     server = ThreadingHTTPServer((host, port), handler)
     server.config = config  # type: ignore[attr-defined]
+    server.database = PortalDatabase(
+        config.db_path,
+        bootstrap_registered_emails=config.seed_registered_emails,
+        default_currency=config.billing_currency,
+        default_monthly_minimum_cents=max(0, int(round(config.billing_minimum_monthly_charge * 100))),
+        default_input_token_price_multiplier=config.billing_input_token_price_multiplier,
+        default_output_token_price_multiplier=config.billing_output_token_price_multiplier,
+    )  # type: ignore[attr-defined]
     server.store = PortalAuthStore(
         otp_ttl_seconds=config.otp_ttl_seconds,
         session_ttl_seconds=config.session_ttl_seconds,
         max_attempts=config.max_attempts,
         session_secret=config.session_secret,
+        registered_email_lookup=server.database.is_registered_email,
     )  # type: ignore[attr-defined]
     return server
 
@@ -997,6 +1156,24 @@ def main() -> int:
     provider = normalize_mail_provider(config.mail_provider)
 
     print(f"Portal server listening on http://{args.host}:{args.port}/portal/", flush=True)
+    print(f"Portal database: {config.db_path}", flush=True)
+    registered_count = server.database.count_registered_users()
+    if registered_count:
+        print(f"Registered users database contains {registered_count} active user(s).", flush=True)
+    elif config.seed_registered_emails:
+        print(
+            f"Database started empty. {len(config.seed_registered_emails)} bootstrap email(s) are configured for first-run seeding.",
+            flush=True,
+        )
+    else:
+        print(
+            "Registered users database is empty, so OTP requests will be blocked until users are added.",
+            flush=True,
+        )
+    if config.support_phone:
+        print(f"Blocked users will be told to contact {config.support_phone}.", flush=True)
+    else:
+        print("PORTAL_SUPPORT_PHONE is not set, so blocked users will see a generic contact message.", flush=True)
     if config.session_secret:
         print(
             f"Signed sessions enabled. Default session lifetime is {config.session_ttl_seconds // 86400} days.",
@@ -1008,6 +1185,18 @@ def main() -> int:
             "Set PORTAL_SESSION_SECRET or configure mail credentials with a stable secret.",
             flush=True,
         )
+
+    print(
+        f"Default billing plan: {config.billing_input_token_price_multiplier}x input / "
+        f"{config.billing_output_token_price_multiplier}x output, "
+        f"${config.billing_minimum_monthly_charge:.2f} minimum.",
+        flush=True,
+    )
+    print(
+        f"Sample billing fallback: {config.billing_data_path} "
+        f"({config.billing_markup_multiplier}x markup, ${config.billing_minimum_monthly_charge:.2f} minimum).",
+        flush=True,
+    )
 
     if provider == "resend":
         if config.resend.configured:

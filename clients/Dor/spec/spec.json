@@ -4,20 +4,23 @@
     "client_name": "Dor",
     "project_name": "WhatsApp Business Reply Suggestion Assistant",
     "prepared_by": "Codex",
-    "date": "2026-06-26",
+    "date": "2026-07-01",
     "status": "Draft",
     "language": "en"
   },
   "overview": {
-    "client_request": "The scope includes two separate tools:\nTool 1: A WhatsApp reply assistant for active conversations. It reads the current thread, understands the context, drafts a reply suggestion in the owner’s tone, and leaves the final send action to the owner.\nTool 2: A follow-up outreach writer for old clients. The owner can export a past WhatsApp conversation, upload it into the workspace, and get a copy-ready message for re-engaging that client and trying to win another job."
+    "client_request": "The scope includes two separate tools:\nTool 1: A WhatsApp reply assistant for active conversations. It reads the current thread, understands the context, drafts a reply suggestion in the owner’s tone, and leaves the final send action to the owner.\nTool 2: A follow-up tracker and outreach writer for existing clients. It stores both the client's messages and Dor's replies per client, checks a configurable x-time reminder window on a weekly automation, and when it is time to re-engage with the client, it sends a message to the WhatsApp bot with a ready-made follow-up message that he can copy and send manually. The follow-up message is based uppon the saved conversation history as context."
   },
   "sections": {
     "deliverables": [
       "Tool 1: A WhatsApp bot for reviewing incoming customer messages and surfacing reply suggestions.",
       "Tool 1: A private workspace for editing the assistant's tone and knowledge.",
       "Tool 1: A reply suggestion drafted from the current WhatsApp conversation.",
+      "Tool 2: A per-client conversation tracker that saves both customer messages and Dor's replies for follow-up history.",
+      "Tool 2: A weekly reminder check that flags clients when the configurable x-time window has passed since the last conversation.",
+      "Tool 2: A new message inside the WhatsApp bot that tells Dor when a client should be reconnected and includes a ready-made outreach message.",
       "Tool 2: A workspace upload flow for exported WhatsApp conversations.",
-      "Tool 2: A copy-ready follow-up outreach suggestion drafted from the uploaded conversation context."
+      "Tool 2: A copy-ready follow-up outreach suggestion drafted from the saved conversation history."
     ],
     "workflow": [
       "Tool 1: A customer sends a message in WhatsApp Business.",
@@ -26,10 +29,11 @@
       "Tool 1: The WhatsApp bot shows the suggested reply drafted by the assistant.",
       "Tool 1: The owner reviews and edits the suggestion.",
       "Tool 1: The owner sends the final reply manually in WhatsApp Business.",
-      "Tool 2: The owner exports an older WhatsApp conversation from a past client thread.",
-      "Tool 2: The owner uploads the exported conversation into the workspace feature.",
-      "Tool 2: The assistant reads the conversation context and drafts a follow-up outreach message for re-engaging the old client.",
-      "Tool 2: The owner copies the suggested message and sends it manually to the old client."
-    ]
+      "Tool 2: Every new message in each conversation is stored with both the customer's message and Dor's reply history.",
+      "Tool 2: A weekly automation checks saved client threads against the configured x-time reminder window.",
+      "Tool 2: If the reminder window has passed, the WhatsApp bot shows Dor a ready-made outreach message for the client.",
+      "Tool 2: The owner copies the suggested message and sends it manually."
+    ],
+    "future_ideas": []
   }
 }

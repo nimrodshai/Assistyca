@@ -2,6 +2,8 @@
 
 This repository uses a reusable JSON spec plus a PDF generator script to lock client scope before implementation.
 
+For the internal technical/product version, see [docs/technical-spec-generation.md](/Users/nimrodshai/Documents/Projects/AgentsForAll/docs/technical-spec-generation.md).
+
 ## Where It Lives
 
 - `clients/_template/spec/spec.json` is the reusable starter template.

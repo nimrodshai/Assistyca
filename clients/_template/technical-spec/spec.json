@@ -1,0 +1,31 @@
+{
+  "meta": {
+    "title": "Technical / Product Spec",
+    "client_name": "Client name",
+    "project_name": "Project name",
+    "prepared_by": "Your name",
+    "date": "YYYY-MM-DD",
+    "status": "Draft",
+    "language": "en",
+    "audience": "internal"
+  },
+  "overview": {
+    "problem_statement": "",
+    "product_goal": "",
+    "recommended_shape": "",
+    "implementation_notes": ""
+  },
+  "sections": {
+    "goals": [],
+    "architecture": [],
+    "data_model": [],
+    "automation": [],
+    "workflows": [],
+    "implementation_plan": [],
+    "non_goals": [],
+    "acceptance_criteria": [],
+    "risks": [],
+    "open_questions": [],
+    "future_ideas": []
+  }
+}

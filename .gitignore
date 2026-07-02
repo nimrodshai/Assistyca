@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 *.pyo
 clients/*/spec/*-clean.pdf
+portal/*.db
+portal/*.sqlite
+portal/*.sqlite3

@@ -51,15 +51,15 @@ features:
     mode: approval_bot
     description: Drafts suggested replies for active WhatsApp conversations and keeps the final send manual.
   - id: whatsapp-business-follow-up-outreach-writer
-    name: WhatsApp Follow-Up Outreach Writer
+    name: WhatsApp Follow-Up Tracker, Reminder, and Outreach Writer
     status: draft
     channel: whatsapp
     mode: follow_up_writer
-    description: Drafts copy-ready outreach messages from exported WhatsApp conversations for re-engaging old clients.
+    description: Stores both sides of each client conversation, checks when the follow-up window has passed, and shows Dor a ready-made outreach message inside the WhatsApp bot when a client should be reconnected.
 
 agent:
   name: "Assistant"
-  purpose: "Suggest helpful replies and follow-up outreach drafts for customer messages."
+  purpose: "Suggest helpful replies, track follow-up timing, and draft outreach messages for customer conversations."
   tone:
     style: friendly
     formality: medium
@@ -70,6 +70,8 @@ agent:
     - summarize_thread
     - extract_job_details
     - follow_up_outreach
+    - conversation_history_tracking
+    - follow_up_reminders
   response_policy:
     require_human_review: true
     can_send_messages: false
