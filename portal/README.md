@@ -14,6 +14,7 @@ It is intentionally separate from the reusable spec and client config layers.
 
 - `Features` for the client account and its assigned capabilities. Click one to open its studio.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
+- The Tool studio can open a live backend dashboard when a feature includes a `launch_url`
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-model usage, and historical monthly charges
 - The top-right menu opens account, settings, and log out actions

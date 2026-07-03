@@ -1,2 +1,0 @@
-"""Portal authentication backend package."""
-

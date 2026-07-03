@@ -23,7 +23,7 @@ You can still develop locally. The usual pattern is:
 
 ## Files
 
-- `packages/whatsapp_reply_approval/server.py` contains the reusable backend server.
+- `packages/tools/whatsapp_reply_approval/server.py` contains the reusable backend server.
 - `scripts/run_whatsapp_backend.py` starts the server from the repo root.
 - `clients/_template/backend.json` is the starter config for new clients.
 - `clients/demo-handyman/backend.json` is the demo config in this repo.
@@ -82,4 +82,3 @@ Meta will send the standard verification query parameters to that route. The bac
 ## Edit Flow
 
 The dashboard’s `Edit` action opens the hosted approval page for the selected approval record. The approval page contains the draft reply in a textarea, so the owner can revise it before pressing `Send`.
-

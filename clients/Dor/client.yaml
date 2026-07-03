@@ -46,10 +46,11 @@ channels:
 features:
   - id: whatsapp-business-reply-suggestion-assistant
     name: WhatsApp Reply Approval Bot
-    status: draft
+    status: active
     channel: whatsapp
     mode: approval_bot
     description: Drafts suggested replies for active WhatsApp conversations and keeps the final send manual.
+    launch_url: http://127.0.0.1:8001/
   - id: whatsapp-business-follow-up-outreach-writer
     name: WhatsApp Follow-Up Tracker, Reminder, and Outreach Writer
     status: draft

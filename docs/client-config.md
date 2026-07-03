@@ -6,7 +6,8 @@ Recommended structure:
 
 - `clients/_template/` for the starter template
 - `clients/<client-id>/` for each live client
-- `packages/` for reusable capabilities
+- `packages/tools/` for reusable client-facing tools
+- `packages/infrastructure/` for shared backend support like auth, billing, storage, and delivery helpers
 - `clients/<client-id>/backend.json` for live WhatsApp backend settings and approval routing
 
 ## Field Groups
@@ -63,6 +64,7 @@ Assigned capabilities that the client should see in the portal.
 - `channel`: where the capability lives, such as `whatsapp`
 - `mode`: short label for the operating mode, such as `approval_bot`
 - `description`: short summary of what the feature does
+- `launch_url`: optional live dashboard or tool URL to open from the portal
 
 ### `backend.json`
 
@@ -124,4 +126,4 @@ Metadata for your own operations.
 ## Rule Of Thumb
 
 If a setting changes from client to client, keep it in `client.yaml`.
-If a setting is shared across most clients, move it into reusable code under `packages/`.
+If a setting is shared across most clients, move it into reusable code under `packages/tools/` or `packages/infrastructure/`.

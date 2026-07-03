@@ -55,6 +55,7 @@ features:
     channel: whatsapp
     mode: approval_bot
     description: Drafts suggested replies for active WhatsApp conversations and keeps the final send manual.
+    launch_url: http://127.0.0.1:8001/
 
 agent:
   name: "Assistant"

@@ -32,6 +32,7 @@ const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 29;
+const DEFAULT_FEATURE_LAUNCH_URL = "http://127.0.0.1:8001/";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
   "WhatsApp Reply Approval Bot",
@@ -66,10 +67,11 @@ const DEFAULT_FEATURES = [
   {
     id: "whatsapp-business-reply-suggestion-assistant",
     name: "WhatsApp Reply Assistant",
-    description: "Drafts suggested WhatsApp replies and keeps sending manual.",
+    description: "Drafts suggested WhatsApp replies, keeps sending manual, and opens the live backend dashboard.",
     channel: "WhatsApp",
     mode: "Human-reviewed",
     status: "Active",
+    launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
     prompt: { ...DEFAULT_PROMPT },
   },
 ];
@@ -228,6 +230,8 @@ const elements = {
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
   featureStudioChannel: document.querySelector("#featureStudioChannel"),
   featureStudioMode: document.querySelector("#featureStudioMode"),
+  featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
+  featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
   accountAvatar: document.querySelector("#accountAvatar"),
@@ -730,6 +734,10 @@ function loadClientState(email) {
         ? DEFAULT_FEATURES[0].mode
         : String(feature?.mode || "Default"),
       status: String(feature?.status || "Active"),
+      launchUrl: String(
+        feature?.launchUrl
+        || (index === 0 ? DEFAULT_FEATURE_LAUNCH_URL : "")
+      ).trim(),
       prompt: normalizePrompt(feature?.prompt || {}, fallbackPrompt),
     };
   });
@@ -2245,6 +2253,19 @@ function updateFeatureStudioHeader() {
   elements.featureStudioDescription.textContent = feature.description || "";
   elements.featureStudioChannel.textContent = `Channel: ${feature.channel || "Web"}`;
   elements.featureStudioMode.textContent = `Mode: ${feature.mode || "Default"}`;
+
+  const launchUrl = String(feature.launchUrl || "").trim();
+  if (elements.featureStudioLaunchButton) {
+    elements.featureStudioLaunchButton.hidden = !launchUrl;
+    elements.featureStudioLaunchButton.disabled = !launchUrl;
+  }
+
+  if (elements.featureStudioLaunchNote) {
+    elements.featureStudioLaunchNote.hidden = !launchUrl;
+    elements.featureStudioLaunchNote.textContent = launchUrl
+      ? `Opens the live WhatsApp reply assistant dashboard at ${launchUrl}.`
+      : "Add a launch URL to this tool if it should open a live backend dashboard.";
+  }
 }
 
 function updatePromptFields() {
@@ -2887,6 +2908,18 @@ function handleMenuAction(action) {
   }
 }
 
+function openSelectedFeatureLaunchUrl() {
+  const feature = getSelectedFeature();
+  const launchUrl = String(feature?.launchUrl || "").trim();
+  if (!launchUrl) {
+    setStatus("This tool does not have a live launch URL yet.");
+    return;
+  }
+
+  window.open(launchUrl, "_blank", "noopener,noreferrer");
+  setStatus(`Opened ${feature.name || "the live tool"}`);
+}
+
 async function bootstrapAuthState() {
   const storedSession = normalizeStoredSession(loadJson(AUTH_SESSION_KEY, null));
   authChallenge = normalizeStoredChallenge(loadJson(AUTH_CHALLENGE_KEY, null));
@@ -2971,6 +3004,9 @@ function bindEvents() {
   });
   elements.closeSettingsButton.addEventListener("click", closeSettings);
   elements.backToFeaturesButton.addEventListener("click", closeFeatureStudio);
+  if (elements.featureStudioLaunchButton) {
+    elements.featureStudioLaunchButton.addEventListener("click", openSelectedFeatureLaunchUrl);
+  }
 
   elements.settingsPanel.addEventListener("click", (event) => {
     if (event.target === elements.settingsPanel) {

@@ -10,7 +10,10 @@ When working here:
 
 ## Core Structure
 
-- `packages/` for reusable capabilities, prompts, tools, and runtime code.
+- `packages/tools/` for reusable client-facing tools.
+- `packages/infrastructure/` for shared backend support such as auth, billing, persistence, and delivery helpers.
+- Keep `packages/` free of loose root-level modules and compatibility shims.
+- If code moves between package areas, delete the old path in the same change and update imports immediately.
 - `clients/` for per-client configuration, knowledge, overrides, and tests.
 - `portal/` for the client-facing guidance editor and preview workspace.
 - `scripts/` for shared automation such as setup, sync, evals, and deploy helpers.
@@ -48,6 +51,7 @@ When working here:
 - Prefer a shared script over a one-off manual process when a task may repeat.
 - Name scripts by intent, not by client.
 - Keep setup and deployment scripts reusable whenever possible.
+- Run `python3 scripts/check_package_layout.py` after moving shared code between package folders.
 
 ## Scope Spec Workflow
 

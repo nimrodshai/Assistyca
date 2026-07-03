@@ -1727,6 +1727,12 @@ a {
   justify-content: flex-start;
 }
 
+.feature-page-actions {
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .panel-spotlight {
   display: flex;
   justify-content: flex-end;

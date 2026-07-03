@@ -14,9 +14,8 @@ if str(REPO_ROOT) not in sys.path:
 
 os.chdir(REPO_ROOT)
 
-from packages.whatsapp_reply_approval.server import main  # noqa: E402
+from packages.tools.whatsapp_reply_approval.server import main  # noqa: E402
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
