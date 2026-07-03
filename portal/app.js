@@ -267,7 +267,6 @@ const elements = {
   billingCurrentSummary: document.querySelector("#billingCurrentSummary"),
   billingCurrentTokens: document.querySelector("#billingCurrentTokens"),
   billingCurrentCharge: document.querySelector("#billingCurrentCharge"),
-  billingMinimumPayment: document.querySelector("#billingMinimumPayment"),
   billingNextPayment: document.querySelector("#billingNextPayment"),
   billingMix: document.querySelector("#billingMix"),
   billingModelCount: document.querySelector("#billingModelCount"),
@@ -1436,13 +1435,10 @@ function buildBillingSummaryText(report) {
 }
 
 function buildBillingHelpBody(report) {
-  const currency = report?.currency || "USD";
-  const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, currency);
   const pricingLabel = getBillingPricingLabel(report);
   const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
   const helpLines = [
     `We total the month at ${pricingLabel}.`,
-    `If the total stays below ${minimum}, the minimum payment applies.`,
     nextPaymentDate
       ? `Your next payment is due on ${nextPaymentDate}. It repeats on the day you registered, so someone who registered on Aug 23 would next pay on Sep 23.`
       : "Your next payment repeats on the day you registered. If that day does not exist in a shorter month, we use the last day of that month.",
@@ -2420,9 +2416,7 @@ function createBillingToolRow(tool, index = 0, currency = "USD", report = null) 
   const note = document.createElement("p");
   note.className = "billing-month-note";
   const pricingLabel = getBillingPricingLabel(report);
-  note.textContent = tool.minimumApplied
-    ? `This tool hit the minimum charge of ${formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, currency)} this month.`
-    : `Base spend was ${formatCurrency(tool.baseCostUsd, currency)} before the ${pricingLabel}.`;
+  note.textContent = `Base spend was ${formatCurrency(tool.baseCostUsd, currency)} before the ${pricingLabel}.`;
 
   body.append(note);
 
@@ -2493,9 +2487,7 @@ function createBillingMonthDetail(month, index = 0, currency = "USD", report = n
   const note = document.createElement("p");
   note.className = "billing-month-note";
   const pricingLabel = getBillingPricingLabel(report);
-  note.textContent = month.minimumApplied
-    ? `The minimum charge applied across the tools billed this month.`
-    : `Base spend was ${formatCurrency(month.baseCostUsd, currency)} before the ${pricingLabel}.`;
+  note.textContent = `Base spend was ${formatCurrency(month.baseCostUsd, currency)} before the ${pricingLabel}.`;
 
   body.append(note);
 
@@ -2556,12 +2548,6 @@ function updateBillingPanel() {
       elements.billingCurrentCharge.title = hasError || isLoading
         ? "Projected payment unavailable"
         : "Projected payment not loaded yet";
-    }
-    if (elements.billingMinimumPayment) {
-      elements.billingMinimumPayment.textContent = "—";
-      elements.billingMinimumPayment.title = hasError || isLoading
-        ? "Minimum payment unavailable"
-        : "Minimum payment not loaded yet";
     }
     if (elements.billingNextPayment) {
       elements.billingNextPayment.textContent = "—";
@@ -2629,10 +2615,6 @@ function updateBillingPanel() {
   if (elements.billingCurrentCharge) {
     elements.billingCurrentCharge.textContent = formatCurrency(currentMonth.chargeUsd, currency);
     elements.billingCurrentCharge.title = "Projected payment based on current usage";
-  }
-  if (elements.billingMinimumPayment) {
-    elements.billingMinimumPayment.textContent = formatCurrency(report.minimumMonthlyCharge, currency);
-    elements.billingMinimumPayment.title = "Minimum payment for this billing plan";
   }
   if (elements.billingNextPayment) {
     elements.billingNextPayment.textContent = formatBillingDate(getNextBillingPaymentDate(report)) || "—";
