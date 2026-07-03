@@ -800,6 +800,15 @@ a {
   margin: 0 auto;
   padding: var(--shell-pad);
   min-height: 100vh;
+  transition:
+    filter 280ms ease,
+    transform 280ms ease;
+  will-change: filter, transform;
+}
+
+body[data-modal="billing"] .app-shell {
+  filter: blur(18px) saturate(90%);
+  transform: scale(0.996);
 }
 
 .app-bar {
@@ -1009,19 +1018,16 @@ a {
   background: rgba(20, 28, 38, 0);
   opacity: 0;
   pointer-events: none;
-  backdrop-filter: blur(0px) saturate(100%);
   transition:
     opacity 220ms ease,
-    background-color 320ms ease,
-    backdrop-filter 420ms ease;
-  will-change: opacity, backdrop-filter, background-color;
+    background-color 320ms ease;
+  will-change: opacity, background-color;
 }
 
 .billing-help-popover.is-open {
-  background: rgba(20, 28, 38, 0.34);
+  background: rgba(20, 28, 38, 0.24);
   opacity: 1;
   pointer-events: auto;
-  backdrop-filter: blur(22px) saturate(145%);
 }
 
 .billing-help-dialog {
@@ -1844,9 +1850,14 @@ a {
   .auth-alert-overlay,
   .auth-alert-dialog,
   .billing-help-popover,
-  .billing-help-dialog {
+  .billing-help-dialog,
+  .app-shell {
     transition: none;
     transform: none;
+  }
+
+  body[data-modal="billing"] .app-shell {
+    filter: none;
   }
 }
 
