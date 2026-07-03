@@ -977,7 +977,7 @@ function formatBillingDate(value) {
     day: "numeric",
     year: "numeric",
     timeZone: "UTC",
-  }).format(parsed);
+  }).format(parsed).replace(/,\s+(\d{4})$/, ",\u00A0$1");
 }
 
 function getUtcDateParts(value) {
