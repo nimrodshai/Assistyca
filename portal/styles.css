@@ -807,8 +807,8 @@ a {
 }
 
 body[data-modal="billing"] .app-shell {
-  filter: blur(18px) saturate(90%);
-  transform: scale(0.996);
+  filter: none;
+  transform: none;
 }
 
 .app-bar {
@@ -1011,26 +1011,32 @@ body[data-modal="billing"] .app-shell {
 .billing-help-popover {
   position: fixed;
   inset: 0;
-  z-index: 42;
+  z-index: 1000;
   display: grid;
   place-items: center;
   padding: clamp(1rem, 2vw, 1.5rem);
   background: rgba(20, 28, 38, 0);
   opacity: 0;
   pointer-events: none;
+  isolation: isolate;
+  backdrop-filter: blur(0px) saturate(100%);
   transition:
     opacity 220ms ease,
-    background-color 320ms ease;
-  will-change: opacity, background-color;
+    background-color 320ms ease,
+    backdrop-filter 420ms ease;
+  will-change: opacity, background-color, backdrop-filter;
 }
 
 .billing-help-popover.is-open {
-  background: rgba(20, 28, 38, 0.24);
+  background: rgba(20, 28, 38, 0.3);
   opacity: 1;
   pointer-events: auto;
+  backdrop-filter: blur(24px) saturate(140%);
 }
 
 .billing-help-dialog {
+  position: relative;
+  z-index: 1;
   width: min(100%, 34rem);
   max-height: calc(100svh - 2rem);
   overflow: auto;
