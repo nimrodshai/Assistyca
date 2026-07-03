@@ -209,6 +209,9 @@ let settingsPanelCloseTimer = null;
 let authAlertOpenFrame = null;
 let authAlertCloseTimer = null;
 let authAlertReturnFocus = null;
+let billingHelpOpenFrame = null;
+let billingHelpCloseTimer = null;
+let billingHelpReturnFocus = null;
 
 const elements = {
   authView: document.querySelector("#authView"),
@@ -1491,12 +1494,57 @@ function syncBillingHelpState() {
   }
 
   if (elements.billingHelpPopover) {
-    elements.billingHelpPopover.classList.toggle("is-hidden", !isOpen);
-    elements.billingHelpPopover.classList.toggle("is-open", isOpen);
+    if (billingHelpOpenFrame !== null) {
+      window.cancelAnimationFrame(billingHelpOpenFrame);
+      billingHelpOpenFrame = null;
+    }
+
+    if (billingHelpCloseTimer !== null) {
+      window.clearTimeout(billingHelpCloseTimer);
+      billingHelpCloseTimer = null;
+    }
+
+    if (isOpen) {
+      elements.billingHelpPopover.classList.remove("is-hidden");
+      document.body.dataset.modal = "billing";
+
+      if (!elements.billingHelpPopover.classList.contains("is-open")) {
+        billingHelpOpenFrame = window.requestAnimationFrame(() => {
+          elements.billingHelpPopover.classList.add("is-open");
+          billingHelpOpenFrame = null;
+          elements.billingHelpCloseButton?.focus();
+        });
+      }
+
+      return;
+    }
+
+    elements.billingHelpPopover.classList.remove("is-open");
+
+    if (elements.billingHelpPopover.classList.contains("is-hidden")) {
+      if (document.body.dataset.modal === "billing") {
+        delete document.body.dataset.modal;
+      }
+
+      return;
+    }
+
+    billingHelpCloseTimer = window.setTimeout(() => {
+      elements.billingHelpPopover.classList.add("is-hidden");
+      if (document.body.dataset.modal === "billing") {
+        delete document.body.dataset.modal;
+      }
+      billingHelpCloseTimer = null;
+      billingHelpReturnFocus?.focus?.();
+      billingHelpReturnFocus = null;
+    }, 220);
   }
 }
 
 function setBillingHelpOpen(open) {
+  if (open) {
+    billingHelpReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : elements.billingHelpButton;
+  }
   state.billingHelpOpen = Boolean(open);
   syncBillingHelpState();
 }
@@ -2415,8 +2463,9 @@ function createBillingToolRow(tool, index = 0, currency = "USD", report = null) 
 
   const note = document.createElement("p");
   note.className = "billing-month-note";
-  const pricingLabel = getBillingPricingLabel(report);
-  note.textContent = `Base spend was ${formatCurrency(tool.baseCostUsd, currency)} before the ${pricingLabel}.`;
+  note.textContent = tool.tokensUsed
+    ? `Base usage for this tool is ${formatCurrency(tool.baseCostUsd, currency)}.`
+    : "No usage recorded for this tool yet.";
 
   body.append(note);
 
@@ -2486,8 +2535,9 @@ function createBillingMonthDetail(month, index = 0, currency = "USD", report = n
 
   const note = document.createElement("p");
   note.className = "billing-month-note";
-  const pricingLabel = getBillingPricingLabel(report);
-  note.textContent = `Base spend was ${formatCurrency(month.baseCostUsd, currency)} before the ${pricingLabel}.`;
+  note.textContent = month.tokensUsed
+    ? `Base usage this month is ${formatCurrency(month.baseCostUsd, currency)}.`
+    : "No usage recorded this month yet.";
 
   body.append(note);
 
@@ -3620,6 +3670,13 @@ function bindEvents() {
   if (elements.billingHelpCloseButton) {
     elements.billingHelpCloseButton.addEventListener("click", () => {
       closeBillingHelp();
+    });
+  }
+  if (elements.billingHelpPopover) {
+    elements.billingHelpPopover.addEventListener("click", (event) => {
+      if (event.target === elements.billingHelpPopover) {
+        closeBillingHelp();
+      }
     });
   }
   if (elements.featureStudioLaunchButton) {
