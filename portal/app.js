@@ -601,11 +601,11 @@ function focusAuthAlertReturnTarget() {
 
 function openAuthAlert(title, message, options = {}) {
   if (elements.authAlertTitle) {
-    elements.authAlertTitle.textContent = String(title || "Sign-in error");
+    elements.authAlertTitle.textContent = String(title || "Let’s get you set up");
   }
 
   if (elements.authAlertMessage) {
-    elements.authAlertMessage.textContent = String(message || "Something went wrong. Please try again.");
+    elements.authAlertMessage.textContent = String(message || "If you need help, contact me and I’ll take care of it.");
   }
 
   authAlertReturnFocus = options.returnFocus || null;
@@ -2674,8 +2674,9 @@ async function startOtpFlow() {
     const message = formatApiErrorMessage(error, "We couldn’t send the code. Please try again.");
     clearAuthChallenge();
     if (payload.error === "not_registered") {
-      renderAuth(email, message);
-      openAuthAlert("Not registered", message, { returnFocus: "email" });
+      const friendlyMessage = "If you’d like access, contact me and I’ll set you up.";
+      renderAuth(email, friendlyMessage);
+      openAuthAlert("Let’s get you set up", friendlyMessage, { returnFocus: "email" });
       return;
     }
 
