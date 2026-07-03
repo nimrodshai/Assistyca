@@ -1155,7 +1155,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    repo_root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[2]
+    # This server lives under packages/infrastructure/..., so the repository root
+    # is three levels above this file.
+    repo_root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[3]
     os.chdir(repo_root)
 
     config = load_config()
