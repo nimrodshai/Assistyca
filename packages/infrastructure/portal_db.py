@@ -1229,7 +1229,7 @@ class PortalDatabase:
             "email": normalized_email,
             "currency": currency,
             "source": "database",
-            "sourceLabel": "Live billing data",
+            "sourceLabel": "Latest billing snapshot",
             "markupMultiplier": input_multiplier,
             "inputTokenPriceMultiplier": input_multiplier,
             "outputTokenPriceMultiplier": output_multiplier,

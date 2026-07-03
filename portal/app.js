@@ -242,7 +242,6 @@ const elements = {
   simulatorPanel: document.querySelector("#simulatorPanel"),
   billingPanel: document.querySelector("#billingPanel"),
   settingsPanel: document.querySelector("#settingsPanel"),
-  billingSourcePill: document.querySelector("#billingSourcePill"),
   billingStatusBanner: document.querySelector("#billingStatusBanner"),
   billingStatusMessage: document.querySelector("#billingStatusMessage"),
   billingStatusMeta: document.querySelector("#billingStatusMeta"),
@@ -251,7 +250,8 @@ const elements = {
   billingCurrentSummary: document.querySelector("#billingCurrentSummary"),
   billingCurrentTokens: document.querySelector("#billingCurrentTokens"),
   billingCurrentCharge: document.querySelector("#billingCurrentCharge"),
-  billingPolicyValue: document.querySelector("#billingPolicyValue"),
+  billingMinimumPayment: document.querySelector("#billingMinimumPayment"),
+  billingNextPayment: document.querySelector("#billingNextPayment"),
   billingMix: document.querySelector("#billingMix"),
   billingModelCount: document.querySelector("#billingModelCount"),
   billingModelList: document.querySelector("#billingModelList"),
@@ -861,6 +861,78 @@ function formatUsageDate(value) {
   }).format(parsed);
 }
 
+function formatBillingDate(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(parsed);
+}
+
+function getUtcDateParts(value) {
+  const parsed = new Date(String(value || "").trim());
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return {
+    year: parsed.getUTCFullYear(),
+    month: parsed.getUTCMonth(),
+    day: parsed.getUTCDate(),
+  };
+}
+
+function getDaysInUtcMonth(year, monthIndex) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
+
+function getNextBillingPaymentDate(report) {
+  const registeredAt = String(report?.registeredAt || "").trim();
+  if (!registeredAt) {
+    return null;
+  }
+
+  const registration = getUtcDateParts(registeredAt);
+  if (!registration) {
+    return null;
+  }
+
+  const referenceMoment = report?.asOf ? new Date(report.asOf) : new Date();
+  if (Number.isNaN(referenceMoment.getTime())) {
+    return null;
+  }
+
+  const referenceYear = referenceMoment.getUTCFullYear();
+  const referenceMonth = referenceMoment.getUTCMonth();
+  const referenceDay = referenceMoment.getUTCDate();
+  const referenceStartOfDay = Date.UTC(referenceYear, referenceMonth, referenceDay);
+  const targetDay = registration.day;
+
+  const buildCandidate = (year, monthIndex) => {
+    const day = Math.min(targetDay, getDaysInUtcMonth(year, monthIndex));
+    return Date.UTC(year, monthIndex, day);
+  };
+
+  let candidate = buildCandidate(referenceYear, referenceMonth);
+  if (candidate < referenceStartOfDay) {
+    const nextMonth = new Date(Date.UTC(referenceYear, referenceMonth + 1, 1));
+    candidate = buildCandidate(nextMonth.getUTCFullYear(), nextMonth.getUTCMonth());
+  }
+
+  return new Date(candidate);
+}
+
 function formatUsageDateSummary(dates = []) {
   const uniqueDates = Array.from(
     new Set(
@@ -958,6 +1030,7 @@ function normalizeBillingReport(report = {}) {
   ) || 29;
   const currency = String(report.currency || billingPlan.currency || currentMonth.currency || "USD").trim() || "USD";
   const usageDates = Array.isArray(report.usageDates) ? report.usageDates : [];
+  const registeredAt = String(report.registeredAt || "").trim();
 
   return {
     ok: Boolean(report.ok),
@@ -969,7 +1042,7 @@ function normalizeBillingReport(report = {}) {
     minimumMonthlyCharge,
     source: String(report.source || "empty"),
     sourceLabel: String(report.sourceLabel || "").trim()
-      || (report.source === "database" ? "Live billing data" : report.source === "defaults" ? "Sample billing data" : "Billing data"),
+      || (report.source === "database" ? "Latest billing snapshot" : report.source === "defaults" ? "Sample billing data" : "Billing data"),
     currentMonth: {
       ...currentMonth,
       currency,
@@ -979,6 +1052,7 @@ function normalizeBillingReport(report = {}) {
       .filter(Boolean)
       .sort((left, right) => right.month.localeCompare(left.month)),
     usageDates: usageDates.map((date) => String(date || "").trim()).filter(Boolean),
+    registeredAt,
     billingPlan: {
       currency,
       monthlyMinimumCents: Number.isFinite(billingPlanMinimumCents) ? Math.max(0, Math.round(billingPlanMinimumCents)) : Math.round(minimumMonthlyCharge * 100),
@@ -994,20 +1068,20 @@ function getBillingPolicyLabel(report) {
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `Billed at ${inputMultiplier.toFixed(1)}x the token charge · ${minimum} minimum`;
+    return `Billed at ${inputMultiplier.toFixed(1)}x the token cost · ${minimum} minimum payment`;
   }
 
-  return `Billed at ${inputMultiplier.toFixed(1)}x input token charge · ${outputMultiplier.toFixed(1)}x output token charge · ${minimum} minimum`;
+  return `Billed at ${inputMultiplier.toFixed(1)}x input token cost · ${outputMultiplier.toFixed(1)}x output token cost · ${minimum} minimum payment`;
 }
 
 function getBillingPricingLabel(report) {
   const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `${inputMultiplier.toFixed(1)}x the token charge`;
+    return `${inputMultiplier.toFixed(1)}x the token cost`;
   }
 
-  return `${inputMultiplier.toFixed(1)}x input token charge and ${outputMultiplier.toFixed(1)}x output token charge`;
+  return `${inputMultiplier.toFixed(1)}x input token cost and ${outputMultiplier.toFixed(1)}x output token cost`;
 }
 
 function getBillingStatusCopy(report, hasError, isLoading) {
@@ -1052,18 +1126,16 @@ function buildBillingSummaryText(report) {
   const currentMonth = report?.currentMonth;
   const pricingLabel = getBillingPricingLabel(report);
   const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
+  const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
+  const nextPaymentCopy = nextPaymentDate ? ` Your next payment is due on ${nextPaymentDate}.` : "";
   if (!currentMonth || !currentMonth.models.length) {
-    return `No usage has been recorded yet. This month is billed at ${pricingLabel}, with a minimum of ${minimum}.`;
+    return `No usage has been recorded yet. This month is billed at ${pricingLabel}, with a minimum payment of ${minimum}.${nextPaymentCopy}`;
   }
 
-  const modelCopy = currentMonth.models
-    .map((model) => `${formatTokenCount(model.tokensUsed)} tokens on ${formatModelName(model.model)}`)
-    .join(" · ");
-  const baseSpend = formatCurrency(currentMonth.baseCostUsd, report?.currency || "USD");
   const charged = formatCurrency(currentMonth.chargeUsd, report?.currency || "USD");
-  const minimumApplied = currentMonth.minimumApplied ? " The minimum charge applied." : "";
+  const minimumApplied = currentMonth.minimumApplied ? " The minimum payment applies." : "";
 
-  return `This month is billed at ${pricingLabel}, with a minimum of ${minimum}. Model mix: ${modelCopy}. Base spend ${baseSpend}, charged at ${charged}.${minimumApplied}`;
+  return `Based on usage so far, the projected payment is ${charged}. This month is billed at ${pricingLabel}, with a minimum payment of ${minimum}.${minimumApplied}${nextPaymentCopy}`;
 }
 
 function getBillingStatusLabel(report) {
@@ -1072,7 +1144,7 @@ function getBillingStatusLabel(report) {
   }
 
   if (report.source === "database" || report.source === "account") {
-    return "Live billing data";
+    return "Latest billing snapshot";
   }
 
   if (report.source === "defaults") {
@@ -2018,21 +2090,6 @@ function updateBillingPanel() {
   const currency = report?.currency || "USD";
   const statusCopy = getBillingStatusCopy(report, hasError, isLoading);
 
-  if (elements.billingSourcePill) {
-    elements.billingSourcePill.classList.toggle("is-warn", hasError);
-    elements.billingSourcePill.classList.toggle("is-loading", isLoading);
-    const label = elements.billingSourcePill.querySelector(".billing-source-label");
-    if (label) {
-      label.textContent = hasError
-        ? report
-          ? "Last loaded snapshot"
-          : "Billing unavailable"
-        : isLoading
-          ? "Loading billing"
-          : report?.sourceLabel || "Billing data";
-    }
-  }
-
   if (elements.billingStatusBanner) {
     elements.billingStatusBanner.classList.toggle("is-warn", hasError);
     elements.billingStatusBanner.classList.toggle("is-loading", isLoading);
@@ -2067,11 +2124,21 @@ function updateBillingPanel() {
     }
     if (elements.billingCurrentCharge) {
       elements.billingCurrentCharge.textContent = "—";
+      elements.billingCurrentCharge.title = hasError || isLoading
+        ? "Projected payment unavailable"
+        : "Projected payment not loaded yet";
     }
-    if (elements.billingPolicyValue) {
-      elements.billingPolicyValue.textContent = hasError || isLoading
-        ? "Refresh to load billing policy"
-        : `Billed at ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x the token charge · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
+    if (elements.billingMinimumPayment) {
+      elements.billingMinimumPayment.textContent = "—";
+      elements.billingMinimumPayment.title = hasError || isLoading
+        ? "Minimum payment unavailable"
+        : "Minimum payment not loaded yet";
+    }
+    if (elements.billingNextPayment) {
+      elements.billingNextPayment.textContent = "—";
+      elements.billingNextPayment.title = hasError || isLoading
+        ? "Next payment date unavailable"
+        : "Next payment date not loaded yet";
     }
     if (elements.billingModelCount) {
       elements.billingModelCount.textContent = "—";
@@ -2126,9 +2193,15 @@ function updateBillingPanel() {
   }
   if (elements.billingCurrentCharge) {
     elements.billingCurrentCharge.textContent = formatCurrency(currentMonth.chargeUsd, currency);
+    elements.billingCurrentCharge.title = "Projected payment based on current usage";
   }
-  if (elements.billingPolicyValue) {
-    elements.billingPolicyValue.textContent = getBillingPolicyLabel(report);
+  if (elements.billingMinimumPayment) {
+    elements.billingMinimumPayment.textContent = formatCurrency(report.minimumMonthlyCharge, currency);
+    elements.billingMinimumPayment.title = "Minimum payment for this billing plan";
+  }
+  if (elements.billingNextPayment) {
+    elements.billingNextPayment.textContent = formatBillingDate(getNextBillingPaymentDate(report)) || "—";
+    elements.billingNextPayment.title = "Next scheduled payment date";
   }
   if (elements.billingModelCount) {
     elements.billingModelCount.textContent = `${currentMonth.models.length} model${currentMonth.models.length === 1 ? "" : "s"}`;

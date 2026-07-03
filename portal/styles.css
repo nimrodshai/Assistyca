@@ -952,7 +952,7 @@ a {
   display: grid;
   gap: 0.7rem;
   align-content: start;
-  max-width: 44rem;
+  max-width: 46rem;
 }
 
 .billing-hero-copy h2 {
@@ -967,7 +967,7 @@ a {
 
 .billing-summary {
   margin: 0;
-  max-width: 44ch;
+  max-width: 52ch;
   color: rgba(238, 249, 248, 0.8);
   font-size: 1rem;
   line-height: 1.7;
@@ -975,7 +975,7 @@ a {
 
 .billing-hero-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.7rem;
   align-self: stretch;
 }
@@ -1001,14 +1001,14 @@ a {
 }
 
 .billing-metric strong {
-  font-size: clamp(0.95rem, 1.55vw, 1.3rem);
+  font-size: clamp(0.88rem, 1.2vw, 1.16rem);
   letter-spacing: -0.03em;
   line-height: 1.08;
   overflow-wrap: anywhere;
 }
 
-.billing-metric:last-child strong {
-  font-size: clamp(0.87rem, 1.22vw, 1.02rem);
+.billing-metric.is-date strong {
+  font-size: clamp(0.82rem, 1.08vw, 0.98rem);
   line-height: 1.12;
   max-width: 14ch;
 }
@@ -2325,7 +2325,7 @@ a {
   }
 
   .billing-hero-metrics {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .billing-grid {
@@ -2353,10 +2353,6 @@ a {
 
   .panel-intro {
     flex-direction: column;
-  }
-
-  .billing-page .panel-spotlight {
-    justify-content: flex-start;
   }
 
   .feature-page-header {

@@ -212,6 +212,7 @@ def build_billing_report(
     months = source_record.get("months") if isinstance(source_record, dict) else []
     month_rows = months if isinstance(months, list) else []
     current_key = current_month_key(reference_time)
+    registered_at = normalize_text(source_record.get("registeredAt")) if isinstance(source_record, dict) else ""
 
     summaries: list[dict[str, Any]] = []
     for raw_month in month_rows:
@@ -247,6 +248,7 @@ def build_billing_report(
         "markupMultiplier": markup_multiplier,
         "minimumMonthlyCharge": round(minimum_monthly_charge, 2),
         "source": source,
+        "registeredAt": registered_at,
         "currentMonth": current_month,
         "history": history,
         "asOf": datetime.now().astimezone().isoformat(),
