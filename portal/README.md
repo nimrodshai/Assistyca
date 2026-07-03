@@ -26,6 +26,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - Set either the SMTP variables or the Resend variables so the server can actually email the code.
 - Registered emails now live in the backend SQLite database at `portal/portal.db` by default.
 - Set `PORTAL_DB_SEED_REGISTERED_EMAILS` to bootstrap the database the first time it starts. `PORTAL_REGISTERED_EMAILS` is still accepted as a legacy bootstrap alias.
+- Set `PORTAL_DB_SEED_ADMIN_EMAILS` to promote bootstrap users to admin on startup. `PORTAL_ADMIN_EMAILS` is still accepted as a legacy alias.
 - Set `PORTAL_SUPPORT_PHONE` to the phone number shown to anyone who is not registered.
 - The simulator is still browser-local, so it can be tested before any WhatsApp webhook or approval server exists.
 
@@ -50,6 +51,7 @@ Required environment variables on Render:
 - `PORTAL_PRODUCT_NAME` for the sign-in email subject and product branding inside the email
 - `PORTAL_DB_PATH` for the SQLite database file, which defaults to `portal/portal.db`
 - `PORTAL_DB_SEED_REGISTERED_EMAILS` for the comma-separated list of portal users used only when the database starts empty
+- `PORTAL_DB_SEED_ADMIN_EMAILS` for the comma-separated list of admin portal users that get promoted on startup
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
 - `PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER` controls the input-token multiplier for the default billing plan. The default is `1.5`.

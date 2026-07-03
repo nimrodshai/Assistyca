@@ -17,6 +17,8 @@ services:
         value: portal/portal.db
       - key: PORTAL_DB_SEED_REGISTERED_EMAILS
         value: nimrod.shai@gmail.com
+      - key: PORTAL_DB_SEED_ADMIN_EMAILS
+        value: nimrod.shai@gmail.com
       - key: PORTAL_RESEND_FROM_NAME
         value: Assistyca
       - key: PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER

@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 os.chdir(REPO_ROOT)
 
-from packages.portal_auth.server import main  # noqa: E402
+from packages.infrastructure.portal_auth.server import main  # noqa: E402
 
 
 if __name__ == "__main__":

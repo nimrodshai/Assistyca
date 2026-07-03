@@ -13,9 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from packages.portal_db import DEFAULT_DB_PATH  # noqa: E402
-from packages.portal_db import PortalDatabase  # noqa: E402
-from packages.portal_db import normalize_email  # noqa: E402
+from packages.infrastructure.portal_db import DEFAULT_DB_PATH  # noqa: E402
+from packages.infrastructure.portal_db import PortalDatabase  # noqa: E402
+from packages.infrastructure.portal_db import normalize_email  # noqa: E402
 
 
 def load_database(path: str | None) -> PortalDatabase:
@@ -34,7 +34,22 @@ def load_database(path: str | None) -> PortalDatabase:
             if email:
                 bootstrap_emails.add(email)
 
-    return PortalDatabase(db_path, bootstrap_registered_emails=bootstrap_emails)
+    bootstrap_admin_emails: set[str] = set()
+    for env_name in ("PORTAL_DB_SEED_ADMIN_EMAILS", "PORTAL_ADMIN_EMAILS"):
+        raw = os.getenv(env_name, "")
+        if not raw.strip():
+            continue
+
+        for chunk in re.split(r"[,;\n]+", raw):
+            email = normalize_email(chunk)
+            if email:
+                bootstrap_admin_emails.add(email)
+
+    return PortalDatabase(
+        db_path,
+        bootstrap_registered_emails=bootstrap_emails,
+        bootstrap_admin_emails=bootstrap_admin_emails,
+    )
 
 
 def format_billing(user: dict[str, object]) -> str:
@@ -65,9 +80,10 @@ def command_list_users(args: argparse.Namespace) -> int:
 
     for user in users:
         status = "active" if user.get("isActive") else "inactive"
+        role = "admin" if user.get("isAdmin") else "user"
         print(
             f"{user.get('email')} | registered {user.get('registeredAt')} | {status} | "
-            f"usage {int(user.get('usageCount') or 0)} | {format_billing(user)}"
+            f"{role} | usage {int(user.get('usageCount') or 0)} | {format_billing(user)}"
         )
 
     return 0
