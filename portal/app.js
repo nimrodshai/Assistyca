@@ -32,7 +32,7 @@ const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 29;
-const DEFAULT_FEATURE_LAUNCH_URL = "http://127.0.0.1:8001/";
+const DEFAULT_FEATURE_LAUNCH_URL = "";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
   "WhatsApp Reply Approval Bot",
@@ -67,7 +67,7 @@ const DEFAULT_FEATURES = [
   {
     id: "whatsapp-business-reply-suggestion-assistant",
     name: "WhatsApp Reply Assistant",
-    description: "Drafts suggested WhatsApp replies, keeps sending manual, and opens the live backend dashboard.",
+    description: "Drafts suggested WhatsApp replies and surfaces approvals inside WhatsApp for manual review.",
     channel: "WhatsApp",
     mode: "Human-reviewed",
     status: "Active",
@@ -969,7 +969,7 @@ function normalizeBillingReport(report = {}) {
     minimumMonthlyCharge,
     source: String(report.source || "empty"),
     sourceLabel: String(report.sourceLabel || "").trim()
-      || (report.source === "database" ? "Database ledger" : report.source === "defaults" ? "Sample ledger" : "Billing ledger"),
+      || (report.source === "database" ? "Live billing data" : report.source === "defaults" ? "Sample billing data" : "Billing data"),
     currentMonth: {
       ...currentMonth,
       currency,
@@ -994,20 +994,20 @@ function getBillingPolicyLabel(report) {
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `${inputMultiplier.toFixed(1)}x token price · ${minimum} minimum`;
+    return `Billed at ${inputMultiplier.toFixed(1)}x the token price · ${minimum} minimum`;
   }
 
-  return `${inputMultiplier.toFixed(1)}x in · ${outputMultiplier.toFixed(1)}x out · ${minimum} minimum`;
+  return `Billed at ${inputMultiplier.toFixed(1)}x input token price · ${outputMultiplier.toFixed(1)}x output token price · ${minimum} minimum`;
 }
 
 function getBillingPricingLabel(report) {
   const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `${inputMultiplier.toFixed(1)}x token price`;
+    return `${inputMultiplier.toFixed(1)}x the token price`;
   }
 
-  return `${inputMultiplier.toFixed(1)}x in · ${outputMultiplier.toFixed(1)}x out`;
+  return `${inputMultiplier.toFixed(1)}x input token price and ${outputMultiplier.toFixed(1)}x output token price`;
 }
 
 function getBillingStatusCopy(report, hasError, isLoading) {
@@ -1018,7 +1018,7 @@ function getBillingStatusCopy(report, hasError, isLoading) {
         : "I’m having trouble reaching billing right now.",
       meta: report
         ? "Refresh billing to try again. I’ll keep the last good snapshot on screen while we wait."
-        : "Try Refresh billing. If it keeps failing, I’ll check the ledger connection.",
+        : "Try Refresh billing. If it keeps failing, I’ll check the billing connection.",
     };
   }
 
@@ -1044,26 +1044,26 @@ function getBillingStatusCopy(report, hasError, isLoading) {
 
   return {
     message: "No billing data has been loaded yet.",
-    meta: "Refresh once the ledger is ready.",
+    meta: "Refresh once billing data is ready.",
   };
 }
 
 function buildBillingSummaryText(report) {
   const currentMonth = report?.currentMonth;
+  const pricingLabel = getBillingPricingLabel(report);
+  const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
   if (!currentMonth || !currentMonth.models.length) {
-    return `No usage has been recorded yet. The monthly minimum of ${formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD")} applies until tokens arrive.`;
+    return `No usage has been recorded yet. This month is billed at ${pricingLabel}, with a minimum of ${minimum}.`;
   }
 
   const modelCopy = currentMonth.models
     .map((model) => `${formatTokenCount(model.tokensUsed)} tokens on ${formatModelName(model.model)}`)
     .join(" · ");
-
   const baseSpend = formatCurrency(currentMonth.baseCostUsd, report?.currency || "USD");
   const charged = formatCurrency(currentMonth.chargeUsd, report?.currency || "USD");
   const minimumApplied = currentMonth.minimumApplied ? " The minimum charge applied." : "";
-  const pricingLabel = getBillingPricingLabel(report);
 
-  return `${modelCopy}. Base spend ${baseSpend} before the ${pricingLabel}, charged at ${charged}.${minimumApplied}`;
+  return `This month is billed at ${pricingLabel}, with a minimum of ${minimum}. Model mix: ${modelCopy}. Base spend ${baseSpend}, charged at ${charged}.${minimumApplied}`;
 }
 
 function getBillingStatusLabel(report) {
@@ -1072,11 +1072,11 @@ function getBillingStatusLabel(report) {
   }
 
   if (report.source === "database" || report.source === "account") {
-    return "Live ledger";
+    return "Live billing data";
   }
 
   if (report.source === "defaults") {
-    return "Sample ledger";
+    return "Sample billing data";
   }
 
   if (state.billingLoading) {
@@ -1087,7 +1087,7 @@ function getBillingStatusLabel(report) {
     return "Billing unavailable";
   }
 
-  return "No ledger";
+  return "Billing data";
 }
 
 function setBillingError(message) {
@@ -2029,7 +2029,7 @@ function updateBillingPanel() {
           : "Billing unavailable"
         : isLoading
           ? "Loading billing"
-          : report?.sourceLabel || "Billing ledger";
+          : report?.sourceLabel || "Billing data";
     }
   }
 
@@ -2062,29 +2062,29 @@ function updateBillingPanel() {
       elements.billingCurrentSummary.textContent = fallbackSummary;
     }
     if (elements.billingCurrentTokens) {
-      elements.billingCurrentTokens.textContent = hasError || isLoading ? "—" : "0";
-      elements.billingCurrentTokens.title = hasError || isLoading ? "Billing data unavailable" : "0 tokens";
+      elements.billingCurrentTokens.textContent = "—";
+      elements.billingCurrentTokens.title = hasError || isLoading ? "Billing data unavailable" : "Billing data not loaded yet";
     }
     if (elements.billingCurrentCharge) {
-      elements.billingCurrentCharge.textContent = hasError || isLoading ? "—" : formatCurrency(DEFAULT_BILLING_MINIMUM, currency);
+      elements.billingCurrentCharge.textContent = "—";
     }
     if (elements.billingPolicyValue) {
       elements.billingPolicyValue.textContent = hasError || isLoading
         ? "Refresh to load billing policy"
-        : `${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x in · ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x out · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
+        : `Billed at ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x the token price · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
     }
     if (elements.billingModelCount) {
-      elements.billingModelCount.textContent = hasError || isLoading ? "—" : "0 models";
+      elements.billingModelCount.textContent = "—";
     }
     if (elements.billingHistoryCount) {
-      elements.billingHistoryCount.textContent = hasError || isLoading ? "—" : "0 months";
+      elements.billingHistoryCount.textContent = "—";
     }
     if (elements.billingModelList) {
       elements.billingModelList.replaceChildren(
         createBillingNotice(
           hasError
-            ? "The model breakdown will return as soon as the ledger is reachable again."
-            : "Billing activity will appear here once the ledger is connected.",
+            ? "The model breakdown will return as soon as billing data is reachable again."
+            : "Billing activity will appear here once billing data is connected.",
           hasError ? "warn" : "neutral",
         ),
       );
@@ -2093,7 +2093,7 @@ function updateBillingPanel() {
       elements.billingHistoryList.replaceChildren(
         createBillingNotice(
           hasError
-            ? "The month history will return as soon as the ledger is reachable again."
+            ? "The month history will return as soon as billing data is reachable again."
             : "Previous months will appear here once they are available.",
           hasError ? "warn" : "neutral",
         ),

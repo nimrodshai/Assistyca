@@ -961,7 +961,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     minimum_monthly_charge=self.config.billing_minimum_monthly_charge,
                     currency=self.config.billing_currency,
                 )
-                report["sourceLabel"] = "Sample ledger" if report.get("source") == "defaults" else "Billing ledger"
+                report["sourceLabel"] = "Sample billing data" if report.get("source") == "defaults" else "Billing data"
             json_response(self, HTTPStatus.OK, report)
             return
 
