@@ -53,17 +53,17 @@ def load_database(path: str | None) -> PortalDatabase:
 
 
 def format_billing(user: dict[str, object]) -> str:
-    billing = user.get("billing") if isinstance(user.get("billing"), dict) else {}
-    currency = str(billing.get("currency") or "USD")
-    minimum = float(billing.get("monthlyMinimumCents") or 0) / 100
-    input_multiplier = float(billing.get("inputTokenPriceMultiplier") or 1.5)
-    output_multiplier = float(billing.get("outputTokenPriceMultiplier") or 1.5)
-    if abs(input_multiplier - output_multiplier) < 0.0001:
-        policy = f"{input_multiplier:.1f}x token price"
-    else:
-        policy = f"{input_multiplier:.1f}x input / {output_multiplier:.1f}x output"
+  billing = user.get("billing") if isinstance(user.get("billing"), dict) else {}
+  currency = str(billing.get("currency") or "USD")
+  minimum = float(billing.get("monthlyMinimumCents") or 0) / 100
+  input_multiplier = float(billing.get("inputTokenPriceMultiplier") or 1.5)
+  output_multiplier = float(billing.get("outputTokenPriceMultiplier") or 1.5)
+  if abs(input_multiplier - output_multiplier) < 0.0001:
+    policy = f"{input_multiplier:.1f}x token price"
+  else:
+    policy = f"{input_multiplier:.1f}x input / {output_multiplier:.1f}x output"
 
-    return f"{policy} · {currency} {minimum:.2f} minimum"
+  return f"{policy} · {currency} {minimum:.2f} minimum per tool"
 
 
 def command_list_users(args: argparse.Namespace) -> int:
@@ -119,7 +119,7 @@ def command_list_usage(args: argparse.Namespace) -> int:
 
     for event in events:
         print(
-            f"{event.get('usedAt')} | {event.get('model')} | "
+            f"{event.get('usedAt')} | {event.get('toolName') or event.get('toolId') or 'Unassigned tool'} | {event.get('model')} | "
             f"{int(event.get('inputTokens') or 0) + int(event.get('outputTokens') or 0)} tokens | "
             f"{float(event.get('rawChargeCents') or 0) / 100:.4f} USD"
         )

@@ -53,6 +53,7 @@ How the client talks to the agent.
 - `whatsapp.display_name`
 - `whatsapp.webhook_path`
 - `whatsapp.mode`
+- `whatsapp.owner_wa_id` for the owner number that receives approval cards
 
 ### `features`
 
@@ -76,6 +77,7 @@ Runtime settings for the reusable WhatsApp approval backend.
 - `whatsapp.access_token`
 - `whatsapp.phone_number_id`
 - `whatsapp.app_secret`
+- `whatsapp.owner_wa_id`
 - `whatsapp.allow_mock_send`
 - `assistant.*` guidance fields for reply generation
 

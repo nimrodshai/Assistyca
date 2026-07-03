@@ -55,6 +55,7 @@ The JSON config is intentionally small and reusable.
 - `whatsapp.access_token`
 - `whatsapp.phone_number_id`
 - `whatsapp.app_secret`
+- `whatsapp.owner_wa_id` for the owner WhatsApp number that should receive approvals
 - `whatsapp.allow_mock_send`
 - `assistant.tone_guidance`
 - `assistant.reply_rules`

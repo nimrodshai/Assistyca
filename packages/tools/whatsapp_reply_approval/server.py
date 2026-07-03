@@ -5,8 +5,8 @@ This module provides a small HTTP server that can:
 
 - receive WhatsApp webhook callbacks
 - create a suggested reply from the latest message and thread context
-- present a dashboard of pending approvals
-- let an owner edit the suggested reply and send it manually
+- notify the owner inside WhatsApp when a reply needs approval
+- let the owner approve, edit, or skip the reply from WhatsApp
 
 The implementation is intentionally dependency-light so it can run locally
 without extra packages and still be deployed as a small shared service.
@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -39,7 +40,7 @@ DEFAULT_ASSISTANT_CONFIG = {
     "reply_rules": "Acknowledge the request first. Ask one clarifying question only when needed. Never guess prices or availability.",
     "business_notes": "Service area, hours, pricing hints, and any details the agent should know before replying.",
     "escalation_guidance": "Hand off when the customer is upset, the answer needs a human decision, or the request is urgent.",
-    "approval_guidance": "When a WhatsApp message arrives, show who sent it, the latest message, and one suggested reply. Keep the final send manual.",
+    "approval_guidance": "When a WhatsApp message arrives, send the owner a WhatsApp approval card with who sent it, the latest message, and one suggested reply. Keep the final send manual inside WhatsApp.",
     "example_replies": "Good: \"Yes, I can help. What is the address?\"\nBad: \"Sure, anything is possible.\"",
     "response_style": "balanced",
 }
@@ -545,6 +546,17 @@ def escape_attr(value: Any) -> str:
     return escape(str(value or ""), quote=True)
 
 
+def short_ref(value: str, length: int = 6) -> str:
+    cleaned = normalize_text(value).replace("-", "")
+    if len(cleaned) <= length:
+        return cleaned.upper()
+    return cleaned[:length].upper()
+
+
+def normalize_whatsapp_id(value: Any) -> str:
+    return re.sub(r"\D", "", normalize_text(value))
+
+
 @dataclass
 class RuntimeConfig:
     client_id: str
@@ -556,6 +568,7 @@ class RuntimeConfig:
     app_secret: str
     api_version: str
     allow_mock_send: bool
+    owner_wa_id: str
     data_path: Path
     assistant: dict[str, Any] = field(default_factory=dict)
 
@@ -626,6 +639,11 @@ class RuntimeConfig:
             or whatsapp.get("app_secret")
             or merged.get("app_secret")
         )
+        owner_wa_id = normalize_text(
+            os.getenv("WHATSAPP_OWNER_WA_ID")
+            or whatsapp.get("owner_wa_id")
+            or merged.get("owner_wa_id")
+        )
         api_version = normalize_text(
             os.getenv("WHATSAPP_API_VERSION")
             or whatsapp.get("api_version")
@@ -666,6 +684,7 @@ class RuntimeConfig:
             app_secret=app_secret,
             api_version=api_version,
             allow_mock_send=allow_mock_send,
+            owner_wa_id=owner_wa_id,
             data_path=data_path,
             assistant=assistant_config,
         )
@@ -719,6 +738,93 @@ class BackendStore:
             if thread is None:
                 return None
             return json.loads(json.dumps(thread))
+
+    def update_approval(self, approval_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            approvals = self.data.setdefault("approvals", {})
+            approval = approvals.get(approval_id)
+            if approval is None:
+                raise KeyError(f"Unknown approval id: {approval_id}")
+            approval.update(updates)
+            approval["updated_at"] = now_iso()
+            self.save()
+            return json.loads(json.dumps(approval))
+
+    def append_approval_message_id(self, approval_id: str, message_id: str) -> dict[str, Any]:
+        with self.lock:
+            approvals = self.data.setdefault("approvals", {})
+            approval = approvals.get(approval_id)
+            if approval is None:
+                raise KeyError(f"Unknown approval id: {approval_id}")
+            message_id = normalize_text(message_id)
+            if message_id:
+                owner_message_ids = approval.setdefault("owner_message_ids", [])
+                if message_id not in owner_message_ids:
+                    owner_message_ids.append(message_id)
+                approval["owner_last_message_id"] = message_id
+                approval["updated_at"] = now_iso()
+                self.save()
+            return json.loads(json.dumps(approval))
+
+    def mark_pending_edit(self, approval_id: str, prompt_message_id: str | None = None) -> dict[str, Any]:
+        updates: dict[str, Any] = {
+            "status": "awaiting_edit",
+            "owner_state": "awaiting_edit",
+            "owner_edit_requested_at": now_iso(),
+        }
+        if prompt_message_id:
+            updates["owner_edit_prompt_message_id"] = normalize_text(prompt_message_id)
+        return self.update_approval(approval_id, updates)
+
+    def mark_skipped(self, approval_id: str) -> dict[str, Any]:
+        approval = self.update_approval(
+            approval_id,
+            {
+                "status": "skipped",
+                "owner_state": "skipped",
+                "skipped_at": now_iso(),
+            },
+        )
+        thread = self.data.setdefault("threads", {}).get(approval.get("thread_id"))
+        if thread is not None and thread.get("pending_approval_id") == approval_id:
+            thread["pending_approval_id"] = ""
+            thread["updated_at"] = now_iso()
+            self.save()
+        return approval
+
+    def find_approval_by_message_id(self, message_id: str) -> dict[str, Any] | None:
+        needle = normalize_text(message_id)
+        if not needle:
+            return None
+        with self.lock:
+            approvals = list(self.data.get("approvals", {}).values())
+            for approval in approvals:
+                known_ids = {
+                    normalize_text(approval.get("approval_id")),
+                    normalize_text(approval.get("source_message_id")),
+                    normalize_text(approval.get("sent_message_id")),
+                    normalize_text(approval.get("owner_notification_message_id")),
+                    normalize_text(approval.get("owner_edit_prompt_message_id")),
+                    normalize_text(approval.get("owner_last_message_id")),
+                }
+                known_ids.update(normalize_text(item) for item in approval.get("owner_message_ids", []))
+                if needle in {item for item in known_ids if item}:
+                    return json.loads(json.dumps(approval))
+            return None
+
+    def find_approval_by_reference(self, reference: str) -> dict[str, Any] | None:
+        needle = normalize_text(reference).lstrip("#").lower()
+        if not needle:
+            return None
+        with self.lock:
+            approvals = list(self.data.get("approvals", {}).values())
+            for approval in approvals:
+                approval_id = normalize_text(approval.get("approval_id")).lower()
+                if approval_id == needle or approval_id.startswith(needle):
+                    return json.loads(json.dumps(approval))
+                if short_ref(approval_id).lower() == needle:
+                    return json.loads(json.dumps(approval))
+            return None
 
     def record_inbound_message(
         self,
@@ -779,6 +885,8 @@ class BackendStore:
                 "suggested_reply": suggested_reply,
                 "context": context,
                 "status": "pending",
+                "owner_state": "pending",
+                "owner_message_ids": [],
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
                 "sent_message_id": "",
@@ -812,9 +920,11 @@ class BackendStore:
                 return approval
 
             approval["status"] = "sent"
+            approval["owner_state"] = "sent"
             approval["updated_at"] = now_iso()
             approval["sent_message_id"] = sent_message_id
             approval["sent_text"] = reply_text
+            approval["sent_at"] = now_iso()
 
             thread = self.data.setdefault("threads", {}).get(approval.get("thread_id"))
             if thread is not None:
@@ -906,16 +1016,21 @@ def send_whatsapp_message(
     phone_number_id: str,
     api_version: str,
     recipient_wa_id: str,
-    message_text: str,
+    message_text: str | None = None,
+    interactive: dict[str, Any] | None = None,
 ) -> str:
     url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
-    payload = {
+    payload: dict[str, Any] = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
         "to": recipient_wa_id,
-        "type": "text",
-        "text": {"preview_url": False, "body": message_text},
     }
+    if interactive is not None:
+        payload["type"] = "interactive"
+        payload["interactive"] = interactive
+    else:
+        payload["type"] = "text"
+        payload["text"] = {"preview_url": False, "body": message_text or ""}
     request = urllib_request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -969,9 +1084,9 @@ def render_dashboard(config: RuntimeConfig, approvals: list[dict[str, Any]], req
         else '<span class="pill warn">Mock send mode</span>'
     )
     helper_text = (
-        "Configure WhatsApp access token and phone number ID to send real replies."
+        "Live approvals are sent to the owner in WhatsApp. This page is a debug mirror."
         if not config.live_send_enabled
-        else "Incoming WhatsApp messages will create approval cards here."
+        else "Incoming WhatsApp messages are routed to the owner in WhatsApp. This page is only a debug mirror."
     )
 
     if not approvals:
@@ -979,13 +1094,13 @@ def render_dashboard(config: RuntimeConfig, approvals: list[dict[str, Any]], req
         <section class="card">
           <h2>No pending approvals yet</h2>
           <p class="lede">
-            When WhatsApp webhooks arrive, a sender, latest message, and suggested reply will appear here.
+            When WhatsApp webhooks arrive, the backend stores the thread and forwards the approval to WhatsApp.
           </p>
           <div class="notice {'warn' if not config.live_send_enabled else ''}">
             {escape(helper_text)}
           </div>
           <p class="footer-note">
-            Webhook endpoint: <code>/webhooks/whatsapp</code> · Edit screen: <code>/approval/&lt;approval_id&gt;</code>
+            Webhook endpoint: <code>/webhooks/whatsapp</code> · Debug screen: <code>/approval/&lt;approval_id&gt;</code>
           </p>
         </section>
         """
@@ -1160,7 +1275,7 @@ def render_approval_page(
           {''.join(context_html) if context_html else '<div class="notice">No conversation history stored yet.</div>'}
         </div>
         <p class="footer-note">
-          This page is the hosted approval screen. The dashboard links here when the owner clicks Edit.
+          This page is only a debug mirror. The real approval flow happens in WhatsApp.
         </p>
       </article>
     </section>
@@ -1235,6 +1350,8 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         if message_type not in {"text", "image", "audio", "video", "document", "interactive", "location"}:
                             continue
                         message_text = extract_message_text(message)
+                        reply_to_message_id = extract_message_context_id(message)
+                        interactive_reply = extract_interactive_reply(message)
                         sender_wa_id = sender_wa_id or normalize_text(message.get("from"))
                         sender_name = sender_name or sender_wa_id
                         events.append(
@@ -1247,6 +1364,9 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                                 "source_message_id": normalize_text(message.get("id")),
                                 "timestamp": normalize_text(message.get("timestamp")) or now_iso(),
                                 "metadata": metadata,
+                                "reply_to_message_id": reply_to_message_id,
+                                "interactive_reply": interactive_reply,
+                                "message_payload": message,
                                 "raw_payload": payload,
                             }
                         )
@@ -1262,6 +1382,9 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "source_message_id": normalize_text(payload.get("message_id")),
                 "timestamp": normalize_text(payload.get("timestamp")) or now_iso(),
                 "metadata": {},
+                "reply_to_message_id": normalize_text(payload.get("reply_to_message_id")),
+                "interactive_reply": {},
+                "message_payload": payload,
                 "raw_payload": payload,
             }
         )
@@ -1273,6 +1396,18 @@ def extract_message_text(message: dict[str, Any]) -> str:
     text = get_nested(message, "text", "body", default="")
     if text:
         return normalize_text(text)
+
+    button_reply = get_nested(message, "interactive", "button_reply", default={})
+    if isinstance(button_reply, dict):
+        title = normalize_text(button_reply.get("title"))
+        if title:
+            return title
+
+    list_reply = get_nested(message, "interactive", "list_reply", default={})
+    if isinstance(list_reply, dict):
+        title = normalize_text(list_reply.get("title"))
+        if title:
+            return title
 
     caption = get_nested(message, "image", "caption", default="")
     if caption:
@@ -1288,6 +1423,141 @@ def extract_message_text(message: dict[str, Any]) -> str:
     return f"[{normalize_text(message.get('type') or 'message')}]"
 
 
+def extract_message_context_id(message: dict[str, Any]) -> str:
+    context = message.get("context", {})
+    if isinstance(context, dict):
+        return normalize_text(context.get("id"))
+    return ""
+
+
+def extract_interactive_reply(message: dict[str, Any]) -> dict[str, str]:
+    interactive = message.get("interactive", {})
+    if not isinstance(interactive, dict):
+        return {"id": "", "title": "", "type": ""}
+
+    button_reply = interactive.get("button_reply")
+    if isinstance(button_reply, dict):
+        return {
+            "id": normalize_text(button_reply.get("id")),
+            "title": normalize_text(button_reply.get("title")),
+            "type": "button_reply",
+        }
+
+    list_reply = interactive.get("list_reply")
+    if isinstance(list_reply, dict):
+        return {
+            "id": normalize_text(list_reply.get("id")),
+            "title": normalize_text(list_reply.get("title")),
+            "type": "list_reply",
+        }
+
+    return {"id": "", "title": "", "type": ""}
+
+
+def build_owner_notification_text(approval: dict[str, Any]) -> str:
+    sender_name = normalize_text(approval.get("sender_name") or approval.get("sender_wa_id") or "Customer")
+    latest_message = normalize_text(approval.get("latest_message"))
+    suggested_reply = normalize_text(approval.get("suggested_reply"))
+    ref = short_ref(approval.get("approval_id", ""))
+    lines = [
+        f"Approval {ref} for {sender_name}",
+        "",
+        f"Customer: {latest_message}",
+        "",
+        f"Suggested reply: {suggested_reply}",
+        "",
+        "Tap Send to approve, Edit to send a revised reply, or Skip to leave it pending.",
+    ]
+    context = approval.get("context", [])
+    if isinstance(context, list) and context:
+        lines.append("")
+        lines.append("Recent context:")
+        for item in context[-4:]:
+            if not isinstance(item, dict):
+                continue
+            direction = normalize_text(item.get("direction", "inbound"))
+            role = "Customer" if direction == "inbound" else "You" if direction == "outbound" else "Bot"
+            text = normalize_text(item.get("text"))
+            if text:
+                lines.append(f"- {role}: {text}")
+    return "\n".join(lines)
+
+
+def build_owner_interactive_payload(approval: dict[str, Any]) -> dict[str, Any]:
+    approval_id = normalize_text(approval.get("approval_id"))
+    return {
+        "type": "button",
+        "body": {"text": build_owner_notification_text(approval)},
+        "action": {
+            "buttons": [
+                {"type": "reply", "reply": {"id": f"approval:{approval_id}:send", "title": "Send"}},
+                {"type": "reply", "reply": {"id": f"approval:{approval_id}:edit", "title": "Edit"}},
+                {"type": "reply", "reply": {"id": f"approval:{approval_id}:skip", "title": "Skip"}},
+            ]
+        },
+    }
+
+
+def build_owner_edit_prompt_text(approval: dict[str, Any]) -> str:
+    sender_name = normalize_text(approval.get("sender_name") or approval.get("sender_wa_id") or "Customer")
+    ref = short_ref(approval.get("approval_id", ""))
+    return (
+        f"Reply with the revised message for {sender_name} (ref {ref}). "
+        "I’ll send exactly what you write."
+    )
+
+
+def build_owner_confirmation_text(approval: dict[str, Any], reply_text: str) -> str:
+    sender_name = normalize_text(approval.get("sender_name") or approval.get("sender_wa_id") or "Customer")
+    ref = short_ref(approval.get("approval_id", ""))
+    return f"Sent to {sender_name} (ref {ref}). Used reply: {normalize_text(reply_text)}"
+
+
+def build_owner_skip_text(approval: dict[str, Any]) -> str:
+    sender_name = normalize_text(approval.get("sender_name") or approval.get("sender_wa_id") or "Customer")
+    ref = short_ref(approval.get("approval_id", ""))
+    return f"Skipped {sender_name} (ref {ref})."
+
+
+def build_owner_help_text(approval: dict[str, Any] | None = None) -> str:
+    if approval is None:
+        return (
+            "Send me a reply suggestion with Send, edit it with Edit, or skip it with Skip. "
+            "If I need a specific approval, reply to the message I sent or include the approval ref."
+        )
+    sender_name = normalize_text(approval.get("sender_name") or approval.get("sender_wa_id") or "Customer")
+    ref = short_ref(approval.get("approval_id", ""))
+    return f"For {sender_name} (ref {ref}), tap Send, tap Edit and then send the revised text, or tap Skip."
+
+
+def parse_owner_command_text(text: str) -> tuple[str, str]:
+    normalized = normalize_text(text)
+    lower = normalized.lower()
+    if not normalized:
+        return "help", ""
+    if lower in {"send", "approve"}:
+        return "send_suggested", ""
+    if lower == "edit":
+        return "edit_request", ""
+    if lower.startswith("send:"):
+        return "send_custom", normalized.split(":", 1)[1].strip()
+    if lower.startswith("edit:") or lower.startswith("reply:"):
+        return "send_custom", normalized.split(":", 1)[1].strip()
+    if lower in {"skip", "cancel", "later"}:
+        return "skip", ""
+    if lower.startswith("send "):
+        suffix = normalized.split(" ", 1)[1].strip()
+        if suffix:
+            return "send_reference_or_custom", suffix
+        return "send_suggested", ""
+    if lower.startswith("approve "):
+        suffix = normalized.split(" ", 1)[1].strip()
+        if suffix:
+            return "send_reference_or_custom", suffix
+        return "send_suggested", ""
+    return "help", normalized
+
+
 class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
     server_version = "WhatsAppApproval/1.0"
     config: RuntimeConfig
@@ -1298,6 +1568,299 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
 
     def _store(self) -> BackendStore:
         return self.server.store  # type: ignore[attr-defined]
+
+    def is_owner_sender(self, sender_wa_id: str) -> bool:
+        owner_wa_id = normalize_whatsapp_id(self._config().owner_wa_id)
+        return bool(owner_wa_id and normalize_whatsapp_id(sender_wa_id) == owner_wa_id)
+
+    def send_owner_message(
+        self,
+        approval: dict[str, Any] | None,
+        *,
+        message_text: str | None = None,
+        interactive: dict[str, Any] | None = None,
+    ) -> str:
+        config = self._config()
+        owner_wa_id = normalize_whatsapp_id(config.owner_wa_id)
+        if not owner_wa_id:
+            raise RuntimeError("Owner WhatsApp ID is not configured.")
+
+        if config.live_send_enabled:
+            message_id = send_whatsapp_message(
+                access_token=config.access_token,
+                phone_number_id=config.phone_number_id,
+                api_version=config.api_version,
+                recipient_wa_id=owner_wa_id,
+                message_text=message_text,
+                interactive=interactive,
+            )
+        elif config.allow_mock_send:
+            message_id = f"mock-{uuid.uuid4().hex}"
+        else:
+            raise RuntimeError("Live WhatsApp send is not configured. Add access token and phone number ID.")
+
+        if approval is not None and approval.get("approval_id"):
+            self._store().append_approval_message_id(approval["approval_id"], message_id)
+        return message_id
+
+    def notify_owner_about_approval(self, approval: dict[str, Any]) -> str:
+        notification_text = build_owner_notification_text(approval)
+        interactive = build_owner_interactive_payload(approval)
+        message_id = self.send_owner_message(approval, message_text=notification_text, interactive=interactive)
+        self._store().update_approval(
+            approval["approval_id"],
+            {
+                "owner_notification_message_id": message_id,
+                "owner_notification_text": notification_text,
+                "owner_state": "pending",
+            },
+        )
+        return message_id
+
+    def notify_owner_edit_prompt(self, approval: dict[str, Any]) -> str:
+        prompt_text = build_owner_edit_prompt_text(approval)
+        message_id = self.send_owner_message(approval, message_text=prompt_text)
+        self._store().update_approval(
+            approval["approval_id"],
+            {
+                "owner_edit_prompt_message_id": message_id,
+                "owner_edit_prompt_text": prompt_text,
+                "owner_state": "awaiting_edit",
+            },
+        )
+        return message_id
+
+    def notify_owner_confirmation(self, approval: dict[str, Any], reply_text: str) -> str:
+        confirmation_text = build_owner_confirmation_text(approval, reply_text)
+        message_id = self.send_owner_message(approval, message_text=confirmation_text)
+        self._store().update_approval(
+            approval["approval_id"],
+            {
+                "owner_confirmation_message_id": message_id,
+                "owner_confirmation_text": confirmation_text,
+                "owner_state": "sent",
+            },
+        )
+        return message_id
+
+    def notify_owner_skip(self, approval: dict[str, Any]) -> str:
+        skip_text = build_owner_skip_text(approval)
+        message_id = self.send_owner_message(approval, message_text=skip_text)
+        self._store().update_approval(
+            approval["approval_id"],
+            {
+                "owner_skip_message_id": message_id,
+                "owner_skip_text": skip_text,
+                "owner_state": "skipped",
+            },
+        )
+        return message_id
+
+    def resolve_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        store = self._store()
+        context_id = normalize_text(event.get("reply_to_message_id"))
+        if context_id:
+            approval = store.find_approval_by_message_id(context_id)
+            if approval is not None:
+                return approval
+
+        interactive_reply = event.get("interactive_reply", {})
+        if isinstance(interactive_reply, dict):
+            interactive_id = normalize_text(interactive_reply.get("id"))
+            if interactive_id:
+                match = re.match(r"^approval:([0-9a-f]+):(send|edit|skip)$", interactive_id)
+                if match:
+                    approval = store.find_approval_by_reference(match.group(1))
+                    if approval is not None:
+                        return approval
+                approval = store.find_approval_by_message_id(interactive_id)
+                if approval is not None:
+                    return approval
+
+        text = normalize_text(event.get("message_text"))
+        ref_match = re.search(r"(?:ref|approval|id)\s*#?([0-9a-f]{6,})", text, flags=re.IGNORECASE)
+        if ref_match:
+            approval = store.find_approval_by_reference(ref_match.group(1))
+            if approval is not None:
+                return approval
+        if text.startswith("#"):
+            approval = store.find_approval_by_reference(text.lstrip("#"))
+            if approval is not None:
+                return approval
+
+        awaiting_edit = store.list_approvals(status="awaiting_edit")
+        if len(awaiting_edit) == 1:
+            return awaiting_edit[0]
+
+        pending = store.list_approvals(status="pending")
+        if len(pending) == 1 and text.lower() in {"send", "approve", "skip", "cancel", "later"}:
+            return pending[0]
+
+        return None
+
+    def handle_customer_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        config = self._config()
+        approval = self._store().record_inbound_message(
+            thread_id=event["thread_id"],
+            sender_name=event["sender_name"],
+            sender_wa_id=event["sender_wa_id"],
+            message_text=event["message_text"],
+            source_message_id=event["source_message_id"],
+            message_type=event["message_type"],
+            raw_payload=event["raw_payload"],
+            config=config,
+        )
+        owner_notification_id = ""
+        owner_notification_error = ""
+        if config.owner_wa_id:
+            try:
+                owner_notification_id = self.notify_owner_about_approval(approval)
+            except Exception as exc:  # noqa: BLE001 - keep inbound processing resilient
+                owner_notification_error = str(exc)
+                self._store().update_approval(
+                    approval["approval_id"],
+                    {
+                        "owner_notification_error": owner_notification_error,
+                        "owner_state": "pending",
+                    },
+                )
+        stored_approval = self._store().get_approval(approval["approval_id"]) or approval
+        return {
+            "type": "customer",
+            "approval": stored_approval,
+            "owner_notification_message_id": owner_notification_id,
+            "owner_notification_error": owner_notification_error,
+        }
+
+    def handle_owner_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        approval = self.resolve_owner_target_approval(event)
+        command, argument = parse_owner_command_text(event.get("message_text", ""))
+        interactive_reply = event.get("interactive_reply", {})
+        if isinstance(interactive_reply, dict):
+            interactive_id = normalize_text(interactive_reply.get("id"))
+            if interactive_id.endswith(":send"):
+                command = "send_suggested"
+                argument = ""
+            elif interactive_id.endswith(":edit"):
+                command = "edit_request"
+                argument = ""
+            elif interactive_id.endswith(":skip"):
+                command = "skip"
+                argument = ""
+
+        if approval is None and command == "send_reference_or_custom":
+            approval = self._store().find_approval_by_reference(argument)
+
+        if approval is None:
+            help_text = build_owner_help_text(None)
+            message_id = self.send_owner_message(
+                None,
+                message_text=help_text,
+            )
+            return {"type": "owner", "action": "help", "message_id": message_id}
+
+        if command == "help" and approval.get("status") == "awaiting_edit":
+            command = "send_custom"
+            argument = normalize_text(event.get("message_text"))
+
+        if command == "send_reference_or_custom":
+            referenced = self._store().find_approval_by_reference(argument)
+            if referenced is not None:
+                approval = referenced
+                command = "send_suggested"
+                argument = ""
+            else:
+                command = "help"
+
+        approval_id = approval["approval_id"]
+        current_status = normalize_text(approval.get("status"))
+        if current_status in {"sent", "skipped"}:
+            status_text = (
+                f"Approval {short_ref(approval_id)} was already sent."
+                if current_status == "sent"
+                else f"Approval {short_ref(approval_id)} was skipped."
+            )
+            message_id = self.send_owner_message(approval, message_text=status_text)
+            return {
+                "type": "owner",
+                "action": "already_sent" if current_status == "sent" else "already_skipped",
+                "approval": approval,
+                "message_id": message_id,
+            }
+
+        try:
+            if command == "send_suggested":
+                reply_text = normalize_text(approval.get("suggested_reply"))
+                if not reply_text:
+                    raise RuntimeError("Suggested reply is empty.")
+                sent_message_id = self.send_reply_message(
+                    recipient_wa_id=approval.get("sender_wa_id", ""),
+                    reply_text=reply_text,
+                )
+                updated = self._store().mark_sent(approval_id, reply_text, sent_message_id)
+                confirmation_id = self.notify_owner_confirmation(updated, reply_text)
+                return {
+                    "type": "owner",
+                    "action": "send_suggested",
+                    "approval": updated,
+                    "sent_message_id": sent_message_id,
+                    "confirmation_message_id": confirmation_id,
+                }
+
+            if command == "send_custom":
+                reply_text = normalize_text(argument or event.get("message_text"))
+                if not reply_text:
+                    raise RuntimeError("Edited reply text is empty.")
+                sent_message_id = self.send_reply_message(
+                    recipient_wa_id=approval.get("sender_wa_id", ""),
+                    reply_text=reply_text,
+                )
+                updated = self._store().mark_sent(approval_id, reply_text, sent_message_id)
+                confirmation_id = self.notify_owner_confirmation(updated, reply_text)
+                return {
+                    "type": "owner",
+                    "action": "send_custom",
+                    "approval": updated,
+                    "sent_message_id": sent_message_id,
+                    "confirmation_message_id": confirmation_id,
+                }
+
+            if command == "edit_request":
+                updated = self._store().mark_pending_edit(approval_id)
+                prompt_id = self.notify_owner_edit_prompt(updated)
+                return {
+                    "type": "owner",
+                    "action": "edit_request",
+                    "approval": updated,
+                    "prompt_message_id": prompt_id,
+                }
+
+            if command == "skip":
+                updated = self._store().mark_skipped(approval_id)
+                confirmation_id = self.notify_owner_skip(updated)
+                return {
+                    "type": "owner",
+                    "action": "skip",
+                    "approval": updated,
+                    "confirmation_message_id": confirmation_id,
+                }
+        except Exception as exc:  # noqa: BLE001 - surface failure to owner without dropping the webhook
+            error_text = f"Could not complete approval {short_ref(approval_id)}: {exc}"
+            if self._config().owner_wa_id:
+                try:
+                    self.send_owner_message(approval, message_text=error_text)
+                except Exception:
+                    pass
+            return {
+                "type": "owner",
+                "action": "error",
+                "approval": approval,
+                "error": str(exc),
+            }
+
+        help_text = build_owner_help_text(approval)
+        message_id = self.send_owner_message(approval, message_text=help_text)
+        return {"type": "owner", "action": "help", "approval": approval, "message_id": message_id}
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         return
@@ -1561,24 +2124,32 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
 
         events = extract_inbound_events(payload)
         approvals = []
+        results = []
         for event in events:
-            approval = self._store().record_inbound_message(
-                thread_id=event["thread_id"],
-                sender_name=event["sender_name"],
-                sender_wa_id=event["sender_wa_id"],
-                message_text=event["message_text"],
-                source_message_id=event["source_message_id"],
-                message_type=event["message_type"],
-                raw_payload=event["raw_payload"],
-                config=config,
-            )
-            approvals.append(approval)
+            try:
+                if self.is_owner_sender(event["sender_wa_id"]):
+                    results.append(self.handle_owner_event(event))
+                    continue
+
+                result = self.handle_customer_event(event)
+                approvals.append(result["approval"])
+                results.append(result)
+            except Exception as exc:  # noqa: BLE001 - keep webhook resilient
+                results.append(
+                    {
+                        "type": "error",
+                        "sender_wa_id": event.get("sender_wa_id", ""),
+                        "thread_id": event.get("thread_id", ""),
+                        "error": str(exc),
+                    }
+                )
 
         response = {
             "ok": True,
             "client_id": config.client_id,
             "received": len(events),
             "approvals": approvals,
+            "results": results,
         }
         self.send_json(response)
 

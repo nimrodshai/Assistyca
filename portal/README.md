@@ -12,13 +12,14 @@ It is intentionally separate from the reusable spec and client config layers.
 
 ## Portal layout
 
-- `Features` for the client account and its assigned capabilities. Click one to open its studio.
+- `Features` for the client account and its assigned capabilities. Click one to open its tool page.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
-- The Tool studio can open a live backend dashboard when a feature includes a `launch_url`
+- The Tool page explains the offer, shows a concrete example, shows the monthly price, and still lets the client open the editor before paying
+- WhatsApp credentials live in the per-client backend config at `clients/<client-id>/backend.json`
 - `Settings` opens as a modal overlay for account details and portal preferences
-- `Billing` is available from the account menu and shows the current month, per-model usage, and historical monthly charges
+- `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
 - The top-right menu opens account, settings, and log out actions
-- The simulator's Edit button opens [`../approval.html`](../approval.html), a reusable local approval page that accepts prefilled sender, message, and draft values.
+- The simulator's Edit button opens [`../approval.html`](../approval.html), a reusable local approval page that is now only a debug fallback.
 
 ## Sign-in flow
 
@@ -29,7 +30,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - Set `PORTAL_DB_SEED_REGISTERED_EMAILS` to bootstrap the database the first time it starts. `PORTAL_REGISTERED_EMAILS` is still accepted as a legacy bootstrap alias.
 - Set `PORTAL_DB_SEED_ADMIN_EMAILS` to promote bootstrap users to admin on startup. `PORTAL_ADMIN_EMAILS` is still accepted as a legacy alias.
 - Set `PORTAL_SUPPORT_PHONE` to the phone number shown to anyone who is not registered.
-- The simulator is still browser-local, so it can be tested before any WhatsApp webhook or approval server exists.
+- The simulator is still browser-local, so it can be tested before any WhatsApp webhook or approval server exists, but the real approval flow now runs in WhatsApp.
 
 ## Recommended test hosting
 
@@ -59,7 +60,7 @@ Required environment variables on Render:
 - `PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER` controls the output-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_MULTIPLIER` is still accepted as a legacy fallback for both billing multipliers.
 - `PORTAL_BILLING_DATA_PATH` optional path to a JSON billing ledger used only as a sample fallback. It defaults to `portal/billing.sample.json`.
-- `PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE` sets the minimum monthly charge floor. The default is `29`.
+- `PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE` sets the minimum monthly charge floor per tool. The default is `14.9`.
 - `PORTAL_BILLING_CURRENCY` controls the display currency. The default is `USD`.
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.

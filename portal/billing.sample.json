@@ -1,64 +1,89 @@
 {
   "version": 1,
   "defaults": {
+    "registeredAt": "2026-07-02T13:00:54.451777+00:00",
     "months": [
       {
         "month": "2026-07",
-        "models": [
+        "tools": [
           {
-            "model": "gpt-5.4",
-            "tokens": 1000000,
-            "base_cost_usd": 19.8
-          },
-          {
-            "model": "gpt-5.5",
-            "tokens": 2000000,
-            "base_cost_usd": 43.2
+            "toolId": "whatsapp-business-reply-suggestion-assistant",
+            "toolName": "WhatsApp Reply Assistant",
+            "models": [
+              {
+                "model": "gpt-5.4",
+                "tokens": 1000000,
+                "base_cost_usd": 19.8
+              },
+              {
+                "model": "gpt-5.5",
+                "tokens": 2000000,
+                "base_cost_usd": 43.2
+              }
+            ]
           }
         ]
       },
       {
         "month": "2026-06",
-        "models": [
+        "tools": [
           {
-            "model": "gpt-5.4",
-            "tokens": 180000,
-            "base_cost_usd": 3.6
-          },
-          {
-            "model": "gpt-5.5",
-            "tokens": 90000,
-            "base_cost_usd": 2.7
+            "toolId": "whatsapp-business-reply-suggestion-assistant",
+            "toolName": "WhatsApp Reply Assistant",
+            "models": [
+              {
+                "model": "gpt-5.4",
+                "tokens": 180000,
+                "base_cost_usd": 3.6
+              },
+              {
+                "model": "gpt-5.5",
+                "tokens": 90000,
+                "base_cost_usd": 2.7
+              }
+            ]
           }
         ]
       },
       {
         "month": "2026-05",
-        "models": [
+        "tools": [
           {
-            "model": "gpt-5.4",
-            "tokens": 640000,
-            "base_cost_usd": 12.8
-          },
-          {
-            "model": "gpt-5.5",
-            "tokens": 510000,
-            "base_cost_usd": 11.22
+            "toolId": "whatsapp-business-reply-suggestion-assistant",
+            "toolName": "WhatsApp Reply Assistant",
+            "models": [
+              {
+                "model": "gpt-5.4",
+                "tokens": 640000,
+                "base_cost_usd": 12.8
+              },
+              {
+                "model": "gpt-5.5",
+                "tokens": 510000,
+                "base_cost_usd": 11.22
+              }
+            ]
           }
         ]
       },
       {
         "month": "2026-04",
-        "models": [
+        "tools": [
           {
-            "model": "gpt-5.4",
-            "tokens": 220000,
-            "base_cost_usd": 4.4
-          },
-          {
-            "model": "gpt-5.5",
-            "tokens": 180000,
-            "base_cost_usd": 3.96
+            "toolId": "whatsapp-business-reply-suggestion-assistant",
+            "toolName": "WhatsApp Reply Assistant",
+            "models": [
+              {
+                "model": "gpt-5.4",
+                "tokens": 220000,
+                "base_cost_usd": 4.4
+              },
+              {
+                "model": "gpt-5.5",
+                "tokens": 180000,
+                "base_cost_usd": 3.96
+              }
+            ]
           }
         ]
       }

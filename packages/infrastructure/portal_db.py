@@ -10,13 +10,14 @@ from datetime import timezone
 from decimal import Decimal
 from decimal import ROUND_HALF_UP
 from pathlib import Path
+import re
 from typing import Any
 from typing import Iterable
 
 
 DEFAULT_DB_PATH = Path("portal/portal.db")
 DEFAULT_CURRENCY = "USD"
-DEFAULT_MONTHLY_MINIMUM_CENTS = 2900
+DEFAULT_MONTHLY_MINIMUM_CENTS = 1490
 DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 RAW_CENTS_QUANT = Decimal("0.0001")
@@ -50,7 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS user_billing (
     user_id INTEGER PRIMARY KEY,
     currency TEXT NOT NULL DEFAULT 'USD',
-    monthly_minimum_cents INTEGER NOT NULL DEFAULT 2900,
+    monthly_minimum_cents INTEGER NOT NULL DEFAULT 1490,
     input_token_price_multiplier REAL NOT NULL DEFAULT 1.5,
     output_token_price_multiplier REAL NOT NULL DEFAULT 1.5,
     effective_from TEXT NOT NULL,
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS model_prices (
 CREATE TABLE IF NOT EXISTS usage_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    tool_id TEXT NOT NULL DEFAULT '',
     model_name TEXT NOT NULL,
     billing_month TEXT NOT NULL,
     used_at TEXT NOT NULL,
@@ -104,6 +106,57 @@ def normalize_email(value: Any) -> str:
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def humanize_identifier(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return "Unassigned tool"
+
+    cleaned = re.sub(r"[-_]+", " ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else "Unassigned tool"
+
+
+def extract_tool_context(metadata: dict[str, Any] | None, tool_id: str | None = None) -> tuple[str, str]:
+    payload = metadata if isinstance(metadata, dict) else {}
+    tool_record = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+    feature_record = payload.get("feature") if isinstance(payload.get("feature"), dict) else {}
+
+    id_candidates = (
+        tool_id,
+        payload.get("tool_id"),
+        payload.get("toolId"),
+        payload.get("feature_id"),
+        payload.get("featureId"),
+        tool_record.get("id"),
+        tool_record.get("tool_id"),
+        tool_record.get("toolId"),
+        tool_record.get("feature_id"),
+        tool_record.get("featureId"),
+        feature_record.get("id"),
+        feature_record.get("tool_id"),
+        feature_record.get("toolId"),
+        feature_record.get("feature_id"),
+        feature_record.get("featureId"),
+    )
+    name_candidates = (
+        payload.get("tool_name"),
+        payload.get("toolName"),
+        payload.get("feature_name"),
+        payload.get("featureName"),
+        payload.get("name"),
+        tool_record.get("name"),
+        tool_record.get("tool_name"),
+        tool_record.get("toolName"),
+        feature_record.get("name"),
+        feature_record.get("tool_name"),
+        feature_record.get("toolName"),
+    )
+
+    resolved_tool_id = next((normalize_text(candidate) for candidate in id_candidates if normalize_text(candidate)), "") or "unassigned"
+    resolved_tool_name = next((normalize_text(candidate) for candidate in name_candidates if normalize_text(candidate)), "") or humanize_identifier(resolved_tool_id)
+    return resolved_tool_id, resolved_tool_name
 
 
 def to_decimal(value: Any, default: str = "0") -> Decimal:
@@ -227,6 +280,9 @@ class PortalDatabase:
             with self._connection() as conn:
                 conn.executescript(SCHEMA_SQL)
                 self._migrate_users_table(conn)
+                self._migrate_user_billing_table(conn)
+                self._migrate_usage_events_table(conn)
+                self._ensure_usage_events_tool_indexes(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
                 if self.bootstrap_admin_emails:
@@ -239,6 +295,60 @@ class PortalDatabase:
         }
         if "is_admin" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+
+    def _migrate_user_billing_table(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(user_billing)").fetchall()
+        }
+        if "monthly_minimum_cents" not in columns:
+            return
+
+        old_default = 2900
+        if self.default_billing_plan.monthly_minimum_cents == old_default:
+            return
+
+        conn.execute(
+            """
+            UPDATE user_billing
+            SET monthly_minimum_cents = ?, updated_at = ?
+            WHERE monthly_minimum_cents = ?
+            """,
+            (
+                self.default_billing_plan.monthly_minimum_cents,
+                now_iso(),
+                old_default,
+            ),
+        )
+
+    def _migrate_usage_events_table(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(usage_events)").fetchall()
+        }
+        if "tool_id" not in columns:
+            conn.execute("ALTER TABLE usage_events ADD COLUMN tool_id TEXT NOT NULL DEFAULT ''")
+
+    def _ensure_usage_events_tool_indexes(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(usage_events)").fetchall()
+        }
+        if "tool_id" not in columns:
+            return
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_usage_events_user_tool_month
+            ON usage_events(user_id, tool_id, billing_month, used_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_usage_events_user_tool_model
+            ON usage_events(user_id, tool_id, model_name, used_at DESC)
+            """
+        )
 
     def _seed_registered_emails(self, conn: sqlite3.Connection, emails: Iterable[str]) -> None:
         now = now_iso()
@@ -859,6 +969,7 @@ class PortalDatabase:
         email: str,
         model_name: str,
         *,
+        tool_id: str | None = None,
         used_at: str | datetime | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
@@ -878,7 +989,11 @@ class PortalDatabase:
 
         moment = parse_datetime(used_at) if used_at is not None else datetime.now(timezone.utc)
         billing_month = month_key_for(moment)
-        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        metadata_payload = dict(metadata or {}) if isinstance(metadata, dict) else {}
+        resolved_tool_id, resolved_tool_name = extract_tool_context(metadata_payload, tool_id)
+        metadata_payload.setdefault("tool_id", resolved_tool_id)
+        metadata_payload.setdefault("tool_name", resolved_tool_name)
+        metadata_json = json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True)
         now = now_iso()
 
         with self._connection() as conn:
@@ -935,6 +1050,7 @@ class PortalDatabase:
                 """
                 INSERT INTO usage_events (
                     user_id,
+                    tool_id,
                     model_name,
                     billing_month,
                     used_at,
@@ -950,10 +1066,11 @@ class PortalDatabase:
                     currency,
                     metadata_json,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(user_row["id"]),
+                    resolved_tool_id,
                     normalized_model_name,
                     billing_month,
                     moment.astimezone(timezone.utc).isoformat(),
@@ -978,6 +1095,8 @@ class PortalDatabase:
         result.update(
             {
                 "email": normalized_email,
+                "toolId": resolved_tool_id,
+                "toolName": resolved_tool_name,
                 "model": normalized_model_name,
                 "usedAt": result.get("used_at"),
                 "billingMonth": result.get("billing_month"),
@@ -1022,9 +1141,13 @@ class PortalDatabase:
         events: list[dict[str, Any]] = []
         for row in rows:
             payload = _row_to_dict(row) or {}
+            metadata = json.loads(payload.get("metadata_json") or "{}")
+            resolved_tool_id, resolved_tool_name = extract_tool_context(metadata, payload.get("tool_id"))
             payload.update(
                 {
                     "email": normalized_email,
+                    "toolId": resolved_tool_id,
+                    "toolName": resolved_tool_name,
                     "model": payload.get("model_name"),
                     "usedAt": payload.get("used_at"),
                     "billingMonth": payload.get("billing_month"),
@@ -1038,7 +1161,7 @@ class PortalDatabase:
                     "outputChargeCents": float(payload.get("output_charge_cents") or 0),
                     "rawChargeCents": float(payload.get("raw_charge_cents") or 0),
                     "currency": normalize_text(payload.get("currency")) or self.default_billing_plan.currency,
-                    "metadata": json.loads(payload.get("metadata_json") or "{}"),
+                    "metadata": metadata,
                 }
             )
             payload.pop("metadata_json", None)
@@ -1076,6 +1199,8 @@ class PortalDatabase:
         month_rows: dict[str, dict[str, Any]] = {}
         for event in events:
             month_key = normalize_text(event.get("billingMonth")) or month_key_for(parse_datetime(event.get("usedAt")))
+            tool_id = normalize_text(event.get("toolId") or event.get("tool_id") or event.get("metadata", {}).get("tool_id")) or "unassigned"
+            tool_name = normalize_text(event.get("toolName") or event.get("tool_name") or event.get("metadata", {}).get("tool_name")) or humanize_identifier(tool_id)
             month_row = month_rows.setdefault(
                 month_key,
                 {
@@ -1087,16 +1212,34 @@ class PortalDatabase:
                     "baseCostCents": Decimal("0"),
                     "inputChargeCents": Decimal("0"),
                     "outputChargeCents": Decimal("0"),
-                    "minimumApplied": False,
                     "currency": currency,
                     "usageCount": 0,
                     "usageDates": set(),
+                    "toolsById": {},
+                },
+            )
+
+            tool_row = month_row["toolsById"].setdefault(
+                tool_id,
+                {
+                    "toolId": tool_id,
+                    "toolName": tool_name,
+                    "tokensUsed": 0,
+                    "inputTokensUsed": 0,
+                    "outputTokensUsed": 0,
+                    "baseCostCents": Decimal("0"),
+                    "inputChargeCents": Decimal("0"),
+                    "outputChargeCents": Decimal("0"),
+                    "usageCount": 0,
+                    "usageDates": set(),
+                    "firstUsedAt": None,
+                    "lastUsedAt": None,
                     "modelsByName": {},
                 },
             )
 
             model_name = normalize_text(event.get("model")) or "Unknown model"
-            model_row = month_row["modelsByName"].setdefault(
+            model_row = tool_row["modelsByName"].setdefault(
                 model_name,
                 {
                     "model": model_name,
@@ -1130,6 +1273,25 @@ class PortalDatabase:
             month_row["usageCount"] += 1
             month_row["usageDates"].add(usage_date)
 
+            tool_row["tokensUsed"] += input_tokens + output_tokens
+            tool_row["inputTokensUsed"] += input_tokens
+            tool_row["outputTokensUsed"] += output_tokens
+            tool_row["baseCostCents"] += raw_charge
+            tool_row["inputChargeCents"] += input_charge
+            tool_row["outputChargeCents"] += output_charge
+            tool_row["usageCount"] += 1
+            tool_row["usageDates"].add(usage_date)
+            tool_row["firstUsedAt"] = (
+                used_at.isoformat()
+                if tool_row["firstUsedAt"] is None or used_at < parse_datetime(tool_row["firstUsedAt"])
+                else tool_row["firstUsedAt"]
+            )
+            tool_row["lastUsedAt"] = (
+                used_at.isoformat()
+                if tool_row["lastUsedAt"] is None or used_at > parse_datetime(tool_row["lastUsedAt"])
+                else tool_row["lastUsedAt"]
+            )
+
             model_row["tokensUsed"] += input_tokens + output_tokens
             model_row["inputTokensUsed"] += input_tokens
             model_row["outputTokensUsed"] += output_tokens
@@ -1150,37 +1312,70 @@ class PortalDatabase:
             )
 
         summaries: list[dict[str, Any]] = []
+        minimum_cents_decimal = Decimal(minimum_monthly_cents)
         for month_key, month_row in month_rows.items():
-            raw_total = month_row["baseCostCents"]
-            charged_cents = raw_total if raw_total >= Decimal(minimum_monthly_cents) else Decimal(minimum_monthly_cents)
-            month_row["baseCostUsd"] = cents_to_usd(raw_total)
-            month_row["chargeUsd"] = cents_to_usd(charged_cents)
-            month_row["minimumApplied"] = raw_total < Decimal(minimum_monthly_cents)
-            month_row["usageDates"] = sorted(month_row["usageDates"])
-            model_rows: list[dict[str, Any]] = []
-            for model_row in month_row.pop("modelsByName").values():
-                model_raw_total = model_row["baseCostCents"]
-                model_row["baseCostUsd"] = cents_to_usd(model_raw_total)
-                model_row["inputChargeUsd"] = cents_to_usd(model_row["inputChargeCents"])
-                model_row["outputChargeUsd"] = cents_to_usd(model_row["outputChargeCents"])
-                model_row["usageDates"] = sorted(model_row["usageDates"])
-                model_rows.append(
+            tool_rows: list[dict[str, Any]] = []
+            for tool_row in month_row.pop("toolsById").values():
+                tool_raw_total = tool_row["baseCostCents"]
+                charged_cents = tool_raw_total if tool_raw_total >= minimum_cents_decimal else minimum_cents_decimal
+                tool_row["baseCostUsd"] = cents_to_usd(tool_raw_total)
+                tool_row["chargeUsd"] = cents_to_usd(charged_cents)
+                tool_row["minimumApplied"] = tool_raw_total < minimum_cents_decimal
+                tool_row["usageDates"] = sorted(tool_row["usageDates"])
+
+                model_rows: list[dict[str, Any]] = []
+                for model_row in tool_row.pop("modelsByName").values():
+                    model_raw_total = model_row["baseCostCents"]
+                    model_row["baseCostUsd"] = cents_to_usd(model_raw_total)
+                    model_row["inputChargeUsd"] = cents_to_usd(model_row["inputChargeCents"])
+                    model_row["outputChargeUsd"] = cents_to_usd(model_row["outputChargeCents"])
+                    model_row["usageDates"] = sorted(model_row["usageDates"])
+                    model_rows.append(
+                        {
+                            "model": model_row["model"],
+                            "tokensUsed": int(model_row["tokensUsed"]),
+                            "inputTokensUsed": int(model_row["inputTokensUsed"]),
+                            "outputTokensUsed": int(model_row["outputTokensUsed"]),
+                            "baseCostUsd": round(float(model_row["baseCostUsd"]), 2),
+                            "inputChargeUsd": round(float(model_row["inputChargeUsd"]), 2),
+                            "outputChargeUsd": round(float(model_row["outputChargeUsd"]), 2),
+                            "usageCount": int(model_row["usageCount"]),
+                            "usageDates": list(model_row["usageDates"]),
+                            "firstUsedAt": model_row["firstUsedAt"],
+                            "lastUsedAt": model_row["lastUsedAt"],
+                        }
+                    )
+
+                model_rows.sort(key=lambda row: (-row["tokensUsed"], str(row["model"]).lower()))
+                tool_rows.append(
                     {
-                        "model": model_row["model"],
-                        "tokensUsed": int(model_row["tokensUsed"]),
-                        "inputTokensUsed": int(model_row["inputTokensUsed"]),
-                        "outputTokensUsed": int(model_row["outputTokensUsed"]),
-                        "baseCostUsd": round(float(model_row["baseCostUsd"]), 2),
-                        "inputChargeUsd": round(float(model_row["inputChargeUsd"]), 2),
-                        "outputChargeUsd": round(float(model_row["outputChargeUsd"]), 2),
-                        "usageCount": int(model_row["usageCount"]),
-                        "usageDates": list(model_row["usageDates"]),
-                        "firstUsedAt": model_row["firstUsedAt"],
-                        "lastUsedAt": model_row["lastUsedAt"],
+                        "toolId": tool_row["toolId"],
+                        "toolName": tool_row["toolName"],
+                        "tokensUsed": int(tool_row["tokensUsed"]),
+                        "inputTokensUsed": int(tool_row["inputTokensUsed"]),
+                        "outputTokensUsed": int(tool_row["outputTokensUsed"]),
+                        "baseCostUsd": round(float(tool_row["baseCostUsd"]), 2),
+                        "inputChargeUsd": round(float(cents_to_usd(tool_row["inputChargeCents"])), 2),
+                        "outputChargeUsd": round(float(cents_to_usd(tool_row["outputChargeCents"])), 2),
+                        "chargeUsd": round(float(tool_row["chargeUsd"]), 2),
+                        "minimumApplied": bool(tool_row["minimumApplied"]),
+                        "usageCount": int(tool_row["usageCount"]),
+                        "usageDates": list(tool_row["usageDates"]),
+                        "firstUsedAt": tool_row["firstUsedAt"],
+                        "lastUsedAt": tool_row["lastUsedAt"],
+                        "models": model_rows,
                     }
                 )
 
-            model_rows.sort(key=lambda row: (-row["tokensUsed"], str(row["model"]).lower()))
+            tool_rows.sort(key=lambda row: (-row["tokensUsed"], str(row["toolName"]).lower()))
+            month_raw_total = month_row["baseCostCents"]
+            month_charge_cents = sum(Decimal(str(tool["chargeUsd"])) * Decimal("100") for tool in tool_rows)
+            month_row["baseCostUsd"] = cents_to_usd(month_raw_total)
+            month_row["chargeUsd"] = cents_to_usd(month_charge_cents)
+            month_row["minimumApplied"] = month_charge_cents > month_raw_total
+            month_row["usageDates"] = sorted(month_row["usageDates"])
+            flat_models = [model for tool in tool_rows for model in tool["models"]]
+
             summaries.append(
                 {
                     "month": month_key,
@@ -1196,7 +1391,9 @@ class PortalDatabase:
                     "currency": currency,
                     "usageCount": int(month_row["usageCount"]),
                     "usageDates": list(month_row["usageDates"]),
-                    "models": model_rows,
+                    "toolCount": len(tool_rows),
+                    "tools": tool_rows,
+                    "models": flat_models,
                 }
             )
 
@@ -1219,6 +1416,8 @@ class PortalDatabase:
                 "currency": currency,
                 "usageCount": 0,
                 "usageDates": [],
+                "toolCount": 0,
+                "tools": [],
                 "models": [],
             }
 

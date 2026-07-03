@@ -11,6 +11,7 @@
     "access_token": "",
     "phone_number_id": "",
     "app_secret": "",
+    "owner_wa_id": "",
     "api_version": "v20.0",
     "allow_mock_send": true
   },
@@ -19,9 +20,8 @@
     "reply_rules": "Acknowledge the request first. Ask one clarifying question only when needed. Never guess prices or availability.",
     "business_notes": "Service area, hours, pricing hints, and any details the agent should know before replying.",
     "escalation_guidance": "Hand off when the customer is upset, the answer needs a human decision, or the request is urgent.",
-    "approval_guidance": "When a WhatsApp message arrives, show who sent it, the latest message, and one suggested reply. Keep the final send manual.",
+    "approval_guidance": "When a WhatsApp message arrives, send the owner a WhatsApp approval card with who sent it, the latest message, and one suggested reply. Keep the final send manual inside WhatsApp.",
     "example_replies": "Good: \"Yes, I can help. What is the address?\"\nBad: \"Sure, anything is possible.\"",
     "response_style": "balanced"
   }
 }
-
