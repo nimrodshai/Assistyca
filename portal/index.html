@@ -210,22 +210,79 @@
         </header>
 
         <div class="feature-page-intro">
-          <h1 id="featureStudioTitle">Tool name</h1>
-          <p id="featureStudioDescription" class="feature-page-description">
-            Tool details appear here.
-          </p>
+          <div class="feature-page-intro-main">
+            <p class="eyebrow">Tool overview</p>
+            <h1 id="featureStudioTitle">Tool name</h1>
+            <p id="featureStudioDescription" class="feature-page-description">
+              Tool details appear here.
+            </p>
 
-          <div class="feature-meta feature-page-meta">
-            <span id="featureStudioChannel">Channel: Web</span>
-            <span id="featureStudioMode">Mode: Default</span>
+            <div class="feature-meta feature-page-meta">
+              <span id="featureStudioChannel">Channel: Web</span>
+              <span id="featureStudioMode">Mode: Default</span>
+              <span id="featureStudioPricing">1.5x token cost · $14.90 minimum per tool</span>
+            </div>
+
+            <p id="featureStudioPitch" class="feature-page-description feature-page-pitch">
+              This tool helps you reply faster without giving up control.
+            </p>
+
+            <div class="feature-page-actions">
+              <button id="featureStudioLaunchButton" class="primary-button" type="button">
+                Open tool editor
+              </button>
+              <p id="featureStudioLaunchNote" class="approval-note">
+                You can open the editor before paying.
+              </p>
+            </div>
           </div>
 
-          <p class="approval-note">
-            Approvals are now delivered inside WhatsApp. Use this portal to edit tone, rules, and the preview only.
-          </p>
+          <aside class="feature-page-example phone-shell">
+            <div class="phone-status">
+              <span id="featureStudioExampleSender" class="phone-name">Jim Hopper</span>
+              <span id="featureStudioExampleLabel" class="phone-badge">Example</span>
+            </div>
+
+            <div class="approval-thread">
+              <div class="approval-field">
+                <span class="approval-label">Latest message</span>
+                <div id="featureStudioExampleMessage" class="bubble incoming"></div>
+              </div>
+              <div class="approval-field">
+                <span class="approval-label">Suggested reply</span>
+                <div id="featureStudioExampleReply" class="bubble outgoing"></div>
+              </div>
+            </div>
+          </aside>
         </div>
 
-        <div class="studio-fields">
+        <div id="toolEditorSection" class="studio-fields">
+          <article class="glass-card config-card setup-card">
+            <div class="card-head">
+              <h3>WhatsApp setup</h3>
+            </div>
+
+            <p class="setup-copy">
+              Put the phone number and WhatsApp credentials in the client backend config. The reusable backend reads them from there.
+            </p>
+
+            <div class="setup-path">
+              <code>clients/&lt;client-id&gt;/backend.json</code>
+            </div>
+
+            <ul class="setup-list">
+              <li><strong>phone_number_id</strong> for the WhatsApp business number.</li>
+              <li><strong>access_token</strong> for sending live replies.</li>
+              <li><strong>verify_token</strong> for webhook verification.</li>
+              <li><strong>app_secret</strong> for signature checks.</li>
+              <li><strong>owner_wa_id</strong> for the approval messages sent to the owner.</li>
+            </ul>
+
+            <p class="approval-note">
+              Approvals still route through WhatsApp, so you can explore the editor before payment.
+            </p>
+          </article>
+
           <article class="glass-card config-card">
             <div class="card-head">
               <h3>Tone</h3>
@@ -298,7 +355,6 @@ Bad: 'Sure, anything is possible.'"
               ></textarea>
             </label>
           </article>
-
         </div>
       </section>
 
@@ -530,10 +586,48 @@ Owner said afternoons are easier."
         <div class="panel-intro">
           <div>
             <p class="eyebrow">Billing</p>
-            <h1>Track tokens by model, month by month.</h1>
+            <h1>Track tokens by tool, model, and month.</h1>
             <p class="lede compact">
-              See the current month, every previous month, and what the next payment will look like.
+              See the current month, every previous month, and the billing snapshot at a glance.
             </p>
+          </div>
+        </div>
+
+        <div class="billing-help-strip glass-card">
+          <div class="billing-help-copy">
+            <p class="eyebrow">How billing works</p>
+            <p id="billingCurrentSummary" class="billing-help-summary">
+              Loading billing data...
+            </p>
+          </div>
+
+          <div class="billing-help-actions">
+            <button
+              id="billingHelpButton"
+              class="billing-help-button"
+              type="button"
+              aria-expanded="false"
+              aria-controls="billingHelpPopover"
+              aria-label="More details about billing"
+            >
+              ?
+            </button>
+
+            <div
+              id="billingHelpPopover"
+              class="billing-help-popover is-hidden"
+              role="dialog"
+              aria-modal="false"
+              aria-labelledby="billingHelpTitle"
+            >
+              <div class="billing-help-popover-head">
+                <strong id="billingHelpTitle">How payment works</strong>
+                <button id="billingHelpCloseButton" class="billing-help-close" type="button" aria-label="Close billing details">
+                  ×
+                </button>
+              </div>
+              <div id="billingHelpBody" class="billing-help-body"></div>
+            </div>
           </div>
         </div>
 
@@ -541,9 +635,6 @@ Owner said afternoons are easier."
           <div class="billing-hero-copy">
             <p class="eyebrow">Current month</p>
             <h2 id="billingCurrentMonthLabel">This month</h2>
-            <p id="billingCurrentSummary" class="billing-summary">
-              Loading billing data...
-            </p>
           </div>
 
           <div class="billing-hero-metrics">
@@ -585,7 +676,7 @@ Owner said afternoons are easier."
         <div class="billing-grid">
           <article class="glass-card billing-card">
             <div class="card-head">
-              <h3>By model</h3>
+              <h3>By tool</h3>
               <span id="billingModelCount" class="feature-status">—</span>
             </div>
 

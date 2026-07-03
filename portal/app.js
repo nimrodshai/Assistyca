@@ -31,8 +31,9 @@ const VALID_SETTINGS_MODES = new Set(["account", "preferences"]);
 const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
-const DEFAULT_BILLING_MINIMUM = 29;
+const DEFAULT_BILLING_MINIMUM = 14.9;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
+const DEFAULT_TOOL_EDITOR_TARGET_ID = "toolEditorSection";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
   "WhatsApp Reply Approval Bot",
@@ -42,6 +43,10 @@ const LEGACY_DEFAULT_FEATURE_MODES = new Set([
   "Approval bot",
 ]);
 const BILLING_MODEL_COLORS = ["#17958a", "#2f7de1", "#d49a3a", "#8c96a3"];
+const DEFAULT_FEATURE_PRICING = {
+  billingMultiplier: DEFAULT_BILLING_MULTIPLIER,
+  minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
+};
 
 const DEFAULT_PROMPT = {
   toneGuidance: "Warm, direct, and practical. Keep replies human, short, and grounded.",
@@ -72,6 +77,7 @@ const DEFAULT_FEATURES = [
     mode: "Human-reviewed",
     status: "Active",
     launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
+    pricing: { ...DEFAULT_FEATURE_PRICING },
     prompt: { ...DEFAULT_PROMPT },
   },
 ];
@@ -194,6 +200,7 @@ const state = {
   billingReport: null,
   billingLoading: false,
   billingError: "",
+  billingHelpOpen: false,
   lastPrimaryTab: normalizeTab(loadJson(LAST_PRIMARY_TAB_KEY, "features")) || "features",
 };
 
@@ -230,6 +237,12 @@ const elements = {
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
   featureStudioChannel: document.querySelector("#featureStudioChannel"),
   featureStudioMode: document.querySelector("#featureStudioMode"),
+  featureStudioPricing: document.querySelector("#featureStudioPricing"),
+  featureStudioPitch: document.querySelector("#featureStudioPitch"),
+  featureStudioExampleSender: document.querySelector("#featureStudioExampleSender"),
+  featureStudioExampleLabel: document.querySelector("#featureStudioExampleLabel"),
+  featureStudioExampleMessage: document.querySelector("#featureStudioExampleMessage"),
+  featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
@@ -245,6 +258,10 @@ const elements = {
   billingStatusBanner: document.querySelector("#billingStatusBanner"),
   billingStatusMessage: document.querySelector("#billingStatusMessage"),
   billingStatusMeta: document.querySelector("#billingStatusMeta"),
+  billingHelpButton: document.querySelector("#billingHelpButton"),
+  billingHelpPopover: document.querySelector("#billingHelpPopover"),
+  billingHelpCloseButton: document.querySelector("#billingHelpCloseButton"),
+  billingHelpBody: document.querySelector("#billingHelpBody"),
   billingRefreshButton: document.querySelector("#billingRefreshButton"),
   billingCurrentMonthLabel: document.querySelector("#billingCurrentMonthLabel"),
   billingCurrentSummary: document.querySelector("#billingCurrentSummary"),
@@ -742,6 +759,7 @@ function loadClientState(email) {
         feature?.launchUrl
         || (index === 0 ? DEFAULT_FEATURE_LAUNCH_URL : "")
       ).trim(),
+      pricing: normalizeFeaturePricing(feature?.pricing || {}),
       prompt: normalizePrompt(feature?.prompt || {}, fallbackPrompt),
     };
   });
@@ -757,6 +775,86 @@ function loadClientState(email) {
     features,
     simulator,
   };
+}
+
+function normalizeFeaturePricing(pricing = {}) {
+  const source = pricing && typeof pricing === "object" ? pricing : {};
+  return {
+    billingMultiplier: Math.max(
+      0,
+      Number(
+        source.billingMultiplier
+        ?? source.billing_multiplier
+        ?? source.multiplier
+        ?? DEFAULT_FEATURE_PRICING.billingMultiplier,
+      ),
+    ) || DEFAULT_FEATURE_PRICING.billingMultiplier,
+    minimumMonthlyCharge: Math.max(
+      0,
+      Number(
+        source.minimumMonthlyCharge
+        ?? source.minimum_monthly_charge
+        ?? source.minimumCharge
+        ?? source.minimum_charge
+        ?? DEFAULT_FEATURE_PRICING.minimumMonthlyCharge,
+      ),
+    ) || DEFAULT_FEATURE_PRICING.minimumMonthlyCharge,
+  };
+}
+
+function getFeaturePricing(feature = getSelectedFeature()) {
+  return normalizeFeaturePricing(feature?.pricing || DEFAULT_FEATURE_PRICING);
+}
+
+function formatFeaturePricingLabel(feature = getSelectedFeature(), currency = "USD") {
+  const pricing = getFeaturePricing(feature);
+  return `${pricing.billingMultiplier.toFixed(1)}x token cost · ${formatCurrency(pricing.minimumMonthlyCharge, currency)} minimum per tool`;
+}
+
+function buildFeaturePitch(feature = getSelectedFeature()) {
+  const prompt = feature?.prompt || getSelectedPrompt();
+  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
+  const title = feature?.name || "This tool";
+  return `${title} keeps replies human and fast. For example, when someone says "${scenario.user}", it drafts "${scenario.ask}" and keeps the final send inside WhatsApp for review.`;
+}
+
+function buildFeatureExample(feature = getSelectedFeature()) {
+  const prompt = feature?.prompt || getSelectedPrompt();
+  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
+  return {
+    sender: scenario.sender || "Customer",
+    label: "Example",
+    incoming: scenario.user,
+    outgoing: buildResponseText(prompt),
+  };
+}
+
+function buildFeatureEditorHint(feature = getSelectedFeature()) {
+  const pricing = getFeaturePricing(feature);
+  return `Open the editor before payment. This tool bills at ${pricing.billingMultiplier.toFixed(1)}x token cost with a ${formatCurrency(pricing.minimumMonthlyCharge, "USD")} minimum per tool.`;
+}
+
+function buildWhatsAppConfigHint() {
+  return "Put the phone number and WhatsApp credentials in the client backend config at `clients/<client-id>/backend.json` under `whatsapp.*`.";
+}
+
+function formatNextBillingDate(reference = new Date()) {
+  const moment = new Date(reference.getTime());
+  moment.setDate(1);
+  moment.setMonth(moment.getMonth() + 1);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(moment);
+}
+
+function formatDisplayNameFromId(value) {
+  return String(value || "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Unassigned tool";
 }
 
 function normalizePrompt(prompt = {}, fallback = DEFAULT_PROMPT) {
@@ -980,19 +1078,72 @@ function normalizeBillingModel(model = {}) {
   };
 }
 
-function normalizeBillingMonth(month = {}) {
-  const modelsSource = Array.isArray(month.models) ? month.models : [];
+function normalizeBillingTool(tool = {}) {
+  const modelsSource = Array.isArray(tool.models) ? tool.models : [];
   const models = modelsSource.map(normalizeBillingModel).filter(Boolean);
-  const currentMonthLabel = formatBillingMonthLabel(month.month);
+  const usageDates = Array.isArray(tool.usageDates)
+    ? tool.usageDates
+    : Array.from(new Set(models.flatMap((model) => model.usageDates || [])));
   const tokensUsed = models.reduce((sum, model) => sum + Math.max(0, Number(model.tokensUsed || 0)), 0);
   const baseCostUsd = models.reduce((sum, model) => sum + Math.max(0, Number(model.baseCostUsd || 0)), 0);
   const inputTokensUsed = models.reduce((sum, model) => sum + Math.max(0, Number(model.inputTokensUsed || 0)), 0);
   const outputTokensUsed = models.reduce((sum, model) => sum + Math.max(0, Number(model.outputTokensUsed || 0)), 0);
   const inputChargeUsd = models.reduce((sum, model) => sum + Math.max(0, Number(model.inputChargeUsd || 0)), 0);
   const outputChargeUsd = models.reduce((sum, model) => sum + Math.max(0, Number(model.outputChargeUsd || 0)), 0);
+  const toolId = String(tool.toolId || tool.tool_id || tool.featureId || tool.feature_id || "").trim();
+  const toolName = String(tool.toolName || tool.tool_name || tool.name || formatDisplayNameFromId(toolId)).trim() || formatDisplayNameFromId(toolId);
+
+  return {
+    toolId,
+    toolName,
+    tokensUsed,
+    baseCostUsd: Number(baseCostUsd.toFixed(2)),
+    inputTokensUsed,
+    outputTokensUsed,
+    inputChargeUsd: Number(inputChargeUsd.toFixed(2)),
+    outputChargeUsd: Number(outputChargeUsd.toFixed(2)),
+    chargeUsd: Number(Number(tool.chargeUsd ?? 0).toFixed(2)),
+    minimumApplied: Boolean(tool.minimumApplied),
+    currency: String(tool.currency || "USD").trim() || "USD",
+    usageCount: Math.max(0, Math.round(Number(tool.usageCount ?? usageDates.length ?? 0))),
+    usageDates: usageDates.map((date) => String(date || "").trim()).filter(Boolean),
+    models: models
+      .sort((left, right) => right.tokensUsed - left.tokensUsed || left.model.localeCompare(right.model)),
+  };
+}
+
+function normalizeBillingMonth(month = {}) {
+  const toolsSource = Array.isArray(month.tools) ? month.tools : [];
+  const modelsSource = Array.isArray(month.models) ? month.models : [];
+  const tools = toolsSource.length
+    ? toolsSource.map(normalizeBillingTool).filter(Boolean)
+    : modelsSource.length
+      ? [{
+          toolId: String(month.toolId || month.tool_id || "").trim() || "unassigned",
+          toolName: String(month.toolName || month.tool_name || month.name || "Unassigned tool").trim() || "Unassigned tool",
+          models: modelsSource,
+          chargeUsd: month.chargeUsd,
+          minimumApplied: month.minimumApplied,
+          currency: month.currency,
+          usageCount: month.usageCount,
+          usageDates: month.usageDates,
+        }].map(normalizeBillingTool)
+      : [];
+  const currentMonthLabel = formatBillingMonthLabel(month.month);
+  const tokensUsed = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.tokensUsed || 0)), 0);
+  const baseCostUsd = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.baseCostUsd || 0)), 0);
+  const inputTokensUsed = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.inputTokensUsed || 0)), 0);
+  const outputTokensUsed = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.outputTokensUsed || 0)), 0);
+  const inputChargeUsd = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.inputChargeUsd || 0)), 0);
+  const outputChargeUsd = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.outputChargeUsd || 0)), 0);
   const usageDates = Array.isArray(month.usageDates)
     ? month.usageDates
-    : Array.from(new Set(models.flatMap((model) => model.usageDates || [])));
+    : Array.from(new Set(tools.flatMap((tool) => tool.usageDates || [])));
+  const flattenedModels = tools.flatMap((tool) => tool.models || []);
+  const minimumMonthlyCharge = Number(month.minimumMonthlyCharge ?? DEFAULT_BILLING_MINIMUM) || DEFAULT_BILLING_MINIMUM;
+  const rawChargeUsd = Number(Number(month.chargeUsd ?? 0).toFixed(2));
+  const calculatedChargeUsd = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.chargeUsd || 0)), 0);
+  const chargeUsd = Number((rawChargeUsd || calculatedChargeUsd).toFixed(2));
 
   return {
     month: String(month.month || "").trim(),
@@ -1003,12 +1154,16 @@ function normalizeBillingMonth(month = {}) {
     outputTokensUsed,
     inputChargeUsd: Number(inputChargeUsd.toFixed(2)),
     outputChargeUsd: Number(outputChargeUsd.toFixed(2)),
-    chargeUsd: Number(Number(month.chargeUsd ?? 0).toFixed(2)),
+    chargeUsd,
     minimumApplied: Boolean(month.minimumApplied),
+    minimumMonthlyCharge,
     currency: String(month.currency || "USD").trim() || "USD",
     usageCount: Math.max(0, Math.round(Number(month.usageCount ?? usageDates.length ?? 0))),
     usageDates: usageDates.map((date) => String(date || "").trim()).filter(Boolean),
-    models: models
+    toolCount: tools.length,
+    tools: tools
+      .sort((left, right) => right.tokensUsed - left.tokensUsed || left.toolName.localeCompare(right.toolName)),
+    models: flattenedModels
       .sort((left, right) => right.tokensUsed - left.tokensUsed || left.model.localeCompare(right.model)),
   };
 }
@@ -1026,8 +1181,8 @@ function normalizeBillingReport(report = {}) {
   ) || markupMultiplier;
   const billingPlanMinimumCents = Number(billingPlan.monthlyMinimumCents ?? NaN);
   const minimumMonthlyCharge = Number(
-    report.minimumMonthlyCharge ?? (Number.isFinite(billingPlanMinimumCents) ? billingPlanMinimumCents / 100 : 29),
-  ) || 29;
+    report.minimumMonthlyCharge ?? (Number.isFinite(billingPlanMinimumCents) ? billingPlanMinimumCents / 100 : DEFAULT_BILLING_MINIMUM),
+  ) || DEFAULT_BILLING_MINIMUM;
   const currency = String(report.currency || billingPlan.currency || currentMonth.currency || "USD").trim() || "USD";
   const usageDates = Array.isArray(report.usageDates) ? report.usageDates : [];
   const registeredAt = String(report.registeredAt || "").trim();
@@ -1066,12 +1221,12 @@ function normalizeBillingReport(report = {}) {
 function getBillingPolicyLabel(report) {
   const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
-  const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
+  const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, report?.currency || "USD");
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `Billed at ${inputMultiplier.toFixed(1)}x the token cost · ${minimum} minimum payment`;
+    return `Billed at ${inputMultiplier.toFixed(1)}x the token cost · ${minimum} minimum per tool`;
   }
 
-  return `Billed at ${inputMultiplier.toFixed(1)}x input token cost · ${outputMultiplier.toFixed(1)}x output token cost · ${minimum} minimum payment`;
+  return `Billed at ${inputMultiplier.toFixed(1)}x input token cost · ${outputMultiplier.toFixed(1)}x output token cost · ${minimum} minimum per tool`;
 }
 
 function getBillingPricingLabel(report) {
@@ -1082,6 +1237,146 @@ function getBillingPricingLabel(report) {
   }
 
   return `${inputMultiplier.toFixed(1)}x input token cost and ${outputMultiplier.toFixed(1)}x output token cost`;
+}
+
+function buildBillingToolCatalog() {
+  const features = Array.isArray(clientState?.features) ? clientState.features : [];
+  return features.map((feature, index) => {
+    const pricing = getFeaturePricing(feature);
+    return {
+      toolId: String(feature?.id || `feature-${index + 1}`).trim(),
+      toolName: String(feature?.name || `Tool ${index + 1}`).trim(),
+      pricing,
+      status: String(feature?.status || "Active").trim(),
+    };
+  });
+}
+
+function mergeBillingMonthWithCatalog(month, catalog = []) {
+  const toolMap = new Map();
+  for (const tool of Array.isArray(month?.tools) ? month.tools : []) {
+    const normalizedTool = normalizeBillingTool(tool);
+    const key = normalizedTool.toolId || normalizedTool.toolName;
+    if (!key) {
+      continue;
+    }
+    toolMap.set(key, normalizedTool);
+  }
+
+  const tools = [];
+  const seenKeys = new Set();
+  const fallbackUnassignedTool = toolMap.get("unassigned") || toolMap.get("shared") || null;
+  for (const catalogTool of catalog) {
+    const key = catalogTool.toolId || catalogTool.toolName;
+    if (!key) {
+      continue;
+    }
+    const minimumMonthlyCharge = Number(catalogTool?.pricing?.minimumMonthlyCharge || month?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM) || DEFAULT_BILLING_MINIMUM;
+
+    const existing = toolMap.get(key) || (catalog.length === 1 ? fallbackUnassignedTool : null);
+    const tool = existing
+      ? {
+          ...existing,
+          toolId: key,
+          toolName: catalogTool.toolName || existing.toolName,
+          minimumMonthlyCharge,
+        }
+      : {
+          toolId: key,
+          toolName: catalogTool.toolName || formatDisplayNameFromId(key),
+          tokensUsed: 0,
+          baseCostUsd: 0,
+          inputTokensUsed: 0,
+          outputTokensUsed: 0,
+          inputChargeUsd: 0,
+          outputChargeUsd: 0,
+          chargeUsd: Number(minimumMonthlyCharge.toFixed(2)),
+          minimumApplied: true,
+          currency: month?.currency || "USD",
+          usageCount: 0,
+          usageDates: [],
+          models: [],
+          minimumMonthlyCharge,
+        };
+
+    tools.push(tool);
+    seenKeys.add(key);
+  }
+
+  if (fallbackUnassignedTool && catalog.length === 1) {
+    seenKeys.add(fallbackUnassignedTool.toolId || "unassigned");
+    seenKeys.add("shared");
+  }
+
+  for (const [key, tool] of toolMap.entries()) {
+    if (seenKeys.has(key)) {
+      continue;
+    }
+
+    tools.push(tool);
+  }
+
+  const currency = month?.currency || "USD";
+  const normalizedTools = tools
+    .map((tool) => {
+      const minimumMonthlyCharge = Number(tool.minimumMonthlyCharge || month?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM) || DEFAULT_BILLING_MINIMUM;
+      const rawChargeUsd = Number(tool.baseCostUsd || 0);
+      const chargeUsd = tool.chargeUsd > 0
+        ? Number(Math.max(tool.chargeUsd, minimumMonthlyCharge).toFixed(2))
+        : Number(Math.max(rawChargeUsd, minimumMonthlyCharge).toFixed(2));
+      return {
+        ...tool,
+        currency,
+        chargeUsd,
+        minimumApplied: Boolean(tool.minimumApplied || rawChargeUsd < minimumMonthlyCharge || tool.chargeUsd <= 0),
+      };
+    })
+    .sort((left, right) => right.tokensUsed - left.tokensUsed || left.toolName.localeCompare(right.toolName));
+
+  const flattenedModels = normalizedTools.flatMap((tool) => tool.models || []);
+  const tokensUsed = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.tokensUsed || 0)), 0);
+  const baseCostUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.baseCostUsd || 0)), 0);
+  const inputTokensUsed = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.inputTokensUsed || 0)), 0);
+  const outputTokensUsed = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.outputTokensUsed || 0)), 0);
+  const inputChargeUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.inputChargeUsd || 0)), 0);
+  const outputChargeUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.outputChargeUsd || 0)), 0);
+  const chargeUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.chargeUsd || 0)), 0);
+  const usageDates = Array.from(new Set(normalizedTools.flatMap((tool) => tool.usageDates || [])));
+  const usageCount = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.usageCount || 0)), 0);
+  const minimumApplied = normalizedTools.some((tool) => tool.minimumApplied);
+
+  return {
+    ...month,
+    tokensUsed,
+    baseCostUsd: Number(baseCostUsd.toFixed(2)),
+    inputTokensUsed,
+    outputTokensUsed,
+    inputChargeUsd: Number(inputChargeUsd.toFixed(2)),
+    outputChargeUsd: Number(outputChargeUsd.toFixed(2)),
+    chargeUsd: Number(chargeUsd.toFixed(2)),
+    minimumApplied,
+    usageCount,
+    usageDates,
+    toolCount: normalizedTools.length,
+    tools: normalizedTools,
+    models: flattenedModels
+      .sort((left, right) => right.tokensUsed - left.tokensUsed || left.model.localeCompare(right.model)),
+  };
+}
+
+function enrichBillingReportWithCatalog(report) {
+  if (!report) {
+    return report;
+  }
+
+  const catalog = buildBillingToolCatalog();
+  return {
+    ...report,
+    currentMonth: mergeBillingMonthWithCatalog(report.currentMonth, catalog),
+    history: Array.isArray(report.history)
+      ? report.history.map((month) => mergeBillingMonthWithCatalog(month, catalog))
+      : [],
+  };
 }
 
 function getBillingStatusCopy(report, hasError, isLoading) {
@@ -1099,20 +1394,18 @@ function getBillingStatusCopy(report, hasError, isLoading) {
   if (isLoading) {
     return {
       message: report ? "Refreshing the billing snapshot..." : "Loading billing data...",
-      meta: report
-        ? `Showing the last loaded snapshot from ${report.sourceLabel}.`
-        : "This usually takes just a moment.",
+      meta: report ? "Showing the last loaded snapshot while I refresh." : "This usually takes just a moment.",
     };
   }
 
   if (report) {
     return {
-      message: report.currentMonth?.models?.length
+      message: report.currentMonth?.tools?.length
         ? "Billing data is ready."
         : "No usage has been recorded yet.",
       meta: report.asOf
-        ? `${report.sourceLabel} · updated ${formatUsageDate(report.asOf) || "recently"}`
-        : report.sourceLabel,
+        ? `Updated ${formatUsageDate(report.asOf) || "recently"}`
+        : "Snapshot ready.",
     };
   }
 
@@ -1123,19 +1416,46 @@ function getBillingStatusCopy(report, hasError, isLoading) {
 }
 
 function buildBillingSummaryText(report) {
-  const currentMonth = report?.currentMonth;
-  const pricingLabel = getBillingPricingLabel(report);
-  const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
   const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
-  const nextPaymentCopy = nextPaymentDate ? ` Your next payment is due on ${nextPaymentDate}.` : "";
-  if (!currentMonth || !currentMonth.models.length) {
-    return `No usage has been recorded yet. This month is billed at ${pricingLabel}, with a minimum payment of ${minimum}.${nextPaymentCopy}`;
+  const currentMonth = report?.currentMonth;
+
+  if (!currentMonth) {
+    return "Projected payment data will appear here once billing loads.";
   }
 
   const charged = formatCurrency(currentMonth.chargeUsd, report?.currency || "USD");
-  const minimumApplied = currentMonth.minimumApplied ? " The minimum payment applies." : "";
+  if (!currentMonth.tools?.length || !currentMonth.tokensUsed) {
+    return nextPaymentDate
+      ? `Projected payment will update as usage grows. Next payment: ${nextPaymentDate}.`
+      : "Projected payment will update as usage grows.";
+  }
 
-  return `Based on usage so far, the projected payment is ${charged}. This month is billed at ${pricingLabel}, with a minimum payment of ${minimum}.${minimumApplied}${nextPaymentCopy}`;
+  return nextPaymentDate
+    ? `Projected payment is ${charged} so far. Next payment: ${nextPaymentDate}.`
+    : `Projected payment is ${charged} so far.`;
+}
+
+function buildBillingHelpBody(report) {
+  const currency = report?.currency || "USD";
+  const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, currency);
+  const pricingLabel = getBillingPricingLabel(report);
+  const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
+  const helpLines = [
+    `We total the month at ${pricingLabel}.`,
+    `If the total stays below ${minimum}, the minimum payment applies.`,
+    nextPaymentDate
+      ? `Your next payment is due on ${nextPaymentDate}. It repeats on the day you registered, so someone who registered on Aug 23 would next pay on Sep 23.`
+      : "Your next payment repeats on the day you registered. If that day does not exist in a shorter month, we use the last day of that month.",
+  ];
+
+  const fragment = document.createDocumentFragment();
+  for (const line of helpLines) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = line;
+    fragment.append(paragraph);
+  }
+
+  return fragment;
 }
 
 function getBillingStatusLabel(report) {
@@ -1165,6 +1485,36 @@ function getBillingStatusLabel(report) {
 function setBillingError(message) {
   state.billingError = String(message || "").trim();
   state.billingLoading = false;
+}
+
+function syncBillingHelpState() {
+  const isOpen = Boolean(state.billingHelpOpen);
+
+  if (elements.billingHelpButton) {
+    elements.billingHelpButton.setAttribute("aria-expanded", String(isOpen));
+  }
+
+  if (elements.billingHelpPopover) {
+    elements.billingHelpPopover.classList.toggle("is-hidden", !isOpen);
+    elements.billingHelpPopover.classList.toggle("is-open", isOpen);
+  }
+}
+
+function setBillingHelpOpen(open) {
+  state.billingHelpOpen = Boolean(open);
+  syncBillingHelpState();
+}
+
+function toggleBillingHelp() {
+  setBillingHelpOpen(!state.billingHelpOpen);
+}
+
+function closeBillingHelp() {
+  if (!state.billingHelpOpen) {
+    return;
+  }
+
+  setBillingHelpOpen(false);
 }
 
 function ensureBillingMenuItem() {
@@ -1299,6 +1649,7 @@ function openSettings(mode = state.settingsMode) {
   }
 
   state.selectedFeatureId = null;
+  closeBillingHelp();
 
   if (state.activeTab !== "settings" && VALID_TABS.has(state.activeTab)) {
     state.lastPrimaryTab = state.activeTab;
@@ -1313,6 +1664,7 @@ function openSettings(mode = state.settingsMode) {
 
 function closeSettings() {
   state.settingsOpen = false;
+  closeBillingHelp();
   state.activeTab = VALID_TABS.has(state.lastPrimaryTab) && state.lastPrimaryTab !== "settings"
     ? state.lastPrimaryTab
     : "features";
@@ -1342,6 +1694,7 @@ function setActiveTab(tab, options = {}) {
   state.settingsOpen = false;
   state.selectedFeatureId = null;
   state.selectedSimulatorId = null;
+  closeBillingHelp();
   if (options.settingsMode && VALID_SETTINGS_MODES.has(options.settingsMode)) {
     state.settingsMode = options.settingsMode;
   }
@@ -2010,6 +2363,82 @@ function createBillingModelRow(model, index = 0, currency = "USD") {
   return row;
 }
 
+function createBillingToolRow(tool, index = 0, currency = "USD", report = null) {
+  const details = document.createElement("details");
+  details.className = "billing-tool";
+  if (index === 0) {
+    details.open = true;
+  }
+
+  const summary = document.createElement("summary");
+
+  const labelBlock = document.createElement("div");
+  labelBlock.className = "billing-tool-label";
+
+  const title = document.createElement("strong");
+  title.textContent = tool.toolName || formatDisplayNameFromId(tool.toolId);
+
+  const subtitle = document.createElement("span");
+  subtitle.textContent = tool.models.length
+    ? tool.models.map((model) => formatModelName(model.model)).join(" · ")
+    : "No model activity";
+
+  labelBlock.append(title, subtitle);
+
+  const tokenBlock = document.createElement("div");
+  tokenBlock.className = "billing-tool-stat";
+
+  const tokenLabel = document.createElement("span");
+  tokenLabel.textContent = "Tokens";
+
+  const tokenValue = document.createElement("strong");
+  tokenValue.textContent = formatTokenCount(tool.tokensUsed);
+
+  tokenBlock.append(tokenLabel, tokenValue);
+
+  const paidBlock = document.createElement("div");
+  paidBlock.className = "billing-tool-stat";
+
+  const paidLabel = document.createElement("span");
+  paidLabel.textContent = "Charged";
+
+  const paidValue = document.createElement("strong");
+  paidValue.textContent = formatCurrency(tool.chargeUsd, currency);
+
+  paidBlock.append(paidLabel, paidValue);
+
+  const caret = document.createElement("span");
+  caret.className = "billing-month-caret";
+  caret.setAttribute("aria-hidden", "true");
+  caret.textContent = "▸";
+
+  summary.append(labelBlock, tokenBlock, paidBlock, caret);
+
+  const body = document.createElement("div");
+  body.className = "billing-tool-body";
+
+  const note = document.createElement("p");
+  note.className = "billing-month-note";
+  const pricingLabel = getBillingPricingLabel(report);
+  note.textContent = tool.minimumApplied
+    ? `This tool hit the minimum charge of ${formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, currency)} this month.`
+    : `Base spend was ${formatCurrency(tool.baseCostUsd, currency)} before the ${pricingLabel}.`;
+
+  body.append(note);
+
+  if (!tool.models.length) {
+    body.append(createBillingNotice("No model usage was recorded for this tool yet."));
+  } else {
+    const modelList = document.createElement("div");
+    modelList.className = "billing-model-list billing-model-list-nested";
+    modelList.append(...tool.models.map((model, modelIndex) => createBillingModelRow(model, modelIndex, currency)));
+    body.append(modelList);
+  }
+
+  details.append(summary, body);
+  return details;
+}
+
 function createBillingMonthDetail(month, index = 0, currency = "USD", report = null) {
   const details = document.createElement("details");
   details.className = "billing-month";
@@ -2023,9 +2452,9 @@ function createBillingMonthDetail(month, index = 0, currency = "USD", report = n
   title.textContent = month.label || formatBillingMonthLabel(month.month);
 
   const subtitle = document.createElement("span");
-  subtitle.textContent = month.models.length
-    ? month.models.map((model) => formatModelName(model.model)).join(" · ")
-    : "No model activity";
+  subtitle.textContent = month.tools.length
+    ? `${month.tools.length} tool${month.tools.length === 1 ? "" : "s"} · ${month.models.length} model${month.models.length === 1 ? "" : "s"}`
+    : "No tool activity";
 
   labelBlock.append(title, subtitle);
 
@@ -2065,18 +2494,18 @@ function createBillingMonthDetail(month, index = 0, currency = "USD", report = n
   note.className = "billing-month-note";
   const pricingLabel = getBillingPricingLabel(report);
   note.textContent = month.minimumApplied
-    ? `The ${formatCurrency(month.chargeUsd, currency)} minimum charge applied for this month.`
+    ? `The minimum charge applied across the tools billed this month.`
     : `Base spend was ${formatCurrency(month.baseCostUsd, currency)} before the ${pricingLabel}.`;
 
   body.append(note);
 
-  if (!month.models.length) {
-    body.append(createBillingNotice("No model usage was recorded for this month yet."));
+  if (!month.tools.length) {
+    body.append(createBillingNotice("No tool usage was recorded for this month yet."));
   } else {
-    const modelList = document.createElement("div");
-    modelList.className = "billing-model-list billing-model-list-nested";
-    modelList.append(...month.models.map((model, modelIndex) => createBillingModelRow(model, modelIndex, currency)));
-    body.append(modelList);
+    const toolList = document.createElement("div");
+    toolList.className = "billing-tool-list";
+    toolList.append(...month.tools.map((toolRow, toolIndex) => createBillingToolRow(toolRow, toolIndex, currency, report)));
+    body.append(toolList);
   }
 
   details.append(summary, body);
@@ -2084,7 +2513,7 @@ function createBillingMonthDetail(month, index = 0, currency = "USD", report = n
 }
 
 function updateBillingPanel() {
-  const report = state.billingReport ? normalizeBillingReport(state.billingReport) : null;
+  const report = state.billingReport ? enrichBillingReportWithCatalog(normalizeBillingReport(state.billingReport)) : null;
   const hasError = Boolean(state.billingError);
   const isLoading = state.billingLoading && !report;
   const currency = report?.currency || "USD";
@@ -2110,7 +2539,7 @@ function updateBillingPanel() {
       ? "I’m not able to load billing data right now."
       : isLoading
         ? "Loading billing data..."
-        : "No billing data has been loaded yet. Refresh billing when you’re ready.";
+        : "Projected payment updates as usage changes. Tap ? for the billing rules.";
 
     if (elements.billingCurrentMonthLabel) {
       elements.billingCurrentMonthLabel.textContent = "This month";
@@ -2150,8 +2579,8 @@ function updateBillingPanel() {
       elements.billingModelList.replaceChildren(
         createBillingNotice(
           hasError
-            ? "The model breakdown will return as soon as billing data is reachable again."
-            : "Billing activity will appear here once billing data is connected.",
+            ? "The tool breakdown will return as soon as billing data is reachable again."
+            : "Billing activity will appear here once billing is connected.",
           hasError ? "warn" : "neutral",
         ),
       );
@@ -2166,6 +2595,10 @@ function updateBillingPanel() {
         ),
       );
     }
+    if (elements.billingHelpBody) {
+      elements.billingHelpBody.replaceChildren(buildBillingHelpBody(report));
+    }
+    syncBillingHelpState();
     if (elements.billingMix) {
       elements.billingMix.replaceChildren();
     }
@@ -2176,8 +2609,10 @@ function updateBillingPanel() {
     label: "This month",
     tokensUsed: 0,
     baseCostUsd: 0,
-    chargeUsd: report.minimumMonthlyCharge || 29,
+    chargeUsd: report.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM,
     minimumApplied: true,
+    minimumMonthlyCharge: report.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM,
+    tools: [],
     models: [],
   };
 
@@ -2204,19 +2639,20 @@ function updateBillingPanel() {
     elements.billingNextPayment.title = "Next scheduled payment date";
   }
   if (elements.billingModelCount) {
-    elements.billingModelCount.textContent = `${currentMonth.models.length} model${currentMonth.models.length === 1 ? "" : "s"}`;
+    currentMonth.tools = Array.isArray(currentMonth.tools) ? currentMonth.tools : [];
+    elements.billingModelCount.textContent = `${currentMonth.tools.length} tool${currentMonth.tools.length === 1 ? "" : "s"}`;
   }
   if (elements.billingHistoryCount) {
     elements.billingHistoryCount.textContent = `${report.history.length} month${report.history.length === 1 ? "" : "s"}`;
   }
   if (elements.billingModelList) {
-    if (!currentMonth.models.length) {
+    if (!currentMonth.tools.length) {
       elements.billingModelList.replaceChildren(
-        createBillingNotice("No model usage has been recorded for the current month yet."),
+        createBillingNotice("No tool usage has been recorded for the current month yet."),
       );
     } else {
       elements.billingModelList.replaceChildren(
-        ...currentMonth.models.map((model, index) => createBillingModelRow(model, index, currency)),
+        ...currentMonth.tools.map((tool, index) => createBillingToolRow(tool, index, currency, report)),
       );
     }
   }
@@ -2233,15 +2669,15 @@ function updateBillingPanel() {
   }
   if (elements.billingMix) {
     const totalTokens = Math.max(0, Number(currentMonth.tokensUsed || 0));
-    if (!totalTokens || !currentMonth.models.length) {
+    if (!totalTokens || !currentMonth.tools.length) {
       elements.billingMix.replaceChildren();
     } else {
-      const segments = currentMonth.models.map((model, index) => {
+      const segments = currentMonth.tools.map((tool, index) => {
         const segment = document.createElement("div");
         segment.className = "billing-mix-segment";
         segment.style.setProperty("--billing-model-color", BILLING_MODEL_COLORS[index % BILLING_MODEL_COLORS.length]);
-        segment.style.flexGrow = String(Math.max(0.001, Number(model.tokensUsed || 0)));
-        segment.title = `${formatModelName(model.model)} · ${formatTokenCount(model.tokensUsed)} tokens`;
+        segment.style.flexGrow = String(Math.max(0.001, Number(tool.tokensUsed || 0)));
+        segment.title = `${tool.toolName || formatDisplayNameFromId(tool.toolId)} · ${formatTokenCount(tool.tokensUsed)} tokens`;
         return segment;
       });
 
@@ -2324,7 +2760,21 @@ function createFeatureCard(feature) {
   description.className = "feature-card-copy";
   description.textContent = feature.description || "";
 
-  card.append(status, head, description);
+  const meta = document.createElement("div");
+  meta.className = "feature-meta";
+
+  const channel = document.createElement("span");
+  channel.textContent = feature.channel || "Web";
+
+  const mode = document.createElement("span");
+  mode.textContent = feature.mode || "Default";
+
+  const pricing = document.createElement("span");
+  pricing.textContent = formatFeaturePricingLabel(feature);
+
+  meta.append(channel, mode, pricing);
+
+  card.append(status, head, description, meta);
   return card;
 }
 
@@ -2382,23 +2832,46 @@ function updateFeatureStudioHeader() {
     return;
   }
 
+  const example = buildFeatureExample(feature);
+  const pricingLabel = formatFeaturePricingLabel(feature);
+  const pitch = buildFeaturePitch(feature);
+  const launchUrl = String(feature.launchUrl || "").trim();
+
   elements.featureStudioStatus.textContent = feature.status || "Active";
   elements.featureStudioTitle.textContent = feature.name;
   elements.featureStudioDescription.textContent = feature.description || "";
   elements.featureStudioChannel.textContent = `Channel: ${feature.channel || "Web"}`;
   elements.featureStudioMode.textContent = `Mode: ${feature.mode || "Default"}`;
-
-  const launchUrl = String(feature.launchUrl || "").trim();
+  if (elements.featureStudioPricing) {
+    elements.featureStudioPricing.textContent = pricingLabel;
+  }
+  if (elements.featureStudioPitch) {
+    elements.featureStudioPitch.textContent = pitch;
+  }
+  if (elements.featureStudioExampleSender) {
+    elements.featureStudioExampleSender.textContent = example.sender;
+  }
+  if (elements.featureStudioExampleLabel) {
+    elements.featureStudioExampleLabel.textContent = example.label;
+  }
+  if (elements.featureStudioExampleMessage) {
+    elements.featureStudioExampleMessage.textContent = example.incoming;
+  }
+  if (elements.featureStudioExampleReply) {
+    elements.featureStudioExampleReply.textContent = example.outgoing;
+  }
   if (elements.featureStudioLaunchButton) {
-    elements.featureStudioLaunchButton.hidden = !launchUrl;
-    elements.featureStudioLaunchButton.disabled = !launchUrl;
+    elements.featureStudioLaunchButton.hidden = false;
+    elements.featureStudioLaunchButton.disabled = false;
+    elements.featureStudioLaunchButton.textContent = launchUrl ? "Open live dashboard" : "Open tool editor";
+    elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
-    elements.featureStudioLaunchNote.hidden = !launchUrl;
+    elements.featureStudioLaunchNote.hidden = false;
     elements.featureStudioLaunchNote.textContent = launchUrl
-      ? `Opens the live WhatsApp reply assistant dashboard at ${launchUrl}.`
-      : "Add a launch URL to this tool if it should open a live backend dashboard.";
+      ? `Opens the live WhatsApp dashboard at ${launchUrl}.`
+      : buildFeatureEditorHint(feature);
   }
 }
 
@@ -2869,6 +3342,7 @@ function completeSignIn(session) {
   state.settingsOpen = false;
   state.lastPrimaryTab = "features";
   persistLastPrimaryTab();
+  closeBillingHelp();
   state.billingReport = null;
   state.billingLoading = true;
   state.billingError = "";
@@ -2986,6 +3460,7 @@ async function signOut() {
   state.settingsOpen = false;
   state.lastPrimaryTab = "features";
   persistLastPrimaryTab();
+  closeBillingHelp();
 
   persistJson(AUTH_SESSION_KEY, null);
   clearHash();
@@ -3046,7 +3521,14 @@ function openSelectedFeatureLaunchUrl() {
   const feature = getSelectedFeature();
   const launchUrl = String(feature?.launchUrl || "").trim();
   if (!launchUrl) {
-    setStatus("This tool does not have a live launch URL yet.");
+    const editor = document.querySelector(`#${DEFAULT_TOOL_EDITOR_TARGET_ID}`);
+    if (editor && typeof editor.scrollIntoView === "function") {
+      editor.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    if (elements.toneGuidance && typeof elements.toneGuidance.focus === "function") {
+      elements.toneGuidance.focus();
+    }
+    setStatus("Opened the tool editor.");
     return;
   }
 
@@ -3099,10 +3581,14 @@ async function bootstrapAuthState() {
           "Couldn’t verify session",
           formatApiErrorMessage(error, "We couldn’t verify your session. Please sign in again."),
           { returnFocus: "email" },
-        );
-      }
+      );
     }
   }
+  if (elements.billingHelpBody) {
+    elements.billingHelpBody.replaceChildren(buildBillingHelpBody(report));
+  }
+  syncBillingHelpState();
+}
 
   activeEmail = normalizeEmail(authChallenge?.email || storedSession?.email || "");
   clientState = loadClientState("");
@@ -3143,6 +3629,17 @@ function bindEvents() {
       void refreshBillingReport();
     });
   }
+  if (elements.billingHelpButton) {
+    elements.billingHelpButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleBillingHelp();
+    });
+  }
+  if (elements.billingHelpCloseButton) {
+    elements.billingHelpCloseButton.addEventListener("click", () => {
+      closeBillingHelp();
+    });
+  }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.addEventListener("click", openSelectedFeatureLaunchUrl);
   }
@@ -3178,6 +3675,18 @@ function bindEvents() {
   }
 
   document.addEventListener("click", (event) => {
+    const billingHelpButton = elements.billingHelpButton;
+    const billingHelpPopover = elements.billingHelpPopover;
+    if (
+      state.billingHelpOpen
+      && billingHelpPopover
+      && billingHelpButton
+      && !billingHelpPopover.contains(event.target)
+      && !billingHelpButton.contains(event.target)
+    ) {
+      closeBillingHelp();
+    }
+
     if (!elements.accountMenu.contains(event.target) && !elements.accountMenuButton.contains(event.target)) {
       closeMenu();
     }
@@ -3187,6 +3696,11 @@ function bindEvents() {
     if (event.key === "Escape") {
       if (state.authAlertOpen) {
         closeAuthAlert();
+        return;
+      }
+
+      if (state.billingHelpOpen) {
+        closeBillingHelp();
         return;
       }
 

@@ -933,6 +933,153 @@ a {
   gap: 1rem;
 }
 
+.billing-help-strip {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: start;
+  padding: 1rem 1.15rem;
+  border-radius: 24px;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.93), rgba(248, 251, 252, 0.9)),
+    linear-gradient(135deg, rgba(15, 118, 110, 0.05), rgba(30, 136, 229, 0.03));
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  box-shadow: 0 18px 48px rgba(16, 38, 40, 0.08);
+}
+
+.billing-help-copy {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+  min-width: 0;
+}
+
+.billing-help-summary {
+  margin: 0;
+  max-width: 58ch;
+  color: var(--muted);
+  font-size: 0.96rem;
+  line-height: 1.6;
+}
+
+.billing-help-actions {
+  position: relative;
+  align-self: start;
+}
+
+.billing-help-button {
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 1.1rem;
+  font-weight: 900;
+  line-height: 1;
+  transition:
+    transform 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.billing-help-button:hover,
+.billing-help-button:focus-visible {
+  transform: translateY(-1px);
+  background: rgba(15, 118, 110, 0.12);
+  border-color: rgba(15, 118, 110, 0.24);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.billing-help-popover {
+  position: absolute;
+  top: calc(100% + 0.75rem);
+  right: 0;
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 1rem 1rem 0.95rem;
+  border-radius: 20px;
+  color: #eef9f8;
+  background:
+    linear-gradient(180deg, rgba(16, 40, 38, 0.98), rgba(21, 55, 65, 0.98)),
+    linear-gradient(135deg, rgba(15, 118, 110, 0.2), rgba(30, 136, 229, 0.12));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 28px 70px rgba(16, 38, 40, 0.28);
+  z-index: 3;
+}
+
+.billing-help-popover.is-hidden {
+  display: none;
+}
+
+.billing-help-popover-head {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.billing-help-popover-head strong {
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.billing-help-close {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  font-size: 1.15rem;
+  line-height: 1;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.billing-help-close:hover,
+.billing-help-close:focus-visible {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.billing-help-body {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.billing-help-body p {
+  margin: 0;
+  color: rgba(238, 249, 248, 0.82);
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .billing-hero {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(18rem, 0.95fr);
@@ -963,14 +1110,6 @@ a {
   line-height: 0.98;
   text-wrap: balance;
   max-width: 11ch;
-}
-
-.billing-summary {
-  margin: 0;
-  max-width: 52ch;
-  color: rgba(238, 249, 248, 0.8);
-  font-size: 1rem;
-  line-height: 1.7;
 }
 
 .billing-hero-metrics {
@@ -1118,6 +1257,81 @@ a {
 .billing-history-list {
   display: grid;
   gap: 0.4rem;
+}
+
+.billing-tool-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.billing-tool {
+  border-top: 1px solid var(--line);
+  padding-top: 0.65rem;
+}
+
+.billing-tool:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.billing-tool summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) auto auto auto;
+  gap: 0.8rem;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  padding: 0.2rem 0;
+}
+
+.billing-tool summary::-webkit-details-marker {
+  display: none;
+}
+
+.billing-tool-label {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.billing-tool-label strong {
+  font-size: 1.02rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+
+.billing-tool-label span {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+  max-width: 32ch;
+}
+
+.billing-tool-stat {
+  display: grid;
+  gap: 0.18rem;
+  text-align: right;
+}
+
+.billing-tool-stat span {
+  color: var(--muted-strong);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.billing-tool-stat strong {
+  font-size: 0.95rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.billing-tool-body {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.7rem 0.15rem 0;
 }
 
 .billing-model-row {
@@ -1826,6 +2040,7 @@ a {
 }
 
 .feature-page-actions {
+  display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
   align-items: center;
@@ -2128,12 +2343,20 @@ a {
 
 .feature-page-intro {
   display: grid;
-  gap: 0.85rem;
+  grid-template-columns: minmax(0, 1.08fr) minmax(18rem, 0.92fr);
+  gap: 1.1rem 1.35rem;
+  align-items: start;
   width: min(100%, 76rem);
   padding-top: 0.35rem;
   justify-self: center;
-  justify-items: center;
-  text-align: center;
+  justify-items: start;
+  text-align: left;
+}
+
+.feature-page-intro-main {
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
 }
 
 .feature-page-intro h1 {
@@ -2156,7 +2379,26 @@ a {
 
 .feature-page-meta {
   margin-top: 0.15rem;
-  justify-content: center;
+  justify-content: flex-start;
+}
+
+.feature-page-pitch {
+  max-width: 42ch;
+  color: var(--text);
+}
+
+.feature-page-example {
+  justify-self: stretch;
+  align-self: stretch;
+  display: grid;
+  gap: 0.8rem;
+  padding: 0.95rem;
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(251, 253, 255, 0.98), rgba(245, 248, 252, 0.94)),
+    linear-gradient(135deg, rgba(15, 118, 110, 0.05), rgba(30, 136, 229, 0.04));
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  box-shadow: 0 20px 50px rgba(16, 38, 40, 0.08);
 }
 
 .feature-page-header .feature-status {
@@ -2188,8 +2430,49 @@ a {
 .studio-fields {
   display: grid;
   gap: 0.85rem;
-  width: min(100%, 60rem);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(100%, 76rem);
   justify-self: center;
+}
+
+.setup-card {
+  grid-column: 1 / -1;
+}
+
+.setup-copy {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.setup-path {
+  display: inline-flex;
+  align-self: start;
+  width: fit-content;
+  padding: 0.42rem 0.62rem;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.08);
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.setup-path code {
+  font: inherit;
+}
+
+.setup-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.setup-list strong {
+  color: var(--text);
 }
 
 .empty-state {
@@ -2230,10 +2513,12 @@ a {
 .app-bar,
 .feature-page-header,
 .feature-page-intro,
+.feature-page-example,
 .feature-row,
 .billing-hero,
 .billing-card,
 .billing-month,
+.billing-tool,
 .billing-model-row,
 .detail-row,
 .card-actions {
@@ -2281,10 +2566,6 @@ a {
     display: none;
   }
 
-  .billing-page .status-pill {
-    display: inline-flex;
-  }
-
   .brand-block {
     grid-area: brand;
   }
@@ -2322,6 +2603,19 @@ a {
 
   .billing-hero {
     grid-template-columns: 1fr;
+  }
+
+  .billing-help-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-help-actions {
+    justify-self: start;
+  }
+
+  .billing-help-popover {
+    left: 0;
+    right: auto;
   }
 
   .billing-hero-metrics {
@@ -2377,6 +2671,7 @@ a {
   }
 
   .auth-shell,
+  .feature-page-intro,
   .feature-page-header,
   .feature-list-grid,
   .studio-hero,
@@ -2402,6 +2697,19 @@ a {
     position: static;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     gap: 0.55rem;
+  }
+
+  .feature-page-intro {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .feature-page-example {
+    width: 100%;
+  }
+
+  .setup-card {
+    grid-column: auto;
   }
 
   .brand-block {
@@ -2491,12 +2799,33 @@ a {
     max-width: 100%;
   }
 
+  .billing-help-strip {
+    gap: 0.85rem;
+  }
+
+  .billing-help-summary {
+    max-width: none;
+  }
+
+  .billing-help-popover {
+    width: min(100%, 24rem);
+  }
+
   .billing-hero-metrics {
     grid-template-columns: 1fr;
   }
 
   .billing-grid {
     grid-template-columns: 1fr;
+  }
+
+  .billing-tool summary {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .billing-tool-stat {
+    text-align: left;
   }
 
   .billing-month summary {
