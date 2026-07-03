@@ -994,20 +994,20 @@ function getBillingPolicyLabel(report) {
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const minimum = formatCurrency(report?.minimumMonthlyCharge || 29, report?.currency || "USD");
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `Billed at ${inputMultiplier.toFixed(1)}x the token price · ${minimum} minimum`;
+    return `Billed at ${inputMultiplier.toFixed(1)}x the token charge · ${minimum} minimum`;
   }
 
-  return `Billed at ${inputMultiplier.toFixed(1)}x input token price · ${outputMultiplier.toFixed(1)}x output token price · ${minimum} minimum`;
+  return `Billed at ${inputMultiplier.toFixed(1)}x input token charge · ${outputMultiplier.toFixed(1)}x output token charge · ${minimum} minimum`;
 }
 
 function getBillingPricingLabel(report) {
   const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `${inputMultiplier.toFixed(1)}x the token price`;
+    return `${inputMultiplier.toFixed(1)}x the token charge`;
   }
 
-  return `${inputMultiplier.toFixed(1)}x input token price and ${outputMultiplier.toFixed(1)}x output token price`;
+  return `${inputMultiplier.toFixed(1)}x input token charge and ${outputMultiplier.toFixed(1)}x output token charge`;
 }
 
 function getBillingStatusCopy(report, hasError, isLoading) {
@@ -2071,7 +2071,7 @@ function updateBillingPanel() {
     if (elements.billingPolicyValue) {
       elements.billingPolicyValue.textContent = hasError || isLoading
         ? "Refresh to load billing policy"
-        : `Billed at ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x the token price · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
+        : `Billed at ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x the token charge · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
     }
     if (elements.billingModelCount) {
       elements.billingModelCount.textContent = "—";
