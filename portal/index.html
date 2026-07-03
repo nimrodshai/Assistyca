@@ -9,7 +9,7 @@
       content="Registered users sign in with a one-time code to continue into Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=33" />
+    <link rel="stylesheet" href="./styles.css?v=34" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -555,7 +555,7 @@ Owner said afternoons are easier."
         <section class="billing-hero glass-card">
           <div class="billing-hero-copy">
             <p class="eyebrow">Current month</p>
-            <h2 id="billingCurrentMonthLabel">Current month</h2>
+            <h2 id="billingCurrentMonthLabel">This month</h2>
             <p id="billingCurrentSummary" class="billing-summary">
               Loading billing data...
             </p>
@@ -578,6 +578,20 @@ Owner said afternoons are easier."
 
           <div id="billingMix" class="billing-mix" aria-hidden="true"></div>
         </section>
+
+        <div id="billingStatusBanner" class="billing-status-banner glass-card" role="status" aria-live="polite">
+          <div class="billing-status-copy">
+            <p class="eyebrow">Billing status</p>
+            <p id="billingStatusMessage" class="billing-status-message">Loading billing data...</p>
+            <p id="billingStatusMeta" class="billing-status-meta">
+              We’ll keep the last loaded snapshot visible if a refresh fails.
+            </p>
+          </div>
+
+          <button id="billingRefreshButton" class="ghost-button small billing-refresh-button" type="button">
+            Refresh billing
+          </button>
+        </div>
 
         <div class="billing-grid">
           <article class="glass-card billing-card">

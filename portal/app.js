@@ -243,6 +243,10 @@ const elements = {
   billingPanel: document.querySelector("#billingPanel"),
   settingsPanel: document.querySelector("#settingsPanel"),
   billingSourcePill: document.querySelector("#billingSourcePill"),
+  billingStatusBanner: document.querySelector("#billingStatusBanner"),
+  billingStatusMessage: document.querySelector("#billingStatusMessage"),
+  billingStatusMeta: document.querySelector("#billingStatusMeta"),
+  billingRefreshButton: document.querySelector("#billingRefreshButton"),
   billingCurrentMonthLabel: document.querySelector("#billingCurrentMonthLabel"),
   billingCurrentSummary: document.querySelector("#billingCurrentSummary"),
   billingCurrentTokens: document.querySelector("#billingCurrentTokens"),
@@ -993,7 +997,7 @@ function getBillingPolicyLabel(report) {
     return `${inputMultiplier.toFixed(1)}x token price · ${minimum} minimum`;
   }
 
-  return `${inputMultiplier.toFixed(1)}x input · ${outputMultiplier.toFixed(1)}x output · ${minimum} minimum`;
+  return `${inputMultiplier.toFixed(1)}x in · ${outputMultiplier.toFixed(1)}x out · ${minimum} minimum`;
 }
 
 function getBillingPricingLabel(report) {
@@ -1003,7 +1007,45 @@ function getBillingPricingLabel(report) {
     return `${inputMultiplier.toFixed(1)}x token price`;
   }
 
-  return `${inputMultiplier.toFixed(1)}x input · ${outputMultiplier.toFixed(1)}x output`;
+  return `${inputMultiplier.toFixed(1)}x in · ${outputMultiplier.toFixed(1)}x out`;
+}
+
+function getBillingStatusCopy(report, hasError, isLoading) {
+  if (hasError) {
+    return {
+      message: report
+        ? "The latest refresh didn’t come through, but your last snapshot is still visible."
+        : "I’m having trouble reaching billing right now.",
+      meta: report
+        ? "Refresh billing to try again. I’ll keep the last good snapshot on screen while we wait."
+        : "Try Refresh billing. If it keeps failing, I’ll check the ledger connection.",
+    };
+  }
+
+  if (isLoading) {
+    return {
+      message: report ? "Refreshing the billing snapshot..." : "Loading billing data...",
+      meta: report
+        ? `Showing the last loaded snapshot from ${report.sourceLabel}.`
+        : "This usually takes just a moment.",
+    };
+  }
+
+  if (report) {
+    return {
+      message: report.currentMonth?.models?.length
+        ? "Billing data is ready."
+        : "No usage has been recorded yet.",
+      meta: report.asOf
+        ? `${report.sourceLabel} · updated ${formatUsageDate(report.asOf) || "recently"}`
+        : report.sourceLabel,
+    };
+  }
+
+  return {
+    message: "No billing data has been loaded yet.",
+    meta: "Refresh once the ledger is ready.",
+  };
 }
 
 function buildBillingSummaryText(report) {
@@ -1974,6 +2016,7 @@ function updateBillingPanel() {
   const hasError = Boolean(state.billingError);
   const isLoading = state.billingLoading && !report;
   const currency = report?.currency || "USD";
+  const statusCopy = getBillingStatusCopy(report, hasError, isLoading);
 
   if (elements.billingSourcePill) {
     elements.billingSourcePill.classList.toggle("is-warn", hasError);
@@ -1981,47 +2024,66 @@ function updateBillingPanel() {
     const label = elements.billingSourcePill.querySelector(".billing-source-label");
     if (label) {
       label.textContent = hasError
-        ? "Billing unavailable"
+        ? report
+          ? "Last loaded snapshot"
+          : "Billing unavailable"
         : isLoading
           ? "Loading billing"
           : report?.sourceLabel || "Billing ledger";
     }
   }
 
+  if (elements.billingStatusBanner) {
+    elements.billingStatusBanner.classList.toggle("is-warn", hasError);
+    elements.billingStatusBanner.classList.toggle("is-loading", isLoading);
+  }
+  if (elements.billingStatusMessage) {
+    elements.billingStatusMessage.textContent = statusCopy.message;
+  }
+  if (elements.billingStatusMeta) {
+    elements.billingStatusMeta.textContent = statusCopy.meta;
+  }
+  if (elements.billingRefreshButton) {
+    elements.billingRefreshButton.disabled = state.billingLoading;
+    elements.billingRefreshButton.textContent = hasError ? "Try again" : "Refresh billing";
+  }
+
   if (!report) {
     const fallbackSummary = hasError
-      ? state.billingError
+      ? "I’m not able to load billing data right now."
       : isLoading
         ? "Loading billing data..."
-        : "No billing data has been loaded yet.";
+        : "No billing data has been loaded yet. Refresh billing when you’re ready.";
 
     if (elements.billingCurrentMonthLabel) {
-      elements.billingCurrentMonthLabel.textContent = "Current month";
+      elements.billingCurrentMonthLabel.textContent = "This month";
     }
     if (elements.billingCurrentSummary) {
       elements.billingCurrentSummary.textContent = fallbackSummary;
     }
     if (elements.billingCurrentTokens) {
-      elements.billingCurrentTokens.textContent = "0";
-      elements.billingCurrentTokens.title = "0 tokens";
+      elements.billingCurrentTokens.textContent = hasError || isLoading ? "—" : "0";
+      elements.billingCurrentTokens.title = hasError || isLoading ? "Billing data unavailable" : "0 tokens";
     }
     if (elements.billingCurrentCharge) {
-      elements.billingCurrentCharge.textContent = formatCurrency(DEFAULT_BILLING_MINIMUM, currency);
+      elements.billingCurrentCharge.textContent = hasError || isLoading ? "—" : formatCurrency(DEFAULT_BILLING_MINIMUM, currency);
     }
     if (elements.billingPolicyValue) {
-      elements.billingPolicyValue.textContent = `${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x input · ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x output · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
+      elements.billingPolicyValue.textContent = hasError || isLoading
+        ? "Refresh to load billing policy"
+        : `${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x in · ${DEFAULT_BILLING_MULTIPLIER.toFixed(1)}x out · ${formatCurrency(DEFAULT_BILLING_MINIMUM, currency)} minimum`;
     }
     if (elements.billingModelCount) {
-      elements.billingModelCount.textContent = "0 models";
+      elements.billingModelCount.textContent = hasError || isLoading ? "—" : "0 models";
     }
     if (elements.billingHistoryCount) {
-      elements.billingHistoryCount.textContent = "0 months";
+      elements.billingHistoryCount.textContent = hasError || isLoading ? "—" : "0 months";
     }
     if (elements.billingModelList) {
       elements.billingModelList.replaceChildren(
         createBillingNotice(
           hasError
-            ? state.billingError
+            ? "The model breakdown will return as soon as the ledger is reachable again."
             : "Billing activity will appear here once the ledger is connected.",
           hasError ? "warn" : "neutral",
         ),
@@ -2031,7 +2093,7 @@ function updateBillingPanel() {
       elements.billingHistoryList.replaceChildren(
         createBillingNotice(
           hasError
-            ? "The history could not be loaded."
+            ? "The month history will return as soon as the ledger is reachable again."
             : "Previous months will appear here once they are available.",
           hasError ? "warn" : "neutral",
         ),
@@ -2044,7 +2106,7 @@ function updateBillingPanel() {
   }
 
   const currentMonth = report.currentMonth || {
-    label: "Current month",
+    label: "This month",
     tokensUsed: 0,
     baseCostUsd: 0,
     chargeUsd: report.minimumMonthlyCharge || 29,
@@ -2053,7 +2115,7 @@ function updateBillingPanel() {
   };
 
   if (elements.billingCurrentMonthLabel) {
-    elements.billingCurrentMonthLabel.textContent = currentMonth.label || "Current month";
+    elements.billingCurrentMonthLabel.textContent = currentMonth.label || "This month";
   }
   if (elements.billingCurrentSummary) {
     elements.billingCurrentSummary.textContent = buildBillingSummaryText(report);
@@ -2137,7 +2199,6 @@ async function refreshBillingReport() {
     state.billingReport = normalizeBillingReport(response);
     state.billingError = "";
   } catch (error) {
-    state.billingReport = null;
     setBillingError(formatApiErrorMessage(error, "We couldn’t load billing data right now."));
   } finally {
     state.billingLoading = false;
@@ -3004,6 +3065,11 @@ function bindEvents() {
   });
   elements.closeSettingsButton.addEventListener("click", closeSettings);
   elements.backToFeaturesButton.addEventListener("click", closeFeatureStudio);
+  if (elements.billingRefreshButton) {
+    elements.billingRefreshButton.addEventListener("click", () => {
+      void refreshBillingReport();
+    });
+  }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.addEventListener("click", openSelectedFeatureLaunchUrl);
   }

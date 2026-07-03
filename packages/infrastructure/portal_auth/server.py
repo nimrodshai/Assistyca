@@ -893,7 +893,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/") or self.path.startswith("/api/billing/"):
+        if self.path.startswith("/api/auth/") or self.path == "/api/billing" or self.path.startswith("/api/billing/"):
             self.send_response(HTTPStatus.NO_CONTENT)
             send_api_headers(self)
             self.end_headers()
@@ -902,14 +902,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/") or self.path.startswith("/api/billing/"):
+        if self.path.startswith("/api/auth/") or self.path == "/api/billing" or self.path.startswith("/api/billing/"):
             self._handle_api_get()
             return
 
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/") or self.path.startswith("/api/billing/"):
+        if self.path.startswith("/api/auth/") or self.path == "/api/billing" or self.path.startswith("/api/billing/"):
             self._handle_api_post()
             return
 
