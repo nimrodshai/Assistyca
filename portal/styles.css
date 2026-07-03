@@ -85,7 +85,8 @@ body[data-view="app"] {
 }
 
 body[data-modal="settings"],
-body[data-modal="alert"] {
+body[data-modal="alert"],
+body[data-modal="billing"] {
   overflow: hidden;
 }
 
@@ -965,7 +966,6 @@ a {
 }
 
 .billing-help-actions {
-  position: relative;
   align-self: start;
 }
 
@@ -1000,19 +1000,56 @@ a {
 }
 
 .billing-help-popover {
-  position: absolute;
-  top: calc(100% + 0.75rem);
-  right: 0;
-  width: min(24rem, calc(100vw - 2rem));
+  position: fixed;
+  inset: 0;
+  z-index: 42;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 2vw, 1.5rem);
+  background: rgba(20, 28, 38, 0);
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: blur(0px) saturate(100%);
+  transition:
+    opacity 220ms ease,
+    background-color 320ms ease,
+    backdrop-filter 420ms ease;
+  will-change: opacity, backdrop-filter, background-color;
+}
+
+.billing-help-popover.is-open {
+  background: rgba(20, 28, 38, 0.34);
+  opacity: 1;
+  pointer-events: auto;
+  backdrop-filter: blur(22px) saturate(145%);
+}
+
+.billing-help-dialog {
+  width: min(100%, 34rem);
+  max-height: calc(100svh - 2rem);
+  overflow: auto;
+  display: grid;
+  gap: 0.85rem;
   padding: 1rem 1rem 0.95rem;
-  border-radius: 20px;
+  border-radius: 24px;
   color: #eef9f8;
   background:
     linear-gradient(180deg, rgba(16, 40, 38, 0.98), rgba(21, 55, 65, 0.98)),
     linear-gradient(135deg, rgba(15, 118, 110, 0.2), rgba(30, 136, 229, 0.12));
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 28px 70px rgba(16, 38, 40, 0.28);
-  z-index: 3;
+  opacity: 0;
+  transform: translateY(18px) scale(0.98);
+  transition:
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    box-shadow 320ms ease;
+  will-change: transform, opacity;
+}
+
+.billing-help-popover.is-open .billing-help-dialog {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 
 .billing-help-popover.is-hidden {
@@ -1805,7 +1842,9 @@ a {
   .settings-overlay,
   .settings-dialog,
   .auth-alert-overlay,
-  .auth-alert-dialog {
+  .auth-alert-dialog,
+  .billing-help-popover,
+  .billing-help-dialog {
     transition: none;
     transform: none;
   }
@@ -2611,11 +2650,6 @@ a {
 
   .billing-help-actions {
     justify-self: start;
-  }
-
-  .billing-help-popover {
-    left: 0;
-    right: auto;
   }
 
   .billing-hero-metrics {
