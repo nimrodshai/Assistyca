@@ -1445,10 +1445,11 @@ function buildBillingHelpBody(report) {
   const helpLines = [
     "We bill each tool separately each month.",
     `The rate is ${pricingLabel}, with a ${minimum} minimum per tool. If a tool’s token total for the month stays below the minimum, we charge the minimum instead.`,
-    nextPaymentDate
-      ? `Your next payment is due on ${nextPaymentDate}. It repeats on the day you registered, so someone who registered on Aug 23 would next pay on Sep 23.`
-      : "Your next payment repeats on the day you registered. If that day does not exist in a shorter month, we use the last day of that month.",
   ];
+
+  if (nextPaymentDate) {
+    helpLines.push(`Your next payment is due on ${nextPaymentDate}.`);
+  }
 
   const fragment = document.createDocumentFragment();
   for (const line of helpLines) {
