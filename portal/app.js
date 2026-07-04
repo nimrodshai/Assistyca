@@ -48,6 +48,12 @@ const DEFAULT_FEATURE_PRICING = {
   billingMultiplier: DEFAULT_BILLING_MULTIPLIER,
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
 };
+const FEATURE_ACTIVATION_REQUIRED_KEYS = [
+  "access_token",
+  "phone_number_id",
+  "verify_token",
+  "owner_wa_id",
+];
 const DEFAULT_FEATURE_WHATSAPP = {
   verify_token: "",
   access_token: "",
@@ -277,6 +283,9 @@ const elements = {
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationAppSecretInput: document.querySelector("#featureActivationAppSecret"),
   featureActivationAllowMockSendInput: document.querySelector("#featureActivationAllowMockSend"),
+  featureActivationProgress: document.querySelector("#featureActivationProgress"),
+  featureActivationProgressFill: document.querySelector("#featureActivationProgressFill"),
+  featureActivationProgressNote: document.querySelector("#featureActivationProgressNote"),
   featureActivationSummary: document.querySelector("#featureActivationSummary"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
@@ -978,7 +987,56 @@ function formatFeatureActivationFieldLabel(key) {
 
 function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return ["access_token", "phone_number_id", "verify_token", "owner_wa_id"].filter((key) => !String(whatsapp[key] || "").trim());
+  return FEATURE_ACTIVATION_REQUIRED_KEYS.filter((key) => !String(whatsapp[key] || "").trim());
+}
+
+function getFeatureActivationProgress(feature = getSelectedFeature()) {
+  const missing = getMissingFeatureActivationFields(feature);
+  const total = FEATURE_ACTIVATION_REQUIRED_KEYS.length;
+  return {
+    total,
+    ready: total - missing.length,
+    missing,
+    readyRatio: total > 0 ? (total - missing.length) / total : 0,
+  };
+}
+
+function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
+  if (isFeatureActivated(feature)) {
+    return "Activated";
+  }
+
+  const progress = getFeatureActivationProgress(feature);
+  return progress.ready === progress.total
+    ? "Ready to activate"
+    : `${progress.ready}/${progress.total} ready`;
+}
+
+function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
+  if (isFeatureActivated(feature)) {
+    return "The tool is active.";
+  }
+
+  const progress = getFeatureActivationProgress(feature);
+  return progress.ready === progress.total
+    ? "4 of 4 required fields ready"
+    : `${progress.ready} of ${progress.total} required fields ready`;
+}
+
+function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
+  const progress = getFeatureActivationProgress(feature);
+  if (progress.missing.length) {
+    const readableMissing = progress.missing.map(formatFeatureActivationFieldLabel);
+    const needsList = readableMissing.length === 1
+      ? readableMissing[0]
+      : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
+    return `Still missing ${needsList}. Required fields unlock activation.`;
+  }
+
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  return whatsapp.app_secret
+    ? "Required fields are complete. Review the advanced options, then click Activate now."
+    : "Required fields are complete. App secret is optional, but recommended for signature checks.";
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
@@ -990,12 +1048,12 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
     const needsList = readableMissing.length === 1
       ? readableMissing[0]
       : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
-    return `Fill ${needsList} to unlock activation. App secret is recommended for signature checks.`;
+    return `Fill ${needsList} to unlock activation. Advanced options stay optional.`;
   }
 
   return whatsapp.app_secret
-    ? "All required WhatsApp keys are in place. Activating will start billing and switch you to the editor."
-    : "All required WhatsApp keys are in place. App secret is recommended for signature checks before you activate.";
+    ? "Required fields are complete. Review the advanced options, then click Activate now."
+    : "Required fields are complete. App secret is optional, but recommended for signature checks before activation.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
@@ -1003,8 +1061,15 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
     return "Active";
   }
 
+  const progress = getFeatureActivationProgress(feature);
+  const ready = progress.ready === progress.total;
+
   if (view === "activation") {
-    return "Setup";
+    return ready ? "Ready to activate" : "Draft";
+  }
+
+  if (view === "editor") {
+    return ready ? "Ready to activate" : "Draft";
   }
 
   return "Preview";
@@ -3203,8 +3268,9 @@ function updateFeatureStudioHeader() {
   const launchUrl = String(feature.launchUrl || "").trim();
   const isActivated = isFeatureActivated(feature);
   const studioView = getSelectedFeatureStudioView(feature);
+  const activationProgress = getFeatureActivationProgress(feature);
   const activationSummary = getFeatureActivationSummary(feature);
-  const activationReady = getMissingFeatureActivationFields(feature).length === 0;
+  const activationReady = activationProgress.missing.length === 0;
 
   state.featureStudioView = studioView;
 
@@ -3239,7 +3305,16 @@ function updateFeatureStudioHeader() {
     elements.featureStudioMenuWrap.classList.toggle("is-hidden", !isActivated);
   }
   if (elements.featureActivationStatus) {
-    elements.featureActivationStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
+    elements.featureActivationStatus.textContent = formatFeatureActivationProgressLabel(feature);
+  }
+  if (elements.featureActivationProgress) {
+    elements.featureActivationProgress.textContent = getFeatureActivationProgressDetail(feature);
+  }
+  if (elements.featureActivationProgressFill) {
+    elements.featureActivationProgressFill.style.width = `${Math.max(0, Math.min(1, activationProgress.readyRatio)) * 100}%`;
+  }
+  if (elements.featureActivationProgressNote) {
+    elements.featureActivationProgressNote.textContent = getFeatureActivationProgressNote(feature);
   }
   if (elements.featureStudioStatus) {
     elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
@@ -3269,13 +3344,13 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
-    elements.featureStudioLaunchButton.textContent = "Activate tool";
+    elements.featureStudioLaunchButton.textContent = "Set up activation";
     elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = "Open the activation page to enter the WhatsApp keys and routing data before billing starts.";
+    elements.featureStudioLaunchNote.textContent = "Open the setup page to add the WhatsApp keys before billing starts.";
   }
 
   if (elements.featureActivationSummary) {

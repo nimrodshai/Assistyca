@@ -2576,28 +2576,93 @@ body[data-modal="billing"] .app-shell {
 
 .feature-activation-hero-meta {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.75rem;
   justify-items: end;
   align-content: center;
   text-align: right;
   min-width: 0;
 }
 
-.feature-activation-hero-meta code {
-  display: inline-flex;
-  padding: 0.42rem 0.7rem;
+.activation-progress {
+  display: grid;
+  gap: 0.55rem;
+  width: min(100%, 24rem);
+  justify-items: end;
+}
+
+.activation-progress strong {
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.activation-progress-track {
+  width: min(100%, 15rem);
+  height: 0.55rem;
   border-radius: 999px;
-  border: 1px solid rgba(15, 118, 110, 0.14);
-  background: rgba(15, 118, 110, 0.08);
+  background: rgba(15, 118, 110, 0.09);
+  border: 1px solid rgba(15, 118, 110, 0.1);
+  overflow: hidden;
+}
+
+.activation-progress-track span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.86), rgba(30, 136, 229, 0.8));
+  transition: width 220ms ease;
+}
+
+.activation-progress-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.activation-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.activation-card-head h3 {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+
+.activation-section-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.38rem 0.72rem;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.1);
   color: var(--accent);
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 700;
+  font-size: 0.72rem;
+  font-weight: 750;
   white-space: nowrap;
 }
 
+.activation-section-chip-optional {
+  background: rgba(90, 102, 118, 0.12);
+  color: var(--muted-strong);
+}
+
+.activation-divider {
+  width: 100%;
+  height: 1px;
+  background: var(--line);
+  margin: 0.15rem 0 0.25rem;
+}
+
 .activation-card {
-  gap: 0.9rem;
+  gap: 1rem;
 }
 
 .activation-form-grid {
@@ -2608,6 +2673,14 @@ body[data-modal="billing"] .app-shell {
 
 .activation-field-span {
   grid-column: 1 / -1;
+}
+
+.field-help {
+  display: block;
+  margin-top: 0.34rem;
+  color: var(--muted-strong);
+  font-size: 0.8rem;
+  line-height: 1.45;
 }
 
 .field-toggle {
@@ -2626,10 +2699,23 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.5;
 }
 
+.activation-summary {
+  color: var(--muted-strong);
+}
+
 .feature-activation-actions {
   width: 100%;
   justify-content: space-between;
   align-items: center;
+  position: sticky;
+  bottom: 0.85rem;
+  margin-top: 0.15rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.98));
+  border: 1px solid rgba(20, 28, 38, 0.07);
+  box-shadow: 0 18px 32px rgba(25, 38, 54, 0.08);
+  backdrop-filter: blur(10px) saturate(140%);
 }
 
 .feature-activation-actions .text-button {
@@ -2899,6 +2985,10 @@ body[data-modal="billing"] .app-shell {
     text-align: left;
   }
 
+  .activation-progress {
+    justify-items: start;
+  }
+
   .feature-page-header-label {
     justify-self: center;
   }
@@ -2960,6 +3050,14 @@ body[data-modal="billing"] .app-shell {
     padding: 1rem;
   }
 
+  .activation-card-head {
+    flex-direction: column;
+  }
+
+  .activation-section-chip {
+    align-self: flex-start;
+  }
+
   .activation-form-grid {
     grid-template-columns: 1fr;
   }
@@ -2971,6 +3069,11 @@ body[data-modal="billing"] .app-shell {
   .feature-activation-actions {
     flex-direction: column;
     align-items: stretch;
+    position: static;
+    padding: 0.85rem 0;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
   }
 
   .feature-activation-actions .text-button {
