@@ -16,6 +16,7 @@ const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
 const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "settings"]);
+const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "editor"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
@@ -76,6 +77,7 @@ const DEFAULT_FEATURES = [
     channel: "WhatsApp",
     mode: "Human-reviewed",
     status: "Active",
+    activated: false,
     launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
     pricing: { ...DEFAULT_FEATURE_PRICING },
     prompt: { ...DEFAULT_PROMPT },
@@ -196,6 +198,8 @@ const state = {
   authAlertOpen: false,
   menuOpen: false,
   selectedFeatureId: null,
+  featureStudioView: "overview",
+  featureStudioMenuOpen: false,
   selectedSimulatorId: null,
   billingReport: null,
   billingLoading: false,
@@ -235,7 +239,13 @@ const elements = {
   featureList: document.querySelector("#featureList"),
   featureStudioPanel: document.querySelector("#featureStudioPanel"),
   backToFeaturesButton: document.querySelector("#backToFeaturesButton"),
+  featureStudioHeaderLabel: document.querySelector("#featureStudioHeaderLabel"),
+  featureStudioNav: document.querySelector("#featureStudioNav"),
+  featureStudioOverviewButton: document.querySelector("#featureStudioOverviewButton"),
+  featureStudioEditorButton: document.querySelector("#featureStudioEditorButton"),
   featureStudioStatus: document.querySelector("#featureStudioStatus"),
+  featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
+  featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
   featureStudioChannel: document.querySelector("#featureStudioChannel"),
@@ -248,6 +258,9 @@ const elements = {
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
+  featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
+  featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
+  featureStudioMenu: document.querySelector("#featureStudioMenu"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
   accountAvatar: document.querySelector("#accountAvatar"),
@@ -758,6 +771,7 @@ function loadClientState(email) {
         ? DEFAULT_FEATURES[0].mode
         : String(feature?.mode || "Default"),
       status: String(feature?.status || "Active"),
+      activated: Boolean(feature?.activated ?? feature?.isActivated ?? false),
       launchUrl: String(
         feature?.launchUrl
         || (index === 0 ? DEFAULT_FEATURE_LAUNCH_URL : "")
@@ -888,6 +902,29 @@ function getSelectedFeature() {
 
 function getSelectedPrompt() {
   return getSelectedFeature()?.prompt || { ...DEFAULT_PROMPT };
+}
+
+function normalizeFeatureStudioView(view) {
+  const nextView = String(view || "").trim().toLowerCase();
+  return VALID_FEATURE_STUDIO_VIEWS.has(nextView) ? nextView : null;
+}
+
+function isFeatureActivated(feature = getSelectedFeature()) {
+  return Boolean(feature && feature.activated);
+}
+
+function getFeatureActivationLabel(feature = getSelectedFeature()) {
+  return isFeatureActivated(feature) ? "Active" : "Preview";
+}
+
+function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
+  return isFeatureActivated(feature) ? "editor" : "overview";
+}
+
+function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
+  return isFeatureActivated(feature)
+    ? "editor"
+    : normalizeFeatureStudioView(state.featureStudioView) || getDefaultFeatureStudioView(feature);
 }
 
 function persistClientState() {
@@ -1648,12 +1685,21 @@ function setStatus(message) {
   elements.saveState.textContent = `${message} · ${time}`;
 }
 
-function setHashForTab(tab, itemId = null) {
+function setHashForTab(tab, itemId = null, subview = null) {
   const normalizedTab = normalizeTab(tab);
   const url = new URL(window.location.href);
-  url.hash = itemId && (normalizedTab === "features" || normalizedTab === "simulator")
-    ? `${normalizedTab}/${encodeURIComponent(itemId)}`
-    : normalizedTab;
+  const encodedSubview = normalizeFeatureStudioView(subview);
+
+  if (itemId && (normalizedTab === "features" || normalizedTab === "simulator")) {
+    const parts = [normalizedTab, encodeURIComponent(itemId)];
+    if (normalizedTab === "features" && encodedSubview) {
+      parts.push(encodeURIComponent(encodedSubview));
+    }
+    url.hash = parts.join("/");
+  } else {
+    url.hash = normalizedTab;
+  }
+
   window.history.replaceState({}, "", url);
 }
 
@@ -1667,24 +1713,26 @@ function resolveRouteFromHash() {
   const hash = window.location.hash.replace(/^#/, "").trim();
 
   if (!hash) {
-    return { tab: null, featureId: null };
+    return { tab: null, featureId: null, subview: null };
   }
 
   const [rawTab, ...rest] = hash.split("/");
   const normalized = normalizeTab(rawTab);
 
   if ((normalized === "features" || normalized === "simulator") && rest.length) {
+    const [itemId, maybeSubview, ...remaining] = rest;
     return {
       tab: normalized,
-      featureId: decodeURIComponent(rest.join("/")),
+      featureId: decodeURIComponent([itemId, ...remaining].join("/")),
+      subview: normalized === "features" ? normalizeFeatureStudioView(decodeURIComponent(maybeSubview || "")) : null,
     };
   }
 
   if (VALID_TABS.has(normalized)) {
-    return { tab: normalized, featureId: null };
+    return { tab: normalized, featureId: null, subview: null };
   }
 
-  return { tab: null, featureId: null };
+  return { tab: null, featureId: null, subview: null };
 }
 
 function persistLastPrimaryTab() {
@@ -1697,6 +1745,7 @@ function openSettings(mode = state.settingsMode) {
   }
 
   state.selectedFeatureId = null;
+  closeFeatureStudioMenu();
   closeBillingHelp();
 
   if (state.activeTab !== "settings" && VALID_TABS.has(state.activeTab)) {
@@ -1741,6 +1790,7 @@ function setActiveTab(tab, options = {}) {
   persistLastPrimaryTab();
   state.settingsOpen = false;
   state.selectedFeatureId = null;
+  closeFeatureStudioMenu();
   state.selectedSimulatorId = null;
   closeBillingHelp();
   if (options.settingsMode && VALID_SETTINGS_MODES.has(options.settingsMode)) {
@@ -2565,8 +2615,9 @@ function updateBillingPanel() {
   const report = state.billingReport ? enrichBillingReportWithCatalog(normalizeBillingReport(state.billingReport)) : null;
   const hasError = Boolean(state.billingError);
   const isLoading = state.billingLoading && !report;
+  const isRefreshing = state.billingLoading && Boolean(report);
   const currency = report?.currency || "USD";
-  const statusCopy = getBillingStatusCopy(report, hasError, isLoading);
+  const statusCopy = getBillingStatusCopy(report, hasError, state.billingLoading);
 
   if (elements.billingStatusBanner) {
     elements.billingStatusBanner.classList.toggle("is-warn", hasError);
@@ -2581,6 +2632,10 @@ function updateBillingPanel() {
   if (elements.billingRefreshButton) {
     elements.billingRefreshButton.disabled = state.billingLoading;
     elements.billingRefreshButton.textContent = hasError ? "Try again" : "Refresh billing";
+  }
+
+  if (isRefreshing) {
+    return;
   }
 
   if (!report) {
@@ -2783,7 +2838,7 @@ function createFeatureCard(feature) {
 
   const status = document.createElement("span");
   status.className = "feature-status feature-card-status";
-  status.textContent = feature.status || "Active";
+  status.textContent = getFeatureActivationLabel(feature);
 
   const head = document.createElement("div");
   head.className = "feature-card-head";
@@ -2838,7 +2893,27 @@ function updateFeatureList() {
   elements.featureList.replaceChildren(...features.map((feature) => createFeatureCard(feature)));
 }
 
-function openFeatureStudio(featureId) {
+function setFeatureStudioView(view, options = {}) {
+  const nextView = normalizeFeatureStudioView(view) || getDefaultFeatureStudioView();
+
+  if (isFeatureActivated(getSelectedFeature()) && nextView !== "editor") {
+    state.featureStudioView = "editor";
+  } else {
+    state.featureStudioView = nextView;
+  }
+
+  if (options.syncHash !== false && state.selectedFeatureId) {
+    setHashForTab("features", state.selectedFeatureId, state.featureStudioView);
+  }
+
+  closeFeatureStudioMenu();
+  renderApp();
+  if (options.scroll !== false) {
+    window.scrollTo(0, 0);
+  }
+}
+
+function openFeatureStudio(featureId, view = null) {
   const feature = getFeatureById(featureId) || clientState.features[0];
 
   if (!feature) {
@@ -2848,21 +2923,118 @@ function openFeatureStudio(featureId) {
   state.selectedFeatureId = feature.id;
   state.activeTab = "features";
   state.settingsOpen = false;
+  state.featureStudioView = isFeatureActivated(feature)
+    ? "editor"
+    : normalizeFeatureStudioView(view) || getDefaultFeatureStudioView(feature);
   closeMenu();
-  setHashForTab("features", feature.id);
+  closeFeatureStudioMenu();
+  setHashForTab("features", feature.id, state.featureStudioView);
   renderApp();
   window.scrollTo(0, 0);
 }
 
 function closeFeatureStudio() {
   state.selectedFeatureId = null;
+  state.featureStudioView = "overview";
   state.activeTab = "features";
   state.lastPrimaryTab = "features";
   persistLastPrimaryTab();
   closeMenu();
+  closeFeatureStudioMenu();
   setHashForTab("features");
   renderApp();
   window.scrollTo(0, 0);
+}
+
+function closeFeatureStudioMenu() {
+  state.featureStudioMenuOpen = false;
+  if (elements.featureStudioMenu) {
+    elements.featureStudioMenu.classList.add("is-hidden");
+  }
+  if (elements.featureStudioMenuButton) {
+    elements.featureStudioMenuButton.setAttribute("aria-expanded", "false");
+  }
+}
+
+function toggleFeatureStudioMenu(force) {
+  if (!elements.featureStudioMenuButton || !elements.featureStudioMenu) {
+    return;
+  }
+
+  const nextOpen = typeof force === "boolean" ? force : !state.featureStudioMenuOpen;
+  state.featureStudioMenuOpen = nextOpen;
+  elements.featureStudioMenu.classList.toggle("is-hidden", !nextOpen);
+  elements.featureStudioMenuButton.setAttribute("aria-expanded", String(nextOpen));
+}
+
+function buildFeatureStudioMenu(feature) {
+  if (!elements.featureStudioMenu) {
+    return;
+  }
+
+  const launchUrl = String(feature?.launchUrl || "").trim();
+  const items = [];
+
+  if (launchUrl && isFeatureActivated(feature)) {
+    const launchButton = document.createElement("button");
+    launchButton.type = "button";
+    launchButton.className = "menu-item";
+    launchButton.dataset.featureAction = "launch";
+    launchButton.textContent = "Open live dashboard";
+    items.push(launchButton);
+  }
+
+  const deactivateButton = document.createElement("button");
+  deactivateButton.type = "button";
+  deactivateButton.className = "menu-item danger";
+  deactivateButton.dataset.featureAction = "deactivate";
+  deactivateButton.textContent = "Deactivate tool";
+  items.push(deactivateButton);
+
+  elements.featureStudioMenu.replaceChildren(...items);
+}
+
+function activateSelectedFeature() {
+  const feature = getSelectedFeature();
+  if (!feature) {
+    return;
+  }
+
+  feature.activated = true;
+  state.featureStudioView = "editor";
+  persistClientState();
+  closeFeatureStudioMenu();
+  setHashForTab("features", feature.id, "editor");
+  renderApp();
+  window.scrollTo(0, 0);
+  setStatus("Activated the tool.");
+}
+
+function deactivateSelectedFeature() {
+  const feature = getSelectedFeature();
+  if (!feature) {
+    return;
+  }
+
+  feature.activated = false;
+  state.featureStudioView = "overview";
+  persistClientState();
+  closeFeatureStudioMenu();
+  setHashForTab("features", feature.id, "overview");
+  renderApp();
+  window.scrollTo(0, 0);
+  setStatus("Deactivated the tool.");
+}
+
+function handleFeatureStudioMenuAction(action) {
+  if (action === "launch") {
+    openSelectedFeatureLaunchUrl();
+    return;
+  }
+
+  if (action === "deactivate") {
+    deactivateSelectedFeature();
+  }
 }
 
 function updateFeatureStudioHeader() {
@@ -2875,8 +3047,37 @@ function updateFeatureStudioHeader() {
   const pricingLabel = formatFeaturePricingLabel(feature);
   const pitch = buildFeaturePitch(feature);
   const launchUrl = String(feature.launchUrl || "").trim();
+  const isActivated = isFeatureActivated(feature);
+  const studioView = getSelectedFeatureStudioView(feature);
 
-  elements.featureStudioStatus.textContent = feature.status || "Active";
+  state.featureStudioView = studioView;
+
+  if (elements.featureStudioHeaderLabel) {
+    elements.featureStudioHeaderLabel.textContent = studioView === "editor" ? "Tool editor" : "Tool overview";
+  }
+  if (elements.featureStudioNav) {
+    elements.featureStudioNav.classList.toggle("is-hidden", isActivated);
+  }
+  if (elements.featureStudioOverviewButton) {
+    elements.featureStudioOverviewButton.classList.toggle("is-active", studioView === "overview");
+    elements.featureStudioOverviewButton.setAttribute("aria-selected", String(studioView === "overview"));
+  }
+  if (elements.featureStudioEditorButton) {
+    elements.featureStudioEditorButton.classList.toggle("is-active", studioView === "editor");
+    elements.featureStudioEditorButton.setAttribute("aria-selected", String(studioView === "editor"));
+  }
+  if (elements.featureStudioOverviewSection) {
+    elements.featureStudioOverviewSection.classList.toggle("is-hidden", studioView !== "overview");
+  }
+  if (elements.featureStudioEditorSection) {
+    elements.featureStudioEditorSection.classList.toggle("is-hidden", studioView !== "editor");
+  }
+  if (elements.featureStudioMenuWrap) {
+    elements.featureStudioMenuWrap.classList.toggle("is-hidden", !isActivated);
+  }
+  if (elements.featureStudioStatus) {
+    elements.featureStudioStatus.textContent = getFeatureActivationLabel(feature);
+  }
   elements.featureStudioTitle.textContent = feature.name;
   elements.featureStudioDescription.textContent = feature.description || "";
   elements.featureStudioChannel.textContent = `Channel: ${feature.channel || "Web"}`;
@@ -2900,18 +3101,18 @@ function updateFeatureStudioHeader() {
     elements.featureStudioExampleReply.textContent = example.outgoing;
   }
   if (elements.featureStudioLaunchButton) {
-    elements.featureStudioLaunchButton.hidden = false;
+    elements.featureStudioLaunchButton.hidden = isActivated;
     elements.featureStudioLaunchButton.disabled = false;
-    elements.featureStudioLaunchButton.textContent = launchUrl ? "Open live dashboard" : "Open tool editor";
+    elements.featureStudioLaunchButton.textContent = "Activate tool";
     elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
-    elements.featureStudioLaunchNote.hidden = false;
-    elements.featureStudioLaunchNote.textContent = launchUrl
-      ? `Opens the live WhatsApp dashboard at ${launchUrl}.`
-      : buildFeatureEditorHint(feature);
+    elements.featureStudioLaunchNote.hidden = isActivated;
+    elements.featureStudioLaunchNote.textContent = "Activating starts billing for this tool. You can deactivate it anytime from Tool options.";
   }
+
+  buildFeatureStudioMenu(feature);
 }
 
 function updatePromptFields() {
@@ -3066,6 +3267,7 @@ function refreshView() {
     if (route.tab === "settings") {
       state.selectedFeatureId = null;
       state.selectedSimulatorId = null;
+      closeFeatureStudioMenu();
       state.settingsOpen = true;
       state.activeTab = VALID_TABS.has(state.lastPrimaryTab) && state.lastPrimaryTab !== "settings"
         ? state.lastPrimaryTab
@@ -3085,12 +3287,20 @@ function refreshView() {
       if (state.selectedSimulatorId && !clientState.simulator.approvals.some((approval) => approval.approvalId === state.selectedSimulatorId)) {
         state.selectedSimulatorId = clientState.simulator.approvals[0]?.approvalId || null;
       }
+      if (state.activeTab === "features" && state.selectedFeatureId) {
+        const feature = getFeatureById(state.selectedFeatureId);
+        const selectedView = normalizeFeatureStudioView(route.subview);
+        state.featureStudioView = isFeatureActivated(feature)
+          ? "editor"
+          : selectedView || getDefaultFeatureStudioView(feature);
+        setHashForTab("features", state.selectedFeatureId, state.featureStudioView);
+      } else {
+        state.featureStudioView = "overview";
+      }
       state.lastPrimaryTab = state.activeTab;
       persistLastPrimaryTab();
       if (!route.tab) {
         setHashForTab(state.activeTab);
-      } else if (state.activeTab === "features" && state.selectedFeatureId) {
-        setHashForTab("features", state.selectedFeatureId);
       } else if (state.activeTab === "simulator" && state.selectedSimulatorId) {
         setHashForTab("simulator", state.selectedSimulatorId);
       } else if (rawHash && rawHash !== route.tab) {
@@ -3670,6 +3880,40 @@ function bindEvents() {
       toggleBillingHelp();
     });
   }
+  if (elements.featureStudioLaunchButton) {
+    elements.featureStudioLaunchButton.addEventListener("click", () => {
+      activateSelectedFeature();
+    });
+  }
+  if (elements.featureStudioOverviewButton) {
+    elements.featureStudioOverviewButton.addEventListener("click", () => {
+      setFeatureStudioView("overview");
+    });
+  }
+  if (elements.featureStudioEditorButton) {
+    elements.featureStudioEditorButton.addEventListener("click", () => {
+      setFeatureStudioView("editor");
+    });
+  }
+  if (elements.featureStudioMenuButton) {
+    elements.featureStudioMenuButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeMenu();
+      toggleFeatureStudioMenu();
+    });
+  }
+  if (elements.featureStudioMenu) {
+    elements.featureStudioMenu.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-feature-action]");
+      if (!item) {
+        return;
+      }
+
+      const action = item.dataset.featureAction || "";
+      closeFeatureStudioMenu();
+      handleFeatureStudioMenuAction(action);
+    });
+  }
   if (elements.billingHelpCloseButton) {
     elements.billingHelpCloseButton.addEventListener("click", () => {
       closeBillingHelp();
@@ -3682,10 +3926,6 @@ function bindEvents() {
       }
     });
   }
-  if (elements.featureStudioLaunchButton) {
-    elements.featureStudioLaunchButton.addEventListener("click", openSelectedFeatureLaunchUrl);
-  }
-
   if (elements.billingBackButton) {
     elements.billingBackButton.addEventListener("click", () => {
       setActiveTab("features");
@@ -3726,6 +3966,7 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const billingHelpButton = elements.billingHelpButton;
     const billingHelpPopover = elements.billingHelpPopover;
+    const featureMenuWrap = elements.featureStudioMenuWrap;
     if (
       state.billingHelpOpen
       && billingHelpPopover
@@ -3734,6 +3975,16 @@ function bindEvents() {
       && !billingHelpButton.contains(event.target)
     ) {
       closeBillingHelp();
+    }
+
+    if (
+      state.featureStudioMenuOpen
+      && featureMenuWrap
+      && elements.featureStudioMenuButton
+      && !featureMenuWrap.contains(event.target)
+      && !elements.featureStudioMenuButton.contains(event.target)
+    ) {
+      closeFeatureStudioMenu();
     }
 
     if (!elements.accountMenu.contains(event.target) && !elements.accountMenuButton.contains(event.target)) {
@@ -3750,6 +4001,11 @@ function bindEvents() {
 
       if (state.billingHelpOpen) {
         closeBillingHelp();
+        return;
+      }
+
+      if (state.featureStudioMenuOpen) {
+        closeFeatureStudioMenu();
         return;
       }
 
@@ -3780,6 +4036,7 @@ function bindEvents() {
 
     if (route.tab) {
       state.settingsOpen = false;
+      closeFeatureStudioMenu();
       if (route.tab !== state.activeTab) {
         state.activeTab = route.tab;
       }
@@ -3796,7 +4053,15 @@ function bindEvents() {
         state.selectedSimulatorId = clientState.simulator.approvals[0]?.approvalId || null;
       }
       if (state.activeTab === "features" && state.selectedFeatureId) {
-        setHashForTab("features", state.selectedFeatureId);
+        const feature = getFeatureById(state.selectedFeatureId);
+        const defaultView = getDefaultFeatureStudioView(feature);
+        state.featureStudioView = route.subview && (!isFeatureActivated(feature) || route.subview === "editor")
+          ? route.subview
+          : defaultView;
+        if (isFeatureActivated(feature)) {
+          state.featureStudioView = "editor";
+        }
+        setHashForTab("features", state.selectedFeatureId, state.featureStudioView);
       } else if (state.activeTab === "simulator" && state.selectedSimulatorId) {
         setHashForTab("simulator", state.selectedSimulatorId);
       } else if (rawHash && rawHash !== route.tab) {

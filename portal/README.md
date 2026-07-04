@@ -12,9 +12,9 @@ It is intentionally separate from the reusable spec and client config layers.
 
 ## Portal layout
 
-- `Features` for the client account and its assigned capabilities. Click one to open its tool page.
+- `Features` for the client account and its assigned capabilities. Click one to open the tool preview or editor.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
-- The Tool page explains the offer, shows a concrete example, shows the monthly price, and still lets the client open the editor before paying
+- The Tool page splits the preview and editor into inner navigation, then collapses to editor-only once the tool is activated
 - WhatsApp credentials live in the per-client backend config at `clients/<client-id>/backend.json`
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges

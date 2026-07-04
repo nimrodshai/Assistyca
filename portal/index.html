@@ -9,7 +9,7 @@
       content="Registered users sign in with a one-time code to continue into Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=36" />
+    <link rel="stylesheet" href="./styles.css?v=37" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -204,11 +204,52 @@
             <span aria-hidden="true">&lt;</span>
             <span>Back to tools</span>
           </button>
-          <p class="eyebrow feature-page-header-label">Tool studio</p>
-          <span id="featureStudioStatus" class="feature-status">Active</span>
+          <div class="feature-page-header-center">
+            <p id="featureStudioHeaderLabel" class="eyebrow feature-page-header-label">Tool overview</p>
+            <nav id="featureStudioNav" class="feature-page-nav" aria-label="Tool sections">
+              <button
+                id="featureStudioOverviewButton"
+                class="subtab-button is-active"
+                type="button"
+                aria-selected="true"
+              >
+                Overview
+              </button>
+              <button
+                id="featureStudioEditorButton"
+                class="subtab-button"
+                type="button"
+                aria-selected="false"
+              >
+                Tool editor
+              </button>
+            </nav>
+          </div>
+          <div class="feature-page-header-actions">
+            <span id="featureStudioStatus" class="feature-status">Preview</span>
+            <div id="featureStudioMenuWrap" class="menu-wrap feature-menu-wrap is-hidden">
+              <button
+                id="featureStudioMenuButton"
+                class="feature-menu-button"
+                type="button"
+                aria-label="Tool options"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="featureStudioMenu"
+              >
+                <span class="feature-menu-button-label">Tool options</span>
+                <span class="menu-caret" aria-hidden="true">▾</span>
+              </button>
+              <div id="featureStudioMenu" class="menu-popover feature-menu-popover is-hidden" role="menu">
+                <button class="menu-item" type="button" data-feature-action="deactivate">
+                  Deactivate tool
+                </button>
+              </div>
+            </div>
+          </div>
         </header>
 
-        <div class="feature-page-intro">
+        <div id="featureStudioOverviewSection" class="feature-page-intro">
           <div class="feature-page-intro-main">
             <p class="eyebrow">Tool overview</p>
             <h1 id="featureStudioTitle">Tool name</h1>
@@ -228,10 +269,10 @@
 
             <div class="feature-page-actions">
               <button id="featureStudioLaunchButton" class="primary-button" type="button">
-                Open tool editor
+                Activate tool
               </button>
               <p id="featureStudioLaunchNote" class="approval-note">
-                You can open the editor before paying.
+                Activating starts billing for this tool. You can deactivate it anytime from Tool options.
               </p>
             </div>
           </div>
