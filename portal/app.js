@@ -3282,6 +3282,7 @@ function updateFeatureStudioHeader() {
     elements.featureActivationSummary.textContent = activationSummary;
   }
   if (elements.featureStudioActivationButton) {
+    elements.featureStudioActivationButton.textContent = "Activate now";
     elements.featureStudioActivationButton.disabled = !activationReady || isActivated;
   }
 
