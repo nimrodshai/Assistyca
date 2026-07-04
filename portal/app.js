@@ -324,7 +324,7 @@ const elements = {
   simulatorEditButton: document.querySelector("#simulatorEditButton"),
   simulatorSendButton: document.querySelector("#simulatorSendButton"),
   simulatorResetButton: document.querySelector("#simulatorResetButton"),
-  settingsButtons: Array.from(document.querySelectorAll(".subtab-button")),
+  settingsButtons: Array.from(document.querySelectorAll("#settingsPanel [data-settings-mode]")),
   accountSettingsPane: document.querySelector("#accountSettingsPane"),
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
   signedInEmail: document.querySelector("#signedInEmail"),
