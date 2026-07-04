@@ -1034,50 +1034,33 @@ function getFeatureActivationProgress(feature = getSelectedFeature()) {
 
 function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking details";
+    return "Checking setup";
   }
 
   if (isFeatureActivated(feature)) {
-    return "Activated";
+    return "Live";
   }
 
   const progress = getFeatureActivationProgress(feature);
   return progress.ready === progress.total
-    ? "Ready to activate"
+    ? "Ready to turn on"
     : "Setup in progress";
 }
 
 function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
-  if (isFeatureActivationBusy(feature)) {
-    return "Checking the details now.";
-  }
-
-  if (isFeatureActivated(feature)) {
-    return "The tool is live.";
-  }
-
   const progress = getFeatureActivationProgress(feature);
   return progress.ready === progress.total
-    ? "4 of 4 details added"
-    : `${progress.ready} of ${progress.total} details added`;
+    ? "4 of 4 fields filled in"
+    : `${progress.ready} of ${progress.total} fields filled in`;
 }
 
-function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
-  if (isFeatureActivationBusy(feature)) {
-    return "We’re checking your details now.";
-  }
-
-  const progress = getFeatureActivationProgress(feature);
-  if (progress.missing.length) {
-    return "Tap Activate now to check the details you added.";
-  }
-
+function getFeatureActivationProgressNote() {
   return "";
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking your details now...";
+    return "";
   }
 
   const missing = getMissingFeatureActivationFields(feature);
@@ -1090,27 +1073,27 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
     return `Add ${needsList} to continue.`;
   }
 
-  return "Everything looks ready. Tap Activate now.";
+  return "Everything looks ready. Turn it on now.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking details";
+    return "Checking setup";
   }
 
   if (isFeatureActivated(feature)) {
-    return "Active";
+    return "Live";
   }
 
   const progress = getFeatureActivationProgress(feature);
   const ready = progress.ready === progress.total;
 
   if (view === "activation") {
-    return ready ? "Ready to activate" : "Setup in progress";
+    return ready ? "Ready to turn on" : "Setup in progress";
   }
 
   if (view === "editor") {
-    return ready ? "Ready to activate" : "Setup in progress";
+    return ready ? "Ready to turn on" : "Setup in progress";
   }
 
   return "Preview";
@@ -3196,7 +3179,7 @@ async function activateSelectedFeature() {
   featureActivationBusy = true;
   try {
     updateFeatureStudioHeader();
-    setStatus("Checking your details...");
+    setStatus("Checking setup...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 
     const missingFields = getMissingFeatureActivationFields(feature);
@@ -3209,7 +3192,7 @@ async function activateSelectedFeature() {
     const testIssues = getFeatureActivationTestIssues(feature);
     if (testIssues.length) {
       await new Promise((resolve) => window.setTimeout(resolve, 900));
-      setStatus(`One detail needs attention: ${testIssues[0]}`);
+      setStatus(`Fix this first: ${testIssues[0]}`);
       return;
     }
 
@@ -3222,7 +3205,7 @@ async function activateSelectedFeature() {
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    setStatus("Your tool is now on.");
+    setStatus("Your tool is live.");
   } finally {
     featureActivationBusy = false;
     updateFeatureStudioHeader();
@@ -3241,7 +3224,7 @@ function startFeatureActivation() {
   setHashForTab("features", feature.id, "activation");
   renderApp();
   window.scrollTo(0, 0);
-  setStatus("Opened connection setup.");
+  setStatus("Setup started.");
 }
 
 function deactivateSelectedFeature() {
@@ -3257,7 +3240,7 @@ function deactivateSelectedFeature() {
   setHashForTab("features", feature.id, "overview");
   renderApp();
   window.scrollTo(0, 0);
-  setStatus("Turned the tool off.");
+  setStatus("Tool turned off.");
 }
 
 function handleFeatureStudioMenuAction(action) {
@@ -3329,7 +3312,6 @@ function updateFeatureStudioHeader() {
   const activationProgress = getFeatureActivationProgress(feature);
   const activationSummary = getFeatureActivationSummary(feature);
   const activationBusy = isFeatureActivationBusy(feature);
-  const activationReady = activationProgress.missing.length === 0;
 
   state.featureStudioView = studioView;
 
@@ -3378,7 +3360,7 @@ function updateFeatureStudioHeader() {
     elements.featureActivationProgressNote.hidden = !activationProgressNote;
   }
   if (elements.featureActivationLiveState) {
-    const liveState = activationBusy ? "Checking your details now..." : "";
+    const liveState = activationBusy ? "One moment." : "";
     elements.featureActivationLiveState.textContent = liveState;
     elements.featureActivationLiveState.hidden = !liveState;
   }
@@ -3416,7 +3398,7 @@ function updateFeatureStudioHeader() {
 
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = "Open the setup page to add your WhatsApp details.";
+    elements.featureStudioLaunchNote.textContent = "Open the setup page to finish setup.";
   }
 
   if (elements.featureActivationSummary) {
@@ -3425,7 +3407,7 @@ function updateFeatureStudioHeader() {
     elements.featureActivationSummary.classList.toggle("is-loading", activationBusy);
   }
   if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.textContent = activationBusy ? "Checking details..." : "Activate now";
+    elements.featureStudioActivationButton.textContent = activationBusy ? "Checking setup..." : "Activate now";
     elements.featureStudioActivationButton.disabled = isActivated || activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
