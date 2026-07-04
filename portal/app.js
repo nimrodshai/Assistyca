@@ -1581,9 +1581,9 @@ function ensureBillingMenuItem() {
   billingButton.dataset.menuAction = "billing";
   billingButton.textContent = "Billing";
 
-  const accountButton = elements.accountMenu.querySelector('[data-menu-action="account"]');
-  if (accountButton && accountButton.parentElement === elements.accountMenu) {
-    elements.accountMenu.insertBefore(billingButton, accountButton);
+  const settingsButton = elements.accountMenu.querySelector('[data-menu-action="settings"]');
+  if (settingsButton && settingsButton.parentElement === elements.accountMenu) {
+    elements.accountMenu.insertBefore(billingButton, settingsButton);
     return;
   }
 
@@ -3542,13 +3542,8 @@ function handleMenuAction(action) {
     return;
   }
 
-  if (action === "account") {
-    openSettings("account");
-    return;
-  }
-
   if (action === "settings") {
-    openSettings("preferences");
+    openSettings("account");
     return;
   }
 
