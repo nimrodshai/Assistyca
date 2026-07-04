@@ -257,6 +257,7 @@ const elements = {
   previewPanel: document.querySelector("#previewPanel"),
   simulatorPanel: document.querySelector("#simulatorPanel"),
   billingPanel: document.querySelector("#billingPanel"),
+  billingBackButton: document.querySelector("#backToToolsButton"),
   settingsPanel: document.querySelector("#settingsPanel"),
   billingStatusBanner: document.querySelector("#billingStatusBanner"),
   billingStatusMessage: document.querySelector("#billingStatusMessage"),
@@ -1439,9 +1440,11 @@ function buildBillingSummaryText(report) {
 
 function buildBillingHelpBody(report) {
   const pricingLabel = getBillingPricingLabel(report);
+  const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, report?.currency || "USD");
   const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
   const helpLines = [
-    `We total the month at ${pricingLabel}.`,
+    "We bill each tool separately each month.",
+    `The rate is ${pricingLabel}, with a ${minimum} minimum per tool. If a tool’s token total for the month stays below the minimum, we charge the minimum instead.`,
     nextPaymentDate
       ? `Your next payment is due on ${nextPaymentDate}. It repeats on the day you registered, so someone who registered on Aug 23 would next pay on Sep 23.`
       : "Your next payment repeats on the day you registered. If that day does not exist in a shorter month, we use the last day of that month.",
@@ -1749,6 +1752,9 @@ function setActiveTab(tab, options = {}) {
 
   closeMenu();
   renderApp();
+  if (nextTab === "billing") {
+    window.scrollTo(0, 0);
+  }
 }
 
 function setSettingsMode(mode, options = {}) {
@@ -2942,7 +2948,8 @@ function updateSettingsButtons() {
 
 function updatePanelVisibility() {
   const inStudio = state.activeTab === "features" && Boolean(state.selectedFeatureId);
-  elements.appBar.classList.toggle("is-hidden", inStudio);
+  const inBilling = state.activeTab === "billing";
+  elements.appBar.classList.toggle("is-hidden", inStudio || inBilling);
   elements.appView.classList.toggle("is-feature-page", inStudio);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
@@ -3681,6 +3688,13 @@ function bindEvents() {
   }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.addEventListener("click", openSelectedFeatureLaunchUrl);
+  }
+
+  if (elements.billingBackButton) {
+    elements.billingBackButton.addEventListener("click", () => {
+      setActiveTab("features");
+      window.scrollTo(0, 0);
+    });
   }
 
   elements.settingsPanel.addEventListener("click", (event) => {
