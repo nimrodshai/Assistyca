@@ -1033,7 +1033,7 @@ function getFeatureActivationProgress(feature = getSelectedFeature()) {
 
 function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Activating";
+    return "Checking details";
   }
 
   if (isFeatureActivated(feature)) {
@@ -1048,7 +1048,7 @@ function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
 
 function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "This takes a moment.";
+    return "Checking the details now.";
   }
 
   if (isFeatureActivated(feature)) {
@@ -1063,7 +1063,7 @@ function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
 
 function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "We’re turning it on now.";
+    return "We’re checking your details now.";
   }
 
   const progress = getFeatureActivationProgress(feature);
@@ -1071,13 +1071,14 @@ function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
     return "The progress bar updates as you go.";
   }
 
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return whatsapp.app_secret
-    ? "App secret adds another layer of protection."
-    : "App secret is optional.";
+  return "";
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
+  if (isFeatureActivationBusy(feature)) {
+    return "Checking your details now...";
+  }
+
   const missing = getMissingFeatureActivationFields(feature);
 
   if (missing.length) {
@@ -1088,12 +1089,12 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
     return `Add ${needsList} to continue.`;
   }
 
-  return "You’re ready to activate.";
+  return "";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
   if (isFeatureActivationBusy(feature)) {
-    return "Activating";
+    return "Checking details";
   }
 
   if (isFeatureActivated(feature)) {
@@ -3206,8 +3207,9 @@ async function activateSelectedFeature() {
     }
 
     updateFeatureStudioHeader();
-    setStatus("Turning it on...");
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    setStatus("Checking your details...");
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
 
     feature.activated = true;
     state.featureStudioView = "editor";
@@ -3216,7 +3218,7 @@ async function activateSelectedFeature() {
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    setStatus("The tool is on.");
+    setStatus("Your tool is now on.");
   } finally {
     featureActivationBusy = false;
     updateFeatureStudioHeader();
@@ -3322,6 +3324,7 @@ function updateFeatureStudioHeader() {
   const studioView = getSelectedFeatureStudioView(feature);
   const activationProgress = getFeatureActivationProgress(feature);
   const activationSummary = getFeatureActivationSummary(feature);
+  const activationBusy = isFeatureActivationBusy(feature);
   const activationReady = activationProgress.missing.length === 0;
 
   state.featureStudioView = studioView;
@@ -3366,7 +3369,9 @@ function updateFeatureStudioHeader() {
     elements.featureActivationProgressFill.style.width = `${Math.max(0, Math.min(1, activationProgress.readyRatio)) * 100}%`;
   }
   if (elements.featureActivationProgressNote) {
-    elements.featureActivationProgressNote.textContent = getFeatureActivationProgressNote(feature);
+    const activationProgressNote = getFeatureActivationProgressNote(feature);
+    elements.featureActivationProgressNote.textContent = activationProgressNote;
+    elements.featureActivationProgressNote.hidden = !activationProgressNote;
   }
   if (elements.featureStudioStatus) {
     elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
@@ -3407,13 +3412,18 @@ function updateFeatureStudioHeader() {
 
   if (elements.featureActivationSummary) {
     elements.featureActivationSummary.textContent = activationSummary;
+    elements.featureActivationSummary.hidden = !activationSummary;
+    elements.featureActivationSummary.classList.toggle("is-loading", activationBusy);
   }
   if (elements.featureStudioActivationButton) {
-    const activationBusy = isFeatureActivationBusy(feature);
-    elements.featureStudioActivationButton.textContent = activationBusy ? "Activating..." : "Activate now";
+    elements.featureStudioActivationButton.textContent = activationBusy ? "Checking details..." : "Activate now";
     elements.featureStudioActivationButton.disabled = !activationReady || isActivated || activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
+  }
+  if (elements.featureStudioActivationSection) {
+    elements.featureStudioActivationSection.classList.toggle("is-loading", activationBusy);
+    elements.featureStudioActivationSection.setAttribute("aria-busy", String(activationBusy));
   }
 
   buildFeatureStudioMenu(feature);

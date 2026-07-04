@@ -2704,6 +2704,27 @@ body[data-modal="billing"] .app-shell {
   color: var(--muted-strong);
 }
 
+.activation-summary.is-loading {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.feature-activation-grid.is-loading .feature-activation-hero,
+.feature-activation-grid.is-loading .activation-card {
+  border-color: rgba(15, 118, 110, 0.16);
+  box-shadow: 0 24px 60px rgba(16, 38, 40, 0.1);
+}
+
+.feature-activation-grid.is-loading .feature-activation-hero {
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.09), rgba(30, 136, 229, 0.05)),
+    rgba(255, 255, 255, 0.93);
+}
+
+.feature-activation-grid.is-loading .activation-progress strong {
+  color: var(--accent);
+}
+
 .feature-activation-actions {
   width: 100%;
   justify-content: space-between;
