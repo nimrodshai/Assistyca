@@ -1052,27 +1052,27 @@ function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
 function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
   const progress = getFeatureActivationProgress(feature);
   if (progress.missing.length) {
-    const readableMissing = progress.missing.map(formatFeatureActivationFieldLabel);
-    const needsList = readableMissing.length === 1
-      ? readableMissing[0]
-      : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
-    return `Add ${needsList} to continue.`;
+    return "The progress bar updates as you go.";
   }
 
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   return whatsapp.app_secret
-    ? "Everything looks ready. The app secret adds another safety layer."
-    : "Everything looks ready. App secret is optional and adds another safety layer.";
+    ? "App secret adds another layer of protection."
+    : "App secret is optional.";
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
   const missing = getMissingFeatureActivationFields(feature);
 
   if (missing.length) {
-    return "We’ll verify everything before turning it on.";
+    const readableMissing = missing.map(formatFeatureActivationFieldLabel);
+    const needsList = readableMissing.length === 1
+      ? readableMissing[0]
+      : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
+    return `Add ${needsList} to continue.`;
   }
 
-  return "Your details are ready. Tap Activate now when you’re ready.";
+  return "You’re ready to activate.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
@@ -3185,7 +3185,7 @@ async function activateSelectedFeature() {
       return;
     }
 
-    setStatus("Checking your details before turning it on.");
+    setStatus("Turning it on...");
     await new Promise((resolve) => window.setTimeout(resolve, 350));
 
     feature.activated = true;
@@ -3195,7 +3195,7 @@ async function activateSelectedFeature() {
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    setStatus("The tool is on after checking your details.");
+    setStatus("The tool is on.");
   } finally {
     featureActivationBusy = false;
   }
