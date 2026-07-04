@@ -9,7 +9,7 @@
       content="Registered users sign in with a one-time code to continue into Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=37" />
+    <link rel="stylesheet" href="./styles.css?v=39" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -272,7 +272,7 @@
                 Activate tool
               </button>
               <p id="featureStudioLaunchNote" class="approval-note">
-                Activating starts billing for this tool. You can deactivate it anytime from Tool options.
+                Open the activation page to enter the WhatsApp keys and routing data before billing starts.
               </p>
             </div>
           </div>
@@ -296,33 +296,113 @@
           </aside>
         </div>
 
-        <div id="toolEditorSection" class="studio-fields">
-          <article class="glass-card config-card setup-card">
+        <section id="featureStudioActivationSection" class="feature-activation-grid is-hidden">
+          <article class="glass-card feature-activation-hero">
+            <div class="feature-activation-hero-copy">
+              <p class="eyebrow">Tool activation</p>
+              <h2>Enter the WhatsApp connection details</h2>
+              <p class="feature-page-description">
+                Fill in the keys and routing data below. Once you finish, we’ll activate the tool and switch you to the editor.
+              </p>
+            </div>
+            <div class="feature-activation-hero-meta">
+              <span id="featureActivationStatus" class="feature-status">Preview</span>
+              <code>clients/&lt;client-id&gt;/backend.json</code>
+            </div>
+          </article>
+
+          <article class="glass-card config-card activation-card">
             <div class="card-head">
               <h3>WhatsApp setup</h3>
             </div>
 
             <p class="setup-copy">
-              Put the phone number and WhatsApp credentials in the client backend config. The reusable backend reads them from there.
+              These values are stored under <code>whatsapp.*</code> in the client backend config.
             </p>
 
             <div class="setup-path">
               <code>clients/&lt;client-id&gt;/backend.json</code>
             </div>
 
-            <ul class="setup-list">
-              <li><strong>phone_number_id</strong> for the WhatsApp business number.</li>
-              <li><strong>access_token</strong> for sending live replies.</li>
-              <li><strong>verify_token</strong> for webhook verification.</li>
-              <li><strong>app_secret</strong> for signature checks.</li>
-              <li><strong>owner_wa_id</strong> for the approval messages sent to the owner.</li>
-            </ul>
+            <div class="activation-form-grid">
+              <label class="field">
+                <span>Access token</span>
+                <input
+                  id="featureActivationAccessToken"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Paste the Cloud API access token"
+                />
+              </label>
 
-            <p class="approval-note">
-              Approvals still route through WhatsApp, so you can explore the editor before payment.
+              <label class="field">
+                <span>Phone number ID</span>
+                <input
+                  id="featureActivationPhoneNumberId"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="WhatsApp business phone number ID"
+                />
+              </label>
+
+              <label class="field">
+                <span>Verify token</span>
+                <input
+                  id="featureActivationVerifyToken"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Webhook verification token"
+                />
+              </label>
+
+              <label class="field">
+                <span>Owner WhatsApp ID</span>
+                <input
+                  id="featureActivationOwnerWaId"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="WhatsApp ID that receives approvals"
+                />
+              </label>
+
+              <label class="field activation-field-span">
+                <span>App secret</span>
+                <input
+                  id="featureActivationAppSecret"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Recommended for signature checks"
+                />
+              </label>
+
+              <label class="field field-toggle activation-field-span">
+                <span>Allow mock send while setting up</span>
+                <input id="featureActivationAllowMockSend" type="checkbox" />
+                <small>Lets the backend simulate sends until the live keys are ready.</small>
+              </label>
+            </div>
+
+            <p id="featureActivationSummary" class="approval-note">
+              Fill the required fields to unlock the final activation button.
             </p>
-          </article>
 
+            <div class="feature-page-actions feature-activation-actions">
+              <button id="featureStudioActivationBackButton" class="text-button" type="button">
+                Back to overview
+              </button>
+              <button id="featureStudioActivationButton" class="primary-button" type="button" disabled>
+                Activate tool
+              </button>
+            </div>
+          </article>
+        </section>
+
+        <div id="toolEditorSection" class="studio-fields">
           <article class="glass-card config-card">
             <div class="card-head">
               <h3>Tone</h3>
@@ -832,6 +912,6 @@ Owner said afternoons are easier."
       </div>
     </div>
 
-    <script src="./app.js?v=42"></script>
+    <script src="./app.js?v=43"></script>
   </body>
 </html>

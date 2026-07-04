@@ -16,7 +16,7 @@ const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
 const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "settings"]);
-const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "editor"]);
+const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
@@ -47,6 +47,14 @@ const BILLING_MODEL_COLORS = ["#17958a", "#2f7de1", "#d49a3a", "#8c96a3"];
 const DEFAULT_FEATURE_PRICING = {
   billingMultiplier: DEFAULT_BILLING_MULTIPLIER,
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
+};
+const DEFAULT_FEATURE_WHATSAPP = {
+  verify_token: "",
+  access_token: "",
+  phone_number_id: "",
+  app_secret: "",
+  owner_wa_id: "",
+  allow_mock_send: true,
 };
 
 const DEFAULT_PROMPT = {
@@ -81,6 +89,7 @@ const DEFAULT_FEATURES = [
     launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
     pricing: { ...DEFAULT_FEATURE_PRICING },
     prompt: { ...DEFAULT_PROMPT },
+    whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
 ];
 
@@ -243,8 +252,12 @@ const elements = {
   featureStudioNav: document.querySelector("#featureStudioNav"),
   featureStudioOverviewButton: document.querySelector("#featureStudioOverviewButton"),
   featureStudioEditorButton: document.querySelector("#featureStudioEditorButton"),
+  featureStudioActivationSection: document.querySelector("#featureStudioActivationSection"),
   featureStudioStatus: document.querySelector("#featureStudioStatus"),
+  featureActivationStatus: document.querySelector("#featureActivationStatus"),
   featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
+  featureStudioActivationBackButton: document.querySelector("#featureStudioActivationBackButton"),
+  featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
@@ -258,6 +271,13 @@ const elements = {
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
+  featureActivationAccessTokenInput: document.querySelector("#featureActivationAccessToken"),
+  featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
+  featureActivationVerifyTokenInput: document.querySelector("#featureActivationVerifyToken"),
+  featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
+  featureActivationAppSecretInput: document.querySelector("#featureActivationAppSecret"),
+  featureActivationAllowMockSendInput: document.querySelector("#featureActivationAllowMockSend"),
+  featureActivationSummary: document.querySelector("#featureActivationSummary"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
   featureStudioMenu: document.querySelector("#featureStudioMenu"),
@@ -778,6 +798,7 @@ function loadClientState(email) {
       ).trim(),
       pricing: normalizeFeaturePricing(feature?.pricing || {}),
       prompt: normalizePrompt(feature?.prompt || {}, fallbackPrompt),
+      whatsapp: normalizeFeatureWhatsApp(feature?.whatsapp || feature?.activation || {}),
     };
   });
   const settings = { ...DEFAULT_SETTINGS, ...(saved.settings || {}) };
@@ -816,6 +837,18 @@ function normalizeFeaturePricing(pricing = {}) {
         ?? DEFAULT_FEATURE_PRICING.minimumMonthlyCharge,
       ),
     ) || DEFAULT_FEATURE_PRICING.minimumMonthlyCharge,
+  };
+}
+
+function normalizeFeatureWhatsApp(config = {}) {
+  const source = config && typeof config === "object" ? config : {};
+  return {
+    verify_token: String(source.verify_token || source.verifyToken || "").trim(),
+    access_token: String(source.access_token || source.accessToken || "").trim(),
+    phone_number_id: String(source.phone_number_id || source.phoneNumberId || "").trim(),
+    app_secret: String(source.app_secret || source.appSecret || "").trim(),
+    owner_wa_id: String(source.owner_wa_id || source.ownerWaId || "").trim(),
+    allow_mock_send: Boolean(source.allow_mock_send ?? source.allowMockSend ?? true),
   };
 }
 
@@ -925,6 +958,56 @@ function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
   return isFeatureActivated(feature)
     ? "editor"
     : normalizeFeatureStudioView(state.featureStudioView) || getDefaultFeatureStudioView(feature);
+}
+
+function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
+  return normalizeFeatureWhatsApp(feature?.whatsapp || {});
+}
+
+function formatFeatureActivationFieldLabel(key) {
+  const labels = {
+    access_token: "Access token",
+    phone_number_id: "Phone number ID",
+    verify_token: "Verify token",
+    owner_wa_id: "Owner WhatsApp ID",
+    app_secret: "App secret",
+  };
+
+  return labels[key] || key;
+}
+
+function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  return ["access_token", "phone_number_id", "verify_token", "owner_wa_id"].filter((key) => !String(whatsapp[key] || "").trim());
+}
+
+function getFeatureActivationSummary(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  const missing = getMissingFeatureActivationFields(feature);
+
+  if (missing.length) {
+    const readableMissing = missing.map(formatFeatureActivationFieldLabel);
+    const needsList = readableMissing.length === 1
+      ? readableMissing[0]
+      : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
+    return `Fill ${needsList} to unlock activation. App secret is recommended for signature checks.`;
+  }
+
+  return whatsapp.app_secret
+    ? "All required WhatsApp keys are in place. Activating will start billing and switch you to the editor."
+    : "All required WhatsApp keys are in place. App secret is recommended for signature checks before you activate.";
+}
+
+function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
+  if (isFeatureActivated(feature)) {
+    return "Active";
+  }
+
+  if (view === "activation") {
+    return "Setup";
+  }
+
+  return "Preview";
 }
 
 function persistClientState() {
@@ -3000,6 +3083,12 @@ function activateSelectedFeature() {
     return;
   }
 
+  const missingFields = getMissingFeatureActivationFields(feature);
+  if (missingFields.length) {
+    setStatus(`Fill ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} before activating.`);
+    return;
+  }
+
   feature.activated = true;
   state.featureStudioView = "editor";
   persistClientState();
@@ -3008,6 +3097,21 @@ function activateSelectedFeature() {
   renderApp();
   window.scrollTo(0, 0);
   setStatus("Activated the tool.");
+}
+
+function startFeatureActivation() {
+  const feature = getSelectedFeature();
+  if (!feature) {
+    return;
+  }
+
+  state.featureStudioView = "activation";
+  closeMenu();
+  closeFeatureStudioMenu();
+  setHashForTab("features", feature.id, "activation");
+  renderApp();
+  window.scrollTo(0, 0);
+  setStatus("Opened the activation setup.");
 }
 
 function deactivateSelectedFeature() {
@@ -3037,6 +3141,56 @@ function handleFeatureStudioMenuAction(action) {
   }
 }
 
+function updateFeatureActivationFields() {
+  const feature = getSelectedFeature();
+  if (!feature) {
+    return;
+  }
+
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  if (elements.featureActivationAccessTokenInput) {
+    elements.featureActivationAccessTokenInput.value = whatsapp.access_token;
+  }
+  if (elements.featureActivationPhoneNumberIdInput) {
+    elements.featureActivationPhoneNumberIdInput.value = whatsapp.phone_number_id;
+  }
+  if (elements.featureActivationVerifyTokenInput) {
+    elements.featureActivationVerifyTokenInput.value = whatsapp.verify_token;
+  }
+  if (elements.featureActivationOwnerWaIdInput) {
+    elements.featureActivationOwnerWaIdInput.value = whatsapp.owner_wa_id;
+  }
+  if (elements.featureActivationAppSecretInput) {
+    elements.featureActivationAppSecretInput.value = whatsapp.app_secret;
+  }
+  if (elements.featureActivationAllowMockSendInput) {
+    elements.featureActivationAllowMockSendInput.checked = Boolean(whatsapp.allow_mock_send);
+  }
+}
+
+function syncFeatureActivationField(key) {
+  return (event) => {
+    const feature = getSelectedFeature();
+    if (!feature) {
+      return;
+    }
+
+    if (!feature.whatsapp) {
+      feature.whatsapp = { ...DEFAULT_FEATURE_WHATSAPP };
+    }
+
+    if (key === "allow_mock_send") {
+      feature.whatsapp[key] = Boolean(event.target.checked);
+    } else {
+      feature.whatsapp[key] = event.target.value;
+    }
+
+    persistClientState();
+    updateFeatureStudioHeader();
+    setStatus("Activation draft saved locally.");
+  };
+}
+
 function updateFeatureStudioHeader() {
   const feature = getSelectedFeature();
   if (!feature) {
@@ -3049,14 +3203,20 @@ function updateFeatureStudioHeader() {
   const launchUrl = String(feature.launchUrl || "").trim();
   const isActivated = isFeatureActivated(feature);
   const studioView = getSelectedFeatureStudioView(feature);
+  const activationSummary = getFeatureActivationSummary(feature);
+  const activationReady = getMissingFeatureActivationFields(feature).length === 0;
 
   state.featureStudioView = studioView;
 
   if (elements.featureStudioHeaderLabel) {
-    elements.featureStudioHeaderLabel.textContent = studioView === "editor" ? "Tool editor" : "Tool overview";
+    elements.featureStudioHeaderLabel.textContent = studioView === "editor"
+      ? "Tool editor"
+      : studioView === "activation"
+        ? "Tool activation"
+        : "Tool overview";
   }
   if (elements.featureStudioNav) {
-    elements.featureStudioNav.classList.toggle("is-hidden", isActivated);
+    elements.featureStudioNav.classList.toggle("is-hidden", isActivated || studioView === "activation");
   }
   if (elements.featureStudioOverviewButton) {
     elements.featureStudioOverviewButton.classList.toggle("is-active", studioView === "overview");
@@ -3069,14 +3229,20 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioOverviewSection) {
     elements.featureStudioOverviewSection.classList.toggle("is-hidden", studioView !== "overview");
   }
+  if (elements.featureStudioActivationSection) {
+    elements.featureStudioActivationSection.classList.toggle("is-hidden", studioView !== "activation");
+  }
   if (elements.featureStudioEditorSection) {
     elements.featureStudioEditorSection.classList.toggle("is-hidden", studioView !== "editor");
   }
   if (elements.featureStudioMenuWrap) {
     elements.featureStudioMenuWrap.classList.toggle("is-hidden", !isActivated);
   }
+  if (elements.featureActivationStatus) {
+    elements.featureActivationStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
+  }
   if (elements.featureStudioStatus) {
-    elements.featureStudioStatus.textContent = getFeatureActivationLabel(feature);
+    elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
   }
   elements.featureStudioTitle.textContent = feature.name;
   elements.featureStudioDescription.textContent = feature.description || "";
@@ -3101,15 +3267,22 @@ function updateFeatureStudioHeader() {
     elements.featureStudioExampleReply.textContent = example.outgoing;
   }
   if (elements.featureStudioLaunchButton) {
-    elements.featureStudioLaunchButton.hidden = isActivated;
+    elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
     elements.featureStudioLaunchButton.textContent = "Activate tool";
     elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
-    elements.featureStudioLaunchNote.hidden = isActivated;
-    elements.featureStudioLaunchNote.textContent = "Activating starts billing for this tool. You can deactivate it anytime from Tool options.";
+    elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
+    elements.featureStudioLaunchNote.textContent = "Open the activation page to enter the WhatsApp keys and routing data before billing starts.";
+  }
+
+  if (elements.featureActivationSummary) {
+    elements.featureActivationSummary.textContent = activationSummary;
+  }
+  if (elements.featureStudioActivationButton) {
+    elements.featureStudioActivationButton.disabled = !activationReady || isActivated;
   }
 
   buildFeatureStudioMenu(feature);
@@ -3151,6 +3324,8 @@ function updateSettingsButtons() {
 function updatePanelVisibility() {
   const inStudio = state.activeTab === "features" && Boolean(state.selectedFeatureId);
   const inBilling = state.activeTab === "billing";
+  const feature = inStudio ? getSelectedFeature() : null;
+  const studioView = inStudio ? getSelectedFeatureStudioView(feature) : "overview";
   elements.appBar.classList.toggle("is-hidden", inStudio || inBilling);
   elements.appView.classList.toggle("is-feature-page", inStudio);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
@@ -3158,6 +3333,9 @@ function updatePanelVisibility() {
   elements.previewPanel.classList.toggle("is-hidden", state.activeTab !== "preview");
   elements.simulatorPanel.classList.toggle("is-hidden", state.activeTab !== "simulator");
   elements.billingPanel.classList.toggle("is-hidden", state.activeTab !== "billing");
+  if (elements.featureStudioActivationSection && feature) {
+    elements.featureStudioActivationSection.classList.toggle("is-hidden", studioView !== "activation");
+  }
   syncSettingsPanelState();
 }
 
@@ -3226,9 +3404,10 @@ function updateSettingsFields() {
 function renderApp() {
   updateHeader();
   updateTabButtons();
+  updateFeatureStudioHeader();
   updatePanelVisibility();
   updateFeatureList();
-  updateFeatureStudioHeader();
+  updateFeatureActivationFields();
   updatePromptFields();
   updatePreview();
   updateSimulatorPanel();
@@ -3882,6 +4061,16 @@ function bindEvents() {
   }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.addEventListener("click", () => {
+      startFeatureActivation();
+    });
+  }
+  if (elements.featureStudioActivationBackButton) {
+    elements.featureStudioActivationBackButton.addEventListener("click", () => {
+      setFeatureStudioView("overview");
+    });
+  }
+  if (elements.featureStudioActivationButton) {
+    elements.featureStudioActivationButton.addEventListener("click", () => {
       activateSelectedFeature();
     });
   }
@@ -3913,6 +4102,24 @@ function bindEvents() {
       closeFeatureStudioMenu();
       handleFeatureStudioMenuAction(action);
     });
+  }
+  if (elements.featureActivationAccessTokenInput) {
+    elements.featureActivationAccessTokenInput.addEventListener("input", syncFeatureActivationField("access_token"));
+  }
+  if (elements.featureActivationPhoneNumberIdInput) {
+    elements.featureActivationPhoneNumberIdInput.addEventListener("input", syncFeatureActivationField("phone_number_id"));
+  }
+  if (elements.featureActivationVerifyTokenInput) {
+    elements.featureActivationVerifyTokenInput.addEventListener("input", syncFeatureActivationField("verify_token"));
+  }
+  if (elements.featureActivationOwnerWaIdInput) {
+    elements.featureActivationOwnerWaIdInput.addEventListener("input", syncFeatureActivationField("owner_wa_id"));
+  }
+  if (elements.featureActivationAppSecretInput) {
+    elements.featureActivationAppSecretInput.addEventListener("input", syncFeatureActivationField("app_secret"));
+  }
+  if (elements.featureActivationAllowMockSendInput) {
+    elements.featureActivationAllowMockSendInput.addEventListener("change", syncFeatureActivationField("allow_mock_send"));
   }
   if (elements.billingHelpCloseButton) {
     elements.billingHelpCloseButton.addEventListener("click", () => {

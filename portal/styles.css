@@ -2533,6 +2533,114 @@ body[data-modal="billing"] .app-shell {
   box-shadow: 0 20px 50px rgba(16, 38, 40, 0.08);
 }
 
+.feature-activation-grid {
+  display: grid;
+  gap: 0.9rem;
+  width: min(100%, 76rem);
+  justify-self: center;
+  align-items: start;
+  padding-top: 0.35rem;
+}
+
+.feature-activation-hero {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 1.05rem 1.1rem;
+  border-radius: 28px;
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.07), rgba(30, 136, 229, 0.04)),
+    rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  box-shadow: 0 20px 50px rgba(16, 38, 40, 0.08);
+}
+
+.feature-activation-hero-copy {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.feature-activation-hero-copy h2 {
+  margin: 0;
+  max-width: 18ch;
+  font-family: var(--font-display);
+  font-size: clamp(1.45rem, 2.4vw, 2.3rem);
+  letter-spacing: -0.04em;
+  line-height: 1.02;
+}
+
+.feature-activation-hero-copy .feature-page-description {
+  max-width: 48ch;
+}
+
+.feature-activation-hero-meta {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: end;
+  align-content: center;
+  text-align: right;
+  min-width: 0;
+}
+
+.feature-activation-hero-meta code {
+  display: inline-flex;
+  padding: 0.42rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.activation-card {
+  gap: 0.9rem;
+}
+
+.activation-form-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.activation-field-span {
+  grid-column: 1 / -1;
+}
+
+.field-toggle {
+  align-content: start;
+}
+
+.field-toggle input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0.15rem 0 0.05rem;
+  accent-color: var(--accent);
+}
+
+.field-toggle small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.feature-activation-actions {
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.feature-activation-actions .text-button {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.feature-activation-actions .primary-button {
+  min-width: 11rem;
+}
+
 .feature-page-header .feature-status {
   justify-self: end;
 }
@@ -2782,6 +2890,15 @@ body[data-modal="billing"] .app-shell {
     gap: 0.65rem;
   }
 
+  .feature-activation-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-activation-hero-meta {
+    justify-items: start;
+    text-align: left;
+  }
+
   .feature-page-header-label {
     justify-self: center;
   }
@@ -2833,6 +2950,37 @@ body[data-modal="billing"] .app-shell {
   .feature-page-intro {
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .feature-activation-grid {
+    width: 100%;
+  }
+
+  .feature-activation-hero {
+    padding: 1rem;
+  }
+
+  .activation-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .activation-field-span {
+    grid-column: auto;
+  }
+
+  .feature-activation-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .feature-activation-actions .text-button {
+    width: auto;
+    align-self: flex-start;
+  }
+
+  .feature-activation-actions .primary-button {
+    width: 100%;
+    min-width: 0;
   }
 
   .feature-page-example {
