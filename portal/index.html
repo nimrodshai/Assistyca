@@ -272,7 +272,7 @@
                 Set up activation
               </button>
               <p id="featureStudioLaunchNote" class="approval-note">
-                Open the setup page to enter the WhatsApp keys and routing data before billing starts.
+                Open the setup page to add the WhatsApp details before billing starts.
               </p>
             </div>
           </div>
@@ -302,7 +302,7 @@
               <p class="eyebrow">Tool activation</p>
               <h2>Prepare the WhatsApp connection</h2>
               <p class="feature-page-description">
-                Fill the required fields below. We’ll keep the tool in draft until everything is ready, then click Activate now to switch it to the editor.
+                Fill the required fields below. We’ll keep the tool in draft until everything is ready, then click Activate now to run a quick test and switch it to the editor.
               </p>
             </div>
             <div class="feature-activation-hero-meta">
@@ -342,7 +342,7 @@
                   type="password"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="Paste the Cloud API access token"
+                  placeholder="Paste your WhatsApp access token"
                 />
                 <small class="field-help">Used to send live WhatsApp replies.</small>
               </label>
@@ -354,9 +354,9 @@
                   type="text"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="WhatsApp business phone number ID"
+                  placeholder="WhatsApp business number ID"
                 />
-                <small class="field-help">The Cloud API identifier for the business number.</small>
+                <small class="field-help">Identifies the WhatsApp business number that sends replies.</small>
               </label>
 
               <label class="field">
@@ -368,7 +368,7 @@
                   spellcheck="false"
                   placeholder="Webhook verification token"
                 />
-                <small class="field-help">Used when WhatsApp verifies your webhook endpoint.</small>
+                <small class="field-help">Used when WhatsApp checks that your webhook really belongs to you.</small>
               </label>
 
               <label class="field">
@@ -390,7 +390,7 @@
               <div>
                 <h3>Advanced options</h3>
                 <p class="setup-copy">
-                  Useful while testing or if you want signature checks on webhooks.
+                  Optional security settings for webhook checks.
                 </p>
               </div>
               <span class="activation-section-chip activation-section-chip-optional">Optional</span>
@@ -404,20 +404,18 @@
                   type="password"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="Recommended for signature checks"
+                  placeholder="Optional security key"
                 />
-                <small class="field-help">Recommended for webhook signature checks.</small>
-              </label>
-
-              <label class="field field-toggle activation-field-span">
-                <span>Allow mock send while setting up</span>
-                <input id="featureActivationAllowMockSend" type="checkbox" />
-                <small>Keep this on while testing. Turn it off when you want real sends.</small>
+                <small class="field-help">Optional. Helps keep your business safer by confirming webhook messages are genuine.</small>
               </label>
             </div>
 
+            <p class="approval-note">
+              When you click Activate now, we’ll run a quick setup test using the details you entered.
+            </p>
+
             <p id="featureActivationSummary" class="approval-note activation-summary">
-              Fill the required fields to unlock activation.
+              Fill the required fields to unlock activation. We’ll run a quick test before turning the tool on.
             </p>
 
             <div class="feature-page-actions feature-activation-actions">

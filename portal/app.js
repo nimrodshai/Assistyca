@@ -231,6 +231,7 @@ let authAlertReturnFocus = null;
 let billingHelpOpenFrame = null;
 let billingHelpCloseTimer = null;
 let billingHelpReturnFocus = null;
+let featureActivationBusy = false;
 
 const elements = {
   authView: document.querySelector("#authView"),
@@ -282,7 +283,6 @@ const elements = {
   featureActivationVerifyTokenInput: document.querySelector("#featureActivationVerifyToken"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationAppSecretInput: document.querySelector("#featureActivationAppSecret"),
-  featureActivationAllowMockSendInput: document.querySelector("#featureActivationAllowMockSend"),
   featureActivationProgress: document.querySelector("#featureActivationProgress"),
   featureActivationProgressFill: document.querySelector("#featureActivationProgressFill"),
   featureActivationProgressNote: document.querySelector("#featureActivationProgressNote"),
@@ -990,6 +990,34 @@ function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
   return FEATURE_ACTIVATION_REQUIRED_KEYS.filter((key) => !String(whatsapp[key] || "").trim());
 }
 
+function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  const accessToken = String(whatsapp.access_token || "").trim();
+  const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
+  const verifyToken = String(whatsapp.verify_token || "").trim();
+  const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
+  const appSecret = String(whatsapp.app_secret || "").trim();
+  const issues = [];
+
+  if (!accessToken || accessToken.length < 16) {
+    issues.push("Access token looks incomplete.");
+  }
+  if (!/^\d+$/.test(phoneNumberId)) {
+    issues.push("Phone number ID should contain numbers only.");
+  }
+  if (!/^\d+$/.test(ownerWaId)) {
+    issues.push("Owner WhatsApp ID should contain numbers only.");
+  }
+  if (!verifyToken || verifyToken === "change-me") {
+    issues.push("Verify token still looks like a placeholder.");
+  }
+  if (appSecret && appSecret.length < 8) {
+    issues.push("App secret looks too short.");
+  }
+
+  return issues;
+}
+
 function getFeatureActivationProgress(feature = getSelectedFeature()) {
   const missing = getMissingFeatureActivationFields(feature);
   const total = FEATURE_ACTIVATION_REQUIRED_KEYS.length;
@@ -1030,13 +1058,13 @@ function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
     const needsList = readableMissing.length === 1
       ? readableMissing[0]
       : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
-    return `Still missing ${needsList}. Required fields unlock activation.`;
+    return `Still missing ${needsList}. These details are required before activation.`;
   }
 
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   return whatsapp.app_secret
-    ? "Required fields are complete. Review the advanced options, then click Activate now."
-    : "Required fields are complete. App secret is optional, but recommended for signature checks.";
+    ? "Required fields are complete. The app secret adds an extra safety check."
+    : "Required fields are complete. App secret is optional, but it helps keep your business safer.";
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
@@ -1048,12 +1076,12 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
     const needsList = readableMissing.length === 1
       ? readableMissing[0]
       : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
-    return `Fill ${needsList} to unlock activation. Advanced options stay optional.`;
+    return `Fill ${needsList} to unlock activation. App secret is optional, but it helps keep your business safer.`;
   }
 
   return whatsapp.app_secret
-    ? "Required fields are complete. Review the advanced options, then click Activate now."
-    : "Required fields are complete. App secret is optional, but recommended for signature checks before activation.";
+    ? "Required fields are complete. The app secret adds an extra safety check."
+    : "Required fields are complete. App secret is optional, but it helps keep your business safer.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
@@ -3142,26 +3170,49 @@ function buildFeatureStudioMenu(feature) {
   elements.featureStudioMenu.replaceChildren(...items);
 }
 
-function activateSelectedFeature() {
+async function activateSelectedFeature() {
+  if (featureActivationBusy) {
+    return;
+  }
+
   const feature = getSelectedFeature();
   if (!feature) {
     return;
   }
 
-  const missingFields = getMissingFeatureActivationFields(feature);
-  if (missingFields.length) {
-    setStatus(`Fill ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} before activating.`);
-    return;
-  }
+  featureActivationBusy = true;
+  try {
+    const missingFields = getMissingFeatureActivationFields(feature);
+    if (missingFields.length) {
+      setStatus(`Fill ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} before activating.`);
+      return;
+    }
 
-  feature.activated = true;
-  state.featureStudioView = "editor";
-  persistClientState();
-  closeFeatureStudioMenu();
-  setHashForTab("features", feature.id, "editor");
-  renderApp();
-  window.scrollTo(0, 0);
-  setStatus("Activated the tool.");
+    const whatsapp = getSelectedFeatureWhatsApp(feature);
+    if (whatsapp.allow_mock_send) {
+      const testIssues = getFeatureActivationTestIssues(feature);
+      if (testIssues.length) {
+        setStatus(`Quick test found an issue: ${testIssues[0]}`);
+        return;
+      }
+
+      setStatus("Running a quick setup test before activation.");
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+
+    feature.activated = true;
+    state.featureStudioView = "editor";
+    persistClientState();
+    closeFeatureStudioMenu();
+    setHashForTab("features", feature.id, "editor");
+    renderApp();
+    window.scrollTo(0, 0);
+    setStatus(whatsapp.allow_mock_send
+      ? "Activated the tool after a successful setup test."
+      : "Activated the tool.");
+  } finally {
+    featureActivationBusy = false;
+  }
 }
 
 function startFeatureActivation() {
@@ -3227,9 +3278,6 @@ function updateFeatureActivationFields() {
   }
   if (elements.featureActivationAppSecretInput) {
     elements.featureActivationAppSecretInput.value = whatsapp.app_secret;
-  }
-  if (elements.featureActivationAllowMockSendInput) {
-    elements.featureActivationAllowMockSendInput.checked = Boolean(whatsapp.allow_mock_send);
   }
 }
 
@@ -3350,7 +3398,7 @@ function updateFeatureStudioHeader() {
 
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = "Open the setup page to add the WhatsApp keys before billing starts.";
+    elements.featureStudioLaunchNote.textContent = "Open the setup page to add the WhatsApp details before billing starts.";
   }
 
   if (elements.featureActivationSummary) {
@@ -4147,7 +4195,7 @@ function bindEvents() {
   }
   if (elements.featureStudioActivationButton) {
     elements.featureStudioActivationButton.addEventListener("click", () => {
-      activateSelectedFeature();
+      void activateSelectedFeature();
     });
   }
   if (elements.featureStudioOverviewButton) {
@@ -4193,9 +4241,6 @@ function bindEvents() {
   }
   if (elements.featureActivationAppSecretInput) {
     elements.featureActivationAppSecretInput.addEventListener("input", syncFeatureActivationField("app_secret"));
-  }
-  if (elements.featureActivationAllowMockSendInput) {
-    elements.featureActivationAllowMockSendInput.addEventListener("change", syncFeatureActivationField("allow_mock_send"));
   }
   if (elements.billingHelpCloseButton) {
     elements.billingHelpCloseButton.addEventListener("click", () => {

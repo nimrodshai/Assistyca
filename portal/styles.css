@@ -2545,8 +2545,8 @@ body[data-modal="billing"] .app-shell {
 .feature-activation-hero {
   display: grid;
   gap: 0.85rem;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) clamp(22rem, 28vw, 24rem);
+  align-items: start;
   padding: 1.05rem 1.1rem;
   border-radius: 28px;
   background:
@@ -2578,15 +2578,16 @@ body[data-modal="billing"] .app-shell {
   display: grid;
   gap: 0.75rem;
   justify-items: end;
-  align-content: center;
+  align-content: start;
   text-align: right;
   min-width: 0;
+  width: 100%;
 }
 
 .activation-progress {
   display: grid;
   gap: 0.55rem;
-  width: min(100%, 24rem);
+  width: 100%;
   justify-items: end;
 }
 
