@@ -60,7 +60,6 @@ const DEFAULT_FEATURE_WHATSAPP = {
   phone_number_id: "",
   app_secret: "",
   owner_wa_id: "",
-  allow_mock_send: true,
 };
 
 const DEFAULT_PROMPT = {
@@ -857,7 +856,6 @@ function normalizeFeatureWhatsApp(config = {}) {
     phone_number_id: String(source.phone_number_id || source.phoneNumberId || "").trim(),
     app_secret: String(source.app_secret || source.appSecret || "").trim(),
     owner_wa_id: String(source.owner_wa_id || source.ownerWaId || "").trim(),
-    allow_mock_send: Boolean(source.allow_mock_send ?? source.allowMockSend ?? true),
   };
 }
 
@@ -1000,7 +998,7 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const issues = [];
 
   if (!accessToken || accessToken.length < 16) {
-    issues.push("Access token looks incomplete.");
+    issues.push("Access token looks too short. Paste the full token.");
   }
   if (!/^\d+$/.test(phoneNumberId)) {
     issues.push("Phone number ID should contain numbers only.");
@@ -1009,10 +1007,10 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
     issues.push("Owner WhatsApp ID should contain numbers only.");
   }
   if (!verifyToken || verifyToken === "change-me") {
-    issues.push("Verify token still looks like a placeholder.");
+    issues.push("Confirmation token still looks like a placeholder. Replace it with your own code.");
   }
   if (appSecret && appSecret.length < 8) {
-    issues.push("App secret looks too short.");
+    issues.push("App secret looks too short. Check the key and try again.");
   }
 
   return issues;
@@ -1037,18 +1035,18 @@ function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
   const progress = getFeatureActivationProgress(feature);
   return progress.ready === progress.total
     ? "Ready to activate"
-    : `${progress.ready}/${progress.total} ready`;
+    : "Setup in progress";
 }
 
 function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
   if (isFeatureActivated(feature)) {
-    return "The tool is active.";
+    return "The tool is live.";
   }
 
   const progress = getFeatureActivationProgress(feature);
   return progress.ready === progress.total
-    ? "4 of 4 required fields ready"
-    : `${progress.ready} of ${progress.total} required fields ready`;
+    ? "4 of 4 details added"
+    : `${progress.ready} of ${progress.total} details added`;
 }
 
 function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
@@ -1058,30 +1056,23 @@ function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
     const needsList = readableMissing.length === 1
       ? readableMissing[0]
       : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
-    return `Still missing ${needsList}. These details are required before activation.`;
+    return `Add ${needsList} to continue.`;
   }
 
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   return whatsapp.app_secret
-    ? "Required fields are complete. The app secret adds an extra safety check."
-    : "Required fields are complete. App secret is optional, but it helps keep your business safer.";
+    ? "Everything looks ready. The app secret adds another safety layer."
+    : "Everything looks ready. App secret is optional and adds another safety layer.";
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
   const missing = getMissingFeatureActivationFields(feature);
 
   if (missing.length) {
-    const readableMissing = missing.map(formatFeatureActivationFieldLabel);
-    const needsList = readableMissing.length === 1
-      ? readableMissing[0]
-      : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
-    return `Fill ${needsList} to unlock activation. App secret is optional, but it helps keep your business safer.`;
+    return "We’ll verify everything before turning it on.";
   }
 
-  return whatsapp.app_secret
-    ? "Required fields are complete. The app secret adds an extra safety check."
-    : "Required fields are complete. App secret is optional, but it helps keep your business safer.";
+  return "Your details are ready. Tap Activate now when you’re ready.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
@@ -1093,11 +1084,11 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
   const ready = progress.ready === progress.total;
 
   if (view === "activation") {
-    return ready ? "Ready to activate" : "Draft";
+    return ready ? "Ready to activate" : "Setup in progress";
   }
 
   if (view === "editor") {
-    return ready ? "Ready to activate" : "Draft";
+    return ready ? "Ready to activate" : "Setup in progress";
   }
 
   return "Preview";
@@ -3184,21 +3175,18 @@ async function activateSelectedFeature() {
   try {
     const missingFields = getMissingFeatureActivationFields(feature);
     if (missingFields.length) {
-      setStatus(`Fill ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} before activating.`);
+      setStatus(`Add ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} to continue.`);
       return;
     }
 
-    const whatsapp = getSelectedFeatureWhatsApp(feature);
-    if (whatsapp.allow_mock_send) {
-      const testIssues = getFeatureActivationTestIssues(feature);
-      if (testIssues.length) {
-        setStatus(`Quick test found an issue: ${testIssues[0]}`);
-        return;
-      }
-
-      setStatus("Running a quick setup test before activation.");
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    const testIssues = getFeatureActivationTestIssues(feature);
+    if (testIssues.length) {
+      setStatus(`One detail needs attention: ${testIssues[0]}`);
+      return;
     }
+
+    setStatus("Checking your details before turning it on.");
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
 
     feature.activated = true;
     state.featureStudioView = "editor";
@@ -3207,9 +3195,7 @@ async function activateSelectedFeature() {
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    setStatus(whatsapp.allow_mock_send
-      ? "Activated the tool after a successful setup test."
-      : "Activated the tool.");
+    setStatus("The tool is on after checking your details.");
   } finally {
     featureActivationBusy = false;
   }
@@ -3227,7 +3213,7 @@ function startFeatureActivation() {
   setHashForTab("features", feature.id, "activation");
   renderApp();
   window.scrollTo(0, 0);
-  setStatus("Opened the activation setup.");
+  setStatus("Opened connection setup.");
 }
 
 function deactivateSelectedFeature() {
@@ -3243,7 +3229,7 @@ function deactivateSelectedFeature() {
   setHashForTab("features", feature.id, "overview");
   renderApp();
   window.scrollTo(0, 0);
-  setStatus("Deactivated the tool.");
+  setStatus("Turned the tool off.");
 }
 
 function handleFeatureStudioMenuAction(action) {
@@ -3292,15 +3278,11 @@ function syncFeatureActivationField(key) {
       feature.whatsapp = { ...DEFAULT_FEATURE_WHATSAPP };
     }
 
-    if (key === "allow_mock_send") {
-      feature.whatsapp[key] = Boolean(event.target.checked);
-    } else {
-      feature.whatsapp[key] = event.target.value;
-    }
+    feature.whatsapp[key] = event.target.value;
 
     persistClientState();
     updateFeatureStudioHeader();
-    setStatus("Activation draft saved locally.");
+    setStatus("Setup saved.");
   };
 }
 
@@ -3326,7 +3308,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioHeaderLabel.textContent = studioView === "editor"
       ? "Tool editor"
       : studioView === "activation"
-        ? "Tool activation"
+        ? "Connection setup"
         : "Tool overview";
   }
   if (elements.featureStudioNav) {
@@ -3392,13 +3374,13 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
-    elements.featureStudioLaunchButton.textContent = "Set up activation";
+    elements.featureStudioLaunchButton.textContent = "Start setup";
     elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = "Open the setup page to add the WhatsApp details before billing starts.";
+    elements.featureStudioLaunchNote.textContent = "Open the setup page to add your WhatsApp details.";
   }
 
   if (elements.featureActivationSummary) {

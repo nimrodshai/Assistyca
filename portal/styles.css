@@ -2708,15 +2708,9 @@ body[data-modal="billing"] .app-shell {
   width: 100%;
   justify-content: space-between;
   align-items: center;
-  position: sticky;
-  bottom: 0.85rem;
-  margin-top: 0.15rem;
-  padding: 0.85rem 0.95rem;
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.98));
-  border: 1px solid rgba(20, 28, 38, 0.07);
-  box-shadow: 0 18px 32px rgba(25, 38, 54, 0.08);
-  backdrop-filter: blur(10px) saturate(140%);
+  margin-top: 0.25rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(20, 28, 38, 0.08);
 }
 
 .feature-activation-actions .text-button {
@@ -2773,20 +2767,22 @@ body[data-modal="billing"] .app-shell {
 }
 
 .setup-path {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.setup-path code {
   display: inline-flex;
-  align-self: start;
-  width: fit-content;
-  padding: 0.42rem 0.62rem;
+  align-items: center;
+  padding: 0.3rem 0.55rem;
   border-radius: 999px;
   background: rgba(15, 118, 110, 0.08);
   border: 1px solid rgba(15, 118, 110, 0.12);
   color: var(--accent);
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.setup-path code {
   font: inherit;
+  font-weight: 700;
 }
 
 .setup-list {

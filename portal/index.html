@@ -9,7 +9,7 @@
       content="Registered users sign in with a one-time code to continue into Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=39" />
+    <link rel="stylesheet" href="./styles.css?v=40" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -269,10 +269,10 @@
 
             <div class="feature-page-actions">
               <button id="featureStudioLaunchButton" class="primary-button" type="button">
-                Set up activation
+                Start setup
               </button>
               <p id="featureStudioLaunchNote" class="approval-note">
-                Open the setup page to add the WhatsApp details before billing starts.
+                Open the setup page to add your WhatsApp details.
               </p>
             </div>
           </div>
@@ -299,21 +299,21 @@
         <section id="featureStudioActivationSection" class="feature-activation-grid is-hidden">
           <article class="glass-card feature-activation-hero">
             <div class="feature-activation-hero-copy">
-              <p class="eyebrow">Tool activation</p>
-              <h2>Prepare the WhatsApp connection</h2>
+              <p class="eyebrow">Connection setup</p>
+              <h2>Connect your WhatsApp account</h2>
               <p class="feature-page-description">
-                Fill the required fields below. We’ll keep the tool in draft until everything is ready, then click Activate now to run a quick test and switch it to the editor.
+                Add the details we need to turn it on. We’ll verify everything when you click Activate now.
               </p>
             </div>
             <div class="feature-activation-hero-meta">
-              <span id="featureActivationStatus" class="feature-status">Draft</span>
+              <span id="featureActivationStatus" class="feature-status">Setup in progress</span>
               <div class="activation-progress">
-                <strong id="featureActivationProgress">0 of 4 required fields ready</strong>
+                <strong id="featureActivationProgress">0 of 4 details added</strong>
                 <div class="activation-progress-track" aria-hidden="true">
                   <span id="featureActivationProgressFill"></span>
                 </div>
                 <p id="featureActivationProgressNote" class="activation-progress-note">
-                  Required fields are checked in real time.
+                  We check each detail as you fill it in.
                 </p>
               </div>
             </div>
@@ -322,16 +322,14 @@
           <article class="glass-card config-card activation-card">
             <div class="activation-card-head">
               <div>
-                <h3>Required fields</h3>
-                <p class="setup-copy">
-                  Fill these before the tool can go live.
-                </p>
+                <h3>Connection details</h3>
+                <p class="setup-copy">Add these so the tool can go live.</p>
               </div>
-              <span class="activation-section-chip">Mandatory</span>
+              <span class="activation-section-chip">Needed</span>
             </div>
 
             <p class="setup-path">
-              <code>clients/&lt;client-id&gt;/backend.json</code>
+              Saved in <code>clients/&lt;client-id&gt;/backend.json</code>.
             </p>
 
             <div class="activation-form-grid">
@@ -344,7 +342,7 @@
                   spellcheck="false"
                   placeholder="Paste your WhatsApp access token"
                 />
-                <small class="field-help">Used to send live WhatsApp replies.</small>
+                <small class="field-help">Used to send replies for you.</small>
               </label>
 
               <label class="field">
@@ -356,7 +354,7 @@
                   spellcheck="false"
                   placeholder="WhatsApp business number ID"
                 />
-                <small class="field-help">Identifies the WhatsApp business number that sends replies.</small>
+                <small class="field-help">This is the number that sends replies.</small>
               </label>
 
               <label class="field">
@@ -366,9 +364,9 @@
                   type="text"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="Webhook verification token"
+                  placeholder="Confirmation token"
                 />
-                <small class="field-help">Used when WhatsApp checks that your webhook really belongs to you.</small>
+                <small class="field-help">A code you choose to confirm the connection.</small>
               </label>
 
               <label class="field">
@@ -380,7 +378,7 @@
                   spellcheck="false"
                   placeholder="WhatsApp ID that receives approvals"
                 />
-                <small class="field-help">Approval requests are sent to this number.</small>
+                <small class="field-help">This is the number that gets approval requests.</small>
               </label>
             </div>
 
@@ -388,10 +386,8 @@
 
             <div class="activation-card-head">
               <div>
-                <h3>Advanced options</h3>
-                <p class="setup-copy">
-                  Optional security settings for webhook checks.
-                </p>
+                <h3>More protection</h3>
+                <p class="setup-copy">Optional. Adds another safety layer for your business.</p>
               </div>
               <span class="activation-section-chip activation-section-chip-optional">Optional</span>
             </div>
@@ -406,16 +402,16 @@
                   spellcheck="false"
                   placeholder="Optional security key"
                 />
-                <small class="field-help">Optional. Helps keep your business safer by confirming webhook messages are genuine.</small>
+                <small class="field-help">Optional. This key adds another safety check and helps protect your business.</small>
               </label>
             </div>
 
             <p class="approval-note">
-              When you click Activate now, we’ll run a quick setup test using the details you entered.
+              When you click Activate now, we’ll verify your details before turning it on.
             </p>
 
             <p id="featureActivationSummary" class="approval-note activation-summary">
-              Fill the required fields to unlock activation. We’ll run a quick test before turning the tool on.
+              We’ll verify everything before turning it on.
             </p>
 
             <div class="feature-page-actions feature-activation-actions">
