@@ -971,6 +971,10 @@ function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
   return normalizeFeatureWhatsApp(feature?.whatsapp || {});
 }
 
+function isFeatureActivationBusy(feature = getSelectedFeature()) {
+  return Boolean(featureActivationBusy && getSelectedFeatureStudioView(feature) === "activation" && !isFeatureActivated(feature));
+}
+
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
     access_token: "Access token",
@@ -1028,6 +1032,10 @@ function getFeatureActivationProgress(feature = getSelectedFeature()) {
 }
 
 function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
+  if (isFeatureActivationBusy(feature)) {
+    return "Activating";
+  }
+
   if (isFeatureActivated(feature)) {
     return "Activated";
   }
@@ -1039,6 +1047,10 @@ function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
 }
 
 function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
+  if (isFeatureActivationBusy(feature)) {
+    return "This takes a moment.";
+  }
+
   if (isFeatureActivated(feature)) {
     return "The tool is live.";
   }
@@ -1050,6 +1062,10 @@ function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
 }
 
 function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
+  if (isFeatureActivationBusy(feature)) {
+    return "We’re turning it on now.";
+  }
+
   const progress = getFeatureActivationProgress(feature);
   if (progress.missing.length) {
     return "The progress bar updates as you go.";
@@ -1076,6 +1092,10 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
+  if (isFeatureActivationBusy(feature)) {
+    return "Activating";
+  }
+
   if (isFeatureActivated(feature)) {
     return "Active";
   }
@@ -3185,6 +3205,7 @@ async function activateSelectedFeature() {
       return;
     }
 
+    updateFeatureStudioHeader();
     setStatus("Turning it on...");
     await new Promise((resolve) => window.setTimeout(resolve, 350));
 
@@ -3198,6 +3219,7 @@ async function activateSelectedFeature() {
     setStatus("The tool is on.");
   } finally {
     featureActivationBusy = false;
+    updateFeatureStudioHeader();
   }
 }
 
@@ -3387,8 +3409,11 @@ function updateFeatureStudioHeader() {
     elements.featureActivationSummary.textContent = activationSummary;
   }
   if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.textContent = "Activate now";
-    elements.featureStudioActivationButton.disabled = !activationReady || isActivated;
+    const activationBusy = isFeatureActivationBusy(feature);
+    elements.featureStudioActivationButton.textContent = activationBusy ? "Activating..." : "Activate now";
+    elements.featureStudioActivationButton.disabled = !activationReady || isActivated || activationBusy;
+    elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
+    elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
   }
 
   buildFeatureStudioMenu(feature);
