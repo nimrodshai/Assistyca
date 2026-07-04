@@ -285,6 +285,7 @@ const elements = {
   featureActivationProgress: document.querySelector("#featureActivationProgress"),
   featureActivationProgressFill: document.querySelector("#featureActivationProgressFill"),
   featureActivationProgressNote: document.querySelector("#featureActivationProgressNote"),
+  featureActivationLiveState: document.querySelector("#featureActivationLiveState"),
   featureActivationSummary: document.querySelector("#featureActivationSummary"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
@@ -1068,7 +1069,7 @@ function getFeatureActivationProgressNote(feature = getSelectedFeature()) {
 
   const progress = getFeatureActivationProgress(feature);
   if (progress.missing.length) {
-    return "The progress bar updates as you go.";
+    return "Tap Activate now to check the details you added.";
   }
 
   return "";
@@ -1089,7 +1090,7 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
     return `Add ${needsList} to continue.`;
   }
 
-  return "";
+  return "Everything looks ready. Tap Activate now.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
@@ -3194,21 +3195,24 @@ async function activateSelectedFeature() {
 
   featureActivationBusy = true;
   try {
+    updateFeatureStudioHeader();
+    setStatus("Checking your details...");
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+
     const missingFields = getMissingFeatureActivationFields(feature);
     if (missingFields.length) {
+      await new Promise((resolve) => window.setTimeout(resolve, 900));
       setStatus(`Add ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} to continue.`);
       return;
     }
 
     const testIssues = getFeatureActivationTestIssues(feature);
     if (testIssues.length) {
+      await new Promise((resolve) => window.setTimeout(resolve, 900));
       setStatus(`One detail needs attention: ${testIssues[0]}`);
       return;
     }
 
-    updateFeatureStudioHeader();
-    setStatus("Checking your details...");
-    await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
     await new Promise((resolve) => window.setTimeout(resolve, 1200));
 
     feature.activated = true;
@@ -3373,6 +3377,11 @@ function updateFeatureStudioHeader() {
     elements.featureActivationProgressNote.textContent = activationProgressNote;
     elements.featureActivationProgressNote.hidden = !activationProgressNote;
   }
+  if (elements.featureActivationLiveState) {
+    const liveState = activationBusy ? "Checking your details now..." : "";
+    elements.featureActivationLiveState.textContent = liveState;
+    elements.featureActivationLiveState.hidden = !liveState;
+  }
   if (elements.featureStudioStatus) {
     elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
   }
@@ -3417,7 +3426,7 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureStudioActivationButton) {
     elements.featureStudioActivationButton.textContent = activationBusy ? "Checking details..." : "Activate now";
-    elements.featureStudioActivationButton.disabled = !activationReady || isActivated || activationBusy;
+    elements.featureStudioActivationButton.disabled = isActivated || activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
   }
@@ -4210,6 +4219,17 @@ function bindEvents() {
       setFeatureStudioView("overview");
     });
   }
+  if (elements.featureStudioActivationSection) {
+    elements.featureStudioActivationSection.addEventListener("click", (event) => {
+      const activationButton = event.target.closest("#featureStudioActivationButton");
+      if (!activationButton || activationButton.disabled) {
+        return;
+      }
+
+      event.preventDefault();
+      void activateSelectedFeature();
+    });
+  }
   if (elements.featureStudioActivationButton) {
     elements.featureStudioActivationButton.addEventListener("click", () => {
       void activateSelectedFeature();
@@ -4520,6 +4540,16 @@ function bindEvents() {
     } catch {
       setStatus("Copy failed in this browser");
     }
+  });
+
+  document.addEventListener("click", (event) => {
+    const activationButton = event.target.closest("#featureStudioActivationButton");
+    if (!activationButton || activationButton.disabled) {
+      return;
+    }
+
+    event.preventDefault();
+    void activateSelectedFeature();
   });
 }
 
