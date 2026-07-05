@@ -2,51 +2,54 @@
   "meta": {
     "title": "Project Scope Spec",
     "client_name": "Bisi",
-    "project_name": "Customer Support Service - Intent Routing (whatsNext)",
+    "project_name": "Customer Support Service - Internal Next-Step API",
     "prepared_by": "Codex",
     "date": "2026-07-05",
     "status": "Draft",
     "language": "en"
   },
   "overview": {
-    "client_request": "Create a service called Customer Support that keeps a list of intents. In v1, only one intent is active: `whatsNext`. The handler should look at the client's current state and return the two next steps that make the most sense. Example: if the client just created a task and has no employees, the suggestions should guide them to add an employee and then either assign the task or create another task."
+    "client_request": "Create an internal Customer Support service that can be called by other services to figure out the next best steps for a client. In v1, the only function exposed by this service is the `whatsNext` internal API. It should look at the client's current state and return the two next steps that make the most sense. Example: if the client just created a task and has no employees, the suggestions should guide them to add an employee and then either assign the task or create another task."
   },
   "sections": {
     "deliverables": [
       "Create the Customer Support service shell.",
-      "Add an intent registry that can hold multiple intents, even though v1 only enables one.",
-      "Implement the first live intent: `whatsNext`.",
+      "Expose `whatsNext` as an internal API that other services can call.",
       "Read the client state needed for `whatsNext`, including employee count, task count, assignment status, and recent activity.",
-      "Return two ranked next-step suggestions from the `whatsNext` handler.",
-      "Add basic logging so the resolved intent and chosen suggestions are recorded."
+      "Return two ranked next-step suggestions from the `whatsNext` API.",
+      "Add basic logging so the resolved request and chosen suggestions are recorded.",
+      "Support a delayed call to `whatsNext` x seconds after the user finishes a task.",
+      "If x is a large number, verify that the user has not replied yet before returning suggestions."
     ],
     "workflow": [
-      "A client asks what to do next.",
-      "The service resolves the request to the `whatsNext` intent.",
-      "The handler loads the current client state.",
-      "The handler checks whether the client has employees, whether a task exists, and whether the task is assigned.",
-      "The service returns the two most sensible next steps for that state.",
+      "A service or workflow calls the `whatsNext` internal API for a client.",
+      "The API loads the current client state.",
+      "The API checks whether the client has employees, whether a task exists, and whether the task is assigned.",
+      "If the call is delayed by x seconds after task completion, the API checks whether the user has replied before suggesting anything.",
+      "The API returns the two most sensible next steps for that state.",
       "If the client has no employees, the first suggestion should be to add an employee.",
       "If the client has employees and an open task, the first suggestion should be to assign the task."
     ],
     "assumptions": [
-      "v1 activates only one intent: `whatsNext`.",
       "The service can read reliable client state from the existing product data.",
       "The suggestions are recommendations, not automatic actions.",
       "The same client state should produce the same suggestions.",
-      "The current scope is intentionally narrow and does not include broader support flows yet."
+      "The current scope is intentionally narrow and does not include broader support flows yet.",
+      "Future intents may reuse the same internal next-step functionality."
     ],
     "open_questions": [
       "Should the second suggestion always be `create another task`, or should it vary by state?",
       "Should the service live inside the product UI, the backend, or both?",
-      "What exact state fields are available on day one?"
+      "What exact state fields are available on day one?",
+      "What should x be for the delayed call, and which events count as a user reply?"
     ],
     "acceptance_criteria": [
-      "The service exists and exposes an intent list.",
-      "`whatsNext` is the only active intent in v1.",
+      "The service exists as an internal API that other services can call.",
+      "`whatsNext` is exposed as the only v1 API surface for this capability.",
       "`whatsNext` returns exactly two next-step suggestions.",
       "If there are no employees, the response includes `add employee`.",
       "If there are employees and the task is unassigned, the response includes `assign current task`.",
+      "If the call happens x seconds after task completion and x is large, the API verifies the user has not replied yet before returning suggestions.",
       "The service handles the same state with consistent output."
     ],
     "future_ideas": [
@@ -58,9 +61,10 @@
   },
   "approval": {
     "review_items": [
-      "Confirm the service name and that v1 includes only `whatsNext`.",
+      "Confirm the service name and that v1 exposes only the `whatsNext` internal API.",
       "Confirm the two-step recommendation logic for no-employees and has-employees states.",
       "Confirm the service returns suggestions only and does not auto-execute actions.",
+      "Confirm the delayed call behavior and the no-reply check for large x values.",
       "Confirm any future intents are out of scope for this phase."
     ],
     "signoff_label": "Client approval",
