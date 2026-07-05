@@ -1095,30 +1095,24 @@ function getFeatureActivationNoticeLabel() {
     return "Connection checked";
   }
 
-  if (/^add\b/i.test(notice) || /^fix this first\b/i.test(notice)) {
-    return "Needs attention";
+  if (/^add\b/i.test(notice)) {
+    return "Missing details";
+  }
+
+  if (/^fix this first\b/i.test(notice)) {
+    return "Check details";
   }
 
   if (/^sign in again\b/i.test(notice) || /could not|failed|rejected|unavailable|network|timeout|connect/i.test(notice)) {
     return "Connection failed";
   }
 
-  return "Needs attention";
+  return "Check details";
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
     return "Checking WhatsApp connection...";
-  }
-
-  if (state.featureActivationNotice) {
-    return "WhatsApp needs attention. Fix the details and try again.";
-  }
-
-  const missing = getMissingFeatureActivationFields(feature);
-
-  if (missing.length) {
-    return "Add the missing details to continue.";
   }
 
   return "";
@@ -3255,7 +3249,7 @@ async function activateSelectedFeature() {
           returnFocus: getFeatureActivationFieldElement(missingFields[0]) || elements.featureStudioActivationButton,
         },
       );
-      setStatus("Needs attention");
+      setStatus("Missing details");
       return;
     }
 
@@ -3272,7 +3266,7 @@ async function activateSelectedFeature() {
           returnFocus: getFeatureActivationFieldElement("access_token") || elements.featureStudioActivationButton,
         },
       );
-      setStatus("Needs attention");
+      setStatus("Check details");
       return;
     }
 

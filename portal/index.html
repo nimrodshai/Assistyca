@@ -9,7 +9,7 @@
       content="Registered users sign in with a one-time code to continue into Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=40" />
+    <link rel="stylesheet" href="./styles.css?v=41" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -110,33 +110,6 @@
         <p id="demoCodeText" class="demo-note is-hidden"></p>
       </section>
 
-      <section
-        id="authAlertOverlay"
-        class="auth-alert-overlay is-hidden"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="authAlertTitle"
-        aria-describedby="authAlertMessage"
-      >
-        <div class="auth-alert-dialog glass-card">
-          <div class="auth-alert-head">
-            <div class="auth-alert-icon" aria-hidden="true">!</div>
-            <div class="auth-alert-copy">
-              <p id="authAlertEyebrow" class="eyebrow">Sign-in help</p>
-              <h2 id="authAlertTitle">Let’s get you set up</h2>
-              <p id="authAlertMessage" class="lede compact">
-                If you’d like access, contact me and I’ll set you up.
-              </p>
-            </div>
-          </div>
-
-          <div class="auth-alert-actions">
-            <button id="authAlertDismissButton" class="primary-button small" type="button">
-              OK
-            </button>
-          </div>
-        </div>
-      </section>
     </main>
 
     <section id="appView" class="app-shell is-hidden">
@@ -405,10 +378,6 @@
                 <small class="field-help">Adds another layer of protection for your business.</small>
               </label>
             </div>
-
-            <p id="featureActivationSummary" class="approval-note activation-summary" hidden>
-              Add the missing fields to continue.
-            </p>
 
             <div class="feature-page-actions feature-activation-actions">
               <button id="featureStudioActivationBackButton" class="text-button" type="button">
@@ -931,6 +900,34 @@ Owner said afternoons are easier."
       </div>
     </div>
 
-    <script src="./app.js?v=47"></script>
+    <section
+      id="authAlertOverlay"
+      class="auth-alert-overlay is-hidden"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="authAlertTitle"
+      aria-describedby="authAlertMessage"
+    >
+      <div class="auth-alert-dialog glass-card">
+        <div class="auth-alert-head">
+          <div class="auth-alert-icon" aria-hidden="true">!</div>
+          <div class="auth-alert-copy">
+            <p id="authAlertEyebrow" class="eyebrow">Sign-in help</p>
+            <h2 id="authAlertTitle">Let’s get you set up</h2>
+            <p id="authAlertMessage" class="lede compact">
+              If you’d like access, contact me and I’ll set you up.
+            </p>
+          </div>
+        </div>
+
+        <div class="auth-alert-actions">
+          <button id="authAlertDismissButton" class="primary-button small" type="button">
+            OK
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <script src="./app.js?v=48"></script>
   </body>
 </html>
