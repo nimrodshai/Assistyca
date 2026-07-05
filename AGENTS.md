@@ -40,6 +40,12 @@ When working here:
 - Keep shared capabilities generic and parameterized.
 - Avoid embedding client names, client secrets, or client-specific assumptions in shared code.
 
+## OpenAI Access
+
+- All tools and shared services must use `packages/infrastructure/openai_api.py` as the single integration point for OpenAI requests.
+- Do not call the OpenAI API directly from tool code, client code, or portal code.
+- If a workflow needs new OpenAI behavior, extend the centralized gateway first so request construction, event emission, token tracking, and billing stay consistent.
+
 ## Secrets And Access
 
 - Never commit secrets to the repo.
