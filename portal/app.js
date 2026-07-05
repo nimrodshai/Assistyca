@@ -214,6 +214,7 @@ const state = {
   selectedFeatureId: null,
   featureStudioView: "overview",
   featureStudioMenuOpen: false,
+  featureActivationNotice: "",
   selectedSimulatorId: null,
   billingReport: null,
   billingLoading: false,
@@ -1033,7 +1034,12 @@ function getFeatureActivationProgress(feature = getSelectedFeature()) {
 
 function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking setup";
+    return "Checking connection";
+  }
+
+  const noticeLabel = getFeatureActivationNoticeLabel();
+  if (noticeLabel && !isFeatureActivated(feature)) {
+    return noticeLabel;
   }
 
   if (isFeatureActivated(feature)) {
@@ -1057,9 +1063,39 @@ function getFeatureActivationProgressNote() {
   return "";
 }
 
-function getFeatureActivationSummary(feature = getSelectedFeature()) {
-  if (isFeatureActivationBusy(feature)) {
+function getFeatureActivationNoticeLabel() {
+  const notice = String(state.featureActivationNotice || "").trim();
+  if (!notice) {
     return "";
+  }
+
+  if (/^checking\b/i.test(notice)) {
+    return "Checking connection";
+  }
+
+  if (/^whatsapp confirmed\b/i.test(notice)) {
+    return "Connection checked";
+  }
+
+  if (/^add\b/i.test(notice) || /^fix this first\b/i.test(notice)) {
+    return "Needs attention";
+  }
+
+  if (/^sign in again\b/i.test(notice) || /could not confirm|did not respond/i.test(notice)) {
+    return "Connection failed";
+  }
+
+  return "Needs attention";
+}
+
+function getFeatureActivationSummary(feature = getSelectedFeature()) {
+  const activationNotice = String(state.featureActivationNotice || "").trim();
+  if (activationNotice) {
+    return activationNotice;
+  }
+
+  if (isFeatureActivationBusy(feature)) {
+    return "Checking WhatsApp connection...";
   }
 
   const missing = getMissingFeatureActivationFields(feature);
@@ -1077,7 +1113,12 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking setup";
+    return "Checking connection";
+  }
+
+  const noticeLabel = getFeatureActivationNoticeLabel();
+  if (noticeLabel && !isFeatureActivated(feature)) {
+    return noticeLabel;
   }
 
   if (isFeatureActivated(feature)) {
@@ -1856,6 +1897,10 @@ function setStatus(message) {
 
   elements.saveState.textContent = `${text} · ${time}`;
   elements.saveState.classList.toggle("is-loading", /^checking\b/i.test(text));
+}
+
+function clearFeatureActivationNotice() {
+  state.featureActivationNotice = "";
 }
 
 function setHashForTab(tab, itemId = null, subview = null) {
@@ -3178,35 +3223,74 @@ async function activateSelectedFeature() {
   }
 
   featureActivationBusy = true;
+  state.featureActivationNotice = "Checking WhatsApp connection...";
   try {
     updateFeatureStudioHeader();
-    setStatus("Checking setup...");
+    setStatus("Checking WhatsApp connection...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 
     const missingFields = getMissingFeatureActivationFields(feature);
     if (missingFields.length) {
+      const message = `Add ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} to continue.`;
+      state.featureActivationNotice = message;
+      updateFeatureStudioHeader();
       await new Promise((resolve) => window.setTimeout(resolve, 900));
-      setStatus(`Add ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} to continue.`);
+      setStatus(message);
       return;
     }
 
     const testIssues = getFeatureActivationTestIssues(feature);
     if (testIssues.length) {
+      const message = `Fix this first: ${testIssues[0]}`;
+      state.featureActivationNotice = message;
+      updateFeatureStudioHeader();
       await new Promise((resolve) => window.setTimeout(resolve, 900));
-      setStatus(`Fix this first: ${testIssues[0]}`);
+      setStatus(message);
       return;
     }
 
-    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    const authToken = String(authSession?.token || "").trim();
+    if (!authToken) {
+      const message = "Sign in again to check the connection.";
+      state.featureActivationNotice = message;
+      updateFeatureStudioHeader();
+      setStatus(message);
+      return;
+    }
+
+    const whatsapp = getSelectedFeatureWhatsApp(feature);
+    const response = await apiRequest("/api/whatsapp/test", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: {
+        access_token: whatsapp.access_token,
+        phone_number_id: whatsapp.phone_number_id,
+      },
+      timeoutMs: 30000,
+    });
 
     feature.activated = true;
+    clearFeatureActivationNotice();
     state.featureStudioView = "editor";
     persistClientState();
     closeFeatureStudioMenu();
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    setStatus("Your tool is live.");
+    const activationLabel = String(response.displayPhoneNumber || response.verifiedName || "").trim();
+    setStatus(
+      activationLabel
+        ? `WhatsApp confirmed the connection for ${activationLabel}. Your tool is live.`
+        : "WhatsApp confirmed the connection. Your tool is live."
+    );
+  } catch (error) {
+    const message = formatApiErrorMessage(error, "WhatsApp could not confirm the connection. Check the details and try again.");
+    state.featureActivationNotice = message;
+    updateFeatureStudioHeader();
+    setStatus(message);
+    return;
   } finally {
     featureActivationBusy = false;
     updateFeatureStudioHeader();
@@ -3219,6 +3303,7 @@ function startFeatureActivation() {
     return;
   }
 
+  clearFeatureActivationNotice();
   state.featureStudioView = "activation";
   closeMenu();
   closeFeatureStudioMenu();
@@ -3235,6 +3320,7 @@ function deactivateSelectedFeature() {
   }
 
   feature.activated = false;
+  clearFeatureActivationNotice();
   state.featureStudioView = "overview";
   persistClientState();
   closeFeatureStudioMenu();
@@ -3292,6 +3378,9 @@ function syncFeatureActivationField(key) {
 
     feature.whatsapp[key] = event.target.value;
 
+    if (!featureActivationBusy) {
+      clearFeatureActivationNotice();
+    }
     persistClientState();
     updateFeatureStudioHeader();
     setStatus("Setup saved.");
@@ -3403,10 +3492,28 @@ function updateFeatureStudioHeader() {
     elements.featureActivationSummary.classList.toggle("is-loading", activationBusy);
   }
   if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.textContent = activationBusy ? "Checking setup..." : "Activate now";
+    elements.featureStudioActivationButton.textContent = activationBusy ? "Checking connection..." : "Activate now";
     elements.featureStudioActivationButton.disabled = isActivated || activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
+  }
+  if (elements.featureStudioActivationBackButton) {
+    elements.featureStudioActivationBackButton.disabled = activationBusy;
+  }
+  if (elements.featureActivationAccessTokenInput) {
+    elements.featureActivationAccessTokenInput.disabled = activationBusy;
+  }
+  if (elements.featureActivationPhoneNumberIdInput) {
+    elements.featureActivationPhoneNumberIdInput.disabled = activationBusy;
+  }
+  if (elements.featureActivationVerifyTokenInput) {
+    elements.featureActivationVerifyTokenInput.disabled = activationBusy;
+  }
+  if (elements.featureActivationOwnerWaIdInput) {
+    elements.featureActivationOwnerWaIdInput.disabled = activationBusy;
+  }
+  if (elements.featureActivationAppSecretInput) {
+    elements.featureActivationAppSecretInput.disabled = activationBusy;
   }
   if (elements.featureStudioActivationSection) {
     elements.featureStudioActivationSection.classList.toggle("is-loading", activationBusy);

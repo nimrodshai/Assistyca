@@ -39,6 +39,8 @@ from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
+from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 
 
 EMAIL_RE = re.compile(r"^\S+@\S+\.\S+$")
@@ -893,7 +895,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/") or self.path == "/api/billing" or self.path.startswith("/api/billing/"):
+        if (
+            self.path.startswith("/api/auth/")
+            or self.path == "/api/billing"
+            or self.path.startswith("/api/billing/")
+            or self.path.startswith("/api/whatsapp/")
+        ):
             self.send_response(HTTPStatus.NO_CONTENT)
             send_api_headers(self)
             self.end_headers()
@@ -902,14 +909,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/") or self.path == "/api/billing" or self.path.startswith("/api/billing/"):
+        if (
+            self.path.startswith("/api/auth/")
+            or self.path == "/api/billing"
+            or self.path.startswith("/api/billing/")
+        ):
             self._handle_api_get()
             return
 
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path.startswith("/api/auth/") or self.path == "/api/billing" or self.path.startswith("/api/billing/"):
+        if (
+            self.path.startswith("/api/auth/")
+            or self.path == "/api/billing"
+            or self.path.startswith("/api/billing/")
+            or self.path.startswith("/api/whatsapp/")
+        ):
             self._handle_api_post()
             return
 
@@ -978,6 +994,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if self.path.startswith("/api/auth/logout"):
             self._handle_logout()
+            return
+
+        if self.path.startswith("/api/whatsapp/test"):
+            self._handle_whatsapp_test()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -1100,6 +1120,81 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         self.store.revoke_session(token)
         json_response(self, HTTPStatus.OK, {"ok": True})
+
+    def _handle_whatsapp_test(self) -> None:
+        token = self._extract_session_token()
+        session = self.store.get_session(token) if token else None
+        if session is None:
+            json_response(self, HTTPStatus.UNAUTHORIZED, {
+                "ok": False,
+                "error": "unauthorized",
+                "message": "Sign in again to check the connection.",
+            })
+            return
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        access_token = str(payload.get("access_token", "")).strip()
+        phone_number_id = str(payload.get("phone_number_id", "")).strip()
+
+        if not access_token or not phone_number_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_fields",
+                "message": "Add the access token and phone number ID first.",
+            })
+            return
+
+        try:
+            result = test_whatsapp_connection(
+                access_token=access_token,
+                phone_number_id=phone_number_id,
+            )
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_fields",
+                "message": str(exc),
+            })
+            return
+        except WhatsAppConnectionError as exc:
+            response: dict[str, Any] = {
+                "ok": False,
+                "error": "whatsapp_test_failed",
+                "message": str(exc),
+            }
+            if exc.details:
+                response["details"] = exc.details
+            json_response(self, HTTPStatus.BAD_GATEWAY, response)
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to the UI
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "whatsapp_test_failed",
+                "message": f"WhatsApp could not confirm the connection: {exc}",
+            })
+            return
+
+        display_phone_number = result.get("display_phone_number", "")
+        verified_name = result.get("verified_name", "")
+        success_label = display_phone_number or verified_name or phone_number_id
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "WhatsApp confirmed the connection.",
+            "phoneNumberId": result.get("phone_number_id", phone_number_id),
+            "displayPhoneNumber": display_phone_number,
+            "verifiedName": verified_name,
+            "label": success_label,
+        })
 
     def _extract_session_token(self) -> str:
         auth_header = str(self.headers.get("Authorization", "")).strip()
