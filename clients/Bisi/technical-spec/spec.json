@@ -1,0 +1,107 @@
+{
+  "meta": {
+    "title": "Technical / Product Spec",
+    "client_name": "Bisi",
+    "project_name": "Client Support Service - Onboarding Issues",
+    "prepared_by": "Codex",
+    "date": "2026-07-05",
+    "status": "Draft",
+    "language": "en",
+    "audience": "internal"
+  },
+  "overview": {
+    "problem_statement": "The first phase of the new client support service needs to handle onboarding issues so new clients do not get stuck during setup, access, or first-use tasks.",
+    "product_goal": "Build a support service that can detect onboarding requests, classify the blocker, guide the client through the next step, log the case, and escalate anything that cannot be resolved automatically.",
+    "recommended_shape": "Use one support orchestrator with onboarding intent detection, a small playbook library, a case tracker, and a human escalation path.",
+    "implementation_notes": "Keep this phase narrow: onboarding only, copy-ready replies only, no auto-send, and no general client support until a later roadmap item."
+  },
+  "sections": {
+    "goals": [
+      "Recognize onboarding-related requests quickly and separate them from general support.",
+      "Classify the onboarding issue type and attach it to the right client case.",
+      "Capture the minimum required context before giving instructions or escalating.",
+      "Generate step-by-step guidance from onboarding playbooks for common blockers.",
+      "Track case state from open to resolved so the team can see where the client is stuck.",
+      "Escalate ambiguous or blocked cases to a human with enough context to act fast.",
+      "Measure the most common onboarding blockers and the time it takes to resolve them."
+    ],
+    "architecture": [
+      "An existing messaging surface receives the client request and forwards it to a support orchestrator.",
+      "An onboarding intent classifier decides whether the message belongs in the onboarding support flow.",
+      "A case tracker stores the client, issue type, onboarding stage, status, and ownership for every onboarding issue.",
+      "A playbook resolver matches the issue type to a predefined onboarding playbook and drafts the next step or reply.",
+      "A human escalation path creates a handoff task when the resolver cannot confidently finish the case.",
+      "A logging layer stores inbound messages, drafted replies, state changes, and resolution notes for audit and review.",
+      "A lightweight metrics layer counts issue types, reopen rates, unresolved cases, and average time to resolution."
+    ],
+    "data_model": [
+      "cases: case_id, client_id, status, issue_type, onboarding_stage, confidence, owner, created_at, updated_at, last_inbound_at, last_outbound_at, due_at, escalation_reason, resolution_summary.",
+      "messages: message_id, case_id, direction, source_channel, sender_role, body, timestamp, external_message_id.",
+      "playbooks: playbook_id, issue_type, required_fields, steps, fallback_questions, escalation_rules, version, last_reviewed_at.",
+      "tasks: task_id, case_id, task_type, status, assignee, due_at, notes, created_at, updated_at.",
+      "reminders: reminder_id, case_id, due_at, status, last_checked_at, trigger_reason."
+    ],
+    "automation": [
+      "On inbound message, classify the request and either open a new onboarding case or attach it to the existing one.",
+      "If the issue type is known and the required context is present, generate a copy-ready resolution message from the relevant playbook.",
+      "If key information is missing, ask one clarifying question instead of guessing.",
+      "If the issue is blocked, low confidence, or outside the onboarding playbooks, create a human escalation task with a summary of the conversation.",
+      "If a case stays open past the configured reminder window, create a follow-up reminder so the team can re-engage the client.",
+      "When the case is resolved, update the status and store the resolution summary so the same blocker can be reviewed later."
+    ],
+    "workflows": [
+      "New onboarding issue flow: a client sends a setup-related question, the service classifies it as onboarding, and the case tracker opens or updates the case.",
+      "Clarification flow: the service detects missing context, asks for the minimum needed detail, and pauses until the client replies.",
+      "Resolution flow: the playbook resolver returns a copy-ready answer, the team reviews it, and the case is marked resolved once the client confirms success.",
+      "Escalation flow: if the playbook cannot solve the issue, the service creates a human handoff with the issue type, client context, and recent messages.",
+      "Follow-up flow: if the client goes quiet while the case is still open, a reminder is created so the team can re-engage."
+    ],
+    "implementation_plan": [
+      "Define the onboarding issue taxonomy and decide which issue types are in v1.",
+      "Collect the initial onboarding playbooks, required fields, and fallback questions for each issue type.",
+      "Implement the onboarding classifier and confidence threshold for routing.",
+      "Build the case store and state transitions for open, waiting, escalated, resolved, and closed.",
+      "Implement the playbook resolver so it can draft a reply from the correct onboarding steps.",
+      "Add the escalation handoff summary and human task creation path.",
+      "Add reminder logic for stalled onboarding cases and a simple way to review unresolved items.",
+      "Add logging and metrics so the team can see the most common onboarding blockers and the service's performance.",
+      "Test the flow with real sample conversations and refine the playbooks before expanding the scope."
+    ],
+    "non_goals": [
+      "Do not support general client support categories in v1.",
+      "Do not auto-send messages on behalf of the team.",
+      "Do not replace a CRM or full ticketing system.",
+      "Do not handle billing, renewals, or product feature requests in this phase.",
+      "Do not build a public self-serve help center yet."
+    ],
+    "acceptance_criteria": [
+      "An onboarding-related message opens or updates a case within the support flow.",
+      "The service can identify the main onboarding issue types in v1 and draft a copy-ready response for each one.",
+      "If the service lacks confidence or needs more information, it asks a clarifying question instead of guessing.",
+      "Blocked cases create a human handoff that includes the client, issue type, recent context, and next action.",
+      "Every case has a visible status and a final resolution summary.",
+      "Non-onboarding requests are not routed into this service by default."
+    ],
+    "risks": [
+      "Short or vague requests may be misclassified without a clear taxonomy and confidence threshold.",
+      "Incomplete onboarding playbooks may leave the service unable to resolve common blockers.",
+      "If the support surface does not store enough client state, the service may ask for avoidable clarifying questions.",
+      "Time-based reminders can become noisy if the case status is not updated promptly.",
+      "A weak handoff summary can slow down human escalation and make the client wait longer."
+    ],
+    "open_questions": [
+      "Which support channel is in scope for v1: WhatsApp only, or also email or portal intake?",
+      "What exact onboarding issue types should be covered in the first release?",
+      "Who owns escalations once the case is handed off to a human?",
+      "Should the service support more than one language in the first phase?",
+      "What is the default reminder window for cases that stay unresolved?"
+    ],
+    "future_ideas": [
+      "Add a visible onboarding progress tracker so the team can see the client's setup stage at a glance.",
+      "Add proactive onboarding reminders before a client gets stuck.",
+      "Expand the same support service to billing, renewals, and general account help after onboarding is stable.",
+      "Add multilingual reply templates for clients who prefer Hebrew or English.",
+      "Add analytics that show which onboarding step causes the most friction."
+    ]
+  }
+}
