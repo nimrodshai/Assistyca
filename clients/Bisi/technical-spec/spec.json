@@ -2,7 +2,7 @@
   "meta": {
     "title": "Technical / Product Spec",
     "client_name": "Bisi",
-    "project_name": "Client Support Service - Onboarding Issues",
+    "project_name": "Client Activation Support Service - Onboarding Retention",
     "prepared_by": "Codex",
     "date": "2026-07-05",
     "status": "Draft",
@@ -10,98 +10,99 @@
     "audience": "internal"
   },
   "overview": {
-    "problem_statement": "The first phase of the new client support service needs to handle onboarding issues so new clients do not get stuck during setup, access, or first-use tasks.",
-    "product_goal": "Build a support service that can detect onboarding requests, classify the blocker, guide the client through the next step, log the case, and escalate anything that cannot be resolved automatically.",
-    "recommended_shape": "Use one support orchestrator with onboarding intent detection, a small playbook library, a case tracker, and a human escalation path.",
-    "implementation_notes": "Keep this phase narrow: onboarding only, copy-ready replies only, no auto-send, and no general client support until a later roadmap item."
+    "problem_statement": "The first phase of the new client support service needs to keep new clients active after they create their first task, so they do not disappear after setup begins.",
+    "product_goal": "Build a support service that watches for task creation, waits 15 minutes of inactivity, and then sends the right onboarding nudge based on whether the client can assign the task, create another task, or needs to add an employee first.",
+    "recommended_shape": "Use one support orchestrator with task-activation tracking, employee-aware branching, a 15-minute reminder scheduler, and a human escalation path.",
+    "implementation_notes": "Keep this phase narrow: onboarding retention around the first task, one automatic 15-minute nudge, no general client support, and no unrelated workflow expansion yet."
   },
   "sections": {
     "goals": [
-      "Recognize onboarding-related requests quickly and separate them from general support.",
-      "Classify the onboarding issue type and attach it to the right client case.",
-      "Capture the minimum required context before giving instructions or escalating.",
-      "Generate step-by-step guidance from onboarding playbooks for common blockers.",
-      "Track case state from open to resolved so the team can see where the client is stuck.",
+      "Recognize first-time activation events and separate them from general support.",
+      "Detect when a client has created a task but has gone inactive for the 15-minute onboarding window.",
+      "Check whether the client has employees available for task assignment.",
+      "Send the correct onboarding nudge based on client state.",
+      "Track case state from first task created to active user so the team can see who is still at risk of dropping off.",
       "Escalate ambiguous or blocked cases to a human with enough context to act fast.",
-      "Measure the most common onboarding blockers and the time it takes to resolve them."
+      "Measure activation drop-off, employee setup completion, and the time it takes to get a client past the first-task stage."
     ],
     "architecture": [
-      "An existing messaging surface receives the client request and forwards it to a support orchestrator.",
-      "An onboarding intent classifier decides whether the message belongs in the onboarding support flow.",
-      "A case tracker stores the client, issue type, onboarding stage, status, and ownership for every onboarding issue.",
-      "A playbook resolver matches the issue type to a predefined onboarding playbook and drafts the next step or reply.",
-      "A human escalation path creates a handoff task when the resolver cannot confidently finish the case.",
-      "A logging layer stores inbound messages, drafted replies, state changes, and resolution notes for audit and review.",
-      "A lightweight metrics layer counts issue types, reopen rates, unresolved cases, and average time to resolution."
+      "An existing messaging or event surface receives the first task creation event and forwards it to a support orchestrator.",
+      "An activation tracker starts a 15-minute onboarding window when the client creates their first task or returns to an unfinished activation state.",
+      "A client state store keeps employee count, task assignment status, onboarding stage, and reminder state for every client.",
+      "A nudge resolver checks the current state and chooses the right message template.",
+      "A reminder scheduler sends one automatic follow-up after the inactivity window expires.",
+      "A human escalation path creates a handoff task when the resolver cannot confidently choose the next action.",
+      "A logging layer stores inbound events, outbound nudges, state changes, and resolution notes for audit and review.",
+      "A lightweight metrics layer counts activation drop-off, employee setup completion, nudges sent, and first-task success rate."
     ],
     "data_model": [
-      "cases: case_id, client_id, status, issue_type, onboarding_stage, confidence, owner, created_at, updated_at, last_inbound_at, last_outbound_at, due_at, escalation_reason, resolution_summary.",
-      "messages: message_id, case_id, direction, source_channel, sender_role, body, timestamp, external_message_id.",
-      "playbooks: playbook_id, issue_type, required_fields, steps, fallback_questions, escalation_rules, version, last_reviewed_at.",
-      "tasks: task_id, case_id, task_type, status, assignee, due_at, notes, created_at, updated_at.",
-      "reminders: reminder_id, case_id, due_at, status, last_checked_at, trigger_reason."
+      "cases: case_id, client_id, status, onboarding_stage, last_task_created_at, last_client_action_at, employee_count, unassigned_task_count, reminder_due_at, reminder_sent_at, last_nudge_type, escalation_reason, resolution_summary.",
+      "tasks: task_id, client_id, status, assignee_id, created_at, updated_at, source_channel, external_task_id.",
+      "employees: employee_id, client_id, status, created_at, updated_at.",
+      "nudges: nudge_id, case_id, trigger_type, template_version, due_at, sent_at, status, message_body.",
+      "events: event_id, client_id, event_type, payload, created_at, source_channel."
     ],
     "automation": [
-      "On inbound message, classify the request and either open a new onboarding case or attach it to the existing one.",
-      "If the issue type is known and the required context is present, generate a copy-ready resolution message from the relevant playbook.",
-      "If key information is missing, ask one clarifying question instead of guessing.",
-      "If the issue is blocked, low confidence, or outside the onboarding playbooks, create a human escalation task with a summary of the conversation.",
-      "If a case stays open past the configured reminder window, create a follow-up reminder so the team can re-engage the client.",
-      "When the case is resolved, update the status and store the resolution summary so the same blocker can be reviewed later."
+      "On first task creation, open an activation case and start the 15-minute onboarding timer.",
+      "If the client becomes active again before the timer expires, reset or cancel the pending nudge.",
+      "When the timer expires and the client has employees available, send a message that says they can assign the current task or create another task.",
+      "When the timer expires and the client has no employees, send a message that says the first step is to add an employee.",
+      "If the task is already assigned and the client is active, do not send the onboarding nudge.",
+      "If the client is blocked or the state is unclear, create a human escalation task with a summary of the relevant task and employee context."
     ],
     "workflows": [
-      "New onboarding issue flow: a client sends a setup-related question, the service classifies it as onboarding, and the case tracker opens or updates the case.",
-      "Clarification flow: the service detects missing context, asks for the minimum needed detail, and pauses until the client replies.",
-      "Resolution flow: the playbook resolver returns a copy-ready answer, the team reviews it, and the case is marked resolved once the client confirms success.",
-      "Escalation flow: if the playbook cannot solve the issue, the service creates a human handoff with the issue type, client context, and recent messages.",
-      "Follow-up flow: if the client goes quiet while the case is still open, a reminder is created so the team can re-engage."
+      "First-task activation flow: a client creates their first task, the service opens an activation case, and a 15-minute inactivity timer starts.",
+      "Employee-aware follow-up flow: the timer expires, the service checks whether employees exist, and it sends either the assign-task prompt or the add-employee prompt.",
+      "Return-to-active flow: the client assigns the task, creates another task, or adds an employee before the timer fires, and the onboarding nudge is canceled.",
+      "Escalation flow: if the task state is inconsistent or the client is blocked, the service creates a human handoff with the task context, employee count, and next recommended action.",
+      "Ongoing activation flow: once the client has assigned the task or added an employee, the case is updated to reflect that onboarding is progressing."
     ],
     "implementation_plan": [
-      "Define the onboarding issue taxonomy and decide which issue types are in v1.",
-      "Collect the initial onboarding playbooks, required fields, and fallback questions for each issue type.",
-      "Implement the onboarding classifier and confidence threshold for routing.",
-      "Build the case store and state transitions for open, waiting, escalated, resolved, and closed.",
-      "Implement the playbook resolver so it can draft a reply from the correct onboarding steps.",
+      "Define the activation-state taxonomy and decide what counts as a first-task onboarding case in v1.",
+      "Collect the onboarding message templates for the assign-task and add-employee branches.",
+      "Implement the event intake that opens or updates an activation case on first task creation.",
+      "Build the client state store and transitions for active, waiting, nudged, escalated, and resolved.",
+      "Implement the 15-minute scheduler and the branch logic that checks employee availability before sending a nudge.",
       "Add the escalation handoff summary and human task creation path.",
-      "Add reminder logic for stalled onboarding cases and a simple way to review unresolved items.",
-      "Add logging and metrics so the team can see the most common onboarding blockers and the service's performance.",
-      "Test the flow with real sample conversations and refine the playbooks before expanding the scope."
+      "Add logging and metrics so the team can see activation drop-off, reminders sent, and first-task success.",
+      "Test the flow with sample activation states and refine the message templates before expanding the scope."
     ],
     "non_goals": [
       "Do not support general client support categories in v1.",
-      "Do not auto-send messages on behalf of the team.",
+      "Do not build a full CRM or task management system.",
+      "Do not auto-send messages beyond the onboarding nudge defined in this phase.",
       "Do not replace a CRM or full ticketing system.",
       "Do not handle billing, renewals, or product feature requests in this phase.",
       "Do not build a public self-serve help center yet."
     ],
     "acceptance_criteria": [
-      "An onboarding-related message opens or updates a case within the support flow.",
-      "The service can identify the main onboarding issue types in v1 and draft a copy-ready response for each one.",
-      "If the service lacks confidence or needs more information, it asks a clarifying question instead of guessing.",
-      "Blocked cases create a human handoff that includes the client, issue type, recent context, and next action.",
-      "Every case has a visible status and a final resolution summary.",
+      "A client's first task opens or updates an activation case within the support flow.",
+      "After 15 minutes of inactivity, the service sends the correct nudge based on whether the client has employees.",
+      "If the client has no employees, the message tells them to add an employee first.",
+      "If the client has employees, the message tells them they can assign the current task or create another task.",
+      "If the client returns to active use before the timer expires, the nudge is canceled or suppressed.",
       "Non-onboarding requests are not routed into this service by default."
     ],
     "risks": [
-      "Short or vague requests may be misclassified without a clear taxonomy and confidence threshold.",
-      "Incomplete onboarding playbooks may leave the service unable to resolve common blockers.",
-      "If the support surface does not store enough client state, the service may ask for avoidable clarifying questions.",
-      "Time-based reminders can become noisy if the case status is not updated promptly.",
-      "A weak handoff summary can slow down human escalation and make the client wait longer."
+      "If the 15-minute window is too aggressive, the reminder can feel noisy instead of helpful.",
+      "Missing or stale employee data can cause the wrong onboarding nudge to be sent.",
+      "If task assignment events are delayed, the system may send a nudge after the client has already progressed.",
+      "A weak handoff summary can slow down human escalation and make the client wait longer.",
+      "If activation success is not measured clearly, the team may not know whether the onboarding flow is actually keeping clients engaged."
     ],
     "open_questions": [
       "Which support channel is in scope for v1: WhatsApp only, or also email or portal intake?",
-      "What exact onboarding issue types should be covered in the first release?",
+      "Should the 15-minute timer start from first task creation, last task update, or the client's last meaningful action?",
+      "Is the onboarding nudge a one-time message, or should it repeat if the client stays inactive?",
       "Who owns escalations once the case is handed off to a human?",
-      "Should the service support more than one language in the first phase?",
-      "What is the default reminder window for cases that stay unresolved?"
+      "Should the service support more than one language in the first phase?"
     ],
     "future_ideas": [
-      "Add a visible onboarding progress tracker so the team can see the client's setup stage at a glance.",
-      "Add proactive onboarding reminders before a client gets stuck.",
-      "Expand the same support service to billing, renewals, and general account help after onboarding is stable.",
-      "Add multilingual reply templates for clients who prefer Hebrew or English.",
-      "Add analytics that show which onboarding step causes the most friction."
+      "Add a visible onboarding progress tracker so the team can see the client's activation stage at a glance.",
+      "Add a second follow-up nudge if the client still does not respond after the first reminder.",
+      "Expand the same support service to billing, renewals, and general account help after activation is stable.",
+      "Add multilingual nudge templates for clients who prefer Hebrew or English.",
+      "Add analytics that show whether adding an employee or assigning the first task has the biggest impact on retention."
     ]
   }
 }
