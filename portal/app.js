@@ -683,7 +683,7 @@ function openAuthAlert(title, message, options = {}) {
 
 function openFeatureActivationAlert(title, message, options = {}) {
   openAuthAlert(title, message, {
-    eyebrow: options.eyebrow || "Connection check",
+    eyebrow: options.eyebrow || "Before you turn it on",
     returnFocus: options.returnFocus || elements.featureStudioActivationButton,
   });
 }
@@ -994,6 +994,27 @@ function formatFeatureActivationFieldLabel(key) {
   return labels[key] || key;
 }
 
+function formatReadableList(items = []) {
+  const values = items
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+
+  if (!values.length) {
+    return "";
+  }
+
+  if (values.length === 1) {
+    return values[0];
+  }
+
+  if (values.length === 2) {
+    return `${values[0]} and ${values[1]}`;
+  }
+
+  const last = values[values.length - 1];
+  return `${values.slice(0, -1).join(", ")}, and ${last}`;
+}
+
 function getFeatureActivationFieldElement(key) {
   const elementsByKey = {
     access_token: elements.featureActivationAccessTokenInput,
@@ -1021,19 +1042,39 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const issues = [];
 
   if (!accessToken || accessToken.length < 16) {
-    issues.push("Access token looks too short. Paste the full token.");
+    issues.push({
+      field: "access_token",
+      title: "Paste the full access token",
+      message: "This token looks too short.",
+    });
   }
   if (!/^\d+$/.test(phoneNumberId)) {
-    issues.push("Phone number ID should contain numbers only.");
+    issues.push({
+      field: "phone_number_id",
+      title: "Check the Phone number ID",
+      message: "Use numbers only.",
+    });
   }
   if (!/^\d+$/.test(ownerWaId)) {
-    issues.push("Owner WhatsApp ID should contain numbers only.");
+    issues.push({
+      field: "owner_wa_id",
+      title: "Check the Owner WhatsApp ID",
+      message: "Use numbers only.",
+    });
   }
   if (!verifyToken || verifyToken === "change-me") {
-    issues.push("Confirmation token still looks like a placeholder. Replace it with your own code.");
+    issues.push({
+      field: "verify_token",
+      title: "Replace the confirmation code",
+      message: "Use your own code instead of the example.",
+    });
   }
   if (appSecret && appSecret.length < 8) {
-    issues.push("App secret looks too short. Check the key and try again.");
+    issues.push({
+      field: "app_secret",
+      title: "Check the app secret",
+      message: "This key looks too short.",
+    });
   }
 
   return issues;
@@ -1095,15 +1136,35 @@ function getFeatureActivationNoticeLabel() {
     return "Connection checked";
   }
 
-  if (/^add\b/i.test(notice)) {
+  if (/^add the missing details\b/i.test(notice) || /^please add\b/i.test(notice)) {
     return "Missing details";
   }
 
-  if (/^fix this first\b/i.test(notice)) {
-    return "Check details";
+  if (/^paste the full access token\b/i.test(notice)) {
+    return "Access token";
   }
 
-  if (/^sign in again\b/i.test(notice) || /could not|failed|rejected|unavailable|network|timeout|connect/i.test(notice)) {
+  if (/^check the phone number id\b/i.test(notice)) {
+    return "Phone number ID";
+  }
+
+  if (/^check the owner whatsapp id\b/i.test(notice)) {
+    return "Owner WhatsApp ID";
+  }
+
+  if (/^replace the confirmation code\b/i.test(notice)) {
+    return "Confirmation code";
+  }
+
+  if (/^check the app secret\b/i.test(notice)) {
+    return "App secret";
+  }
+
+  if (/^sign in again\b/i.test(notice)) {
+    return "Sign in again";
+  }
+
+  if (/^connection failed\b/i.test(notice) || /could not|failed|rejected|unavailable|network|timeout|connect/i.test(notice)) {
     return "Connection failed";
   }
 
@@ -3238,14 +3299,15 @@ async function activateSelectedFeature() {
 
     const missingFields = getMissingFeatureActivationFields(feature);
     if (missingFields.length) {
-      const message = `Add ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} to continue.`;
-      state.featureActivationNotice = message;
+      const labels = missingFields.map(formatFeatureActivationFieldLabel);
+      const message = `Please add ${formatReadableList(labels)}.`;
+      state.featureActivationNotice = "Add the missing details";
       updateFeatureStudioHeader();
       openFeatureActivationAlert(
-        "Missing details",
+        "Add the missing details",
         message,
         {
-          eyebrow: "Connection check",
+          eyebrow: "Before you turn it on",
           returnFocus: getFeatureActivationFieldElement(missingFields[0]) || elements.featureStudioActivationButton,
         },
       );
@@ -3255,15 +3317,15 @@ async function activateSelectedFeature() {
 
     const testIssues = getFeatureActivationTestIssues(feature);
     if (testIssues.length) {
-      const message = `Fix this first: ${testIssues[0]}`;
-      state.featureActivationNotice = message;
+      const issue = testIssues[0];
+      state.featureActivationNotice = issue.title;
       updateFeatureStudioHeader();
       openFeatureActivationAlert(
-        "Check this first",
-        message,
+        issue.title,
+        issue.message,
         {
-          eyebrow: "Connection check",
-          returnFocus: getFeatureActivationFieldElement("access_token") || elements.featureStudioActivationButton,
+          eyebrow: "Before you turn it on",
+          returnFocus: getFeatureActivationFieldElement(issue.field) || elements.featureStudioActivationButton,
         },
       );
       setStatus("Check details");
@@ -3272,14 +3334,14 @@ async function activateSelectedFeature() {
 
     const authToken = String(authSession?.token || "").trim();
     if (!authToken) {
-      const message = "Sign in again to check the connection.";
-      state.featureActivationNotice = message;
+      const message = "Sign in again so we can check the connection.";
+      state.featureActivationNotice = "Sign in again";
       updateFeatureStudioHeader();
       openFeatureActivationAlert(
         "Sign in again",
         message,
         {
-          eyebrow: "Connection check",
+          eyebrow: "Before you turn it on",
           returnFocus: elements.featureStudioActivationButton,
         },
       );
@@ -3316,13 +3378,13 @@ async function activateSelectedFeature() {
     );
   } catch (error) {
     const message = formatApiErrorMessage(error, "WhatsApp could not confirm the connection. Check the details and try again.");
-    state.featureActivationNotice = message;
+    state.featureActivationNotice = "Connection failed";
     updateFeatureStudioHeader();
     openFeatureActivationAlert(
-      "WhatsApp connection failed",
+      "Connection failed",
       message,
       {
-        eyebrow: "Connection check",
+        eyebrow: "Before you turn it on",
         returnFocus: elements.featureStudioActivationButton,
       },
     );
