@@ -53,6 +53,12 @@ When working here:
 - Keep setup and deployment scripts reusable whenever possible.
 - Run `python3 scripts/check_package_layout.py` after moving shared code between package folders.
 
+## Git Workflow
+
+- In every thread, if you make a repo change, finish by staging, committing, and pushing it before you hand back unless the user explicitly asks you not to.
+- Use focused commits with short, specific messages.
+- If a change must stay local, say so clearly before you leave it uncommitted.
+
 ## Scope Spec Workflow
 
 - Keep the source spec for each client in `clients/<client-id>/spec/spec.json`.
