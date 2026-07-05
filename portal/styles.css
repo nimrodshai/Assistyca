@@ -2623,31 +2623,6 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.45;
 }
 
-.activation-live-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  margin: 0.1rem 0 0;
-  padding: 0.38rem 0.72rem;
-  border-radius: 999px;
-  background: rgba(15, 118, 110, 0.11);
-  border: 1px solid rgba(15, 118, 110, 0.14);
-  color: var(--accent);
-  font-size: 0.82rem;
-  font-weight: 750;
-  line-height: 1.2;
-}
-
-.activation-live-state::before {
-  content: "";
-  width: 0.52rem;
-  height: 0.52rem;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.24);
-  animation: pulse 1.15s ease-in-out infinite;
-}
-
 .activation-card-head {
   display: flex;
   justify-content: space-between;
@@ -2912,18 +2887,6 @@ body[data-modal="billing"] .app-shell {
   }
   to {
     transform: rotate(360deg);
-  }
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    transform: scale(0.88);
-    opacity: 0.7;
-  }
-  50% {
-    transform: scale(1.15);
-    opacity: 1;
   }
 }
 

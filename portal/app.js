@@ -285,7 +285,6 @@ const elements = {
   featureActivationProgress: document.querySelector("#featureActivationProgress"),
   featureActivationProgressFill: document.querySelector("#featureActivationProgressFill"),
   featureActivationProgressNote: document.querySelector("#featureActivationProgressNote"),
-  featureActivationLiveState: document.querySelector("#featureActivationLiveState"),
   featureActivationSummary: document.querySelector("#featureActivationSummary"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
@@ -3358,11 +3357,6 @@ function updateFeatureStudioHeader() {
     const activationProgressNote = getFeatureActivationProgressNote(feature);
     elements.featureActivationProgressNote.textContent = activationProgressNote;
     elements.featureActivationProgressNote.hidden = !activationProgressNote;
-  }
-  if (elements.featureActivationLiveState) {
-    const liveState = activationBusy ? "One moment." : "";
-    elements.featureActivationLiveState.textContent = liveState;
-    elements.featureActivationLiveState.hidden = !liveState;
   }
   if (elements.featureStudioStatus) {
     elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
