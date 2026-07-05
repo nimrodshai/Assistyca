@@ -905,6 +905,28 @@ body[data-modal="billing"] .app-shell {
   padding-top: 0.05rem;
 }
 
+.save-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.55rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--muted-strong);
+  font-size: 0.8rem;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: 0 8px 18px rgba(25, 38, 54, 0.04);
+}
+
+.save-state.is-loading {
+  color: var(--accent);
+  border-color: rgba(15, 118, 110, 0.18);
+  background: rgba(15, 118, 110, 0.08);
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

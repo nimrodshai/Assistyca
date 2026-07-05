@@ -1848,12 +1848,14 @@ function setStatus(message) {
     return;
   }
 
+  const text = String(message || "").trim();
   const time = new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date());
 
-  elements.saveState.textContent = `${message} · ${time}`;
+  elements.saveState.textContent = `${text} · ${time}`;
+  elements.saveState.classList.toggle("is-loading", /^checking\b/i.test(text));
 }
 
 function setHashForTab(tab, itemId = null, subview = null) {
