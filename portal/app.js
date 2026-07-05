@@ -215,6 +215,7 @@ const state = {
   featureStudioView: "overview",
   featureStudioMenuOpen: false,
   featureActivationNotice: "",
+  featureActivationFieldErrors: {},
   selectedSimulatorId: null,
   billingReport: null,
   billingLoading: false,
@@ -271,7 +272,6 @@ const elements = {
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
   featureStudioChannel: document.querySelector("#featureStudioChannel"),
   featureStudioMode: document.querySelector("#featureStudioMode"),
-  featureStudioPricing: document.querySelector("#featureStudioPricing"),
   featureStudioPitch: document.querySelector("#featureStudioPitch"),
   featureStudioExampleSender: document.querySelector("#featureStudioExampleSender"),
   featureStudioExampleLabel: document.querySelector("#featureStudioExampleLabel"),
@@ -281,8 +281,10 @@ const elements = {
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   featureActivationAccessTokenInput: document.querySelector("#featureActivationAccessToken"),
   featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
+  featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
   featureActivationVerifyTokenInput: document.querySelector("#featureActivationVerifyToken"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
+  featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
   featureActivationAppSecretInput: document.querySelector("#featureActivationAppSecret"),
   featureActivationProgress: document.querySelector("#featureActivationProgress"),
   featureActivationProgressFill: document.querySelector("#featureActivationProgressFill"),
@@ -870,11 +872,6 @@ function getFeaturePricing(feature = getSelectedFeature()) {
   return normalizeFeaturePricing(feature?.pricing || DEFAULT_FEATURE_PRICING);
 }
 
-function formatFeaturePricingLabel(feature = getSelectedFeature(), currency = "USD") {
-  const pricing = getFeaturePricing(feature);
-  return `${pricing.billingMultiplier.toFixed(1)}x token cost · ${formatCurrency(pricing.minimumMonthlyCharge, currency)} minimum per tool`;
-}
-
 function buildFeaturePitch(feature = getSelectedFeature()) {
   const prompt = feature?.prompt || getSelectedPrompt();
   const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
@@ -961,7 +958,7 @@ function isFeatureActivated(feature = getSelectedFeature()) {
 }
 
 function getFeatureActivationLabel(feature = getSelectedFeature()) {
-  return isFeatureActivated(feature) ? "Active" : "Preview";
+  return isFeatureActivated(feature) ? "Active" : "Draft";
 }
 
 function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
@@ -1015,6 +1012,38 @@ function formatReadableList(items = []) {
   return `${values.slice(0, -1).join(", ")}, and ${last}`;
 }
 
+function clearFeatureActivationFieldErrors() {
+  state.featureActivationFieldErrors = {};
+}
+
+function setFeatureActivationFieldErrors(issues = []) {
+  const nextErrors = {};
+
+  for (const issue of issues) {
+    if (!issue?.field) {
+      continue;
+    }
+
+    nextErrors[issue.field] = String(issue.message || issue.title || "").trim();
+  }
+
+  state.featureActivationFieldErrors = nextErrors;
+}
+
+function clearFeatureActivationFieldError(key) {
+  if (!state.featureActivationFieldErrors?.[key]) {
+    return;
+  }
+
+  const nextErrors = { ...state.featureActivationFieldErrors };
+  delete nextErrors[key];
+  state.featureActivationFieldErrors = nextErrors;
+}
+
+function getFeatureActivationFieldError(key) {
+  return String(state.featureActivationFieldErrors?.[key] || "").trim();
+}
+
 function getFeatureActivationFieldElement(key) {
   const elementsByKey = {
     access_token: elements.featureActivationAccessTokenInput,
@@ -1042,39 +1071,19 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const issues = [];
 
   if (!accessToken || accessToken.length < 16) {
-    issues.push({
-      field: "access_token",
-      title: "Paste the full access token",
-      message: "This token looks too short.",
-    });
+    issues.push({ field: "access_token", title: "Paste the full access token", message: "This token looks too short." });
   }
   if (!/^\d+$/.test(phoneNumberId)) {
-    issues.push({
-      field: "phone_number_id",
-      title: "Check the Phone number ID",
-      message: "Use numbers only.",
-    });
+    issues.push({ field: "phone_number_id", message: "Use numbers only.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
-    issues.push({
-      field: "owner_wa_id",
-      title: "Check the Owner WhatsApp ID",
-      message: "Use numbers only.",
-    });
+    issues.push({ field: "owner_wa_id", message: "Use numbers only.", inline: true });
   }
   if (!verifyToken || verifyToken === "change-me") {
-    issues.push({
-      field: "verify_token",
-      title: "Replace the confirmation code",
-      message: "Use your own code instead of the example.",
-    });
+    issues.push({ field: "verify_token", title: "Replace the confirmation code", message: "Use your own code instead of the example." });
   }
   if (appSecret && appSecret.length < 8) {
-    issues.push({
-      field: "app_secret",
-      title: "Check the app secret",
-      message: "This key looks too short.",
-    });
+    issues.push({ field: "app_secret", title: "Check the app secret", message: "This key looks too short." });
   }
 
   return issues;
@@ -1204,7 +1213,7 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
     return ready ? "Ready to turn on" : "Setup in progress";
   }
 
-  return "Preview";
+  return "Draft";
 }
 
 function persistClientState() {
@@ -2484,7 +2493,7 @@ function markSimulatorApprovalSent() {
 }
 
 function updateStatusFromSimulator(message) {
-  setStatus(message || "Autosaved locally");
+  setStatus(message || "Saved");
 }
 
 function syncSimulatorComposerField(key) {
@@ -3149,10 +3158,7 @@ function createFeatureCard(feature) {
   const mode = document.createElement("span");
   mode.textContent = feature.mode || "Default";
 
-  const pricing = document.createElement("span");
-  pricing.textContent = formatFeaturePricingLabel(feature);
-
-  meta.append(channel, mode, pricing);
+  meta.append(channel, mode);
 
   card.append(status, head, description, meta);
   return card;
@@ -3297,6 +3303,8 @@ async function activateSelectedFeature() {
     setStatus("Checking WhatsApp connection...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 
+    clearFeatureActivationFieldErrors();
+
     const missingFields = getMissingFeatureActivationFields(feature);
     if (missingFields.length) {
       const labels = missingFields.map(formatFeatureActivationFieldLabel);
@@ -3316,6 +3324,19 @@ async function activateSelectedFeature() {
     }
 
     const testIssues = getFeatureActivationTestIssues(feature);
+    const inlineIssues = testIssues.filter((issue) => issue.inline);
+    if (inlineIssues.length) {
+      setFeatureActivationFieldErrors(inlineIssues);
+      state.featureActivationNotice = "Check details";
+      updateFeatureStudioHeader();
+      setStatus("Check details");
+      const focusField = getFeatureActivationFieldElement(inlineIssues[0].field);
+      window.requestAnimationFrame(() => {
+        focusField?.focus();
+      });
+      return;
+    }
+
     if (testIssues.length) {
       const issue = testIssues[0];
       state.featureActivationNotice = issue.title;
@@ -3364,6 +3385,7 @@ async function activateSelectedFeature() {
 
     feature.activated = true;
     clearFeatureActivationNotice();
+    clearFeatureActivationFieldErrors();
     state.featureStudioView = "editor";
     persistClientState();
     closeFeatureStudioMenu();
@@ -3403,6 +3425,7 @@ function startFeatureActivation() {
   }
 
   clearFeatureActivationNotice();
+  clearFeatureActivationFieldErrors();
   state.featureStudioView = "activation";
   closeMenu();
   closeFeatureStudioMenu();
@@ -3420,6 +3443,7 @@ function deactivateSelectedFeature() {
 
   feature.activated = false;
   clearFeatureActivationNotice();
+  clearFeatureActivationFieldErrors();
   state.featureStudioView = "overview";
   persistClientState();
   closeFeatureStudioMenu();
@@ -3464,6 +3488,37 @@ function updateFeatureActivationFields() {
   }
 }
 
+function renderFeatureActivationFieldErrors() {
+  const fieldStates = [
+    {
+      key: "phone_number_id",
+      input: elements.featureActivationPhoneNumberIdInput,
+      error: elements.featureActivationPhoneNumberIdError,
+    },
+    {
+      key: "owner_wa_id",
+      input: elements.featureActivationOwnerWaIdInput,
+      error: elements.featureActivationOwnerWaIdError,
+    },
+  ];
+
+  for (const { key, input, error } of fieldStates) {
+    if (!input || !error) {
+      continue;
+    }
+
+    const message = getFeatureActivationFieldError(key);
+    const field = input.closest(".field");
+    if (field) {
+      field.classList.toggle("has-error", Boolean(message));
+    }
+
+    input.setAttribute("aria-invalid", String(Boolean(message)));
+    error.textContent = message;
+    error.hidden = !message;
+  }
+}
+
 function syncFeatureActivationField(key) {
   return (event) => {
     const feature = getSelectedFeature();
@@ -3480,6 +3535,7 @@ function syncFeatureActivationField(key) {
     if (!featureActivationBusy) {
       clearFeatureActivationNotice();
     }
+    clearFeatureActivationFieldError(key);
     persistClientState();
     updateFeatureStudioHeader();
     setStatus("Setup saved.");
@@ -3493,7 +3549,6 @@ function updateFeatureStudioHeader() {
   }
 
   const example = buildFeatureExample(feature);
-  const pricingLabel = formatFeaturePricingLabel(feature);
   const pitch = buildFeaturePitch(feature);
   const launchUrl = String(feature.launchUrl || "").trim();
   const isActivated = isFeatureActivated(feature);
@@ -3555,9 +3610,6 @@ function updateFeatureStudioHeader() {
   elements.featureStudioDescription.textContent = feature.description || "";
   elements.featureStudioChannel.textContent = `Channel: ${feature.channel || "Web"}`;
   elements.featureStudioMode.textContent = `Mode: ${feature.mode || "Default"}`;
-  if (elements.featureStudioPricing) {
-    elements.featureStudioPricing.textContent = pricingLabel;
-  }
   if (elements.featureStudioPitch) {
     elements.featureStudioPitch.textContent = pitch;
   }
@@ -3590,6 +3642,7 @@ function updateFeatureStudioHeader() {
     elements.featureActivationSummary.hidden = !activationSummary;
     elements.featureActivationSummary.classList.toggle("is-loading", activationBusy);
   }
+  renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
     elements.featureStudioActivationButton.textContent = activationBusy ? "Checking connection..." : "Activate now";
     elements.featureStudioActivationButton.disabled = isActivated || activationBusy;
@@ -3748,7 +3801,7 @@ function renderApp() {
   updateBillingPanel();
   updateSettingsButtons();
   updateSettingsFields();
-  setStatus("Autosaved locally");
+  setStatus("Saved");
 }
 
 function renderAuth(preferredEmail = "", messageOverride = "") {
@@ -4245,7 +4298,7 @@ function syncPromptField(key) {
     updateHeader();
     updateFeatureStudioHeader();
     updatePreview();
-    setStatus("Autosaved locally");
+    setStatus("Saved");
   };
 }
 
@@ -4255,7 +4308,7 @@ function syncSettingsField(key) {
     persistClientState();
     updateHeader();
     updateSettingsFields();
-    setStatus("Autosaved locally");
+    setStatus("Saved");
   };
 }
 

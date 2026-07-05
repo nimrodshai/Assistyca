@@ -9,7 +9,7 @@
       content="Registered users sign in with a one-time code to continue into Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=41" />
+    <link rel="stylesheet" href="./styles.css?v=43" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -159,8 +159,7 @@
             </div>
           </div>
 
-          <span id="saveState" class="save-state" role="status" aria-live="polite" aria-atomic="true">
-            Ready
+          <span id="saveState" class="sr-only" role="status" aria-live="polite" aria-atomic="true">
           </span>
         </div>
       </header>
@@ -203,7 +202,7 @@
             </nav>
           </div>
           <div class="feature-page-header-actions">
-            <span id="featureStudioStatus" class="feature-status">Preview</span>
+            <span id="featureStudioStatus" class="feature-status">Draft</span>
             <div id="featureStudioMenuWrap" class="menu-wrap feature-menu-wrap is-hidden">
               <button
                 id="featureStudioMenuButton"
@@ -237,7 +236,6 @@
             <div class="feature-meta feature-page-meta">
               <span id="featureStudioChannel">Channel: Web</span>
               <span id="featureStudioMode">Mode: Default</span>
-              <span id="featureStudioPricing">1.5x token cost · $14.90 minimum per tool</span>
             </div>
 
             <p id="featureStudioPitch" class="feature-page-description feature-page-pitch">
@@ -326,8 +324,10 @@
                   autocomplete="off"
                   spellcheck="false"
                   placeholder="WhatsApp business number ID"
+                  aria-describedby="featureActivationPhoneNumberIdHelp featureActivationPhoneNumberIdError"
                 />
-                <small class="field-help">This is the number that sends replies.</small>
+                <small id="featureActivationPhoneNumberIdHelp" class="field-help">This is the number that sends replies.</small>
+                <small id="featureActivationPhoneNumberIdError" class="field-error" hidden aria-live="polite"></small>
               </label>
 
               <label class="field">
@@ -350,8 +350,10 @@
                   autocomplete="off"
                   spellcheck="false"
                   placeholder="WhatsApp ID that receives approvals"
+                  aria-describedby="featureActivationOwnerWaIdHelp featureActivationOwnerWaIdError"
                 />
-                <small class="field-help">This is the number that gets approval requests.</small>
+                <small id="featureActivationOwnerWaIdHelp" class="field-help">This is the number that gets approval requests.</small>
+                <small id="featureActivationOwnerWaIdError" class="field-error" hidden aria-live="polite"></small>
               </label>
             </div>
 
@@ -928,6 +930,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=48"></script>
+    <script src="./app.js?v=49"></script>
   </body>
 </html>
