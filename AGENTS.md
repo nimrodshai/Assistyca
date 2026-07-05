@@ -55,7 +55,7 @@ When working here:
 
 ## Git Workflow
 
-- In every thread, if you make a repo change, finish by staging, committing, and pushing it before you hand back unless the user explicitly asks you not to.
+- In every thread, if you make a repo change, finish by staging, committing, pushing, and deploying it before you hand back unless the user explicitly asks you not to.
 - Use focused commits with short, specific messages.
 - If a change must stay local, say so clearly before you leave it uncommitted.
 
