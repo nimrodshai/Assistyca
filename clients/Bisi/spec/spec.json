@@ -1,0 +1,70 @@
+{
+  "meta": {
+    "title": "Project Scope Spec",
+    "client_name": "Bisi",
+    "project_name": "Customer Support Service - Intent Routing (whatsNext)",
+    "prepared_by": "Codex",
+    "date": "2026-07-05",
+    "status": "Draft",
+    "language": "en"
+  },
+  "overview": {
+    "client_request": "Create a service called Customer Support that keeps a list of intents. In v1, only one intent is active: `whatsNext`. The handler should look at the client's current state and return the two next steps that make the most sense. Example: if the client just created a task and has no employees, the suggestions should guide them to add an employee and then either assign the task or create another task."
+  },
+  "sections": {
+    "deliverables": [
+      "Create the Customer Support service shell.",
+      "Add an intent registry that can hold multiple intents, even though v1 only enables one.",
+      "Implement the first live intent: `whatsNext`.",
+      "Read the client state needed for `whatsNext`, including employee count, task count, assignment status, and recent activity.",
+      "Return two ranked next-step suggestions from the `whatsNext` handler.",
+      "Add basic logging so the resolved intent and chosen suggestions are recorded."
+    ],
+    "workflow": [
+      "A client asks what to do next.",
+      "The service resolves the request to the `whatsNext` intent.",
+      "The handler loads the current client state.",
+      "The handler checks whether the client has employees, whether a task exists, and whether the task is assigned.",
+      "The service returns the two most sensible next steps for that state.",
+      "If the client has no employees, the first suggestion should be to add an employee.",
+      "If the client has employees and an open task, the first suggestion should be to assign the task."
+    ],
+    "assumptions": [
+      "v1 activates only one intent: `whatsNext`.",
+      "The service can read reliable client state from the existing product data.",
+      "The suggestions are recommendations, not automatic actions.",
+      "The same client state should produce the same suggestions.",
+      "The current scope is intentionally narrow and does not include broader support flows yet."
+    ],
+    "open_questions": [
+      "Should the second suggestion always be `create another task`, or should it vary by state?",
+      "Should the service live inside the product UI, the backend, or both?",
+      "What exact state fields are available on day one?"
+    ],
+    "acceptance_criteria": [
+      "The service exists and exposes an intent list.",
+      "`whatsNext` is the only active intent in v1.",
+      "`whatsNext` returns exactly two next-step suggestions.",
+      "If there are no employees, the response includes `add employee`.",
+      "If there are employees and the task is unassigned, the response includes `assign current task`.",
+      "The service handles the same state with consistent output."
+    ],
+    "future_ideas": [
+      "Add more intents later for other support flows.",
+      "Add proactive nudges when the service predicts drop-off.",
+      "Add per-client intent priorities.",
+      "Add richer state scoring so the service can rank next steps more accurately."
+    ]
+  },
+  "approval": {
+    "review_items": [
+      "Confirm the service name and that v1 includes only `whatsNext`.",
+      "Confirm the two-step recommendation logic for no-employees and has-employees states.",
+      "Confirm the service returns suggestions only and does not auto-execute actions.",
+      "Confirm any future intents are out of scope for this phase."
+    ],
+    "signoff_label": "Client approval",
+    "name_label": "Name",
+    "date_label": "Date"
+  }
+}
