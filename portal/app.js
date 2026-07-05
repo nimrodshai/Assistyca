@@ -1121,7 +1121,7 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
     return "Add the missing details to continue.";
   }
 
-  return "Everything looks ready. Turn it on now.";
+  return "";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
