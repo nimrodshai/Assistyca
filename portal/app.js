@@ -237,6 +237,7 @@ const elements = {
   authView: document.querySelector("#authView"),
   authCard: document.querySelector("#authCard"),
   authAlertOverlay: document.querySelector("#authAlertOverlay"),
+  authAlertEyebrow: document.querySelector("#authAlertEyebrow"),
   authAlertTitle: document.querySelector("#authAlertTitle"),
   authAlertMessage: document.querySelector("#authAlertMessage"),
   authAlertDismissButton: document.querySelector("#authAlertDismissButton"),
@@ -659,17 +660,10 @@ function syncAuthAlertState() {
   }, 220);
 }
 
-function focusAuthAlertReturnTarget() {
-  if (authAlertReturnFocus === "otp") {
-    focusFirstEmptyOtpDigit();
-  } else {
-    elements.emailInput.focus();
-  }
-
-  authAlertReturnFocus = null;
-}
-
 function openAuthAlert(title, message, options = {}) {
+  if (elements.authAlertEyebrow) {
+    elements.authAlertEyebrow.textContent = String(options.eyebrow || "Sign-in help");
+  }
   if (elements.authAlertTitle) {
     elements.authAlertTitle.textContent = String(title || "Let’s get you set up");
   }
@@ -684,6 +678,13 @@ function openAuthAlert(title, message, options = {}) {
 
   window.requestAnimationFrame(() => {
     elements.authAlertDismissButton?.focus();
+  });
+}
+
+function openFeatureActivationAlert(title, message, options = {}) {
+  openAuthAlert(title, message, {
+    eyebrow: options.eyebrow || "Connection check",
+    returnFocus: options.returnFocus || elements.featureStudioActivationButton,
   });
 }
 
@@ -706,6 +707,11 @@ function closeAuthAlert() {
 
     if (returnFocus === "email") {
       elements.emailInput.focus();
+      return;
+    }
+
+    if (returnFocus && typeof returnFocus.focus === "function") {
+      returnFocus.focus();
     }
   });
 }
@@ -988,6 +994,18 @@ function formatFeatureActivationFieldLabel(key) {
   return labels[key] || key;
 }
 
+function getFeatureActivationFieldElement(key) {
+  const elementsByKey = {
+    access_token: elements.featureActivationAccessTokenInput,
+    phone_number_id: elements.featureActivationPhoneNumberIdInput,
+    verify_token: elements.featureActivationVerifyTokenInput,
+    owner_wa_id: elements.featureActivationOwnerWaIdInput,
+    app_secret: elements.featureActivationAppSecretInput,
+  };
+
+  return elementsByKey[key] || null;
+}
+
 function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   return FEATURE_ACTIVATION_REQUIRED_KEYS.filter((key) => !String(whatsapp[key] || "").trim());
@@ -1081,7 +1099,7 @@ function getFeatureActivationNoticeLabel() {
     return "Needs attention";
   }
 
-  if (/^sign in again\b/i.test(notice) || /could not confirm|did not respond/i.test(notice)) {
+  if (/^sign in again\b/i.test(notice) || /could not|failed|rejected|unavailable|network|timeout|connect/i.test(notice)) {
     return "Connection failed";
   }
 
@@ -1089,23 +1107,18 @@ function getFeatureActivationNoticeLabel() {
 }
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
-  const activationNotice = String(state.featureActivationNotice || "").trim();
-  if (activationNotice) {
-    return activationNotice;
-  }
-
   if (isFeatureActivationBusy(feature)) {
     return "Checking WhatsApp connection...";
+  }
+
+  if (state.featureActivationNotice) {
+    return "WhatsApp needs attention. Fix the details and try again.";
   }
 
   const missing = getMissingFeatureActivationFields(feature);
 
   if (missing.length) {
-    const readableMissing = missing.map(formatFeatureActivationFieldLabel);
-    const needsList = readableMissing.length === 1
-      ? readableMissing[0]
-      : `${readableMissing.slice(0, -1).join(", ")} and ${readableMissing[readableMissing.length - 1]}`;
-    return `Add ${needsList} to continue.`;
+    return "Add the missing details to continue.";
   }
 
   return "Everything looks ready. Turn it on now.";
@@ -3234,8 +3247,15 @@ async function activateSelectedFeature() {
       const message = `Add ${missingFields.map(formatFeatureActivationFieldLabel).join(", ")} to continue.`;
       state.featureActivationNotice = message;
       updateFeatureStudioHeader();
-      await new Promise((resolve) => window.setTimeout(resolve, 900));
-      setStatus(message);
+      openFeatureActivationAlert(
+        "Missing details",
+        message,
+        {
+          eyebrow: "Connection check",
+          returnFocus: getFeatureActivationFieldElement(missingFields[0]) || elements.featureStudioActivationButton,
+        },
+      );
+      setStatus("Needs attention");
       return;
     }
 
@@ -3244,8 +3264,15 @@ async function activateSelectedFeature() {
       const message = `Fix this first: ${testIssues[0]}`;
       state.featureActivationNotice = message;
       updateFeatureStudioHeader();
-      await new Promise((resolve) => window.setTimeout(resolve, 900));
-      setStatus(message);
+      openFeatureActivationAlert(
+        "Check this first",
+        message,
+        {
+          eyebrow: "Connection check",
+          returnFocus: getFeatureActivationFieldElement("access_token") || elements.featureStudioActivationButton,
+        },
+      );
+      setStatus("Needs attention");
       return;
     }
 
@@ -3254,7 +3281,15 @@ async function activateSelectedFeature() {
       const message = "Sign in again to check the connection.";
       state.featureActivationNotice = message;
       updateFeatureStudioHeader();
-      setStatus(message);
+      openFeatureActivationAlert(
+        "Sign in again",
+        message,
+        {
+          eyebrow: "Connection check",
+          returnFocus: elements.featureStudioActivationButton,
+        },
+      );
+      setStatus("Connection failed");
       return;
     }
 
@@ -3289,7 +3324,15 @@ async function activateSelectedFeature() {
     const message = formatApiErrorMessage(error, "WhatsApp could not confirm the connection. Check the details and try again.");
     state.featureActivationNotice = message;
     updateFeatureStudioHeader();
-    setStatus(message);
+    openFeatureActivationAlert(
+      "WhatsApp connection failed",
+      message,
+      {
+        eyebrow: "Connection check",
+        returnFocus: elements.featureStudioActivationButton,
+      },
+    );
+    setStatus("Connection failed");
     return;
   } finally {
     featureActivationBusy = false;
