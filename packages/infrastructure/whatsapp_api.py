@@ -52,13 +52,13 @@ def format_connection_error(status_code: int, raw_body: str) -> str:
         parsed_message = extract_graph_error_message(payload)
 
     if status_code in {401, 403}:
-        return "WhatsApp rejected the access token. Check it and try again."
+        return "WhatsApp rejected the connection credentials. Check them and try again."
 
     if status_code == 404:
         return "WhatsApp could not find that phone number ID. Check it and try again."
 
     if status_code == 400:
-        return "WhatsApp could not confirm those details. Check the access token and phone number ID, then try again."
+        return "WhatsApp could not confirm those details. Check the connection credentials, then try again."
 
     if parsed_message:
         return parsed_message
@@ -81,10 +81,10 @@ def test_whatsapp_connection(
     api_version_value = normalize_text(api_version) or DEFAULT_WHATSAPP_API_VERSION
 
     if not access_token_value:
-        raise ValueError("Access token is required.")
+        raise ValueError("WhatsApp connection credentials are required.")
 
     if not phone_number_id_value:
-        raise ValueError("Phone number ID is required.")
+        raise ValueError("WhatsApp phone number ID is required.")
 
     url = f"https://graph.facebook.com/{api_version_value}/{phone_number_id_value}"
     query = urllib_parse.urlencode(

@@ -1235,7 +1235,7 @@ def render_approval_page(
         notices.append(f'<div class="notice {escape_attr(notice_kind)}">{escape(notice)}</div>')
     if not config.live_send_enabled:
         notices.append(
-            '<div class="notice warn">Live WhatsApp send is not configured yet, so Send will only work once you add access token and phone number ID.</div>'
+            '<div class="notice warn">Live WhatsApp send is not configured yet, so Send will only work once the Meta connection flow has stored the token and phone number ID in the backend.</div>'
         )
 
     body = f"""
@@ -1597,7 +1597,7 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
         elif config.allow_mock_send:
             message_id = f"mock-{uuid.uuid4().hex}"
         else:
-            raise RuntimeError("Live WhatsApp send is not configured. Add access token and phone number ID.")
+            raise RuntimeError("Live WhatsApp send is not configured. Complete the WhatsApp connection setup in the backend first.")
 
         if approval is not None and approval.get("approval_id"):
             self._store().append_approval_message_id(approval["approval_id"], message_id)
@@ -2083,7 +2083,7 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
             )
         if config.allow_mock_send:
             return f"mock-{uuid.uuid4().hex}"
-        raise RuntimeError("Live WhatsApp send is not configured. Add access token and phone number ID.")
+        raise RuntimeError("Live WhatsApp send is not configured. Complete the WhatsApp connection setup in the backend first.")
 
     def handle_webhook_verification(self, parsed: urllib_parse.ParseResult) -> None:
         query = urllib_parse.parse_qs(parsed.query)

@@ -55,6 +55,8 @@ How the client talks to the agent.
 - `whatsapp.mode`
 - `whatsapp.owner_wa_id` for the owner number that receives approval cards
 
+For SaaS-style WhatsApp onboarding, the customer connects their own number through Meta Embedded Signup, then the backend stores the resulting WABA ID, phone number ID, and customer-scoped token.
+
 ### `features`
 
 Assigned capabilities that the client should see in the portal.
@@ -80,6 +82,8 @@ Runtime settings for the reusable WhatsApp approval backend.
 - `whatsapp.owner_wa_id`
 - `whatsapp.allow_mock_send`
 - `assistant.*` guidance fields for reply generation
+
+These backend values are not meant to be typed into the customer-facing portal. They are populated by the Meta connection flow and stored server-side.
 
 ### `agent`
 

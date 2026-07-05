@@ -12,6 +12,15 @@ You can still develop locally. The usual pattern is:
 2. Expose it with a tunnel during testing if you want WhatsApp to hit it.
 3. Point the Meta webhook callback at the tunnel or production URL.
 
+## SaaS Connection Pattern
+
+For a multi-tenant product, the usual setup is:
+
+- Create one Meta app for the whole product.
+- Let each customer connect their own WhatsApp Business Account through Embedded Signup.
+- Store the resulting WABA ID, phone number ID, and customer-scoped token in backend config, not in the customer-facing portal.
+- Use one webhook endpoint for all tenants, then route each event by WABA ID or phone number ID.
+
 ## What The Backend Does
 
 - Receives inbound WhatsApp webhooks.
@@ -69,6 +78,8 @@ The JSON config is intentionally small and reusable.
 
 - If `whatsapp.access_token` and `whatsapp.phone_number_id` are set, `Send` calls the real WhatsApp Cloud API.
 - If they are missing and `whatsapp.allow_mock_send` is true, the backend simulates the send so local development still works.
+
+The token and phone number ID are backend-owned outputs of the customer connection flow; the portal should not ask the customer to type them in.
 
 ## Webhook Setup
 

@@ -14,9 +14,9 @@ It is intentionally separate from the reusable spec and client config layers.
 
 - `Features` for the client account and its assigned capabilities. Click one to open the tool preview or editor.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
-- The Tool page uses inner navigation for overview and editor, then opens a separate activation form before billing starts and collapses to editor-only once the tool is activated
-- Clicking `Activate now` runs a real WhatsApp Cloud API check for the access token and phone number ID before the tool turns on
-- WhatsApp credentials live in the per-client backend config at `clients/<client-id>/backend.json`
+- The Tool page uses inner navigation for overview and editor, then opens a separate connection guide that explains the Meta Embedded Signup flow before the tool is marked live
+- The WhatsApp screen no longer asks for raw access tokens; the backend keeps the WABA ID, phone number ID, and customer-scoped token after signup
+- The backend connection details still live in the per-client backend config at `clients/<client-id>/backend.json`
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
 - The top-right menu opens account, settings, and log out actions
@@ -31,7 +31,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - Set `PORTAL_DB_SEED_REGISTERED_EMAILS` to bootstrap the database the first time it starts. `PORTAL_REGISTERED_EMAILS` is still accepted as a legacy bootstrap alias.
 - Set `PORTAL_DB_SEED_ADMIN_EMAILS` to promote bootstrap users to admin on startup. `PORTAL_ADMIN_EMAILS` is still accepted as a legacy alias.
 - Set `PORTAL_SUPPORT_PHONE` to the phone number shown to anyone who is not registered.
-- The simulator is still browser-local, so it can be tested before any WhatsApp webhook or approval server exists, but the real approval flow now runs in WhatsApp.
+- The simulator is still browser-local, so it can be tested before any WhatsApp webhook or approval server exists, but the real approval flow is now routed through the Meta connection and backend webhook setup.
 
 ## Recommended test hosting
 

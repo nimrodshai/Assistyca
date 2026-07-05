@@ -54,6 +54,11 @@ const FEATURE_ACTIVATION_REQUIRED_KEYS = [
   "verify_token",
   "owner_wa_id",
 ];
+const FEATURE_ACTIVATION_STEPS = [
+  "Meta app",
+  "Embedded signup",
+  "Webhook routing",
+];
 const DEFAULT_FEATURE_WHATSAPP = {
   verify_token: "",
   access_token: "",
@@ -896,7 +901,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Put the phone number and WhatsApp credentials in the client backend config at `clients/<client-id>/backend.json` under `whatsapp.*`.";
+  return "Use Meta Embedded Signup for the customer connection, then store the resulting WABA ID, phone number ID, and customer-scoped token in `clients/<client-id>/backend.json` under `whatsapp.*`.";
 }
 
 function formatNextBillingDate(reference = new Date()) {
@@ -958,7 +963,7 @@ function isFeatureActivated(feature = getSelectedFeature()) {
 }
 
 function getFeatureActivationLabel(feature = getSelectedFeature()) {
-  return isFeatureActivated(feature) ? "Active" : "Draft";
+  return isFeatureActivated(feature) ? "Active" : "Connect";
 }
 
 function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
@@ -1090,51 +1095,47 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
 }
 
 function getFeatureActivationProgress(feature = getSelectedFeature()) {
-  const missing = getMissingFeatureActivationFields(feature);
-  const total = FEATURE_ACTIVATION_REQUIRED_KEYS.length;
+  const total = FEATURE_ACTIVATION_STEPS.length;
+  const ready = isFeatureActivated(feature) ? total : 0;
   return {
     total,
-    ready: total - missing.length,
-    missing,
-    readyRatio: total > 0 ? (total - missing.length) / total : 0,
+    ready,
+    missing: isFeatureActivated(feature) ? [] : FEATURE_ACTIVATION_STEPS,
+    readyRatio: total > 0 ? ready / total : 0,
   };
 }
 
 function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking connection";
-  }
-
-  const noticeLabel = getFeatureActivationNoticeLabel();
-  if (noticeLabel && !isFeatureActivated(feature)) {
-    return noticeLabel;
+    return "Confirming setup";
   }
 
   if (isFeatureActivated(feature)) {
     return "Live";
   }
 
-  const progress = getFeatureActivationProgress(feature);
-  return progress.ready === progress.total
-    ? "Ready to turn on"
-    : "Setup in progress";
+  return "Connection guide";
 }
 
 function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
   const progress = getFeatureActivationProgress(feature);
   return progress.ready === progress.total
-    ? "4 of 4 fields filled in"
-    : `${progress.ready} of ${progress.total} fields filled in`;
+    ? `${progress.total} of ${progress.total} setup steps complete`
+    : `${progress.ready} of ${progress.total} setup steps complete`;
 }
 
 function getFeatureActivationProgressNote() {
-  return "";
+  return "The customer connects through Meta Embedded Signup, so no raw access tokens are entered here.";
 }
 
 function getFeatureActivationNoticeLabel() {
   const notice = String(state.featureActivationNotice || "").trim();
   if (!notice) {
     return "";
+  }
+
+  if (/^setup failed\b/i.test(notice)) {
+    return "Setup failed";
   }
 
   if (/^checking\b/i.test(notice)) {
@@ -1182,38 +1183,32 @@ function getFeatureActivationNoticeLabel() {
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking WhatsApp connection...";
+    return "Confirming setup...";
   }
 
-  return "";
+  return isFeatureActivated(feature)
+    ? "The WhatsApp connection is live."
+    : "The portal guides the Meta Embedded Signup flow and keeps raw secrets out of the UI.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
   if (isFeatureActivationBusy(feature)) {
-    return "Checking connection";
-  }
-
-  const noticeLabel = getFeatureActivationNoticeLabel();
-  if (noticeLabel && !isFeatureActivated(feature)) {
-    return noticeLabel;
+    return "Confirming setup";
   }
 
   if (isFeatureActivated(feature)) {
     return "Live";
   }
 
-  const progress = getFeatureActivationProgress(feature);
-  const ready = progress.ready === progress.total;
-
   if (view === "activation") {
-    return ready ? "Ready to turn on" : "Setup in progress";
+    return "Connection guide";
   }
 
   if (view === "editor") {
-    return ready ? "Ready to turn on" : "Setup in progress";
+    return "Connect";
   }
 
-  return "Draft";
+  return "Connect";
 }
 
 function persistClientState() {
@@ -3297,91 +3292,11 @@ async function activateSelectedFeature() {
   }
 
   featureActivationBusy = true;
-  state.featureActivationNotice = "Checking WhatsApp connection...";
+  state.featureActivationNotice = "";
   try {
     updateFeatureStudioHeader();
-    setStatus("Checking WhatsApp connection...");
+    setStatus("Confirming setup...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-
-    clearFeatureActivationFieldErrors();
-
-    const missingFields = getMissingFeatureActivationFields(feature);
-    if (missingFields.length) {
-      const labels = missingFields.map(formatFeatureActivationFieldLabel);
-      const message = `Please add ${formatReadableList(labels)}.`;
-      state.featureActivationNotice = "Add the missing details";
-      updateFeatureStudioHeader();
-      openFeatureActivationAlert(
-        "Add the missing details",
-        message,
-        {
-          eyebrow: "Before you turn it on",
-          returnFocus: getFeatureActivationFieldElement(missingFields[0]) || elements.featureStudioActivationButton,
-        },
-      );
-      setStatus("Missing details");
-      return;
-    }
-
-    const testIssues = getFeatureActivationTestIssues(feature);
-    const inlineIssues = testIssues.filter((issue) => issue.inline);
-    if (inlineIssues.length) {
-      setFeatureActivationFieldErrors(inlineIssues);
-      state.featureActivationNotice = "Check details";
-      updateFeatureStudioHeader();
-      setStatus("Check details");
-      const focusField = getFeatureActivationFieldElement(inlineIssues[0].field);
-      window.requestAnimationFrame(() => {
-        focusField?.focus();
-      });
-      return;
-    }
-
-    if (testIssues.length) {
-      const issue = testIssues[0];
-      state.featureActivationNotice = issue.title;
-      updateFeatureStudioHeader();
-      openFeatureActivationAlert(
-        issue.title,
-        issue.message,
-        {
-          eyebrow: "Before you turn it on",
-          returnFocus: getFeatureActivationFieldElement(issue.field) || elements.featureStudioActivationButton,
-        },
-      );
-      setStatus("Check details");
-      return;
-    }
-
-    const authToken = String(authSession?.token || "").trim();
-    if (!authToken) {
-      const message = "Sign in again so we can check the connection.";
-      state.featureActivationNotice = "Sign in again";
-      updateFeatureStudioHeader();
-      openFeatureActivationAlert(
-        "Sign in again",
-        message,
-        {
-          eyebrow: "Before you turn it on",
-          returnFocus: elements.featureStudioActivationButton,
-        },
-      );
-      setStatus("Connection failed");
-      return;
-    }
-
-    const whatsapp = getSelectedFeatureWhatsApp(feature);
-    const response = await apiRequest("/api/whatsapp/test", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: {
-        access_token: whatsapp.access_token,
-        phone_number_id: whatsapp.phone_number_id,
-      },
-      timeoutMs: 30000,
-    });
 
     feature.activated = true;
     clearFeatureActivationNotice();
@@ -3392,25 +3307,20 @@ async function activateSelectedFeature() {
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    const activationLabel = String(response.displayPhoneNumber || response.verifiedName || "").trim();
-    setStatus(
-      activationLabel
-        ? `WhatsApp confirmed the connection for ${activationLabel}. Your tool is live.`
-        : "WhatsApp confirmed the connection. Your tool is live."
-    );
+    setStatus("WhatsApp setup confirmed. Your tool is live.");
   } catch (error) {
-    const message = formatApiErrorMessage(error, "WhatsApp could not confirm the connection. Check the details and try again.");
-    state.featureActivationNotice = "Connection failed";
+    const message = error instanceof Error ? error.message : String(error || "").trim();
+    state.featureActivationNotice = "Setup failed";
     updateFeatureStudioHeader();
     openFeatureActivationAlert(
-      "Connection failed",
-      message,
+      "Setup failed",
+      message || "WhatsApp setup could not be confirmed.",
       {
-        eyebrow: "Before you turn it on",
+        eyebrow: "Before you continue",
         returnFocus: elements.featureStudioActivationButton,
       },
     );
-    setStatus("Connection failed");
+    setStatus("Setup failed");
     return;
   } finally {
     featureActivationBusy = false;
@@ -3432,7 +3342,7 @@ function startFeatureActivation() {
   setHashForTab("features", feature.id, "activation");
   renderApp();
   window.scrollTo(0, 0);
-  setStatus("Setup started.");
+  setStatus("Connection guide opened.");
 }
 
 function deactivateSelectedFeature() {
@@ -3628,13 +3538,21 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
-    elements.featureStudioLaunchButton.textContent = "Start setup";
+    elements.featureStudioLaunchButton.textContent = launchUrl
+      ? "Open live dashboard"
+      : isActivated
+        ? "Open editor"
+        : "Connect WhatsApp";
     elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = "Open the setup page to finish setup.";
+    elements.featureStudioLaunchNote.textContent = launchUrl
+      ? "Open the live dashboard in a new tab."
+      : isActivated
+        ? "Jump straight into the editor or open the live dashboard if you have one."
+        : "Review the Meta Embedded Signup flow before you turn the tool on.";
   }
 
   if (elements.featureActivationSummary) {
@@ -3644,8 +3562,8 @@ function updateFeatureStudioHeader() {
   }
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.textContent = activationBusy ? "Checking connection..." : "Activate now";
-    elements.featureStudioActivationButton.disabled = isActivated || activationBusy;
+    elements.featureStudioActivationButton.textContent = activationBusy ? "Confirming setup..." : "I’ve completed setup";
+    elements.featureStudioActivationButton.disabled = activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
   }
@@ -4332,6 +4250,12 @@ function openSelectedFeatureLaunchUrl() {
   const feature = getSelectedFeature();
   const launchUrl = String(feature?.launchUrl || "").trim();
   if (!launchUrl) {
+    if (!isFeatureActivated(feature)) {
+      setFeatureStudioView("activation");
+      setStatus("Opened the connection guide.");
+      return;
+    }
+
     const editor = document.querySelector(`#${DEFAULT_TOOL_EDITOR_TARGET_ID}`);
     if (editor && typeof editor.scrollIntoView === "function") {
       editor.scrollIntoView({ behavior: "smooth", block: "start" });

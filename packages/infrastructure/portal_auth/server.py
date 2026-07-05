@@ -1149,7 +1149,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "missing_fields",
-                "message": "Add the access token and phone number ID first.",
+                "message": "Complete the WhatsApp connection setup first.",
             })
             return
 

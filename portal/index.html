@@ -202,7 +202,7 @@
             </nav>
           </div>
           <div class="feature-page-header-actions">
-            <span id="featureStudioStatus" class="feature-status">Draft</span>
+            <span id="featureStudioStatus" class="feature-status">Connect</span>
             <div id="featureStudioMenuWrap" class="menu-wrap feature-menu-wrap is-hidden">
               <button
                 id="featureStudioMenuButton"
@@ -244,10 +244,10 @@
 
             <div class="feature-page-actions">
               <button id="featureStudioLaunchButton" class="primary-button" type="button">
-                Start setup
+                Connect WhatsApp
               </button>
               <p id="featureStudioLaunchNote" class="approval-note">
-                Open the setup page to finish setup.
+                Review the Meta Embedded Signup flow before you turn the tool on.
               </p>
             </div>
           </div>
@@ -275,20 +275,20 @@
           <article class="glass-card feature-activation-hero">
             <div class="feature-activation-hero-copy">
               <p class="eyebrow">Connection setup</p>
-              <h2>Connect your WhatsApp account</h2>
+              <h2>Let each customer connect their own WhatsApp number</h2>
               <p class="feature-page-description">
-                Add the details below. Click Activate now to check the WhatsApp connection before we turn it on.
+                The portal does not ask for raw access tokens. Customers finish Meta Embedded Signup, and the backend stores the WABA ID, phone number ID, and customer-scoped token behind the scenes.
               </p>
             </div>
             <div class="feature-activation-hero-meta">
-              <span id="featureActivationStatus" class="feature-status">Setup in progress</span>
+              <span id="featureActivationStatus" class="feature-status">Connection guide</span>
               <div class="activation-progress">
-                <strong id="featureActivationProgress">0 of 4 fields filled in</strong>
+                <strong id="featureActivationProgress">0 of 3 setup steps complete</strong>
                 <div class="activation-progress-track" aria-hidden="true">
                   <span id="featureActivationProgressFill"></span>
                 </div>
                 <p id="featureActivationProgressNote" class="activation-progress-note" hidden>
-                  Add the missing fields to continue.
+                  Meta handles the customer connection. The backend routes events by WABA ID and phone number ID.
                 </p>
               </div>
             </div>
@@ -297,96 +297,29 @@
           <article class="glass-card config-card activation-card">
             <div class="activation-card-head">
               <div>
-                <h3>WhatsApp setup</h3>
-                <p class="setup-copy">These details let us check WhatsApp before we turn it on.</p>
+                <h3>What the SaaS flow does</h3>
+                <p class="setup-copy">One Meta app serves the whole product. Each customer connects their own number, and the backend keeps each tenant isolated.</p>
               </div>
-              <span class="activation-section-chip">Needed</span>
+              <span class="activation-section-chip">Managed in Meta</span>
             </div>
 
-            <div class="activation-form-grid">
-              <label class="field">
-                <span>Access token</span>
-                <input
-                  id="featureActivationAccessToken"
-                  type="password"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="Paste your WhatsApp access token"
-                />
-                <small class="field-help">Used to send replies.</small>
-              </label>
+            <ul class="setup-list">
+              <li><strong>One Meta app.</strong> Keep the integration centralized for the SaaS product.</li>
+              <li><strong>Embedded signup.</strong> Let each customer connect their own WhatsApp Business Account and number.</li>
+              <li><strong>Tenant routing.</strong> Route inbound webhooks by WABA ID and phone number ID.</li>
+              <li><strong>Backend storage.</strong> Store the customer-scoped token, WABA ID, and phone number ID outside the portal.</li>
+            </ul>
 
-              <label class="field">
-                <span>Phone number ID</span>
-                <input
-                  id="featureActivationPhoneNumberId"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="WhatsApp business number ID"
-                  aria-describedby="featureActivationPhoneNumberIdHelp featureActivationPhoneNumberIdError"
-                />
-                <small id="featureActivationPhoneNumberIdHelp" class="field-help">This is the number that sends replies.</small>
-                <small id="featureActivationPhoneNumberIdError" class="field-error" hidden aria-live="polite"></small>
-              </label>
-
-              <label class="field">
-                <span>Verify token</span>
-                <input
-                  id="featureActivationVerifyToken"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="Confirmation token"
-                />
-                <small class="field-help">A code you choose to confirm the connection.</small>
-              </label>
-
-              <label class="field">
-                <span>Owner WhatsApp ID</span>
-                <input
-                  id="featureActivationOwnerWaId"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="WhatsApp ID that receives approvals"
-                  aria-describedby="featureActivationOwnerWaIdHelp featureActivationOwnerWaIdError"
-                />
-                <small id="featureActivationOwnerWaIdHelp" class="field-help">This is the number that gets approval requests.</small>
-                <small id="featureActivationOwnerWaIdError" class="field-error" hidden aria-live="polite"></small>
-              </label>
-            </div>
-
-            <div class="activation-divider" aria-hidden="true"></div>
-
-            <div class="activation-card-head">
-              <div>
-                <h3>Extra protection</h3>
-                <p class="setup-copy">Optional. Adds an extra safety check for your business.</p>
-              </div>
-              <span class="activation-section-chip activation-section-chip-optional">Optional</span>
-            </div>
-
-            <div class="activation-form-grid activation-form-grid-advanced">
-              <label class="field activation-field-span">
-                <span>App secret</span>
-                <input
-                  id="featureActivationAppSecret"
-                  type="password"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="Optional protection key"
-                />
-                <small class="field-help">Adds another layer of protection for your business.</small>
-              </label>
-            </div>
+            <p class="setup-copy">
+              No one pastes raw secrets into this screen. The portal is the guide and confirmation step.
+            </p>
 
             <div class="feature-page-actions feature-activation-actions">
               <button id="featureStudioActivationBackButton" class="text-button" type="button">
                 Back to overview
               </button>
-              <button id="featureStudioActivationButton" class="primary-button" type="button" disabled>
-                Activate now
+              <button id="featureStudioActivationButton" class="primary-button" type="button">
+                I’ve completed setup
               </button>
             </div>
           </article>
@@ -930,6 +863,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=49"></script>
+    <script src="./app.js?v=50"></script>
   </body>
 </html>
