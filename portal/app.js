@@ -49,9 +49,7 @@ const DEFAULT_FEATURE_PRICING = {
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
 };
 const FEATURE_ACTIVATION_REQUIRED_KEYS = [
-  "access_token",
   "phone_number_id",
-  "verify_token",
   "owner_wa_id",
 ];
 const FEATURE_ACTIVATION_STEPS = [
@@ -60,10 +58,7 @@ const FEATURE_ACTIVATION_STEPS = [
   "Webhook routing",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
-  verify_token: "",
-  access_token: "",
   phone_number_id: "",
-  app_secret: "",
   owner_wa_id: "",
 };
 
@@ -865,10 +860,7 @@ function normalizeFeaturePricing(pricing = {}) {
 function normalizeFeatureWhatsApp(config = {}) {
   const source = config && typeof config === "object" ? config : {};
   return {
-    verify_token: String(source.verify_token || source.verifyToken || "").trim(),
-    access_token: String(source.access_token || source.accessToken || "").trim(),
     phone_number_id: String(source.phone_number_id || source.phoneNumberId || "").trim(),
-    app_secret: String(source.app_secret || source.appSecret || "").trim(),
     owner_wa_id: String(source.owner_wa_id || source.ownerWaId || "").trim(),
   };
 }
@@ -901,7 +893,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Use Meta Embedded Signup for the customer connection, then store the resulting WABA ID, phone number ID, and customer-scoped token in `clients/<client-id>/backend.json` under `whatsapp.*`.";
+  return "Keep `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET` on the backend deployment, or in `clients/<client-id>/backend.json` for local setups. Customers only provide the WABA ID, phone number ID, and owner WhatsApp ID.";
 }
 
 function formatNextBillingDate(reference = new Date()) {
@@ -986,11 +978,11 @@ function isFeatureActivationBusy(feature = getSelectedFeature()) {
 
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
-    access_token: "Access token",
+    access_token: "Backend access token",
     phone_number_id: "Phone number ID",
-    verify_token: "Verify token",
+    verify_token: "Backend verify token",
     owner_wa_id: "Owner WhatsApp ID",
-    app_secret: "App secret",
+    app_secret: "Backend app secret",
   };
 
   return labels[key] || key;
@@ -1068,27 +1060,15 @@ function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
 
 function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const accessToken = String(whatsapp.access_token || "").trim();
   const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
-  const verifyToken = String(whatsapp.verify_token || "").trim();
   const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
-  const appSecret = String(whatsapp.app_secret || "").trim();
   const issues = [];
 
-  if (!accessToken || accessToken.length < 16) {
-    issues.push({ field: "access_token", title: "Paste the full access token", message: "This token looks too short." });
-  }
   if (!/^\d+$/.test(phoneNumberId)) {
     issues.push({ field: "phone_number_id", message: "Use numbers only.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
     issues.push({ field: "owner_wa_id", message: "Use numbers only.", inline: true });
-  }
-  if (!verifyToken || verifyToken === "change-me") {
-    issues.push({ field: "verify_token", title: "Replace the confirmation code", message: "Use your own code instead of the example." });
-  }
-  if (appSecret && appSecret.length < 8) {
-    issues.push({ field: "app_secret", title: "Check the app secret", message: "This key looks too short." });
   }
 
   return issues;
@@ -1125,7 +1105,7 @@ function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
 }
 
 function getFeatureActivationProgressNote() {
-  return "The customer connects through Meta Embedded Signup, so no raw access tokens are entered here.";
+  return "The customer connects through Meta Embedded Signup. Keep the Meta app secrets on the backend, not in the portal.";
 }
 
 function getFeatureActivationNoticeLabel() {
@@ -1150,8 +1130,8 @@ function getFeatureActivationNoticeLabel() {
     return "Missing details";
   }
 
-  if (/^paste the full access token\b/i.test(notice)) {
-    return "Access token";
+  if (/^set whatsapp_access_token\b/i.test(notice) || /^set the access token\b/i.test(notice)) {
+    return "Backend setup";
   }
 
   if (/^check the phone number id\b/i.test(notice)) {
@@ -1164,10 +1144,6 @@ function getFeatureActivationNoticeLabel() {
 
   if (/^replace the confirmation code\b/i.test(notice)) {
     return "Confirmation code";
-  }
-
-  if (/^check the app secret\b/i.test(notice)) {
-    return "App secret";
   }
 
   if (/^sign in again\b/i.test(notice)) {
@@ -1188,7 +1164,7 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
 
   return isFeatureActivated(feature)
     ? "The WhatsApp connection is live."
-    : "The portal guides the Meta Embedded Signup flow and keeps raw secrets out of the UI.";
+    : "The portal guides the Meta Embedded Signup flow and keeps the Meta app secrets out of the UI.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {

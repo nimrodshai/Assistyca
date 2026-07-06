@@ -15,8 +15,8 @@ It is intentionally separate from the reusable spec and client config layers.
 - `Features` for the client account and its assigned capabilities. Click one to open the tool preview or editor.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview and editor, then opens a separate connection guide that explains the Meta Embedded Signup flow before the tool is marked live
-- The WhatsApp screen no longer asks for raw access tokens; the backend keeps the WABA ID, phone number ID, and customer-scoped token after signup
-- The backend connection details still live in the per-client backend config at `clients/<client-id>/backend.json`
+- The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes by WABA ID and phone number ID
+- The backend connection details still live in the per-client backend config at `clients/<client-id>/backend.json`, with the raw secrets in the backend deployment environment or the same file for local setups
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
 - The top-right menu opens account, settings, and log out actions

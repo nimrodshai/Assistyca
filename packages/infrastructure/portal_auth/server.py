@@ -1142,14 +1142,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        access_token = str(payload.get("access_token", "")).strip()
+        access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip() or str(payload.get("access_token", "")).strip()
         phone_number_id = str(payload.get("phone_number_id", "")).strip()
 
         if not access_token or not phone_number_id:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "missing_fields",
-                "message": "Complete the WhatsApp connection setup first.",
+                "message": "Set WHATSAPP_ACCESS_TOKEN on the backend and provide the phone number ID.",
             })
             return
 

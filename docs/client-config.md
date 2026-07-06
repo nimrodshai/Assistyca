@@ -48,14 +48,14 @@ How the client talks to the agent.
 
 - `primary`: the main channel, such as `whatsapp`
 - `whatsapp.enabled`
-- `whatsapp.business_account_id`
+- `whatsapp.business_account_id` for the WABA ID that Meta assigns during Embedded Signup
 - `whatsapp.phone_number_id`
 - `whatsapp.display_name`
 - `whatsapp.webhook_path`
 - `whatsapp.mode`
 - `whatsapp.owner_wa_id` for the owner number that receives approval cards
 
-For SaaS-style WhatsApp onboarding, the customer connects their own number through Meta Embedded Signup, then the backend stores the resulting WABA ID, phone number ID, and customer-scoped token.
+For SaaS-style WhatsApp onboarding, the customer connects their own number through Meta Embedded Signup. The backend keeps the Meta app secrets, while the customer-facing config keeps the WABA ID and phone number ID.
 
 ### `features`
 
@@ -83,7 +83,13 @@ Runtime settings for the reusable WhatsApp approval backend.
 - `whatsapp.allow_mock_send`
 - `assistant.*` guidance fields for reply generation
 
-These backend values are not meant to be typed into the customer-facing portal. They are populated by the Meta connection flow and stored server-side.
+These backend values are not meant to be typed into the customer-facing portal. Put the Meta app secrets in the backend deployment environment when you can:
+
+- `WHATSAPP_ACCESS_TOKEN`
+- `WHATSAPP_VERIFY_TOKEN`
+- `WHATSAPP_APP_SECRET`
+
+For local or single-client setups, `clients/<client-id>/backend.json` can still hold the same values under `whatsapp.*`.
 
 ### `agent`
 

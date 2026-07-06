@@ -18,7 +18,8 @@ For a multi-tenant product, the usual setup is:
 
 - Create one Meta app for the whole product.
 - Let each customer connect their own WhatsApp Business Account through Embedded Signup.
-- Store the resulting WABA ID, phone number ID, and customer-scoped token in backend config, not in the customer-facing portal.
+- Store the WABA ID and phone number ID in backend config, not in the customer-facing portal.
+- Keep the Meta app secrets on the backend deployment as `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`, or in `clients/<client-id>/backend.json` for local setups.
 - Use one webhook endpoint for all tenants, then route each event by WABA ID or phone number ID.
 
 ## What The Backend Does
@@ -73,6 +74,8 @@ The JSON config is intentionally small and reusable.
 - `assistant.approval_guidance`
 - `assistant.example_replies`
 - `assistant.response_style`
+
+For shared SaaS deployments, the backend should prefer the `WHATSAPP_*` environment variables so the browser never sees the Meta app secrets.
 
 ### Send Mode
 

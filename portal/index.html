@@ -277,7 +277,7 @@
               <p class="eyebrow">Connection setup</p>
               <h2>Let each customer connect their own WhatsApp number</h2>
               <p class="feature-page-description">
-                The portal does not ask for raw access tokens. Customers finish Meta Embedded Signup, and the backend stores the WABA ID, phone number ID, and customer-scoped token behind the scenes.
+                The portal does not ask for raw access tokens. Put <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_VERIFY_TOKEN</code>, and <code>WHATSAPP_APP_SECRET</code> on the backend deployment, or in <code>clients/&lt;client-id&gt;/backend.json</code> for local setups. Customers only provide the WABA ID, phone number ID, and owner WhatsApp ID.
               </p>
             </div>
             <div class="feature-activation-hero-meta">
@@ -288,7 +288,7 @@
                   <span id="featureActivationProgressFill"></span>
                 </div>
                 <p id="featureActivationProgressNote" class="activation-progress-note" hidden>
-                  Meta handles the customer connection. The backend routes events by WABA ID and phone number ID.
+                  Meta handles the customer connection. Keep the app secrets on the backend and route events by WABA ID and phone number ID.
                 </p>
               </div>
             </div>
@@ -307,7 +307,7 @@
               <li><strong>One Meta app.</strong> Keep the integration centralized for the SaaS product.</li>
               <li><strong>Embedded signup.</strong> Let each customer connect their own WhatsApp Business Account and number.</li>
               <li><strong>Tenant routing.</strong> Route inbound webhooks by WABA ID and phone number ID.</li>
-              <li><strong>Backend storage.</strong> Store the customer-scoped token, WABA ID, and phone number ID outside the portal.</li>
+              <li><strong>Backend storage.</strong> Store the access token, verify token, and app secret on the backend; keep the customer WABA ID and phone number ID outside the portal.</li>
             </ul>
 
             <p class="setup-copy">
