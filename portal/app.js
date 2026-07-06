@@ -3514,21 +3514,21 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
-    elements.featureStudioLaunchButton.textContent = launchUrl
-      ? "Open live dashboard"
-      : isActivated
-        ? "Open editor"
-        : "Connect WhatsApp";
+    elements.featureStudioLaunchButton.textContent = !isActivated
+      ? "Start setup"
+      : launchUrl
+        ? "Open live dashboard"
+        : "Open editor";
     elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = launchUrl
-      ? "Open the live dashboard in a new tab."
-      : isActivated
-        ? "Jump straight into the editor or open the live dashboard if you have one."
-        : "Review the Meta Embedded Signup flow before you turn the tool on.";
+    elements.featureStudioLaunchNote.textContent = !isActivated
+      ? "Start setup to add the WhatsApp details this feature needs."
+      : launchUrl
+        ? "Open the live dashboard in a new tab."
+        : "Jump straight into the editor or open the live dashboard if you have one.";
   }
 
   if (elements.featureActivationSummary) {
@@ -4225,13 +4225,13 @@ function handleMenuAction(action) {
 function openSelectedFeatureLaunchUrl() {
   const feature = getSelectedFeature();
   const launchUrl = String(feature?.launchUrl || "").trim();
-  if (!launchUrl) {
-    if (!isFeatureActivated(feature)) {
-      setFeatureStudioView("activation");
-      setStatus("Opened the connection guide.");
-      return;
-    }
+  if (!isFeatureActivated(feature)) {
+    setFeatureStudioView("activation");
+    setStatus("Opened the setup flow.");
+    return;
+  }
 
+  if (!launchUrl) {
     const editor = document.querySelector(`#${DEFAULT_TOOL_EDITOR_TARGET_ID}`);
     if (editor && typeof editor.scrollIntoView === "function") {
       editor.scrollIntoView({ behavior: "smooth", block: "start" });
