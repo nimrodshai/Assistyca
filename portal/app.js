@@ -55,8 +55,8 @@ const FEATURE_ACTIVATION_REQUIRED_KEYS = [
 ];
 const FEATURE_ACTIVATION_STEPS = [
   "Business account",
-  "Phone number",
-  "Owner approval number",
+  "WhatsApp number",
+  "Your phone number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
   business_account_id: "",
@@ -88,7 +88,7 @@ const DEFAULT_FEATURES = [
   {
     id: "whatsapp-business-reply-suggestion-assistant",
     name: "WhatsApp Reply Assistant",
-    description: "Drafts suggested WhatsApp replies and surfaces approvals inside WhatsApp for manual review.",
+    description: "Helps you write WhatsApp replies faster and keep control over every reply.",
     channel: "WhatsApp",
     mode: "Human-reviewed",
     status: "Active",
@@ -875,7 +875,7 @@ function buildFeaturePitch(feature = getSelectedFeature()) {
   const prompt = feature?.prompt || getSelectedPrompt();
   const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
   const title = feature?.name || "This tool";
-  return `${title} keeps replies human and fast. For example, when someone says "${scenario.user}", it drafts "${scenario.ask}" and keeps the final send inside WhatsApp for review.`;
+  return `${title} helps you write replies faster and keep control over every message. For example, when someone says "${scenario.user}", it drafts "${scenario.ask}".`;
 }
 
 function buildFeatureExample(feature = getSelectedFeature()) {
@@ -895,7 +895,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Connect your WhatsApp Business Account in Meta, then save the Business Account ID, Phone Number ID, and the number that should receive approvals.";
+  return "Connect your WhatsApp account in Meta, then save the account ID, the linked WhatsApp number, and your phone number.";
 }
 
 function formatNextBillingDate(reference = new Date()) {
@@ -980,9 +980,9 @@ function isFeatureActivationBusy(feature = getSelectedFeature()) {
 
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
-    business_account_id: "WhatsApp Business Account ID",
-    phone_number_id: "Phone number ID",
-    owner_wa_id: "Owner WhatsApp number",
+    business_account_id: "Account ID",
+    phone_number_id: "WhatsApp number",
+    owner_wa_id: "Your phone number",
   };
 
   return labels[key] || key;
@@ -1067,10 +1067,10 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
     issues.push({ field: "business_account_id", message: "Enter the ID Meta gave you.", inline: true });
   }
   if (!/^\d+$/.test(phoneNumberId)) {
-    issues.push({ field: "phone_number_id", message: "Enter the Phone Number ID from Meta.", inline: true });
+    issues.push({ field: "phone_number_id", message: "Enter the number linked to this account.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
-    issues.push({ field: "owner_wa_id", message: "Enter the WhatsApp number that should receive approvals.", inline: true });
+    issues.push({ field: "owner_wa_id", message: "Enter the number that should get reply suggestions.", inline: true });
   }
 
   return issues;
@@ -1115,7 +1115,7 @@ function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
 }
 
 function getFeatureActivationProgressNote() {
-  return "Meta handles the connection. We only save the Business Account ID, Phone Number ID, and the number that receives approvals.";
+  return "We save the account ID, the linked WhatsApp number, and your phone number.";
 }
 
 function getFeatureActivationNoticeLabel() {
@@ -1166,7 +1166,7 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
 
   const progress = getFeatureActivationProgress(feature);
   if (progress.ready === 0) {
-    return "Enter the Business Account ID, Phone Number ID, and owner number to finish setup.";
+    return "Enter the account ID, linked WhatsApp number, and your phone number to finish setup.";
   }
 
   if (progress.ready < progress.total) {
@@ -1198,7 +1198,7 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
     return "Connected";
   }
 
-  return "Open setup";
+  return "Start setup";
 }
 
 function persistClientState() {
@@ -3546,7 +3546,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
     elements.featureStudioLaunchButton.textContent = !isActivated
-      ? "Open setup"
+      ? "Start setup"
       : launchUrl
         ? "Open live dashboard"
         : "Open editor";
@@ -3556,7 +3556,7 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchNote.textContent = !isActivated
-      ? "Open setup to add the WhatsApp account details this feature needs."
+      ? "Start setup to add the WhatsApp account details this feature needs."
       : launchUrl
         ? "Open the live dashboard in a new tab."
         : "Jump straight into the editor or open the live dashboard if you have one.";
