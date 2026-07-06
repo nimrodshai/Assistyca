@@ -49,15 +49,17 @@ const DEFAULT_FEATURE_PRICING = {
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
 };
 const FEATURE_ACTIVATION_REQUIRED_KEYS = [
+  "business_account_id",
   "phone_number_id",
   "owner_wa_id",
 ];
 const FEATURE_ACTIVATION_STEPS = [
-  "Meta app",
-  "Embedded signup",
-  "Webhook routing",
+  "Business account",
+  "Phone number",
+  "Owner approval number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
+  business_account_id: "",
   phone_number_id: "",
   owner_wa_id: "",
 };
@@ -279,13 +281,12 @@ const elements = {
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
-  featureActivationAccessTokenInput: document.querySelector("#featureActivationAccessToken"),
+  featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
+  featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
   featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
   featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
-  featureActivationVerifyTokenInput: document.querySelector("#featureActivationVerifyToken"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
-  featureActivationAppSecretInput: document.querySelector("#featureActivationAppSecret"),
   featureActivationProgress: document.querySelector("#featureActivationProgress"),
   featureActivationProgressFill: document.querySelector("#featureActivationProgressFill"),
   featureActivationProgressNote: document.querySelector("#featureActivationProgressNote"),
@@ -860,6 +861,7 @@ function normalizeFeaturePricing(pricing = {}) {
 function normalizeFeatureWhatsApp(config = {}) {
   const source = config && typeof config === "object" ? config : {};
   return {
+    business_account_id: String(source.business_account_id || source.businessAccountId || "").trim(),
     phone_number_id: String(source.phone_number_id || source.phoneNumberId || "").trim(),
     owner_wa_id: String(source.owner_wa_id || source.ownerWaId || "").trim(),
   };
@@ -893,7 +895,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Keep `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET` on the backend deployment, or in `clients/<client-id>/backend.json` for local setups. Customers only provide the WABA ID, phone number ID, and owner WhatsApp ID.";
+  return "Connect your WhatsApp Business Account in Meta, then save the Business Account ID, Phone Number ID, and the number that should receive approvals.";
 }
 
 function formatNextBillingDate(reference = new Date()) {
@@ -978,11 +980,9 @@ function isFeatureActivationBusy(feature = getSelectedFeature()) {
 
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
-    access_token: "Backend access token",
+    business_account_id: "WhatsApp Business Account ID",
     phone_number_id: "Phone number ID",
-    verify_token: "Backend verify token",
-    owner_wa_id: "Owner WhatsApp ID",
-    app_secret: "Backend app secret",
+    owner_wa_id: "Owner WhatsApp number",
   };
 
   return labels[key] || key;
@@ -1043,11 +1043,9 @@ function getFeatureActivationFieldError(key) {
 
 function getFeatureActivationFieldElement(key) {
   const elementsByKey = {
-    access_token: elements.featureActivationAccessTokenInput,
+    business_account_id: elements.featureActivationBusinessAccountIdInput,
     phone_number_id: elements.featureActivationPhoneNumberIdInput,
-    verify_token: elements.featureActivationVerifyTokenInput,
     owner_wa_id: elements.featureActivationOwnerWaIdInput,
-    app_secret: elements.featureActivationAppSecretInput,
   };
 
   return elementsByKey[key] || null;
@@ -1060,23 +1058,30 @@ function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
 
 function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
+  const businessAccountId = String(whatsapp.business_account_id || "").trim();
   const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
   const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
   const issues = [];
 
+  if (!/^\d+$/.test(businessAccountId)) {
+    issues.push({ field: "business_account_id", message: "Enter the ID Meta gave you.", inline: true });
+  }
   if (!/^\d+$/.test(phoneNumberId)) {
-    issues.push({ field: "phone_number_id", message: "Use numbers only.", inline: true });
+    issues.push({ field: "phone_number_id", message: "Enter the Phone Number ID from Meta.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
-    issues.push({ field: "owner_wa_id", message: "Use numbers only.", inline: true });
+    issues.push({ field: "owner_wa_id", message: "Enter the WhatsApp number that should receive approvals.", inline: true });
   }
 
   return issues;
 }
 
 function getFeatureActivationProgress(feature = getSelectedFeature()) {
-  const total = FEATURE_ACTIVATION_STEPS.length;
-  const ready = isFeatureActivated(feature) ? total : 0;
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  const total = FEATURE_ACTIVATION_REQUIRED_KEYS.length;
+  const ready = isFeatureActivated(feature)
+    ? total
+    : FEATURE_ACTIVATION_REQUIRED_KEYS.reduce((count, key) => count + (String(whatsapp[key] || "").trim() ? 1 : 0), 0);
   return {
     total,
     ready,
@@ -1087,25 +1092,30 @@ function getFeatureActivationProgress(feature = getSelectedFeature()) {
 
 function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Confirming setup";
+    return "Saving setup";
   }
 
   if (isFeatureActivated(feature)) {
     return "Live";
   }
 
-  return "Connection guide";
+  const progress = getFeatureActivationProgress(feature);
+  if (progress.ready === 0) {
+    return "WhatsApp setup";
+  }
+
+  return progress.ready === progress.total ? "Ready to save" : "Setup in progress";
 }
 
 function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
   const progress = getFeatureActivationProgress(feature);
   return progress.ready === progress.total
-    ? `${progress.total} of ${progress.total} setup steps complete`
-    : `${progress.ready} of ${progress.total} setup steps complete`;
+    ? `${progress.total} of ${progress.total} details complete`
+    : `${progress.ready} of ${progress.total} details complete`;
 }
 
 function getFeatureActivationProgressNote() {
-  return "The customer connects through Meta Embedded Signup. Keep the Meta app secrets on the backend, not in the portal.";
+  return "Meta handles the connection. We only save the Business Account ID, Phone Number ID, and the number that receives approvals.";
 }
 
 function getFeatureActivationNoticeLabel() {
@@ -1123,23 +1133,11 @@ function getFeatureActivationNoticeLabel() {
   }
 
   if (/^whatsapp confirmed\b/i.test(notice)) {
-    return "Connection checked";
+    return "Setup saved";
   }
 
   if (/^add the missing details\b/i.test(notice) || /^please add\b/i.test(notice)) {
     return "Missing details";
-  }
-
-  if (/^set whatsapp_access_token\b/i.test(notice) || /^set the access token\b/i.test(notice)) {
-    return "Backend setup";
-  }
-
-  if (/^check the phone number id\b/i.test(notice)) {
-    return "Phone number ID";
-  }
-
-  if (/^check the owner whatsapp id\b/i.test(notice)) {
-    return "Owner WhatsApp ID";
   }
 
   if (/^replace the confirmation code\b/i.test(notice)) {
@@ -1151,7 +1149,7 @@ function getFeatureActivationNoticeLabel() {
   }
 
   if (/^connection failed\b/i.test(notice) || /could not|failed|rejected|unavailable|network|timeout|connect/i.test(notice)) {
-    return "Connection failed";
+    return "Connection issue";
   }
 
   return "Check details";
@@ -1159,17 +1157,28 @@ function getFeatureActivationNoticeLabel() {
 
 function getFeatureActivationSummary(feature = getSelectedFeature()) {
   if (isFeatureActivationBusy(feature)) {
-    return "Confirming setup...";
+    return "Saving your WhatsApp setup...";
   }
 
-  return isFeatureActivated(feature)
-    ? "The WhatsApp connection is live."
-    : "The portal guides the Meta Embedded Signup flow and keeps the Meta app secrets out of the UI.";
+  if (isFeatureActivated(feature)) {
+    return "Your WhatsApp account is connected.";
+  }
+
+  const progress = getFeatureActivationProgress(feature);
+  if (progress.ready === 0) {
+    return "Enter the Business Account ID, Phone Number ID, and owner number to finish setup.";
+  }
+
+  if (progress.ready < progress.total) {
+    return `${progress.ready} of ${progress.total} details saved. Finish the remaining fields to continue.`;
+  }
+
+  return "Your WhatsApp details are ready to save.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
   if (isFeatureActivationBusy(feature)) {
-    return "Confirming setup";
+    return "Saving setup";
   }
 
   if (isFeatureActivated(feature)) {
@@ -1177,14 +1186,19 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
   }
 
   if (view === "activation") {
-    return "Connection guide";
+    const progress = getFeatureActivationProgress(feature);
+    if (progress.ready === 0) {
+      return "WhatsApp setup";
+    }
+
+    return progress.ready === progress.total ? "Ready to save" : "Setup in progress";
   }
 
   if (view === "editor") {
-    return "Connect";
+    return "Connected";
   }
 
-  return "Connect";
+  return "Open setup";
 }
 
 function persistClientState() {
@@ -3267,11 +3281,24 @@ async function activateSelectedFeature() {
     return;
   }
 
+  const issues = getFeatureActivationTestIssues(feature);
+  if (issues.length) {
+    setFeatureActivationFieldErrors(issues);
+    updateFeatureStudioHeader();
+    setStatus("Finish the missing WhatsApp details.");
+    const firstIssue = issues[0];
+    const focusTarget = getFeatureActivationFieldElement(firstIssue.field);
+    window.requestAnimationFrame(() => {
+      focusTarget?.focus();
+    });
+    return;
+  }
+
   featureActivationBusy = true;
   state.featureActivationNotice = "";
   try {
     updateFeatureStudioHeader();
-    setStatus("Confirming setup...");
+    setStatus("Saving setup...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 
     feature.activated = true;
@@ -3283,7 +3310,7 @@ async function activateSelectedFeature() {
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    setStatus("WhatsApp setup confirmed. Your tool is live.");
+    setStatus("WhatsApp account connected. Your tool is live.");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error || "").trim();
     state.featureActivationNotice = "Setup failed";
@@ -3318,7 +3345,12 @@ function startFeatureActivation() {
   setHashForTab("features", feature.id, "activation");
   renderApp();
   window.scrollTo(0, 0);
-  setStatus("Connection guide opened.");
+  const firstMissingKey = getMissingFeatureActivationFields(feature)[0];
+  const focusTarget = firstMissingKey ? getFeatureActivationFieldElement(firstMissingKey) : elements.featureActivationBusinessAccountIdInput;
+  window.requestAnimationFrame(() => {
+    focusTarget?.focus();
+  });
+  setStatus("WhatsApp setup opened.");
 }
 
 function deactivateSelectedFeature() {
@@ -3357,25 +3389,24 @@ function updateFeatureActivationFields() {
   }
 
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  if (elements.featureActivationAccessTokenInput) {
-    elements.featureActivationAccessTokenInput.value = whatsapp.access_token;
+  if (elements.featureActivationBusinessAccountIdInput) {
+    elements.featureActivationBusinessAccountIdInput.value = whatsapp.business_account_id;
   }
   if (elements.featureActivationPhoneNumberIdInput) {
     elements.featureActivationPhoneNumberIdInput.value = whatsapp.phone_number_id;
   }
-  if (elements.featureActivationVerifyTokenInput) {
-    elements.featureActivationVerifyTokenInput.value = whatsapp.verify_token;
-  }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.value = whatsapp.owner_wa_id;
-  }
-  if (elements.featureActivationAppSecretInput) {
-    elements.featureActivationAppSecretInput.value = whatsapp.app_secret;
   }
 }
 
 function renderFeatureActivationFieldErrors() {
   const fieldStates = [
+    {
+      key: "business_account_id",
+      input: elements.featureActivationBusinessAccountIdInput,
+      error: elements.featureActivationBusinessAccountIdError,
+    },
     {
       key: "phone_number_id",
       input: elements.featureActivationPhoneNumberIdInput,
@@ -3449,7 +3480,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioHeaderLabel.textContent = studioView === "editor"
       ? "Tool editor"
       : studioView === "activation"
-        ? "Connection setup"
+        ? "WhatsApp setup"
         : "Tool overview";
   }
   if (elements.featureStudioNav) {
@@ -3515,7 +3546,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
     elements.featureStudioLaunchButton.textContent = !isActivated
-      ? "Start setup"
+      ? "Open setup"
       : launchUrl
         ? "Open live dashboard"
         : "Open editor";
@@ -3525,7 +3556,7 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchNote.textContent = !isActivated
-      ? "Start setup to add the WhatsApp details this feature needs."
+      ? "Open setup to add the WhatsApp account details this feature needs."
       : launchUrl
         ? "Open the live dashboard in a new tab."
         : "Jump straight into the editor or open the live dashboard if you have one.";
@@ -3538,7 +3569,7 @@ function updateFeatureStudioHeader() {
   }
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.textContent = activationBusy ? "Confirming setup..." : "I’ve completed setup";
+    elements.featureStudioActivationButton.textContent = activationBusy ? "Saving setup..." : "Save setup";
     elements.featureStudioActivationButton.disabled = activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
@@ -3546,20 +3577,14 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioActivationBackButton) {
     elements.featureStudioActivationBackButton.disabled = activationBusy;
   }
-  if (elements.featureActivationAccessTokenInput) {
-    elements.featureActivationAccessTokenInput.disabled = activationBusy;
+  if (elements.featureActivationBusinessAccountIdInput) {
+    elements.featureActivationBusinessAccountIdInput.disabled = activationBusy;
   }
   if (elements.featureActivationPhoneNumberIdInput) {
     elements.featureActivationPhoneNumberIdInput.disabled = activationBusy;
   }
-  if (elements.featureActivationVerifyTokenInput) {
-    elements.featureActivationVerifyTokenInput.disabled = activationBusy;
-  }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.disabled = activationBusy;
-  }
-  if (elements.featureActivationAppSecretInput) {
-    elements.featureActivationAppSecretInput.disabled = activationBusy;
   }
   if (elements.featureStudioActivationSection) {
     elements.featureStudioActivationSection.classList.toggle("is-loading", activationBusy);
@@ -4401,20 +4426,14 @@ function bindEvents() {
       handleFeatureStudioMenuAction(action);
     });
   }
-  if (elements.featureActivationAccessTokenInput) {
-    elements.featureActivationAccessTokenInput.addEventListener("input", syncFeatureActivationField("access_token"));
+  if (elements.featureActivationBusinessAccountIdInput) {
+    elements.featureActivationBusinessAccountIdInput.addEventListener("input", syncFeatureActivationField("business_account_id"));
   }
   if (elements.featureActivationPhoneNumberIdInput) {
     elements.featureActivationPhoneNumberIdInput.addEventListener("input", syncFeatureActivationField("phone_number_id"));
   }
-  if (elements.featureActivationVerifyTokenInput) {
-    elements.featureActivationVerifyTokenInput.addEventListener("input", syncFeatureActivationField("verify_token"));
-  }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.addEventListener("input", syncFeatureActivationField("owner_wa_id"));
-  }
-  if (elements.featureActivationAppSecretInput) {
-    elements.featureActivationAppSecretInput.addEventListener("input", syncFeatureActivationField("app_secret"));
   }
   if (elements.billingHelpCloseButton) {
     elements.billingHelpCloseButton.addEventListener("click", () => {
