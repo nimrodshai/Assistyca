@@ -13,10 +13,6 @@
   --accent: #0f766e;
   --accent-2: #1e88e5;
   --accent-soft: rgba(15, 118, 110, 0.1);
-  --success: #15803d;
-  --success-soft: rgba(22, 163, 74, 0.12);
-  --danger: #b42318;
-  --danger-soft: rgba(220, 38, 38, 0.12);
   --warn: #cc5c31;
   --shadow: 0 12px 36px rgba(25, 38, 54, 0.06);
   --shadow-soft: 0 8px 18px rgba(25, 38, 54, 0.04);
@@ -1972,16 +1968,6 @@ body[data-modal="billing"] .app-shell {
   white-space: nowrap;
 }
 
-.feature-status[data-state="active"] {
-  background: var(--success-soft);
-  color: var(--success);
-}
-
-.feature-status[data-state="non-active"] {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
 .feature-card-status {
   position: absolute;
   top: 1rem;
@@ -2548,7 +2534,7 @@ body[data-modal="billing"] .app-shell {
   border-radius: 32px;
   padding: 0;
   border: 1px solid rgba(15, 118, 110, 0.16);
-  background: linear-gradient(180deg, #0b7669 0 5.75rem, #edf7f1 5.75rem 100%);
+  background: linear-gradient(180deg, #0b7669 0 7rem, #edf7f1 7rem 100%);
   box-shadow: 0 26px 60px rgba(16, 38, 40, 0.12);
 }
 
@@ -2570,14 +2556,15 @@ body[data-modal="billing"] .app-shell {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  align-items: center;
-  padding: 1.05rem 1.15rem 1rem;
+  align-items: flex-start;
+  min-height: 7rem;
+  padding: 1.2rem 1.35rem 1.45rem;
   color: #fff;
 }
 
 .whatsapp-preview-contact {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.85rem;
   min-width: 0;
 }
@@ -2600,18 +2587,23 @@ body[data-modal="billing"] .app-shell {
 
 .whatsapp-preview-contact-copy {
   display: grid;
-  gap: 0.16rem;
+  gap: 0.22rem;
   min-width: 0;
+  padding-top: 0.15rem;
 }
 
 .whatsapp-preview-contact-copy .phone-name {
   color: #fff;
-  font-size: 0.98rem;
+  font-size: 1.1rem;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
 }
 
 .whatsapp-preview-meta {
   color: rgba(225, 255, 246, 0.78);
   font-size: 0.72rem;
+  line-height: 1.2;
   font-weight: 800;
   letter-spacing: 0.16em;
   text-transform: uppercase;

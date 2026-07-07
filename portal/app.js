@@ -1024,6 +1024,16 @@ function applyFeatureActivationBadgeStyle(element, feature = getSelectedFeature(
   element.style.color = palette.color;
 }
 
+function clearFeatureActivationBadgeStyle(element) {
+  if (!element) {
+    return;
+  }
+
+  element.removeAttribute("data-state");
+  element.style.backgroundColor = "";
+  element.style.color = "";
+}
+
 function setFeatureActivationState(feature, activated) {
   if (!feature) {
     return;
@@ -3520,13 +3530,15 @@ function updateFeatureStudioHeader() {
         : "Tool overview";
   }
   if (elements.featureStudioNav) {
-    elements.featureStudioNav.classList.toggle("is-hidden", isActivated || studioView === "activation");
+    elements.featureStudioNav.classList.toggle("is-hidden", !isActivated || studioView === "activation");
   }
   if (elements.featureStudioOverviewButton) {
+    elements.featureStudioOverviewButton.hidden = true;
     elements.featureStudioOverviewButton.classList.toggle("is-active", studioView === "overview");
     elements.featureStudioOverviewButton.setAttribute("aria-selected", String(studioView === "overview"));
   }
   if (elements.featureStudioEditorButton) {
+    elements.featureStudioEditorButton.hidden = !isActivated;
     elements.featureStudioEditorButton.classList.toggle("is-active", studioView === "editor");
     elements.featureStudioEditorButton.setAttribute("aria-selected", String(studioView === "editor"));
   }
@@ -3548,7 +3560,13 @@ function updateFeatureStudioHeader() {
       : "Back to tools";
   }
   if (elements.featureStudioStatus) {
-    elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
+    if (studioView === "activation") {
+      clearFeatureActivationBadgeStyle(elements.featureStudioStatus);
+      elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
+    } else {
+      applyFeatureActivationBadgeStyle(elements.featureStudioStatus, feature);
+      elements.featureStudioStatus.textContent = getFeatureActivationLabel(feature);
+    }
   }
   elements.featureStudioTitle.textContent = feature.name;
   elements.featureStudioDescription.textContent = feature.description || "";
