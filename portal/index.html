@@ -9,7 +9,7 @@
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=48" />
+    <link rel="stylesheet" href="./styles.css?v=49" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -398,6 +398,22 @@
 Bad: 'Sure, anything is possible.'"
               ></textarea>
             </label>
+          </article>
+
+          <article class="glass-card config-card setup-card editor-activation-card">
+            <div class="card-head">
+              <h3>Activation</h3>
+            </div>
+
+            <p id="featureStudioEditorActivationText" class="feature-card-copy">
+              Finish setup before turning this tool on.
+            </p>
+
+            <div class="feature-page-actions editor-activation-actions">
+              <button id="featureStudioEditorToggleButton" class="primary-button" type="button">
+                Activate tool
+              </button>
+            </div>
           </article>
         </div>
       </section>
@@ -846,7 +862,7 @@ Owner said afternoons are easier."
     >
       <div class="auth-alert-dialog glass-card">
         <div class="auth-alert-head">
-          <div class="auth-alert-icon" aria-hidden="true">!</div>
+          <div id="authAlertIcon" class="auth-alert-icon" aria-hidden="true">!</div>
           <div class="auth-alert-copy">
             <p id="authAlertEyebrow" class="eyebrow">Sign-in help</p>
             <h2 id="authAlertTitle">Let’s get you set up</h2>
@@ -864,6 +880,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=54"></script>
+    <script src="./app.js?v=55"></script>
   </body>
 </html>

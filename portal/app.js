@@ -95,6 +95,7 @@ const DEFAULT_FEATURES = [
     mode: "Human-reviewed",
     status: "non-active",
     activated: false,
+    setupComplete: false,
     launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
     pricing: { ...DEFAULT_FEATURE_PRICING },
     prompt: { ...DEFAULT_PROMPT },
@@ -261,6 +262,7 @@ const elements = {
   authView: document.querySelector("#authView"),
   authCard: document.querySelector("#authCard"),
   authAlertOverlay: document.querySelector("#authAlertOverlay"),
+  authAlertIcon: document.querySelector("#authAlertIcon"),
   authAlertEyebrow: document.querySelector("#authAlertEyebrow"),
   authAlertTitle: document.querySelector("#authAlertTitle"),
   authAlertMessage: document.querySelector("#authAlertMessage"),
@@ -289,6 +291,8 @@ const elements = {
   featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
+  featureStudioEditorActivationText: document.querySelector("#featureStudioEditorActivationText"),
+  featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
   featureStudioPitch: document.querySelector("#featureStudioPitch"),
@@ -676,6 +680,10 @@ function syncAuthAlertState() {
 }
 
 function openAuthAlert(title, message, options = {}) {
+  if (elements.authAlertIcon) {
+    elements.authAlertIcon.textContent = String(options.icon || "!");
+    elements.authAlertIcon.dataset.tone = String(options.tone || "warning");
+  }
   if (elements.authAlertEyebrow) {
     elements.authAlertEyebrow.textContent = String(options.eyebrow || "Sign-in help");
   }
@@ -685,6 +693,9 @@ function openAuthAlert(title, message, options = {}) {
 
   if (elements.authAlertMessage) {
     elements.authAlertMessage.textContent = String(message || "If you need help, contact me and I’ll take care of it.");
+  }
+  if (elements.authAlertDismissButton) {
+    elements.authAlertDismissButton.textContent = String(options.buttonLabel || "OK");
   }
 
   authAlertReturnFocus = options.returnFocus || null;
@@ -801,7 +812,17 @@ function loadClientState(email) {
     const featureName = String(feature?.name || "");
     const featureMode = String(feature?.mode || "");
     const featureDescription = String(feature?.description || "");
-    const activated = Boolean(feature?.activated ?? feature?.isActivated ?? false);
+    const activated = Boolean(
+      feature?.activated
+      ?? feature?.isActivated
+      ?? (String(feature?.status || "").trim().toLowerCase() === "active"),
+    );
+    const setupComplete = Boolean(
+      feature?.setupComplete
+      ?? feature?.setup_complete
+      ?? feature?.isSetupComplete
+      ?? activated,
+    );
     const isLegacyDefaultFeature = index === 0
       && featureId === DEFAULT_FEATURES[0].id
       && (
@@ -835,6 +856,7 @@ function loadClientState(email) {
         : String(feature?.mode || "Default"),
       status: activated ? "active" : "non-active",
       activated,
+      setupComplete,
       launchUrl: String(
         feature?.launchUrl
         || (index === 0 ? DEFAULT_FEATURE_LAUNCH_URL : "")
@@ -998,6 +1020,10 @@ function isFeatureActivated(feature = getSelectedFeature()) {
   return Boolean(feature && feature.activated);
 }
 
+function isFeatureSetupComplete(feature = getSelectedFeature()) {
+  return Boolean(feature && (feature.setupComplete || isFeatureActivated(feature)));
+}
+
 function getFeatureActivationState(feature = getSelectedFeature()) {
   return isFeatureActivated(feature) ? "active" : "non-active";
 }
@@ -1037,11 +1063,14 @@ function setFeatureActivationState(feature, activated) {
   }
 
   feature.activated = Boolean(activated);
+  if (feature.activated) {
+    feature.setupComplete = true;
+  }
   feature.status = getFeatureActivationState(feature);
 }
 
 function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
-  return isFeatureActivated(feature) ? "editor" : "overview";
+  return isFeatureSetupComplete(feature) ? "editor" : "overview";
 }
 
 function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
@@ -1153,13 +1182,13 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
 function getFeatureActivationProgress(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   const total = FEATURE_ACTIVATION_REQUIRED_KEYS.length;
-  const ready = isFeatureActivated(feature)
+  const ready = isFeatureSetupComplete(feature)
     ? total
     : FEATURE_ACTIVATION_REQUIRED_KEYS.reduce((count, key) => count + (String(whatsapp[key] || "").trim() ? 1 : 0), 0);
   return {
     total,
     ready,
-    missing: isFeatureActivated(feature) ? [] : FEATURE_ACTIVATION_STEPS,
+    missing: isFeatureSetupComplete(feature) ? [] : FEATURE_ACTIVATION_STEPS,
     readyRatio: total > 0 ? ready / total : 0,
   };
 }
@@ -1171,6 +1200,10 @@ function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
 
   if (isFeatureActivated(feature)) {
     return "Live";
+  }
+
+  if (isFeatureSetupComplete(feature)) {
+    return "Setup saved";
   }
 
   const progress = getFeatureActivationProgress(feature);
@@ -1223,24 +1256,11 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
     return "Saving setup";
   }
 
-  if (isFeatureActivated(feature)) {
-    return "Live";
-  }
-
   if (view === "activation") {
-    const progress = getFeatureActivationProgress(feature);
-    if (progress.ready === 0) {
-      return "WhatsApp setup";
-    }
-
-    return progress.ready === progress.total ? "Ready to save" : "Setup in progress";
+    return "";
   }
 
-  if (view === "editor") {
-    return "Connected";
-  }
-
-  return "Start setup";
+  return getFeatureActivationLabel(feature);
 }
 
 function persistClientState() {
@@ -3353,8 +3373,10 @@ async function activateSelectedFeature() {
     updateFeatureStudioHeader();
     setStatus("Saving setup...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+    await new Promise((resolve) => window.setTimeout(resolve, 720));
 
-    setFeatureActivationState(feature, true);
+    feature.setupComplete = true;
+    feature.status = getFeatureActivationState(feature);
     clearFeatureActivationNotice();
     clearFeatureActivationFieldErrors();
     state.featureStudioView = "editor";
@@ -3363,7 +3385,18 @@ async function activateSelectedFeature() {
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
-    setStatus("WhatsApp account connected. Your tool is live.");
+    openAuthAlert(
+      "Setup succeeded",
+      "Your WhatsApp setup succeeded. This feature is now ready to be activated. Before turning it on, review the tool editor and make sure everything is set up to your taste.",
+      {
+        eyebrow: "Nice work",
+        buttonLabel: "Open tool editor",
+        icon: "✓",
+        tone: "success",
+        returnFocus: elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Setup saved. Review the tool editor before activating.");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error || "").trim();
     state.featureActivationNotice = "Setup failed";
@@ -3406,7 +3439,7 @@ function startFeatureActivation() {
   setStatus("WhatsApp setup opened.");
 }
 
-function deactivateSelectedFeature() {
+function deactivateSelectedFeature(options = {}) {
   const feature = getSelectedFeature();
   if (!feature) {
     return;
@@ -3415,13 +3448,41 @@ function deactivateSelectedFeature() {
   setFeatureActivationState(feature, false);
   clearFeatureActivationNotice();
   clearFeatureActivationFieldErrors();
-  state.featureStudioView = "overview";
+  state.featureStudioView = normalizeFeatureStudioView(options.view) || getDefaultFeatureStudioView(feature);
   persistClientState();
   closeFeatureStudioMenu();
-  setHashForTab("features", feature.id, "overview");
+  setHashForTab("features", feature.id, state.featureStudioView);
   renderApp();
   window.scrollTo(0, 0);
-  setStatus("Tool turned off.");
+  setStatus(String(options.statusMessage || "Tool turned off."));
+}
+
+function toggleSelectedFeatureEditorActivation() {
+  const feature = getSelectedFeature();
+  if (!feature) {
+    return;
+  }
+
+  if (isFeatureActivated(feature)) {
+    deactivateSelectedFeature({ view: "editor", statusMessage: "Tool turned off." });
+    return;
+  }
+
+  if (!isFeatureSetupComplete(feature)) {
+    setStatus("Finish WhatsApp setup before turning this tool on.");
+    return;
+  }
+
+  setFeatureActivationState(feature, true);
+  clearFeatureActivationNotice();
+  clearFeatureActivationFieldErrors();
+  state.featureStudioView = "editor";
+  persistClientState();
+  closeFeatureStudioMenu();
+  setHashForTab("features", feature.id, "editor");
+  renderApp();
+  window.scrollTo(0, 0);
+  setStatus("Tool activated.");
 }
 
 function handleFeatureStudioMenuAction(action) {
@@ -3500,7 +3561,7 @@ function syncFeatureActivationField(key) {
     clearFeatureActivationFieldError(key);
     persistClientState();
     updateFeatureStudioHeader();
-    setStatus("Setup saved.");
+    setStatus("Setup details updated.");
   };
 }
 
@@ -3514,6 +3575,7 @@ function updateFeatureStudioHeader() {
   const pitch = buildFeaturePitch(feature);
   const launchUrl = String(feature.launchUrl || "").trim();
   const isActivated = isFeatureActivated(feature);
+  const isSetupComplete = isFeatureSetupComplete(feature);
   const studioView = getSelectedFeatureStudioView(feature);
   const activationBusy = isFeatureActivationBusy(feature);
 
@@ -3557,6 +3619,7 @@ function updateFeatureStudioHeader() {
       : "Back to tools";
   }
   if (elements.featureStudioStatus) {
+    elements.featureStudioStatus.classList.toggle("is-hidden", studioView === "activation");
     if (studioView === "activation") {
       clearFeatureActivationBadgeStyle(elements.featureStudioStatus);
       elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
@@ -3588,21 +3651,17 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
-    elements.featureStudioLaunchButton.textContent = !isActivated
-      ? "Start setup"
-      : launchUrl
-        ? "Open live dashboard"
-        : "Open editor";
+    elements.featureStudioLaunchButton.textContent = isSetupComplete
+      ? "Open tool editor"
+      : "Start setup";
     elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = !isActivated
-      ? "Start setup to connect your WhatsApp account."
-      : launchUrl
-        ? "Open the live dashboard in a new tab."
-        : "Jump straight into the editor or open the live dashboard if you have one.";
+    elements.featureStudioLaunchNote.textContent = isSetupComplete
+      ? "Your WhatsApp setup is saved. Review the tool editor, then activate the feature when you’re ready."
+      : "Start setup to connect your WhatsApp account.";
   }
 
   renderFeatureActivationFieldErrors();
@@ -3621,6 +3680,19 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioActivationSection) {
     elements.featureStudioActivationSection.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationSection.setAttribute("aria-busy", String(activationBusy));
+  }
+  if (elements.featureStudioEditorActivationText) {
+    elements.featureStudioEditorActivationText.textContent = isActivated
+      ? "This tool is active now. You can turn it off anytime without losing your setup or editor settings."
+      : isSetupComplete
+        ? "Your WhatsApp setup is complete. Review the editor, then activate the tool when everything looks right."
+        : "Finish WhatsApp setup before turning this tool on.";
+  }
+  if (elements.featureStudioEditorToggleButton) {
+    elements.featureStudioEditorToggleButton.textContent = isActivated ? "Deactivate tool" : "Activate tool";
+    elements.featureStudioEditorToggleButton.className = isActivated ? "ghost-button danger" : "primary-button";
+    elements.featureStudioEditorToggleButton.disabled = !isActivated && !isSetupComplete;
+    elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
   }
 
   buildFeatureStudioMenu(feature);
@@ -4412,6 +4484,17 @@ function bindEvents() {
   }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.addEventListener("click", () => {
+      const feature = getSelectedFeature();
+      if (!feature) {
+        return;
+      }
+
+      if (isFeatureSetupComplete(feature)) {
+        setFeatureStudioView("editor");
+        setStatus("Tool editor opened.");
+        return;
+      }
+
       startFeatureActivation();
     });
   }
@@ -4439,6 +4522,11 @@ function bindEvents() {
   if (elements.featureStudioEditorButton) {
     elements.featureStudioEditorButton.addEventListener("click", () => {
       setFeatureStudioView("editor");
+    });
+  }
+  if (elements.featureStudioEditorToggleButton) {
+    elements.featureStudioEditorToggleButton.addEventListener("click", () => {
+      toggleSelectedFeatureEditorActivation();
     });
   }
   if (elements.featureStudioMenuButton) {
