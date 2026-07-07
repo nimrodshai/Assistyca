@@ -8,7 +8,7 @@ Recommended structure:
 - `clients/<client-id>/` for each live client
 - `packages/tools/` for reusable client-facing tools
 - `packages/infrastructure/` for shared backend support like auth, billing, storage, and delivery helpers
-- `clients/<client-id>/backend.json` for live WhatsApp backend settings and approval routing
+- `clients/<client-id>/backend.json` for live WhatsApp routing and tenant-specific connection outputs
 
 ## Field Groups
 
@@ -75,21 +75,16 @@ Runtime settings for the reusable WhatsApp approval backend.
 
 - `client.id` and `client.name`
 - `web.base_url`
-- `whatsapp.verify_token`
-- `whatsapp.access_token`
 - `whatsapp.phone_number_id`
-- `whatsapp.app_secret`
 - `whatsapp.owner_wa_id`
 - `whatsapp.allow_mock_send`
 - `assistant.*` guidance fields for reply generation
 
-These backend values are not meant to be typed into the customer-facing portal. Put the Meta app secrets in the backend deployment environment when you can:
+These backend values are not meant to be typed into the customer-facing portal. Put the Meta app secrets only in the backend deployment environment:
 
 - `WHATSAPP_ACCESS_TOKEN`
 - `WHATSAPP_VERIFY_TOKEN`
 - `WHATSAPP_APP_SECRET`
-
-For local or single-client setups, `clients/<client-id>/backend.json` can still hold the same values under `whatsapp.*`.
 
 ### `agent`
 

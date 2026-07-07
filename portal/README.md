@@ -16,7 +16,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview and editor, then opens a separate connection guide that explains the Meta Embedded Signup flow before the tool is marked live
 - The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes by WABA ID and phone number ID
-- The backend connection details still live in the per-client backend config at `clients/<client-id>/backend.json`, with the raw secrets in the backend deployment environment or the same file for local setups
+- The backend connection details can still use `clients/<client-id>/backend.json` for tenant-specific routing fields, but the Meta app secrets now belong only in the backend deployment environment
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
 - The top-right menu opens account, settings, and log out actions
@@ -57,6 +57,9 @@ Required environment variables on Render:
 - `PORTAL_DB_SEED_ADMIN_EMAILS` for the comma-separated list of admin portal users that get promoted on startup
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
+- `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the backend
+- `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
+- `WHATSAPP_APP_SECRET` for webhook signature verification
 - `PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER` controls the input-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER` controls the output-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_MULTIPLIER` is still accepted as a legacy fallback for both billing multipliers.

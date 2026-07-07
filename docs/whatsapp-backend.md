@@ -19,7 +19,7 @@ For a multi-tenant product, the usual setup is:
 - Create one Meta app for the whole product.
 - Let each customer connect their own WhatsApp Business Account through Embedded Signup.
 - Store the WABA ID and phone number ID in backend config, not in the customer-facing portal.
-- Keep the Meta app secrets on the backend deployment as `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`, or in `clients/<client-id>/backend.json` for local setups.
+- Keep the Meta app secrets only in the backend deployment environment as `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`.
 - Use one webhook endpoint for all tenants, then route each event by WABA ID or phone number ID.
 
 ## What The Backend Does
@@ -61,10 +61,7 @@ The JSON config is intentionally small and reusable.
 
 - `client.id` and `client.name`
 - `web.base_url`
-- `whatsapp.verify_token`
-- `whatsapp.access_token`
 - `whatsapp.phone_number_id`
-- `whatsapp.app_secret`
 - `whatsapp.owner_wa_id` for the owner WhatsApp number that should receive approvals
 - `whatsapp.allow_mock_send`
 - `assistant.tone_guidance`
@@ -79,7 +76,7 @@ For shared SaaS deployments, the backend should prefer the `WHATSAPP_*` environm
 
 ### Send Mode
 
-- If `whatsapp.access_token` and `whatsapp.phone_number_id` are set, `Send` calls the real WhatsApp Cloud API.
+- If `WHATSAPP_ACCESS_TOKEN` and `whatsapp.phone_number_id` are set, `Send` calls the real WhatsApp Cloud API.
 - If they are missing and `whatsapp.allow_mock_send` is true, the backend simulates the send so local development still works.
 
 The token and phone number ID are backend-owned outputs of the customer connection flow; the portal should not ask the customer to type them in.
@@ -92,7 +89,7 @@ The WhatsApp webhook verification endpoint is:
 /webhooks/whatsapp
 ```
 
-Meta will send the standard verification query parameters to that route. The backend also verifies the `X-Hub-Signature-256` header when `whatsapp.app_secret` is configured.
+Meta will send the standard verification query parameters to that route. The backend also verifies the `X-Hub-Signature-256` header when `WHATSAPP_APP_SECRET` is configured.
 
 ## Edit Flow
 

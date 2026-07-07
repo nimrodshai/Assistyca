@@ -619,26 +619,14 @@ class RuntimeConfig:
         if not base_url:
             base_url = f"http://{host}:{port}"
 
-        verify_token = normalize_text(
-            os.getenv("WHATSAPP_VERIFY_TOKEN")
-            or whatsapp.get("verify_token")
-            or merged.get("verify_token")
-        )
-        access_token = normalize_text(
-            os.getenv("WHATSAPP_ACCESS_TOKEN")
-            or whatsapp.get("access_token")
-            or merged.get("access_token")
-        )
+        verify_token = normalize_text(os.getenv("WHATSAPP_VERIFY_TOKEN"))
+        access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
         phone_number_id = normalize_text(
             os.getenv("WHATSAPP_PHONE_NUMBER_ID")
             or whatsapp.get("phone_number_id")
             or merged.get("phone_number_id")
         )
-        app_secret = normalize_text(
-            os.getenv("WHATSAPP_APP_SECRET")
-            or whatsapp.get("app_secret")
-            or merged.get("app_secret")
-        )
+        app_secret = normalize_text(os.getenv("WHATSAPP_APP_SECRET"))
         owner_wa_id = normalize_text(
             os.getenv("WHATSAPP_OWNER_WA_ID")
             or whatsapp.get("owner_wa_id")

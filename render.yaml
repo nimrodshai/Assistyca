@@ -31,5 +31,11 @@ services:
         sync: false
       - key: PORTAL_RESEND_FROM_EMAIL
         sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
       - key: PORTAL_SUPPORT_PHONE
         value: "+972-50-7322341"
