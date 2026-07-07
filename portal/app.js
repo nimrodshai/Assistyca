@@ -3589,7 +3589,7 @@ function updateFeatureStudioHeader() {
         : "Tool overview";
   }
   if (elements.featureStudioNav) {
-    elements.featureStudioNav.classList.toggle("is-hidden", !isActivated || studioView === "activation");
+    elements.featureStudioNav.classList.add("is-hidden");
   }
   if (elements.featureStudioOverviewButton) {
     elements.featureStudioOverviewButton.hidden = true;
@@ -3597,7 +3597,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioOverviewButton.setAttribute("aria-selected", String(studioView === "overview"));
   }
   if (elements.featureStudioEditorButton) {
-    elements.featureStudioEditorButton.hidden = !isActivated;
+    elements.featureStudioEditorButton.hidden = true;
     elements.featureStudioEditorButton.classList.toggle("is-active", studioView === "editor");
     elements.featureStudioEditorButton.setAttribute("aria-selected", String(studioView === "editor"));
   }
