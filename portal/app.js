@@ -88,7 +88,7 @@ const DEFAULT_FEATURES = [
     description: "Turns incoming WhatsApp questions into quick, human-reviewed replies that help you quote faster and book more work.",
     channel: "WhatsApp",
     mode: "Human-reviewed",
-    status: "Active",
+    status: "non-active",
     activated: false,
     launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
     pricing: { ...DEFAULT_FEATURE_PRICING },
@@ -789,6 +789,7 @@ function loadClientState(email) {
     const featureId = String(feature?.id || "");
     const featureName = String(feature?.name || "");
     const featureMode = String(feature?.mode || "");
+    const activated = Boolean(feature?.activated ?? feature?.isActivated ?? false);
     const isLegacyDefaultFeature = index === 0
       && featureId === DEFAULT_FEATURES[0].id
       && (
@@ -810,8 +811,8 @@ function loadClientState(email) {
       mode: isLegacyDefaultFeature
         ? DEFAULT_FEATURES[0].mode
         : String(feature?.mode || "Default"),
-      status: String(feature?.status || "Active"),
-      activated: Boolean(feature?.activated ?? feature?.isActivated ?? false),
+      status: activated ? "active" : "non-active",
+      activated,
       launchUrl: String(
         feature?.launchUrl
         || (index === 0 ? DEFAULT_FEATURE_LAUNCH_URL : "")
@@ -970,8 +971,36 @@ function isFeatureActivated(feature = getSelectedFeature()) {
   return Boolean(feature && feature.activated);
 }
 
+function getFeatureActivationState(feature = getSelectedFeature()) {
+  return isFeatureActivated(feature) ? "active" : "non-active";
+}
+
 function getFeatureActivationLabel(feature = getSelectedFeature()) {
-  return isFeatureActivated(feature) ? "Active" : "Connect";
+  return getFeatureActivationState(feature);
+}
+
+function applyFeatureActivationBadgeStyle(element, feature = getSelectedFeature()) {
+  if (!element) {
+    return;
+  }
+
+  const state = getFeatureActivationState(feature);
+  const palette = state === "active"
+    ? { backgroundColor: "rgba(22, 163, 74, 0.12)", color: "#15803d" }
+    : { backgroundColor: "rgba(220, 38, 38, 0.12)", color: "#b42318" };
+
+  element.dataset.state = state;
+  element.style.backgroundColor = palette.backgroundColor;
+  element.style.color = palette.color;
+}
+
+function setFeatureActivationState(feature, activated) {
+  if (!feature) {
+    return;
+  }
+
+  feature.activated = Boolean(activated);
+  feature.status = getFeatureActivationState(feature);
 }
 
 function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
@@ -1537,7 +1566,7 @@ function buildBillingToolCatalog() {
       toolId: String(feature?.id || `feature-${index + 1}`).trim(),
       toolName: String(feature?.name || `Tool ${index + 1}`).trim(),
       pricing,
-      status: String(feature?.status || "Active").trim(),
+      status: getFeatureActivationLabel(feature),
     };
   });
 }
@@ -3094,6 +3123,7 @@ function createFeatureCard(feature) {
 
   const status = document.createElement("span");
   status.className = "feature-status feature-card-status";
+  applyFeatureActivationBadgeStyle(status, feature);
   status.textContent = getFeatureActivationLabel(feature);
 
   const head = document.createElement("div");
@@ -3277,7 +3307,7 @@ async function activateSelectedFeature() {
     setStatus("Saving setup...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 
-    feature.activated = true;
+    setFeatureActivationState(feature, true);
     clearFeatureActivationNotice();
     clearFeatureActivationFieldErrors();
     state.featureStudioView = "editor";
@@ -3335,7 +3365,7 @@ function deactivateSelectedFeature() {
     return;
   }
 
-  feature.activated = false;
+  setFeatureActivationState(feature, false);
   clearFeatureActivationNotice();
   clearFeatureActivationFieldErrors();
   state.featureStudioView = "overview";
