@@ -6,10 +6,10 @@
     <title>Assistyca | WhatsApp setup</title>
     <meta
       name="description"
-      content="Connect your WhatsApp account, add the details this feature needs, and finish setup inside Assistyca."
+      content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=44" />
+    <link rel="stylesheet" href="./styles.css?v=45" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -247,7 +247,7 @@
                 Start setup
               </button>
               <p id="featureStudioLaunchNote" class="approval-note">
-                Start setup to add the WhatsApp account details this feature needs.
+                Start setup to connect your WhatsApp account.
               </p>
             </div>
           </div>
@@ -284,7 +284,7 @@
                 <div class="setup-step">
                   <span class="setup-step-index">1</span>
                   <div>
-                    <strong>Business account</strong>
+                    <strong>Account ID</strong>
                     <p>Paste the account ID Meta gives you.</p>
                   </div>
                 </div>
@@ -299,14 +299,13 @@
             </div>
 
             <aside class="feature-activation-hero-meta">
-              <span id="featureActivationStatus" class="feature-status">WhatsApp setup</span>
               <div class="activation-progress">
-                <strong id="featureActivationProgress">0 of 3 details complete</strong>
+                <strong id="featureActivationProgress">0 of 2 steps complete</strong>
                 <div class="activation-progress-track" aria-hidden="true">
                   <span id="featureActivationProgressFill"></span>
                 </div>
                 <p id="featureActivationProgressNote" class="activation-progress-note" hidden>
-                  We save the account ID, the linked WhatsApp number, and your phone number.
+                  We save the account ID and your phone number.
                 </p>
                 <p id="featureActivationSummary" class="activation-summary"></p>
               </div>
@@ -318,13 +317,12 @@
               <div class="activation-card-head">
                 <div>
                   <h3>Your WhatsApp account details</h3>
-                  <p class="setup-copy">These values stay with this account. Fill them in once and save to continue.</p>
+                  <p class="setup-copy">These details let the feature work with your WhatsApp account. Fill them in once and save to continue.</p>
                 </div>
-                <span class="activation-section-chip">Saved privately</span>
               </div>
 
               <div class="activation-form-grid">
-                <label class="field activation-field-span">
+                <label class="field">
                   <span>Account ID</span>
                   <input
                     id="featureActivationBusinessAccountId"
@@ -335,19 +333,6 @@
                   />
                   <small class="field-help">Paste the account ID Meta gives you.</small>
                   <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
-                </label>
-
-                <label class="field">
-                  <span>WhatsApp number</span>
-                  <input
-                    id="featureActivationPhoneNumberId"
-                    type="text"
-                    inputmode="numeric"
-                    autocomplete="off"
-                    placeholder="123456789012345"
-                  />
-                  <small class="field-help">Add the number linked to this account.</small>
-                  <span id="featureActivationPhoneNumberIdError" class="field-error" hidden></span>
                 </label>
 
                 <label class="field">
@@ -364,13 +349,6 @@
                 </label>
               </div>
 
-              <div class="setup-divider"></div>
-
-              <div class="setup-note">
-                <h4>What to have ready</h4>
-                <p>Open Meta, finish the connection, then paste the details here.</p>
-              </div>
-
               <div class="feature-page-actions feature-activation-actions">
                 <button id="featureStudioActivationBackButton" class="text-button" type="button">
                   Back to overview
@@ -381,27 +359,6 @@
               </div>
             </article>
 
-            <aside class="feature-activation-sidebar">
-              <article class="glass-card activation-card">
-                <div class="activation-card-head">
-                  <h3>What happens after you save</h3>
-                  <span class="activation-section-chip">Manual review</span>
-                </div>
-                <ul class="setup-list">
-                  <li><strong>Reply drafts.</strong> New WhatsApp messages create a suggested response.</li>
-                  <li><strong>Control.</strong> You decide whether to send it.</li>
-                </ul>
-                <p class="setup-copy">You can update these details later if the account changes.</p>
-              </article>
-
-              <article class="glass-card activation-card">
-                <div class="activation-card-head">
-                  <h3>Two details we need</h3>
-                  <span class="activation-section-chip activation-section-chip-optional">Quick checklist</span>
-                </div>
-                <p class="setup-copy">You'll need the account ID and your phone number.</p>
-              </article>
-            </aside>
           </div>
         </section>
 
@@ -943,6 +900,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=50"></script>
+    <script src="./app.js?v=51"></script>
   </body>
 </html>

@@ -50,17 +50,14 @@ const DEFAULT_FEATURE_PRICING = {
 };
 const FEATURE_ACTIVATION_REQUIRED_KEYS = [
   "business_account_id",
-  "phone_number_id",
   "owner_wa_id",
 ];
 const FEATURE_ACTIVATION_STEPS = [
-  "Business account",
-  "WhatsApp number",
+  "Account ID",
   "Your phone number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
   business_account_id: "",
-  phone_number_id: "",
   owner_wa_id: "",
 };
 
@@ -265,7 +262,6 @@ const elements = {
   featureStudioEditorButton: document.querySelector("#featureStudioEditorButton"),
   featureStudioActivationSection: document.querySelector("#featureStudioActivationSection"),
   featureStudioStatus: document.querySelector("#featureStudioStatus"),
-  featureActivationStatus: document.querySelector("#featureActivationStatus"),
   featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
   featureStudioActivationBackButton: document.querySelector("#featureStudioActivationBackButton"),
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
@@ -283,8 +279,6 @@ const elements = {
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
-  featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
-  featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
   featureActivationProgress: document.querySelector("#featureActivationProgress"),
@@ -895,7 +889,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Connect your WhatsApp account in Meta, then save the account ID, the linked WhatsApp number, and your phone number.";
+  return "Connect your WhatsApp account in Meta, then save the account ID and your phone number.";
 }
 
 function formatNextBillingDate(reference = new Date()) {
@@ -981,7 +975,6 @@ function isFeatureActivationBusy(feature = getSelectedFeature()) {
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
     business_account_id: "Account ID",
-    phone_number_id: "WhatsApp number",
     owner_wa_id: "Your phone number",
   };
 
@@ -1044,7 +1037,6 @@ function getFeatureActivationFieldError(key) {
 function getFeatureActivationFieldElement(key) {
   const elementsByKey = {
     business_account_id: elements.featureActivationBusinessAccountIdInput,
-    phone_number_id: elements.featureActivationPhoneNumberIdInput,
     owner_wa_id: elements.featureActivationOwnerWaIdInput,
   };
 
@@ -1059,18 +1051,14 @@ function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
 function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   const businessAccountId = String(whatsapp.business_account_id || "").trim();
-  const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
   const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
   const issues = [];
 
   if (!/^\d+$/.test(businessAccountId)) {
-    issues.push({ field: "business_account_id", message: "Enter the ID Meta gave you.", inline: true });
-  }
-  if (!/^\d+$/.test(phoneNumberId)) {
-    issues.push({ field: "phone_number_id", message: "Enter the number linked to this account.", inline: true });
+    issues.push({ field: "business_account_id", message: "Enter the account ID Meta gave you.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
-    issues.push({ field: "owner_wa_id", message: "Enter the number that should get reply suggestions.", inline: true });
+    issues.push({ field: "owner_wa_id", message: "Enter your phone number.", inline: true });
   }
 
   return issues;
@@ -1109,13 +1097,14 @@ function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
 
 function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
   const progress = getFeatureActivationProgress(feature);
+  const noun = progress.total === 1 ? "step" : "steps";
   return progress.ready === progress.total
-    ? `${progress.total} of ${progress.total} details complete`
-    : `${progress.ready} of ${progress.total} details complete`;
+    ? `${progress.total} of ${progress.total} ${noun} complete`
+    : `${progress.ready} of ${progress.total} ${noun} complete`;
 }
 
 function getFeatureActivationProgressNote() {
-  return "We save the account ID, the linked WhatsApp number, and your phone number.";
+  return "We save the account ID and your phone number.";
 }
 
 function getFeatureActivationNoticeLabel() {
@@ -1166,11 +1155,11 @@ function getFeatureActivationSummary(feature = getSelectedFeature()) {
 
   const progress = getFeatureActivationProgress(feature);
   if (progress.ready === 0) {
-    return "Enter the account ID, linked WhatsApp number, and your phone number to finish setup.";
+    return "Enter the account ID and your phone number to finish setup.";
   }
 
   if (progress.ready < progress.total) {
-    return `${progress.ready} of ${progress.total} details saved. Finish the remaining fields to continue.`;
+    return "You’re partway there. Finish the remaining field to continue.";
   }
 
   return "Your WhatsApp details are ready to save.";
@@ -3285,7 +3274,7 @@ async function activateSelectedFeature() {
   if (issues.length) {
     setFeatureActivationFieldErrors(issues);
     updateFeatureStudioHeader();
-    setStatus("Finish the missing WhatsApp details.");
+    setStatus("Finish the missing details.");
     const firstIssue = issues[0];
     const focusTarget = getFeatureActivationFieldElement(firstIssue.field);
     window.requestAnimationFrame(() => {
@@ -3392,9 +3381,6 @@ function updateFeatureActivationFields() {
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.value = whatsapp.business_account_id;
   }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.value = whatsapp.phone_number_id;
-  }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.value = whatsapp.owner_wa_id;
   }
@@ -3406,11 +3392,6 @@ function renderFeatureActivationFieldErrors() {
       key: "business_account_id",
       input: elements.featureActivationBusinessAccountIdInput,
       error: elements.featureActivationBusinessAccountIdError,
-    },
-    {
-      key: "phone_number_id",
-      input: elements.featureActivationPhoneNumberIdInput,
-      error: elements.featureActivationPhoneNumberIdError,
     },
     {
       key: "owner_wa_id",
@@ -3506,9 +3487,6 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioMenuWrap) {
     elements.featureStudioMenuWrap.classList.toggle("is-hidden", !isActivated);
   }
-  if (elements.featureActivationStatus) {
-    elements.featureActivationStatus.textContent = formatFeatureActivationProgressLabel(feature);
-  }
   if (elements.featureActivationProgress) {
     elements.featureActivationProgress.textContent = getFeatureActivationProgressDetail(feature);
   }
@@ -3556,7 +3534,7 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchNote) {
     elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchNote.textContent = !isActivated
-      ? "Start setup to add the WhatsApp account details this feature needs."
+      ? "Start setup to connect your WhatsApp account."
       : launchUrl
         ? "Open the live dashboard in a new tab."
         : "Jump straight into the editor or open the live dashboard if you have one.";
@@ -3579,9 +3557,6 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.disabled = activationBusy;
-  }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.disabled = activationBusy;
   }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.disabled = activationBusy;
@@ -4428,9 +4403,6 @@ function bindEvents() {
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.addEventListener("input", syncFeatureActivationField("business_account_id"));
-  }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.addEventListener("input", syncFeatureActivationField("phone_number_id"));
   }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.addEventListener("input", syncFeatureActivationField("owner_wa_id"));

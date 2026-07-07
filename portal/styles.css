@@ -2644,8 +2644,7 @@ body[data-modal="billing"] .app-shell {
   align-content: start;
   min-width: 0;
   width: 100%;
-  position: sticky;
-  top: 6.5rem;
+  position: static;
 }
 
 .activation-progress {
@@ -2693,17 +2692,9 @@ body[data-modal="billing"] .app-shell {
 
 .feature-activation-body {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.75fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
   align-items: start;
-}
-
-.feature-activation-sidebar {
-  display: grid;
-  gap: 1rem;
-  align-self: start;
-  position: sticky;
-  top: 6.5rem;
 }
 
 .activation-card {
@@ -2722,10 +2713,8 @@ body[data-modal="billing"] .app-shell {
 }
 
 .activation-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: flex-start;
+  display: grid;
+  gap: 0.35rem;
 }
 
 .activation-card-head h3 {
@@ -2843,11 +2832,7 @@ body[data-modal="billing"] .app-shell {
 .activation-form-grid {
   display: grid;
   gap: 0.85rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.activation-field-span {
-  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .field-help {
@@ -3257,10 +3242,6 @@ body[data-modal="billing"] .app-shell {
     grid-template-columns: 1fr;
   }
 
-  .feature-activation-sidebar {
-    position: static;
-  }
-
   .feature-activation-hero-meta {
     position: static;
   }
@@ -3269,20 +3250,8 @@ body[data-modal="billing"] .app-shell {
     padding: 0.9rem;
   }
 
-  .activation-card-head {
-    flex-direction: column;
-  }
-
-  .activation-section-chip {
-    align-self: flex-start;
-  }
-
   .activation-form-grid {
     grid-template-columns: 1fr;
-  }
-
-  .activation-field-span {
-    grid-column: auto;
   }
 
   .feature-activation-actions {
