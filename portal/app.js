@@ -85,7 +85,7 @@ const DEFAULT_FEATURES = [
   {
     id: "whatsapp-business-reply-suggestion-assistant",
     name: "WhatsApp Reply Assistant",
-    description: "Helps you write WhatsApp replies faster and keep control over every reply.",
+    description: "Turns incoming WhatsApp questions into quick, human-reviewed replies that help you quote faster and book more work.",
     channel: "WhatsApp",
     mode: "Human-reviewed",
     status: "Active",
@@ -100,11 +100,11 @@ const DEFAULT_FEATURES = [
 const DEFAULT_SIMULATOR = {
   composer: {
     scenario: "approval",
-    senderName: "Jim Hopper",
+    senderName: "Maya Cohen",
     senderWaId: "15551230000",
-    latestMessage: "Hey, are you available today?",
+    latestMessage: "Hi, can you quote a same-day leak repair at 14 King St? We’re comparing options now.",
     threadContext:
-      "Can you fit me in later today?\nI can check my calendar now.\nIf not, tomorrow afternoon works too.",
+      "Need a quote for a leak repair at 14 King St.\nWe need the earliest slot and a rough price.\nCustomer is comparing options now.",
     approvalUrl: LOCAL_APPROVAL_URL,
   },
   approvals: [],
@@ -129,35 +129,45 @@ function isLegacyWorkspaceName(value) {
 
 const SCENARIOS = {
   approval: {
-    label: "WhatsApp reply assistant example",
-    sender: "Jim Hopper",
-    user: "Hey, are you available today?",
-    ask: "One sec, checking my calendar right now.",
+    label: "Hot lead",
+    sender: "Maya Cohen",
+    meta: "After-hours quote request",
+    user: "Hi, can you quote a same-day leak repair at 14 King St? We’re comparing options now.",
+    ask: "Absolutely. Send me a photo and your address, and I’ll confirm pricing and the earliest slot right away.",
+    insight: "Keeps fresh leads from going cold while you’re busy on another job.",
     exactReply: true,
   },
   availability: {
-    label: "New lead asking about availability",
+    label: "Booking request",
     sender: "Maya Cohen",
+    meta: "New inquiry",
     user: "Hi, are you available tomorrow afternoon?",
     ask: "Let me check what works best. What address should I look at?",
+    insight: "Shows customers you’re responsive before they move on.",
   },
   pricing: {
-    label: "Customer asking about price",
+    label: "Quote request",
     sender: "Oren Levy",
+    meta: "Price comparison",
     user: "How much would it cost to replace the lock?",
     ask: "I can give you a proper price once I know the door type and lock model.",
+    insight: "Gets the details you need before quoting blind.",
   },
   reschedule: {
-    label: "Existing client wants to reschedule",
+    label: "Schedule change",
     sender: "Dana Klein",
+    meta: "Existing customer",
     user: "Can we move the appointment by one day?",
     ask: "Yes, I can check that. What time window would work for you?",
+    insight: "Keeps repeat business moving without a phone call.",
   },
   urgent: {
-    label: "Urgent request that should escalate",
+    label: "Escalation",
     sender: "Customer",
+    meta: "Needs a human",
     user: "The door is stuck and I need help right now.",
-    ask: "I am flagging this for immediate human follow-up so someone can help you as fast as possible.",
+    ask: "I’m flagging this for immediate human follow-up so someone can help you as fast as possible.",
+    insight: "Makes urgent jobs impossible to miss.",
   },
 };
 
@@ -263,7 +273,6 @@ const elements = {
   featureStudioActivationSection: document.querySelector("#featureStudioActivationSection"),
   featureStudioStatus: document.querySelector("#featureStudioStatus"),
   featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
-  featureStudioActivationBackButton: document.querySelector("#featureStudioActivationBackButton"),
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
@@ -272,9 +281,12 @@ const elements = {
   featureStudioMode: document.querySelector("#featureStudioMode"),
   featureStudioPitch: document.querySelector("#featureStudioPitch"),
   featureStudioExampleSender: document.querySelector("#featureStudioExampleSender"),
+  featureStudioExampleAvatar: document.querySelector("#featureStudioExampleAvatar"),
   featureStudioExampleLabel: document.querySelector("#featureStudioExampleLabel"),
+  featureStudioExampleMeta: document.querySelector("#featureStudioExampleMeta"),
   featureStudioExampleMessage: document.querySelector("#featureStudioExampleMessage"),
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
+  featureStudioExampleInsight: document.querySelector("#featureStudioExampleInsight"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
@@ -865,7 +877,7 @@ function buildFeaturePitch(feature = getSelectedFeature()) {
   const prompt = feature?.prompt || getSelectedPrompt();
   const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
   const title = feature?.name || "This tool";
-  return `${title} helps you write replies faster and keep control over every message. For example, when someone says "${scenario.user}", it drafts "${scenario.ask}".`;
+  return `${title} turns WhatsApp questions into quicker quotes, clearer next steps, and more booked work. When someone says "${scenario.user}", it drafts "${scenario.ask}" so the lead stays warm until you hit send.`;
 }
 
 function buildFeatureExample(feature = getSelectedFeature()) {
@@ -873,9 +885,12 @@ function buildFeatureExample(feature = getSelectedFeature()) {
   const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
   return {
     sender: scenario.sender || "Customer",
-    label: "Example",
+    avatar: getInitialsFromName(scenario.sender || feature?.name || "WA"),
+    label: scenario.label || "Example",
+    meta: scenario.meta || "Recent lead",
     incoming: scenario.user,
     outgoing: buildResponseText(prompt),
+    insight: scenario.insight || "Keeps the thread moving until you can send.",
   };
 }
 
@@ -905,6 +920,15 @@ function formatDisplayNameFromId(value) {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Unassigned tool";
+}
+
+function getInitialsFromName(value) {
+  const parts = String(value || "")
+    .replace(/[^A-Za-z0-9\s]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return (parts.slice(0, 2).map((part) => part[0]).join("") || "WA").toUpperCase();
 }
 
 function normalizePrompt(prompt = {}, fallback = DEFAULT_PROMPT) {
@@ -3448,6 +3472,11 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioMenuWrap) {
     elements.featureStudioMenuWrap.classList.toggle("is-hidden", !isActivated);
   }
+  if (elements.backToFeaturesButton) {
+    elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "activation"
+      ? "Back to overview"
+      : "Back to tools";
+  }
   if (elements.featureStudioStatus) {
     elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
   }
@@ -3461,14 +3490,23 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioExampleSender) {
     elements.featureStudioExampleSender.textContent = example.sender;
   }
+  if (elements.featureStudioExampleAvatar) {
+    elements.featureStudioExampleAvatar.textContent = example.avatar;
+  }
   if (elements.featureStudioExampleLabel) {
     elements.featureStudioExampleLabel.textContent = example.label;
+  }
+  if (elements.featureStudioExampleMeta) {
+    elements.featureStudioExampleMeta.textContent = example.meta;
   }
   if (elements.featureStudioExampleMessage) {
     elements.featureStudioExampleMessage.textContent = example.incoming;
   }
   if (elements.featureStudioExampleReply) {
     elements.featureStudioExampleReply.textContent = example.outgoing;
+  }
+  if (elements.featureStudioExampleInsight) {
+    elements.featureStudioExampleInsight.textContent = example.insight;
   }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
@@ -3496,9 +3534,6 @@ function updateFeatureStudioHeader() {
     elements.featureStudioActivationButton.disabled = activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
-  }
-  if (elements.featureStudioActivationBackButton) {
-    elements.featureStudioActivationBackButton.disabled = activationBusy;
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.disabled = activationBusy;
@@ -4279,7 +4314,14 @@ function bindEvents() {
     void signOut();
   });
   elements.closeSettingsButton.addEventListener("click", closeSettings);
-  elements.backToFeaturesButton.addEventListener("click", closeFeatureStudio);
+  elements.backToFeaturesButton.addEventListener("click", () => {
+    if (state.featureStudioView === "activation") {
+      setFeatureStudioView("overview");
+      return;
+    }
+
+    closeFeatureStudio();
+  });
   if (elements.billingRefreshButton) {
     elements.billingRefreshButton.addEventListener("click", () => {
       void refreshBillingReport();
@@ -4294,11 +4336,6 @@ function bindEvents() {
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.addEventListener("click", () => {
       startFeatureActivation();
-    });
-  }
-  if (elements.featureStudioActivationBackButton) {
-    elements.featureStudioActivationBackButton.addEventListener("click", () => {
-      setFeatureStudioView("overview");
     });
   }
   if (elements.featureStudioActivationSection) {

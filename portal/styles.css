@@ -2646,16 +2646,11 @@ body[data-modal="billing"] .app-shell {
 
 .feature-activation-actions {
   width: 100%;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   margin-top: 0.15rem;
   padding-top: 0.95rem;
   border-top: 1px solid rgba(20, 28, 38, 0.08);
-}
-
-.feature-activation-actions .text-button {
-  padding-left: 0;
-  padding-right: 0;
 }
 
 .feature-activation-actions .primary-button {
@@ -3007,11 +3002,6 @@ body[data-modal="billing"] .app-shell {
     border: 0;
     box-shadow: none;
     background: transparent;
-  }
-
-  .feature-activation-actions .text-button {
-    width: auto;
-    align-self: flex-start;
   }
 
   .feature-activation-actions .primary-button {
