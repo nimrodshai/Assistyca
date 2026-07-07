@@ -51,7 +51,7 @@ DEFAULT_SESSION_TTL_SECONDS = 180 * 24 * 60 * 60
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_SMTP_PORT = 587
 DEFAULT_BILLING_MULTIPLIER = 1.5
-DEFAULT_BILLING_MINIMUM = 14.9
+DEFAULT_BILLING_MINIMUM = 50.0
 RESEND_API_URL = "https://api.resend.com/emails"
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 SESSION_TOKEN_VERSION = 1
@@ -1295,12 +1295,12 @@ def main() -> int:
     print(
         f"Default billing plan: {config.billing_input_token_price_multiplier}x input / "
         f"{config.billing_output_token_price_multiplier}x output, "
-        f"${config.billing_minimum_monthly_charge:.2f} minimum.",
+        f"${config.billing_minimum_monthly_charge:.2f} monthly account minimum.",
         flush=True,
     )
     print(
         f"Sample billing fallback: {config.billing_data_path} "
-        f"({config.billing_markup_multiplier}x markup, ${config.billing_minimum_monthly_charge:.2f} minimum).",
+        f"({config.billing_markup_multiplier}x markup, ${config.billing_minimum_monthly_charge:.2f} monthly account minimum).",
         flush=True,
     )
 

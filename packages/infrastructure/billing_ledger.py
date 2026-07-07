@@ -118,7 +118,7 @@ def resolve_model_base_cost(raw_model: dict[str, Any]) -> float:
     return max(0.0, tokens * safe_float(token_value))
 
 
-def summarize_model_rows(raw_models: Any) -> list[dict[str, Any]]:
+def summarize_model_rows(raw_models: Any, *, markup_multiplier: float = 1.0) -> list[dict[str, Any]]:
     models = raw_models if isinstance(raw_models, list) else []
     aggregated: dict[str, dict[str, Any]] = {}
 
@@ -133,18 +133,30 @@ def summarize_model_rows(raw_models: Any) -> list[dict[str, Any]]:
                 "model": model_name,
                 "tokensUsed": 0,
                 "baseCostUsd": 0.0,
+                "inputChargeUsd": 0.0,
+                "outputChargeUsd": 0.0,
+                "chargeUsd": 0.0,
             },
         )
         entry["tokensUsed"] += safe_int(raw_model.get("tokens") or raw_model.get("token_count"))
         entry["baseCostUsd"] += resolve_model_base_cost(raw_model)
+        entry["inputChargeUsd"] += safe_float(raw_model.get("inputChargeUsd") or raw_model.get("input_charge_usd"))
+        entry["outputChargeUsd"] += safe_float(raw_model.get("outputChargeUsd") or raw_model.get("output_charge_usd"))
+        entry["chargeUsd"] += safe_float(raw_model.get("chargeUsd") or raw_model.get("charge_usd"))
 
     summarized = []
     for row in aggregated.values():
+        input_charge_usd = round(float(row["inputChargeUsd"]), 2)
+        output_charge_usd = round(float(row["outputChargeUsd"]), 2)
+        usage_charge_usd = round(float(row["chargeUsd"]) or input_charge_usd + output_charge_usd, 2)
         summarized.append(
             {
                 "model": row["model"],
                 "tokensUsed": int(row["tokensUsed"]),
                 "baseCostUsd": round(float(row["baseCostUsd"]), 2),
+                "inputChargeUsd": input_charge_usd,
+                "outputChargeUsd": output_charge_usd,
+                "chargeUsd": usage_charge_usd or round(float(row["baseCostUsd"]) * markup_multiplier, 2),
             }
         )
 
@@ -167,7 +179,7 @@ def resolve_tool_base_cost(raw_tool: dict[str, Any]) -> float:
     return sum(resolve_model_base_cost(raw_model) for raw_model in (raw_tool.get("models") if isinstance(raw_tool.get("models"), list) else []))
 
 
-def summarize_tool_rows(raw_tools: Any) -> list[dict[str, Any]]:
+def summarize_tool_rows(raw_tools: Any, *, markup_multiplier: float) -> list[dict[str, Any]]:
     tools = raw_tools if isinstance(raw_tools, list) else []
     summarized: list[dict[str, Any]] = []
 
@@ -175,7 +187,10 @@ def summarize_tool_rows(raw_tools: Any) -> list[dict[str, Any]]:
         if not isinstance(raw_tool, dict):
             continue
 
-        model_rows = summarize_model_rows(raw_tool.get("models"))
+        resolved_markup_multiplier = safe_float(
+            raw_tool.get("markup_multiplier") or raw_tool.get("markupMultiplier") or markup_multiplier or 1.0
+        )
+        model_rows = summarize_model_rows(raw_tool.get("models"), markup_multiplier=resolved_markup_multiplier)
         tokens_used = sum(int(model["tokensUsed"]) for model in model_rows)
         input_tokens_used = sum(int(model.get("inputTokensUsed", 0)) for model in model_rows)
         output_tokens_used = sum(int(model.get("outputTokensUsed", 0)) for model in model_rows)
@@ -187,12 +202,7 @@ def summarize_tool_rows(raw_tools: Any) -> list[dict[str, Any]]:
         tool_name = normalize_text(raw_tool.get("tool_name") or raw_tool.get("toolName") or raw_tool.get("name")) or f"Tool {index + 1}"
         tool_id = normalize_text(raw_tool.get("tool_id") or raw_tool.get("toolId") or raw_tool.get("feature_id") or raw_tool.get("featureId")) or tool_name
         raw_total = resolve_tool_base_cost(raw_tool)
-        minimum_monthly_charge = max(0.0, safe_float(raw_tool.get("minimum_monthly_charge") or raw_tool.get("minimumMonthlyCharge") or 0.0))
-        minimum_monthly_charge = minimum_monthly_charge or 0.0
-        charge_floor = minimum_monthly_charge if minimum_monthly_charge > 0 else 0.0
-        raw_charge = round(raw_total * safe_float(raw_tool.get("markup_multiplier") or raw_tool.get("markupMultiplier") or 1.0), 2)
-        charge_usd = round(max(raw_charge, charge_floor), 2) if charge_floor > 0 else round(raw_charge, 2)
-        minimum_applied = charge_usd == round(charge_floor, 2) and raw_charge < charge_floor if charge_floor > 0 else False
+        raw_charge = round(raw_total * resolved_markup_multiplier, 2)
 
         summarized.append(
             {
@@ -204,8 +214,8 @@ def summarize_tool_rows(raw_tools: Any) -> list[dict[str, Any]]:
                 "baseCostUsd": round(base_cost_usd, 2),
                 "inputChargeUsd": input_charge_usd,
                 "outputChargeUsd": output_charge_usd,
-                "chargeUsd": charge_usd,
-                "minimumApplied": minimum_applied,
+                "chargeUsd": raw_charge,
+                "minimumApplied": False,
                 "usageCount": usage_count,
                 "usageDates": usage_dates,
                 "models": model_rows,
@@ -227,24 +237,31 @@ def summarize_month(
     month_key = normalize_month_key(raw_month.get("month"), fallback=fallback_month_key)
     tools_source = raw_month.get("tools")
     if isinstance(tools_source, list) and tools_source:
-        tools = summarize_tool_rows(tools_source)
+        tools = summarize_tool_rows(tools_source, markup_multiplier=markup_multiplier)
     else:
-        models = summarize_model_rows(raw_month.get("models"))
+        models = summarize_model_rows(raw_month.get("models"), markup_multiplier=markup_multiplier)
+        usage_charge_usd = round(sum(float(model.get("chargeUsd", 0)) for model in models), 2)
         tools = [{
             "toolId": normalize_text(raw_month.get("toolId") or raw_month.get("tool_id") or "unassigned") or "unassigned",
             "toolName": normalize_text(raw_month.get("toolName") or raw_month.get("tool_name") or raw_month.get("name") or "Unassigned tool") or "Unassigned tool",
             "tokensUsed": sum(int(model["tokensUsed"]) for model in models),
+            "inputTokensUsed": sum(int(model.get("inputTokensUsed", 0)) for model in models),
+            "outputTokensUsed": sum(int(model.get("outputTokensUsed", 0)) for model in models),
             "baseCostUsd": round(sum(float(model["baseCostUsd"]) for model in models), 2),
-            "chargeUsd": round(max(round(sum(float(model["baseCostUsd"]) for model in models) * markup_multiplier, 2), minimum_monthly_charge), 2),
-            "minimumApplied": round(sum(float(model["baseCostUsd"]) for model in models) * markup_multiplier, 2) < minimum_monthly_charge,
+            "inputChargeUsd": round(sum(float(model.get("inputChargeUsd", 0)) for model in models), 2),
+            "outputChargeUsd": round(sum(float(model.get("outputChargeUsd", 0)) for model in models), 2),
+            "chargeUsd": usage_charge_usd,
+            "minimumApplied": False,
+            "usageCount": sum(int(model.get("usageCount", 0)) for model in models),
+            "usageDates": sorted({date for model in models for date in model.get("usageDates", [])}),
             "models": models,
         }]
 
     tokens_used = sum(int(tool["tokensUsed"]) for tool in tools)
     base_cost_usd = round(sum(float(tool["baseCostUsd"]) for tool in tools), 2)
-    charge_usd = round(sum(float(tool["chargeUsd"]) for tool in tools), 2)
-    raw_charge_usd = round(base_cost_usd * markup_multiplier, 2)
-    minimum_applied = charge_usd > raw_charge_usd
+    usage_charge_usd = round(sum(float(tool["chargeUsd"]) for tool in tools), 2)
+    charge_usd = round(max(usage_charge_usd, minimum_monthly_charge), 2)
+    minimum_applied = charge_usd > usage_charge_usd
     models = [model for tool in tools for model in tool["models"]]
     input_tokens_used = sum(int(model.get("inputTokensUsed", 0)) for model in models)
     output_tokens_used = sum(int(model.get("outputTokensUsed", 0)) for model in models)
@@ -260,6 +277,7 @@ def summarize_month(
         "outputTokensUsed": output_tokens_used,
         "inputChargeUsd": input_charge_usd,
         "outputChargeUsd": output_charge_usd,
+        "usageChargeUsd": usage_charge_usd,
         "chargeUsd": charge_usd,
         "minimumApplied": minimum_applied,
         "minimumMonthlyCharge": minimum_monthly_charge,
@@ -293,7 +311,7 @@ def build_billing_report(
     email: str,
     *,
     markup_multiplier: float = 1.5,
-    minimum_monthly_charge: float = 14.9,
+    minimum_monthly_charge: float = 50.0,
     currency: str = DEFAULT_CURRENCY,
     reference_time: datetime | None = None,
 ) -> dict[str, Any]:
@@ -354,7 +372,7 @@ def load_billing_report(
     email: str,
     *,
     markup_multiplier: float = 1.5,
-    minimum_monthly_charge: float = 14.9,
+    minimum_monthly_charge: float = 50.0,
     currency: str = DEFAULT_CURRENCY,
     reference_time: datetime | None = None,
 ) -> dict[str, Any]:

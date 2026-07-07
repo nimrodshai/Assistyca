@@ -32,7 +32,7 @@ const VALID_SETTINGS_MODES = new Set(["account", "preferences"]);
 const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
-const DEFAULT_BILLING_MINIMUM = 14.9;
+const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
 const DEFAULT_TOOL_EDITOR_TARGET_ID = "toolEditorSection";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
@@ -43,6 +43,11 @@ const LEGACY_DEFAULT_FEATURE_MODES = new Set([
   "suggestion_only",
   "Approval bot",
 ]);
+const LEGACY_DEFAULT_FEATURE_DESCRIPTION_PATTERNS = [
+  /drafts\s+suggested\s+whatsapp\s+replies/i,
+  /surfaces?\s+approvals?\s+inside\s+whatsapp/i,
+  /reusable\s+approval\s+page/i,
+];
 const BILLING_MODEL_COLORS = ["#17958a", "#2f7de1", "#d49a3a", "#8c96a3"];
 const DEFAULT_FEATURE_PRICING = {
   billingMultiplier: DEFAULT_BILLING_MULTIPLIER,
@@ -125,6 +130,15 @@ function normalizeBrandName(value) {
 
 function isLegacyWorkspaceName(value) {
   return LEGACY_WORKSPACE_NAMES.has(normalizeBrandName(value));
+}
+
+function isLegacyDefaultFeatureDescription(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return false;
+  }
+
+  return LEGACY_DEFAULT_FEATURE_DESCRIPTION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 const SCENARIOS = {
@@ -784,11 +798,13 @@ function loadClientState(email) {
   const featuresSource = Array.isArray(saved.features) && saved.features.length
     ? saved.features
     : DEFAULT_FEATURES;
+  let didMigrateLegacyDescription = false;
   const features = featuresSource.map((feature, index) => {
     const fallbackPrompt = index === 0 ? { ...DEFAULT_PROMPT, ...savedPrompt } : DEFAULT_PROMPT;
     const featureId = String(feature?.id || "");
     const featureName = String(feature?.name || "");
     const featureMode = String(feature?.mode || "");
+    const featureDescription = String(feature?.description || "");
     const activated = Boolean(feature?.activated ?? feature?.isActivated ?? false);
     const isLegacyDefaultFeature = index === 0
       && featureId === DEFAULT_FEATURES[0].id
@@ -796,15 +812,25 @@ function loadClientState(email) {
         LEGACY_DEFAULT_FEATURE_NAMES.has(featureName)
         || LEGACY_DEFAULT_FEATURE_MODES.has(featureMode)
       );
+    const shouldUpgradeDescription = index === 0
+      && featureId === DEFAULT_FEATURES[0].id
+      && (
+        isLegacyDefaultFeatureDescription(featureDescription)
+        || (!featureDescription && isLegacyDefaultFeature)
+      );
+
+    if (shouldUpgradeDescription) {
+      didMigrateLegacyDescription = true;
+    }
 
     return {
       id: featureId || `feature-${index + 1}`,
       name: isLegacyDefaultFeature
         ? DEFAULT_FEATURES[0].name
         : String(feature?.name || `Tool ${index + 1}`),
-      description: isLegacyDefaultFeature
+      description: shouldUpgradeDescription
         ? DEFAULT_FEATURES[0].description
-        : String(feature?.description || ""),
+        : featureDescription,
       channel: isLegacyDefaultFeature
         ? DEFAULT_FEATURES[0].channel
         : String(feature?.channel || "Web"),
@@ -827,6 +853,15 @@ function loadClientState(email) {
 
   if (!settings.workspaceName || isLegacyWorkspaceName(settings.workspaceName)) {
     settings.workspaceName = DEFAULT_SETTINGS.workspaceName;
+  }
+
+  if (didMigrateLegacyDescription) {
+    persistJson(getClientKey(email), {
+      ...saved,
+      settings,
+      features,
+      simulator,
+    });
   }
 
   return {
@@ -897,7 +932,8 @@ function buildFeatureExample(feature = getSelectedFeature()) {
 
 function buildFeatureEditorHint(feature = getSelectedFeature()) {
   const pricing = getFeaturePricing(feature);
-  return `Open the editor before payment. This tool bills at ${pricing.billingMultiplier.toFixed(1)}x token cost with a ${formatCurrency(pricing.minimumMonthlyCharge, "USD")} minimum per tool.`;
+  const accountMinimum = Math.max(DEFAULT_BILLING_MINIMUM, Number(pricing.minimumMonthlyCharge || 0) || 0);
+  return `Open the editor before payment. This tool bills at ${pricing.billingMultiplier.toFixed(1)}x token cost, and your account has a ${formatCurrency(accountMinimum, "USD")} monthly minimum across all tools.`;
 }
 
 function buildWhatsAppConfigHint() {
@@ -1380,14 +1416,18 @@ function formatModelName(value) {
 
 function normalizeBillingModel(model = {}) {
   const usageDatesSource = Array.isArray(model.usageDates) ? model.usageDates : [];
+  const baseCostUsd = Number(model.baseCostUsd ?? model.base_cost_usd ?? 0) || 0;
+  const inputChargeUsd = Number(model.inputChargeUsd ?? model.input_charge_usd ?? 0) || 0;
+  const outputChargeUsd = Number(model.outputChargeUsd ?? model.output_charge_usd ?? 0) || 0;
   return {
     model: String(model.model || model.name || "Unknown model").trim() || "Unknown model",
     tokensUsed: Math.max(0, Math.round(Number(model.tokensUsed ?? model.tokens ?? model.token_count ?? 0))),
-    baseCostUsd: Number(model.baseCostUsd ?? model.base_cost_usd ?? 0) || 0,
+    baseCostUsd,
     inputTokensUsed: Math.max(0, Math.round(Number(model.inputTokensUsed ?? model.input_tokens ?? 0))),
     outputTokensUsed: Math.max(0, Math.round(Number(model.outputTokensUsed ?? model.output_tokens ?? 0))),
-    inputChargeUsd: Number(model.inputChargeUsd ?? model.input_charge_usd ?? 0) || 0,
-    outputChargeUsd: Number(model.outputChargeUsd ?? model.output_charge_usd ?? 0) || 0,
+    inputChargeUsd,
+    outputChargeUsd,
+    chargeUsd: Number(model.chargeUsd ?? model.charge_usd ?? (inputChargeUsd + outputChargeUsd || baseCostUsd)) || 0,
     usageCount: Math.max(0, Math.round(Number(model.usageCount ?? model.usage_count ?? usageDatesSource.length ?? 0))),
     usageDates: usageDatesSource
       .map((date) => String(date || "").trim())
@@ -1463,6 +1503,7 @@ function normalizeBillingMonth(month = {}) {
   const rawChargeUsd = Number(Number(month.chargeUsd ?? 0).toFixed(2));
   const calculatedChargeUsd = tools.reduce((sum, tool) => sum + Math.max(0, Number(tool.chargeUsd || 0)), 0);
   const chargeUsd = Number((rawChargeUsd || calculatedChargeUsd).toFixed(2));
+  const usageChargeUsd = Number(calculatedChargeUsd.toFixed(2));
 
   return {
     month: String(month.month || "").trim(),
@@ -1473,6 +1514,7 @@ function normalizeBillingMonth(month = {}) {
     outputTokensUsed,
     inputChargeUsd: Number(inputChargeUsd.toFixed(2)),
     outputChargeUsd: Number(outputChargeUsd.toFixed(2)),
+    usageChargeUsd,
     chargeUsd,
     minimumApplied: Boolean(month.minimumApplied),
     minimumMonthlyCharge,
@@ -1542,10 +1584,10 @@ function getBillingPolicyLabel(report) {
   const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, report?.currency || "USD");
   if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `Billed at ${inputMultiplier.toFixed(1)}x the token cost · ${minimum} minimum per tool`;
+    return `Billed at ${inputMultiplier.toFixed(1)}x the token cost · ${minimum} monthly minimum across all tools`;
   }
 
-  return `Billed at ${inputMultiplier.toFixed(1)}x input token cost · ${outputMultiplier.toFixed(1)}x output token cost · ${minimum} minimum per tool`;
+  return `Billed at ${inputMultiplier.toFixed(1)}x input token cost · ${outputMultiplier.toFixed(1)}x output token cost · ${minimum} monthly minimum across all tools`;
 }
 
 function getBillingPricingLabel(report) {
@@ -1590,15 +1632,12 @@ function mergeBillingMonthWithCatalog(month, catalog = []) {
     if (!key) {
       continue;
     }
-    const minimumMonthlyCharge = Number(catalogTool?.pricing?.minimumMonthlyCharge || month?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM) || DEFAULT_BILLING_MINIMUM;
-
     const existing = toolMap.get(key) || (catalog.length === 1 ? fallbackUnassignedTool : null);
     const tool = existing
       ? {
           ...existing,
           toolId: key,
           toolName: catalogTool.toolName || existing.toolName,
-          minimumMonthlyCharge,
         }
       : {
           toolId: key,
@@ -1609,13 +1648,12 @@ function mergeBillingMonthWithCatalog(month, catalog = []) {
           outputTokensUsed: 0,
           inputChargeUsd: 0,
           outputChargeUsd: 0,
-          chargeUsd: Number(minimumMonthlyCharge.toFixed(2)),
-          minimumApplied: true,
+          chargeUsd: 0,
+          minimumApplied: false,
           currency: month?.currency || "USD",
           usageCount: 0,
           usageDates: [],
           models: [],
-          minimumMonthlyCharge,
         };
 
     tools.push(tool);
@@ -1638,16 +1676,15 @@ function mergeBillingMonthWithCatalog(month, catalog = []) {
   const currency = month?.currency || "USD";
   const normalizedTools = tools
     .map((tool) => {
-      const minimumMonthlyCharge = Number(tool.minimumMonthlyCharge || month?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM) || DEFAULT_BILLING_MINIMUM;
-      const rawChargeUsd = Number(tool.baseCostUsd || 0);
+      const usageChargeUsd = Number(tool.inputChargeUsd || 0) + Number(tool.outputChargeUsd || 0);
       const chargeUsd = tool.chargeUsd > 0
-        ? Number(Math.max(tool.chargeUsd, minimumMonthlyCharge).toFixed(2))
-        : Number(Math.max(rawChargeUsd, minimumMonthlyCharge).toFixed(2));
+        ? Number(tool.chargeUsd.toFixed(2))
+        : Number(usageChargeUsd.toFixed(2));
       return {
         ...tool,
         currency,
         chargeUsd,
-        minimumApplied: Boolean(tool.minimumApplied || rawChargeUsd < minimumMonthlyCharge || tool.chargeUsd <= 0),
+        minimumApplied: Boolean(tool.minimumApplied),
       };
     })
     .sort((left, right) => right.tokensUsed - left.tokensUsed || left.toolName.localeCompare(right.toolName));
@@ -1659,10 +1696,11 @@ function mergeBillingMonthWithCatalog(month, catalog = []) {
   const outputTokensUsed = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.outputTokensUsed || 0)), 0);
   const inputChargeUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.inputChargeUsd || 0)), 0);
   const outputChargeUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.outputChargeUsd || 0)), 0);
-  const chargeUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.chargeUsd || 0)), 0);
+  const usageChargeUsd = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.chargeUsd || 0)), 0);
+  const chargeUsd = Number(Number(month?.chargeUsd ?? usageChargeUsd).toFixed(2));
   const usageDates = Array.from(new Set(normalizedTools.flatMap((tool) => tool.usageDates || [])));
   const usageCount = normalizedTools.reduce((sum, tool) => sum + Math.max(0, Number(tool.usageCount || 0)), 0);
-  const minimumApplied = normalizedTools.some((tool) => tool.minimumApplied);
+  const minimumApplied = Boolean(month?.minimumApplied);
 
   return {
     ...month,
@@ -1672,7 +1710,8 @@ function mergeBillingMonthWithCatalog(month, catalog = []) {
     outputTokensUsed,
     inputChargeUsd: Number(inputChargeUsd.toFixed(2)),
     outputChargeUsd: Number(outputChargeUsd.toFixed(2)),
-    chargeUsd: Number(chargeUsd.toFixed(2)),
+    usageChargeUsd: Number(usageChargeUsd.toFixed(2)),
+    chargeUsd,
     minimumApplied,
     usageCount,
     usageDates,
@@ -1744,9 +1783,20 @@ function buildBillingSummaryText(report) {
 
   const charged = formatCurrency(currentMonth.chargeUsd, report?.currency || "USD");
   if (!currentMonth.tools?.length || !currentMonth.tokensUsed) {
+    if (currentMonth.minimumApplied) {
+      return nextPaymentDate
+        ? `Projected payment starts at ${charged} and will rise with usage. Next payment: ${nextPaymentDate}.`
+        : `Projected payment starts at ${charged} and will rise with usage.`;
+    }
     return nextPaymentDate
       ? `Projected payment will update as usage grows. Next payment: ${nextPaymentDate}.`
       : "Projected payment will update as usage grows.";
+  }
+
+  if (currentMonth.minimumApplied) {
+    return nextPaymentDate
+      ? `Projected payment is ${charged} so far, including the monthly minimum. Next payment: ${nextPaymentDate}.`
+      : `Projected payment is ${charged} so far, including the monthly minimum.`;
   }
 
   return nextPaymentDate
@@ -1759,8 +1809,9 @@ function buildBillingHelpBody(report) {
   const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, report?.currency || "USD");
   const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
   const helpLines = [
-    "We bill each tool separately each month.",
-    `The rate is ${pricingLabel}, with a ${minimum} minimum per tool. If a tool’s token total for the month stays below the minimum, we charge the minimum instead.`,
+    "We add up usage across all of your tools each month.",
+    `The rate is ${pricingLabel}, so cheaper models cost less and more expensive models cost more. Your account has a ${minimum} monthly minimum across all tools combined.`,
+    `If the month’s usage total stays below ${minimum}, we charge ${minimum}. Once usage goes above it, you pay the higher usage-based total.`,
   ];
 
   if (nextPaymentDate) {
@@ -2738,10 +2789,10 @@ function createBillingModelRow(model, index = 0, currency = "USD") {
   stats.className = "billing-model-stats";
 
   const cost = document.createElement("strong");
-  cost.textContent = formatCurrency(model.baseCostUsd, currency);
+  cost.textContent = formatCurrency(model.chargeUsd, currency);
 
   const label = document.createElement("span");
-  label.textContent = "Base spend";
+  label.textContent = "Usage cost";
 
   stats.append(cost, label);
 
@@ -2786,7 +2837,7 @@ function createBillingToolRow(tool, index = 0, currency = "USD", report = null) 
   paidBlock.className = "billing-tool-stat";
 
   const paidLabel = document.createElement("span");
-  paidLabel.textContent = "Charged";
+  paidLabel.textContent = "Usage cost";
 
   const paidValue = document.createElement("strong");
   paidValue.textContent = formatCurrency(tool.chargeUsd, currency);
@@ -2806,7 +2857,7 @@ function createBillingToolRow(tool, index = 0, currency = "USD", report = null) 
   const note = document.createElement("p");
   note.className = "billing-month-note";
   note.textContent = tool.tokensUsed
-    ? `Base usage for this tool is ${formatCurrency(tool.baseCostUsd, currency)}.`
+    ? `Usage-based total for this tool is ${formatCurrency(tool.chargeUsd, currency)}.`
     : "No usage recorded for this tool yet.";
 
   body.append(note);
@@ -2877,9 +2928,15 @@ function createBillingMonthDetail(month, index = 0, currency = "USD", report = n
 
   const note = document.createElement("p");
   note.className = "billing-month-note";
+  const usageChargeUsd = Number(month.usageChargeUsd ?? month.chargeUsd ?? 0);
+  const minimumMonthlyCharge = Number(month.minimumMonthlyCharge || report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM) || DEFAULT_BILLING_MINIMUM;
   note.textContent = month.tokensUsed
-    ? `Base usage this month is ${formatCurrency(month.baseCostUsd, currency)}.`
-    : "No usage recorded this month yet.";
+    ? month.minimumApplied
+      ? `Usage-based total this month is ${formatCurrency(usageChargeUsd, currency)}. The ${formatCurrency(minimumMonthlyCharge, currency)} monthly minimum sets the projected payment at ${formatCurrency(month.chargeUsd, currency)}.`
+      : `Usage-based total this month is ${formatCurrency(usageChargeUsd, currency)}.`
+    : month.minimumApplied
+      ? `No usage recorded this month yet. The projected payment stays at the ${formatCurrency(minimumMonthlyCharge, currency)} monthly minimum.`
+      : "No usage recorded this month yet.";
 
   body.append(note);
 

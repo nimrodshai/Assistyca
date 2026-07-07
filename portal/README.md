@@ -61,7 +61,7 @@ Required environment variables on Render:
 - `PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER` controls the output-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_MULTIPLIER` is still accepted as a legacy fallback for both billing multipliers.
 - `PORTAL_BILLING_DATA_PATH` optional path to a JSON billing ledger used only as a sample fallback. It defaults to `portal/billing.sample.json`.
-- `PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE` sets the minimum monthly charge floor per tool. The default is `14.9`.
+- `PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE` sets the minimum monthly charge floor across the whole account. The default is `50`.
 - `PORTAL_BILLING_CURRENCY` controls the display currency. The default is `USD`.
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.

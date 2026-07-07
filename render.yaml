@@ -25,6 +25,8 @@ services:
         value: "1.5"
       - key: PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER
         value: "1.5"
+      - key: PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE
+        value: "50"
       - key: PORTAL_RESEND_API_KEY
         sync: false
       - key: PORTAL_RESEND_FROM_EMAIL

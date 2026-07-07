@@ -17,7 +17,7 @@ from typing import Iterable
 
 DEFAULT_DB_PATH = Path("portal/portal.db")
 DEFAULT_CURRENCY = "USD"
-DEFAULT_MONTHLY_MINIMUM_CENTS = 1490
+DEFAULT_MONTHLY_MINIMUM_CENTS = 5000
 DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 RAW_CENTS_QUANT = Decimal("0.0001")
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS user_billing (
     user_id INTEGER PRIMARY KEY,
     currency TEXT NOT NULL DEFAULT 'USD',
-    monthly_minimum_cents INTEGER NOT NULL DEFAULT 1490,
+    monthly_minimum_cents INTEGER NOT NULL DEFAULT 5000,
     input_token_price_multiplier REAL NOT NULL DEFAULT 1.5,
     output_token_price_multiplier REAL NOT NULL DEFAULT 1.5,
     effective_from TEXT NOT NULL,
@@ -304,20 +304,21 @@ class PortalDatabase:
         if "monthly_minimum_cents" not in columns:
             return
 
-        old_default = 2900
-        if self.default_billing_plan.monthly_minimum_cents == old_default:
+        old_defaults = (1490, 2900)
+        if self.default_billing_plan.monthly_minimum_cents in old_defaults:
             return
 
+        placeholders = ", ".join("?" for _ in old_defaults)
         conn.execute(
-            """
+            f"""
             UPDATE user_billing
             SET monthly_minimum_cents = ?, updated_at = ?
-            WHERE monthly_minimum_cents = ?
+            WHERE monthly_minimum_cents IN ({placeholders})
             """,
             (
                 self.default_billing_plan.monthly_minimum_cents,
                 now_iso(),
-                old_default,
+                *old_defaults,
             ),
         )
 
@@ -1317,10 +1318,9 @@ class PortalDatabase:
             tool_rows: list[dict[str, Any]] = []
             for tool_row in month_row.pop("toolsById").values():
                 tool_raw_total = tool_row["baseCostCents"]
-                charged_cents = tool_raw_total if tool_raw_total >= minimum_cents_decimal else minimum_cents_decimal
                 tool_row["baseCostUsd"] = cents_to_usd(tool_raw_total)
-                tool_row["chargeUsd"] = cents_to_usd(charged_cents)
-                tool_row["minimumApplied"] = tool_raw_total < minimum_cents_decimal
+                tool_row["chargeUsd"] = cents_to_usd(tool_raw_total)
+                tool_row["minimumApplied"] = False
                 tool_row["usageDates"] = sorted(tool_row["usageDates"])
 
                 model_rows: list[dict[str, Any]] = []
@@ -1329,6 +1329,7 @@ class PortalDatabase:
                     model_row["baseCostUsd"] = cents_to_usd(model_raw_total)
                     model_row["inputChargeUsd"] = cents_to_usd(model_row["inputChargeCents"])
                     model_row["outputChargeUsd"] = cents_to_usd(model_row["outputChargeCents"])
+                    model_row["chargeUsd"] = cents_to_usd(model_row["inputChargeCents"] + model_row["outputChargeCents"])
                     model_row["usageDates"] = sorted(model_row["usageDates"])
                     model_rows.append(
                         {
@@ -1339,6 +1340,7 @@ class PortalDatabase:
                             "baseCostUsd": round(float(model_row["baseCostUsd"]), 2),
                             "inputChargeUsd": round(float(model_row["inputChargeUsd"]), 2),
                             "outputChargeUsd": round(float(model_row["outputChargeUsd"]), 2),
+                            "chargeUsd": round(float(model_row["chargeUsd"]), 2),
                             "usageCount": int(model_row["usageCount"]),
                             "usageDates": list(model_row["usageDates"]),
                             "firstUsedAt": model_row["firstUsedAt"],
@@ -1369,10 +1371,12 @@ class PortalDatabase:
 
             tool_rows.sort(key=lambda row: (-row["tokensUsed"], str(row["toolName"]).lower()))
             month_raw_total = month_row["baseCostCents"]
-            month_charge_cents = sum(Decimal(str(tool["chargeUsd"])) * Decimal("100") for tool in tool_rows)
+            month_usage_charge_cents = sum(Decimal(str(tool["chargeUsd"])) * Decimal("100") for tool in tool_rows)
+            month_charge_cents = month_usage_charge_cents if month_usage_charge_cents >= minimum_cents_decimal else minimum_cents_decimal
             month_row["baseCostUsd"] = cents_to_usd(month_raw_total)
             month_row["chargeUsd"] = cents_to_usd(month_charge_cents)
-            month_row["minimumApplied"] = month_charge_cents > month_raw_total
+            month_row["usageChargeUsd"] = cents_to_usd(month_usage_charge_cents)
+            month_row["minimumApplied"] = month_charge_cents > month_usage_charge_cents
             month_row["usageDates"] = sorted(month_row["usageDates"])
             flat_models = [model for tool in tool_rows for model in tool["models"]]
 
@@ -1386,6 +1390,7 @@ class PortalDatabase:
                     "baseCostUsd": round(float(month_row["baseCostUsd"]), 2),
                     "inputChargeUsd": round(float(cents_to_usd(month_row["inputChargeCents"])), 2),
                     "outputChargeUsd": round(float(cents_to_usd(month_row["outputChargeCents"])), 2),
+                    "usageChargeUsd": round(float(month_row["usageChargeUsd"]), 2),
                     "chargeUsd": round(float(month_row["chargeUsd"]), 2),
                     "minimumApplied": bool(month_row["minimumApplied"]),
                     "currency": currency,
@@ -1411,6 +1416,7 @@ class PortalDatabase:
                 "baseCostUsd": 0.0,
                 "inputChargeUsd": 0.0,
                 "outputChargeUsd": 0.0,
+                "usageChargeUsd": 0.0,
                 "chargeUsd": cents_to_usd(Decimal(minimum_monthly_cents)),
                 "minimumApplied": True,
                 "currency": currency,
