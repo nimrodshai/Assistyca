@@ -9,7 +9,7 @@
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
     <meta name="portal-api-base" content="" />
-    <link rel="stylesheet" href="./styles.css?v=45" />
+    <link rel="stylesheet" href="./styles.css?v=47" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -228,9 +228,9 @@
         <div id="featureStudioOverviewSection" class="feature-page-intro">
           <div class="feature-page-intro-main">
             <p class="eyebrow">Tool overview</p>
-            <h1 id="featureStudioTitle">Tool name</h1>
+            <h1 id="featureStudioTitle">WhatsApp Reply Assistant</h1>
             <p id="featureStudioDescription" class="feature-page-description">
-              Tool details appear here.
+              Turns incoming WhatsApp questions into quick, human-reviewed replies that help you quote faster and book more work.
             </p>
 
             <div class="feature-meta feature-page-meta">
@@ -239,7 +239,7 @@
             </div>
 
             <p id="featureStudioPitch" class="feature-page-description feature-page-pitch">
-              This tool helps you write replies faster and stay in control.
+              When a new lead asks about price or availability, it drafts a reply that keeps the lead warm until you hit send.
             </p>
 
             <div class="feature-page-actions">
@@ -252,21 +252,39 @@
             </div>
           </div>
 
-          <aside class="feature-page-example phone-shell">
-            <div class="phone-status">
-              <span id="featureStudioExampleSender" class="phone-name">Jim Hopper</span>
-              <span id="featureStudioExampleLabel" class="phone-badge">Example</span>
+          <aside class="feature-page-example phone-shell whatsapp-preview" aria-label="WhatsApp conversation example">
+            <div class="whatsapp-preview-topbar">
+              <div class="whatsapp-preview-contact">
+                <span id="featureStudioExampleAvatar" class="whatsapp-avatar">MC</span>
+                <div class="whatsapp-preview-contact-copy">
+                  <span id="featureStudioExampleSender" class="phone-name">Maya Cohen</span>
+                  <span id="featureStudioExampleMeta" class="whatsapp-preview-meta">After-hours quote request</span>
+                </div>
+              </div>
+
+              <span id="featureStudioExampleLabel" class="whatsapp-preview-label">Hot lead</span>
             </div>
 
-            <div class="approval-thread">
+            <div class="whatsapp-preview-body approval-thread">
               <div class="approval-field">
                 <span class="approval-label">Latest message</span>
                 <div id="featureStudioExampleMessage" class="bubble incoming"></div>
               </div>
+
+              <div class="whatsapp-preview-insight">
+                <strong>Why this matters</strong>
+                <p id="featureStudioExampleInsight">Keeps fresh leads from going cold while you’re busy on another job.</p>
+              </div>
+
               <div class="approval-field">
                 <span class="approval-label">Suggested reply</span>
                 <div id="featureStudioExampleReply" class="bubble outgoing"></div>
               </div>
+            </div>
+
+            <div class="whatsapp-preview-footer">
+              <span class="status-dot" aria-hidden="true"></span>
+              Manual send stays in your hands
             </div>
           </aside>
         </div>
@@ -416,7 +434,7 @@ Bad: 'Sure, anything is possible.'"
             <label class="field compact">
               <span>Test scenario</span>
               <select id="scenarioSelect">
-                <option value="approval">WhatsApp reply assistant example</option>
+                <option value="approval">Hot lead asking for a quote</option>
                 <option value="availability">New lead asking about availability</option>
                 <option value="pricing">Customer asking about price</option>
                 <option value="reschedule">Existing client wants to reschedule</option>
@@ -495,7 +513,7 @@ Bad: 'Sure, anything is possible.'"
             <label class="field compact">
               <span>Example scenario</span>
               <select id="simulatorPresetSelect">
-                <option value="approval">WhatsApp reply assistant example</option>
+                <option value="approval">Hot lead asking for a quote</option>
                 <option value="availability">New lead asking about availability</option>
                 <option value="pricing">Customer asking about price</option>
                 <option value="reschedule">Existing client wants to reschedule</option>
@@ -857,6 +875,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=51"></script>
+    <script src="./app.js?v=53"></script>
   </body>
 </html>
