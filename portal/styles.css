@@ -2617,18 +2617,6 @@ body[data-modal="billing"] .app-shell {
   text-transform: uppercase;
 }
 
-.whatsapp-preview-label {
-  padding: 0.45rem 0.82rem;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
-  color: #ddfff3;
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
 .whatsapp-preview-body {
   position: relative;
   z-index: 1;
@@ -2680,31 +2668,6 @@ body[data-modal="billing"] .app-shell {
 .whatsapp-preview .bubble.outgoing {
   background: linear-gradient(180deg, #128c7e, #0f766e);
   border-bottom-right-radius: 8px;
-}
-
-.whatsapp-preview-insight {
-  display: grid;
-  gap: 0.25rem;
-  padding: 0.95rem 1rem;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(15, 118, 110, 0.08);
-  box-shadow: 0 12px 24px rgba(16, 38, 40, 0.05);
-}
-
-.whatsapp-preview-insight strong {
-  color: var(--accent);
-  font-size: 0.74rem;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.whatsapp-preview-insight p {
-  margin: 0;
-  color: var(--text);
-  font-size: 0.95rem;
-  line-height: 1.5;
 }
 
 .whatsapp-preview-footer {

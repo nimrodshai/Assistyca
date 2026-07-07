@@ -296,11 +296,9 @@ const elements = {
   featureStudioPitch: document.querySelector("#featureStudioPitch"),
   featureStudioExampleSender: document.querySelector("#featureStudioExampleSender"),
   featureStudioExampleAvatar: document.querySelector("#featureStudioExampleAvatar"),
-  featureStudioExampleLabel: document.querySelector("#featureStudioExampleLabel"),
   featureStudioExampleMeta: document.querySelector("#featureStudioExampleMeta"),
   featureStudioExampleMessage: document.querySelector("#featureStudioExampleMessage"),
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
-  featureStudioExampleInsight: document.querySelector("#featureStudioExampleInsight"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
@@ -922,11 +920,9 @@ function buildFeatureExample(feature = getSelectedFeature()) {
   return {
     sender: scenario.sender || "Customer",
     avatar: getInitialsFromName(scenario.sender || feature?.name || "WA"),
-    label: scenario.label || "Example",
     meta: scenario.meta || "Recent lead",
     incoming: scenario.user,
     outgoing: buildResponseText(prompt),
-    insight: scenario.insight || "Keeps the thread moving until you can send.",
   };
 }
 
@@ -3580,9 +3576,6 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioExampleAvatar) {
     elements.featureStudioExampleAvatar.textContent = example.avatar;
   }
-  if (elements.featureStudioExampleLabel) {
-    elements.featureStudioExampleLabel.textContent = example.label;
-  }
   if (elements.featureStudioExampleMeta) {
     elements.featureStudioExampleMeta.textContent = example.meta;
   }
@@ -3591,9 +3584,6 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureStudioExampleReply) {
     elements.featureStudioExampleReply.textContent = example.outgoing;
-  }
-  if (elements.featureStudioExampleInsight) {
-    elements.featureStudioExampleInsight.textContent = example.insight;
   }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
