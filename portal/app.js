@@ -34,7 +34,6 @@ const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
-const DEFAULT_TOOL_EDITOR_TARGET_ID = "toolEditorSection";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
   "WhatsApp Reply Approval Bot",
@@ -1074,9 +1073,7 @@ function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
 }
 
 function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
-  return isFeatureActivated(feature)
-    ? "editor"
-    : normalizeFeatureStudioView(state.featureStudioView) || getDefaultFeatureStudioView(feature);
+  return normalizeFeatureStudioView(state.featureStudioView) || getDefaultFeatureStudioView(feature);
 }
 
 function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
@@ -3245,12 +3242,7 @@ function updateFeatureList() {
 
 function setFeatureStudioView(view, options = {}) {
   const nextView = normalizeFeatureStudioView(view) || getDefaultFeatureStudioView();
-
-  if (isFeatureActivated(getSelectedFeature()) && nextView !== "editor") {
-    state.featureStudioView = "editor";
-  } else {
-    state.featureStudioView = nextView;
-  }
+  state.featureStudioView = nextView;
 
   if (options.syncHash !== false && state.selectedFeatureId) {
     setHashForTab("features", state.selectedFeatureId, state.featureStudioView);
@@ -3273,9 +3265,7 @@ function openFeatureStudio(featureId, view = null) {
   state.selectedFeatureId = feature.id;
   state.activeTab = "features";
   state.settingsOpen = false;
-  state.featureStudioView = isFeatureActivated(feature)
-    ? "editor"
-    : normalizeFeatureStudioView(view) || getDefaultFeatureStudioView(feature);
+  state.featureStudioView = normalizeFeatureStudioView(view) || getDefaultFeatureStudioView(feature);
   closeMenu();
   closeFeatureStudioMenu();
   setHashForTab("features", feature.id, state.featureStudioView);
@@ -3322,16 +3312,15 @@ function buildFeatureStudioMenu(feature) {
     return;
   }
 
-  const launchUrl = String(feature?.launchUrl || "").trim();
   const items = [];
 
-  if (launchUrl && isFeatureActivated(feature)) {
-    const launchButton = document.createElement("button");
-    launchButton.type = "button";
-    launchButton.className = "menu-item";
-    launchButton.dataset.featureAction = "launch";
-    launchButton.textContent = "Open live dashboard";
-    items.push(launchButton);
+  if (isFeatureActivated(feature)) {
+    const detailsButton = document.createElement("button");
+    detailsButton.type = "button";
+    detailsButton.className = "menu-item";
+    detailsButton.dataset.featureAction = "details";
+    detailsButton.textContent = "WhatsApp details";
+    items.push(detailsButton);
   }
 
   const deactivateButton = document.createElement("button");
@@ -3353,6 +3342,7 @@ async function activateSelectedFeature() {
   if (!feature) {
     return;
   }
+  const editingActiveFeature = isFeatureActivated(feature);
 
   const issues = getFeatureActivationTestIssues(feature);
   if (issues.length) {
@@ -3371,7 +3361,7 @@ async function activateSelectedFeature() {
   state.featureActivationNotice = "";
   try {
     updateFeatureStudioHeader();
-    setStatus("Saving setup...");
+    setStatus(editingActiveFeature ? "Saving details..." : "Saving setup...");
     await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
     await new Promise((resolve) => window.setTimeout(resolve, 720));
 
@@ -3379,9 +3369,18 @@ async function activateSelectedFeature() {
     feature.status = getFeatureActivationState(feature);
     clearFeatureActivationNotice();
     clearFeatureActivationFieldErrors();
-    state.featureStudioView = "editor";
     persistClientState();
     closeFeatureStudioMenu();
+    if (editingActiveFeature) {
+      state.featureStudioView = "activation";
+      setHashForTab("features", feature.id, "activation");
+      renderApp();
+      window.scrollTo(0, 0);
+      setStatus("WhatsApp details saved.");
+      return;
+    }
+
+    state.featureStudioView = "editor";
     setHashForTab("features", feature.id, "editor");
     renderApp();
     window.scrollTo(0, 0);
@@ -3417,7 +3416,7 @@ async function activateSelectedFeature() {
   }
 }
 
-function startFeatureActivation() {
+function startFeatureActivation(options = {}) {
   const feature = getSelectedFeature();
   if (!feature) {
     return;
@@ -3436,7 +3435,7 @@ function startFeatureActivation() {
   window.requestAnimationFrame(() => {
     focusTarget?.focus();
   });
-  setStatus("WhatsApp setup opened.");
+  setStatus(String(options.statusMessage || (isFeatureActivated(feature) ? "WhatsApp details opened." : "WhatsApp setup opened.")));
 }
 
 function deactivateSelectedFeature(options = {}) {
@@ -3486,8 +3485,8 @@ function toggleSelectedFeatureEditorActivation() {
 }
 
 function handleFeatureStudioMenuAction(action) {
-  if (action === "launch") {
-    openSelectedFeatureLaunchUrl();
+  if (action === "details") {
+    startFeatureActivation({ statusMessage: "WhatsApp details opened." });
     return;
   }
 
@@ -3573,7 +3572,6 @@ function updateFeatureStudioHeader() {
 
   const example = buildFeatureExample(feature);
   const pitch = buildFeaturePitch(feature);
-  const launchUrl = String(feature.launchUrl || "").trim();
   const isActivated = isFeatureActivated(feature);
   const isSetupComplete = isFeatureSetupComplete(feature);
   const studioView = getSelectedFeatureStudioView(feature);
@@ -3585,7 +3583,9 @@ function updateFeatureStudioHeader() {
     elements.featureStudioHeaderLabel.textContent = studioView === "editor"
       ? "Tool editor"
       : studioView === "activation"
-        ? "WhatsApp setup"
+        ? isActivated
+          ? "WhatsApp details"
+          : "WhatsApp setup"
         : "Tool overview";
   }
   if (elements.featureStudioNav) {
@@ -3654,7 +3654,6 @@ function updateFeatureStudioHeader() {
     elements.featureStudioLaunchButton.textContent = isSetupComplete
       ? "Open tool editor"
       : "Start setup";
-    elements.featureStudioLaunchButton.dataset.launchUrl = launchUrl;
   }
 
   if (elements.featureStudioLaunchNote) {
@@ -3666,7 +3665,13 @@ function updateFeatureStudioHeader() {
 
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.textContent = activationBusy ? "Saving setup..." : "Save setup";
+    elements.featureStudioActivationButton.textContent = activationBusy
+      ? isActivated
+        ? "Saving details..."
+        : "Saving setup..."
+      : isActivated
+        ? "Save details"
+        : "Save setup";
     elements.featureStudioActivationButton.disabled = activationBusy;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
@@ -3879,9 +3884,7 @@ function refreshView() {
       if (state.activeTab === "features" && state.selectedFeatureId) {
         const feature = getFeatureById(state.selectedFeatureId);
         const selectedView = normalizeFeatureStudioView(route.subview);
-        state.featureStudioView = isFeatureActivated(feature)
-          ? "editor"
-          : selectedView || getDefaultFeatureStudioView(feature);
+        state.featureStudioView = selectedView || getDefaultFeatureStudioView(feature);
         setHashForTab("features", state.selectedFeatureId, state.featureStudioView);
       } else {
         state.featureStudioView = "overview";
@@ -4351,31 +4354,6 @@ function handleMenuAction(action) {
   }
 }
 
-function openSelectedFeatureLaunchUrl() {
-  const feature = getSelectedFeature();
-  const launchUrl = String(feature?.launchUrl || "").trim();
-  if (!isFeatureActivated(feature)) {
-    setFeatureStudioView("activation");
-    setStatus("Opened the setup flow.");
-    return;
-  }
-
-  if (!launchUrl) {
-    const editor = document.querySelector(`#${DEFAULT_TOOL_EDITOR_TARGET_ID}`);
-    if (editor && typeof editor.scrollIntoView === "function") {
-      editor.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-    if (elements.toneGuidance && typeof elements.toneGuidance.focus === "function") {
-      elements.toneGuidance.focus();
-    }
-    setStatus("Opened the tool editor.");
-    return;
-  }
-
-  window.open(launchUrl, "_blank", "noopener,noreferrer");
-  setStatus(`Opened ${feature.name || "the live tool"}`);
-}
-
 async function bootstrapAuthState() {
   const storedSession = normalizeStoredSession(loadJson(AUTH_SESSION_KEY, null));
   authChallenge = normalizeStoredChallenge(loadJson(AUTH_CHALLENGE_KEY, null));
@@ -4695,12 +4673,7 @@ function bindEvents() {
       if (state.activeTab === "features" && state.selectedFeatureId) {
         const feature = getFeatureById(state.selectedFeatureId);
         const defaultView = getDefaultFeatureStudioView(feature);
-        state.featureStudioView = route.subview && (!isFeatureActivated(feature) || route.subview === "editor")
-          ? route.subview
-          : defaultView;
-        if (isFeatureActivated(feature)) {
-          state.featureStudioView = "editor";
-        }
+        state.featureStudioView = normalizeFeatureStudioView(route.subview) || defaultView;
         setHashForTab("features", state.selectedFeatureId, state.featureStudioView);
       } else if (state.activeTab === "simulator" && state.selectedSimulatorId) {
         setHashForTab("simulator", state.selectedSimulatorId);
