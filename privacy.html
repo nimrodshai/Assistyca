@@ -6,7 +6,7 @@
     <title>Assistyca Privacy Policy</title>
     <meta
       name="description"
-      content="Privacy Policy for Assistyca, including its portal, WhatsApp integrations, and related automation features."
+      content="Privacy Policy for Assistyca, including its portal, Meta and WhatsApp integrations, and related automation features."
     />
     <style>
       :root {
@@ -80,8 +80,19 @@
         line-height: 0.95;
       }
 
+      h2 {
+        margin: 0 0 0.85rem;
+        font-size: 1.45rem;
+      }
+
+      h3 {
+        margin: 1rem 0 0.45rem;
+        font-size: 1.05rem;
+        color: var(--ink);
+      }
+
       .intro {
-        max-width: 46rem;
+        max-width: 48rem;
         margin: 1.1rem 0 0;
         font-size: 1.06rem;
         line-height: 1.7;
@@ -118,11 +129,6 @@
         padding: 1.5rem;
       }
 
-      h2 {
-        margin: 0 0 0.85rem;
-        font-size: 1.45rem;
-      }
-
       p,
       li {
         font-size: 1rem;
@@ -142,6 +148,47 @@
 
       a {
         color: var(--accent);
+      }
+
+      strong {
+        color: var(--ink);
+      }
+
+      .notice {
+        border-left: 4px solid var(--accent);
+        padding-left: 1rem;
+      }
+
+      .small {
+        font-size: 0.93rem;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        margin-top: 0.85rem;
+      }
+
+      table {
+        width: 100%;
+        min-width: 42rem;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 0.9rem 0.95rem;
+        border-top: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+        font-size: 0.96rem;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      th {
+        color: var(--ink);
+        font-weight: 700;
+        background: rgba(255, 255, 255, 0.55);
       }
 
       .footer {
@@ -168,77 +215,285 @@
         <p class="eyebrow">Assistyca</p>
         <h1 id="privacy-title">Privacy Policy</h1>
         <p class="intro">
-          This Privacy Policy explains how Assistyca collects, uses, stores, and shares
-          information when businesses use the Assistyca portal, WhatsApp integrations,
-          approval workflows, and related automation features.
+          This Privacy Policy explains how Assistyca collects, uses, stores, discloses,
+          and protects personal information when people use the Assistyca website, portal,
+          Meta and WhatsApp integrations, approval workflows, and related automation and
+          AI-assisted features.
         </p>
         <div class="meta">
-          <span class="pill">Effective date: July 7, 2026</span>
+          <span class="pill">Last updated: July 7, 2026</span>
           <span class="pill">Contact: nimrod.shai@gmail.com</span>
         </div>
       </section>
 
       <div class="grid">
-        <section class="section">
-          <h2>Information We Collect</h2>
-          <p>Depending on how the service is used, we may collect:</p>
-          <ul>
-            <li>Account and sign-in details such as name and email address.</li>
-            <li>Business profile details such as company name, phone number, and setup data.</li>
-            <li>Message content, approval drafts, and related communication metadata.</li>
-            <li>Technical information such as IP address, browser type, device details, and usage logs.</li>
-            <li>Integration data received from third-party platforms such as Meta WhatsApp services.</li>
-          </ul>
-        </section>
-
-        <section class="section">
-          <h2>How We Use Information</h2>
-          <ul>
-            <li>Provide, operate, secure, and improve the Assistyca service.</li>
-            <li>Authenticate users and manage account access.</li>
-            <li>Process and deliver messaging, approvals, and workflow automations.</li>
-            <li>Monitor reliability, prevent abuse, and troubleshoot technical issues.</li>
-            <li>Comply with legal obligations and enforce our terms and policies.</li>
-          </ul>
-        </section>
-
-        <section class="section">
-          <h2>How Information May Be Shared</h2>
-          <p>We may share information only as needed to operate the service, including with:</p>
-          <ul>
-            <li>Meta and WhatsApp platform services used for messaging and app integrations.</li>
-            <li>Service providers that help us host the app, send emails, and support operations.</li>
-            <li>Technology providers that process requests on our behalf to power product features.</li>
-            <li>Authorities or other parties when required by law or to protect rights and safety.</li>
-          </ul>
-          <p>We do not sell personal information.</p>
-        </section>
-
-        <section class="section">
-          <h2>Data Retention</h2>
+        <section class="section full">
+          <h2>Important Scope Notes</h2>
+          <p class="notice">
+            This policy is designed to cover Assistyca’s current business-facing portal and
+            messaging workflows as of July 7, 2026. It is reviewed at least annually and
+            whenever material product, legal, or processing changes require an update.
+          </p>
           <p>
-            We keep information for as long as reasonably necessary to provide the service,
-            maintain security, resolve disputes, comply with legal obligations, and enforce
-            agreements. Retention periods may vary depending on the type of data and the
-            business relationship involved.
+            Assistyca is generally a <strong>service provider / processor</strong> for
+            customer conversation data that a business customer chooses to submit, and a
+            <strong>controller</strong> for its own account, billing, security, support,
+            and website administration data. If you are an end user whose information was
+            provided to Assistyca by a business using the service, you should usually
+            direct privacy requests to that business first.
+          </p>
+          <p>
+            Unless Assistyca expressly agrees otherwise in writing, the service is not
+            intended for child-directed products or for regulated workloads that require
+            sector-specific compliance frameworks such as HIPAA, GLBA, or similar regimes.
           </p>
         </section>
 
         <section class="section">
-          <h2>Security</h2>
-          <p>
-            We use reasonable administrative, technical, and organizational safeguards to
-            protect information. No method of transmission or storage is completely secure,
-            so we cannot guarantee absolute security.
+          <h2>Categories of Personal Information</h2>
+          <p>Depending on how the service is used, we may collect the following categories:</p>
+          <ul>
+            <li>Identifiers and contact details, such as name, email address, phone number, and account identifiers.</li>
+            <li>Business and configuration data, such as workspace details, connection settings, and onboarding information.</li>
+            <li>Communications content and metadata, such as messages, approval drafts, timestamps, sender details, and delivery or status data.</li>
+            <li>Technical and device data, such as IP address, browser type, device signals, error logs, and security events.</li>
+            <li>Transaction and service records, such as support history, authentication events, and billing or usage records.</li>
+            <li>Integration data from third-party platforms, including Meta or WhatsApp related identifiers, webhook events, and account-linked information.</li>
+            <li>Sensitive information only if a user or customer chooses to submit it or an integration transmits it; the service is not designed to invite unnecessary sensitive data.</li>
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>Sources of Information</h2>
+          <p>We may collect personal information from the following categories of sources:</p>
+          <ul>
+            <li>Directly from you when you sign in, contact us, configure integrations, or use the service.</li>
+            <li>From the business customer that administers the workspace or uploads customer communication data.</li>
+            <li>From connected third-party services such as Meta, WhatsApp, email delivery providers, and infrastructure providers.</li>
+            <li>Automatically from browsers, devices, and server interactions through logs and security monitoring.</li>
+            <li>From publicly available or lawfully obtained sources where needed for business verification, compliance, or fraud prevention.</li>
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>Purposes and Legal Bases</h2>
+          <p>We use personal information for specific business and operational purposes, including to:</p>
+          <ul>
+            <li>Provide, authenticate, maintain, secure, and improve the Assistyca service.</li>
+            <li>Process messaging, approvals, support workflows, and AI-assisted drafting features requested by users.</li>
+            <li>Operate connected integrations, including Meta or WhatsApp related setup, testing, and message routing.</li>
+            <li>Prevent abuse, investigate incidents, debug errors, enforce agreements, and protect rights and safety.</li>
+            <li>Comply with legal obligations, respond to lawful requests, and keep required records.</li>
+            <li>Create aggregated or de-identified insights that do not reasonably identify a person.</li>
+          </ul>
+          <p class="small">
+            Where applicable under laws such as the GDPR or UK GDPR, our legal bases may
+            include contract performance, legitimate interests, legal obligations, and
+            consent where consent is the appropriate basis.
           </p>
         </section>
 
         <section class="section">
-          <h2>Your Choices and Rights</h2>
+          <h2>Disclosure to Third Parties</h2>
           <p>
-            Depending on your location and relationship to the service, you may have rights
-            to request access to, correction of, deletion of, or restriction of certain
-            personal information. To make a request, contact us using the email below.
+            We disclose personal information only as reasonably necessary for the purposes
+            described above, including to the following categories of recipients:
+          </p>
+          <ul>
+            <li>Hosting, infrastructure, storage, and security providers.</li>
+            <li>Email, notification, and communications providers.</li>
+            <li>Messaging and platform partners, including Meta and WhatsApp related services.</li>
+            <li>AI and automation technology providers that process instructions on our behalf.</li>
+            <li>Professional advisers, auditors, insurers, and counterparties involved in corporate transactions.</li>
+            <li>Government authorities or other parties when required by law or necessary to protect rights, safety, or the service.</li>
+          </ul>
+          <p>
+            We may also disclose information in connection with a merger, acquisition,
+            financing, reorganization, sale of assets, or similar business transaction,
+            subject to applicable confidentiality and legal requirements.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>Sales, Sharing, and Sensitive Information</h2>
+          <p>
+            As of July 7, 2026, Assistyca does <strong>not</strong> sell personal
+            information for money and does <strong>not</strong> share personal information
+            for cross-context behavioral advertising as those concepts are used in
+            California privacy law.
+          </p>
+          <p>
+            If we process sensitive personal information, we do so only as reasonably
+            necessary to provide the requested service, maintain security, comply with law,
+            or for other permitted purposes. We do not intentionally use sensitive personal
+            information to infer characteristics about people unless clearly disclosed and
+            legally permitted.
+          </p>
+          <p class="small">
+            Because Assistyca does not currently sell or share personal information for
+            cross-context behavioral advertising, a “Do Not Sell or Share My Personal
+            Information” link is not currently provided. If that practice changes, this
+            notice and any required request mechanisms will be updated.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>International Transfers</h2>
+          <p>
+            Personal information may be processed in the United States and other countries
+            where Assistyca or its service providers operate. Where applicable law requires
+            safeguards for cross-border transfers, we rely on appropriate measures such as
+            contractual protections, vendor commitments, and related legal transfer
+            mechanisms.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>Retention</h2>
+          <p>
+            We retain personal information only for as long as reasonably necessary for the
+            purposes described in this policy, including service delivery, security,
+            dispute resolution, recordkeeping, and compliance.
+          </p>
+          <p>
+            Retention periods vary by category. For example, account data may be kept while
+            an account remains active, security and audit records may be retained longer for
+            abuse prevention and legal compliance, and some information may be kept in backups
+            or archived systems for a limited additional period.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>Security and Incident Response</h2>
+          <p>
+            We use reasonable administrative, technical, and organizational safeguards
+            designed to protect personal information. These measures may include access
+            controls, authentication safeguards, limited internal access, vendor controls,
+            transport security, logging, and monitoring.
+          </p>
+          <p>
+            No method of transmission or storage is completely secure. If we become aware of
+            a personal data breach, we will investigate, mitigate, and provide notifications
+            where required by applicable law.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>Cookies and Similar Technologies</h2>
+          <p>
+            Assistyca and its providers may use server logs, session technologies, local
+            storage, or similar technical mechanisms to support sign-in, security,
+            preferences, fraud prevention, and service functionality.
+          </p>
+          <p>
+            If we introduce non-essential cookies or similar tracking technologies in a way
+            that requires additional notice or choice under applicable law, we will provide
+            that notice or choice at the relevant time.
+          </p>
+        </section>
+
+        <section class="section full">
+          <h2>Your Privacy Rights</h2>
+          <p>
+            Depending on your location and the context in which Assistyca processes your
+            information, you may have rights that include:
+          </p>
+          <div class="table-wrap">
+            <table aria-label="Privacy rights summary">
+              <thead>
+                <tr>
+                  <th>Right</th>
+                  <th>What it may include</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Access / right to know</td>
+                  <td>Request details about the personal information we hold and how we use or disclose it.</td>
+                </tr>
+                <tr>
+                  <td>Correction / rectification</td>
+                  <td>Request correction of inaccurate or incomplete personal information.</td>
+                </tr>
+                <tr>
+                  <td>Deletion / erasure</td>
+                  <td>Request deletion of personal information, subject to legal or operational exceptions.</td>
+                </tr>
+                <tr>
+                  <td>Restriction / objection</td>
+                  <td>Request limited processing or object to certain processing, including some marketing or legitimate-interest uses.</td>
+                </tr>
+                <tr>
+                  <td>Portability</td>
+                  <td>Request a copy of certain information in a portable format where required by law.</td>
+                </tr>
+                <tr>
+                  <td>Withdraw consent</td>
+                  <td>Withdraw consent for processing that relies on consent, without affecting prior lawful processing.</td>
+                </tr>
+                <tr>
+                  <td>California-specific requests</td>
+                  <td>Request to know, delete, correct, and if applicable opt out of sale or sharing and limit certain sensitive-information uses.</td>
+                </tr>
+                <tr>
+                  <td>Non-discrimination</td>
+                  <td>Not be unlawfully discriminated against for exercising privacy rights.</td>
+                </tr>
+                <tr>
+                  <td>Automated decision safeguards</td>
+                  <td>Request human review or more information if legally significant automated decision-making applies.</td>
+                </tr>
+                <tr>
+                  <td>Complaint rights</td>
+                  <td>Lodge a complaint with a regulator or data protection authority where applicable.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="small">
+            We may need to verify identity and authority before responding. Some rights are
+            subject to legal exceptions. If Assistyca acts only as a service provider /
+            processor for data controlled by a business customer, we may direct the request
+            to that customer or ask you to contact them directly.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>How to Submit Requests</h2>
+          <p>
+            To submit an access, correction, deletion, objection, portability, or privacy
+            complaint request, email
+            <a href="mailto:nimrod.shai@gmail.com?subject=Privacy%20Request">nimrod.shai@gmail.com</a>
+            with enough detail for us to understand and verify the request.
+          </p>
+          <p>
+            Where permitted by law, authorized agents may submit requests on someone else’s
+            behalf. We may ask for proof of authority and identity verification before
+            responding.
+          </p>
+          <p>
+            If you are contacting us about a Meta, WhatsApp, or portal data deletion issue,
+            please include the app, account, and workspace details so we can route the
+            request appropriately.
+          </p>
+          <p class="small">
+            If we deny a request that is subject to an appeal right under applicable law,
+            you may reply to our response and request that we review the decision again.
+          </p>
+        </section>
+
+        <section class="section">
+          <h2>Automated Tools and AI Features</h2>
+          <p>
+            Assistyca may use automation and AI-assisted tools to help draft responses,
+            summarize communications, classify workflows, and improve service operations.
+            These features are intended to assist users, not to replace their own judgment
+            where human review is appropriate.
+          </p>
+          <p>
+            Assistyca does not intentionally use solely automated decision-making that
+            produces legal or similarly significant effects on an individual without the
+            safeguards required by applicable law.
           </p>
         </section>
 
@@ -246,16 +501,30 @@
           <h2>Business Customer Responsibilities</h2>
           <p>
             If you use Assistyca on behalf of a business, you are responsible for making
-            sure you have the necessary rights, notices, and permissions to share customer
-            or contact data with the service and with connected platforms such as Meta.
+            sure you have the necessary rights, notices, legal bases, and permissions to
+            share customer, employee, prospect, or contact data with the service and with
+            connected platforms such as Meta.
+          </p>
+          <p>
+            Business customers are also responsible for determining whether they need their
+            own privacy notice, data processing agreement, cookie notice, consumer request
+            workflow, or industry-specific compliance controls.
           </p>
         </section>
 
         <section class="section full">
-          <h2>Children's Privacy</h2>
+          <h2>Children and Regulated Data</h2>
           <p>
-            Assistyca is not intended for children under 13, and we do not knowingly collect
-            personal information from children under 13.
+            Assistyca is not directed to children under 13, and we do not knowingly collect
+            personal information from children under 13. Where local law requires parental
+            consent for certain minors, users should not submit that child data through the
+            service unless they have the necessary authority and legal basis.
+          </p>
+          <p>
+            Unless expressly agreed otherwise in writing, users should avoid submitting
+            highly regulated information such as medical records, payment card data,
+            government-issued identifiers, or similarly sensitive data that is not necessary
+            for the service.
           </p>
         </section>
 
@@ -263,7 +532,8 @@
           <h2>Changes to This Policy</h2>
           <p>
             We may update this Privacy Policy from time to time. Material updates will be
-            reflected by revising the effective date on this page.
+            reflected by revising the date on this page. We intend to review this policy at
+            least annually so it stays aligned with product and legal changes.
           </p>
         </section>
 
@@ -272,6 +542,10 @@
           <p>
             If you have questions about this Privacy Policy or privacy-related requests,
             contact <a href="mailto:nimrod.shai@gmail.com">nimrod.shai@gmail.com</a>.
+          </p>
+          <p class="small">
+            If you are located in a jurisdiction that provides complaint rights, you may
+            also contact your local privacy or data protection regulator.
           </p>
         </section>
       </div>
