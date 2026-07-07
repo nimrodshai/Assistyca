@@ -291,8 +291,6 @@ const elements = {
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
-  featureStudioChannel: document.querySelector("#featureStudioChannel"),
-  featureStudioMode: document.querySelector("#featureStudioMode"),
   featureStudioPitch: document.querySelector("#featureStudioPitch"),
   featureStudioExampleSender: document.querySelector("#featureStudioExampleSender"),
   featureStudioExampleAvatar: document.querySelector("#featureStudioExampleAvatar"),
@@ -3193,18 +3191,7 @@ function createFeatureCard(feature) {
   description.className = "feature-card-copy";
   description.textContent = feature.description || "";
 
-  const meta = document.createElement("div");
-  meta.className = "feature-meta";
-
-  const channel = document.createElement("span");
-  channel.textContent = feature.channel || "Web";
-
-  const mode = document.createElement("span");
-  mode.textContent = feature.mode || "Default";
-
-  meta.append(channel, mode);
-
-  card.append(status, head, description, meta);
+  card.append(status, head, description);
   return card;
 }
 
@@ -3565,8 +3552,6 @@ function updateFeatureStudioHeader() {
   }
   elements.featureStudioTitle.textContent = feature.name;
   elements.featureStudioDescription.textContent = feature.description || "";
-  elements.featureStudioChannel.textContent = `Channel: ${feature.channel || "Web"}`;
-  elements.featureStudioMode.textContent = `Mode: ${feature.mode || "Default"}`;
   if (elements.featureStudioPitch) {
     elements.featureStudioPitch.textContent = pitch;
   }
