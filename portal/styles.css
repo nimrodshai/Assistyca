@@ -1893,12 +1893,14 @@ body[data-modal="billing"] .app-shell {
 .card-grid {
   display: grid;
   gap: 0.75rem;
+  align-items: start;
 }
 
 .preview-grid,
 .settings-pane-grid {
   grid-template-columns: 1fr;
   width: min(100%, 60rem);
+  align-items: start;
 }
 
 .feature-list-grid {
@@ -1908,6 +1910,7 @@ body[data-modal="billing"] .app-shell {
 .feature-list-grid {
   display: grid;
   gap: 0.85rem;
+  align-items: start;
 }
 
 .feature-card,
@@ -1921,6 +1924,7 @@ body[data-modal="billing"] .app-shell {
   padding: 1rem;
   display: grid;
   gap: 0.75rem;
+  align-content: start;
 }
 
 .feature-card {
@@ -2862,6 +2866,7 @@ body[data-modal="billing"] .app-shell {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: min(100%, 76rem);
   justify-self: center;
+  align-items: start;
 }
 
 .setup-card {
