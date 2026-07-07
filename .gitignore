@@ -8,3 +8,4 @@ clients/*/spec/*-clean.pdf
 portal/*.db
 portal/*.sqlite
 portal/*.sqlite3
+scripts/run_portal_server.local.sh

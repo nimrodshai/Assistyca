@@ -82,6 +82,12 @@ PORTAL_SMTP_FROM_EMAIL=sign-in@example.com \
 python3 scripts/run_portal_server.py --port 8000
 ```
 
+For local WhatsApp testing, edit `scripts/run_portal_server.local.sh`, replace the placeholder values, and run:
+
+```bash
+./scripts/run_portal_server.local.sh
+```
+
 Then visit `http://localhost:8000/portal/`.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.
