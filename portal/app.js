@@ -906,10 +906,7 @@ function getFeaturePricing(feature = getSelectedFeature()) {
 }
 
 function buildFeaturePitch(feature = getSelectedFeature()) {
-  const prompt = feature?.prompt || getSelectedPrompt();
-  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
-  const title = feature?.name || "This tool";
-  return `${title} turns WhatsApp questions into quicker quotes, clearer next steps, and more booked work. When someone says "${scenario.user}", it drafts "${scenario.ask}" so the lead stays warm until you hit send.`;
+  return "WhatsApp Reply Assistant helps you respond faster without sounding rushed. It turns incoming messages into clear, polished reply drafts that keep leads warm, reduce missed opportunities after hours, and make follow-up feel consistent and professional. You stay in control of every send while moving quicker, quoting with more confidence, and turning more conversations into booked work.";
 }
 
 function buildFeatureExample(feature = getSelectedFeature()) {
