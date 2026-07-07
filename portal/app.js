@@ -281,10 +281,6 @@ const elements = {
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
-  featureActivationProgress: document.querySelector("#featureActivationProgress"),
-  featureActivationProgressFill: document.querySelector("#featureActivationProgressFill"),
-  featureActivationProgressNote: document.querySelector("#featureActivationProgressNote"),
-  featureActivationSummary: document.querySelector("#featureActivationSummary"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
   featureStudioMenu: document.querySelector("#featureStudioMenu"),
@@ -1095,18 +1091,6 @@ function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
   return progress.ready === progress.total ? "Ready to save" : "Setup in progress";
 }
 
-function getFeatureActivationProgressDetail(feature = getSelectedFeature()) {
-  const progress = getFeatureActivationProgress(feature);
-  const noun = progress.total === 1 ? "step" : "steps";
-  return progress.ready === progress.total
-    ? `${progress.total} of ${progress.total} ${noun} complete`
-    : `${progress.ready} of ${progress.total} ${noun} complete`;
-}
-
-function getFeatureActivationProgressNote() {
-  return "We save the account ID and your phone number.";
-}
-
 function getFeatureActivationNoticeLabel() {
   const notice = String(state.featureActivationNotice || "").trim();
   if (!notice) {
@@ -1142,27 +1126,6 @@ function getFeatureActivationNoticeLabel() {
   }
 
   return "Check details";
-}
-
-function getFeatureActivationSummary(feature = getSelectedFeature()) {
-  if (isFeatureActivationBusy(feature)) {
-    return "Saving your WhatsApp setup...";
-  }
-
-  if (isFeatureActivated(feature)) {
-    return "Your WhatsApp account is connected.";
-  }
-
-  const progress = getFeatureActivationProgress(feature);
-  if (progress.ready === 0) {
-    return "Enter the account ID and your phone number to finish setup.";
-  }
-
-  if (progress.ready < progress.total) {
-    return "You’re partway there. Finish the remaining field to continue.";
-  }
-
-  return "Your WhatsApp details are ready to save.";
 }
 
 function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
@@ -3451,8 +3414,6 @@ function updateFeatureStudioHeader() {
   const launchUrl = String(feature.launchUrl || "").trim();
   const isActivated = isFeatureActivated(feature);
   const studioView = getSelectedFeatureStudioView(feature);
-  const activationProgress = getFeatureActivationProgress(feature);
-  const activationSummary = getFeatureActivationSummary(feature);
   const activationBusy = isFeatureActivationBusy(feature);
 
   state.featureStudioView = studioView;
@@ -3486,17 +3447,6 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureStudioMenuWrap) {
     elements.featureStudioMenuWrap.classList.toggle("is-hidden", !isActivated);
-  }
-  if (elements.featureActivationProgress) {
-    elements.featureActivationProgress.textContent = getFeatureActivationProgressDetail(feature);
-  }
-  if (elements.featureActivationProgressFill) {
-    elements.featureActivationProgressFill.style.width = `${Math.max(0, Math.min(1, activationProgress.readyRatio)) * 100}%`;
-  }
-  if (elements.featureActivationProgressNote) {
-    const activationProgressNote = getFeatureActivationProgressNote(feature);
-    elements.featureActivationProgressNote.textContent = activationProgressNote;
-    elements.featureActivationProgressNote.hidden = !activationProgressNote;
   }
   if (elements.featureStudioStatus) {
     elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
@@ -3540,11 +3490,6 @@ function updateFeatureStudioHeader() {
         : "Jump straight into the editor or open the live dashboard if you have one.";
   }
 
-  if (elements.featureActivationSummary) {
-    elements.featureActivationSummary.textContent = activationSummary;
-    elements.featureActivationSummary.hidden = !activationSummary;
-    elements.featureActivationSummary.classList.toggle("is-loading", activationBusy);
-  }
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
     elements.featureStudioActivationButton.textContent = activationBusy ? "Saving setup..." : "Save setup";

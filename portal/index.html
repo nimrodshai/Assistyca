@@ -279,48 +279,9 @@
               <p class="feature-page-description">
                 We need these details so the feature can work with your WhatsApp account.
               </p>
-
-              <div class="feature-activation-hero-points">
-                <div class="setup-step">
-                  <span class="setup-step-index">1</span>
-                  <div>
-                    <strong>Account ID</strong>
-                    <p>Paste the account ID Meta gives you.</p>
-                  </div>
-                </div>
-                <div class="setup-step">
-                  <span class="setup-step-index">2</span>
-                  <div>
-                    <strong>Your phone number</strong>
-                    <p>This is the number you'll be notified at when a smart reply is ready.</p>
-                  </div>
-                </div>
-              </div>
             </div>
 
-            <aside class="feature-activation-hero-meta">
-              <div class="activation-progress">
-                <strong id="featureActivationProgress">0 of 2 steps complete</strong>
-                <div class="activation-progress-track" aria-hidden="true">
-                  <span id="featureActivationProgressFill"></span>
-                </div>
-                <p id="featureActivationProgressNote" class="activation-progress-note" hidden>
-                  We save the account ID and your phone number.
-                </p>
-                <p id="featureActivationSummary" class="activation-summary"></p>
-              </div>
-            </aside>
-          </header>
-
-          <div class="feature-activation-body">
-            <article class="glass-card config-card activation-card">
-              <div class="activation-card-head">
-                <div>
-                  <h3>Your WhatsApp account details</h3>
-                  <p class="setup-copy">These details let the feature work with your WhatsApp account. Fill them in once and save to continue.</p>
-                </div>
-              </div>
-
+            <div class="feature-activation-hero-form">
               <div class="activation-form-grid">
                 <label class="field">
                   <span>Account ID</span>
@@ -331,7 +292,7 @@
                     autocomplete="off"
                     placeholder="123456789012345"
                   />
-                  <small class="field-help">Paste the account ID Meta gives you.</small>
+                  <small class="field-help">Use the account ID Meta gives you.</small>
                   <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
                 </label>
 
@@ -344,7 +305,7 @@
                     autocomplete="off"
                     placeholder="15551234567"
                   />
-                  <small class="field-help">This is the number you'll be notified at when a smart reply is ready.</small>
+                  <small class="field-help">We’ll notify this number when a reply is ready.</small>
                   <span id="featureActivationOwnerWaIdError" class="field-error" hidden></span>
                 </label>
               </div>
@@ -357,9 +318,8 @@
                   Save setup
                 </button>
               </div>
-            </article>
-
-          </div>
+            </div>
+          </header>
         </section>
 
         <div id="toolEditorSection" class="studio-fields">
