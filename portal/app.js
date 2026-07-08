@@ -57,7 +57,7 @@ const FEATURE_ACTIVATION_REQUIRED_KEYS = [
   "owner_wa_id",
 ];
 const FEATURE_ACTIVATION_STEPS = [
-  "Account ID",
+  "Phone number ID",
   "Your phone number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
@@ -310,6 +310,7 @@ const elements = {
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
+  featureActivationPhoneNumberIdHelpButton: document.querySelector("#featureActivationPhoneNumberIdHelpButton"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
@@ -729,6 +730,18 @@ function openFeatureActivationAlert(title, message, options = {}) {
   });
 }
 
+function openPhoneNumberIdHelp() {
+  openAuthAlert(
+    "Where to find your Phone number ID",
+    "Open WhatsApp Manager, go to Account tools, then Phone numbers. Open the WhatsApp number you connected to Meta and copy the Phone Number ID shown there. This is not your Meta app ID or your visible phone number.",
+    {
+      eyebrow: "WhatsApp setup",
+      icon: "?",
+      returnFocus: elements.featureActivationPhoneNumberIdHelpButton,
+    },
+  );
+}
+
 function closeAuthAlert() {
   if (!state.authAlertOpen) {
     return;
@@ -983,7 +996,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Connect your WhatsApp account in Meta, then save the account ID and your phone number.";
+  return "Connect your WhatsApp account in Meta, then save the Phone Number ID and your phone number.";
 }
 
 function applyWhatsAppConnectionToFeatures(connection, options = {}) {
@@ -1212,8 +1225,8 @@ function isFeatureActivationBusy(feature = getSelectedFeature()) {
 
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
-    business_account_id: "Account ID",
-    phone_number_id: "Account ID",
+    business_account_id: "Phone number ID",
+    phone_number_id: "Phone number ID",
     owner_wa_id: "Your phone number",
   };
 
@@ -1295,7 +1308,7 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const issues = [];
 
   if (!/^\d+$/.test(accountId)) {
-    issues.push({ field: "business_account_id", message: "Enter the account ID Meta gave you.", inline: true });
+    issues.push({ field: "business_account_id", message: "Enter the Phone Number ID Meta gave you.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
     issues.push({ field: "owner_wa_id", message: "Enter your phone number.", inline: true });
@@ -4723,6 +4736,11 @@ function bindEvents() {
       const action = item.dataset.featureAction || "";
       closeFeatureStudioMenu();
       handleFeatureStudioMenuAction(action);
+    });
+  }
+  if (elements.featureActivationPhoneNumberIdHelpButton) {
+    elements.featureActivationPhoneNumberIdHelpButton.addEventListener("click", () => {
+      openPhoneNumberIdHelp();
     });
   }
   if (elements.featureActivationBusinessAccountIdInput) {

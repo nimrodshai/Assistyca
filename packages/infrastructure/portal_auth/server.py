@@ -1422,9 +1422,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         issues: list[dict[str, str]] = []
 
         if payload.get("business_account_id") and not business_account_id:
-            issues.append({"field": "business_account_id", "message": "Enter the account ID Meta gave you."})
+            issues.append({"field": "business_account_id", "message": "Enter the Phone Number ID Meta gave you."})
         if not phone_number_id:
-            issues.append({"field": "business_account_id", "message": "Enter the account ID Meta gave you."})
+            issues.append({"field": "business_account_id", "message": "Enter the Phone Number ID Meta gave you."})
         if not owner_wa_id:
             issues.append({"field": "owner_wa_id", "message": "Enter the phone number that should receive approvals."})
 

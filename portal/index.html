@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=49" />
+    <link rel="stylesheet" href="./styles.css?v=50" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -290,7 +290,17 @@
             <div class="feature-activation-hero-form">
               <div class="activation-form-grid">
                 <label class="field">
-                  <span>Account ID</span>
+                  <div class="field-label">
+                    <span>Phone number ID</span>
+                    <button
+                      id="featureActivationPhoneNumberIdHelpButton"
+                      class="field-help-button"
+                      type="button"
+                      aria-label="Where to find your Phone number ID"
+                    >
+                      ?
+                    </button>
+                  </div>
                   <input
                     id="featureActivationBusinessAccountId"
                     type="text"
@@ -298,7 +308,7 @@
                     autocomplete="off"
                     placeholder="123456789012345"
                   />
-                  <small class="field-help">Use the account ID Meta gives you.</small>
+                  <small class="field-help">Copy the Phone Number ID Meta shows for this WhatsApp number.</small>
                   <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
                 </label>
 
@@ -879,6 +889,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=57"></script>
+    <script src="./app.js?v=58"></script>
   </body>
 </html>
