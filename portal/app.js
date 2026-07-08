@@ -772,7 +772,7 @@ function openFeatureActivationAlert(title, message, options = {}) {
 function openPhoneNumberIdHelp() {
   openAuthAlert(
     "Where to find your Phone number ID",
-    "Open WhatsApp Manager, go to Account tools, then Phone numbers. Open the WhatsApp number you connected to Meta and copy the Phone Number ID shown there. This is not your Meta app ID or your visible phone number.",
+    "Open WhatsApp Manager, go to Account tools, then Phone numbers. Open the WhatsApp number you connected to Meta and copy the Phone Number ID shown there.",
     {
       eyebrow: "WhatsApp setup",
       icon: "?",
