@@ -251,6 +251,7 @@ const state = {
   featureStudioMenuOpen: false,
   featureActivationNotice: "",
   featureActivationFieldErrors: {},
+  paymentStatus: null,
   selectedSimulatorId: null,
   billingReport: null,
   billingLoading: false,
@@ -268,6 +269,9 @@ let billingHelpOpenFrame = null;
 let billingHelpCloseTimer = null;
 let billingHelpReturnFocus = null;
 let featureActivationBusy = false;
+let featureActivationTransitionBusy = false;
+let featureActivationTransitionTargetId = "";
+let featureActivationTransitionAction = "";
 
 const elements = {
   authView: document.querySelector("#authView"),
@@ -580,6 +584,15 @@ function clearAuthChallenge() {
 function getSessionAuthHeaders() {
   const token = String(authSession?.token || "").trim();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function isFeatureActivationTransitionBusy(feature = getSelectedFeature()) {
+  return Boolean(
+    featureActivationTransitionBusy
+    && feature
+    && feature.id
+    && feature.id === featureActivationTransitionTargetId
+  );
 }
 
 function isWhatsAppFeature(feature) {
@@ -1071,6 +1084,65 @@ function applyWhatsAppConnectionToFeatures(connection, options = {}) {
   if (options.persist !== false) {
     persistClientState();
   }
+}
+
+function applyServerFeatureStates(features = [], options = {}) {
+  const byId = new Map();
+  const resetMissing = options.resetMissing === true;
+  for (const feature of Array.isArray(features) ? features : []) {
+    const featureId = String(feature?.featureId || feature?.feature_id || feature?.id || "").trim();
+    if (featureId) {
+      byId.set(featureId, feature);
+    }
+  }
+
+  clientState.features = clientState.features.map((feature) => {
+    const serverFeature = byId.get(feature.id);
+    if (!serverFeature) {
+      if (!resetMissing) {
+        return feature;
+      }
+
+      return {
+        ...feature,
+        activated: false,
+        status: "non-active",
+      };
+    }
+
+    const activated = Boolean(
+      serverFeature?.isActive
+      ?? serverFeature?.activated
+      ?? serverFeature?.is_active
+    );
+    return {
+      ...feature,
+      activated,
+      status: activated ? "active" : "non-active",
+    };
+  });
+
+  if (options.persist !== false) {
+    persistClientState();
+  }
+}
+
+async function refreshFeatureActivationStates(options = {}) {
+  if (!isSignedIn()) {
+    return null;
+  }
+
+  const response = await apiRequest("/api/features", {
+    headers: getSessionAuthHeaders(),
+    timeoutMs: options.timeoutMs || 15000,
+  });
+
+  applyServerFeatureStates(response.features || [], { persist: true, resetMissing: true });
+  state.paymentStatus = response.paymentStatus || null;
+  if (options.render !== false && view === "app") {
+    renderApp();
+  }
+  return response;
 }
 
 async function refreshWhatsAppConnection(options = {}) {
@@ -3681,32 +3753,87 @@ function startFeatureActivation(options = {}) {
   setStatus(String(options.statusMessage || (isFeatureActivated(feature) ? "WhatsApp details opened." : "WhatsApp setup opened.")));
 }
 
-function deactivateSelectedFeature(options = {}) {
+async function deactivateSelectedFeature(options = {}) {
+  if (featureActivationTransitionBusy) {
+    return;
+  }
+
   const feature = getSelectedFeature();
   if (!feature) {
     return;
   }
 
-  setFeatureActivationState(feature, false);
-  clearFeatureActivationNotice();
-  clearFeatureActivationFieldErrors();
-  state.featureStudioView = normalizeFeatureStudioView(options.view) || getDefaultFeatureStudioView(feature);
-  persistClientState();
-  closeFeatureStudioMenu();
-  setHashForTab("features", feature.id, state.featureStudioView);
-  renderApp();
-  window.scrollTo(0, 0);
-  setStatus(String(options.statusMessage || "Tool turned off."));
+  featureActivationTransitionBusy = true;
+  featureActivationTransitionTargetId = feature.id;
+  featureActivationTransitionAction = "deactivate";
+  try {
+    updateFeatureStudioHeader();
+    setStatus("Turning tool off...");
+    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/activation`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        action: "deactivate",
+        featureName: feature.name,
+        channel: feature.channel,
+      },
+    });
+
+    applyServerFeatureStates([response.feature || {}], { persist: true });
+    state.paymentStatus = response.paymentStatus || state.paymentStatus;
+    clearFeatureActivationNotice();
+    clearFeatureActivationFieldErrors();
+    state.featureStudioView = normalizeFeatureStudioView(options.view) || getDefaultFeatureStudioView(feature);
+    closeFeatureStudioMenu();
+    setHashForTab("features", feature.id, state.featureStudioView);
+    renderApp();
+    window.scrollTo(0, 0);
+    setStatus(String(response.message || options.statusMessage || "Tool turned off."));
+  } catch (error) {
+    openFeatureActivationAlert(
+      "Couldn’t turn the tool off",
+      formatApiErrorMessage(error, "We couldn’t update the activation right now."),
+      {
+        eyebrow: "Try again",
+        returnFocus: elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Couldn’t turn the tool off.");
+  } finally {
+    featureActivationTransitionBusy = false;
+    featureActivationTransitionTargetId = "";
+    featureActivationTransitionAction = "";
+    updateFeatureStudioHeader();
+  }
 }
 
-function toggleSelectedFeatureEditorActivation() {
+function openPaymentCheckout(checkoutUrl) {
+  const url = String(checkoutUrl || "").trim();
+  if (!url) {
+    return false;
+  }
+
+  const popup = window.open(url, "_blank", "noopener");
+  if (popup) {
+    return true;
+  }
+
+  window.location.assign(url);
+  return true;
+}
+
+async function toggleSelectedFeatureEditorActivation() {
+  if (featureActivationTransitionBusy) {
+    return;
+  }
+
   const feature = getSelectedFeature();
   if (!feature) {
     return;
   }
 
   if (isFeatureActivated(feature)) {
-    deactivateSelectedFeature({ view: "editor", statusMessage: "Tool turned off." });
+    await deactivateSelectedFeature({ view: "editor", statusMessage: "Tool turned off." });
     return;
   }
 
@@ -3719,16 +3846,79 @@ function toggleSelectedFeatureEditorActivation() {
     return;
   }
 
-  setFeatureActivationState(feature, true);
-  clearFeatureActivationNotice();
-  clearFeatureActivationFieldErrors();
-  state.featureStudioView = "editor";
-  persistClientState();
-  closeFeatureStudioMenu();
-  setHashForTab("features", feature.id, "editor");
-  renderApp();
-  window.scrollTo(0, 0);
-  setStatus("Tool activated.");
+  featureActivationTransitionBusy = true;
+  featureActivationTransitionTargetId = feature.id;
+  featureActivationTransitionAction = "activate";
+  try {
+    updateFeatureStudioHeader();
+    setStatus("Checking payment and activation...");
+    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/activation`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        action: "activate",
+        featureName: feature.name,
+        channel: feature.channel,
+      },
+    });
+
+    applyServerFeatureStates([response.feature || {}], { persist: true });
+    state.paymentStatus = response.paymentStatus || state.paymentStatus;
+    clearFeatureActivationNotice();
+    clearFeatureActivationFieldErrors();
+    state.featureStudioView = "editor";
+    closeFeatureStudioMenu();
+    setHashForTab("features", feature.id, "editor");
+    renderApp();
+    window.scrollTo(0, 0);
+    setStatus(String(response.message || "Tool activated."));
+  } catch (error) {
+    const payload = error?.payload || {};
+    if (payload.error === "payment_required") {
+      state.paymentStatus = payload.paymentStatus || state.paymentStatus;
+      const checkoutOpened = openPaymentCheckout(payload.paymentStatus?.checkoutUrl || payload.checkoutUrl);
+      openFeatureActivationAlert(
+        "Add payment details",
+        payload.message || "Add your card details before activating this tool.",
+        {
+          eyebrow: "Billing required",
+          returnFocus: elements.featureStudioEditorToggleButton,
+        },
+      );
+      setStatus(checkoutOpened ? "Opening checkout..." : "Payment is required before activation.");
+      return;
+    }
+
+    if (payload.error === "setup_required") {
+      startFeatureActivation({
+        statusMessage: payload.message || "Finish WhatsApp setup before turning this tool on.",
+      });
+      openFeatureActivationAlert(
+        "Finish setup first",
+        payload.message || "Finish WhatsApp setup before turning this tool on.",
+        {
+          eyebrow: "One thing left",
+          returnFocus: elements.featureStudioActivationButton,
+        },
+      );
+      return;
+    }
+
+    openFeatureActivationAlert(
+      "Couldn’t activate the tool",
+      formatApiErrorMessage(error, "We couldn’t activate the tool right now."),
+      {
+        eyebrow: "Try again",
+        returnFocus: elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Couldn’t activate the tool.");
+  } finally {
+    featureActivationTransitionBusy = false;
+    featureActivationTransitionTargetId = "";
+    featureActivationTransitionAction = "";
+    updateFeatureStudioHeader();
+  }
 }
 
 function handleFeatureStudioMenuAction(action) {
@@ -3738,7 +3928,7 @@ function handleFeatureStudioMenuAction(action) {
   }
 
   if (action === "deactivate") {
-    deactivateSelectedFeature();
+    void deactivateSelectedFeature();
   }
 }
 
@@ -3827,6 +4017,7 @@ function updateFeatureStudioHeader() {
   const isSetupComplete = isFeatureSetupComplete(feature);
   const studioView = getSelectedFeatureStudioView(feature);
   const activationBusy = isFeatureActivationBusy(feature);
+  const transitionBusy = isFeatureActivationTransitionBusy(feature);
   const hasActivationChanges = hasFeatureActivationChanges(feature);
 
   state.featureStudioView = studioView;
@@ -3950,15 +4141,19 @@ function updateFeatureStudioHeader() {
           : "Finish WhatsApp setup before turning this tool on.";
   }
   if (elements.featureStudioEditorToggleButton) {
-    elements.featureStudioEditorToggleButton.textContent = isActivated
-      ? "Deactivate tool"
-      : isSetupComplete
-        ? "Activate tool"
-        : hasFeatureWhatsAppDetails(feature)
-          ? "Finish WhatsApp setup"
-          : "Start WhatsApp setup";
+    elements.featureStudioEditorToggleButton.textContent = transitionBusy
+      ? featureActivationTransitionAction === "deactivate"
+        ? "Turning off..."
+        : "Activating..."
+      : isActivated
+        ? "Deactivate tool"
+        : isSetupComplete
+          ? "Activate tool"
+          : hasFeatureWhatsAppDetails(feature)
+            ? "Finish WhatsApp setup"
+            : "Start WhatsApp setup";
     elements.featureStudioEditorToggleButton.className = isActivated ? "ghost-button danger" : "primary-button";
-    elements.featureStudioEditorToggleButton.disabled = false;
+    elements.featureStudioEditorToggleButton.disabled = transitionBusy;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
   }
 
@@ -4452,11 +4647,13 @@ function completeSignIn(session) {
   state.billingReport = null;
   state.billingLoading = true;
   state.billingError = "";
+  state.paymentStatus = null;
   setHashForTab("features");
   setView("app");
   renderApp();
   void refreshBillingReport();
   void refreshWhatsAppConnection();
+  void refreshFeatureActivationStates();
 }
 
 async function verifyOtpFlow() {
@@ -4564,6 +4761,7 @@ async function signOut() {
   state.billingReport = null;
   state.billingLoading = false;
   state.billingError = "";
+  state.paymentStatus = null;
   state.requestCountryCode = "";
   state.settingsOpen = false;
   state.lastPrimaryTab = "features";
@@ -4654,9 +4852,11 @@ async function bootstrapAuthState() {
       state.billingReport = null;
       state.billingLoading = true;
       state.billingError = "";
+      state.paymentStatus = null;
       refreshView();
       void refreshBillingReport();
       void refreshWhatsAppConnection();
+      void refreshFeatureActivationStates();
       return;
     } catch (error) {
       const status = Number(error?.status || 0);
@@ -4681,6 +4881,7 @@ async function bootstrapAuthState() {
   state.billingReport = null;
   state.billingLoading = false;
   state.billingError = "";
+  state.paymentStatus = null;
   refreshView();
 }
 
@@ -4770,7 +4971,7 @@ function bindEvents() {
   }
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.addEventListener("click", () => {
-      toggleSelectedFeatureEditorActivation();
+      void toggleSelectedFeatureEditorActivation();
     });
   }
   if (elements.featureStudioMenuButton) {

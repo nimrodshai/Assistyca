@@ -67,6 +67,11 @@ Required environment variables on Render:
 - `PORTAL_BILLING_DATA_PATH` optional path to a JSON billing ledger used only as a sample fallback. It defaults to `portal/billing.sample.json`.
 - `PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE` sets the minimum monthly charge floor across the whole account. The default is `50`.
 - `PORTAL_BILLING_CURRENCY` controls the display currency. The default is `USD`.
+- `LEMON_SQUEEZY_API_KEY` for subscription lookups and hosted checkout creation
+- `LEMON_SQUEEZY_STORE_ID` for the Lemon Squeezy store
+- `LEMON_SQUEEZY_ACTIVATION_VARIANT_ID` for the subscription or plan that should unlock feature activation
+- `LEMON_SQUEEZY_SIGNING_SECRET` optional now, but needed once you accept Lemon Squeezy webhooks
+- `LEMON_SQUEEZY_ACTIVATION_REDIRECT_URL` optional override for where checkout should return after payment. If unset, the portal uses `PUBLIC_BASE_URL/portal/#features`
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.
 Portal sessions now default to 180 days and survive server restarts when the signing secret stays stable.

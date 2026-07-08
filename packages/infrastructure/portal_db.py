@@ -117,6 +117,51 @@ CREATE TABLE IF NOT EXISTS whatsapp_approval_index (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS billing_customers (
+    user_id INTEGER PRIMARY KEY,
+    provider TEXT NOT NULL DEFAULT '',
+    external_customer_id TEXT NOT NULL DEFAULT '',
+    external_subscription_id TEXT NOT NULL DEFAULT '',
+    external_subscription_item_id TEXT NOT NULL DEFAULT '',
+    subscription_status TEXT NOT NULL DEFAULT '',
+    product_id TEXT NOT NULL DEFAULT '',
+    variant_id TEXT NOT NULL DEFAULT '',
+    checkout_url TEXT NOT NULL DEFAULT '',
+    customer_portal_url TEXT NOT NULL DEFAULT '',
+    last_checked_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS feature_activations (
+    user_id INTEGER NOT NULL,
+    feature_id TEXT NOT NULL,
+    feature_name TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 0,
+    activated_at TEXT,
+    deactivated_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, feature_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS feature_activation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    feature_id TEXT NOT NULL DEFAULT '',
+    feature_name TEXT NOT NULL DEFAULT '',
+    event_name TEXT NOT NULL,
+    outcome TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
@@ -126,6 +171,12 @@ ON whatsapp_connections(phone_number_id)
 WHERE phone_number_id <> '';
 CREATE INDEX IF NOT EXISTS idx_whatsapp_approval_index_user_id
 ON whatsapp_approval_index(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_billing_customers_provider_status
+ON billing_customers(provider, subscription_status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feature_activations_user_active
+ON feature_activations(user_id, is_active, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feature_activation_events_user_feature
+ON feature_activation_events(user_id, feature_id, created_at DESC);
 """
 
 
@@ -732,6 +783,145 @@ class PortalDatabase:
             "updatedAt": payload.get("updated_at"),
         }
 
+    def _resolve_active_user_id(self, conn: sqlite3.Connection, email: str) -> int:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        user_row = conn.execute(
+            "SELECT id FROM users WHERE email = ? AND is_active = 1",
+            (normalized_email,),
+        ).fetchone()
+        if user_row is None:
+            raise KeyError(f"Unknown user: {normalized_email}")
+
+        return int(user_row["id"])
+
+    def _load_billing_customer_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int | None = None,
+        email: str | None = None,
+    ) -> dict[str, Any] | None:
+        if user_id is None:
+            if email is None:
+                return None
+            try:
+                user_id = self._resolve_active_user_id(conn, email)
+            except (KeyError, ValueError):
+                return None
+
+        row = conn.execute(
+            """
+            SELECT
+                b.user_id,
+                u.email,
+                b.provider,
+                b.external_customer_id,
+                b.external_subscription_id,
+                b.external_subscription_item_id,
+                b.subscription_status,
+                b.product_id,
+                b.variant_id,
+                b.checkout_url,
+                b.customer_portal_url,
+                b.last_checked_at,
+                b.metadata_json,
+                b.created_at,
+                b.updated_at
+            FROM billing_customers AS b
+            INNER JOIN users AS u
+                ON u.id = b.user_id
+            WHERE b.user_id = ?
+            LIMIT 1
+            """,
+            (int(user_id),),
+        ).fetchone()
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        metadata = payload.get("metadata_json")
+        try:
+            metadata_payload = json.loads(metadata) if metadata else {}
+        except json.JSONDecodeError:
+            metadata_payload = {}
+
+        return {
+            "userId": int(payload.get("user_id") or 0),
+            "email": normalize_email(payload.get("email")),
+            "provider": normalize_text(payload.get("provider")),
+            "externalCustomerId": normalize_text(payload.get("external_customer_id")),
+            "externalSubscriptionId": normalize_text(payload.get("external_subscription_id")),
+            "externalSubscriptionItemId": normalize_text(payload.get("external_subscription_item_id")),
+            "subscriptionStatus": normalize_text(payload.get("subscription_status")),
+            "productId": normalize_text(payload.get("product_id")),
+            "variantId": normalize_text(payload.get("variant_id")),
+            "checkoutUrl": normalize_text(payload.get("checkout_url")),
+            "customerPortalUrl": normalize_text(payload.get("customer_portal_url")),
+            "lastCheckedAt": payload.get("last_checked_at"),
+            "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
+    def _load_feature_activation_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+        feature_id: str,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_feature_id:
+            return None
+
+        row = conn.execute(
+            """
+            SELECT
+                fa.user_id,
+                u.email,
+                fa.feature_id,
+                fa.feature_name,
+                fa.is_active,
+                fa.activated_at,
+                fa.deactivated_at,
+                fa.metadata_json,
+                fa.created_at,
+                fa.updated_at
+            FROM feature_activations AS fa
+            INNER JOIN users AS u
+                ON u.id = fa.user_id
+            WHERE fa.user_id = ? AND fa.feature_id = ?
+            LIMIT 1
+            """,
+            (int(user_id), normalized_feature_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        metadata = payload.get("metadata_json")
+        try:
+            metadata_payload = json.loads(metadata) if metadata else {}
+        except json.JSONDecodeError:
+            metadata_payload = {}
+
+        return {
+            "userId": int(payload.get("user_id") or 0),
+            "email": normalize_email(payload.get("email")),
+            "featureId": normalize_text(payload.get("feature_id")),
+            "featureName": normalize_text(payload.get("feature_name")),
+            "isActive": bool(payload.get("is_active")),
+            "status": "active" if bool(payload.get("is_active")) else "non-active",
+            "activatedAt": payload.get("activated_at"),
+            "deactivatedAt": payload.get("deactivated_at"),
+            "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
     def count_registered_users(self, conn: sqlite3.Connection | None = None) -> int:
         if conn is not None:
             row = conn.execute("SELECT COUNT(*) AS count FROM users WHERE is_active = 1").fetchone()
@@ -1098,6 +1288,133 @@ class PortalDatabase:
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, user_id=user_id)
 
+    def get_billing_customer(self, email: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return None
+
+        with self._connection() as conn:
+            return self._load_billing_customer_row(conn, email=normalized_email)
+
+    def save_billing_customer(
+        self,
+        email: str,
+        *,
+        provider: str = "",
+        external_customer_id: str = "",
+        external_subscription_id: str = "",
+        external_subscription_item_id: str = "",
+        subscription_status: str = "",
+        product_id: str = "",
+        variant_id: str = "",
+        checkout_url: str = "",
+        customer_portal_url: str = "",
+        last_checked_at: str | datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        checked_at_value = parse_datetime(last_checked_at).isoformat() if last_checked_at is not None else now
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            existing = conn.execute(
+                "SELECT created_at FROM billing_customers WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            created_at = existing["created_at"] if existing and existing["created_at"] else now
+
+            conn.execute(
+                """
+                INSERT INTO billing_customers (
+                    user_id,
+                    provider,
+                    external_customer_id,
+                    external_subscription_id,
+                    external_subscription_item_id,
+                    subscription_status,
+                    product_id,
+                    variant_id,
+                    checkout_url,
+                    customer_portal_url,
+                    last_checked_at,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    external_customer_id = excluded.external_customer_id,
+                    external_subscription_id = excluded.external_subscription_id,
+                    external_subscription_item_id = excluded.external_subscription_item_id,
+                    subscription_status = excluded.subscription_status,
+                    product_id = excluded.product_id,
+                    variant_id = excluded.variant_id,
+                    checkout_url = excluded.checkout_url,
+                    customer_portal_url = excluded.customer_portal_url,
+                    last_checked_at = excluded.last_checked_at,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    normalize_text(provider),
+                    normalize_text(external_customer_id),
+                    normalize_text(external_subscription_id),
+                    normalize_text(external_subscription_item_id),
+                    normalize_text(subscription_status),
+                    normalize_text(product_id),
+                    normalize_text(variant_id),
+                    normalize_text(checkout_url),
+                    normalize_text(customer_portal_url),
+                    checked_at_value,
+                    metadata_json,
+                    created_at,
+                    now,
+                ),
+            )
+
+            return self._load_billing_customer_row(conn, user_id=user_id) or {}
+
+    def get_feature_activation(self, email: str, feature_id: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email or not normalized_feature_id:
+            return None
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            return self._load_feature_activation_row(conn, user_id=user_id, feature_id=normalized_feature_id)
+
+    def list_feature_activations(self, email: str) -> list[dict[str, Any]]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return []
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            rows = conn.execute(
+                """
+                SELECT feature_id
+                FROM feature_activations
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, feature_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+
+            activations: list[dict[str, Any]] = []
+            for row in rows:
+                record = self._load_feature_activation_row(conn, user_id=user_id, feature_id=row["feature_id"])
+                if record is not None:
+                    activations.append(record)
+
+        return activations
+
     def save_whatsapp_connection(
         self,
         email: str,
@@ -1187,6 +1504,226 @@ class PortalDatabase:
             )
 
             return self._load_whatsapp_connection_row(conn, user_id=user_id) or {}
+
+    def set_feature_activation(
+        self,
+        email: str,
+        *,
+        feature_id: str,
+        feature_name: str = "",
+        is_active: bool,
+        metadata: dict[str, Any] | None = None,
+        activated_at: str | datetime | None = None,
+        deactivated_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            existing = conn.execute(
+                "SELECT created_at, activated_at, deactivated_at FROM feature_activations WHERE user_id = ? AND feature_id = ?",
+                (user_id, normalized_feature_id),
+            ).fetchone()
+            created_at = existing["created_at"] if existing and existing["created_at"] else now
+            activated_at_value = (
+                parse_datetime(activated_at).isoformat() if activated_at is not None
+                else (
+                    (existing["activated_at"] if existing and existing["activated_at"] and bool(is_active) else None)
+                    or (now if bool(is_active) else None)
+                )
+            )
+            deactivated_at_value = (
+                parse_datetime(deactivated_at).isoformat() if deactivated_at is not None
+                else (now if not bool(is_active) else None)
+            )
+
+            conn.execute(
+                """
+                INSERT INTO feature_activations (
+                    user_id,
+                    feature_id,
+                    feature_name,
+                    is_active,
+                    activated_at,
+                    deactivated_at,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, feature_id) DO UPDATE SET
+                    feature_name = excluded.feature_name,
+                    is_active = excluded.is_active,
+                    activated_at = excluded.activated_at,
+                    deactivated_at = excluded.deactivated_at,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    normalized_feature_id,
+                    normalize_text(feature_name),
+                    1 if is_active else 0,
+                    activated_at_value,
+                    deactivated_at_value,
+                    metadata_json,
+                    created_at,
+                    now,
+                ),
+            )
+
+            return self._load_feature_activation_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
+
+    def record_feature_activation_event(
+        self,
+        email: str,
+        *,
+        feature_id: str,
+        feature_name: str = "",
+        event_name: str,
+        outcome: str = "",
+        reason: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        normalized_event_name = normalize_text(event_name)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+        if not normalized_event_name:
+            raise ValueError("Event name is required.")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            conn.execute(
+                """
+                INSERT INTO feature_activation_events (
+                    user_id,
+                    feature_id,
+                    feature_name,
+                    event_name,
+                    outcome,
+                    reason,
+                    metadata_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    normalized_feature_id,
+                    normalize_text(feature_name),
+                    normalized_event_name,
+                    normalize_text(outcome),
+                    normalize_text(reason),
+                    metadata_json,
+                    now,
+                ),
+            )
+            event_id = int(conn.execute("SELECT last_insert_rowid() AS event_id").fetchone()["event_id"])
+            row = conn.execute(
+                """
+                SELECT
+                    e.id,
+                    e.feature_id,
+                    e.feature_name,
+                    e.event_name,
+                    e.outcome,
+                    e.reason,
+                    e.metadata_json,
+                    e.created_at,
+                    u.email
+                FROM feature_activation_events AS e
+                INNER JOIN users AS u
+                    ON u.id = e.user_id
+                WHERE e.id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+
+        payload = _row_to_dict(row) or {}
+        metadata_blob = payload.get("metadata_json")
+        try:
+            metadata_payload = json.loads(metadata_blob) if metadata_blob else {}
+        except json.JSONDecodeError:
+            metadata_payload = {}
+
+        return {
+            "id": int(payload.get("id") or 0),
+            "email": normalize_email(payload.get("email")),
+            "featureId": normalize_text(payload.get("feature_id")),
+            "featureName": normalize_text(payload.get("feature_name")),
+            "eventName": normalize_text(payload.get("event_name")),
+            "outcome": normalize_text(payload.get("outcome")),
+            "reason": normalize_text(payload.get("reason")),
+            "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
+            "createdAt": payload.get("created_at"),
+        }
+
+    def list_feature_activation_events(self, email: str, feature_id: str = "") -> list[dict[str, Any]]:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email:
+            return []
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            params: list[Any] = [user_id]
+            query = """
+                SELECT
+                    e.id,
+                    e.feature_id,
+                    e.feature_name,
+                    e.event_name,
+                    e.outcome,
+                    e.reason,
+                    e.metadata_json,
+                    e.created_at,
+                    u.email
+                FROM feature_activation_events AS e
+                INNER JOIN users AS u
+                    ON u.id = e.user_id
+                WHERE e.user_id = ?
+            """
+            if normalized_feature_id:
+                query += " AND e.feature_id = ?"
+                params.append(normalized_feature_id)
+            query += " ORDER BY e.created_at DESC, e.id DESC"
+
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            payload = _row_to_dict(row) or {}
+            metadata_blob = payload.get("metadata_json")
+            try:
+                metadata_payload = json.loads(metadata_blob) if metadata_blob else {}
+            except json.JSONDecodeError:
+                metadata_payload = {}
+            events.append(
+                {
+                    "id": int(payload.get("id") or 0),
+                    "email": normalize_email(payload.get("email")),
+                    "featureId": normalize_text(payload.get("feature_id")),
+                    "featureName": normalize_text(payload.get("feature_name")),
+                    "eventName": normalize_text(payload.get("event_name")),
+                    "outcome": normalize_text(payload.get("outcome")),
+                    "reason": normalize_text(payload.get("reason")),
+                    "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
+                    "createdAt": payload.get("created_at"),
+                }
+            )
+
+        return events
 
     def map_whatsapp_approval(
         self,

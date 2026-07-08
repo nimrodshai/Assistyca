@@ -35,6 +35,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from packages.infrastructure.billing_ledger import load_billing_report
+from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.portal_db import DEFAULT_CURRENCY
 from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
@@ -914,6 +915,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/features"
+            or path.startswith("/api/features/")
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
             or path.startswith("/api/threads")
@@ -932,6 +935,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/features"
+            or path.startswith("/api/features/")
             or path == "/webhooks/whatsapp"
             or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
@@ -950,6 +955,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/features"
+            or path.startswith("/api/features/")
             or path == "/webhooks/whatsapp"
             or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
@@ -1012,6 +1019,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, report)
             return
 
+        if path == "/api/features":
+            session = self._require_authenticated_session()
+            if session is None:
+                return
+
+            service = self._feature_activation_service()
+            result = service.list_feature_states(session.email)
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "features": result.get("features", []),
+                "paymentStatus": result.get("paymentStatus", {}),
+            })
+            return
+
         if path == "/webhooks/whatsapp":
             self._handle_whatsapp_webhook_verification(parsed)
             return
@@ -1054,6 +1075,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/whatsapp/connection":
             self._handle_whatsapp_connection_post()
+            return
+
+        if path == "/api/features" or path.startswith("/api/features/"):
+            self._handle_feature_activation_post(parsed)
             return
 
         if path == "/webhooks/whatsapp":
@@ -1392,6 +1417,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         serialized["webhookUrl"] = f"{self._public_base_url()}/webhooks/whatsapp"
         return serialized
 
+    def _feature_activation_service(self) -> FeatureActivationService:
+        return FeatureActivationService.from_env(self.database)
+
     def _resolve_whatsapp_service_for_session(self, session: PortalSession) -> tuple[dict[str, Any], PortalWhatsAppService] | None:
         connection = self.database.get_whatsapp_connection(session.email)
         if not connection:
@@ -1528,6 +1556,65 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "connection": self._serialize_whatsapp_connection(connection),
             "liveTested": True,
             "requiresAccessToken": False,
+        })
+
+    def _handle_feature_activation_post(self, parsed: urllib_parse.ParseResult) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "features" or parts[3] != "activation":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        feature_id = urllib_parse.unquote(parts[2])
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        action = normalize_text(payload.get("action")).lower()
+        feature_name = normalize_text(payload.get("featureName") or payload.get("feature_name"))
+        channel = normalize_text(payload.get("channel"))
+        service = self._feature_activation_service()
+
+        if action == "activate":
+            result = service.activate_feature(
+                session.email,
+                feature_id=feature_id,
+                feature_name=feature_name,
+                channel=channel,
+                public_base_url=self._public_base_url(),
+            )
+            if not result.get("ok") and result.get("error") == "payment_required":
+                json_response(self, HTTPStatus.PAYMENT_REQUIRED, result)
+                return
+            if not result.get("ok") and result.get("error") == "setup_required":
+                json_response(self, HTTPStatus.CONFLICT, result)
+                return
+            json_response(self, HTTPStatus.OK, result)
+            return
+
+        if action == "deactivate":
+            result = service.deactivate_feature(
+                session.email,
+                feature_id=feature_id,
+                feature_name=feature_name,
+                channel=channel,
+            )
+            json_response(self, HTTPStatus.OK, result)
+            return
+
+        json_response(self, HTTPStatus.BAD_REQUEST, {
+            "ok": False,
+            "error": "invalid_action",
+            "message": "Action must be activate or deactivate.",
         })
 
     def _handle_whatsapp_approvals_get(self, parsed: urllib_parse.ParseResult) -> None:
