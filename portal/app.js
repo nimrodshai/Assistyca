@@ -828,7 +828,6 @@ function loadClientState(email) {
     const featureMode = String(feature?.mode || "");
     const featureDescription = String(feature?.description || "");
     const featureChannel = String(feature?.channel || "");
-    const isWhatsAppFeatureConfig = featureChannel.trim().toLowerCase() === "whatsapp";
     const activated = Boolean(
       feature?.activated
       ?? feature?.isActivated
@@ -840,7 +839,7 @@ function loadClientState(email) {
       ?? feature?.isSetupComplete
       ?? activated,
     );
-    const setupComplete = isWhatsAppFeatureConfig ? activated : savedSetupComplete;
+    const setupComplete = savedSetupComplete;
     const isLegacyDefaultFeature = index === 0
       && featureId === DEFAULT_FEATURES[0].id
       && (
@@ -1100,6 +1099,31 @@ function isFeatureActivated(feature = getSelectedFeature()) {
 
 function isFeatureSetupComplete(feature = getSelectedFeature()) {
   return Boolean(feature && (feature.setupComplete || isFeatureActivated(feature)));
+}
+
+function hasFeatureWhatsAppDetails(feature = getSelectedFeature()) {
+  if (!feature || !isWhatsAppFeature(feature)) {
+    return false;
+  }
+
+  const detailKeys = [
+    "business_account_id",
+    "phone_number_id",
+    "owner_wa_id",
+    "display_phone_number",
+    "verified_name",
+  ];
+  const configs = [getSelectedFeatureWhatsApp(feature), getSavedFeatureWhatsApp(feature)];
+
+  return configs.some((config) => detailKeys.some((key) => String(config[key] || "").trim()));
+}
+
+function canOpenFeatureWhatsAppDetails(feature = getSelectedFeature()) {
+  return Boolean(
+    feature
+    && isWhatsAppFeature(feature)
+    && (isFeatureActivated(feature) || isFeatureSetupComplete(feature) || hasFeatureWhatsAppDetails(feature))
+  );
 }
 
 function getFeatureActivationState(feature = getSelectedFeature()) {
@@ -1368,7 +1392,7 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
 function persistClientState() {
   const persistedFeatures = clientState.features.map((feature) => ({
     ...feature,
-    setupComplete: isWhatsAppFeature(feature) ? Boolean(feature.activated) : feature.setupComplete,
+    setupComplete: Boolean(feature.setupComplete),
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   }));
@@ -3429,7 +3453,7 @@ function buildFeatureStudioMenu(feature) {
 
   const items = [];
 
-  if (isFeatureActivated(feature)) {
+  if (canOpenFeatureWhatsAppDetails(feature)) {
     const detailsButton = document.createElement("button");
     detailsButton.type = "button";
     detailsButton.className = "menu-item";
@@ -3438,12 +3462,14 @@ function buildFeatureStudioMenu(feature) {
     items.push(detailsButton);
   }
 
-  const deactivateButton = document.createElement("button");
-  deactivateButton.type = "button";
-  deactivateButton.className = "menu-item danger";
-  deactivateButton.dataset.featureAction = "deactivate";
-  deactivateButton.textContent = "Deactivate tool";
-  items.push(deactivateButton);
+  if (isFeatureActivated(feature)) {
+    const deactivateButton = document.createElement("button");
+    deactivateButton.type = "button";
+    deactivateButton.className = "menu-item danger";
+    deactivateButton.dataset.featureAction = "deactivate";
+    deactivateButton.textContent = "Deactivate tool";
+    items.push(deactivateButton);
+  }
 
   elements.featureStudioMenu.replaceChildren(...items);
 }
@@ -3625,7 +3651,11 @@ function toggleSelectedFeatureEditorActivation() {
   }
 
   if (!isFeatureSetupComplete(feature)) {
-    setStatus("Finish WhatsApp setup before turning this tool on.");
+    startFeatureActivation({
+      statusMessage: hasFeatureWhatsAppDetails(feature)
+        ? "Finish WhatsApp setup before turning this tool on."
+        : "Start WhatsApp setup before turning this tool on.",
+    });
     return;
   }
 
@@ -3772,7 +3802,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioEditorSection.classList.toggle("is-hidden", studioView !== "editor");
   }
   if (elements.featureStudioMenuWrap) {
-    elements.featureStudioMenuWrap.classList.toggle("is-hidden", !isActivated);
+    elements.featureStudioMenuWrap.classList.toggle("is-hidden", !canOpenFeatureWhatsAppDetails(feature));
   }
   if (elements.backToFeaturesButton) {
     elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "activation"
@@ -3854,12 +3884,20 @@ function updateFeatureStudioHeader() {
       ? "This tool is active now. You can turn it off anytime without losing your setup or editor settings."
       : isSetupComplete
         ? "Your WhatsApp setup is complete. Review the editor, then activate the tool when everything looks right."
-        : "Finish WhatsApp setup before turning this tool on.";
+        : hasFeatureWhatsAppDetails(feature)
+          ? "Your WhatsApp details are saved, but setup still needs to be completed before you can activate this tool."
+          : "Finish WhatsApp setup before turning this tool on.";
   }
   if (elements.featureStudioEditorToggleButton) {
-    elements.featureStudioEditorToggleButton.textContent = isActivated ? "Deactivate tool" : "Activate tool";
+    elements.featureStudioEditorToggleButton.textContent = isActivated
+      ? "Deactivate tool"
+      : isSetupComplete
+        ? "Activate tool"
+        : hasFeatureWhatsAppDetails(feature)
+          ? "Finish WhatsApp setup"
+          : "Start WhatsApp setup";
     elements.featureStudioEditorToggleButton.className = isActivated ? "ghost-button danger" : "primary-button";
-    elements.featureStudioEditorToggleButton.disabled = !isActivated && !isSetupComplete;
+    elements.featureStudioEditorToggleButton.disabled = false;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
   }
 
