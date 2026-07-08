@@ -1798,6 +1798,7 @@ function getBillingStatusCopy(report, hasError, isLoading) {
 function buildBillingSummaryText(report) {
   const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
   const currentMonth = report?.currentMonth;
+  const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, report?.currency || "USD");
 
   if (!currentMonth) {
     return "Projected payment data will appear here once billing loads.";
@@ -1807,23 +1808,23 @@ function buildBillingSummaryText(report) {
   if (!currentMonth.tools?.length || !currentMonth.tokensUsed) {
     if (currentMonth.minimumApplied) {
       return nextPaymentDate
-        ? `Projected payment starts at ${charged} and will rise with usage. Next payment: ${nextPaymentDate}.`
-        : `Projected payment starts at ${charged} and will rise with usage.`;
+        ? `Billing is based on token usage, with a ${minimum} monthly minimum. Since usage is below the minimum, projected payment is ${charged}. Next payment: ${nextPaymentDate}.`
+        : `Billing is based on token usage, with a ${minimum} monthly minimum. Since usage is below the minimum, projected payment is ${charged}.`;
     }
     return nextPaymentDate
-      ? `Projected payment will update as usage grows. Next payment: ${nextPaymentDate}.`
-      : "Projected payment will update as usage grows.";
+      ? `Billing is based on token usage. Projected payment will update as usage is recorded. Next payment: ${nextPaymentDate}.`
+      : "Billing is based on token usage. Projected payment will update as usage is recorded.";
   }
 
   if (currentMonth.minimumApplied) {
     return nextPaymentDate
-      ? `Projected payment is ${charged} so far, including the monthly minimum. Next payment: ${nextPaymentDate}.`
-      : `Projected payment is ${charged} so far, including the monthly minimum.`;
+      ? `Billing is based on token usage, with a ${minimum} monthly minimum. Since usage is below the minimum, projected payment is ${charged} so far. Next payment: ${nextPaymentDate}.`
+      : `Billing is based on token usage, with a ${minimum} monthly minimum. Since usage is below the minimum, projected payment is ${charged} so far.`;
   }
 
   return nextPaymentDate
-    ? `Projected payment is ${charged} so far. Next payment: ${nextPaymentDate}.`
-    : `Projected payment is ${charged} so far.`;
+    ? `Billing is based on token usage. Projected payment is ${charged} so far. Next payment: ${nextPaymentDate}.`
+    : `Billing is based on token usage. Projected payment is ${charged} so far.`;
 }
 
 function buildBillingHelpBody(report) {
@@ -2954,10 +2955,10 @@ function createBillingMonthDetail(month, index = 0, currency = "USD", report = n
   const minimumMonthlyCharge = Number(month.minimumMonthlyCharge || report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM) || DEFAULT_BILLING_MINIMUM;
   note.textContent = month.tokensUsed
     ? month.minimumApplied
-      ? `Usage-based total this month is ${formatCurrency(usageChargeUsd, currency)}. The ${formatCurrency(minimumMonthlyCharge, currency)} monthly minimum sets the projected payment at ${formatCurrency(month.chargeUsd, currency)}.`
+      ? `Usage-based total this month is ${formatCurrency(usageChargeUsd, currency)}. Since that is below the ${formatCurrency(minimumMonthlyCharge, currency)} monthly minimum, projected payment is ${formatCurrency(month.chargeUsd, currency)}.`
       : `Usage-based total this month is ${formatCurrency(usageChargeUsd, currency)}.`
     : month.minimumApplied
-      ? `No usage recorded this month yet. The projected payment stays at the ${formatCurrency(minimumMonthlyCharge, currency)} monthly minimum.`
+      ? `No usage recorded this month yet, so projected payment remains the ${formatCurrency(minimumMonthlyCharge, currency)} monthly minimum.`
       : "No usage recorded this month yet.";
 
   body.append(note);
