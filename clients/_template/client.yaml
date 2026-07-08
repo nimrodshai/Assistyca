@@ -84,7 +84,15 @@ knowledge:
 integrations:
   calendar: none
   crm: none
-  payments: none
+  payments:
+    provider: none
+    # When billing is enabled, switch to:
+    # provider: lemon_squeezy
+    # store_id: "12345"
+    # product_id: "12345"
+    # variant_id: "12345"
+    # subscription_item_id: "12345"
+    # webhook_path: /webhooks/lemonsqueezy
   storage: local
 
 guardrails:

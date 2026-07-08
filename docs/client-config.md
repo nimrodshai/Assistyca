@@ -110,6 +110,8 @@ External systems the client uses.
 - `calendar`
 - `crm`
 - `payments`
+  For Lemon Squeezy, prefer an object with:
+  `provider`, `store_id`, `product_id`, `variant_id`, optional `subscription_item_id`, and `webhook_path`
 - `storage`
 
 ### `guardrails`

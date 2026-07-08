@@ -14,6 +14,7 @@ ALLOWED_TOP_LEVEL_DIRS = {"infrastructure", "tools"}
 REQUIRED_FILES = [
     PACKAGES_DIR / "infrastructure" / "__init__.py",
     PACKAGES_DIR / "infrastructure" / "billing_ledger.py",
+    PACKAGES_DIR / "infrastructure" / "lemon_squeezy_api.py",
     PACKAGES_DIR / "infrastructure" / "portal_auth" / "__init__.py",
     PACKAGES_DIR / "infrastructure" / "portal_auth" / "server.py",
     PACKAGES_DIR / "infrastructure" / "portal_db.py",
