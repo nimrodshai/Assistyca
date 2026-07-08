@@ -53,16 +53,11 @@ const DEFAULT_FEATURE_PRICING = {
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
 };
 const FEATURE_ACTIVATION_REQUIRED_KEYS = [
-  "phone_number_id",
-  "owner_wa_id",
-];
-const FEATURE_ACTIVATION_TRACKED_KEYS = [
   "business_account_id",
-  "phone_number_id",
   "owner_wa_id",
 ];
 const FEATURE_ACTIVATION_STEPS = [
-  "Phone number ID",
+  "Account ID",
   "Your phone number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
@@ -316,8 +311,6 @@ const elements = {
   featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
-  featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
-  featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
@@ -888,8 +881,14 @@ function loadClientState(email) {
       ).trim(),
       pricing: normalizeFeaturePricing(feature?.pricing || {}),
       prompt: normalizePrompt(feature?.prompt || {}, fallbackPrompt),
-      whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
-      savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
+      whatsapp: normalizeFeatureWhatsApp(feature?.whatsapp || feature?.activation || {}),
+      savedWhatsApp: normalizeFeatureWhatsApp(
+        feature?.savedWhatsApp
+        || feature?.saved_whatsapp
+        || feature?.whatsapp
+        || feature?.activation
+        || {},
+      ),
     };
   });
   const settings = { ...DEFAULT_SETTINGS, ...(saved.settings || {}) };
@@ -942,9 +941,13 @@ function normalizeFeaturePricing(pricing = {}) {
 
 function normalizeFeatureWhatsApp(config = {}) {
   const source = config && typeof config === "object" ? config : {};
+  const businessAccountId = String(source.business_account_id || source.businessAccountId || "").trim();
+  const phoneNumberId = String(source.phone_number_id || source.phoneNumberId || "").trim();
+  const accountId = phoneNumberId || businessAccountId;
+
   return {
-    business_account_id: String(source.business_account_id || source.businessAccountId || "").trim(),
-    phone_number_id: String(source.phone_number_id || source.phoneNumberId || "").trim(),
+    business_account_id: accountId,
+    phone_number_id: accountId,
     owner_wa_id: String(source.owner_wa_id || source.ownerWaId || "").trim(),
     connection_status: String(source.connection_status || source.connectionStatus || "not_connected").trim() || "not_connected",
     display_phone_number: String(source.display_phone_number || source.displayPhoneNumber || "").trim(),
@@ -981,7 +984,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Connect your WhatsApp account in Meta, then save the phone number ID and the phone number that should receive approvals.";
+  return "Connect your WhatsApp account in Meta, then save the account ID and your phone number.";
 }
 
 function applyWhatsAppConnectionToFeatures(connection, options = {}) {
@@ -1185,8 +1188,8 @@ function isFeatureActivationBusy(feature = getSelectedFeature()) {
 
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
-    business_account_id: "Business account ID",
-    phone_number_id: "Phone number ID",
+    business_account_id: "Account ID",
+    phone_number_id: "Account ID",
     owner_wa_id: "Your phone number",
   };
 
@@ -1249,7 +1252,7 @@ function getFeatureActivationFieldError(key) {
 function getFeatureActivationFieldElement(key) {
   const elementsByKey = {
     business_account_id: elements.featureActivationBusinessAccountIdInput,
-    phone_number_id: elements.featureActivationPhoneNumberIdInput,
+    phone_number_id: elements.featureActivationBusinessAccountIdInput,
     owner_wa_id: elements.featureActivationOwnerWaIdInput,
   };
 
@@ -1263,16 +1266,12 @@ function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
 
 function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const businessAccountId = String(whatsapp.business_account_id || "").trim();
-  const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
+  const accountId = String(whatsapp.business_account_id || whatsapp.phone_number_id || "").trim();
   const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
   const issues = [];
 
-  if (businessAccountId && !/^\d+$/.test(businessAccountId)) {
+  if (!/^\d+$/.test(accountId)) {
     issues.push({ field: "business_account_id", message: "Enter the account ID Meta gave you.", inline: true });
-  }
-  if (!/^\d+$/.test(phoneNumberId)) {
-    issues.push({ field: "phone_number_id", message: "Enter the phone number ID Meta gave you.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
     issues.push({ field: "owner_wa_id", message: "Enter your phone number.", inline: true });
@@ -3484,12 +3483,13 @@ async function activateSelectedFeature() {
     updateFeatureStudioHeader();
     setStatus(editingActiveFeature ? "Saving details..." : "Saving setup...");
     const whatsapp = getSelectedFeatureWhatsApp(feature);
+    const accountId = String(whatsapp.business_account_id || whatsapp.phone_number_id || "").trim();
     const response = await apiRequest("/api/whatsapp/connection", {
       method: "POST",
       headers: getSessionAuthHeaders(),
       body: {
-        business_account_id: whatsapp.business_account_id,
-        phone_number_id: whatsapp.phone_number_id,
+        business_account_id: accountId,
+        phone_number_id: accountId,
         owner_wa_id: whatsapp.owner_wa_id,
       },
     });
@@ -3588,7 +3588,7 @@ function startFeatureActivation(options = {}) {
   renderApp();
   window.scrollTo(0, 0);
   const firstMissingKey = getMissingFeatureActivationFields(feature)[0];
-  const focusTarget = firstMissingKey ? getFeatureActivationFieldElement(firstMissingKey) : elements.featureActivationPhoneNumberIdInput;
+  const focusTarget = firstMissingKey ? getFeatureActivationFieldElement(firstMissingKey) : elements.featureActivationBusinessAccountIdInput;
   window.requestAnimationFrame(() => {
     focusTarget?.focus();
   });
@@ -3662,9 +3662,6 @@ function updateFeatureActivationFields() {
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.value = whatsapp.business_account_id;
   }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.value = whatsapp.phone_number_id;
-  }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.value = whatsapp.owner_wa_id;
   }
@@ -3676,11 +3673,6 @@ function renderFeatureActivationFieldErrors() {
       key: "business_account_id",
       input: elements.featureActivationBusinessAccountIdInput,
       error: elements.featureActivationBusinessAccountIdError,
-    },
-    {
-      key: "phone_number_id",
-      input: elements.featureActivationPhoneNumberIdInput,
-      error: elements.featureActivationPhoneNumberIdError,
     },
     {
       key: "owner_wa_id",
@@ -3718,6 +3710,9 @@ function syncFeatureActivationField(key) {
     }
 
     feature.whatsapp[key] = event.target.value;
+    if (key === "business_account_id") {
+      feature.whatsapp.phone_number_id = event.target.value;
+    }
 
     if (!featureActivationBusy) {
       clearFeatureActivationNotice();
@@ -3846,9 +3841,6 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.disabled = activationBusy;
-  }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.disabled = activationBusy;
   }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.disabled = activationBusy;
@@ -4697,9 +4689,6 @@ function bindEvents() {
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.addEventListener("input", syncFeatureActivationField("business_account_id"));
-  }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.addEventListener("input", syncFeatureActivationField("phone_number_id"));
   }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.addEventListener("input", syncFeatureActivationField("owner_wa_id"));

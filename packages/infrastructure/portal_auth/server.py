@@ -1417,14 +1417,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         business_account_id = self._normalize_digits(payload.get("business_account_id"))
-        phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
+        phone_number_id = self._normalize_digits(payload.get("phone_number_id")) or business_account_id
         owner_wa_id = self._normalize_digits(payload.get("owner_wa_id"))
         issues: list[dict[str, str]] = []
 
         if payload.get("business_account_id") and not business_account_id:
-            issues.append({"field": "business_account_id", "message": "Enter the business account ID Meta gave you."})
+            issues.append({"field": "business_account_id", "message": "Enter the account ID Meta gave you."})
         if not phone_number_id:
-            issues.append({"field": "phone_number_id", "message": "Enter the phone number ID Meta gave you."})
+            issues.append({"field": "business_account_id", "message": "Enter the account ID Meta gave you."})
         if not owner_wa_id:
             issues.append({"field": "owner_wa_id", "message": "Enter the phone number that should receive approvals."})
 
