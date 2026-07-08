@@ -980,6 +980,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "token": session.token,
                 "issuedAt": to_millis(session.issued_at),
                 "expiresAt": to_millis(session.expires_at),
+                "requestCountry": self._request_country(),
             })
             return
 
@@ -1174,6 +1175,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "sessionToken": result["token"],
             "issuedAt": result["issuedAt"],
             "expiresAt": result["expiresAt"],
+            "requestCountry": self._request_country(),
         })
 
     def _handle_logout(self) -> None:
@@ -1315,6 +1317,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if forwarded:
             return forwarded.split(",", 1)[0].strip()
         return normalize_text(self.headers.get("Host")) or f"{self.server.server_name}:{self.server.server_port}"
+
+    def _request_country(self) -> str:
+        country_headers = [
+            "CF-IPCountry",
+            "CloudFront-Viewer-Country",
+            "X-Vercel-IP-Country",
+            "Fly-Client-Country",
+            "X-AppEngine-Country",
+        ]
+        invalid_values = {"", "XX", "ZZ", "T1", "EU"}
+
+        for header in country_headers:
+            value = normalize_text(self.headers.get(header)).upper()
+            if value in invalid_values:
+                continue
+            if re.fullmatch(r"[A-Z]{2}", value):
+                return value
+
+        return ""
 
     def _public_base_url(self) -> str:
         configured = normalize_text(os.getenv("PUBLIC_BASE_URL"))

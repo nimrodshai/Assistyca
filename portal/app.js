@@ -52,6 +52,10 @@ const DEFAULT_FEATURE_PRICING = {
   billingMultiplier: DEFAULT_BILLING_MULTIPLIER,
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
 };
+const PHONE_PLACEHOLDER_BY_COUNTRY = {
+  IL: "972559195101",
+  US: "15551234567",
+};
 const FEATURE_ACTIVATION_REQUIRED_KEYS = [
   "business_account_id",
   "owner_wa_id",
@@ -239,6 +243,7 @@ const state = {
   activeTab: "features",
   settingsMode: "account",
   settingsOpen: false,
+  requestCountryCode: "",
   authAlertOpen: false,
   menuOpen: false,
   selectedFeatureId: null,
@@ -521,12 +526,14 @@ function normalizeStoredSession(value) {
   }
 
   const signedInAt = Number(value.signedInAt || value.issuedAt || Date.now());
+  const requestCountry = String(value.requestCountry || "").trim().toUpperCase();
   return {
     email,
     token,
     signedIn: true,
     signedInAt: Number.isFinite(signedInAt) ? signedInAt : Date.now(),
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
+    requestCountry: /^[A-Z]{2}$/.test(requestCountry) ? requestCountry : "",
   };
 }
 
@@ -577,6 +584,38 @@ function getSessionAuthHeaders() {
 
 function isWhatsAppFeature(feature) {
   return String(feature?.channel || "").trim().toLowerCase() === "whatsapp";
+}
+
+function normalizeCountryCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(code) ? code : "";
+}
+
+function inferRequestCountryCode() {
+  const explicit = normalizeCountryCode(state.requestCountryCode || authSession?.requestCountry);
+  if (explicit) {
+    return explicit;
+  }
+
+  const timeZone = String(clientState?.settings?.timezone || defaultTimeZone()).trim();
+  if (timeZone === "Asia/Jerusalem") {
+    return "IL";
+  }
+
+  const locale = String(navigator.language || "").trim().toUpperCase();
+  if (locale.endsWith("-IL")) {
+    return "IL";
+  }
+  if (locale.endsWith("-US")) {
+    return "US";
+  }
+
+  return "";
+}
+
+function getOwnerPhonePlaceholder() {
+  const requestCountry = inferRequestCountryCode();
+  return PHONE_PLACEHOLDER_BY_COUNTRY[requestCountry] || PHONE_PLACEHOLDER_BY_COUNTRY.US;
 }
 
 function buildApiUrl(path) {
@@ -740,6 +779,14 @@ function openPhoneNumberIdHelp() {
       returnFocus: elements.featureActivationPhoneNumberIdHelpButton,
     },
   );
+}
+
+function updateFeatureActivationPhonePlaceholder() {
+  if (!elements.featureActivationOwnerWaIdInput) {
+    return;
+  }
+
+  elements.featureActivationOwnerWaIdInput.placeholder = getOwnerPhonePlaceholder();
 }
 
 function closeAuthAlert() {
@@ -3701,6 +3748,7 @@ function updateFeatureActivationFields() {
     return;
   }
 
+  updateFeatureActivationPhonePlaceholder();
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.value = whatsapp.business_account_id;
@@ -4386,7 +4434,9 @@ function completeSignIn(session) {
     signedInAt: Date.now(),
     issuedAt: session?.issuedAt || Date.now(),
     expiresAt: session?.expiresAt || 0,
+    requestCountry: normalizeCountryCode(session?.requestCountry),
   };
+  state.requestCountryCode = authSession.requestCountry;
   clearAuthChallenge();
   authBusy = false;
   closeAuthAlert();
@@ -4514,6 +4564,7 @@ async function signOut() {
   state.billingReport = null;
   state.billingLoading = false;
   state.billingError = "";
+  state.requestCountryCode = "";
   state.settingsOpen = false;
   state.lastPrimaryTab = "features";
   persistLastPrimaryTab();
@@ -4592,7 +4643,9 @@ async function bootstrapAuthState() {
         token: response.token || storedSession.token,
         signedInAt: response.issuedAt || storedSession.signedInAt || Date.now(),
         expiresAt: response.expiresAt || storedSession.expiresAt || 0,
+        requestCountry: response.requestCountry || storedSession.requestCountry || "",
       });
+      state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
       activeEmail = normalizeEmail(authSession?.email || "");
       clientState = loadClientState(activeEmail);
       state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
@@ -4622,6 +4675,7 @@ async function bootstrapAuthState() {
     }
   }
   activeEmail = normalizeEmail(authChallenge?.email || storedSession?.email || "");
+  state.requestCountryCode = normalizeCountryCode(storedSession?.requestCountry);
   clientState = loadClientState(activeEmail);
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
   state.billingReport = null;
