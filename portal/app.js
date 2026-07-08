@@ -1076,6 +1076,10 @@ function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
   return normalizeFeatureStudioView(state.featureStudioView) || getDefaultFeatureStudioView(feature);
 }
 
+function getActivationBackView(feature = getSelectedFeature()) {
+  return isFeatureActivated(feature) ? "editor" : "overview";
+}
+
 function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
   return normalizeFeatureWhatsApp(feature?.whatsapp || {});
 }
@@ -3615,7 +3619,9 @@ function updateFeatureStudioHeader() {
   }
   if (elements.backToFeaturesButton) {
     elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "activation"
-      ? "Back to overview"
+      ? getActivationBackView(feature) === "editor"
+        ? "Back to editor"
+        : "Back to overview"
       : "Back to tools";
   }
   if (elements.featureStudioStatus) {
@@ -4443,7 +4449,7 @@ function bindEvents() {
   elements.closeSettingsButton.addEventListener("click", closeSettings);
   elements.backToFeaturesButton.addEventListener("click", () => {
     if (state.featureStudioView === "activation") {
-      setFeatureStudioView("overview");
+      setFeatureStudioView(getActivationBackView());
       return;
     }
 
