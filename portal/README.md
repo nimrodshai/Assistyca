@@ -14,9 +14,9 @@ It is intentionally separate from the reusable spec and client config layers.
 
 - `Features` for the client account and its assigned capabilities. Click one to open the tool preview or editor.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
-- The Tool page uses inner navigation for overview and editor, then opens a separate connection guide that explains the Meta Embedded Signup flow before the tool is marked live
-- The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes by WABA ID and phone number ID
-- The backend connection details can still use `clients/<client-id>/backend.json` for tenant-specific routing fields, but the Meta app secrets now belong only in the backend deployment environment
+- The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself
+- The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes inbound webhooks by phone number ID
+- WhatsApp approval pages and webhook handling now live inside the portal backend at `/approval/<approval_id>` and `/webhooks/whatsapp`
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
 - The top-right menu opens account, settings, and log out actions
@@ -60,6 +60,7 @@ Required environment variables on Render:
 - `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the backend
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
+- `PUBLIC_BASE_URL` recommended for production so approval links and the connection payload always point at the public portal hostname
 - `PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER` controls the input-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER` controls the output-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_MULTIPLIER` is still accepted as a legacy fallback for both billing multipliers.
@@ -89,6 +90,15 @@ For local WhatsApp testing, edit `scripts/run_portal_server.local.sh`, replace t
 ```
 
 Then visit `http://localhost:8000/portal/`.
+
+The portal setup form now saves only the WhatsApp tenant fields needed per workspace:
+
+- `phone_number_id` required
+- `owner_wa_id` required
+- `business_account_id` optional
+
+The shared Meta app secrets stay server-side in environment variables and should never be stored in portal client state.
+The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.
 

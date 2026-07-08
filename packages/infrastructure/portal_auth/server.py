@@ -31,6 +31,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from packages.infrastructure.billing_ledger import load_billing_report
@@ -41,6 +42,14 @@ from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPL
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
+from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
+from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
+from packages.tools.whatsapp_reply_approval.server import BackendStore
+from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+from packages.tools.whatsapp_reply_approval.server import normalize_text
+from packages.tools.whatsapp_reply_approval.server import parse_form_encoded as parse_whatsapp_form_encoded
+from packages.tools.whatsapp_reply_approval.server import parse_json_body as parse_whatsapp_json_body
+from packages.tools.whatsapp_reply_approval.server import verify_whatsapp_signature
 
 
 EMAIL_RE = re.compile(r"^\S+@\S+\.\S+$")
@@ -883,6 +892,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def database(self) -> PortalDatabase:
         return self.server.database  # type: ignore[attr-defined]
 
+    @property
+    def root(self) -> Path:
+        return self.server.root  # type: ignore[attr-defined]
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         return
 
@@ -895,11 +908,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib_parse.urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
         if (
-            self.path.startswith("/api/auth/")
-            or self.path == "/api/billing"
-            or self.path.startswith("/api/billing/")
-            or self.path.startswith("/api/whatsapp/")
+            path.startswith("/api/auth/")
+            or path == "/api/billing"
+            or path.startswith("/api/billing/")
+            or path.startswith("/api/whatsapp/")
+            or path.startswith("/api/approvals")
+            or path.startswith("/api/threads")
         ):
             self.send_response(HTTPStatus.NO_CONTENT)
             send_api_headers(self)
@@ -909,30 +926,43 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib_parse.urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
         if (
-            self.path.startswith("/api/auth/")
-            or self.path == "/api/billing"
-            or self.path.startswith("/api/billing/")
+            path.startswith("/api/auth/")
+            or path == "/api/billing"
+            or path.startswith("/api/billing/")
+            or path == "/webhooks/whatsapp"
+            or path.startswith("/approval/")
+            or path.startswith("/api/whatsapp/")
+            or path.startswith("/api/approvals")
+            or path.startswith("/api/threads")
         ):
-            self._handle_api_get()
+            self._handle_api_get(parsed)
             return
 
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib_parse.urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
         if (
-            self.path.startswith("/api/auth/")
-            or self.path == "/api/billing"
-            or self.path.startswith("/api/billing/")
-            or self.path.startswith("/api/whatsapp/")
+            path.startswith("/api/auth/")
+            or path == "/api/billing"
+            or path.startswith("/api/billing/")
+            or path == "/webhooks/whatsapp"
+            or path.startswith("/approval/")
+            or path.startswith("/api/whatsapp/")
+            or path.startswith("/api/approvals")
         ):
-            self._handle_api_post()
+            self._handle_api_post(parsed)
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def _handle_api_get(self) -> None:
-        if self.path.startswith("/api/auth/session"):
+    def _handle_api_get(self, parsed: urllib_parse.ParseResult) -> None:
+        path = parsed.path.rstrip("/") or "/"
+        if path == "/api/auth/session":
             token = self._extract_session_token()
             session = self.store.get_session(token) if token else None
             if session is None:
@@ -953,7 +983,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        if self.path.startswith("/api/billing"):
+        if path.startswith("/api/billing"):
             token = self._extract_session_token()
             session = self.store.get_session(token) if token else None
             if session is None:
@@ -981,23 +1011,60 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, report)
             return
 
+        if path == "/webhooks/whatsapp":
+            self._handle_whatsapp_webhook_verification(parsed)
+            return
+
+        if path == "/api/whatsapp/connection":
+            self._handle_whatsapp_connection_get()
+            return
+
+        if path.startswith("/api/approvals"):
+            self._handle_whatsapp_approvals_get(parsed)
+            return
+
+        if path.startswith("/api/threads"):
+            self._handle_whatsapp_threads_get(parsed)
+            return
+
+        if path.startswith("/approval/"):
+            self._handle_whatsapp_approval_page(parsed)
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def _handle_api_post(self) -> None:
-        if self.path.startswith("/api/auth/otp/request"):
+    def _handle_api_post(self, parsed: urllib_parse.ParseResult) -> None:
+        path = parsed.path.rstrip("/") or "/"
+        if path == "/api/auth/otp/request":
             self._handle_otp_request()
             return
 
-        if self.path.startswith("/api/auth/otp/verify"):
+        if path == "/api/auth/otp/verify":
             self._handle_otp_verify()
             return
 
-        if self.path.startswith("/api/auth/logout"):
+        if path == "/api/auth/logout":
             self._handle_logout()
             return
 
-        if self.path.startswith("/api/whatsapp/test"):
+        if path == "/api/whatsapp/test":
             self._handle_whatsapp_test()
+            return
+
+        if path == "/api/whatsapp/connection":
+            self._handle_whatsapp_connection_post()
+            return
+
+        if path == "/webhooks/whatsapp":
+            self._handle_whatsapp_webhook_ingest()
+            return
+
+        if path.startswith("/approval/"):
+            self._handle_whatsapp_approval_submit(parsed)
+            return
+
+        if path.startswith("/api/approvals"):
+            self._handle_whatsapp_approval_api_submit(parsed)
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -1196,6 +1263,552 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "label": success_label,
         })
 
+    def _read_body(self) -> bytes:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _send_text(self, status: HTTPStatus, body: str) -> None:
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_html(self, status: HTTPStatus, body: str) -> None:
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.end_headers()
+
+    def _get_authenticated_session(self) -> PortalSession | None:
+        token = self._extract_session_token()
+        return self.store.get_session(token) if token else None
+
+    def _require_authenticated_session(self) -> PortalSession | None:
+        session = self._get_authenticated_session()
+        if session is not None:
+            return session
+
+        json_response(self, HTTPStatus.UNAUTHORIZED, {
+            "ok": False,
+            "error": "unauthorized",
+            "message": "Sign in again to continue.",
+        })
+        return None
+
+    def _request_scheme(self) -> str:
+        forwarded = normalize_text(self.headers.get("X-Forwarded-Proto"))
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip() or "https"
+        return "http" if self.server.server_port in {80, 8000} else "https"
+
+    def _request_host(self) -> str:
+        forwarded = normalize_text(self.headers.get("X-Forwarded-Host"))
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+        return normalize_text(self.headers.get("Host")) or f"{self.server.server_name}:{self.server.server_port}"
+
+    def _public_base_url(self) -> str:
+        configured = normalize_text(os.getenv("PUBLIC_BASE_URL"))
+        if configured:
+            return configured.rstrip("/")
+        return f"{self._request_scheme()}://{self._request_host()}".rstrip("/")
+
+    def _normalize_digits(self, value: Any) -> str:
+        return re.sub(r"\D+", "", str(value or ""))
+
+    def _whatsapp_store_path_for_connection(self, connection: dict[str, Any]) -> Path:
+        user_id = int(connection.get("userId") or 0)
+        identifier = f"user-{user_id}" if user_id > 0 else re.sub(r"[^a-z0-9]+", "-", str(connection.get("email") or "portal-user").lower()).strip("-") or "portal-user"
+        return self.root / ".agents" / "portal-whatsapp" / f"{identifier}.json"
+
+    def _get_whatsapp_store(self, data_path: Path) -> BackendStore:
+        resolved_path = data_path.resolve()
+        cache_key = str(resolved_path)
+        with self.server.whatsapp_store_lock:  # type: ignore[attr-defined]
+            store = self.server.whatsapp_stores.get(cache_key)  # type: ignore[attr-defined]
+            if store is None:
+                store = BackendStore(resolved_path)
+                self.server.whatsapp_stores[cache_key] = store  # type: ignore[attr-defined]
+            return store
+
+    def _build_whatsapp_service(self, connection: dict[str, Any]) -> PortalWhatsAppService:
+        metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
+        assistant = metadata.get("assistant") if isinstance(metadata.get("assistant"), dict) else None
+        data_path = self._whatsapp_store_path_for_connection(connection)
+        config = build_portal_runtime_config(
+            client_id=f"portal-user-{int(connection.get('userId') or 0) or 'unknown'}",
+            client_name=normalize_text(connection.get("displayName")) or normalize_text(connection.get("verifiedName")) or normalize_text(connection.get("email")) or "Portal user",
+            base_url=self._public_base_url(),
+            phone_number_id=normalize_text(connection.get("phoneNumberId")),
+            owner_wa_id=normalize_text(connection.get("ownerWaId")),
+            data_path=data_path,
+            assistant=assistant,
+        )
+        return PortalWhatsAppService(config, self._get_whatsapp_store(data_path))
+
+    def _serialize_whatsapp_connection(self, connection: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not connection:
+            return None
+
+        serialized = dict(connection)
+        serialized["configured"] = bool(
+            normalize_text(connection.get("phoneNumberId"))
+            and normalize_text(connection.get("ownerWaId"))
+        )
+        serialized["liveSendEnabled"] = bool(
+            normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+            and normalize_text(connection.get("phoneNumberId"))
+        )
+        serialized["webhookUrl"] = f"{self._public_base_url()}/webhooks/whatsapp"
+        return serialized
+
+    def _resolve_whatsapp_service_for_session(self, session: PortalSession) -> tuple[dict[str, Any], PortalWhatsAppService] | None:
+        connection = self.database.get_whatsapp_connection(session.email)
+        if not connection:
+            return None
+        return connection, self._build_whatsapp_service(connection)
+
+    def _resolve_whatsapp_service_for_approval(self, approval_id: str) -> tuple[dict[str, Any], PortalWhatsAppService, dict[str, Any]] | None:
+        owner = self.database.get_whatsapp_approval_owner(approval_id)
+        if owner is None:
+            return None
+
+        connection = self.database.get_whatsapp_connection_by_user_id(int(owner.get("userId") or 0))
+        if not connection:
+            return None
+
+        return owner, self._build_whatsapp_service(connection), connection
+
+    def _handle_whatsapp_connection_get(self) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        connection = self.database.get_whatsapp_connection(session.email)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "connection": self._serialize_whatsapp_connection(connection),
+            "configured": bool(connection and normalize_text(connection.get("phoneNumberId")) and normalize_text(connection.get("ownerWaId"))),
+            "hasAccessToken": bool(normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))),
+        })
+
+    def _handle_whatsapp_connection_post(self) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        business_account_id = self._normalize_digits(payload.get("business_account_id"))
+        phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
+        owner_wa_id = self._normalize_digits(payload.get("owner_wa_id"))
+        issues: list[dict[str, str]] = []
+
+        if payload.get("business_account_id") and not business_account_id:
+            issues.append({"field": "business_account_id", "message": "Enter the business account ID Meta gave you."})
+        if not phone_number_id:
+            issues.append({"field": "phone_number_id", "message": "Enter the phone number ID Meta gave you."})
+        if not owner_wa_id:
+            issues.append({"field": "owner_wa_id", "message": "Enter the phone number that should receive approvals."})
+
+        if issues:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_fields",
+                "issues": issues,
+                "message": "Finish the missing WhatsApp details.",
+            })
+            return
+
+        existing = self.database.get_whatsapp_connection(session.email) or {}
+        metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+        access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+
+        if not access_token:
+            connection = self.database.save_whatsapp_connection(
+                session.email,
+                business_account_id=business_account_id,
+                phone_number_id=phone_number_id,
+                owner_wa_id=owner_wa_id,
+                display_phone_number=normalize_text(existing.get("displayPhoneNumber")),
+                verified_name=normalize_text(existing.get("verifiedName")),
+                connection_status="pending_access_token",
+                metadata=metadata,
+            )
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "WhatsApp details were saved. Add WHATSAPP_ACCESS_TOKEN on the backend to complete the live connection test.",
+                "connection": self._serialize_whatsapp_connection(connection),
+                "liveTested": False,
+                "requiresAccessToken": True,
+            })
+            return
+
+        try:
+            result = test_whatsapp_connection(
+                access_token=access_token,
+                phone_number_id=phone_number_id,
+            )
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_fields",
+                "message": str(exc),
+            })
+            return
+        except WhatsAppConnectionError as exc:
+            response: dict[str, Any] = {
+                "ok": False,
+                "error": "whatsapp_test_failed",
+                "message": str(exc),
+            }
+            if exc.details:
+                response["details"] = exc.details
+            json_response(self, HTTPStatus.BAD_GATEWAY, response)
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to UI
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "whatsapp_test_failed",
+                "message": f"WhatsApp could not confirm the connection: {exc}",
+            })
+            return
+
+        connection = self.database.save_whatsapp_connection(
+            session.email,
+            business_account_id=business_account_id,
+            phone_number_id=result.get("phone_number_id") or phone_number_id,
+            owner_wa_id=owner_wa_id,
+            display_phone_number=result.get("display_phone_number", ""),
+            verified_name=result.get("verified_name", ""),
+            connection_status="connected",
+            metadata=metadata,
+        )
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "WhatsApp confirmed the connection.",
+            "connection": self._serialize_whatsapp_connection(connection),
+            "liveTested": True,
+            "requiresAccessToken": False,
+        })
+
+    def _handle_whatsapp_approvals_get(self, parsed: urllib_parse.ParseResult) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        resolved = self._resolve_whatsapp_service_for_session(session)
+        if resolved is None:
+            json_response(self, HTTPStatus.OK, {"ok": True, "approvals": []})
+            return
+
+        _, service = resolved
+        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "approvals":
+            approval = service.get_approval(urllib_parse.unquote(parts[2]))
+            if approval is None:
+                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "approval": approval})
+            return
+
+        status = urllib_parse.parse_qs(parsed.query).get("status", [None])[0]
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "approvals": service.list_approvals(status=status),
+        })
+
+    def _handle_whatsapp_threads_get(self, parsed: urllib_parse.ParseResult) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        resolved = self._resolve_whatsapp_service_for_session(session)
+        if resolved is None:
+            json_response(self, HTTPStatus.OK, {"ok": True, "threads": []})
+            return
+
+        _, service = resolved
+        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "threads":
+            thread = service.get_thread(urllib_parse.unquote(parts[2]))
+            if thread is None:
+                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Thread not found."})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "thread": thread})
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "threads": service.list_threads(),
+        })
+
+    def _handle_whatsapp_approval_api_submit(self, parsed: urllib_parse.ParseResult) -> None:
+        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "approvals" or parts[3] != "send":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self._send_whatsapp_approval(urllib_parse.unquote(parts[2]), as_json=True)
+
+    def _handle_whatsapp_approval_page(self, parsed: urllib_parse.ParseResult) -> None:
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 2 or parts[0] != "approval":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        approval_id = urllib_parse.unquote(parts[1])
+        resolved = self._resolve_whatsapp_service_for_approval(approval_id)
+        if resolved is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
+            return
+
+        _, service, _ = resolved
+        if service.get_approval(approval_id) is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
+            return
+
+        query = urllib_parse.parse_qs(parsed.query)
+        notice = None
+        notice_kind = "success"
+        if query.get("sent"):
+            notice = "Reply sent successfully."
+        elif query.get("error"):
+            notice = normalize_text(query.get("error", [""])[0]) or "Something went wrong."
+            notice_kind = "error"
+
+        self._send_html(
+            HTTPStatus.OK,
+            service.render_approval_page_html(
+                approval_id,
+                notice=notice,
+                notice_kind=notice_kind,
+            ),
+        )
+
+    def _handle_whatsapp_approval_submit(self, parsed: urllib_parse.ParseResult) -> None:
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 3 or parts[0] != "approval" or parts[2] != "send":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self._send_whatsapp_approval(urllib_parse.unquote(parts[1]), as_json=False)
+
+    def _send_whatsapp_approval(self, approval_id: str, *, as_json: bool) -> None:
+        resolved = self._resolve_whatsapp_service_for_approval(approval_id)
+        if resolved is None:
+            if as_json:
+                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
+            return
+
+        owner, service, connection = resolved
+        approval = service.get_approval(approval_id)
+        if approval is None:
+            if as_json:
+                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
+            return
+
+        session = self._get_authenticated_session()
+        if as_json:
+            if session is None:
+                json_response(self, HTTPStatus.UNAUTHORIZED, {
+                    "ok": False,
+                    "error": "unauthorized",
+                    "message": "Sign in again to continue.",
+                })
+                return
+            if normalize_email(session.email) != normalize_email(connection.get("email")):
+                json_response(self, HTTPStatus.FORBIDDEN, {
+                    "ok": False,
+                    "error": "forbidden",
+                    "message": "This approval belongs to another workspace.",
+                })
+                return
+
+        body = self._read_body()
+        content_type = normalize_text(self.headers.get("Content-Type")).lower()
+        try:
+            if "application/json" in content_type:
+                payload = parse_whatsapp_json_body(body)
+            else:
+                payload = parse_whatsapp_form_encoded(body)
+        except json.JSONDecodeError:
+            payload = {}
+
+        reply_text = normalize_text(payload.get("reply_text")) or normalize_text(approval.get("suggested_reply"))
+        if not reply_text:
+            error_message = "Reply text is required."
+            if as_json:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "missing_reply_text",
+                    "message": error_message,
+                })
+            else:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    service.render_approval_page_html(approval_id, notice=error_message, notice_kind="error"),
+                )
+            return
+
+        try:
+            updated, sent_message_id = service.send_approval(approval_id, reply_text)
+        except ValueError as exc:
+            error_message = str(exc)
+            if as_json:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_request", "message": error_message})
+            else:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    service.render_approval_page_html(approval_id, notice=error_message, notice_kind="error"),
+                )
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to the UI
+            error_message = str(exc)
+            if as_json:
+                json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "send_failed", "message": error_message})
+            else:
+                self._send_html(
+                    HTTPStatus.BAD_GATEWAY,
+                    service.render_approval_page_html(approval_id, notice=error_message, notice_kind="error"),
+                )
+            return
+
+        if owner:
+            self.database.map_whatsapp_approval(
+                approval_id,
+                user_id=int(owner.get("userId") or 0),
+                phone_number_id=normalize_text(owner.get("phoneNumberId")),
+            )
+
+        if as_json:
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "approval": updated,
+                "sentMessageId": sent_message_id,
+            })
+            return
+
+        self._redirect(f"/approval/{urllib_parse.quote(approval_id)}?sent=1")
+
+    def _handle_whatsapp_webhook_verification(self, parsed: urllib_parse.ParseResult) -> None:
+        query = urllib_parse.parse_qs(parsed.query)
+        mode = normalize_text(query.get("hub.mode", [""])[0])
+        token = normalize_text(query.get("hub.verify_token", [""])[0])
+        challenge = normalize_text(query.get("hub.challenge", [""])[0])
+        verify_token = normalize_text(os.getenv("WHATSAPP_VERIFY_TOKEN"))
+
+        if verify_token and token != verify_token:
+            self.send_error(HTTPStatus.FORBIDDEN, "Invalid verify token")
+            return
+
+        if mode and mode != "subscribe":
+            self.send_error(HTTPStatus.BAD_REQUEST, "Unexpected webhook mode")
+            return
+
+        self._send_text(HTTPStatus.OK, challenge or "ok")
+
+    def _handle_whatsapp_webhook_ingest(self) -> None:
+        body = self._read_body()
+        if not verify_whatsapp_signature(
+            normalize_text(os.getenv("WHATSAPP_APP_SECRET")),
+            body,
+            self.headers.get("X-Hub-Signature-256"),
+        ):
+            self.send_error(HTTPStatus.FORBIDDEN, "Invalid WhatsApp signature")
+            return
+
+        try:
+            payload = parse_whatsapp_json_body(body)
+        except json.JSONDecodeError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": f"Invalid JSON: {exc}",
+            })
+            return
+
+        events = extract_inbound_events(payload)
+        approvals: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
+        routed_user_ids: set[int] = set()
+
+        for event in events:
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            phone_number_id = normalize_text(metadata.get("phone_number_id"))
+            if not phone_number_id:
+                results.append({
+                    "type": "error",
+                    "thread_id": event.get("thread_id", ""),
+                    "sender_wa_id": event.get("sender_wa_id", ""),
+                    "error": "Missing phone_number_id in webhook metadata.",
+                })
+                continue
+
+            connection = self.database.get_whatsapp_connection_by_phone_number_id(phone_number_id)
+            if not connection:
+                results.append({
+                    "type": "error",
+                    "thread_id": event.get("thread_id", ""),
+                    "sender_wa_id": event.get("sender_wa_id", ""),
+                    "phone_number_id": phone_number_id,
+                    "error": "No portal workspace is connected to this phone number ID.",
+                })
+                continue
+
+            service = self._build_whatsapp_service(connection)
+            routed_user_ids.add(int(connection.get("userId") or 0))
+            try:
+                if service.is_owner_sender(str(event.get("sender_wa_id", ""))):
+                    results.append(service.handle_owner_event(event))
+                    continue
+
+                result = service.handle_customer_event(event)
+                approval = result.get("approval") if isinstance(result.get("approval"), dict) else None
+                if approval is not None:
+                    approvals.append(approval)
+                    self.database.map_whatsapp_approval(
+                        normalize_text(approval.get("approval_id")),
+                        user_id=int(connection.get("userId") or 0),
+                        phone_number_id=phone_number_id,
+                    )
+                results.append(result)
+            except Exception as exc:  # pragma: no cover - keep webhook resilient
+                results.append({
+                    "type": "error",
+                    "thread_id": event.get("thread_id", ""),
+                    "sender_wa_id": event.get("sender_wa_id", ""),
+                    "phone_number_id": phone_number_id,
+                    "error": str(exc),
+                })
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "received": len(events),
+            "approvals": approvals,
+            "results": results,
+            "routedUserCount": len([user_id for user_id in routed_user_ids if user_id > 0]),
+        })
+
     def _extract_session_token(self) -> str:
         auth_header = str(self.headers.get("Authorization", "")).strip()
         if auth_header.lower().startswith("bearer "):
@@ -1217,6 +1830,7 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     handler = partial(PortalAuthHandler, directory=str(root))
     server = ThreadingHTTPServer((host, port), handler)
     server.config = config  # type: ignore[attr-defined]
+    server.root = root  # type: ignore[attr-defined]
     server.database = PortalDatabase(
         config.db_path,
         bootstrap_registered_emails=config.seed_registered_emails,
@@ -1233,6 +1847,8 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
         session_secret=config.session_secret,
         registered_email_lookup=server.database.is_registered_email,
     )  # type: ignore[attr-defined]
+    server.whatsapp_stores = {}  # type: ignore[attr-defined]
+    server.whatsapp_store_lock = threading.RLock()  # type: ignore[attr-defined]
     return server
 
 

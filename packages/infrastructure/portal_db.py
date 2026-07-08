@@ -93,10 +93,39 @@ CREATE TABLE IF NOT EXISTS usage_events (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS whatsapp_connections (
+    user_id INTEGER PRIMARY KEY,
+    business_account_id TEXT NOT NULL DEFAULT '',
+    phone_number_id TEXT NOT NULL DEFAULT '',
+    owner_wa_id TEXT NOT NULL DEFAULT '',
+    display_phone_number TEXT NOT NULL DEFAULT '',
+    verified_name TEXT NOT NULL DEFAULT '',
+    connection_status TEXT NOT NULL DEFAULT 'not_connected',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    connected_at TEXT,
+    last_tested_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS whatsapp_approval_index (
+    approval_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    phone_number_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_model_prices_is_active ON model_prices(is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_connections_phone_number_id
+ON whatsapp_connections(phone_number_id)
+WHERE phone_number_id <> '';
+CREATE INDEX IF NOT EXISTS idx_whatsapp_approval_index_user_id
+ON whatsapp_approval_index(user_id, created_at DESC);
 """
 
 
@@ -622,6 +651,87 @@ class PortalDatabase:
         payload.pop("output_token_price_multiplier", None)
         return payload
 
+    def _load_whatsapp_connection_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int | None = None,
+        email: str | None = None,
+        phone_number_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        where_clauses: list[str] = ["u.is_active = 1"]
+        params: list[Any] = []
+
+        if user_id is not None:
+            where_clauses.append("u.id = ?")
+            params.append(int(user_id))
+        elif email is not None:
+            normalized_email = normalize_email(email)
+            if not normalized_email:
+                return None
+            where_clauses.append("u.email = ?")
+            params.append(normalized_email)
+        elif phone_number_id is not None:
+            normalized_phone_number_id = normalize_text(phone_number_id)
+            if not normalized_phone_number_id:
+                return None
+            where_clauses.append("w.phone_number_id = ?")
+            params.append(normalized_phone_number_id)
+        else:
+            return None
+
+        row = conn.execute(
+            f"""
+            SELECT
+                u.id AS user_id,
+                u.email,
+                u.display_name,
+                w.business_account_id,
+                w.phone_number_id,
+                w.owner_wa_id,
+                w.display_phone_number,
+                w.verified_name,
+                w.connection_status,
+                w.metadata_json,
+                w.connected_at,
+                w.last_tested_at,
+                w.created_at,
+                w.updated_at
+            FROM whatsapp_connections AS w
+            INNER JOIN users AS u
+                ON u.id = w.user_id
+            WHERE {" AND ".join(where_clauses)}
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        metadata = payload.get("metadata_json")
+        try:
+            metadata_payload = json.loads(metadata) if metadata else {}
+        except json.JSONDecodeError:
+            metadata_payload = {}
+
+        return {
+            "userId": int(payload.get("user_id") or 0),
+            "email": normalize_email(payload.get("email")),
+            "displayName": normalize_text(payload.get("display_name")),
+            "businessAccountId": normalize_text(payload.get("business_account_id")),
+            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+            "ownerWaId": normalize_text(payload.get("owner_wa_id")),
+            "displayPhoneNumber": normalize_text(payload.get("display_phone_number")),
+            "verifiedName": normalize_text(payload.get("verified_name")),
+            "connectionStatus": normalize_text(payload.get("connection_status")) or "not_connected",
+            "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
+            "connectedAt": payload.get("connected_at"),
+            "lastTestedAt": payload.get("last_tested_at"),
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
     def count_registered_users(self, conn: sqlite3.Connection | None = None) -> int:
         if conn is not None:
             row = conn.execute("SELECT COUNT(*) AS count FROM users WHERE is_active = 1").fetchone()
@@ -964,6 +1074,227 @@ class PortalDatabase:
                 """,
                 (now, now, now, normalized_email),
             )
+
+    def get_whatsapp_connection(self, email: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return None
+
+        with self._connection() as conn:
+            return self._load_whatsapp_connection_row(conn, email=normalized_email)
+
+    def get_whatsapp_connection_by_phone_number_id(self, phone_number_id: str) -> dict[str, Any] | None:
+        normalized_phone_number_id = normalize_text(phone_number_id)
+        if not normalized_phone_number_id:
+            return None
+
+        with self._connection() as conn:
+            return self._load_whatsapp_connection_row(conn, phone_number_id=normalized_phone_number_id)
+
+    def get_whatsapp_connection_by_user_id(self, user_id: int) -> dict[str, Any] | None:
+        if user_id <= 0:
+            return None
+
+        with self._connection() as conn:
+            return self._load_whatsapp_connection_row(conn, user_id=user_id)
+
+    def save_whatsapp_connection(
+        self,
+        email: str,
+        *,
+        business_account_id: str = "",
+        phone_number_id: str = "",
+        owner_wa_id: str = "",
+        display_phone_number: str = "",
+        verified_name: str = "",
+        connection_status: str = "configured",
+        metadata: dict[str, Any] | None = None,
+        connected_at: str | datetime | None = None,
+        tested_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        connected_at_value = parse_datetime(connected_at).isoformat() if connected_at is not None else None
+        tested_at_value = parse_datetime(tested_at).isoformat() if tested_at is not None else now
+
+        with self._connection() as conn:
+            user_row = conn.execute(
+                "SELECT id FROM users WHERE email = ? AND is_active = 1",
+                (normalized_email,),
+            ).fetchone()
+            if user_row is None:
+                raise KeyError(f"Unknown user: {normalized_email}")
+
+            user_id = int(user_row["id"])
+            existing = conn.execute(
+                "SELECT created_at, connected_at FROM whatsapp_connections WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+
+            created_at = existing["created_at"] if existing and existing["created_at"] else now
+            resolved_connected_at = (
+                connected_at_value
+                or (existing["connected_at"] if existing and existing["connected_at"] else None)
+                or now
+            )
+
+            conn.execute(
+                """
+                INSERT INTO whatsapp_connections (
+                    user_id,
+                    business_account_id,
+                    phone_number_id,
+                    owner_wa_id,
+                    display_phone_number,
+                    verified_name,
+                    connection_status,
+                    metadata_json,
+                    connected_at,
+                    last_tested_at,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    business_account_id = excluded.business_account_id,
+                    phone_number_id = excluded.phone_number_id,
+                    owner_wa_id = excluded.owner_wa_id,
+                    display_phone_number = excluded.display_phone_number,
+                    verified_name = excluded.verified_name,
+                    connection_status = excluded.connection_status,
+                    metadata_json = excluded.metadata_json,
+                    connected_at = excluded.connected_at,
+                    last_tested_at = excluded.last_tested_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    normalize_text(business_account_id),
+                    normalize_text(phone_number_id),
+                    normalize_text(owner_wa_id),
+                    normalize_text(display_phone_number),
+                    normalize_text(verified_name),
+                    normalize_text(connection_status) or "configured",
+                    metadata_json,
+                    resolved_connected_at,
+                    tested_at_value,
+                    created_at,
+                    now,
+                ),
+            )
+
+            return self._load_whatsapp_connection_row(conn, user_id=user_id) or {}
+
+    def map_whatsapp_approval(
+        self,
+        approval_id: str,
+        *,
+        email: str | None = None,
+        user_id: int | None = None,
+        phone_number_id: str = "",
+    ) -> dict[str, Any]:
+        normalized_approval_id = normalize_text(approval_id)
+        if not normalized_approval_id:
+            raise ValueError("Approval id is required.")
+
+        resolved_user_id = int(user_id or 0)
+        now = now_iso()
+
+        with self._connection() as conn:
+            if resolved_user_id <= 0:
+                normalized_email = normalize_email(email)
+                if not normalized_email:
+                    raise ValueError("Email or user id is required.")
+                user_row = conn.execute(
+                    "SELECT id FROM users WHERE email = ? AND is_active = 1",
+                    (normalized_email,),
+                ).fetchone()
+                if user_row is None:
+                    raise KeyError(f"Unknown user: {normalized_email}")
+                resolved_user_id = int(user_row["id"])
+
+            conn.execute(
+                """
+                INSERT INTO whatsapp_approval_index (
+                    approval_id,
+                    user_id,
+                    phone_number_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(approval_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    phone_number_id = excluded.phone_number_id
+                """,
+                (
+                    normalized_approval_id,
+                    resolved_user_id,
+                    normalize_text(phone_number_id),
+                    now,
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT
+                    i.approval_id,
+                    i.user_id,
+                    i.phone_number_id,
+                    i.created_at,
+                    u.email
+                FROM whatsapp_approval_index AS i
+                INNER JOIN users AS u
+                    ON u.id = i.user_id
+                WHERE i.approval_id = ?
+                """,
+                (normalized_approval_id,),
+            ).fetchone()
+
+        payload = _row_to_dict(row) or {}
+        return {
+            "approvalId": normalize_text(payload.get("approval_id")),
+            "userId": int(payload.get("user_id") or 0),
+            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+            "createdAt": payload.get("created_at"),
+            "email": normalize_email(payload.get("email")),
+        }
+
+    def get_whatsapp_approval_owner(self, approval_id: str) -> dict[str, Any] | None:
+        normalized_approval_id = normalize_text(approval_id)
+        if not normalized_approval_id:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    i.approval_id,
+                    i.user_id,
+                    i.phone_number_id,
+                    i.created_at,
+                    u.email
+                FROM whatsapp_approval_index AS i
+                INNER JOIN users AS u
+                    ON u.id = i.user_id
+                WHERE i.approval_id = ?
+                LIMIT 1
+                """,
+                (normalized_approval_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        return {
+            "approvalId": normalize_text(payload.get("approval_id")),
+            "userId": int(payload.get("user_id") or 0),
+            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+            "createdAt": payload.get("created_at"),
+            "email": normalize_email(payload.get("email")),
+        }
 
     def record_usage(
         self,
