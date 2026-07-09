@@ -3930,6 +3930,9 @@ function buildAdminFeatureSummary(feature) {
 function createAdminFeatureOption(feature, options = {}) {
   const option = document.createElement("label");
   option.className = "admin-feature-option";
+  if (options.compact) {
+    option.classList.add("is-compact");
+  }
 
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
@@ -4180,41 +4183,18 @@ function createAdminUserDetailView(user) {
   const wrapper = document.createElement("div");
   wrapper.className = "admin-users-view admin-users-detail-view";
 
-  const hero = document.createElement("section");
-  hero.className = "admin-detail-hero";
+  const strip = document.createElement("div");
+  strip.className = "admin-detail-strip";
 
-  const heroCopy = document.createElement("div");
-  heroCopy.className = "admin-detail-hero-copy";
-
-  const eyebrow = document.createElement("span");
-  eyebrow.className = "detail-key";
-  eyebrow.textContent = "Registered user";
-
-  const title = document.createElement("h4");
-  title.textContent = user.displayName || deriveDisplayName(user.email);
-
-  const email = document.createElement("p");
-  email.className = "admin-user-email";
-  email.textContent = user.email;
-
-  heroCopy.append(eyebrow, title, email);
-
-  const badges = document.createElement("div");
-  badges.className = "admin-user-badges";
-
-  if (user.isAdmin) {
-    const adminBadge = document.createElement("span");
-    adminBadge.className = "feature-status";
-    adminBadge.textContent = "Admin";
-    badges.append(adminBadge);
-  }
+  const roleBadge = document.createElement("span");
+  roleBadge.className = "feature-status";
+  roleBadge.textContent = user.isAdmin ? "Admin" : "Client";
 
   const toolsBadge = document.createElement("span");
   toolsBadge.className = "feature-status";
-  toolsBadge.textContent = `${draftFeatureIds.length} tool${draftFeatureIds.length === 1 ? "" : "s"}`;
-  badges.append(toolsBadge);
+  toolsBadge.textContent = `${draftFeatureIds.length} visible tool${draftFeatureIds.length === 1 ? "" : "s"}`;
 
-  hero.append(heroCopy, badges);
+  strip.append(roleBadge, toolsBadge);
 
   const grid = document.createElement("div");
   grid.className = "admin-detail-grid";
@@ -4226,22 +4206,20 @@ function createAdminUserDetailView(user) {
   const infoRows = document.createElement("div");
   infoRows.className = "detail-stack";
   infoRows.append(
-    createAdminDetailRow("Email", user.email),
-    createAdminDetailRow("Role", user.isAdmin ? "Admin" : "Client"),
     createAdminDetailRow("Registered", formatAdminDateTime(user.registeredAt) || "Unknown"),
     createAdminDetailRow("Last login", user.lastLoginAt ? formatAdminDateTime(user.lastLoginAt) : "No login yet"),
   );
   infoPanel.append(infoTitle, infoRows);
 
   const accessPanel = document.createElement("section");
-  accessPanel.className = "admin-detail-panel";
+  accessPanel.className = "admin-detail-panel admin-detail-access-panel";
 
   const accessTitle = document.createElement("h4");
   accessTitle.textContent = "Visible tools";
 
   const accessCopy = document.createElement("p");
   accessCopy.className = "admin-panel-copy";
-  accessCopy.textContent = "Choose which tools this user can see when they sign in.";
+  accessCopy.textContent = "Select the tools this user can access in the portal.";
 
   const checklist = document.createElement("div");
   checklist.className = "admin-feature-checklist admin-detail-feature-list";
@@ -4256,7 +4234,7 @@ function createAdminUserDetailView(user) {
         checked: draftFeatureIds.includes(feature.featureId),
         disabled: isSaving || state.adminUsersLoading,
         userEmail: user.email,
-        showDescription: true,
+        compact: true,
       })),
     );
   }
@@ -4266,20 +4244,28 @@ function createAdminUserDetailView(user) {
 
   const summary = document.createElement("span");
   summary.className = "admin-user-summary";
-  summary.textContent = hasChanges ? "Unsaved changes" : "Access is up to date";
+  if (isSaving) {
+    summary.textContent = "Saving changes…";
+  } else if (hasChanges) {
+    summary.textContent = "Changes not saved";
+  } else {
+    summary.textContent = "All access changes saved";
+  }
 
-  const saveButton = document.createElement("button");
-  saveButton.type = "button";
-  saveButton.className = "primary-button";
-  saveButton.dataset.adminSaveUser = user.email;
-  saveButton.disabled = isSaving || !hasChanges;
-  saveButton.textContent = isSaving ? "Saving..." : "Save access";
-
-  actions.append(summary, saveButton);
+  actions.append(summary);
+  if (hasChanges || isSaving) {
+    const saveButton = document.createElement("button");
+    saveButton.type = "button";
+    saveButton.className = "primary-button small";
+    saveButton.dataset.adminSaveUser = user.email;
+    saveButton.disabled = isSaving;
+    saveButton.textContent = isSaving ? "Saving…" : "Save changes";
+    actions.append(saveButton);
+  }
   accessPanel.append(accessTitle, accessCopy, checklist, actions);
 
   grid.append(infoPanel, accessPanel);
-  wrapper.append(hero, grid);
+  wrapper.append(strip, grid);
   return wrapper;
 }
 
@@ -4301,6 +4287,7 @@ function renderAdminUsersPane() {
     elements.userAccessSettingsPane.classList.add("is-hidden");
     elements.adminUsersShell.classList.remove("is-hidden");
     elements.adminUsersShell.classList.remove("is-add-view");
+    elements.adminUsersShell.classList.remove("is-detail-view");
     return;
   }
 
@@ -4322,6 +4309,7 @@ function renderAdminUsersPane() {
 
   if (state.adminView === "add") {
     elements.adminUsersShell.classList.add("is-add-view");
+    elements.adminUsersShell.classList.remove("is-detail-view");
     if (elements.adminUsersError) {
       elements.adminUsersError.classList.add("is-hidden");
     }
@@ -4332,10 +4320,12 @@ function renderAdminUsersPane() {
   elements.adminUsersShell.classList.remove("is-add-view");
 
   if (state.adminView === "detail") {
+    elements.adminUsersShell.classList.add("is-detail-view");
     elements.adminUsersContent.replaceChildren(createAdminUserDetailView(getAdminSelectedUser()));
     return;
   }
 
+  elements.adminUsersShell.classList.remove("is-detail-view");
   elements.adminUsersContent.replaceChildren(createAdminUsersListView());
 }
 
