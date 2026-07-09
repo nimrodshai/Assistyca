@@ -10,6 +10,7 @@ from packages.infrastructure.portal_db import PortalDatabase
 
 
 DEFAULT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
+FOLLOW_UP_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer"
 
 
 class FakeLemonSqueezyClient:
@@ -50,20 +51,23 @@ class FeatureActivationTests(unittest.TestCase):
     def test_default_feature_catalog_is_seeded_and_assigned(self) -> None:
         features = self.database.list_assigned_features("owner@example.com")
 
-        self.assertEqual(len(features), 1)
-        self.assertEqual(features[0]["featureId"], DEFAULT_FEATURE_ID)
-        self.assertTrue(features[0]["billingRequired"])
-        self.assertTrue(features[0]["requirements"]["requiresWhatsAppConnection"])
+        feature_ids = [feature["featureId"] for feature in features]
+
+        self.assertEqual(feature_ids, [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID])
+        self.assertTrue(all(feature["billingRequired"] for feature in features))
+        self.assertTrue(all(feature["requirements"]["requiresWhatsAppConnection"] for feature in features))
 
     def test_list_feature_states_returns_backend_feature_catalog(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 
         result = service.list_feature_states("owner@example.com")
 
-        self.assertEqual(len(result["features"]), 1)
-        self.assertEqual(result["features"][0]["featureId"], DEFAULT_FEATURE_ID)
-        self.assertEqual(result["features"][0]["name"], "WhatsApp Reply Assistant")
-        self.assertTrue(result["features"][0]["billing"]["required"])
+        features_by_id = {feature["featureId"]: feature for feature in result["features"]}
+
+        self.assertEqual(set(features_by_id), {DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID})
+        self.assertEqual(features_by_id[DEFAULT_FEATURE_ID]["name"], "WhatsApp Reply Assistant")
+        self.assertEqual(features_by_id[FOLLOW_UP_FEATURE_ID]["name"], "WhatsApp Re-engagement Assistant")
+        self.assertTrue(features_by_id[FOLLOW_UP_FEATURE_ID]["billing"]["required"])
 
     def test_activation_requires_setup_for_whatsapp_features(self) -> None:
         service = FeatureActivationService(
@@ -312,9 +316,33 @@ class FeatureActivationTests(unittest.TestCase):
 
         result = service.list_feature_states("owner@example.com")
 
-        self.assertEqual(len(result["features"]), 1)
-        self.assertTrue(result["features"][0]["paymentStatus"]["isEntitled"])
+        features_by_id = {feature["featureId"]: feature for feature in result["features"]}
+        self.assertTrue(features_by_id[DEFAULT_FEATURE_ID]["paymentStatus"]["isEntitled"])
         self.assertEqual(client.list_calls[0]["user_email"], "owner@example.com")
+
+    def test_second_whatsapp_feature_reuses_existing_whatsapp_connection(self) -> None:
+        self._connect_whatsapp()
+        client = FakeLemonSqueezyClient(checkout_url="https://checkout.example.com/start")
+        service = FeatureActivationService(
+            self.database,
+            config=FeatureActivationConfig(
+                checkout_store_id="store_1",
+                checkout_variant_id="variant_1",
+            ),
+            lemon_squeezy_client=client,
+        )
+
+        result = service.activate_feature(
+            "owner@example.com",
+            feature_id=FOLLOW_UP_FEATURE_ID,
+            feature_name="WhatsApp Re-engagement Assistant",
+            channel="WhatsApp",
+            public_base_url="https://portal.example.com",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "payment_required")
+        self.assertTrue(result["setupStatus"]["ready"])
 
     def test_deactivation_is_recorded(self) -> None:
         self.database.set_feature_activation(

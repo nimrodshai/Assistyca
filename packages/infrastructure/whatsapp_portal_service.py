@@ -54,6 +54,62 @@ def build_portal_runtime_config(
     )
 
 
+def portal_whatsapp_store_path_for_connection(root: Path, connection: dict[str, Any]) -> Path:
+    user_id = int(connection.get("userId") or 0)
+    if user_id > 0:
+        identifier = f"user-{user_id}"
+    else:
+        identifier = (
+            re.sub(r"[^a-z0-9]+", "-", str(connection.get("email") or "portal-user").lower()).strip("-")
+            or "portal-user"
+        )
+    return root / ".agents" / "portal-whatsapp" / f"{identifier}.json"
+
+
+def build_portal_service_from_connection(
+    *,
+    root: Path,
+    connection: dict[str, Any],
+    base_url: str,
+    store_cache: dict[str, BackendStore] | None = None,
+    store_lock: Any | None = None,
+) -> "PortalWhatsAppService":
+    metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
+    assistant = metadata.get("assistant") if isinstance(metadata.get("assistant"), dict) else None
+    data_path = portal_whatsapp_store_path_for_connection(root, connection)
+    config = build_portal_runtime_config(
+        client_id=f"portal-user-{int(connection.get('userId') or 0) or 'unknown'}",
+        client_name=normalize_text(connection.get("displayName"))
+        or normalize_text(connection.get("verifiedName"))
+        or normalize_text(connection.get("email"))
+        or "Portal user",
+        base_url=normalize_text(base_url).rstrip("/"),
+        phone_number_id=normalize_text(connection.get("phoneNumberId")),
+        owner_wa_id=normalize_text(connection.get("ownerWaId")),
+        data_path=data_path,
+        assistant=assistant,
+    )
+
+    if store_cache is None:
+        return PortalWhatsAppService(config, BackendStore(data_path))
+
+    resolved_path = data_path.resolve()
+    cache_key = str(resolved_path)
+    if store_lock is None:
+        store = store_cache.get(cache_key)
+        if store is None:
+            store = BackendStore(resolved_path)
+            store_cache[cache_key] = store
+    else:
+        with store_lock:
+            store = store_cache.get(cache_key)
+            if store is None:
+                store = BackendStore(resolved_path)
+                store_cache[cache_key] = store
+
+    return PortalWhatsAppService(config, store)
+
+
 class PortalWhatsAppService:
     def __init__(self, config: RuntimeConfig, store: BackendStore):
         self.config = config

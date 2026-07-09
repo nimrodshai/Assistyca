@@ -27,6 +27,18 @@ services:
         value: "1.5"
       - key: PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE
         value: "50"
+      - key: PORTAL_WHATSAPP_REENGAGEMENT_ENABLED
+        value: "1"
+      - key: PORTAL_WHATSAPP_REENGAGEMENT_TIMEZONE
+        value: Asia/Jerusalem
+      - key: PORTAL_WHATSAPP_REENGAGEMENT_WEEKDAY
+        value: sunday
+      - key: PORTAL_WHATSAPP_REENGAGEMENT_HOUR
+        value: "9"
+      - key: PORTAL_WHATSAPP_REENGAGEMENT_MINUTE
+        value: "0"
+      - key: PORTAL_WHATSAPP_REENGAGEMENT_INACTIVITY_MONTHS
+        value: "6"
       - key: PORTAL_RESEND_API_KEY
         sync: false
       - key: PORTAL_RESEND_FROM_EMAIL

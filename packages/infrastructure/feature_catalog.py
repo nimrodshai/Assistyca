@@ -53,6 +53,17 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
         or normalize_text(os.getenv("LEMON_SQUEEZY_VARIANT_ID"))
     )
     whatsapp_product_id = normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_PRODUCT_ID"))
+    whatsapp_follow_up_store_id = (
+        normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_FOLLOW_UP_STORE_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_STORE_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_STORE_ID"))
+    )
+    whatsapp_follow_up_variant_id = (
+        normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_FOLLOW_UP_VARIANT_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_VARIANT_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_VARIANT_ID"))
+    )
+    whatsapp_follow_up_product_id = normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_FOLLOW_UP_PRODUCT_ID"))
 
     return [
         {
@@ -79,6 +90,41 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
             },
             "metadata": {
                 "catalogSource": "default_feature_catalog",
+            },
+        },
+        {
+            "featureId": "whatsapp-business-follow-up-outreach-writer",
+            "name": "WhatsApp Re-engagement Assistant",
+            "description": "Stores customer conversations and drafts a ready-to-send re-engagement message when a thread has been quiet for more than six months.",
+            "channel": "WhatsApp",
+            "mode": "Weekly follow-up",
+            "launchUrl": DEFAULT_LAUNCH_URL,
+            "sortOrder": 110,
+            "isActive": True,
+            "defaultAssigned": True,
+            "prompt": {
+                **DEFAULT_PROMPT,
+                "replyRules": "Use the saved conversation to write a warm, low-pressure re-engagement message. Keep it concise, specific, and easy to copy into WhatsApp.",
+                "businessNotes": "Reference real context from the previous conversation when it helps. Never invent discounts, availability, or promises.",
+                "scenario": "reengagement",
+            },
+            "pricing": dict(DEFAULT_FEATURE_PRICING),
+            "requirements": {
+                "requiresWhatsAppConnection": True,
+            },
+            "billing": {
+                "required": True,
+                "provider": "lemon_squeezy",
+                "storeId": whatsapp_follow_up_store_id,
+                "productId": whatsapp_follow_up_product_id,
+                "variantId": whatsapp_follow_up_variant_id,
+            },
+            "metadata": {
+                "catalogSource": "default_feature_catalog",
+                "automation": {
+                    "schedule": "sunday_morning",
+                    "inactivityMonths": 6,
+                },
             },
         }
     ]

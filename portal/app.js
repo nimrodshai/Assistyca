@@ -124,6 +124,41 @@ const DEFAULT_FEATURES = [
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
+  {
+    id: "whatsapp-business-follow-up-outreach-writer",
+    name: "WhatsApp Re-engagement Assistant",
+    description: "Stores conversation history and drafts a ready-to-send re-engagement message when a customer has been quiet for more than six months.",
+    channel: "WhatsApp",
+    mode: "Weekly follow-up",
+    status: "non-active",
+    activated: false,
+    setupComplete: false,
+    launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
+    pricing: { ...DEFAULT_FEATURE_PRICING },
+    prompt: {
+      ...DEFAULT_PROMPT,
+      replyRules:
+        "Use the saved conversation to write a warm, low-pressure re-engagement message that is specific, concise, and easy to copy into WhatsApp.",
+      businessNotes:
+        "Reference real context from the previous conversation when it helps. Never invent discounts, availability, or promises.",
+      scenario: "reengagement",
+    },
+    requirements: {
+      requiresWhatsAppConnection: true,
+    },
+    billing: {
+      required: true,
+      provider: "lemon_squeezy",
+      storeId: "",
+      productId: "",
+      variantId: "",
+    },
+    assignment: {},
+    paymentStatus: null,
+    metadata: {},
+    whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
+    savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
+  },
 ];
 
 const DEFAULT_SIMULATOR = {
@@ -206,6 +241,14 @@ const SCENARIOS = {
     user: "The door is stuck and I need help right now.",
     ask: "I’m flagging this for immediate human follow-up so someone can help you as fast as possible.",
     insight: "Makes urgent jobs impossible to miss.",
+  },
+  reengagement: {
+    label: "Dormant client",
+    sender: "Maya Cohen",
+    meta: "6+ months since the last thread",
+    user: "Thanks, I’ll think about it and get back to you.",
+    ask: "Hi Maya, just checking in in case you still need help with the leak repair we discussed. If you want to pick it back up, send me a message and I’ll take it from there.",
+    insight: "Keeps old conversations from going cold without sounding pushy.",
   },
 };
 
@@ -1103,6 +1146,10 @@ function getFeaturePricing(feature = getSelectedFeature()) {
 }
 
 function buildFeaturePitch(feature = getSelectedFeature()) {
+  if (feature?.id === "whatsapp-business-follow-up-outreach-writer") {
+    return "WhatsApp Re-engagement Assistant keeps old customer threads from disappearing. It saves the conversation history, checks for threads that have been quiet for more than six months, and sends you a copy-ready outreach message inside WhatsApp so you can reconnect with context instead of starting cold.";
+  }
+
   return "WhatsApp Reply Assistant helps you respond faster without sounding rushed. It turns incoming messages into clear, polished reply drafts that keep leads warm, reduce missed opportunities after hours, and make follow-up feel consistent and professional. You stay in control of every send while moving quicker, quoting with more confidence, and turning more conversations into booked work.";
 }
 

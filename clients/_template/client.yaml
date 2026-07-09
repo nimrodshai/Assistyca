@@ -55,6 +55,12 @@ features:
     channel: whatsapp
     mode: approval_bot
     description: Drafts suggested replies for active WhatsApp conversations and sends approval cards inside WhatsApp for manual review.
+  - id: whatsapp-business-follow-up-outreach-writer
+    name: WhatsApp Re-engagement Assistant
+    status: draft
+    channel: whatsapp
+    mode: follow_up_writer
+    description: Stores customer conversation history and surfaces a ready-made re-engagement message when a thread has been quiet for more than six months.
 
 agent:
   name: "Assistant"

@@ -19,6 +19,8 @@ import threading
 import time
 import hmac
 import hashlib
+from datetime import datetime
+from datetime import timezone
 from dataclasses import dataclass
 from dataclasses import field
 from email.message import EmailMessage
@@ -44,8 +46,9 @@ from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
-from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
-from packages.tools.whatsapp_reply_approval.server import BackendStore
+from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
+from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
+from packages.infrastructure.whatsapp_reengagement import load_whatsapp_reengagement_config
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import normalize_text
 from packages.tools.whatsapp_reply_approval.server import parse_form_encoded as parse_whatsapp_form_encoded
@@ -1371,35 +1374,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _normalize_digits(self, value: Any) -> str:
         return re.sub(r"\D+", "", str(value or ""))
 
-    def _whatsapp_store_path_for_connection(self, connection: dict[str, Any]) -> Path:
-        user_id = int(connection.get("userId") or 0)
-        identifier = f"user-{user_id}" if user_id > 0 else re.sub(r"[^a-z0-9]+", "-", str(connection.get("email") or "portal-user").lower()).strip("-") or "portal-user"
-        return self.root / ".agents" / "portal-whatsapp" / f"{identifier}.json"
-
-    def _get_whatsapp_store(self, data_path: Path) -> BackendStore:
-        resolved_path = data_path.resolve()
-        cache_key = str(resolved_path)
-        with self.server.whatsapp_store_lock:  # type: ignore[attr-defined]
-            store = self.server.whatsapp_stores.get(cache_key)  # type: ignore[attr-defined]
-            if store is None:
-                store = BackendStore(resolved_path)
-                self.server.whatsapp_stores[cache_key] = store  # type: ignore[attr-defined]
-            return store
-
     def _build_whatsapp_service(self, connection: dict[str, Any]) -> PortalWhatsAppService:
-        metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
-        assistant = metadata.get("assistant") if isinstance(metadata.get("assistant"), dict) else None
-        data_path = self._whatsapp_store_path_for_connection(connection)
-        config = build_portal_runtime_config(
-            client_id=f"portal-user-{int(connection.get('userId') or 0) or 'unknown'}",
-            client_name=normalize_text(connection.get("displayName")) or normalize_text(connection.get("verifiedName")) or normalize_text(connection.get("email")) or "Portal user",
+        return build_portal_service_from_connection(
+            root=self.root,
+            connection=connection,
             base_url=self._public_base_url(),
-            phone_number_id=normalize_text(connection.get("phoneNumberId")),
-            owner_wa_id=normalize_text(connection.get("ownerWaId")),
-            data_path=data_path,
-            assistant=assistant,
+            store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
+            store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
         )
-        return PortalWhatsAppService(config, self._get_whatsapp_store(data_path))
 
     def _serialize_whatsapp_connection(self, connection: dict[str, Any] | None) -> dict[str, Any] | None:
         if not connection:
@@ -1436,6 +1418,50 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
 
         return owner, self._build_whatsapp_service(connection), connection
+
+    def _parse_whatsapp_message_timestamp(self, value: Any) -> str | None:
+        text = normalize_text(value)
+        if not text:
+            return None
+        if re.fullmatch(r"\d+", text):
+            try:
+                return datetime.fromtimestamp(int(text), tz=timezone.utc).isoformat()
+            except (OverflowError, OSError, ValueError):
+                return None
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(timezone.utc).isoformat()
+
+    def _record_whatsapp_outbound_approval(
+        self,
+        connection: dict[str, Any],
+        approval: dict[str, Any] | None,
+        sent_message_id: str,
+        reply_text: str,
+    ) -> None:
+        if not isinstance(approval, dict):
+            return
+
+        self.database.save_whatsapp_message(
+            user_id=int(connection.get("userId") or 0),
+            conversation_id=normalize_text(approval.get("thread_id")) or normalize_text(approval.get("sender_wa_id")),
+            direction="outbound",
+            text=normalize_text(reply_text),
+            sender_name=normalize_text(approval.get("sender_name")),
+            sender_wa_id=normalize_text(approval.get("sender_wa_id")),
+            message_id=normalize_text(sent_message_id),
+            message_type="text",
+            message_at=normalize_text(approval.get("sent_at")) or None,
+            metadata={
+                "source": "approval_send",
+                "approvalId": normalize_text(approval.get("approval_id")),
+                "phoneNumberId": normalize_text(connection.get("phoneNumberId")),
+            },
+        )
 
     def _handle_whatsapp_connection_get(self) -> None:
         session = self._require_authenticated_session()
@@ -1807,6 +1833,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 )
             return
 
+        self._record_whatsapp_outbound_approval(connection, updated, sent_message_id, reply_text)
+
         if owner:
             self.database.map_whatsapp_approval(
                 approval_id,
@@ -1893,7 +1921,42 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             routed_user_ids.add(int(connection.get("userId") or 0))
             try:
                 if service.is_owner_sender(str(event.get("sender_wa_id", ""))):
-                    results.append(service.handle_owner_event(event))
+                    owner_result = service.handle_owner_event(event)
+                    approval = owner_result.get("approval") if isinstance(owner_result.get("approval"), dict) else None
+                    action = normalize_text(owner_result.get("action"))
+                    if approval is not None and action in {"send_suggested", "send_custom"}:
+                        self._record_whatsapp_outbound_approval(
+                            connection,
+                            approval,
+                            normalize_text(owner_result.get("sent_message_id")),
+                            normalize_text(approval.get("sent_text")) or normalize_text(approval.get("suggested_reply")),
+                        )
+                    results.append(owner_result)
+                    continue
+
+                message_record = self.database.save_whatsapp_message(
+                    user_id=int(connection.get("userId") or 0),
+                    conversation_id=normalize_text(event.get("thread_id")) or normalize_text(event.get("sender_wa_id")),
+                    direction="inbound",
+                    text=normalize_text(event.get("message_text")),
+                    sender_name=normalize_text(event.get("sender_name")),
+                    sender_wa_id=normalize_text(event.get("sender_wa_id")),
+                    message_id=normalize_text(event.get("source_message_id")),
+                    message_type=normalize_text(event.get("message_type")) or "text",
+                    message_at=self._parse_whatsapp_message_timestamp(event.get("timestamp")),
+                    metadata={
+                        "source": "whatsapp_webhook",
+                        "phoneNumberId": phone_number_id,
+                    },
+                )
+                if message_record.get("isDuplicate"):
+                    results.append({
+                        "type": "duplicate",
+                        "thread_id": event.get("thread_id", ""),
+                        "sender_wa_id": event.get("sender_wa_id", ""),
+                        "phone_number_id": phone_number_id,
+                        "message_id": event.get("source_message_id", ""),
+                    })
                     continue
 
                 result = service.handle_customer_event(event)
@@ -1964,6 +2027,20 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     server.whatsapp_stores = {}  # type: ignore[attr-defined]
     server.whatsapp_store_lock = threading.RLock()  # type: ignore[attr-defined]
     return server
+
+
+def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) -> Callable[[dict[str, Any], str], str]:
+    def send_owner_message(connection: dict[str, Any], message_text: str) -> str:
+        service = build_portal_service_from_connection(
+            root=root,
+            connection=connection,
+            base_url=normalize_text(os.getenv("PUBLIC_BASE_URL")) or "http://127.0.0.1",
+            store_cache=server.whatsapp_stores,  # type: ignore[attr-defined]
+            store_lock=server.whatsapp_store_lock,  # type: ignore[attr-defined]
+        )
+        return service.send_owner_message(None, message_text=message_text)
+
+    return send_owner_message
 
 
 def parse_args() -> argparse.Namespace:
@@ -2058,11 +2135,42 @@ def main() -> int:
     else:
         print("SMTP is not configured yet. Set PORTAL_SMTP_HOST and PORTAL_SMTP_FROM_EMAIL.", flush=True)
 
+    reengagement_config = load_whatsapp_reengagement_config()
+    scheduler_stop_event = threading.Event()
+    scheduler_thread: threading.Thread | None = None
+    if reengagement_config.enabled:
+        scheduler = WhatsAppReengagementScheduler(
+            server.database,  # type: ignore[attr-defined]
+            send_owner_message=build_whatsapp_reengagement_sender(server, repo_root),
+            config=reengagement_config,
+        )
+        scheduler_thread = threading.Thread(
+            target=scheduler.serve_forever,
+            args=(scheduler_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="whatsapp-reengagement-scheduler",
+        )
+        scheduler_thread.start()
+        timezone_label = reengagement_config.timezone_name or str(datetime.now().astimezone().tzinfo or "local")
+        print(
+            "WhatsApp re-engagement scheduler enabled. "
+            f"Runs weekly on weekday {reengagement_config.schedule_weekday} at "
+            f"{reengagement_config.schedule_hour:02d}:{reengagement_config.schedule_minute:02d} "
+            f"({timezone_label}) after {reengagement_config.inactivity_months} months of inactivity.",
+            flush=True,
+        )
+    else:
+        print("WhatsApp re-engagement scheduler is disabled.", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down portal server.", flush=True)
     finally:
+        scheduler_stop_event.set()
+        if scheduler_thread is not None:
+            scheduler_thread.join(timeout=1.0)
         server.server_close()
 
     return 0
