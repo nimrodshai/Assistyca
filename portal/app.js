@@ -834,6 +834,15 @@ function openAdminUsersList(options = {}) {
   }
 }
 
+function focusAdminAddUserEmailInput() {
+  window.requestAnimationFrame(() => {
+    const input = elements.userAccessSettingsPane?.querySelector('[data-admin-new-email="true"]');
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+    }
+  });
+}
+
 function openAdminAddUser() {
   const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
   state.settingsMode = "users";
@@ -845,11 +854,13 @@ function openAdminAddUser() {
 
   if (shouldOpenModal) {
     openSettings("users");
+    focusAdminAddUserEmailInput();
     return;
   }
 
   closeMenu();
   renderApp();
+  focusAdminAddUserEmailInput();
 }
 
 function openAdminUserDetail(email) {
@@ -6089,11 +6100,6 @@ function bindEvents() {
       openAdminUsersList({ preserveSearch: true, refresh: false });
     });
   }
-  if (elements.adminOpenAddUserButton) {
-    elements.adminOpenAddUserButton.addEventListener("click", () => {
-      openAdminAddUser();
-    });
-  }
   if (elements.userAccessSettingsPane) {
     elements.userAccessSettingsPane.addEventListener("input", (event) => {
       const target = event.target;
@@ -6163,6 +6169,12 @@ function bindEvents() {
       const openUserButton = event.target.closest("[data-admin-open-user]");
       if (openUserButton) {
         openAdminUserDetail(openUserButton.dataset.adminOpenUser || "");
+        return;
+      }
+
+      const openAddUserButton = event.target.closest("[data-admin-open-add-user]");
+      if (openAddUserButton) {
+        openAdminAddUser();
         return;
       }
 
