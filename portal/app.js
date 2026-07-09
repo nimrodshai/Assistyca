@@ -28,7 +28,21 @@ const TAB_LABELS = {
   billing: "Billing",
   settings: "Settings",
 };
-const VALID_SETTINGS_MODES = new Set(["account", "preferences"]);
+const VALID_SETTINGS_MODES = new Set(["account", "preferences", "users"]);
+const SETTINGS_MODE_CONTENT = {
+  account: {
+    title: "Account and preferences",
+    description: "Update login details and account preferences.",
+  },
+  preferences: {
+    title: "Account and preferences",
+    description: "Update login details and account preferences.",
+  },
+  users: {
+    title: "User access",
+    description: "Add portal users and choose which tools each account can see.",
+  },
+};
 const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
@@ -299,6 +313,16 @@ const state = {
   activeTab: "features",
   settingsMode: "account",
   settingsOpen: false,
+  adminUsers: [],
+  adminFeatures: [],
+  adminUsersLoading: false,
+  adminUsersError: "",
+  adminAddUserBusy: false,
+  adminSaveBusyByEmail: {},
+  adminUserDrafts: {},
+  adminNewUserEmail: "",
+  adminNewUserDisplayName: "",
+  adminNewUserFeatureIds: [],
   requestCountryCode: "",
   authAlertOpen: false,
   menuOpen: false,
@@ -411,6 +435,8 @@ const elements = {
   billingHistoryCount: document.querySelector("#billingHistoryCount"),
   billingHistoryList: document.querySelector("#billingHistoryList"),
   closeSettingsButton: document.querySelector("#closeSettingsButton"),
+  settingsTitle: document.querySelector("#settingsTitle"),
+  settingsDescription: document.querySelector("#settingsDescription"),
   toneGuidance: document.querySelector("#toneGuidance"),
   responseStyle: document.querySelector("#responseStyle"),
   replyRules: document.querySelector("#replyRules"),
@@ -447,6 +473,16 @@ const elements = {
   settingsButtons: Array.from(document.querySelectorAll("#settingsPanel [data-settings-mode]")),
   accountSettingsPane: document.querySelector("#accountSettingsPane"),
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
+  userAccessSettingsButton: document.querySelector("#userAccessSettingsButton"),
+  userAccessSettingsPane: document.querySelector("#userAccessSettingsPane"),
+  adminUsersMenuItem: document.querySelector("#adminUsersMenuItem"),
+  adminUserEmailInput: document.querySelector("#adminUserEmailInput"),
+  adminUserDisplayNameInput: document.querySelector("#adminUserDisplayNameInput"),
+  adminAddUserButton: document.querySelector("#adminAddUserButton"),
+  adminAddUserFeatureList: document.querySelector("#adminAddUserFeatureList"),
+  adminUserCount: document.querySelector("#adminUserCount"),
+  adminUsersError: document.querySelector("#adminUsersError"),
+  adminUsersList: document.querySelector("#adminUsersList"),
   signedInEmail: document.querySelector("#signedInEmail"),
   signOutButton: document.querySelector("#signOutButton"),
   displayNameInput: document.querySelector("#displayNameInput"),
@@ -593,6 +629,7 @@ function normalizeStoredSession(value) {
     signedInAt: Number.isFinite(signedInAt) ? signedInAt : Date.now(),
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     requestCountry: /^[A-Z]{2}$/.test(requestCountry) ? requestCountry : "",
+    isAdmin: Boolean(value.isAdmin),
   };
 }
 
@@ -626,6 +663,10 @@ function isSignedIn() {
   return Boolean(authSession?.token && authSession.email && activeEmail && normalizeEmail(authSession.email) === activeEmail);
 }
 
+function isAdminUser() {
+  return Boolean(isSignedIn() && authSession?.isAdmin);
+}
+
 function clearAuthSession() {
   authSession = null;
   persistJson(AUTH_SESSION_KEY, null);
@@ -639,6 +680,71 @@ function clearAuthChallenge() {
 function getSessionAuthHeaders() {
   const token = String(authSession?.token || "").trim();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function normalizeSettingsMode(mode) {
+  const nextMode = VALID_SETTINGS_MODES.has(mode) ? mode : "account";
+  if (nextMode === "users" && !isAdminUser()) {
+    return "account";
+  }
+  return nextMode;
+}
+
+function normalizeAdminFeatureRecord(feature = {}) {
+  return {
+    featureId: String(feature.featureId || feature.id || "").trim(),
+    name: String(feature.name || "").trim() || "Untitled tool",
+    description: String(feature.description || "").trim(),
+    channel: String(feature.channel || "").trim(),
+    mode: String(feature.mode || "").trim(),
+    sortOrder: Number(feature.sortOrder || 100),
+  };
+}
+
+function sortUniqueFeatureIds(featureIds = []) {
+  return Array.from(new Set(
+    Array.isArray(featureIds)
+      ? featureIds.map((featureId) => String(featureId || "").trim()).filter(Boolean)
+      : [],
+  )).sort();
+}
+
+function normalizeAdminUserRecord(user = {}) {
+  return {
+    email: normalizeEmail(user.email || ""),
+    displayName: String(user.displayName || "").trim(),
+    isActive: Boolean(user.isActive),
+    isAdmin: Boolean(user.isAdmin),
+    registeredAt: String(user.registeredAt || "").trim(),
+    lastLoginAt: String(user.lastLoginAt || "").trim(),
+    assignedFeatureIds: sortUniqueFeatureIds(user.assignedFeatureIds || user.featureIds || []),
+  };
+}
+
+function getSettingsModeContent(mode = state.settingsMode) {
+  return SETTINGS_MODE_CONTENT[normalizeSettingsMode(mode)] || SETTINGS_MODE_CONTENT.account;
+}
+
+function getAdminUserDraftFeatureIds(email, fallback = []) {
+  const key = normalizeEmail(email);
+  return sortUniqueFeatureIds(state.adminUserDrafts[key] || fallback);
+}
+
+function setAdminUserDraftFeatureIds(email, featureIds) {
+  const key = normalizeEmail(email);
+  if (!key) {
+    return;
+  }
+  state.adminUserDrafts = {
+    ...state.adminUserDrafts,
+    [key]: sortUniqueFeatureIds(featureIds),
+  };
+}
+
+function featureIdListsMatch(first = [], second = []) {
+  const left = sortUniqueFeatureIds(first);
+  const right = sortUniqueFeatureIds(second);
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function isFeatureActivationTransitionBusy(feature = getSelectedFeature()) {
@@ -1819,6 +1925,26 @@ function formatBillingDate(value) {
   }).format(parsed).replace(/,\s+(\d{4})$/, ",\u00A0$1");
 }
 
+function formatAdminDateTime(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
 function getUtcDateParts(value) {
   const parsed = new Date(String(value || "").trim());
   if (Number.isNaN(parsed.getTime())) {
@@ -2563,9 +2689,7 @@ function persistLastPrimaryTab() {
 }
 
 function openSettings(mode = state.settingsMode) {
-  if (VALID_SETTINGS_MODES.has(mode)) {
-    state.settingsMode = mode;
-  }
+  state.settingsMode = normalizeSettingsMode(mode);
 
   state.selectedFeatureId = null;
   closeFeatureStudioMenu();
@@ -2580,6 +2704,9 @@ function openSettings(mode = state.settingsMode) {
   closeMenu();
   setHashForTab("settings");
   renderApp();
+  if (state.settingsMode === "users" && isAdminUser()) {
+    void refreshAdminUsers();
+  }
 }
 
 function closeSettings() {
@@ -2616,8 +2743,8 @@ function setActiveTab(tab, options = {}) {
   closeFeatureStudioMenu();
   state.selectedSimulatorId = null;
   closeBillingHelp();
-  if (options.settingsMode && VALID_SETTINGS_MODES.has(options.settingsMode)) {
-    state.settingsMode = options.settingsMode;
+  if (options.settingsMode) {
+    state.settingsMode = normalizeSettingsMode(options.settingsMode);
   }
 
   if (options.syncHash !== false) {
@@ -2632,18 +2759,17 @@ function setActiveTab(tab, options = {}) {
 }
 
 function setSettingsMode(mode, options = {}) {
-  if (!VALID_SETTINGS_MODES.has(mode)) {
-    return;
-  }
-
-  state.settingsMode = mode;
+  state.settingsMode = normalizeSettingsMode(mode);
   if (options.openSettings !== false) {
-    openSettings(mode);
+    openSettings(state.settingsMode);
     return;
   }
 
   closeMenu();
   renderApp();
+  if (state.settingsMode === "users" && isAdminUser()) {
+    void refreshAdminUsers();
+  }
 }
 
 function toggleMenu(force) {
@@ -3638,6 +3764,373 @@ async function refreshBillingReport() {
   }
 }
 
+function buildAdminFeatureSummary(feature) {
+  return [feature.channel, feature.mode].filter(Boolean).join(" · ");
+}
+
+function createAdminFeatureOption(feature, options = {}) {
+  const option = document.createElement("label");
+  option.className = "admin-feature-option";
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = Boolean(options.checked);
+  checkbox.disabled = Boolean(options.disabled);
+  checkbox.dataset.adminFeatureId = feature.featureId;
+  if (options.userEmail) {
+    checkbox.dataset.adminUserEmail = options.userEmail;
+  } else {
+    checkbox.dataset.adminFeatureTarget = "new";
+  }
+
+  const copy = document.createElement("span");
+  copy.className = "admin-feature-option-copy";
+
+  const name = document.createElement("strong");
+  name.textContent = feature.name;
+
+  const meta = document.createElement("span");
+  meta.className = "admin-feature-option-meta";
+  meta.textContent = buildAdminFeatureSummary(feature) || "Tool";
+
+  copy.append(name, meta);
+  option.append(checkbox, copy);
+  return option;
+}
+
+function renderAdminUsersPane() {
+  const adminVisible = isAdminUser();
+  if (elements.adminUsersMenuItem) {
+    elements.adminUsersMenuItem.classList.toggle("is-hidden", !adminVisible);
+  }
+  if (elements.userAccessSettingsButton) {
+    elements.userAccessSettingsButton.classList.toggle("is-hidden", !adminVisible);
+  }
+
+  if (!elements.userAccessSettingsPane || !elements.adminUsersList) {
+    return;
+  }
+
+  if (!adminVisible) {
+    elements.userAccessSettingsPane.classList.add("is-hidden");
+    return;
+  }
+
+  if (elements.adminUserEmailInput) {
+    elements.adminUserEmailInput.value = state.adminNewUserEmail;
+  }
+  if (elements.adminUserDisplayNameInput) {
+    elements.adminUserDisplayNameInput.value = state.adminNewUserDisplayName;
+  }
+  if (elements.adminAddUserButton) {
+    elements.adminAddUserButton.disabled = state.adminAddUserBusy || state.adminUsersLoading;
+    elements.adminAddUserButton.textContent = state.adminAddUserBusy ? "Adding..." : "Add user";
+  }
+  if (elements.adminUsersError) {
+    elements.adminUsersError.textContent = state.adminUsersError;
+    elements.adminUsersError.classList.toggle("is-hidden", !state.adminUsersError);
+  }
+  if (elements.adminUserCount) {
+    if (state.adminUsersLoading && !state.adminUsers.length) {
+      elements.adminUserCount.textContent = "Loading...";
+    } else {
+      elements.adminUserCount.textContent = `${state.adminUsers.length} user${state.adminUsers.length === 1 ? "" : "s"}`;
+    }
+  }
+
+  if (elements.adminAddUserFeatureList) {
+    const nextFeatureIds = sortUniqueFeatureIds(state.adminNewUserFeatureIds)
+      .filter((featureId) => state.adminFeatures.some((feature) => feature.featureId === featureId));
+    state.adminNewUserFeatureIds = nextFeatureIds;
+
+    if (!state.adminFeatures.length) {
+      const empty = document.createElement("p");
+      empty.className = "admin-empty-copy";
+      empty.textContent = state.adminUsersLoading
+        ? "Loading tools..."
+        : "No active tools are available to assign yet.";
+      elements.adminAddUserFeatureList.replaceChildren(empty);
+    } else {
+      elements.adminAddUserFeatureList.replaceChildren(
+        ...state.adminFeatures.map((feature) => createAdminFeatureOption(feature, {
+          checked: nextFeatureIds.includes(feature.featureId),
+          disabled: state.adminAddUserBusy || state.adminUsersLoading,
+        })),
+      );
+    }
+  }
+
+  if (state.adminUsersLoading && !state.adminUsers.length) {
+    const loading = document.createElement("article");
+    loading.className = "glass-card empty-state";
+    const title = document.createElement("h3");
+    title.textContent = "Loading users";
+    const copy = document.createElement("p");
+    copy.textContent = "Fetching registered accounts and their assigned tools.";
+    loading.append(title, copy);
+    elements.adminUsersList.replaceChildren(loading);
+    return;
+  }
+
+  if (!state.adminUsers.length) {
+    const empty = document.createElement("article");
+    empty.className = "glass-card empty-state";
+    const title = document.createElement("h3");
+    title.textContent = "No registered users yet";
+    const copy = document.createElement("p");
+    copy.textContent = "Add the first client account here, then assign the tools they should see.";
+    empty.append(title, copy);
+    elements.adminUsersList.replaceChildren(empty);
+    return;
+  }
+
+  const cards = state.adminUsers.map((user) => {
+    const draftFeatureIds = getAdminUserDraftFeatureIds(user.email, user.assignedFeatureIds);
+    const hasChanges = !featureIdListsMatch(draftFeatureIds, user.assignedFeatureIds);
+    const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
+
+    const card = document.createElement("article");
+    card.className = "glass-card admin-user-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-user-card-head";
+
+    const titleBlock = document.createElement("div");
+    const title = document.createElement("h4");
+    title.textContent = user.displayName || deriveDisplayName(user.email);
+    const email = document.createElement("p");
+    email.className = "admin-user-email";
+    email.textContent = user.email;
+    titleBlock.append(title, email);
+
+    const badges = document.createElement("div");
+    badges.className = "admin-user-badges";
+    if (user.isAdmin) {
+      const adminBadge = document.createElement("span");
+      adminBadge.className = "feature-status";
+      adminBadge.textContent = "Admin";
+      badges.append(adminBadge);
+    }
+    const countBadge = document.createElement("span");
+    countBadge.className = "feature-status";
+    countBadge.textContent = `${draftFeatureIds.length} tool${draftFeatureIds.length === 1 ? "" : "s"}`;
+    badges.append(countBadge);
+
+    head.append(titleBlock, badges);
+
+    const meta = document.createElement("p");
+    meta.className = "admin-user-meta";
+    const metaParts = [];
+    metaParts.push(`Registered ${formatAdminDateTime(user.registeredAt) || "unknown"}`);
+    metaParts.push(user.lastLoginAt ? `Last login ${formatAdminDateTime(user.lastLoginAt)}` : "No login yet");
+    meta.textContent = metaParts.join(" · ");
+
+    const checklist = document.createElement("div");
+    checklist.className = "admin-feature-checklist";
+    if (!state.adminFeatures.length) {
+      const empty = document.createElement("p");
+      empty.className = "admin-empty-copy";
+      empty.textContent = "No active tools are available to assign.";
+      checklist.append(empty);
+    } else {
+      checklist.append(
+        ...state.adminFeatures.map((feature) => createAdminFeatureOption(feature, {
+          checked: draftFeatureIds.includes(feature.featureId),
+          disabled: isSaving || state.adminUsersLoading,
+          userEmail: user.email,
+        })),
+      );
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "card-actions admin-user-actions";
+
+    const summary = document.createElement("span");
+    summary.className = "admin-user-summary";
+    summary.textContent = hasChanges
+      ? "Unsaved changes"
+      : "Access is up to date";
+
+    const saveButton = document.createElement("button");
+    saveButton.type = "button";
+    saveButton.className = "primary-button";
+    saveButton.dataset.adminSaveUser = user.email;
+    saveButton.disabled = isSaving || !hasChanges;
+    saveButton.textContent = isSaving ? "Saving..." : "Save access";
+
+    actions.append(summary, saveButton);
+    card.append(head, meta, checklist, actions);
+    return card;
+  });
+
+  elements.adminUsersList.replaceChildren(...cards);
+}
+
+async function refreshAdminUsers(options = {}) {
+  if (!isAdminUser() || state.adminUsersLoading) {
+    return null;
+  }
+
+  state.adminUsersLoading = true;
+  state.adminUsersError = "";
+  if (options.render !== false && view === "app") {
+    renderApp();
+  }
+
+  try {
+    const response = await apiRequest("/api/admin/users", {
+      headers: getSessionAuthHeaders(),
+      timeoutMs: options.timeoutMs || 15000,
+    });
+
+    state.adminFeatures = (Array.isArray(response.features) ? response.features : [])
+      .map((feature) => normalizeAdminFeatureRecord(feature))
+      .filter((feature) => feature.featureId)
+      .sort((left, right) => {
+        const leftSort = Number.isFinite(left.sortOrder) ? left.sortOrder : 100;
+        const rightSort = Number.isFinite(right.sortOrder) ? right.sortOrder : 100;
+        if (leftSort !== rightSort) {
+          return leftSort - rightSort;
+        }
+        return left.name.localeCompare(right.name);
+      });
+    state.adminUsers = (Array.isArray(response.users) ? response.users : [])
+      .map((user) => normalizeAdminUserRecord(user))
+      .filter((user) => user.email)
+      .sort((left, right) => {
+        const leftLabel = (left.displayName || left.email).toLowerCase();
+        const rightLabel = (right.displayName || right.email).toLowerCase();
+        return leftLabel.localeCompare(rightLabel);
+      });
+    state.adminUserDrafts = Object.fromEntries(
+      state.adminUsers.map((user) => [user.email, [...user.assignedFeatureIds]]),
+    );
+    state.adminNewUserFeatureIds = state.adminNewUserFeatureIds
+      .filter((featureId) => state.adminFeatures.some((feature) => feature.featureId === featureId));
+
+    if (authSession) {
+      authSession = normalizeStoredSession({
+        ...authSession,
+        isAdmin: Boolean(response.currentUser?.isAdmin),
+      });
+      persistJson(AUTH_SESSION_KEY, authSession);
+    }
+    state.settingsMode = normalizeSettingsMode(state.settingsMode);
+    return response;
+  } catch (error) {
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t load user access right now.");
+    if (Number(error?.status || 0) === 403 && authSession) {
+      authSession = normalizeStoredSession({
+        ...authSession,
+        isAdmin: false,
+      });
+      persistJson(AUTH_SESSION_KEY, authSession);
+      state.settingsMode = "account";
+    }
+    return null;
+  } finally {
+    state.adminUsersLoading = false;
+    if (options.render !== false && view === "app") {
+      renderApp();
+    }
+  }
+}
+
+async function addAdminUser() {
+  if (!isAdminUser() || state.adminAddUserBusy) {
+    return;
+  }
+
+  const email = normalizeEmail(state.adminNewUserEmail);
+  const displayName = normalizeText(state.adminNewUserDisplayName);
+  const assignedFeatureIds = sortUniqueFeatureIds(state.adminNewUserFeatureIds);
+
+  if (!validateEmail(email)) {
+    state.adminUsersError = "Enter a valid email address before adding the user.";
+    renderApp();
+    elements.adminUserEmailInput?.focus();
+    return;
+  }
+
+  state.adminAddUserBusy = true;
+  state.adminUsersError = "";
+  renderApp();
+
+  let didSucceed = false;
+  try {
+    await apiRequest("/api/admin/users", {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        email,
+        displayName,
+        assignedFeatureIds,
+      },
+    });
+
+    state.adminNewUserEmail = "";
+    state.adminNewUserDisplayName = "";
+    state.adminNewUserFeatureIds = [];
+    await refreshAdminUsers({ render: false });
+    didSucceed = true;
+  } catch (error) {
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t add that user right now.");
+  } finally {
+    state.adminAddUserBusy = false;
+    renderApp();
+    if (didSucceed) {
+      setStatus("User added");
+    }
+  }
+}
+
+async function saveAdminUserFeatures(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
+  if (!isAdminUser() || !user || state.adminSaveBusyByEmail[normalizedEmail]) {
+    return;
+  }
+
+  state.adminSaveBusyByEmail = {
+    ...state.adminSaveBusyByEmail,
+    [normalizedEmail]: true,
+  };
+  state.adminUsersError = "";
+  renderApp();
+
+  let didSucceed = false;
+  try {
+    await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/features`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        assignedFeatureIds: getAdminUserDraftFeatureIds(normalizedEmail, user.assignedFeatureIds),
+      },
+    });
+
+    if (normalizedEmail === activeEmail) {
+      await refreshFeatureActivationStates({ render: false });
+      try {
+        await refreshWhatsAppConnection({ render: false });
+      } catch {
+        // Keep the user access update even if the follow-up refresh fails.
+      }
+    }
+
+    await refreshAdminUsers({ render: false });
+    didSucceed = true;
+  } catch (error) {
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t save tool access right now.");
+  } finally {
+    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminSaveBusyByEmail;
+    state.adminSaveBusyByEmail = nextBusy;
+    renderApp();
+    if (didSucceed) {
+      setStatus("User access saved");
+    }
+  }
+}
+
 function updateHeader() {
   const displayName = getDisplayName();
   const workspaceName = getWorkspaceName();
@@ -4373,15 +4866,33 @@ function updateTabButtons() {
 }
 
 function updateSettingsButtons() {
+  state.settingsMode = normalizeSettingsMode(state.settingsMode);
+  const adminVisible = isAdminUser();
+  const modeContent = getSettingsModeContent(state.settingsMode);
+
   for (const button of elements.settingsButtons) {
+    if (button.dataset.settingsMode === "users") {
+      button.classList.toggle("is-hidden", !adminVisible);
+    }
     const isActive = button.dataset.settingsMode === state.settingsMode;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-selected", String(isActive));
   }
 
+  if (elements.settingsTitle) {
+    elements.settingsTitle.textContent = modeContent.title;
+  }
+  if (elements.settingsDescription) {
+    elements.settingsDescription.textContent = modeContent.description;
+  }
+
   const showAccount = state.settingsMode === "account";
+  const showUsers = state.settingsMode === "users" && adminVisible;
   elements.accountSettingsPane.classList.toggle("is-hidden", !showAccount);
-  elements.preferencesSettingsPane.classList.toggle("is-hidden", showAccount);
+  elements.preferencesSettingsPane.classList.toggle("is-hidden", state.settingsMode !== "preferences");
+  if (elements.userAccessSettingsPane) {
+    elements.userAccessSettingsPane.classList.toggle("is-hidden", !showUsers);
+  }
 }
 
 function updatePanelVisibility() {
@@ -4462,6 +4973,7 @@ function updateSettingsFields() {
   elements.displayNameInput.value = clientState.settings.displayName;
   elements.workspaceNameInput.value = clientState.settings.workspaceName;
   elements.timezoneSelect.value = clientState.settings.timezone;
+  renderAdminUsersPane();
 }
 
 function renderApp() {
@@ -4503,6 +5015,7 @@ function renderAuth(preferredEmail = "", messageOverride = "") {
 
 function refreshView() {
   if (isSignedIn()) {
+    state.settingsMode = normalizeSettingsMode(state.settingsMode);
     const route = resolveRouteFromHash();
     const rawHash = window.location.hash.replace(/^#/, "");
 
@@ -4821,6 +5334,7 @@ function completeSignIn(session) {
     issuedAt: session?.issuedAt || Date.now(),
     expiresAt: session?.expiresAt || 0,
     requestCountry: normalizeCountryCode(session?.requestCountry),
+    isAdmin: Boolean(session?.isAdmin),
   };
   state.requestCountryCode = authSession.requestCountry;
   clearAuthChallenge();
@@ -4839,12 +5353,25 @@ function completeSignIn(session) {
   state.billingLoading = true;
   state.billingError = "";
   state.paymentStatus = null;
+  state.adminUsers = [];
+  state.adminFeatures = [];
+  state.adminUsersLoading = false;
+  state.adminUsersError = "";
+  state.adminAddUserBusy = false;
+  state.adminSaveBusyByEmail = {};
+  state.adminUserDrafts = {};
+  state.adminNewUserEmail = "";
+  state.adminNewUserDisplayName = "";
+  state.adminNewUserFeatureIds = [];
   setHashForTab("features");
   setView("app");
   renderApp();
   void refreshBillingReport();
   void refreshWhatsAppConnection();
   void refreshFeatureActivationStates();
+  if (authSession.isAdmin) {
+    void refreshAdminUsers({ render: false });
+  }
 }
 
 async function verifyOtpFlow() {
@@ -4955,7 +5482,18 @@ async function signOut() {
   state.paymentStatus = null;
   state.requestCountryCode = "";
   state.settingsOpen = false;
+  state.settingsMode = "account";
   state.lastPrimaryTab = "features";
+  state.adminUsers = [];
+  state.adminFeatures = [];
+  state.adminUsersLoading = false;
+  state.adminUsersError = "";
+  state.adminAddUserBusy = false;
+  state.adminSaveBusyByEmail = {};
+  state.adminUserDrafts = {};
+  state.adminNewUserEmail = "";
+  state.adminNewUserDisplayName = "";
+  state.adminNewUserFeatureIds = [];
   persistLastPrimaryTab();
   closeBillingHelp();
 
@@ -4999,6 +5537,11 @@ function handleMenuAction(action) {
     return;
   }
 
+  if (action === "admin-users") {
+    openSettings("users");
+    return;
+  }
+
   if (action === "settings") {
     openSettings("account");
     return;
@@ -5033,6 +5576,7 @@ async function bootstrapAuthState() {
         signedInAt: response.issuedAt || storedSession.signedInAt || Date.now(),
         expiresAt: response.expiresAt || storedSession.expiresAt || 0,
         requestCountry: response.requestCountry || storedSession.requestCountry || "",
+        isAdmin: response.isAdmin,
       });
       state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
       activeEmail = normalizeEmail(authSession?.email || "");
@@ -5044,10 +5588,23 @@ async function bootstrapAuthState() {
       state.billingLoading = true;
       state.billingError = "";
       state.paymentStatus = null;
+      state.adminUsers = [];
+      state.adminFeatures = [];
+      state.adminUsersLoading = false;
+      state.adminUsersError = "";
+      state.adminAddUserBusy = false;
+      state.adminSaveBusyByEmail = {};
+      state.adminUserDrafts = {};
+      state.adminNewUserEmail = "";
+      state.adminNewUserDisplayName = "";
+      state.adminNewUserFeatureIds = [];
       refreshView();
       void refreshBillingReport();
       void refreshWhatsAppConnection();
       void refreshFeatureActivationStates();
+      if (authSession?.isAdmin) {
+        void refreshAdminUsers({ render: false });
+      }
       return;
     } catch (error) {
       const status = Number(error?.status || 0);
@@ -5213,6 +5770,80 @@ function bindEvents() {
       window.scrollTo(0, 0);
     });
   }
+  if (elements.adminUserEmailInput) {
+    elements.adminUserEmailInput.addEventListener("input", (event) => {
+      state.adminNewUserEmail = event.target.value;
+      if (state.adminUsersError) {
+        state.adminUsersError = "";
+        renderAdminUsersPane();
+      }
+    });
+  }
+  if (elements.adminUserDisplayNameInput) {
+    elements.adminUserDisplayNameInput.addEventListener("input", (event) => {
+      state.adminNewUserDisplayName = event.target.value;
+      if (state.adminUsersError) {
+        state.adminUsersError = "";
+        renderAdminUsersPane();
+      }
+    });
+  }
+  if (elements.adminAddUserButton) {
+    elements.adminAddUserButton.addEventListener("click", () => {
+      void addAdminUser();
+    });
+  }
+  if (elements.userAccessSettingsPane) {
+    elements.userAccessSettingsPane.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") {
+        return;
+      }
+
+      const featureId = String(target.dataset.adminFeatureId || "").trim();
+      if (!featureId) {
+        return;
+      }
+
+      if (target.dataset.adminFeatureTarget === "new") {
+        const nextFeatureIds = new Set(state.adminNewUserFeatureIds);
+        if (target.checked) {
+          nextFeatureIds.add(featureId);
+        } else {
+          nextFeatureIds.delete(featureId);
+        }
+        state.adminNewUserFeatureIds = sortUniqueFeatureIds(Array.from(nextFeatureIds));
+        return;
+      }
+
+      const userEmail = normalizeEmail(target.dataset.adminUserEmail || "");
+      if (!userEmail) {
+        return;
+      }
+
+      const nextFeatureIds = new Set(getAdminUserDraftFeatureIds(userEmail));
+      if (target.checked) {
+        nextFeatureIds.add(featureId);
+      } else {
+        nextFeatureIds.delete(featureId);
+      }
+      setAdminUserDraftFeatureIds(userEmail, Array.from(nextFeatureIds));
+      renderAdminUsersPane();
+    });
+
+    elements.userAccessSettingsPane.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+
+      const saveButton = event.target.closest("[data-admin-save-user]");
+      if (!saveButton) {
+        return;
+      }
+
+      void saveAdminUserFeatures(saveButton.dataset.adminSaveUser || "");
+    });
+  }
 
   elements.settingsPanel.addEventListener("click", (event) => {
     if (event.target === elements.settingsPanel) {
@@ -5303,6 +5934,7 @@ function bindEvents() {
       return;
     }
 
+    state.settingsMode = normalizeSettingsMode(state.settingsMode);
     const route = resolveRouteFromHash();
     const rawHash = window.location.hash.replace(/^#/, "");
 

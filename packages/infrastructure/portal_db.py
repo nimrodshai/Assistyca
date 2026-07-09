@@ -1843,6 +1843,14 @@ class PortalDatabase:
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, email=normalized_email)
 
+    def get_user(self, email: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return None
+
+        with self._connection() as conn:
+            return self._load_user_row(conn, normalized_email)
+
     def save_whatsapp_message(
         self,
         *,
@@ -2338,6 +2346,101 @@ class PortalDatabase:
                 ),
             )
             return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
+
+    def set_user_feature_assignments(
+        self,
+        email: str,
+        feature_ids: Iterable[str],
+    ) -> list[dict[str, Any]]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        requested_feature_ids = []
+        seen_feature_ids: set[str] = set()
+        for feature_id in feature_ids:
+            normalized_feature_id = normalize_text(feature_id)
+            if not normalized_feature_id or normalized_feature_id in seen_feature_ids:
+                continue
+            seen_feature_ids.add(normalized_feature_id)
+            requested_feature_ids.append(normalized_feature_id)
+
+        now = now_iso()
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            active_features = conn.execute(
+                """
+                SELECT feature_id
+                FROM features
+                WHERE is_active = 1
+                ORDER BY sort_order ASC, feature_name ASC, feature_id ASC
+                """,
+            ).fetchall()
+            active_feature_ids = [normalize_text(row["feature_id"]) for row in active_features if normalize_text(row["feature_id"])]
+            active_feature_id_set = set(active_feature_ids)
+
+            unknown_feature_ids = [feature_id for feature_id in requested_feature_ids if feature_id not in active_feature_id_set]
+            if unknown_feature_ids:
+                raise KeyError(f"Unknown feature ids: {', '.join(sorted(unknown_feature_ids))}")
+
+            existing_rows = conn.execute(
+                """
+                SELECT feature_id, assigned_at
+                FROM feature_assignments
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+            existing_assigned_at = {
+                normalize_text(row["feature_id"]): row["assigned_at"]
+                for row in existing_rows
+                if normalize_text(row["feature_id"])
+            }
+
+            requested_feature_id_set = set(requested_feature_ids)
+            for active_feature_id in active_feature_ids:
+                assigned_at = existing_assigned_at.get(active_feature_id) or now
+                conn.execute(
+                    """
+                    INSERT INTO feature_assignments (
+                        user_id,
+                        feature_id,
+                        is_assigned,
+                        metadata_json,
+                        assigned_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, feature_id) DO UPDATE SET
+                        is_assigned = excluded.is_assigned,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        user_id,
+                        active_feature_id,
+                        1 if active_feature_id in requested_feature_id_set else 0,
+                        "{}",
+                        assigned_at,
+                        now,
+                    ),
+                )
+
+            rows = conn.execute(
+                """
+                SELECT feature_id
+                FROM feature_assignments
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, feature_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+
+            assignments: list[dict[str, Any]] = []
+            for row in rows:
+                assignment = self._load_feature_assignment_row(conn, user_id=user_id, feature_id=row["feature_id"])
+                if assignment is not None:
+                    assignments.append(assignment)
+            return assignments
 
     def get_assigned_feature(self, email: str, feature_id: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)

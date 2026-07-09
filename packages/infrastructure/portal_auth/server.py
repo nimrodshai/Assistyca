@@ -938,6 +938,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/webhooks/whatsapp"
@@ -958,6 +959,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/webhooks/whatsapp"
@@ -983,11 +985,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
+            user = self.database.get_user(session.email) or {}
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
                 "signedIn": True,
                 "email": session.email,
                 "token": session.token,
+                "displayName": normalize_text(user.get("displayName")),
+                "isAdmin": bool(user.get("isAdmin")),
                 "issuedAt": to_millis(session.issued_at),
                 "expiresAt": to_millis(session.expires_at),
                 "requestCountry": self._request_country(),
@@ -1036,6 +1041,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        if path == "/api/admin/users":
+            self._handle_admin_users_get()
+            return
+
         if path == "/webhooks/whatsapp":
             self._handle_whatsapp_webhook_verification(parsed)
             return
@@ -1078,6 +1087,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/whatsapp/connection":
             self._handle_whatsapp_connection_post()
+            return
+
+        if path == "/api/admin/users" or path.startswith("/api/admin/users/"):
+            self._handle_admin_users_post(parsed)
             return
 
         if path == "/api/features" or path.startswith("/api/features/"):
@@ -1197,10 +1210,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.database.record_login(email)
         except Exception:
             pass
+        user = self.database.get_user(email) or {}
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "email": result["email"],
             "sessionToken": result["token"],
+            "displayName": normalize_text(user.get("displayName")),
+            "isAdmin": bool(user.get("isAdmin")),
             "issuedAt": result["issuedAt"],
             "expiresAt": result["expiresAt"],
             "requestCountry": self._request_country(),
@@ -1333,6 +1349,214 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "message": "Sign in again to continue.",
         })
         return None
+
+    def _require_authenticated_user(self) -> tuple[PortalSession, dict[str, Any]] | None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return None
+
+        user = self.database.get_user(session.email)
+        if not user or not bool(user.get("isActive")):
+            json_response(self, HTTPStatus.UNAUTHORIZED, {
+                "ok": False,
+                "error": "unauthorized",
+                "message": "Sign in again to continue.",
+            })
+            return None
+
+        return session, user
+
+    def _require_admin_user(self) -> tuple[PortalSession, dict[str, Any]] | None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return None
+
+        session, user = authenticated
+        if bool(user.get("isAdmin")):
+            return session, user
+
+        json_response(self, HTTPStatus.FORBIDDEN, {
+            "ok": False,
+            "error": "forbidden",
+            "message": "Admin access is required.",
+        })
+        return None
+
+    def _serialize_admin_feature(self, feature: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "featureId": normalize_text(feature.get("featureId") or feature.get("id")),
+            "name": normalize_text(feature.get("name")),
+            "description": normalize_text(feature.get("description")),
+            "channel": normalize_text(feature.get("channel")),
+            "mode": normalize_text(feature.get("mode")),
+            "sortOrder": int(feature.get("sortOrder") or 100),
+        }
+
+    def _serialize_admin_user(self, user: dict[str, Any]) -> dict[str, Any]:
+        assignments = self.database.list_feature_assignments(normalize_text(user.get("email")))
+        assigned_feature_ids = [
+            normalize_text(assignment.get("featureId"))
+            for assignment in assignments
+            if bool(assignment.get("isAssigned")) and normalize_text(assignment.get("featureId"))
+        ]
+        assigned_feature_ids.sort()
+        return {
+            "email": normalize_email(user.get("email")),
+            "displayName": normalize_text(user.get("displayName")),
+            "isActive": bool(user.get("isActive")),
+            "isAdmin": bool(user.get("isAdmin")),
+            "registeredAt": user.get("registeredAt"),
+            "lastLoginAt": user.get("lastLoginAt"),
+            "assignedFeatureIds": assigned_feature_ids,
+        }
+
+    def _handle_admin_users_get(self) -> None:
+        authenticated = self._require_admin_user()
+        if authenticated is None:
+            return
+
+        _, current_user = authenticated
+        users = [
+            self._serialize_admin_user(user)
+            for user in self.database.list_users(include_inactive=False)
+            if bool(user.get("isActive"))
+        ]
+        features = [self._serialize_admin_feature(feature) for feature in self.database.list_features(include_inactive=False)]
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "currentUser": {
+                "email": normalize_email(current_user.get("email")),
+                "displayName": normalize_text(current_user.get("displayName")),
+                "isAdmin": bool(current_user.get("isAdmin")),
+            },
+            "users": users,
+            "features": features,
+        })
+
+    def _handle_admin_users_post(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_admin_user()
+        if authenticated is None:
+            return
+
+        path = parsed.path.rstrip("/") or "/"
+        if path == "/api/admin/users":
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_json",
+                    "message": str(exc),
+                })
+                return
+
+            email = normalize_email(payload.get("email"))
+            display_name = normalize_text(payload.get("displayName") or payload.get("display_name"))
+            if "assignedFeatureIds" in payload:
+                assigned_feature_ids = payload.get("assignedFeatureIds")
+            elif "featureIds" in payload:
+                assigned_feature_ids = payload.get("featureIds")
+            else:
+                assigned_feature_ids = None
+
+            if not is_valid_email(email):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_email",
+                    "message": "Enter a valid email address.",
+                })
+                return
+
+            if assigned_feature_ids is not None and not isinstance(assigned_feature_ids, list):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_feature_ids",
+                    "message": "assignedFeatureIds must be an array of feature ids.",
+                })
+                return
+
+            try:
+                self.database.register_user(email, display_name=display_name)
+                if isinstance(assigned_feature_ids, list):
+                    self.database.set_user_feature_assignments(email, assigned_feature_ids)
+                user = self.database.get_user(email) or {}
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_request",
+                    "message": str(exc),
+                })
+                return
+            except KeyError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_feature_ids",
+                    "message": str(exc),
+                })
+                return
+
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "User added.",
+                "user": self._serialize_admin_user(user),
+            })
+            return
+
+        parts = [part for part in path.split("/") if part]
+        if len(parts) == 5 and parts[:3] == ["api", "admin", "users"] and parts[4] == "features":
+            email = normalize_email(urllib_parse.unquote(parts[3]))
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_json",
+                    "message": str(exc),
+                })
+                return
+
+            if "assignedFeatureIds" in payload:
+                assigned_feature_ids = payload.get("assignedFeatureIds")
+            else:
+                assigned_feature_ids = payload.get("featureIds")
+            if not isinstance(assigned_feature_ids, list):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_feature_ids",
+                    "message": "assignedFeatureIds must be an array of feature ids.",
+                })
+                return
+
+            try:
+                self.database.set_user_feature_assignments(email, assigned_feature_ids)
+                user = self.database.get_user(email) or {}
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_request",
+                    "message": str(exc),
+                })
+                return
+            except KeyError as exc:
+                message = str(exc)
+                status = HTTPStatus.BAD_REQUEST
+                if "Unknown user" in message:
+                    status = HTTPStatus.NOT_FOUND
+                json_response(self, status, {
+                    "ok": False,
+                    "error": "not_found" if status == HTTPStatus.NOT_FOUND else "invalid_feature_ids",
+                    "message": message,
+                })
+                return
+
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "User access updated.",
+                "user": self._serialize_admin_user(user),
+            })
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND)
 
     def _request_scheme(self) -> str:
         forwarded = normalize_text(self.headers.get("X-Forwarded-Proto"))

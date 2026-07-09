@@ -151,6 +151,14 @@
             <div id="accountMenu" class="menu-popover is-hidden" role="menu">
               <button class="menu-item" type="button" data-menu-action="billing">Billing</button>
               <button class="menu-item" type="button" data-menu-action="settings">Settings</button>
+              <button
+                id="adminUsersMenuItem"
+                class="menu-item is-hidden"
+                type="button"
+                data-menu-action="admin-users"
+              >
+                User access
+              </button>
               <div class="menu-divider" aria-hidden="true"></div>
               <button class="menu-item danger" type="button" data-menu-action="logout">
                 Log out
@@ -782,6 +790,14 @@ Owner said afternoons are easier."
             <button class="subtab-button" data-settings-mode="preferences" type="button">
               Preferences
             </button>
+            <button
+              id="userAccessSettingsButton"
+              class="subtab-button is-hidden"
+              data-settings-mode="users"
+              type="button"
+            >
+              User access
+            </button>
           </div>
 
           <div id="accountSettingsPane" class="settings-pane-grid">
@@ -828,6 +844,55 @@ Owner said afternoons are easier."
                   <option value="UTC">UTC</option>
                 </select>
               </label>
+            </article>
+          </div>
+
+          <div id="userAccessSettingsPane" class="settings-pane-grid is-hidden">
+            <article class="glass-card settings-card admin-user-access-card">
+              <div class="card-head">
+                <div>
+                  <h3>Registered users</h3>
+                  <p class="lede compact">
+                    Add users and choose which tools they can see in the portal.
+                  </p>
+                </div>
+                <span id="adminUserCount" class="feature-status">—</span>
+              </div>
+
+              <div class="admin-user-access-grid">
+                <section class="admin-user-form-panel">
+                  <h4>Add user</h4>
+
+                  <label class="field">
+                    <span>Email</span>
+                    <input id="adminUserEmailInput" type="email" placeholder="client@example.com" />
+                  </label>
+
+                  <label class="field">
+                    <span>Display name</span>
+                    <input id="adminUserDisplayNameInput" type="text" placeholder="Client name" />
+                  </label>
+
+                  <div class="field">
+                    <span>Visible tools</span>
+                    <div id="adminAddUserFeatureList" class="admin-feature-checklist"></div>
+                    <small class="field-help">
+                      Choose which tools this account should see when they sign in.
+                    </small>
+                  </div>
+
+                  <div class="card-actions">
+                    <button id="adminAddUserButton" class="primary-button" type="button">
+                      Add user
+                    </button>
+                  </div>
+                </section>
+
+                <section class="admin-user-list-panel">
+                  <div id="adminUsersError" class="field-error is-hidden" role="status" aria-live="polite"></div>
+                  <div id="adminUsersList" class="admin-users-list"></div>
+                </section>
+              </div>
             </article>
           </div>
         </div>
