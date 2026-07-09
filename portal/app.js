@@ -319,6 +319,7 @@ const state = {
   adminUsersNeedsRender: false,
   adminUsersError: "",
   adminAddUserBusy: false,
+  adminEditUserBusy: false,
   adminSaveBusyByEmail: {},
   adminDeleteBusyByEmail: {},
   adminUserDrafts: {},
@@ -329,6 +330,8 @@ const state = {
   adminFeaturePickerOpen: false,
   adminNewUserEmail: "",
   adminNewUserDisplayName: "",
+  adminEditUserEmail: "",
+  adminEditUserDisplayName: "",
   requestCountryCode: "",
   authAlertOpen: false,
   menuOpen: false,
@@ -749,6 +752,39 @@ function upsertAdminUserState(user) {
   return normalizedUser;
 }
 
+function replaceAdminUserState(previousEmail, user) {
+  const normalizedPreviousEmail = normalizeEmail(previousEmail);
+  const normalizedUser = normalizeAdminUserRecord(user);
+  if (!normalizedPreviousEmail || !normalizedUser.email) {
+    return null;
+  }
+
+  const preservedDraftFeatureIds = getAdminUserDraftFeatureIds(
+    normalizedPreviousEmail,
+    normalizedUser.assignedFeatureIds,
+  );
+  state.adminUsers = sortAdminUsers([
+    ...state.adminUsers.filter((entry) => entry.email !== normalizedPreviousEmail && entry.email !== normalizedUser.email),
+    normalizedUser,
+  ]);
+
+  const { [normalizedPreviousEmail]: _previousDraft, ...nextDrafts } = state.adminUserDrafts;
+  state.adminUserDrafts = nextDrafts;
+  setAdminUserDraftFeatureIds(normalizedUser.email, preservedDraftFeatureIds);
+
+  const { [normalizedPreviousEmail]: _saveBusy, ...nextSaveBusy } = state.adminSaveBusyByEmail;
+  state.adminSaveBusyByEmail = nextSaveBusy;
+
+  const { [normalizedPreviousEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
+  state.adminDeleteBusyByEmail = nextDeleteBusy;
+
+  if (normalizeEmail(state.adminSelectedUserEmail) === normalizedPreviousEmail) {
+    state.adminSelectedUserEmail = normalizedUser.email;
+  }
+
+  return normalizedUser;
+}
+
 function removeAdminUserState(email) {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail) {
@@ -782,6 +818,14 @@ function getSettingsModeContent(mode = state.settingsMode) {
     return {
       title: "Register user",
       description: "",
+    };
+  }
+
+  if (state.adminView === "edit") {
+    const user = getAdminSelectedUser();
+    return {
+      title: user ? `Edit ${user.displayName || deriveDisplayName(user.email)}` : "Edit user",
+      description: user?.email || "Fix a typo in this account’s name or email.",
     };
   }
 
@@ -885,6 +929,7 @@ function resetAdminState() {
   state.adminUsersNeedsRender = false;
   state.adminUsersError = "";
   state.adminAddUserBusy = false;
+  state.adminEditUserBusy = false;
   state.adminSaveBusyByEmail = {};
   state.adminDeleteBusyByEmail = {};
   state.adminUserDrafts = {};
@@ -895,6 +940,8 @@ function resetAdminState() {
   state.adminFeaturePickerOpen = false;
   state.adminNewUserEmail = "";
   state.adminNewUserDisplayName = "";
+  state.adminEditUserEmail = "";
+  state.adminEditUserDisplayName = "";
 }
 
 function getAdminSelectedUser() {
@@ -944,6 +991,8 @@ function openAdminUsersList(options = {}) {
   state.adminSelectedUserEmail = "";
   state.adminFeatureSearch = "";
   state.adminFeaturePickerOpen = false;
+  state.adminEditUserEmail = "";
+  state.adminEditUserDisplayName = "";
   if (options.preserveSearch !== true) {
     state.adminUserSearch = "";
   }
@@ -979,6 +1028,8 @@ function openAdminAddUser() {
   state.adminFeaturePickerOpen = false;
   state.adminNewUserEmail = "";
   state.adminNewUserDisplayName = "";
+  state.adminEditUserEmail = "";
+  state.adminEditUserDisplayName = "";
 
   if (shouldOpenModal) {
     openSettings("users");
@@ -989,6 +1040,21 @@ function openAdminAddUser() {
   closeMenu();
   renderApp();
   focusAdminAddUserEmailInput();
+}
+
+function focusAdminEditUserInput() {
+  window.requestAnimationFrame(() => {
+    const emailInput = elements.userAccessSettingsPane?.querySelector('[data-admin-edit-email="true"]');
+    if (emailInput instanceof HTMLInputElement && !emailInput.disabled) {
+      emailInput.focus();
+      return;
+    }
+
+    const nameInput = elements.userAccessSettingsPane?.querySelector('[data-admin-edit-display-name="true"]');
+    if (nameInput instanceof HTMLInputElement) {
+      nameInput.focus();
+    }
+  });
 }
 
 function openAdminUserDetail(email) {
@@ -1004,6 +1070,8 @@ function openAdminUserDetail(email) {
   state.adminUsersError = "";
   state.adminFeatureSearch = "";
   state.adminFeaturePickerOpen = false;
+  state.adminEditUserEmail = "";
+  state.adminEditUserDisplayName = "";
 
   if (shouldOpenModal) {
     openSettings("users");
@@ -1012,6 +1080,33 @@ function openAdminUserDetail(email) {
 
   closeMenu();
   renderApp();
+}
+
+function openAdminEditUser(email) {
+  const user = state.adminUsers.find((entry) => entry.email === normalizeEmail(email));
+  if (!user) {
+    return;
+  }
+
+  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
+  state.settingsMode = "users";
+  state.adminView = "edit";
+  state.adminSelectedUserEmail = user.email;
+  state.adminUsersError = "";
+  state.adminFeatureSearch = "";
+  state.adminFeaturePickerOpen = false;
+  state.adminEditUserEmail = user.email;
+  state.adminEditUserDisplayName = user.displayName || "";
+
+  if (shouldOpenModal) {
+    openSettings("users");
+    focusAdminEditUserInput();
+    return;
+  }
+
+  closeMenu();
+  renderApp();
+  focusAdminEditUserInput();
 }
 
 function isFeatureActivationTransitionBusy(feature = getSelectedFeature()) {
@@ -4384,6 +4479,81 @@ function createAdminAddUserView() {
   return wrapper;
 }
 
+function createAdminEditUserView(user) {
+  if (!user) {
+    return createAdminEmptyState(
+      "User not found",
+      "Go back to the users table and open another account.",
+    );
+  }
+
+  const normalizedUserEmail = normalizeEmail(user.email);
+  const isEditingCurrentUser = normalizedUserEmail === normalizeEmail(authSession?.email || activeEmail || "");
+  const isBusy = state.adminEditUserBusy;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "admin-users-view admin-users-add-view";
+
+  const emailField = document.createElement("label");
+  emailField.className = "field";
+  const emailLabel = document.createElement("span");
+  emailLabel.textContent = "Email";
+  const emailInput = document.createElement("input");
+  emailInput.type = "email";
+  emailInput.placeholder = "client@example.com";
+  emailInput.value = state.adminEditUserEmail;
+  emailInput.autocomplete = "off";
+  emailInput.disabled = isBusy || isEditingCurrentUser;
+  emailInput.dataset.adminEditEmail = "true";
+  emailField.append(emailLabel, emailInput);
+
+  const nameField = document.createElement("label");
+  nameField.className = "field";
+  const nameLabel = document.createElement("span");
+  nameLabel.textContent = "Display name";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "Client name";
+  nameInput.value = state.adminEditUserDisplayName;
+  nameInput.autocomplete = "off";
+  nameInput.disabled = isBusy;
+  nameInput.dataset.adminEditDisplayName = "true";
+  nameField.append(nameLabel, nameInput);
+
+  const note = document.createElement("p");
+  note.className = "admin-form-note";
+  note.textContent = isEditingCurrentUser
+    ? "You can change the display name here, but not the email on the admin account you're using right now."
+    : "Changing the email keeps this user's assigned tools and saved account history attached to the same account.";
+
+  const error = document.createElement("div");
+  error.className = `field-error${state.adminUsersError ? "" : " is-hidden"}`;
+  error.role = "status";
+  error.setAttribute("aria-live", "polite");
+  error.textContent = state.adminUsersError;
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions admin-form-actions";
+
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "ghost-button";
+  cancelButton.dataset.adminCancelEditUser = "true";
+  cancelButton.disabled = isBusy;
+  cancelButton.textContent = "Cancel";
+
+  const submitButton = document.createElement("button");
+  submitButton.type = "button";
+  submitButton.className = `primary-button${isBusy ? " is-loading" : ""}`;
+  submitButton.dataset.adminSaveEditUser = "true";
+  submitButton.disabled = isBusy;
+  submitButton.textContent = isBusy ? "Saving..." : "Save changes";
+
+  actions.append(cancelButton, submitButton);
+  wrapper.append(emailField, nameField, note, error, actions);
+  return wrapper;
+}
+
 function createAdminUserDetailView(user) {
   if (!user) {
     return createAdminEmptyState(
@@ -4443,6 +4613,14 @@ function createAdminUserDetailView(user) {
 
   const infoActions = document.createElement("div");
   infoActions.className = "admin-detail-panel-actions";
+
+  const editButton = document.createElement("button");
+  editButton.type = "button";
+  editButton.className = "ghost-button small";
+  editButton.dataset.adminOpenEditUser = user.email;
+  editButton.disabled = isSaving || isDeleting;
+  editButton.textContent = "Edit user";
+  infoActions.append(editButton);
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
@@ -4611,7 +4789,11 @@ function renderAdminUsersPane() {
   if (elements.adminUsersError) {
     syncAdminUsersError();
   }
-  if (state.adminView === "detail" && !state.adminUsersLoading && !getAdminSelectedUser()) {
+  if (
+    (state.adminView === "detail" || state.adminView === "edit")
+    && !state.adminUsersLoading
+    && !getAdminSelectedUser()
+  ) {
     state.adminView = "list";
     state.adminSelectedUserEmail = "";
   }
@@ -4628,6 +4810,16 @@ function renderAdminUsersPane() {
       elements.adminUsersError.classList.add("is-hidden");
     }
     elements.adminUsersContent.replaceChildren(createAdminAddUserView());
+    return;
+  }
+
+  if (state.adminView === "edit") {
+    elements.adminUsersShell.classList.add("is-add-view");
+    elements.adminUsersShell.classList.remove("is-detail-view");
+    if (elements.adminUsersError) {
+      elements.adminUsersError.classList.add("is-hidden");
+    }
+    elements.adminUsersContent.replaceChildren(createAdminEditUserView(getAdminSelectedUser()));
     return;
   }
 
@@ -4768,6 +4960,58 @@ async function addAdminUser() {
     renderApp();
     if (didSucceed) {
       setStatus("User added");
+    }
+  }
+}
+
+async function saveAdminUserDetails() {
+  const user = getAdminSelectedUser();
+  if (!isAdminUser() || !user || state.adminEditUserBusy) {
+    return;
+  }
+
+  const currentEmail = normalizeEmail(user.email);
+  const nextEmail = normalizeEmail(state.adminEditUserEmail);
+  const nextDisplayName = normalizeText(state.adminEditUserDisplayName);
+
+  if (!validateEmail(nextEmail)) {
+    state.adminUsersError = "Enter a valid email address before saving.";
+    renderApp();
+    return;
+  }
+
+  state.adminEditUserBusy = true;
+  state.adminUsersError = "";
+  renderApp();
+
+  let updatedUser = null;
+  try {
+    const response = await apiRequest(`/api/admin/users/${encodeURIComponent(currentEmail)}`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        email: nextEmail,
+        displayName: nextDisplayName,
+      },
+    });
+
+    updatedUser = replaceAdminUserState(currentEmail, response.user || {
+      ...user,
+      email: nextEmail,
+      displayName: nextDisplayName,
+    });
+    state.adminSelectedUserEmail = updatedUser?.email || nextEmail;
+    state.adminView = "detail";
+    state.adminEditUserEmail = "";
+    state.adminEditUserDisplayName = "";
+    void refreshAdminUsers({ render: false });
+  } catch (error) {
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t update that user right now.");
+  } finally {
+    state.adminEditUserBusy = false;
+    renderApp();
+    if (updatedUser) {
+      setStatus("User updated");
     }
   }
 }
@@ -6573,9 +6817,17 @@ function bindEvents() {
         state.adminNewUserDisplayName = target.value;
       }
 
+      if (target.dataset.adminEditEmail === "true") {
+        state.adminEditUserEmail = target.value;
+      }
+
+      if (target.dataset.adminEditDisplayName === "true") {
+        state.adminEditUserDisplayName = target.value;
+      }
+
       if (state.adminUsersError) {
         state.adminUsersError = "";
-        if (state.adminView === "add") {
+        if (state.adminView === "add" || state.adminView === "edit") {
           renderAdminUsersPane();
         } else {
           syncAdminUsersError();
@@ -6627,6 +6879,12 @@ function bindEvents() {
         return;
       }
 
+      const openEditUserButton = target.closest("[data-admin-open-edit-user]");
+      if (openEditUserButton) {
+        openAdminEditUser(openEditUserButton.dataset.adminOpenEditUser || "");
+        return;
+      }
+
       const addFeatureButton = target.closest("[data-admin-add-feature]");
       if (addFeatureButton) {
         addAdminUserDraftFeature(
@@ -6660,6 +6918,21 @@ function bindEvents() {
       if (cancelAddButton) {
         state.adminUsersError = "";
         openAdminUsersList({ preserveSearch: true, refresh: false });
+        return;
+      }
+
+      const cancelEditButton = target.closest("[data-admin-cancel-edit-user]");
+      if (cancelEditButton) {
+        state.adminUsersError = "";
+        state.adminEditUserEmail = "";
+        state.adminEditUserDisplayName = "";
+        openAdminUserDetail(state.adminSelectedUserEmail);
+        return;
+      }
+
+      const saveEditButton = target.closest("[data-admin-save-edit-user]");
+      if (saveEditButton) {
+        void saveAdminUserDetails();
         return;
       }
 

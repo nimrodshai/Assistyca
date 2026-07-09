@@ -1517,6 +1517,73 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         parts = [part for part in path.split("/") if part]
+        if len(parts) == 4 and parts[:3] == ["api", "admin", "users"]:
+            session, current_user = authenticated
+            email = normalize_email(urllib_parse.unquote(parts[3]))
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_json",
+                    "message": str(exc),
+                })
+                return
+
+            next_email = normalize_email(payload.get("email"))
+            display_name = normalize_text(payload.get("displayName") or payload.get("display_name"))
+            if not is_valid_email(next_email):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_email",
+                    "message": "Enter a valid email address.",
+                })
+                return
+
+            if normalize_email(session.email) == email and next_email != email:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "cannot_change_current_admin_email",
+                    "message": "You can't change the email on the admin account you're using right now.",
+                })
+                return
+
+            try:
+                user = self.database.update_user_identity(
+                    email,
+                    email=next_email,
+                    display_name=display_name,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status = HTTPStatus.CONFLICT if "already registered" in message.lower() else HTTPStatus.BAD_REQUEST
+                json_response(self, status, {
+                    "ok": False,
+                    "error": "email_taken" if status == HTTPStatus.CONFLICT else "invalid_request",
+                    "message": message,
+                })
+                return
+            except KeyError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {
+                    "ok": False,
+                    "error": "not_found",
+                    "message": str(exc),
+                })
+                return
+
+            response_current_user = user if normalize_email(session.email) == normalize_email(user.get("email")) else current_user
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "User updated.",
+                "user": self._serialize_admin_user(user),
+                "currentUser": {
+                    "email": normalize_email(response_current_user.get("email")),
+                    "displayName": normalize_text(response_current_user.get("displayName")),
+                    "isAdmin": bool(response_current_user.get("isAdmin")),
+                },
+            })
+            return
+
         if len(parts) == 5 and parts[:3] == ["api", "admin", "users"] and parts[4] == "features":
             email = normalize_email(urllib_parse.unquote(parts[3]))
             try:

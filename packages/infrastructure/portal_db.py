@@ -1703,6 +1703,50 @@ class PortalDatabase:
             self._ensure_default_feature_assignments_for_user(conn, user_id)
             return self._load_user_row(conn, normalized_email) or {}
 
+    def update_user_identity(
+        self,
+        current_email: str,
+        *,
+        email: str,
+        display_name: str = "",
+    ) -> dict[str, Any]:
+        normalized_current_email = normalize_email(current_email)
+        normalized_email = normalize_email(email)
+        if not normalized_current_email:
+            raise ValueError("Current email is required.")
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_current_email)
+            if user is None:
+                raise KeyError(f"Unknown user: {normalized_current_email}")
+
+            existing = conn.execute(
+                "SELECT id FROM users WHERE email = ?",
+                (normalized_email,),
+            ).fetchone()
+            user_id = int(user.get("id") or 0)
+            if existing is not None and int(existing["id"] or 0) != user_id:
+                raise ValueError("That email is already registered.")
+
+            conn.execute(
+                """
+                UPDATE users
+                SET email = ?,
+                    display_name = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_email,
+                    normalize_text(display_name),
+                    now_iso(),
+                    user_id,
+                ),
+            )
+            return self._load_user_row(conn, normalized_email) or {}
+
     def delete_user(self, email: str) -> dict[str, Any]:
         normalized_email = normalize_email(email)
         if not normalized_email:

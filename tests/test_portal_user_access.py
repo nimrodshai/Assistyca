@@ -81,6 +81,43 @@ class PortalUserAccessTests(unittest.TestCase):
 
         self.assertEqual(int(feature_assignment_row["count"] or 0), 0)
 
+    def test_update_user_identity_changes_email_and_name_and_keeps_related_records(self) -> None:
+        self.database.register_user("owner@example.com", display_name="Owner")
+        self.database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="12345",
+            phone_number_id="12345",
+            owner_wa_id="15551234567",
+            connection_status="connected",
+        )
+
+        updated_user = self.database.update_user_identity(
+            "owner@example.com",
+            email="better@example.com",
+            display_name="Better Name",
+        )
+
+        self.assertEqual(updated_user["email"], "better@example.com")
+        self.assertEqual(updated_user["displayName"], "Better Name")
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+        self.assertIsNotNone(self.database.get_user("better@example.com"))
+        self.assertIsNotNone(self.database.get_whatsapp_connection("better@example.com"))
+        self.assertEqual(
+            [feature["featureId"] for feature in self.database.list_assigned_features("better@example.com")],
+            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID],
+        )
+
+    def test_update_user_identity_rejects_duplicate_email(self) -> None:
+        self.database.register_user("owner@example.com")
+        self.database.register_user("other@example.com")
+
+        with self.assertRaisesRegex(ValueError, "already registered"):
+            self.database.update_user_identity(
+                "owner@example.com",
+                email="other@example.com",
+                display_name="Owner",
+            )
+
     def test_delete_user_handles_legacy_feature_assignments_without_cascade(self) -> None:
         self.database.register_user("owner@example.com")
 
