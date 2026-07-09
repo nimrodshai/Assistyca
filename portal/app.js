@@ -721,6 +721,27 @@ function normalizeAdminUserRecord(user = {}) {
   };
 }
 
+function sortAdminUsers(users = []) {
+  return [...users].sort((left, right) => {
+    const leftLabel = (left.displayName || left.email).toLowerCase();
+    const rightLabel = (right.displayName || right.email).toLowerCase();
+    return leftLabel.localeCompare(rightLabel);
+  });
+}
+
+function upsertAdminUserState(user) {
+  const normalizedUser = normalizeAdminUserRecord(user);
+  if (!normalizedUser.email) {
+    return null;
+  }
+
+  const nextUsers = state.adminUsers.filter((entry) => entry.email !== normalizedUser.email);
+  nextUsers.push(normalizedUser);
+  state.adminUsers = sortAdminUsers(nextUsers);
+  setAdminUserDraftFeatureIds(normalizedUser.email, normalizedUser.assignedFeatureIds);
+  return normalizedUser;
+}
+
 function getSettingsModeContent(mode = state.settingsMode) {
   const normalizedMode = normalizeSettingsMode(mode);
   if (normalizedMode !== "users") {
@@ -4346,14 +4367,9 @@ async function refreshAdminUsers(options = {}) {
         }
         return left.name.localeCompare(right.name);
       });
-    state.adminUsers = (Array.isArray(response.users) ? response.users : [])
+    state.adminUsers = sortAdminUsers((Array.isArray(response.users) ? response.users : [])
       .map((user) => normalizeAdminUserRecord(user))
-      .filter((user) => user.email)
-      .sort((left, right) => {
-        const leftLabel = (left.displayName || left.email).toLowerCase();
-        const rightLabel = (right.displayName || right.email).toLowerCase();
-        return leftLabel.localeCompare(rightLabel);
-      });
+      .filter((user) => user.email));
     state.adminUserDrafts = Object.fromEntries(
       state.adminUsers.map((user) => [user.email, [...user.assignedFeatureIds]]),
     );
@@ -4410,7 +4426,7 @@ async function addAdminUser() {
 
   let didSucceed = false;
   try {
-    await apiRequest("/api/admin/users", {
+    const response = await apiRequest("/api/admin/users", {
       method: "POST",
       headers: getSessionAuthHeaders(),
       body: {
@@ -4421,9 +4437,9 @@ async function addAdminUser() {
 
     state.adminNewUserEmail = "";
     state.adminNewUserDisplayName = "";
-    await refreshAdminUsers({ render: false });
+    const createdUser = upsertAdminUserState(response.user || { email, displayName });
     state.adminView = "detail";
-    state.adminSelectedUserEmail = email;
+    state.adminSelectedUserEmail = createdUser?.email || email;
     didSucceed = true;
   } catch (error) {
     state.adminUsersError = formatApiErrorMessage(error, "We couldn’t add that user right now.");
