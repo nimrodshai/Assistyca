@@ -1689,9 +1689,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "userId": int(target_user.get("id") or 0),
             "email": email,
         }
+        deleted_user_payload = self._serialize_admin_user(target_user)
 
         try:
-            deleted_user = self.database.delete_user(email)
+            self.database.delete_user(email)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -1727,7 +1728,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "message": "User deleted.",
-            "user": self._serialize_admin_user(deleted_user),
+            "user": deleted_user_payload,
             "currentUser": {
                 "email": normalize_email(current_user.get("email")),
                 "displayName": normalize_text(current_user.get("displayName")),
