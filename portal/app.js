@@ -321,6 +321,7 @@ const state = {
   adminAddUserBusy: false,
   adminEditUserBusy: false,
   adminSaveBusyByEmail: {},
+  adminSaveQueuedByEmail: {},
   adminDeleteBusyByEmail: {},
   adminUserDrafts: {},
   adminView: "list",
@@ -775,6 +776,9 @@ function replaceAdminUserState(previousEmail, user) {
   const { [normalizedPreviousEmail]: _saveBusy, ...nextSaveBusy } = state.adminSaveBusyByEmail;
   state.adminSaveBusyByEmail = nextSaveBusy;
 
+  const { [normalizedPreviousEmail]: _saveQueued, ...nextSaveQueued } = state.adminSaveQueuedByEmail;
+  state.adminSaveQueuedByEmail = nextSaveQueued;
+
   const { [normalizedPreviousEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
 
@@ -798,6 +802,9 @@ function removeAdminUserState(email) {
 
   const { [normalizedEmail]: _saveBusy, ...nextSaveBusy } = state.adminSaveBusyByEmail;
   state.adminSaveBusyByEmail = nextSaveBusy;
+
+  const { [normalizedEmail]: _saveQueued, ...nextSaveQueued } = state.adminSaveQueuedByEmail;
+  state.adminSaveQueuedByEmail = nextSaveQueued;
 
   const { [normalizedEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
@@ -880,6 +887,42 @@ function removeAdminUserDraftFeature(email, featureId) {
   setAdminUserDraftFeatureIds(email, Array.from(nextFeatureIds));
 }
 
+function setAdminUserSaveQueued(email, isQueued) {
+  const key = normalizeEmail(email);
+  if (!key) {
+    return;
+  }
+
+  if (isQueued) {
+    state.adminSaveQueuedByEmail = {
+      ...state.adminSaveQueuedByEmail,
+      [key]: true,
+    };
+    return;
+  }
+
+  if (!(key in state.adminSaveQueuedByEmail)) {
+    return;
+  }
+
+  const { [key]: _queued, ...nextQueued } = state.adminSaveQueuedByEmail;
+  state.adminSaveQueuedByEmail = nextQueued;
+}
+
+function queueAdminUserFeatureAutosave(email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !isAdminUser()) {
+    return;
+  }
+
+  if (state.adminSaveBusyByEmail[normalizedEmail]) {
+    setAdminUserSaveQueued(normalizedEmail, true);
+    return;
+  }
+
+  void saveAdminUserFeatures(normalizedEmail);
+}
+
 function buildAdminUserDrafts(users = [], previousUsersByEmail = new Map(), previousDrafts = {}) {
   return Object.fromEntries(users.map((user) => {
     const previousUser = previousUsersByEmail.get(user.email) || null;
@@ -931,6 +974,7 @@ function resetAdminState() {
   state.adminAddUserBusy = false;
   state.adminEditUserBusy = false;
   state.adminSaveBusyByEmail = {};
+  state.adminSaveQueuedByEmail = {};
   state.adminDeleteBusyByEmail = {};
   state.adminUserDrafts = {};
   state.adminView = "list";
@@ -4575,7 +4619,7 @@ function createAdminUserDetailView(user) {
   const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
   const isDeleting = Boolean(state.adminDeleteBusyByEmail[user.email]);
   const deleteDisabledReason = getAdminUserDeleteDisabledReason(user);
-  const inputsDisabled = isSaving || isDeleting;
+  const toolInputsDisabled = isDeleting;
   const featureLookup = new Map(state.adminFeatures.map((feature) => [feature.featureId, feature]));
   const assignedFeatures = draftFeatureIds.map((featureId) => (
     featureLookup.get(featureId) || {
@@ -4668,7 +4712,7 @@ function createAdminUserDetailView(user) {
   searchInput.placeholder = "Click to browse all tools or type to filter";
   searchInput.value = state.adminFeatureSearch;
   searchInput.autocomplete = "off";
-  searchInput.disabled = inputsDisabled;
+  searchInput.disabled = toolInputsDisabled;
   searchInput.dataset.adminFeatureSearchInput = "true";
   searchInput.setAttribute("aria-expanded", String(showToolResults));
 
@@ -4695,7 +4739,7 @@ function createAdminUserDetailView(user) {
   } else {
     results.append(
       ...availableFeatures.map((feature) => createAdminFeatureSearchResult(feature, {
-        disabled: inputsDisabled,
+        disabled: toolInputsDisabled,
         userEmail: user.email,
       })),
     );
@@ -4729,7 +4773,7 @@ function createAdminUserDetailView(user) {
     assignedList.append(
       ...assignedFeatures.map((feature) => createAdminAssignedFeatureBadge(feature, {
         userEmail: user.email,
-        disabled: inputsDisabled,
+        disabled: toolInputsDisabled,
       })),
     );
   }
@@ -4752,15 +4796,6 @@ function createAdminUserDetailView(user) {
   }
 
   actions.append(summary);
-  if ((hasChanges || isSaving) && !isDeleting) {
-    const saveButton = document.createElement("button");
-    saveButton.type = "button";
-    saveButton.className = "primary-button small";
-    saveButton.dataset.adminSaveUser = user.email;
-    saveButton.disabled = isSaving;
-    saveButton.textContent = isSaving ? "Saving…" : "Save changes";
-    actions.append(saveButton);
-  }
   accessPanel.append(accessTitle, picker, assignedShell, actions);
 
   grid.append(infoPanel, accessPanel);
@@ -5027,6 +5062,7 @@ async function saveAdminUserFeatures(email) {
     return;
   }
 
+  const requestedFeatureIds = getAdminUserDraftFeatureIds(normalizedEmail, user.assignedFeatureIds);
   state.adminSaveBusyByEmail = {
     ...state.adminSaveBusyByEmail,
     [normalizedEmail]: true,
@@ -5040,9 +5076,18 @@ async function saveAdminUserFeatures(email) {
       method: "POST",
       headers: getSessionAuthHeaders(),
       body: {
-        assignedFeatureIds: getAdminUserDraftFeatureIds(normalizedEmail, user.assignedFeatureIds),
+        assignedFeatureIds: requestedFeatureIds,
       },
     });
+
+    state.adminUsers = state.adminUsers.map((entry) => (
+      entry.email === normalizedEmail
+        ? {
+          ...entry,
+          assignedFeatureIds: [...requestedFeatureIds],
+        }
+        : entry
+    ));
 
     if (normalizedEmail === activeEmail) {
       await refreshFeatureActivationStates({ render: false });
@@ -5060,9 +5105,23 @@ async function saveAdminUserFeatures(email) {
   } finally {
     const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminSaveBusyByEmail;
     state.adminSaveBusyByEmail = nextBusy;
+    const latestUser = state.adminUsers.find((entry) => entry.email === normalizedEmail) || null;
+    const shouldRetry = didSucceed
+      && Boolean(latestUser)
+      && (
+        Boolean(state.adminSaveQueuedByEmail[normalizedEmail])
+        || !featureIdListsMatch(
+          getAdminUserDraftFeatureIds(normalizedEmail, latestUser.assignedFeatureIds),
+          latestUser.assignedFeatureIds,
+        )
+      );
+    setAdminUserSaveQueued(normalizedEmail, false);
     renderApp();
     if (didSucceed) {
       setStatus("User access saved");
+    }
+    if (shouldRetry && !state.adminDeleteBusyByEmail[normalizedEmail]) {
+      void saveAdminUserFeatures(normalizedEmail);
     }
   }
 }
@@ -6862,6 +6921,7 @@ function bindEvents() {
         nextFeatureIds.delete(featureId);
       }
       setAdminUserDraftFeatureIds(userEmail, Array.from(nextFeatureIds));
+      queueAdminUserFeatureAutosave(userEmail);
       renderAdminUsersPane();
     });
 
@@ -6895,6 +6955,7 @@ function bindEvents() {
           addFeatureButton.dataset.adminUserEmail || "",
           addFeatureButton.dataset.adminAddFeature || "",
         );
+        queueAdminUserFeatureAutosave(addFeatureButton.dataset.adminUserEmail || "");
         state.adminFeatureSearch = "";
         state.adminFeaturePickerOpen = true;
         renderAdminUsersPane();
@@ -6908,6 +6969,7 @@ function bindEvents() {
           removeFeatureButton.dataset.adminUserEmail || "",
           removeFeatureButton.dataset.adminRemoveFeature || "",
         );
+        queueAdminUserFeatureAutosave(removeFeatureButton.dataset.adminUserEmail || "");
         renderAdminUsersPane();
         return;
       }
@@ -6945,13 +7007,6 @@ function bindEvents() {
         void deleteAdminUser(deleteUserButton.dataset.adminDeleteUser || "");
         return;
       }
-
-      const saveButton = target.closest("[data-admin-save-user]");
-      if (!saveButton) {
-        return;
-      }
-
-      void saveAdminUserFeatures(saveButton.dataset.adminSaveUser || "");
     });
 
     elements.userAccessSettingsPane.addEventListener("keydown", (event) => {
