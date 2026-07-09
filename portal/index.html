@@ -841,50 +841,34 @@ Owner said afternoons are easier."
 
           <div id="userAccessSettingsPane" class="settings-pane-grid is-hidden">
             <article class="glass-card settings-card admin-user-access-card">
-              <div class="card-head">
-                <div>
+              <div class="card-head admin-user-access-head">
+                <div class="admin-user-access-copy">
                   <h3>Registered users</h3>
                   <p class="lede compact">
-                    Add users and choose which tools they can see in the portal.
+                    Search registered users, add a new account, and open a specific user to manage tool access.
                   </p>
                 </div>
-                <span id="adminUserCount" class="feature-status">—</span>
+
+                <div class="admin-user-access-actions">
+                  <button
+                    id="adminUsersBackButton"
+                    class="ghost-button small is-hidden"
+                    type="button"
+                  >
+                    Back to users
+                  </button>
+                  <button
+                    id="adminOpenAddUserButton"
+                    class="primary-button small"
+                    type="button"
+                  >
+                    Register user
+                  </button>
+                </div>
               </div>
 
-              <div class="admin-user-access-grid">
-                <section class="admin-user-form-panel">
-                  <h4>Add user</h4>
-
-                  <label class="field">
-                    <span>Email</span>
-                    <input id="adminUserEmailInput" type="email" placeholder="client@example.com" />
-                  </label>
-
-                  <label class="field">
-                    <span>Display name</span>
-                    <input id="adminUserDisplayNameInput" type="text" placeholder="Client name" />
-                  </label>
-
-                  <div class="field">
-                    <span>Visible tools</span>
-                    <div id="adminAddUserFeatureList" class="admin-feature-checklist"></div>
-                    <small class="field-help">
-                      Choose which tools this account should see when they sign in.
-                    </small>
-                  </div>
-
-                  <div class="card-actions">
-                    <button id="adminAddUserButton" class="primary-button" type="button">
-                      Add user
-                    </button>
-                  </div>
-                </section>
-
-                <section class="admin-user-list-panel">
-                  <div id="adminUsersError" class="field-error is-hidden" role="status" aria-live="polite"></div>
-                  <div id="adminUsersList" class="admin-users-list"></div>
-                </section>
-              </div>
+              <div id="adminUsersError" class="field-error is-hidden" role="status" aria-live="polite"></div>
+              <div id="adminUsersContent" class="admin-users-content"></div>
             </article>
           </div>
         </div>

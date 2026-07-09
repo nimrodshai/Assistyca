@@ -39,8 +39,8 @@ const SETTINGS_MODE_CONTENT = {
     description: "Update login details and account preferences.",
   },
   users: {
-    title: "User access",
-    description: "Add portal users and choose which tools each account can see.",
+    title: "Registered users",
+    description: "Search registered users and open one to manage which tools they can see.",
   },
 };
 const LOCAL_APPROVAL_URL = "../approval.html";
@@ -320,9 +320,11 @@ const state = {
   adminAddUserBusy: false,
   adminSaveBusyByEmail: {},
   adminUserDrafts: {},
+  adminView: "list",
+  adminSelectedUserEmail: "",
+  adminUserSearch: "",
   adminNewUserEmail: "",
   adminNewUserDisplayName: "",
-  adminNewUserFeatureIds: [],
   requestCountryCode: "",
   authAlertOpen: false,
   menuOpen: false,
@@ -476,13 +478,10 @@ const elements = {
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
   userAccessSettingsPane: document.querySelector("#userAccessSettingsPane"),
   adminUsersMenuItem: document.querySelector("#adminUsersMenuItem"),
-  adminUserEmailInput: document.querySelector("#adminUserEmailInput"),
-  adminUserDisplayNameInput: document.querySelector("#adminUserDisplayNameInput"),
-  adminAddUserButton: document.querySelector("#adminAddUserButton"),
-  adminAddUserFeatureList: document.querySelector("#adminAddUserFeatureList"),
-  adminUserCount: document.querySelector("#adminUserCount"),
+  adminUsersBackButton: document.querySelector("#adminUsersBackButton"),
+  adminOpenAddUserButton: document.querySelector("#adminOpenAddUserButton"),
   adminUsersError: document.querySelector("#adminUsersError"),
-  adminUsersList: document.querySelector("#adminUsersList"),
+  adminUsersContent: document.querySelector("#adminUsersContent"),
   signedInEmail: document.querySelector("#signedInEmail"),
   signOutButton: document.querySelector("#signOutButton"),
   displayNameInput: document.querySelector("#displayNameInput"),
@@ -722,7 +721,29 @@ function normalizeAdminUserRecord(user = {}) {
 }
 
 function getSettingsModeContent(mode = state.settingsMode) {
-  return SETTINGS_MODE_CONTENT[normalizeSettingsMode(mode)] || SETTINGS_MODE_CONTENT.account;
+  const normalizedMode = normalizeSettingsMode(mode);
+  if (normalizedMode !== "users") {
+    return SETTINGS_MODE_CONTENT[normalizedMode] || SETTINGS_MODE_CONTENT.account;
+  }
+
+  if (state.adminView === "add") {
+    return {
+      title: "Register user",
+      description: "Create a new portal account. You can set visible tools after the user is created.",
+    };
+  }
+
+  if (state.adminView === "detail") {
+    const user = getAdminSelectedUser();
+    return {
+      title: user
+        ? (user.displayName || deriveDisplayName(user.email))
+        : SETTINGS_MODE_CONTENT.users.title,
+      description: user?.email || "Manage which tools this user can see in the portal.",
+    };
+  }
+
+  return SETTINGS_MODE_CONTENT.users;
 }
 
 function getAdminUserDraftFeatureIds(email, fallback = []) {
@@ -745,6 +766,111 @@ function featureIdListsMatch(first = [], second = []) {
   const left = sortUniqueFeatureIds(first);
   const right = sortUniqueFeatureIds(second);
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function syncAdminUsersError() {
+  if (!elements.adminUsersError) {
+    return;
+  }
+  elements.adminUsersError.textContent = state.adminUsersError;
+  elements.adminUsersError.classList.toggle("is-hidden", !state.adminUsersError);
+}
+
+function resetAdminState() {
+  state.adminUsers = [];
+  state.adminFeatures = [];
+  state.adminUsersLoading = false;
+  state.adminUsersError = "";
+  state.adminAddUserBusy = false;
+  state.adminSaveBusyByEmail = {};
+  state.adminUserDrafts = {};
+  state.adminView = "list";
+  state.adminSelectedUserEmail = "";
+  state.adminUserSearch = "";
+  state.adminNewUserEmail = "";
+  state.adminNewUserDisplayName = "";
+}
+
+function getAdminSelectedUser() {
+  const email = normalizeEmail(state.adminSelectedUserEmail);
+  return state.adminUsers.find((user) => user.email === email) || null;
+}
+
+function getFilteredAdminUsers() {
+  const query = normalizeText(state.adminUserSearch).toLowerCase();
+  if (!query) {
+    return state.adminUsers;
+  }
+
+  return state.adminUsers.filter((user) => {
+    const searchable = [
+      user.displayName,
+      user.email,
+      user.isAdmin ? "admin" : "user",
+      ...user.assignedFeatureIds,
+    ].join(" ").toLowerCase();
+    return searchable.includes(query);
+  });
+}
+
+function openAdminUsersList(options = {}) {
+  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
+  state.settingsMode = "users";
+  state.adminView = "list";
+  state.adminSelectedUserEmail = "";
+  if (options.preserveSearch !== true) {
+    state.adminUserSearch = "";
+  }
+
+  if (shouldOpenModal) {
+    openSettings("users");
+    return;
+  }
+
+  closeMenu();
+  renderApp();
+  if (options.refresh !== false && isAdminUser()) {
+    void refreshAdminUsers();
+  }
+}
+
+function openAdminAddUser() {
+  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
+  state.settingsMode = "users";
+  state.adminView = "add";
+  state.adminSelectedUserEmail = "";
+  state.adminUsersError = "";
+  state.adminNewUserEmail = "";
+  state.adminNewUserDisplayName = "";
+
+  if (shouldOpenModal) {
+    openSettings("users");
+    return;
+  }
+
+  closeMenu();
+  renderApp();
+}
+
+function openAdminUserDetail(email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return;
+  }
+
+  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
+  state.settingsMode = "users";
+  state.adminView = "detail";
+  state.adminSelectedUserEmail = normalizedEmail;
+  state.adminUsersError = "";
+
+  if (shouldOpenModal) {
+    openSettings("users");
+    return;
+  }
+
+  closeMenu();
+  renderApp();
 }
 
 function isFeatureActivationTransitionBusy(feature = getSelectedFeature()) {
@@ -3794,8 +3920,343 @@ function createAdminFeatureOption(feature, options = {}) {
   meta.textContent = buildAdminFeatureSummary(feature) || "Tool";
 
   copy.append(name, meta);
+  if (options.showDescription && feature.description) {
+    const description = document.createElement("span");
+    description.className = "admin-feature-option-description";
+    description.textContent = feature.description;
+    copy.append(description);
+  }
   option.append(checkbox, copy);
   return option;
+}
+
+function createAdminEmptyState(titleText, copyText) {
+  const empty = document.createElement("article");
+  empty.className = "glass-card empty-state admin-users-empty";
+
+  const title = document.createElement("h3");
+  title.textContent = titleText;
+
+  const copy = document.createElement("p");
+  copy.textContent = copyText;
+
+  empty.append(title, copy);
+  return empty;
+}
+
+function createAdminDetailRow(labelText, valueText) {
+  const row = document.createElement("div");
+  row.className = "detail-row";
+
+  const label = document.createElement("span");
+  label.className = "detail-key";
+  label.textContent = labelText;
+
+  const value = document.createElement("strong");
+  value.textContent = valueText;
+
+  row.append(label, value);
+  return row;
+}
+
+function createAdminUsersListView() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "admin-users-view admin-users-list-view";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "admin-users-toolbar";
+
+  const searchField = document.createElement("label");
+  searchField.className = "field admin-users-search-field";
+
+  const searchLabel = document.createElement("span");
+  searchLabel.textContent = "Search users";
+
+  const searchInput = document.createElement("input");
+  searchInput.type = "search";
+  searchInput.placeholder = "Search by name or email";
+  searchInput.value = state.adminUserSearch;
+  searchInput.autocomplete = "off";
+  searchInput.dataset.adminSearchInput = "true";
+
+  searchField.append(searchLabel, searchInput);
+
+  const filteredUsers = getFilteredAdminUsers();
+  const countBadge = document.createElement("span");
+  countBadge.className = "feature-status";
+  countBadge.textContent = state.adminUserSearch
+    ? `${filteredUsers.length} of ${state.adminUsers.length} users`
+    : `${state.adminUsers.length} user${state.adminUsers.length === 1 ? "" : "s"}`;
+
+  toolbar.append(searchField, countBadge);
+  wrapper.append(toolbar);
+
+  if (state.adminUsersLoading && !state.adminUsers.length) {
+    wrapper.append(createAdminEmptyState(
+      "Loading users",
+      "Fetching registered accounts so you can search and manage them.",
+    ));
+    return wrapper;
+  }
+
+  if (!state.adminUsers.length) {
+    wrapper.append(createAdminEmptyState(
+      "No registered users yet",
+      "Register the first user here, then open them to manage which tools they can see.",
+    ));
+    return wrapper;
+  }
+
+  if (!filteredUsers.length) {
+    wrapper.append(createAdminEmptyState(
+      "No users match that search",
+      "Try a different name or email address.",
+    ));
+    return wrapper;
+  }
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "admin-users-table-wrap";
+
+  const table = document.createElement("table");
+  table.className = "admin-users-table";
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const heading of ["User", "Email", "Tools", "Last login", "Role", ""]) {
+    const cell = document.createElement("th");
+    cell.textContent = heading;
+    headRow.append(cell);
+  }
+  thead.append(headRow);
+
+  const tbody = document.createElement("tbody");
+  for (const user of filteredUsers) {
+    const row = document.createElement("tr");
+
+    const nameCell = document.createElement("td");
+    const nameButton = document.createElement("button");
+    nameButton.type = "button";
+    nameButton.className = "admin-user-link";
+    nameButton.dataset.adminOpenUser = user.email;
+    nameButton.textContent = user.displayName || deriveDisplayName(user.email);
+    nameCell.append(nameButton);
+
+    const emailCell = document.createElement("td");
+    emailCell.textContent = user.email;
+
+    const toolsCell = document.createElement("td");
+    toolsCell.textContent = String(user.assignedFeatureIds.length);
+
+    const lastLoginCell = document.createElement("td");
+    lastLoginCell.textContent = user.lastLoginAt
+      ? formatAdminDateTime(user.lastLoginAt)
+      : "No login yet";
+
+    const roleCell = document.createElement("td");
+    const roleBadge = document.createElement("span");
+    roleBadge.className = "feature-status";
+    roleBadge.textContent = user.isAdmin ? "Admin" : "Client";
+    roleCell.append(roleBadge);
+
+    const actionCell = document.createElement("td");
+    const manageButton = document.createElement("button");
+    manageButton.type = "button";
+    manageButton.className = "ghost-button small";
+    manageButton.dataset.adminOpenUser = user.email;
+    manageButton.textContent = "Open";
+    actionCell.append(manageButton);
+
+    row.append(nameCell, emailCell, toolsCell, lastLoginCell, roleCell, actionCell);
+    tbody.append(row);
+  }
+
+  table.append(thead, tbody);
+  tableWrap.append(table);
+  wrapper.append(tableWrap);
+  return wrapper;
+}
+
+function createAdminAddUserView() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "admin-users-view admin-users-add-view";
+
+  const panel = document.createElement("section");
+  panel.className = "admin-detail-panel admin-add-panel";
+
+  const title = document.createElement("h4");
+  title.textContent = "Register a new user";
+
+  const copy = document.createElement("p");
+  copy.className = "admin-panel-copy";
+  copy.textContent = "Create the account first. You can choose which tools they see on the next screen.";
+
+  const emailField = document.createElement("label");
+  emailField.className = "field";
+  const emailLabel = document.createElement("span");
+  emailLabel.textContent = "Email";
+  const emailInput = document.createElement("input");
+  emailInput.type = "email";
+  emailInput.placeholder = "client@example.com";
+  emailInput.value = state.adminNewUserEmail;
+  emailInput.autocomplete = "off";
+  emailInput.dataset.adminNewEmail = "true";
+  emailField.append(emailLabel, emailInput);
+
+  const nameField = document.createElement("label");
+  nameField.className = "field";
+  const nameLabel = document.createElement("span");
+  nameLabel.textContent = "Display name";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "Client name";
+  nameInput.value = state.adminNewUserDisplayName;
+  nameInput.autocomplete = "off";
+  nameInput.dataset.adminNewDisplayName = "true";
+  nameField.append(nameLabel, nameInput);
+
+  const note = document.createElement("p");
+  note.className = "admin-form-note";
+  note.textContent = "Tool visibility and any additional account details are managed from the user page after registration.";
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions admin-form-actions";
+
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "ghost-button";
+  cancelButton.dataset.adminCancelAddUser = "true";
+  cancelButton.textContent = "Cancel";
+
+  const submitButton = document.createElement("button");
+  submitButton.type = "button";
+  submitButton.className = "primary-button";
+  submitButton.dataset.adminCreateUser = "true";
+  submitButton.disabled = state.adminAddUserBusy;
+  submitButton.textContent = state.adminAddUserBusy ? "Registering..." : "Register user";
+
+  actions.append(cancelButton, submitButton);
+  panel.append(title, copy, emailField, nameField, note, actions);
+  wrapper.append(panel);
+  return wrapper;
+}
+
+function createAdminUserDetailView(user) {
+  if (!user) {
+    return createAdminEmptyState(
+      "User not found",
+      "Go back to the users table and open another account.",
+    );
+  }
+
+  const draftFeatureIds = getAdminUserDraftFeatureIds(user.email, user.assignedFeatureIds);
+  const hasChanges = !featureIdListsMatch(draftFeatureIds, user.assignedFeatureIds);
+  const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "admin-users-view admin-users-detail-view";
+
+  const hero = document.createElement("section");
+  hero.className = "admin-detail-hero";
+
+  const heroCopy = document.createElement("div");
+  heroCopy.className = "admin-detail-hero-copy";
+
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "detail-key";
+  eyebrow.textContent = "Registered user";
+
+  const title = document.createElement("h4");
+  title.textContent = user.displayName || deriveDisplayName(user.email);
+
+  const email = document.createElement("p");
+  email.className = "admin-user-email";
+  email.textContent = user.email;
+
+  heroCopy.append(eyebrow, title, email);
+
+  const badges = document.createElement("div");
+  badges.className = "admin-user-badges";
+
+  if (user.isAdmin) {
+    const adminBadge = document.createElement("span");
+    adminBadge.className = "feature-status";
+    adminBadge.textContent = "Admin";
+    badges.append(adminBadge);
+  }
+
+  const toolsBadge = document.createElement("span");
+  toolsBadge.className = "feature-status";
+  toolsBadge.textContent = `${draftFeatureIds.length} tool${draftFeatureIds.length === 1 ? "" : "s"}`;
+  badges.append(toolsBadge);
+
+  hero.append(heroCopy, badges);
+
+  const grid = document.createElement("div");
+  grid.className = "admin-detail-grid";
+
+  const infoPanel = document.createElement("section");
+  infoPanel.className = "admin-detail-panel";
+  const infoTitle = document.createElement("h4");
+  infoTitle.textContent = "Account";
+  const infoRows = document.createElement("div");
+  infoRows.className = "detail-stack";
+  infoRows.append(
+    createAdminDetailRow("Email", user.email),
+    createAdminDetailRow("Role", user.isAdmin ? "Admin" : "Client"),
+    createAdminDetailRow("Registered", formatAdminDateTime(user.registeredAt) || "Unknown"),
+    createAdminDetailRow("Last login", user.lastLoginAt ? formatAdminDateTime(user.lastLoginAt) : "No login yet"),
+  );
+  infoPanel.append(infoTitle, infoRows);
+
+  const accessPanel = document.createElement("section");
+  accessPanel.className = "admin-detail-panel";
+
+  const accessTitle = document.createElement("h4");
+  accessTitle.textContent = "Visible tools";
+
+  const accessCopy = document.createElement("p");
+  accessCopy.className = "admin-panel-copy";
+  accessCopy.textContent = "Choose which tools this user can see when they sign in.";
+
+  const checklist = document.createElement("div");
+  checklist.className = "admin-feature-checklist admin-detail-feature-list";
+  if (!state.adminFeatures.length) {
+    const empty = document.createElement("p");
+    empty.className = "admin-empty-copy";
+    empty.textContent = "No active tools are available to assign.";
+    checklist.append(empty);
+  } else {
+    checklist.append(
+      ...state.adminFeatures.map((feature) => createAdminFeatureOption(feature, {
+        checked: draftFeatureIds.includes(feature.featureId),
+        disabled: isSaving || state.adminUsersLoading,
+        userEmail: user.email,
+        showDescription: true,
+      })),
+    );
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions admin-user-actions";
+
+  const summary = document.createElement("span");
+  summary.className = "admin-user-summary";
+  summary.textContent = hasChanges ? "Unsaved changes" : "Access is up to date";
+
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.className = "primary-button";
+  saveButton.dataset.adminSaveUser = user.email;
+  saveButton.disabled = isSaving || !hasChanges;
+  saveButton.textContent = isSaving ? "Saving..." : "Save access";
+
+  actions.append(summary, saveButton);
+  accessPanel.append(accessTitle, accessCopy, checklist, actions);
+
+  grid.append(infoPanel, accessPanel);
+  wrapper.append(hero, grid);
+  return wrapper;
 }
 
 function renderAdminUsersPane() {
@@ -3804,7 +4265,7 @@ function renderAdminUsersPane() {
     elements.adminUsersMenuItem.classList.toggle("is-hidden", !adminVisible);
   }
 
-  if (!elements.userAccessSettingsPane || !elements.adminUsersList) {
+  if (!elements.userAccessSettingsPane || !elements.adminUsersContent) {
     return;
   }
 
@@ -3813,154 +4274,33 @@ function renderAdminUsersPane() {
     return;
   }
 
-  if (elements.adminUserEmailInput) {
-    elements.adminUserEmailInput.value = state.adminNewUserEmail;
-  }
-  if (elements.adminUserDisplayNameInput) {
-    elements.adminUserDisplayNameInput.value = state.adminNewUserDisplayName;
-  }
-  if (elements.adminAddUserButton) {
-    elements.adminAddUserButton.disabled = state.adminAddUserBusy || state.adminUsersLoading;
-    elements.adminAddUserButton.textContent = state.adminAddUserBusy ? "Adding..." : "Add user";
-  }
   if (elements.adminUsersError) {
-    elements.adminUsersError.textContent = state.adminUsersError;
-    elements.adminUsersError.classList.toggle("is-hidden", !state.adminUsersError);
+    syncAdminUsersError();
   }
-  if (elements.adminUserCount) {
-    if (state.adminUsersLoading && !state.adminUsers.length) {
-      elements.adminUserCount.textContent = "Loading...";
-    } else {
-      elements.adminUserCount.textContent = `${state.adminUsers.length} user${state.adminUsers.length === 1 ? "" : "s"}`;
-    }
+  if (state.adminView === "detail" && !state.adminUsersLoading && !getAdminSelectedUser()) {
+    state.adminView = "list";
+    state.adminSelectedUserEmail = "";
   }
 
-  if (elements.adminAddUserFeatureList) {
-    const nextFeatureIds = sortUniqueFeatureIds(state.adminNewUserFeatureIds)
-      .filter((featureId) => state.adminFeatures.some((feature) => feature.featureId === featureId));
-    state.adminNewUserFeatureIds = nextFeatureIds;
-
-    if (!state.adminFeatures.length) {
-      const empty = document.createElement("p");
-      empty.className = "admin-empty-copy";
-      empty.textContent = state.adminUsersLoading
-        ? "Loading tools..."
-        : "No active tools are available to assign yet.";
-      elements.adminAddUserFeatureList.replaceChildren(empty);
-    } else {
-      elements.adminAddUserFeatureList.replaceChildren(
-        ...state.adminFeatures.map((feature) => createAdminFeatureOption(feature, {
-          checked: nextFeatureIds.includes(feature.featureId),
-          disabled: state.adminAddUserBusy || state.adminUsersLoading,
-        })),
-      );
-    }
+  if (elements.adminUsersBackButton) {
+    elements.adminUsersBackButton.classList.toggle("is-hidden", state.adminView === "list");
+  }
+  if (elements.adminOpenAddUserButton) {
+    elements.adminOpenAddUserButton.classList.toggle("is-hidden", state.adminView !== "list");
+    elements.adminOpenAddUserButton.disabled = state.adminUsersLoading;
   }
 
-  if (state.adminUsersLoading && !state.adminUsers.length) {
-    const loading = document.createElement("article");
-    loading.className = "glass-card empty-state";
-    const title = document.createElement("h3");
-    title.textContent = "Loading users";
-    const copy = document.createElement("p");
-    copy.textContent = "Fetching registered accounts and their assigned tools.";
-    loading.append(title, copy);
-    elements.adminUsersList.replaceChildren(loading);
+  if (state.adminView === "add") {
+    elements.adminUsersContent.replaceChildren(createAdminAddUserView());
     return;
   }
 
-  if (!state.adminUsers.length) {
-    const empty = document.createElement("article");
-    empty.className = "glass-card empty-state";
-    const title = document.createElement("h3");
-    title.textContent = "No registered users yet";
-    const copy = document.createElement("p");
-    copy.textContent = "Add the first client account here, then assign the tools they should see.";
-    empty.append(title, copy);
-    elements.adminUsersList.replaceChildren(empty);
+  if (state.adminView === "detail") {
+    elements.adminUsersContent.replaceChildren(createAdminUserDetailView(getAdminSelectedUser()));
     return;
   }
 
-  const cards = state.adminUsers.map((user) => {
-    const draftFeatureIds = getAdminUserDraftFeatureIds(user.email, user.assignedFeatureIds);
-    const hasChanges = !featureIdListsMatch(draftFeatureIds, user.assignedFeatureIds);
-    const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
-
-    const card = document.createElement("article");
-    card.className = "glass-card admin-user-card";
-
-    const head = document.createElement("div");
-    head.className = "admin-user-card-head";
-
-    const titleBlock = document.createElement("div");
-    const title = document.createElement("h4");
-    title.textContent = user.displayName || deriveDisplayName(user.email);
-    const email = document.createElement("p");
-    email.className = "admin-user-email";
-    email.textContent = user.email;
-    titleBlock.append(title, email);
-
-    const badges = document.createElement("div");
-    badges.className = "admin-user-badges";
-    if (user.isAdmin) {
-      const adminBadge = document.createElement("span");
-      adminBadge.className = "feature-status";
-      adminBadge.textContent = "Admin";
-      badges.append(adminBadge);
-    }
-    const countBadge = document.createElement("span");
-    countBadge.className = "feature-status";
-    countBadge.textContent = `${draftFeatureIds.length} tool${draftFeatureIds.length === 1 ? "" : "s"}`;
-    badges.append(countBadge);
-
-    head.append(titleBlock, badges);
-
-    const meta = document.createElement("p");
-    meta.className = "admin-user-meta";
-    const metaParts = [];
-    metaParts.push(`Registered ${formatAdminDateTime(user.registeredAt) || "unknown"}`);
-    metaParts.push(user.lastLoginAt ? `Last login ${formatAdminDateTime(user.lastLoginAt)}` : "No login yet");
-    meta.textContent = metaParts.join(" · ");
-
-    const checklist = document.createElement("div");
-    checklist.className = "admin-feature-checklist";
-    if (!state.adminFeatures.length) {
-      const empty = document.createElement("p");
-      empty.className = "admin-empty-copy";
-      empty.textContent = "No active tools are available to assign.";
-      checklist.append(empty);
-    } else {
-      checklist.append(
-        ...state.adminFeatures.map((feature) => createAdminFeatureOption(feature, {
-          checked: draftFeatureIds.includes(feature.featureId),
-          disabled: isSaving || state.adminUsersLoading,
-          userEmail: user.email,
-        })),
-      );
-    }
-
-    const actions = document.createElement("div");
-    actions.className = "card-actions admin-user-actions";
-
-    const summary = document.createElement("span");
-    summary.className = "admin-user-summary";
-    summary.textContent = hasChanges
-      ? "Unsaved changes"
-      : "Access is up to date";
-
-    const saveButton = document.createElement("button");
-    saveButton.type = "button";
-    saveButton.className = "primary-button";
-    saveButton.dataset.adminSaveUser = user.email;
-    saveButton.disabled = isSaving || !hasChanges;
-    saveButton.textContent = isSaving ? "Saving..." : "Save access";
-
-    actions.append(summary, saveButton);
-    card.append(head, meta, checklist, actions);
-    return card;
-  });
-
-  elements.adminUsersList.replaceChildren(...cards);
+  elements.adminUsersContent.replaceChildren(createAdminUsersListView());
 }
 
 async function refreshAdminUsers(options = {}) {
@@ -4002,8 +4342,10 @@ async function refreshAdminUsers(options = {}) {
     state.adminUserDrafts = Object.fromEntries(
       state.adminUsers.map((user) => [user.email, [...user.assignedFeatureIds]]),
     );
-    state.adminNewUserFeatureIds = state.adminNewUserFeatureIds
-      .filter((featureId) => state.adminFeatures.some((feature) => feature.featureId === featureId));
+    if (state.adminView === "detail" && !state.adminUsers.some((user) => user.email === state.adminSelectedUserEmail)) {
+      state.adminView = "list";
+      state.adminSelectedUserEmail = "";
+    }
 
     if (authSession) {
       authSession = normalizeStoredSession({
@@ -4040,12 +4382,10 @@ async function addAdminUser() {
 
   const email = normalizeEmail(state.adminNewUserEmail);
   const displayName = normalizeText(state.adminNewUserDisplayName);
-  const assignedFeatureIds = sortUniqueFeatureIds(state.adminNewUserFeatureIds);
 
   if (!validateEmail(email)) {
     state.adminUsersError = "Enter a valid email address before adding the user.";
     renderApp();
-    elements.adminUserEmailInput?.focus();
     return;
   }
 
@@ -4061,14 +4401,14 @@ async function addAdminUser() {
       body: {
         email,
         displayName,
-        assignedFeatureIds,
       },
     });
 
     state.adminNewUserEmail = "";
     state.adminNewUserDisplayName = "";
-    state.adminNewUserFeatureIds = [];
     await refreshAdminUsers({ render: false });
+    state.adminView = "detail";
+    state.adminSelectedUserEmail = email;
     didSucceed = true;
   } catch (error) {
     state.adminUsersError = formatApiErrorMessage(error, "We couldn’t add that user right now.");
@@ -4132,8 +4472,11 @@ function updateHeader() {
   const displayName = getDisplayName();
   const workspaceName = getWorkspaceName();
   const selectedFeature = getSelectedFeature();
+  const settingsLabel = state.settingsMode === "users"
+    ? getSettingsModeContent(state.settingsMode).title
+    : "Settings";
   const titleLabel = state.settingsOpen
-    ? "Settings"
+    ? settingsLabel
     : state.selectedFeatureId && selectedFeature
       ? selectedFeature.name
       : TAB_LABELS[state.activeTab] || capitalizeWords(state.activeTab);
@@ -5351,16 +5694,7 @@ function completeSignIn(session) {
   state.billingLoading = true;
   state.billingError = "";
   state.paymentStatus = null;
-  state.adminUsers = [];
-  state.adminFeatures = [];
-  state.adminUsersLoading = false;
-  state.adminUsersError = "";
-  state.adminAddUserBusy = false;
-  state.adminSaveBusyByEmail = {};
-  state.adminUserDrafts = {};
-  state.adminNewUserEmail = "";
-  state.adminNewUserDisplayName = "";
-  state.adminNewUserFeatureIds = [];
+  resetAdminState();
   setHashForTab("features");
   setView("app");
   renderApp();
@@ -5482,16 +5816,7 @@ async function signOut() {
   state.settingsOpen = false;
   state.settingsMode = "account";
   state.lastPrimaryTab = "features";
-  state.adminUsers = [];
-  state.adminFeatures = [];
-  state.adminUsersLoading = false;
-  state.adminUsersError = "";
-  state.adminAddUserBusy = false;
-  state.adminSaveBusyByEmail = {};
-  state.adminUserDrafts = {};
-  state.adminNewUserEmail = "";
-  state.adminNewUserDisplayName = "";
-  state.adminNewUserFeatureIds = [];
+  resetAdminState();
   persistLastPrimaryTab();
   closeBillingHelp();
 
@@ -5536,7 +5861,7 @@ function handleMenuAction(action) {
   }
 
   if (action === "admin-users") {
-    openSettings("users");
+    openAdminUsersList();
     return;
   }
 
@@ -5586,16 +5911,7 @@ async function bootstrapAuthState() {
       state.billingLoading = true;
       state.billingError = "";
       state.paymentStatus = null;
-      state.adminUsers = [];
-      state.adminFeatures = [];
-      state.adminUsersLoading = false;
-      state.adminUsersError = "";
-      state.adminAddUserBusy = false;
-      state.adminSaveBusyByEmail = {};
-      state.adminUserDrafts = {};
-      state.adminNewUserEmail = "";
-      state.adminNewUserDisplayName = "";
-      state.adminNewUserFeatureIds = [];
+      resetAdminState();
       refreshView();
       void refreshBillingReport();
       void refreshWhatsAppConnection();
@@ -5768,30 +6084,51 @@ function bindEvents() {
       window.scrollTo(0, 0);
     });
   }
-  if (elements.adminUserEmailInput) {
-    elements.adminUserEmailInput.addEventListener("input", (event) => {
-      state.adminNewUserEmail = event.target.value;
-      if (state.adminUsersError) {
-        state.adminUsersError = "";
-        renderAdminUsersPane();
-      }
+  if (elements.adminUsersBackButton) {
+    elements.adminUsersBackButton.addEventListener("click", () => {
+      openAdminUsersList({ preserveSearch: true, refresh: false });
     });
   }
-  if (elements.adminUserDisplayNameInput) {
-    elements.adminUserDisplayNameInput.addEventListener("input", (event) => {
-      state.adminNewUserDisplayName = event.target.value;
-      if (state.adminUsersError) {
-        state.adminUsersError = "";
-        renderAdminUsersPane();
-      }
-    });
-  }
-  if (elements.adminAddUserButton) {
-    elements.adminAddUserButton.addEventListener("click", () => {
-      void addAdminUser();
+  if (elements.adminOpenAddUserButton) {
+    elements.adminOpenAddUserButton.addEventListener("click", () => {
+      openAdminAddUser();
     });
   }
   if (elements.userAccessSettingsPane) {
+    elements.userAccessSettingsPane.addEventListener("input", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+
+      if (target.dataset.adminSearchInput === "true") {
+        const caret = target.selectionStart;
+        state.adminUserSearch = target.value;
+        renderAdminUsersPane();
+        const nextInput = elements.userAccessSettingsPane.querySelector('[data-admin-search-input="true"]');
+        if (nextInput instanceof HTMLInputElement) {
+          nextInput.focus();
+          if (typeof caret === "number") {
+            nextInput.setSelectionRange(caret, caret);
+          }
+        }
+        return;
+      }
+
+      if (target.dataset.adminNewEmail === "true") {
+        state.adminNewUserEmail = target.value;
+      }
+
+      if (target.dataset.adminNewDisplayName === "true") {
+        state.adminNewUserDisplayName = target.value;
+      }
+
+      if (state.adminUsersError) {
+        state.adminUsersError = "";
+        syncAdminUsersError();
+      }
+    });
+
     elements.userAccessSettingsPane.addEventListener("change", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") {
@@ -5800,17 +6137,6 @@ function bindEvents() {
 
       const featureId = String(target.dataset.adminFeatureId || "").trim();
       if (!featureId) {
-        return;
-      }
-
-      if (target.dataset.adminFeatureTarget === "new") {
-        const nextFeatureIds = new Set(state.adminNewUserFeatureIds);
-        if (target.checked) {
-          nextFeatureIds.add(featureId);
-        } else {
-          nextFeatureIds.delete(featureId);
-        }
-        state.adminNewUserFeatureIds = sortUniqueFeatureIds(Array.from(nextFeatureIds));
         return;
       }
 
@@ -5834,12 +6160,42 @@ function bindEvents() {
         return;
       }
 
+      const openUserButton = event.target.closest("[data-admin-open-user]");
+      if (openUserButton) {
+        openAdminUserDetail(openUserButton.dataset.adminOpenUser || "");
+        return;
+      }
+
+      const createUserButton = event.target.closest("[data-admin-create-user]");
+      if (createUserButton) {
+        void addAdminUser();
+        return;
+      }
+
+      const cancelAddButton = event.target.closest("[data-admin-cancel-add-user]");
+      if (cancelAddButton) {
+        openAdminUsersList({ preserveSearch: true, refresh: false });
+        return;
+      }
+
       const saveButton = event.target.closest("[data-admin-save-user]");
       if (!saveButton) {
         return;
       }
 
       void saveAdminUserFeatures(saveButton.dataset.adminSaveUser || "");
+    });
+
+    elements.userAccessSettingsPane.addEventListener("keydown", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || event.key !== "Enter") {
+        return;
+      }
+
+      if (target.dataset.adminNewEmail === "true" || target.dataset.adminNewDisplayName === "true") {
+        event.preventDefault();
+        void addAdminUser();
+      }
     });
   }
 

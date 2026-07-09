@@ -2984,47 +2984,144 @@ body[data-modal="billing"] .app-shell {
   width: 100%;
 }
 
-.admin-user-access-grid {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
-  align-items: start;
-}
-
-.admin-user-form-panel,
-.admin-user-list-panel {
-  display: grid;
-  gap: 0.9rem;
-  align-content: start;
-}
-
-.admin-user-form-panel h4,
-.admin-user-card h4 {
-  margin: 0;
-  font-size: 1rem;
-  letter-spacing: -0.02em;
-}
-
-.admin-users-list {
-  display: grid;
-  gap: 0.85rem;
-}
-
-.admin-user-card {
-  gap: 0.9rem;
-}
-
-.admin-user-card-head {
+.admin-user-access-head {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 
-.admin-user-card-head h4 {
+.admin-user-access-copy {
+  max-width: 44rem;
+}
+
+.admin-user-access-copy h3,
+.admin-detail-panel h4,
+.admin-detail-hero h4 {
   margin: 0;
 }
 
+.admin-user-access-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.admin-users-content,
+.admin-users-view,
+.admin-detail-panel,
+.admin-detail-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.admin-users-toolbar {
+  display: flex;
+  gap: 1rem;
+  align-items: end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.admin-users-search-field {
+  flex: 1 1 20rem;
+}
+
+.admin-users-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.admin-users-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 48rem;
+}
+
+.admin-users-table th,
+.admin-users-table td {
+  padding: 0.95rem 1rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.admin-users-table th {
+  color: var(--muted-strong);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: rgba(248, 250, 252, 0.92);
+  white-space: nowrap;
+}
+
+.admin-users-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-users-table tbody tr:hover {
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.admin-user-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  text-align: left;
+}
+
+.admin-user-link:hover,
+.admin-user-link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.admin-users-empty {
+  width: 100%;
+}
+
+.admin-detail-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  padding: 1.1rem 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background:
+    linear-gradient(145deg, rgba(15, 118, 110, 0.08), rgba(30, 136, 229, 0.04)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 253, 0.92));
+}
+
+.admin-detail-hero-copy {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.admin-detail-grid {
+  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  align-items: start;
+}
+
+.admin-detail-panel {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.admin-panel-copy,
+.admin-form-note,
 .admin-user-email,
 .admin-user-meta,
 .admin-empty-copy,
@@ -3033,11 +3130,14 @@ body[data-modal="billing"] .app-shell {
   color: var(--muted);
 }
 
+.admin-panel-copy,
+.admin-form-note,
 .admin-user-email {
-  margin-top: 0.2rem;
   font-size: 0.92rem;
 }
 
+.admin-panel-copy,
+.admin-form-note,
 .admin-user-meta,
 .admin-empty-copy,
 .admin-user-summary {
@@ -3059,6 +3159,10 @@ body[data-modal="billing"] .app-shell {
 .admin-feature-checklist {
   display: grid;
   gap: 0.55rem;
+}
+
+.admin-detail-feature-list {
+  gap: 0.7rem;
 }
 
 .admin-feature-option {
@@ -3105,6 +3209,12 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.45;
 }
 
+.admin-feature-option-description {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 .panel-intro,
 .app-bar,
 .feature-page-header,
@@ -3142,16 +3252,19 @@ body[data-modal="billing"] .app-shell {
 }
 
 @media (max-width: 820px) {
-  .admin-user-access-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .admin-user-card-head {
-    flex-direction: column;
-  }
-
+  .admin-user-access-actions,
   .admin-user-badges {
     justify-content: flex-start;
+  }
+
+  .admin-detail-hero,
+  .admin-users-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .admin-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
