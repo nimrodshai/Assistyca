@@ -5789,15 +5789,20 @@ function refreshView() {
     state.settingsMode = normalizeSettingsMode(state.settingsMode);
     const route = resolveRouteFromHash();
     const rawHash = window.location.hash.replace(/^#/, "");
+    const restoredPrimaryTab = VALID_TABS.has(state.lastPrimaryTab) && state.lastPrimaryTab !== "settings"
+      ? state.lastPrimaryTab
+      : "features";
 
     if (route.tab === "settings") {
+      // Treat the settings drawer as transient UI, not a reload destination.
       state.selectedFeatureId = null;
       state.selectedSimulatorId = null;
       closeFeatureStudioMenu();
-      state.settingsOpen = true;
-      state.activeTab = VALID_TABS.has(state.lastPrimaryTab) && state.lastPrimaryTab !== "settings"
-        ? state.lastPrimaryTab
-        : "features";
+      state.settingsOpen = false;
+      state.activeTab = restoredPrimaryTab;
+      state.lastPrimaryTab = state.activeTab;
+      persistLastPrimaryTab();
+      setHashForTab(state.activeTab);
     } else {
       state.settingsOpen = false;
       state.activeTab = route.tab || "features";
