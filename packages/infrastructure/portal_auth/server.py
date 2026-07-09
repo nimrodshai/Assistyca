@@ -43,6 +43,8 @@ from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
+from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
@@ -516,16 +518,8 @@ def load_config() -> PortalConfig:
         resend=resend,
     )
 
-    db_path = Path(os.getenv("PORTAL_DB_PATH", str(DEFAULT_DB_PATH)).strip() or str(DEFAULT_DB_PATH))
-    if not db_path.is_absolute():
-        db_path = Path.cwd() / db_path
-
-    billing_data_path = Path(
-        os.getenv("PORTAL_BILLING_DATA_PATH", "portal/billing.sample.json").strip()
-        or "portal/billing.sample.json"
-    )
-    if not billing_data_path.is_absolute():
-        billing_data_path = Path.cwd() / billing_data_path
+    db_path = resolve_portal_db_path()
+    billing_data_path = resolve_portal_billing_data_path()
 
     legacy_markup_multiplier = read_float_env("PORTAL_BILLING_MULTIPLIER", DEFAULT_BILLING_MULTIPLIER)
     input_token_price_multiplier = read_float_env(

@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp_store_root
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
 from packages.tools.whatsapp_reply_approval.server import BackendStore
 from packages.tools.whatsapp_reply_approval.server import RuntimeConfig
@@ -63,7 +64,8 @@ def portal_whatsapp_store_path_for_connection(root: Path, connection: dict[str, 
             re.sub(r"[^a-z0-9]+", "-", str(connection.get("email") or "portal-user").lower()).strip("-")
             or "portal-user"
         )
-    return root / ".agents" / "portal-whatsapp" / f"{identifier}.json"
+    store_root = resolve_portal_whatsapp_store_root(root=root)
+    return store_root / f"{identifier}.json"
 
 
 def build_portal_service_from_connection(

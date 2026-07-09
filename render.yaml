@@ -2,19 +2,23 @@ services:
   - type: web
     name: assistyca-portal
     env: python
-    plan: free
+    plan: starter
     autoDeploy: true
     branch: main
     buildCommand: python3 -m pip install -r requirements.txt
     startCommand: python3 -u scripts/run_portal_server.py --host 0.0.0.0 --port $PORT
     healthCheckPath: /portal/
+    disk:
+      name: portal-data
+      mountPath: /var/data
+      sizeGB: 10
     envVars:
       - key: PORTAL_MAIL_PROVIDER
         value: resend
       - key: PORTAL_PRODUCT_NAME
         value: Assistyca
       - key: PORTAL_DB_PATH
-        value: portal/portal.db
+        value: /var/data/portal.db
       - key: PORTAL_DB_SEED_REGISTERED_EMAILS
         value: nimrod.shai@gmail.com
       - key: PORTAL_DB_SEED_ADMIN_EMAILS

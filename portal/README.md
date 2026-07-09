@@ -36,13 +36,18 @@ It is intentionally separate from the reusable spec and client config layers.
 
 ## Recommended test hosting
 
-For a free, non-24/7 test server, deploy the repo to Render as a free web service and use Resend for OTP delivery.
+For a throwaway, non-24/7 test server, you can deploy the repo to Render as a free web service and use Resend for OTP delivery.
 
 Why this setup works:
 
 - Render free web services can host the Python portal backend and static portal together.
 - Render free services block outbound SMTP ports, so an HTTPS email API is the safer choice.
 - Resend has a free tier and sends over HTTPS, which fits the free Render plan.
+
+Important:
+
+- Render free web services use ephemeral local storage, so portal users, feature assignments, WhatsApp connection state, billing data stored in SQLite, and WhatsApp approval thread history stored in local JSON can disappear after a restart or redeploy.
+- For persistent portal data, run the web service on a paid Render plan, attach a persistent disk, and point `PORTAL_DB_PATH` at the disk mount such as `/var/data/portal.db`. The portal will keep its WhatsApp approval JSON state beside that database by default, for example under `/var/data/portal-whatsapp/`.
 
 When you are ready for always-on hosting, you can upgrade the Render service to a paid plan and keep the same code.
 
@@ -53,7 +58,8 @@ Required environment variables on Render:
 - `PORTAL_RESEND_FROM_EMAIL` for a verified sender like `sign-in@yourdomain.com` or `Assistyca <sign-in@yourdomain.com>`
 - `PORTAL_RESEND_FROM_NAME` for the sender label shown in the inbox
 - `PORTAL_PRODUCT_NAME` for the sign-in email subject and product branding inside the email
-- `PORTAL_DB_PATH` for the SQLite database file, which defaults to `portal/portal.db`
+- `PORTAL_DB_PATH` for the SQLite database file. For durable Render deploys, set this to a persistent disk path such as `/var/data/portal.db`.
+- `PORTAL_DATA_ROOT` optional shared directory for portal-owned runtime files. If unset, the portal uses the parent directory of `PORTAL_DB_PATH`.
 - `PORTAL_DB_SEED_REGISTERED_EMAILS` for the comma-separated list of portal users used only when the database starts empty
 - `PORTAL_DB_SEED_ADMIN_EMAILS` for the comma-separated list of admin portal users that get promoted on startup
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
@@ -61,6 +67,7 @@ Required environment variables on Render:
 - `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the backend
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
+- `PORTAL_WHATSAPP_STORE_ROOT` optional override for the per-user WhatsApp approval JSON files. If unset, the portal uses `PORTAL_DATA_ROOT/portal-whatsapp`.
 - `PUBLIC_BASE_URL` recommended for production so approval links and the connection payload always point at the public portal hostname
 - `PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER` controls the input-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER` controls the output-token multiplier for the default billing plan. The default is `1.5`.
@@ -79,6 +86,7 @@ Required environment variables on Render:
 - `FEATURE_ACTIVATION_PAYMENT_STATUS_CACHE_TTL_SECONDS` optional cache TTL for backend payment-status refreshes. The default is `120`.
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.
+If you want portal state to survive restarts on Render, add a persistent disk in the Render dashboard and mount it at `/var/data` or another absolute path you control, then set `PORTAL_DB_PATH` to a file inside that mount. The portal will place its WhatsApp approval store in the same persistent area unless you explicitly override it.
 Portal sessions now default to 180 days and survive server restarts when the signing secret stays stable.
 
 ## Local usage
