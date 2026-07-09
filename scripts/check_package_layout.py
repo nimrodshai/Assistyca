@@ -15,6 +15,7 @@ REQUIRED_FILES = [
     PACKAGES_DIR / "infrastructure" / "__init__.py",
     PACKAGES_DIR / "infrastructure" / "billing_ledger.py",
     PACKAGES_DIR / "infrastructure" / "feature_activation.py",
+    PACKAGES_DIR / "infrastructure" / "feature_catalog.py",
     PACKAGES_DIR / "infrastructure" / "lemon_squeezy_api.py",
     PACKAGES_DIR / "infrastructure" / "portal_auth" / "__init__.py",
     PACKAGES_DIR / "infrastructure" / "portal_auth" / "server.py",

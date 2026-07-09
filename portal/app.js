@@ -108,6 +108,19 @@ const DEFAULT_FEATURES = [
     launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
     pricing: { ...DEFAULT_FEATURE_PRICING },
     prompt: { ...DEFAULT_PROMPT },
+    requirements: {
+      requiresWhatsAppConnection: true,
+    },
+    billing: {
+      required: true,
+      provider: "lemon_squeezy",
+      storeId: "",
+      productId: "",
+      variantId: "",
+    },
+    assignment: {},
+    paymentStatus: null,
+    metadata: {},
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
@@ -953,6 +966,15 @@ function loadClientState(email) {
       ).trim(),
       pricing: normalizeFeaturePricing(feature?.pricing || {}),
       prompt: normalizePrompt(feature?.prompt || {}, fallbackPrompt),
+      requirements: normalizeFeatureRequirements(feature?.requirements || {}),
+      billing: normalizeFeatureBilling(feature?.billing || {}),
+      assignment: feature?.assignment && typeof feature.assignment === "object"
+        ? { ...feature.assignment }
+        : {},
+      paymentStatus: normalizeFeaturePaymentStatus(feature?.paymentStatus || null),
+      metadata: feature?.metadata && typeof feature.metadata === "object"
+        ? { ...feature.metadata }
+        : {},
       whatsapp: normalizeFeatureWhatsApp(feature?.whatsapp || feature?.activation || {}),
       savedWhatsApp: normalizeFeatureWhatsApp(
         feature?.savedWhatsApp
@@ -1008,6 +1030,53 @@ function normalizeFeaturePricing(pricing = {}) {
         ?? DEFAULT_FEATURE_PRICING.minimumMonthlyCharge,
       ),
     ) || DEFAULT_FEATURE_PRICING.minimumMonthlyCharge,
+  };
+}
+
+function normalizeFeatureRequirements(requirements = {}) {
+  const source = requirements && typeof requirements === "object" ? requirements : {};
+  return {
+    requiresWhatsAppConnection: Boolean(
+      source.requiresWhatsAppConnection
+      ?? source.requires_whatsapp_connection
+      ?? false,
+    ),
+  };
+}
+
+function normalizeFeatureBilling(billing = {}) {
+  const source = billing && typeof billing === "object" ? billing : {};
+  return {
+    required: Boolean(source.required ?? source.billingRequired ?? source.billing_required ?? false),
+    provider: String(source.provider || source.billingProvider || source.billing_provider || "").trim(),
+    storeId: String(source.storeId || source.billingStoreId || source.billing_store_id || "").trim(),
+    productId: String(source.productId || source.billingProductId || source.billing_product_id || "").trim(),
+    variantId: String(source.variantId || source.billingVariantId || source.billing_variant_id || "").trim(),
+  };
+}
+
+function normalizeFeaturePaymentStatus(paymentStatus = null) {
+  if (!paymentStatus || typeof paymentStatus !== "object") {
+    return null;
+  }
+
+  return {
+    featureId: String(paymentStatus.featureId || paymentStatus.feature_id || "").trim(),
+    provider: String(paymentStatus.provider || "").trim(),
+    billingRequired: Boolean(paymentStatus.billingRequired ?? paymentStatus.billing_required ?? false),
+    isPayingCustomer: Boolean(paymentStatus.isPayingCustomer),
+    isEntitled: Boolean(paymentStatus.isEntitled ?? paymentStatus.isPayingCustomer),
+    subscriptionStatus: String(paymentStatus.subscriptionStatus || "").trim(),
+    entitlementStatus: String(paymentStatus.entitlementStatus || paymentStatus.subscriptionStatus || "").trim(),
+    checkoutRequired: Boolean(paymentStatus.checkoutRequired ?? paymentStatus.checkout_required ?? false),
+    checkoutUrl: String(paymentStatus.checkoutUrl || paymentStatus.checkout_url || "").trim(),
+    customerPortalUrl: String(paymentStatus.customerPortalUrl || paymentStatus.customer_portal_url || "").trim(),
+    hasAnyActiveSubscription: Boolean(
+      paymentStatus.hasAnyActiveSubscription
+      ?? paymentStatus.has_any_active_subscription
+      ?? false,
+    ),
+    message: String(paymentStatus.message || "").trim(),
   };
 }
 
@@ -1086,41 +1155,124 @@ function applyWhatsAppConnectionToFeatures(connection, options = {}) {
   }
 }
 
+function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null, index = 0) {
+  const featureId = String(serverFeature?.featureId || serverFeature?.id || existingFeature?.id || `feature-${index + 1}`).trim();
+  const channel = String(serverFeature?.channel || existingFeature?.channel || "Web").trim() || "Web";
+  const activated = Boolean(
+    serverFeature?.isActive
+    ?? serverFeature?.activated
+    ?? existingFeature?.activated
+  );
+  const setupComplete = Boolean(
+    serverFeature?.setupComplete
+    ?? serverFeature?.setup_complete
+    ?? existingFeature?.setupComplete
+    ?? activated
+  );
+  const requirements = normalizeFeatureRequirements(serverFeature?.requirements || existingFeature?.requirements || {});
+  const billing = normalizeFeatureBilling(serverFeature?.billing || existingFeature?.billing || {});
+  const prompt = normalizePrompt(
+    existingFeature?.prompt || serverFeature?.prompt || {},
+    serverFeature?.prompt || DEFAULT_PROMPT,
+  );
+  const pricing = normalizeFeaturePricing(serverFeature?.pricing || existingFeature?.pricing || {});
+  const paymentStatus = normalizeFeaturePaymentStatus(serverFeature?.paymentStatus || existingFeature?.paymentStatus || null);
+  const metadata = serverFeature?.metadata && typeof serverFeature.metadata === "object"
+    ? { ...serverFeature.metadata }
+    : existingFeature?.metadata && typeof existingFeature.metadata === "object"
+      ? { ...existingFeature.metadata }
+      : {};
+  const assignment = serverFeature?.assignment && typeof serverFeature.assignment === "object"
+    ? { ...serverFeature.assignment }
+    : existingFeature?.assignment && typeof existingFeature.assignment === "object"
+      ? { ...existingFeature.assignment }
+      : {};
+  const whatsapp = isWhatsAppFeature({ channel })
+    ? normalizeFeatureWhatsApp(existingFeature?.whatsapp || serverFeature?.whatsapp || {})
+    : normalizeFeatureWhatsApp({});
+  const savedWhatsApp = isWhatsAppFeature({ channel })
+    ? normalizeFeatureWhatsApp(existingFeature?.savedWhatsApp || existingFeature?.whatsapp || serverFeature?.whatsapp || {})
+    : normalizeFeatureWhatsApp({});
+
+  return {
+    id: featureId,
+    name: String(serverFeature?.name || serverFeature?.featureName || existingFeature?.name || `Tool ${index + 1}`).trim(),
+    description: String(serverFeature?.description || existingFeature?.description || "").trim(),
+    channel,
+    mode: String(serverFeature?.mode || existingFeature?.mode || "Default").trim() || "Default",
+    status: activated ? "active" : "non-active",
+    activated,
+    setupComplete,
+    launchUrl: String(serverFeature?.launchUrl || existingFeature?.launchUrl || DEFAULT_FEATURE_LAUNCH_URL).trim(),
+    pricing,
+    prompt,
+    requirements,
+    billing,
+    assignment,
+    paymentStatus,
+    metadata,
+    whatsapp,
+    savedWhatsApp,
+  };
+}
+
 function applyServerFeatureStates(features = [], options = {}) {
-  const byId = new Map();
   const resetMissing = options.resetMissing === true;
-  for (const feature of Array.isArray(features) ? features : []) {
+  const serverFeatures = Array.isArray(features) ? features : [];
+  const existingById = new Map(
+    clientState.features
+      .filter((feature) => feature && feature.id)
+      .map((feature) => [feature.id, feature]),
+  );
+  const serverById = new Map();
+
+  for (const feature of serverFeatures) {
     const featureId = String(feature?.featureId || feature?.feature_id || feature?.id || "").trim();
     if (featureId) {
-      byId.set(featureId, feature);
+      serverById.set(featureId, feature);
     }
   }
 
-  clientState.features = clientState.features.map((feature) => {
-    const serverFeature = byId.get(feature.id);
-    if (!serverFeature) {
-      if (!resetMissing) {
+  let nextFeatures = [];
+  if (resetMissing) {
+    nextFeatures = serverFeatures
+      .map((serverFeature, index) => buildClientFeatureFromServer(
+        serverFeature,
+        existingById.get(String(serverFeature?.featureId || serverFeature?.id || "").trim()) || null,
+        index,
+      ))
+      .filter(Boolean);
+  } else {
+    const seenFeatureIds = new Set();
+    nextFeatures = clientState.features.map((feature, index) => {
+      const featureId = String(feature?.id || "").trim();
+      const serverFeature = serverById.get(featureId);
+      if (!serverFeature) {
         return feature;
       }
+      seenFeatureIds.add(featureId);
+      return buildClientFeatureFromServer(serverFeature, feature, index);
+    });
 
-      return {
-        ...feature,
-        activated: false,
-        status: "non-active",
-      };
+    for (const serverFeature of serverFeatures) {
+      const featureId = String(serverFeature?.featureId || serverFeature?.id || "").trim();
+      if (!featureId || seenFeatureIds.has(featureId)) {
+        continue;
+      }
+      nextFeatures.push(
+        buildClientFeatureFromServer(
+          serverFeature,
+          existingById.get(featureId) || null,
+          nextFeatures.length,
+        ),
+      );
     }
+  }
 
-    const activated = Boolean(
-      serverFeature?.isActive
-      ?? serverFeature?.activated
-      ?? serverFeature?.is_active
-    );
-    return {
-      ...feature,
-      activated,
-      status: activated ? "active" : "non-active",
-    };
-  });
+  clientState.features = nextFeatures.filter(Boolean);
+  if (state.selectedFeatureId && !clientState.features.some((feature) => feature.id === state.selectedFeatureId)) {
+    state.selectedFeatureId = clientState.features[0]?.id || null;
+  }
 
   if (options.persist !== false) {
     persistClientState();
@@ -1213,7 +1365,7 @@ function getFeatureById(featureId) {
 }
 
 function getSelectedFeature() {
-  return getFeatureById(state.selectedFeatureId) || clientState.features[0] || DEFAULT_FEATURES[0];
+  return getFeatureById(state.selectedFeatureId) || clientState.features[0] || null;
 }
 
 function getSelectedPrompt() {

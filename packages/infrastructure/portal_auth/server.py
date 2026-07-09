@@ -1592,6 +1592,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 channel=channel,
                 public_base_url=self._public_base_url(),
             )
+            if not result.get("ok") and result.get("error") == "feature_not_available":
+                json_response(self, HTTPStatus.NOT_FOUND, result)
+                return
             if not result.get("ok") and result.get("error") == "payment_required":
                 json_response(self, HTTPStatus.PAYMENT_REQUIRED, result)
                 return
@@ -1608,6 +1611,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 feature_name=feature_name,
                 channel=channel,
             )
+            if not result.get("ok") and result.get("error") == "feature_not_available":
+                json_response(self, HTTPStatus.NOT_FOUND, result)
+                return
             json_response(self, HTTPStatus.OK, result)
             return
 

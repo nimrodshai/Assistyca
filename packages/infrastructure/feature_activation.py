@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime
+from datetime import timezone
 from typing import Any
 
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyClient
@@ -14,8 +16,8 @@ from packages.infrastructure.portal_db import PortalDatabase
 
 
 ACTIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "on_trial"})
-WHATSAPP_CHANNELS = frozenset({"whatsapp"})
 DEFAULT_PRODUCT_NAME = "Assistyca"
+DEFAULT_PAYMENT_STATUS_CACHE_TTL_SECONDS = 120
 
 
 @dataclass
@@ -28,6 +30,7 @@ class FeatureActivationConfig:
     checkout_locale: str = "en"
     test_mode: bool = False
     product_name: str = DEFAULT_PRODUCT_NAME
+    payment_status_cache_ttl_seconds: int = DEFAULT_PAYMENT_STATUS_CACHE_TTL_SECONDS
 
 
 def normalize_text(value: Any) -> str:
@@ -45,6 +48,26 @@ def parse_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
 def load_feature_activation_config(
     *,
     billing_provider: str | None = None,
@@ -55,6 +78,7 @@ def load_feature_activation_config(
     checkout_locale: str | None = None,
     test_mode: bool | None = None,
     product_name: str | None = None,
+    payment_status_cache_ttl_seconds: int | None = None,
 ) -> FeatureActivationConfig:
     return FeatureActivationConfig(
         billing_provider=normalize_text(
@@ -98,6 +122,16 @@ def load_feature_activation_config(
             else os.getenv("PORTAL_PRODUCT_NAME") or os.getenv("LEMON_SQUEEZY_ACTIVATION_PRODUCT_NAME")
         )
         or DEFAULT_PRODUCT_NAME,
+        payment_status_cache_ttl_seconds=max(
+            0,
+            safe_int(
+                payment_status_cache_ttl_seconds
+                if payment_status_cache_ttl_seconds is not None
+                else os.getenv("FEATURE_ACTIVATION_PAYMENT_STATUS_CACHE_TTL_SECONDS"),
+                default=DEFAULT_PAYMENT_STATUS_CACHE_TTL_SECONDS,
+            ),
+        )
+        or DEFAULT_PAYMENT_STATUS_CACHE_TTL_SECONDS,
     )
 
 
@@ -112,6 +146,7 @@ class FeatureActivationService:
         self.database = database
         self.config = config or load_feature_activation_config()
         self.lemon_squeezy_client = lemon_squeezy_client
+        self._subscription_cache: dict[str, list[dict[str, Any]] | None] = {}
 
     @classmethod
     def from_env(
@@ -132,9 +167,23 @@ class FeatureActivationService:
         return cls(database, config=resolved_config, lemon_squeezy_client=lemon_squeezy_client)
 
     def list_feature_states(self, email: str) -> dict[str, Any]:
+        assigned_features = self.database.list_assigned_features(email)
+        feature_states: list[dict[str, Any]] = []
+        payment_summary: dict[str, Any] | None = None
+
+        for feature in assigned_features:
+            feature_state = self._build_feature_state(
+                email,
+                feature,
+                refresh_payment=self._should_refresh_feature_payment(email, feature),
+            )
+            feature_states.append(feature_state)
+            if payment_summary is None and bool(feature_state.get("billing", {}).get("required")):
+                payment_summary = feature_state.get("paymentStatus")
+
         return {
-            "features": self.database.list_feature_activations(email),
-            "paymentStatus": self._resolve_payment_status(email, refresh_remote=False),
+            "features": feature_states,
+            "paymentStatus": payment_summary or self._default_payment_status(),
         }
 
     def activate_feature(
@@ -146,110 +195,140 @@ class FeatureActivationService:
         channel: str = "",
         public_base_url: str = "",
     ) -> dict[str, Any]:
-        normalized_feature_id = normalize_text(feature_id)
-        normalized_feature_name = normalize_text(feature_name)
-        normalized_channel = normalize_text(channel)
+        del feature_name, channel
+        feature = self._require_assigned_feature(email, feature_id)
+        if feature is None:
+            return {
+                "ok": False,
+                "error": "feature_not_available",
+                "message": "This tool is not available for this account.",
+            }
+
+        feature_name_value = normalize_text(feature.get("name"))
+        channel_value = normalize_text(feature.get("channel"))
+        feature_id_value = normalize_text(feature.get("featureId"))
 
         self.database.record_feature_activation_event(
             email,
-            feature_id=normalized_feature_id,
-            feature_name=normalized_feature_name,
+            feature_id=feature_id_value,
+            feature_name=feature_name_value,
             event_name="activation_requested",
             outcome="started",
-            metadata={"channel": normalized_channel},
+            metadata={"channel": channel_value},
         )
 
-        setup_status = self._resolve_setup_status(email, feature_id=normalized_feature_id, channel=normalized_channel)
+        setup_status = self._resolve_setup_status(email, feature=feature)
         if not setup_status["ready"]:
             self.database.record_feature_activation_event(
                 email,
-                feature_id=normalized_feature_id,
-                feature_name=normalized_feature_name,
+                feature_id=feature_id_value,
+                feature_name=feature_name_value,
                 event_name="activation_blocked",
                 outcome="setup_required",
                 reason="setup_incomplete",
                 metadata=setup_status,
             )
-            feature = self.database.set_feature_activation(
+            self.database.set_feature_activation(
                 email,
-                feature_id=normalized_feature_id,
-                feature_name=normalized_feature_name,
+                feature_id=feature_id_value,
+                feature_name=feature_name_value,
                 is_active=False,
-                metadata={"channel": normalized_channel, "setupRequired": True},
+                metadata={"channel": channel_value, "setupRequired": True},
+            )
+            feature_state = self._build_feature_state(
+                email,
+                feature,
+                refresh_payment=False,
+                setup_status=setup_status,
             )
             return {
                 "ok": False,
                 "error": "setup_required",
                 "message": setup_status["message"],
-                "feature": feature,
+                "feature": feature_state,
                 "setupStatus": setup_status,
-                "paymentStatus": self._resolve_payment_status(email, refresh_remote=False),
+                "paymentStatus": feature_state.get("paymentStatus", self._default_payment_status()),
             }
 
         payment_status = self._resolve_payment_status(
             email,
+            feature=feature,
             refresh_remote=True,
-            feature_id=normalized_feature_id,
-            feature_name=normalized_feature_name,
             public_base_url=public_base_url,
         )
-        if not payment_status["isPayingCustomer"]:
+        if not payment_status["isEntitled"]:
             self.database.record_feature_activation_event(
                 email,
-                feature_id=normalized_feature_id,
-                feature_name=normalized_feature_name,
+                feature_id=feature_id_value,
+                feature_name=feature_name_value,
                 event_name="activation_blocked",
                 outcome="payment_required",
-                reason=normalize_text(payment_status.get("subscriptionStatus")) or "not_paying",
+                reason=normalize_text(payment_status.get("entitlementStatus")) or "not_entitled",
                 metadata=payment_status,
             )
-            feature = self.database.set_feature_activation(
+            self.database.set_feature_activation(
                 email,
-                feature_id=normalized_feature_id,
-                feature_name=normalized_feature_name,
+                feature_id=feature_id_value,
+                feature_name=feature_name_value,
                 is_active=False,
                 metadata={
-                    "channel": normalized_channel,
+                    "channel": channel_value,
                     "paymentRequired": True,
                     "checkoutUrl": payment_status.get("checkoutUrl", ""),
                 },
+            )
+            feature_state = self._build_feature_state(
+                email,
+                feature,
+                refresh_payment=False,
+                setup_status=setup_status,
+                payment_status=payment_status,
             )
             return {
                 "ok": False,
                 "error": "payment_required",
                 "message": payment_status["message"],
-                "feature": feature,
+                "feature": feature_state,
                 "paymentStatus": payment_status,
                 "setupStatus": setup_status,
             }
 
-        feature = self.database.set_feature_activation(
+        self.database.set_feature_activation(
             email,
-            feature_id=normalized_feature_id,
-            feature_name=normalized_feature_name,
+            feature_id=feature_id_value,
+            feature_name=feature_name_value,
             is_active=True,
             metadata={
-                "channel": normalized_channel,
+                "channel": channel_value,
                 "billingProvider": payment_status.get("provider", ""),
+                "entitlementStatus": payment_status.get("entitlementStatus", ""),
                 "subscriptionStatus": payment_status.get("subscriptionStatus", ""),
             },
         )
         self.database.record_feature_activation_event(
             email,
-            feature_id=normalized_feature_id,
-            feature_name=normalized_feature_name,
+            feature_id=feature_id_value,
+            feature_name=feature_name_value,
             event_name="activation_changed",
             outcome="activated",
             metadata={
-                "channel": normalized_channel,
+                "channel": channel_value,
                 "provider": payment_status.get("provider", ""),
+                "entitlementStatus": payment_status.get("entitlementStatus", ""),
                 "subscriptionStatus": payment_status.get("subscriptionStatus", ""),
             },
+        )
+        feature_state = self._build_feature_state(
+            email,
+            feature,
+            refresh_payment=False,
+            setup_status=setup_status,
+            payment_status=payment_status,
         )
         return {
             "ok": True,
             "message": "Tool activated.",
-            "feature": feature,
+            "feature": feature_state,
             "paymentStatus": payment_status,
             "setupStatus": setup_status,
         }
@@ -262,35 +341,109 @@ class FeatureActivationService:
         feature_name: str = "",
         channel: str = "",
     ) -> dict[str, Any]:
-        normalized_feature_id = normalize_text(feature_id)
-        normalized_feature_name = normalize_text(feature_name)
-        normalized_channel = normalize_text(channel)
-        feature = self.database.set_feature_activation(
+        del feature_name, channel
+        feature = self._require_assigned_feature(email, feature_id)
+        if feature is None:
+            return {
+                "ok": False,
+                "error": "feature_not_available",
+                "message": "This tool is not available for this account.",
+            }
+
+        feature_name_value = normalize_text(feature.get("name"))
+        channel_value = normalize_text(feature.get("channel"))
+        feature_id_value = normalize_text(feature.get("featureId"))
+        self.database.set_feature_activation(
             email,
-            feature_id=normalized_feature_id,
-            feature_name=normalized_feature_name,
+            feature_id=feature_id_value,
+            feature_name=feature_name_value,
             is_active=False,
-            metadata={"channel": normalized_channel},
+            metadata={"channel": channel_value},
         )
         self.database.record_feature_activation_event(
             email,
-            feature_id=normalized_feature_id,
-            feature_name=normalized_feature_name,
+            feature_id=feature_id_value,
+            feature_name=feature_name_value,
             event_name="activation_changed",
             outcome="deactivated",
-            metadata={"channel": normalized_channel},
+            metadata={"channel": channel_value},
         )
+        feature_state = self._build_feature_state(email, feature, refresh_payment=False)
         return {
             "ok": True,
             "message": "Tool turned off.",
-            "feature": feature,
-            "paymentStatus": self._resolve_payment_status(email, refresh_remote=False),
+            "feature": feature_state,
+            "paymentStatus": feature_state.get("paymentStatus", self._default_payment_status()),
         }
 
-    def _resolve_setup_status(self, email: str, *, feature_id: str, channel: str) -> dict[str, Any]:
-        normalized_channel = normalize_text(channel).lower()
-        normalized_feature_id = normalize_text(feature_id).lower()
-        if normalized_channel not in WHATSAPP_CHANNELS and "whatsapp" not in normalized_feature_id:
+    def _require_assigned_feature(self, email: str, feature_id: str) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_feature_id:
+            return None
+        return self.database.get_assigned_feature(email, normalized_feature_id)
+
+    def _build_feature_state(
+        self,
+        email: str,
+        feature: dict[str, Any],
+        *,
+        refresh_payment: bool,
+        public_base_url: str = "",
+        setup_status: dict[str, Any] | None = None,
+        payment_status: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        feature_id = normalize_text(feature.get("featureId"))
+        activation = self.database.get_feature_activation(email, feature_id) or {}
+        resolved_setup_status = setup_status or self._resolve_setup_status(email, feature=feature)
+        resolved_payment_status = payment_status or self._resolve_payment_status(
+            email,
+            feature=feature,
+            refresh_remote=refresh_payment,
+            public_base_url=public_base_url,
+        )
+
+        is_active = bool(activation.get("isActive"))
+        setup_complete = bool(
+            is_active
+            or not resolved_setup_status.get("required")
+            or resolved_setup_status.get("ready")
+        )
+
+        return {
+            "id": feature_id,
+            "featureId": feature_id,
+            "name": normalize_text(feature.get("name")),
+            "featureName": normalize_text(feature.get("name")),
+            "description": normalize_text(feature.get("description")),
+            "channel": normalize_text(feature.get("channel")),
+            "mode": normalize_text(feature.get("mode")),
+            "launchUrl": normalize_text(feature.get("launchUrl")),
+            "status": "active" if is_active else "non-active",
+            "isActive": is_active,
+            "activated": is_active,
+            "activatedAt": activation.get("activatedAt"),
+            "deactivatedAt": activation.get("deactivatedAt"),
+            "setupComplete": setup_complete,
+            "setupStatus": resolved_setup_status,
+            "paymentStatus": resolved_payment_status,
+            "billing": {
+                "required": bool(feature.get("billingRequired")),
+                "provider": normalize_text(feature.get("billingProvider")) or self.config.billing_provider,
+                "storeId": normalize_text(feature.get("billingStoreId")),
+                "productId": normalize_text(feature.get("billingProductId")),
+                "variantId": normalize_text(feature.get("billingVariantId")),
+            },
+            "requirements": dict(feature.get("requirements") or {}),
+            "pricing": dict(feature.get("pricing") or {}),
+            "prompt": dict(feature.get("prompt") or {}),
+            "assignment": dict(feature.get("assignment") or {}),
+            "metadata": dict(feature.get("metadata") or {}),
+        }
+
+    def _resolve_setup_status(self, email: str, *, feature: dict[str, Any]) -> dict[str, Any]:
+        requirements = feature.get("requirements") if isinstance(feature.get("requirements"), dict) else {}
+        requires_whatsapp_connection = bool(requirements.get("requiresWhatsAppConnection"))
+        if not requires_whatsapp_connection:
             return {
                 "required": False,
                 "ready": True,
@@ -306,65 +459,101 @@ class FeatureActivationService:
         return {
             "required": True,
             "ready": ready,
+            "requirementKey": "requiresWhatsAppConnection",
             "connectionStatus": normalize_text(connection.get("connectionStatus")) or "not_connected",
             "message": "" if ready else "Finish WhatsApp setup before activating this tool.",
         }
+
+    def _should_refresh_feature_payment(self, email: str, feature: dict[str, Any]) -> bool:
+        if not bool(feature.get("billingRequired")):
+            return False
+        if normalize_text(feature.get("billingProvider")) != "lemon_squeezy":
+            return False
+        if self.lemon_squeezy_client is None:
+            return False
+
+        entitlement = self.database.get_feature_entitlement(email, normalize_text(feature.get("featureId"))) or {}
+        if self._is_stale_record(entitlement):
+            return True
+        if self._is_entitled_record(entitlement):
+            return False
+        return bool(normalize_text(entitlement.get("checkoutUrl"))) or not entitlement
 
     def _resolve_payment_status(
         self,
         email: str,
         *,
+        feature: dict[str, Any],
         refresh_remote: bool,
-        feature_id: str = "",
-        feature_name: str = "",
         public_base_url: str = "",
     ) -> dict[str, Any]:
-        stored = self.database.get_billing_customer(email) or {}
+        if not bool(feature.get("billingRequired")):
+            return self._default_payment_status(feature=feature, entitled=True, not_required=True)
+
+        feature_id = normalize_text(feature.get("featureId"))
+        stored = self.database.get_feature_entitlement(email, feature_id) or {}
         if not refresh_remote:
-            return self._format_payment_status(stored, checkout_required=not self._is_paying_record(stored))
+            return self._format_payment_status(feature, stored, checkout_required=not self._is_entitled_record(stored))
 
         resolved = dict(stored)
-        if self.config.billing_provider == "lemon_squeezy" and self.lemon_squeezy_client is not None:
-            remote = self._refresh_from_lemon_squeezy(email)
+        if normalize_text(feature.get("billingProvider")) == "lemon_squeezy" and self.lemon_squeezy_client is not None:
+            remote = self._refresh_feature_entitlement_from_lemon_squeezy(email, feature)
             if remote:
                 resolved = remote
 
-        if self._is_paying_record(resolved):
-            return self._format_payment_status(resolved, checkout_required=False)
+        if self._is_entitled_record(resolved):
+            return self._format_payment_status(feature, resolved, checkout_required=False)
 
         checkout_url = normalize_text(resolved.get("checkoutUrl"))
         if not checkout_url:
             checkout_url = self._create_checkout_url(
                 email,
-                feature_id=feature_id,
-                feature_name=feature_name,
+                feature=feature,
                 public_base_url=public_base_url,
             )
             if checkout_url:
-                resolved = self.database.save_billing_customer(
+                resolved = self.database.save_feature_entitlement(
                     email,
-                    provider=self.config.billing_provider,
-                    variant_id=self.config.checkout_variant_id,
+                    feature_id=feature_id,
+                    provider=normalize_text(feature.get("billingProvider")) or self.config.billing_provider,
+                    external_customer_id=normalize_text(resolved.get("externalCustomerId")),
+                    external_subscription_id=normalize_text(resolved.get("externalSubscriptionId")),
+                    external_subscription_item_id=normalize_text(resolved.get("externalSubscriptionItemId")),
+                    entitlement_status=normalize_text(resolved.get("entitlementStatus")),
+                    product_id=normalize_text(resolved.get("productId")) or normalize_text(feature.get("billingProductId")),
+                    variant_id=normalize_text(resolved.get("variantId")) or normalize_text(feature.get("billingVariantId")),
                     checkout_url=checkout_url,
+                    customer_portal_url=normalize_text(resolved.get("customerPortalUrl")),
                     metadata={
                         **(resolved.get("metadata") if isinstance(resolved.get("metadata"), dict) else {}),
-                        "lastCheckoutFeatureId": normalize_text(feature_id),
-                        "lastCheckoutFeatureName": normalize_text(feature_name),
+                        "lastCheckoutFeatureId": feature_id,
+                        "lastCheckoutFeatureName": normalize_text(feature.get("name")),
                     },
                 )
 
-        return self._format_payment_status(resolved, checkout_required=True)
+        return self._format_payment_status(feature, resolved, checkout_required=True)
 
-    def _refresh_from_lemon_squeezy(self, email: str) -> dict[str, Any]:
-        existing = self.database.get_billing_customer(email) or {}
-        existing_metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+    def _list_remote_subscriptions(self, email: str) -> list[dict[str, Any]] | None:
+        normalized_email = normalize_text(email).lower()
+        if normalized_email in self._subscription_cache:
+            return self._subscription_cache[normalized_email]
+
         try:
-            response = self.lemon_squeezy_client.list_subscriptions(user_email=email, page_size=10)
+            response = self.lemon_squeezy_client.list_subscriptions(user_email=normalized_email, page_size=50)
         except LemonSqueezyRequestError:
-            return existing
+            self._subscription_cache[normalized_email] = None
+            return None
 
         items = response.get("items") if isinstance(response, dict) else []
         subscriptions = items if isinstance(items, list) else []
+        self._subscription_cache[normalized_email] = subscriptions
+        self._sync_account_billing_customer(normalized_email, subscriptions)
+        return subscriptions
+
+    def _sync_account_billing_customer(self, email: str, subscriptions: list[dict[str, Any]]) -> None:
+        existing = self.database.get_billing_customer(email) or {}
+        existing_metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+
         selected = None
         for subscription in subscriptions:
             if normalize_text(subscription.get("status")) in ACTIVE_SUBSCRIPTION_STATUSES:
@@ -374,7 +563,7 @@ class FeatureActivationService:
             selected = subscriptions[0]
 
         if selected is None:
-            return self.database.save_billing_customer(
+            self.database.save_billing_customer(
                 email,
                 provider=self.config.billing_provider,
                 external_customer_id=normalize_text(existing.get("externalCustomerId")),
@@ -388,10 +577,11 @@ class FeatureActivationService:
                     "source": "lemonsqueezy_api",
                 },
             )
+            return
 
         urls = selected.get("urls") if isinstance(selected.get("urls"), dict) else {}
         first_item = selected.get("first_subscription_item") if isinstance(selected.get("first_subscription_item"), dict) else {}
-        return self.database.save_billing_customer(
+        self.database.save_billing_customer(
             email,
             provider=self.config.billing_provider,
             external_customer_id=normalize_text(selected.get("customer_id")),
@@ -411,17 +601,106 @@ class FeatureActivationService:
             },
         )
 
+    def _refresh_feature_entitlement_from_lemon_squeezy(self, email: str, feature: dict[str, Any]) -> dict[str, Any]:
+        feature_id = normalize_text(feature.get("featureId"))
+        existing = self.database.get_feature_entitlement(email, feature_id) or {}
+        existing_metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+        subscriptions = self._list_remote_subscriptions(email)
+        if subscriptions is None:
+            return existing
+
+        matching_subscriptions = self._filter_subscriptions_for_feature(subscriptions, feature)
+        selected = None
+        for subscription in matching_subscriptions:
+            if normalize_text(subscription.get("status")) in ACTIVE_SUBSCRIPTION_STATUSES:
+                selected = subscription
+                break
+        if selected is None and matching_subscriptions:
+            selected = matching_subscriptions[0]
+
+        has_any_active_subscription = any(
+            normalize_text(subscription.get("status")) in ACTIVE_SUBSCRIPTION_STATUSES
+            for subscription in subscriptions
+        )
+
+        if selected is None:
+            return self.database.save_feature_entitlement(
+                email,
+                feature_id=feature_id,
+                provider=normalize_text(feature.get("billingProvider")) or self.config.billing_provider,
+                external_customer_id=normalize_text(existing.get("externalCustomerId")),
+                product_id=normalize_text(feature.get("billingProductId")) or normalize_text(existing.get("productId")),
+                variant_id=normalize_text(feature.get("billingVariantId")) or normalize_text(existing.get("variantId")),
+                entitlement_status="upgrade_required" if has_any_active_subscription else "",
+                checkout_url=normalize_text(existing.get("checkoutUrl")),
+                customer_portal_url=normalize_text(existing.get("customerPortalUrl")),
+                metadata={
+                    **existing_metadata,
+                    "source": "lemonsqueezy_api",
+                    "hasAnyActiveSubscription": has_any_active_subscription,
+                },
+            )
+
+        urls = selected.get("urls") if isinstance(selected.get("urls"), dict) else {}
+        first_item = selected.get("first_subscription_item") if isinstance(selected.get("first_subscription_item"), dict) else {}
+        entitlement_status = normalize_text(selected.get("status"))
+        return self.database.save_feature_entitlement(
+            email,
+            feature_id=feature_id,
+            provider=normalize_text(feature.get("billingProvider")) or self.config.billing_provider,
+            external_customer_id=normalize_text(selected.get("customer_id")),
+            external_subscription_id=normalize_text(selected.get("id")),
+            external_subscription_item_id=normalize_text(first_item.get("id")),
+            entitlement_status=entitlement_status,
+            product_id=normalize_text(selected.get("product_id")) or normalize_text(feature.get("billingProductId")),
+            variant_id=normalize_text(selected.get("variant_id")) or normalize_text(feature.get("billingVariantId")),
+            checkout_url=normalize_text(existing.get("checkoutUrl")),
+            customer_portal_url=normalize_text(urls.get("customer_portal")) or normalize_text(existing.get("customerPortalUrl")),
+            metadata={
+                **existing_metadata,
+                "source": "lemonsqueezy_api",
+                "hasAnyActiveSubscription": has_any_active_subscription,
+                "userEmail": normalize_text(selected.get("user_email")),
+                "statusFormatted": normalize_text(selected.get("status_formatted")),
+                "renewsAt": normalize_text(selected.get("renews_at")),
+            },
+        )
+
+    def _filter_subscriptions_for_feature(
+        self,
+        subscriptions: list[dict[str, Any]],
+        feature: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        billing_variant_id = normalize_text(feature.get("billingVariantId"))
+        billing_product_id = normalize_text(feature.get("billingProductId"))
+
+        if billing_variant_id:
+            return [
+                subscription
+                for subscription in subscriptions
+                if normalize_text(subscription.get("variant_id")) == billing_variant_id
+            ]
+        if billing_product_id:
+            return [
+                subscription
+                for subscription in subscriptions
+                if normalize_text(subscription.get("product_id")) == billing_product_id
+            ]
+        return list(subscriptions)
+
     def _create_checkout_url(
         self,
         email: str,
         *,
-        feature_id: str,
-        feature_name: str,
+        feature: dict[str, Any],
         public_base_url: str,
     ) -> str:
-        if self.config.billing_provider != "lemon_squeezy" or self.lemon_squeezy_client is None:
+        if normalize_text(feature.get("billingProvider")) != "lemon_squeezy" or self.lemon_squeezy_client is None:
             return ""
-        if not self.config.checkout_variant_id:
+
+        store_id = normalize_text(feature.get("billingStoreId")) or self.config.checkout_store_id
+        variant_id = normalize_text(feature.get("billingVariantId")) or self.config.checkout_variant_id
+        if not variant_id:
             return ""
 
         redirect_url = normalize_text(self.config.checkout_redirect_url)
@@ -430,8 +709,8 @@ class FeatureActivationService:
 
         try:
             checkout = self.lemon_squeezy_client.create_checkout(
-                store_id=self.config.checkout_store_id,
-                variant_id=self.config.checkout_variant_id,
+                store_id=store_id,
+                variant_id=variant_id,
                 product_options={"redirect_url": redirect_url} if redirect_url else None,
                 checkout_options={
                     "button_color": self.config.checkout_button_color,
@@ -441,8 +720,8 @@ class FeatureActivationService:
                     "email": normalize_text(email),
                     "custom": {
                         "portal_email": normalize_text(email),
-                        "feature_id": normalize_text(feature_id),
-                        "feature_name": normalize_text(feature_name),
+                        "feature_id": normalize_text(feature.get("featureId")),
+                        "feature_name": normalize_text(feature.get("name")),
                     },
                 },
                 test_mode=self.config.test_mode,
@@ -452,28 +731,87 @@ class FeatureActivationService:
 
         return normalize_text(checkout.get("url"))
 
-    def _is_paying_record(self, record: dict[str, Any] | None) -> bool:
+    def _is_entitled_record(self, record: dict[str, Any] | None) -> bool:
         payload = record if isinstance(record, dict) else {}
-        return normalize_text(payload.get("subscriptionStatus")) in ACTIVE_SUBSCRIPTION_STATUSES
+        return normalize_text(payload.get("entitlementStatus")) in ACTIVE_SUBSCRIPTION_STATUSES
 
-    def _format_payment_status(self, record: dict[str, Any] | None, *, checkout_required: bool) -> dict[str, Any]:
+    def _is_stale_record(self, record: dict[str, Any] | None) -> bool:
         payload = record if isinstance(record, dict) else {}
-        is_paying_customer = self._is_paying_record(payload)
+        moment = parse_datetime(payload.get("lastCheckedAt"))
+        if moment is None:
+            return True
+        age_seconds = (datetime.now(timezone.utc) - moment).total_seconds()
+        return age_seconds >= float(self.config.payment_status_cache_ttl_seconds)
+
+    def _default_payment_status(
+        self,
+        *,
+        feature: dict[str, Any] | None = None,
+        entitled: bool = False,
+        not_required: bool = False,
+    ) -> dict[str, Any]:
+        provider = normalize_text(feature.get("billingProvider")) if isinstance(feature, dict) else ""
+        feature_id = normalize_text(feature.get("featureId")) if isinstance(feature, dict) else ""
+        billing_required = bool(feature.get("billingRequired")) if isinstance(feature, dict) else False
+        message = ""
+        if not_required:
+            message = "Payment is not required for this tool."
+        elif entitled:
+            message = "Payment is active for this tool."
+
+        return {
+            "featureId": feature_id,
+            "provider": provider or self.config.billing_provider,
+            "billingRequired": billing_required,
+            "isPayingCustomer": entitled,
+            "isEntitled": entitled,
+            "subscriptionStatus": "not_required" if not_required else "",
+            "entitlementStatus": "not_required" if not_required else "",
+            "checkoutRequired": False,
+            "checkoutUrl": "",
+            "customerPortalUrl": "",
+            "hasAnyActiveSubscription": False,
+            "message": message,
+        }
+
+    def _format_payment_status(
+        self,
+        feature: dict[str, Any],
+        record: dict[str, Any] | None,
+        *,
+        checkout_required: bool,
+    ) -> dict[str, Any]:
+        payload = record if isinstance(record, dict) else {}
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        is_entitled = self._is_entitled_record(payload)
         checkout_url = normalize_text(payload.get("checkoutUrl"))
+        has_any_active_subscription = bool(metadata.get("hasAnyActiveSubscription"))
+        billing_required = bool(feature.get("billingRequired"))
 
-        if is_paying_customer:
-            message = "Payment is active."
+        if not billing_required:
+            return self._default_payment_status(feature=feature, entitled=True, not_required=True)
+
+        if is_entitled:
+            message = "Payment is active for this tool."
+        elif has_any_active_subscription:
+            message = "Your current plan does not unlock this tool yet."
         elif checkout_url:
             message = "Add your card details before activating this tool."
         else:
             message = "Payment is required before activating this tool."
 
+        entitlement_status = normalize_text(payload.get("entitlementStatus"))
         return {
-            "provider": normalize_text(payload.get("provider")) or self.config.billing_provider,
-            "isPayingCustomer": is_paying_customer,
-            "subscriptionStatus": normalize_text(payload.get("subscriptionStatus")),
-            "checkoutRequired": bool(checkout_required and not is_paying_customer),
+            "featureId": normalize_text(feature.get("featureId")),
+            "provider": normalize_text(payload.get("provider")) or normalize_text(feature.get("billingProvider")) or self.config.billing_provider,
+            "billingRequired": billing_required,
+            "isPayingCustomer": is_entitled,
+            "isEntitled": is_entitled,
+            "subscriptionStatus": entitlement_status,
+            "entitlementStatus": entitlement_status,
+            "checkoutRequired": bool(checkout_required and billing_required and not is_entitled),
             "checkoutUrl": checkout_url,
             "customerPortalUrl": normalize_text(payload.get("customerPortalUrl")),
+            "hasAnyActiveSubscription": has_any_active_subscription,
             "message": message,
         }

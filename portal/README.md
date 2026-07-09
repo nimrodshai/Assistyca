@@ -9,6 +9,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - `index.html` for the tabbed app shell
 - `styles.css` for the interface
 - `app.js` for the OTP sign-in flow, tab state, account menu, and preview behavior
+- The backend now owns the feature catalog, per-user feature assignment, activation state, and billing entitlements. The browser keeps only local editor and draft setup state.
 
 ## Portal layout
 
@@ -70,8 +71,12 @@ Required environment variables on Render:
 - `LEMON_SQUEEZY_API_KEY` for subscription lookups and hosted checkout creation
 - `LEMON_SQUEEZY_STORE_ID` for the Lemon Squeezy store
 - `LEMON_SQUEEZY_ACTIVATION_VARIANT_ID` for the subscription or plan that should unlock feature activation
+- `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_STORE_ID` optional per-feature override for the WhatsApp Reply Assistant store ID
+- `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_VARIANT_ID` optional per-feature override for the WhatsApp Reply Assistant plan or variant ID
+- `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_PRODUCT_ID` optional per-feature product matcher when you want entitlement checks to follow a specific Lemon Squeezy product
 - `LEMON_SQUEEZY_SIGNING_SECRET` optional now, but needed once you accept Lemon Squeezy webhooks
 - `LEMON_SQUEEZY_ACTIVATION_REDIRECT_URL` optional override for where checkout should return after payment. If unset, the portal uses `PUBLIC_BASE_URL/portal/#features`
+- `FEATURE_ACTIVATION_PAYMENT_STATUS_CACHE_TTL_SECONDS` optional cache TTL for backend payment-status refreshes. The default is `120`.
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.
 Portal sessions now default to 180 days and survive server restarts when the signing secret stays stable.

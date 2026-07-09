@@ -14,6 +14,8 @@ import re
 from typing import Any
 from typing import Iterable
 
+from packages.infrastructure.feature_catalog import load_default_feature_catalog
+
 
 DEFAULT_DB_PATH = Path("portal/portal.db")
 DEFAULT_CURRENCY = "USD"
@@ -135,6 +137,62 @@ CREATE TABLE IF NOT EXISTS billing_customers (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS features (
+    feature_id TEXT PRIMARY KEY,
+    feature_name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    launch_url TEXT NOT NULL DEFAULT '',
+    billing_required INTEGER NOT NULL DEFAULT 0,
+    billing_provider TEXT NOT NULL DEFAULT '',
+    billing_store_id TEXT NOT NULL DEFAULT '',
+    billing_product_id TEXT NOT NULL DEFAULT '',
+    billing_variant_id TEXT NOT NULL DEFAULT '',
+    default_assigned INTEGER NOT NULL DEFAULT 1,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 100,
+    prompt_json TEXT NOT NULL DEFAULT '{}',
+    pricing_json TEXT NOT NULL DEFAULT '{}',
+    requirements_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feature_assignments (
+    user_id INTEGER NOT NULL,
+    feature_id TEXT NOT NULL,
+    is_assigned INTEGER NOT NULL DEFAULT 1,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    assigned_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, feature_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(feature_id) REFERENCES features(feature_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS feature_entitlements (
+    user_id INTEGER NOT NULL,
+    feature_id TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT '',
+    external_customer_id TEXT NOT NULL DEFAULT '',
+    external_subscription_id TEXT NOT NULL DEFAULT '',
+    external_subscription_item_id TEXT NOT NULL DEFAULT '',
+    entitlement_status TEXT NOT NULL DEFAULT '',
+    product_id TEXT NOT NULL DEFAULT '',
+    variant_id TEXT NOT NULL DEFAULT '',
+    checkout_url TEXT NOT NULL DEFAULT '',
+    customer_portal_url TEXT NOT NULL DEFAULT '',
+    last_checked_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, feature_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(feature_id) REFERENCES features(feature_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS feature_activations (
     user_id INTEGER NOT NULL,
     feature_id TEXT NOT NULL,
@@ -173,6 +231,12 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_approval_index_user_id
 ON whatsapp_approval_index(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_billing_customers_provider_status
 ON billing_customers(provider, subscription_status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_features_active_sort
+ON features(is_active, sort_order, feature_name);
+CREATE INDEX IF NOT EXISTS idx_feature_assignments_user_assigned
+ON feature_assignments(user_id, is_assigned, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feature_entitlements_user_status
+ON feature_entitlements(user_id, entitlement_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_activations_user_active
 ON feature_activations(user_id, is_active, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_activation_events_user_feature
@@ -314,6 +378,16 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return {key: row[key] for key in row.keys()}
 
 
+def _load_json_dict(raw_value: Any) -> dict[str, Any]:
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    try:
+        payload = json.loads(raw_value) if raw_value else {}
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
 class PortalDatabase:
     def __init__(
         self,
@@ -367,6 +441,63 @@ class PortalDatabase:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
                 if self.bootstrap_admin_emails:
                     self._seed_admin_emails(conn, self.bootstrap_admin_emails)
+                self._sync_feature_catalog(conn)
+                self._ensure_default_feature_assignments(conn)
+
+    def _sync_feature_catalog(self, conn: sqlite3.Connection) -> None:
+        for feature in load_default_feature_catalog():
+            self._upsert_feature_record(
+                conn,
+                feature_id=feature.get("featureId"),
+                feature_name=feature.get("name"),
+                description=feature.get("description"),
+                channel=feature.get("channel"),
+                mode=feature.get("mode"),
+                launch_url=feature.get("launchUrl"),
+                billing_required=bool(feature.get("billing", {}).get("required")),
+                billing_provider=feature.get("billing", {}).get("provider"),
+                billing_store_id=feature.get("billing", {}).get("storeId"),
+                billing_product_id=feature.get("billing", {}).get("productId"),
+                billing_variant_id=feature.get("billing", {}).get("variantId"),
+                default_assigned=bool(feature.get("defaultAssigned", True)),
+                is_active=bool(feature.get("isActive", True)),
+                sort_order=feature.get("sortOrder"),
+                prompt=feature.get("prompt"),
+                pricing=feature.get("pricing"),
+                requirements=feature.get("requirements"),
+                metadata=feature.get("metadata"),
+            )
+
+    def _ensure_default_feature_assignments(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute("SELECT id FROM users WHERE is_active = 1").fetchall()
+        for row in rows:
+            self._ensure_default_feature_assignments_for_user(conn, int(row["id"]))
+
+    def _ensure_default_feature_assignments_for_user(self, conn: sqlite3.Connection, user_id: int) -> None:
+        if user_id <= 0:
+            return
+
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO feature_assignments (
+                user_id,
+                feature_id,
+                is_assigned,
+                metadata_json,
+                assigned_at,
+                updated_at
+            )
+            SELECT ?, f.feature_id, 1, '{}', ?, ?
+            FROM features AS f
+            LEFT JOIN feature_assignments AS a
+                ON a.user_id = ? AND a.feature_id = f.feature_id
+            WHERE f.is_active = 1
+              AND f.default_assigned = 1
+              AND a.feature_id IS NULL
+            """,
+            (user_id, now, now, user_id),
+        )
 
     def _migrate_users_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -922,6 +1053,283 @@ class PortalDatabase:
             "updatedAt": payload.get("updated_at"),
         }
 
+    def _upsert_feature_record(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        feature_id: Any,
+        feature_name: Any = "",
+        description: Any = "",
+        channel: Any = "",
+        mode: Any = "",
+        launch_url: Any = "",
+        billing_required: bool = False,
+        billing_provider: Any = "",
+        billing_store_id: Any = "",
+        billing_product_id: Any = "",
+        billing_variant_id: Any = "",
+        default_assigned: bool = True,
+        is_active: bool = True,
+        sort_order: Any = 100,
+        prompt: dict[str, Any] | None = None,
+        pricing: dict[str, Any] | None = None,
+        requirements: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        now = now_iso()
+        prompt_json = json.dumps(prompt or {}, ensure_ascii=True, sort_keys=True)
+        pricing_json = json.dumps(pricing or {}, ensure_ascii=True, sort_keys=True)
+        requirements_json = json.dumps(requirements or {}, ensure_ascii=True, sort_keys=True)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        existing = conn.execute(
+            "SELECT created_at FROM features WHERE feature_id = ?",
+            (normalized_feature_id,),
+        ).fetchone()
+        created_at = existing["created_at"] if existing and existing["created_at"] else now
+
+        conn.execute(
+            """
+            INSERT INTO features (
+                feature_id,
+                feature_name,
+                description,
+                channel,
+                mode,
+                launch_url,
+                billing_required,
+                billing_provider,
+                billing_store_id,
+                billing_product_id,
+                billing_variant_id,
+                default_assigned,
+                is_active,
+                sort_order,
+                prompt_json,
+                pricing_json,
+                requirements_json,
+                metadata_json,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(feature_id) DO UPDATE SET
+                feature_name = excluded.feature_name,
+                description = excluded.description,
+                channel = excluded.channel,
+                mode = excluded.mode,
+                launch_url = excluded.launch_url,
+                billing_required = excluded.billing_required,
+                billing_provider = excluded.billing_provider,
+                billing_store_id = excluded.billing_store_id,
+                billing_product_id = excluded.billing_product_id,
+                billing_variant_id = excluded.billing_variant_id,
+                default_assigned = excluded.default_assigned,
+                is_active = excluded.is_active,
+                sort_order = excluded.sort_order,
+                prompt_json = excluded.prompt_json,
+                pricing_json = excluded.pricing_json,
+                requirements_json = excluded.requirements_json,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                normalized_feature_id,
+                normalize_text(feature_name) or humanize_identifier(normalized_feature_id),
+                normalize_text(description),
+                normalize_text(channel),
+                normalize_text(mode),
+                normalize_text(launch_url),
+                1 if billing_required else 0,
+                normalize_text(billing_provider),
+                normalize_text(billing_store_id),
+                normalize_text(billing_product_id),
+                normalize_text(billing_variant_id),
+                1 if default_assigned else 0,
+                1 if is_active else 0,
+                int(sort_order or 100),
+                prompt_json,
+                pricing_json,
+                requirements_json,
+                metadata_json,
+                created_at,
+                now,
+            ),
+        )
+        return self._load_feature_row(conn, feature_id=normalized_feature_id) or {}
+
+    def _load_feature_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        feature_id: str,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_feature_id:
+            return None
+
+        row = conn.execute(
+            """
+            SELECT
+                feature_id,
+                feature_name,
+                description,
+                channel,
+                mode,
+                launch_url,
+                billing_required,
+                billing_provider,
+                billing_store_id,
+                billing_product_id,
+                billing_variant_id,
+                default_assigned,
+                is_active,
+                sort_order,
+                prompt_json,
+                pricing_json,
+                requirements_json,
+                metadata_json,
+                created_at,
+                updated_at
+            FROM features
+            WHERE feature_id = ?
+            LIMIT 1
+            """,
+            (normalized_feature_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        return {
+            "featureId": normalize_text(payload.get("feature_id")),
+            "name": normalize_text(payload.get("feature_name")) or humanize_identifier(payload.get("feature_id")),
+            "description": normalize_text(payload.get("description")),
+            "channel": normalize_text(payload.get("channel")),
+            "mode": normalize_text(payload.get("mode")),
+            "launchUrl": normalize_text(payload.get("launch_url")),
+            "billingRequired": bool(payload.get("billing_required")),
+            "billingProvider": normalize_text(payload.get("billing_provider")),
+            "billingStoreId": normalize_text(payload.get("billing_store_id")),
+            "billingProductId": normalize_text(payload.get("billing_product_id")),
+            "billingVariantId": normalize_text(payload.get("billing_variant_id")),
+            "defaultAssigned": bool(payload.get("default_assigned")),
+            "isCatalogActive": bool(payload.get("is_active")),
+            "sortOrder": int(payload.get("sort_order") or 100),
+            "prompt": _load_json_dict(payload.get("prompt_json")),
+            "pricing": _load_json_dict(payload.get("pricing_json")),
+            "requirements": _load_json_dict(payload.get("requirements_json")),
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
+    def _load_feature_assignment_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+        feature_id: str,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0 or not normalized_feature_id:
+            return None
+
+        row = conn.execute(
+            """
+            SELECT
+                fa.user_id,
+                u.email,
+                fa.feature_id,
+                fa.is_assigned,
+                fa.metadata_json,
+                fa.assigned_at,
+                fa.updated_at
+            FROM feature_assignments AS fa
+            INNER JOIN users AS u
+                ON u.id = fa.user_id
+            WHERE fa.user_id = ? AND fa.feature_id = ?
+            LIMIT 1
+            """,
+            (user_id, normalized_feature_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        return {
+            "userId": int(payload.get("user_id") or 0),
+            "email": normalize_email(payload.get("email")),
+            "featureId": normalize_text(payload.get("feature_id")),
+            "isAssigned": bool(payload.get("is_assigned")),
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+            "assignedAt": payload.get("assigned_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
+    def _load_feature_entitlement_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+        feature_id: str,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0 or not normalized_feature_id:
+            return None
+
+        row = conn.execute(
+            """
+            SELECT
+                fe.user_id,
+                u.email,
+                fe.feature_id,
+                fe.provider,
+                fe.external_customer_id,
+                fe.external_subscription_id,
+                fe.external_subscription_item_id,
+                fe.entitlement_status,
+                fe.product_id,
+                fe.variant_id,
+                fe.checkout_url,
+                fe.customer_portal_url,
+                fe.last_checked_at,
+                fe.metadata_json,
+                fe.created_at,
+                fe.updated_at
+            FROM feature_entitlements AS fe
+            INNER JOIN users AS u
+                ON u.id = fe.user_id
+            WHERE fe.user_id = ? AND fe.feature_id = ?
+            LIMIT 1
+            """,
+            (user_id, normalized_feature_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        return {
+            "userId": int(payload.get("user_id") or 0),
+            "email": normalize_email(payload.get("email")),
+            "featureId": normalize_text(payload.get("feature_id")),
+            "provider": normalize_text(payload.get("provider")),
+            "externalCustomerId": normalize_text(payload.get("external_customer_id")),
+            "externalSubscriptionId": normalize_text(payload.get("external_subscription_id")),
+            "externalSubscriptionItemId": normalize_text(payload.get("external_subscription_item_id")),
+            "entitlementStatus": normalize_text(payload.get("entitlement_status")),
+            "productId": normalize_text(payload.get("product_id")),
+            "variantId": normalize_text(payload.get("variant_id")),
+            "checkoutUrl": normalize_text(payload.get("checkout_url")),
+            "customerPortalUrl": normalize_text(payload.get("customer_portal_url")),
+            "lastCheckedAt": payload.get("last_checked_at"),
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
     def count_registered_users(self, conn: sqlite3.Connection | None = None) -> int:
         if conn is not None:
             row = conn.execute("SELECT COUNT(*) AS count FROM users WHERE is_active = 1").fetchone()
@@ -1103,6 +1511,7 @@ class PortalDatabase:
                 effective_from=moment,
                 updated_at=moment,
             )
+            self._ensure_default_feature_assignments_for_user(conn, user_id)
             return self._load_user_row(conn, normalized_email) or {}
 
     def set_user_billing(
@@ -1273,6 +1682,232 @@ class PortalDatabase:
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, email=normalized_email)
 
+    def upsert_feature(
+        self,
+        feature_id: str,
+        *,
+        feature_name: str = "",
+        description: str = "",
+        channel: str = "",
+        mode: str = "",
+        launch_url: str = "",
+        billing_required: bool = False,
+        billing_provider: str = "",
+        billing_store_id: str = "",
+        billing_product_id: str = "",
+        billing_variant_id: str = "",
+        default_assigned: bool = True,
+        is_active: bool = True,
+        sort_order: int = 100,
+        prompt: dict[str, Any] | None = None,
+        pricing: dict[str, Any] | None = None,
+        requirements: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._connection() as conn:
+            return self._upsert_feature_record(
+                conn,
+                feature_id=feature_id,
+                feature_name=feature_name,
+                description=description,
+                channel=channel,
+                mode=mode,
+                launch_url=launch_url,
+                billing_required=billing_required,
+                billing_provider=billing_provider,
+                billing_store_id=billing_store_id,
+                billing_product_id=billing_product_id,
+                billing_variant_id=billing_variant_id,
+                default_assigned=default_assigned,
+                is_active=is_active,
+                sort_order=sort_order,
+                prompt=prompt,
+                pricing=pricing,
+                requirements=requirements,
+                metadata=metadata,
+            )
+
+    def get_feature(self, feature_id: str) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_feature_id:
+            return None
+
+        with self._connection() as conn:
+            return self._load_feature_row(conn, feature_id=normalized_feature_id)
+
+    def list_features(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            query = """
+                SELECT feature_id
+                FROM features
+            """
+            params: list[Any] = []
+            if not include_inactive:
+                query += " WHERE is_active = 1"
+            query += " ORDER BY sort_order ASC, feature_name ASC, feature_id ASC"
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+            features: list[dict[str, Any]] = []
+            for row in rows:
+                record = self._load_feature_row(conn, feature_id=row["feature_id"])
+                if record is not None:
+                    features.append(record)
+        return features
+
+    def get_feature_assignment(self, email: str, feature_id: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email or not normalized_feature_id:
+            return None
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id)
+
+    def list_feature_assignments(self, email: str) -> list[dict[str, Any]]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return []
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            rows = conn.execute(
+                """
+                SELECT feature_id
+                FROM feature_assignments
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, feature_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+
+            assignments: list[dict[str, Any]] = []
+            for row in rows:
+                record = self._load_feature_assignment_row(conn, user_id=user_id, feature_id=row["feature_id"])
+                if record is not None:
+                    assignments.append(record)
+        return assignments
+
+    def assign_feature_to_user(
+        self,
+        email: str,
+        feature_id: str,
+        *,
+        is_assigned: bool = True,
+        metadata: dict[str, Any] | None = None,
+        assigned_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        assigned_at_value = parse_datetime(assigned_at).isoformat() if assigned_at is not None else now
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            feature = self._load_feature_row(conn, feature_id=normalized_feature_id)
+            if feature is None:
+                raise KeyError(f"Unknown feature: {normalized_feature_id}")
+
+            existing = conn.execute(
+                "SELECT assigned_at FROM feature_assignments WHERE user_id = ? AND feature_id = ?",
+                (user_id, normalized_feature_id),
+            ).fetchone()
+            resolved_assigned_at = existing["assigned_at"] if existing and existing["assigned_at"] else assigned_at_value
+
+            conn.execute(
+                """
+                INSERT INTO feature_assignments (
+                    user_id,
+                    feature_id,
+                    is_assigned,
+                    metadata_json,
+                    assigned_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, feature_id) DO UPDATE SET
+                    is_assigned = excluded.is_assigned,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    normalized_feature_id,
+                    1 if is_assigned else 0,
+                    metadata_json,
+                    resolved_assigned_at,
+                    now,
+                ),
+            )
+            return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
+
+    def get_assigned_feature(self, email: str, feature_id: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email or not normalized_feature_id:
+            return None
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            row = conn.execute(
+                """
+                SELECT f.feature_id
+                FROM features AS f
+                INNER JOIN feature_assignments AS a
+                    ON a.feature_id = f.feature_id
+                WHERE a.user_id = ?
+                  AND a.feature_id = ?
+                  AND a.is_assigned = 1
+                  AND f.is_active = 1
+                LIMIT 1
+                """,
+                (user_id, normalized_feature_id),
+            ).fetchone()
+            if row is None:
+                return None
+            feature = self._load_feature_row(conn, feature_id=normalized_feature_id) or {}
+            assignment = self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id)
+            if assignment is not None:
+                feature["assignment"] = assignment
+            return feature
+
+    def list_assigned_features(self, email: str) -> list[dict[str, Any]]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return []
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            rows = conn.execute(
+                """
+                SELECT f.feature_id
+                FROM features AS f
+                INNER JOIN feature_assignments AS a
+                    ON a.feature_id = f.feature_id
+                WHERE a.user_id = ?
+                  AND a.is_assigned = 1
+                  AND f.is_active = 1
+                ORDER BY f.sort_order ASC, f.feature_name ASC, f.feature_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+
+            features: list[dict[str, Any]] = []
+            for row in rows:
+                feature = self._load_feature_row(conn, feature_id=row["feature_id"])
+                if feature is None:
+                    continue
+                assignment = self._load_feature_assignment_row(conn, user_id=user_id, feature_id=row["feature_id"])
+                if assignment is not None:
+                    feature["assignment"] = assignment
+                features.append(feature)
+        return features
+
     def get_whatsapp_connection_by_phone_number_id(self, phone_number_id: str) -> dict[str, Any] | None:
         normalized_phone_number_id = normalize_text(phone_number_id)
         if not normalized_phone_number_id:
@@ -1379,6 +2014,133 @@ class PortalDatabase:
             )
 
             return self._load_billing_customer_row(conn, user_id=user_id) or {}
+
+    def get_feature_entitlement(self, email: str, feature_id: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email or not normalized_feature_id:
+            return None
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            return self._load_feature_entitlement_row(conn, user_id=user_id, feature_id=normalized_feature_id)
+
+    def save_feature_entitlement(
+        self,
+        email: str,
+        *,
+        feature_id: str,
+        provider: str = "",
+        external_customer_id: str = "",
+        external_subscription_id: str = "",
+        external_subscription_item_id: str = "",
+        entitlement_status: str = "",
+        product_id: str = "",
+        variant_id: str = "",
+        checkout_url: str = "",
+        customer_portal_url: str = "",
+        last_checked_at: str | datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        checked_at_value = parse_datetime(last_checked_at).isoformat() if last_checked_at is not None else now
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            feature = self._load_feature_row(conn, feature_id=normalized_feature_id)
+            if feature is None:
+                raise KeyError(f"Unknown feature: {normalized_feature_id}")
+
+            existing = conn.execute(
+                "SELECT created_at FROM feature_entitlements WHERE user_id = ? AND feature_id = ?",
+                (user_id, normalized_feature_id),
+            ).fetchone()
+            created_at = existing["created_at"] if existing and existing["created_at"] else now
+
+            conn.execute(
+                """
+                INSERT INTO feature_entitlements (
+                    user_id,
+                    feature_id,
+                    provider,
+                    external_customer_id,
+                    external_subscription_id,
+                    external_subscription_item_id,
+                    entitlement_status,
+                    product_id,
+                    variant_id,
+                    checkout_url,
+                    customer_portal_url,
+                    last_checked_at,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, feature_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    external_customer_id = excluded.external_customer_id,
+                    external_subscription_id = excluded.external_subscription_id,
+                    external_subscription_item_id = excluded.external_subscription_item_id,
+                    entitlement_status = excluded.entitlement_status,
+                    product_id = excluded.product_id,
+                    variant_id = excluded.variant_id,
+                    checkout_url = excluded.checkout_url,
+                    customer_portal_url = excluded.customer_portal_url,
+                    last_checked_at = excluded.last_checked_at,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    normalized_feature_id,
+                    normalize_text(provider),
+                    normalize_text(external_customer_id),
+                    normalize_text(external_subscription_id),
+                    normalize_text(external_subscription_item_id),
+                    normalize_text(entitlement_status),
+                    normalize_text(product_id),
+                    normalize_text(variant_id),
+                    normalize_text(checkout_url),
+                    normalize_text(customer_portal_url),
+                    checked_at_value,
+                    metadata_json,
+                    created_at,
+                    now,
+                ),
+            )
+            return self._load_feature_entitlement_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
+
+    def list_feature_entitlements(self, email: str) -> list[dict[str, Any]]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return []
+
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            rows = conn.execute(
+                """
+                SELECT feature_id
+                FROM feature_entitlements
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, feature_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+
+            entitlements: list[dict[str, Any]] = []
+            for row in rows:
+                record = self._load_feature_entitlement_row(conn, user_id=user_id, feature_id=row["feature_id"])
+                if record is not None:
+                    entitlements.append(record)
+        return entitlements
 
     def get_feature_activation(self, email: str, feature_id: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)
