@@ -477,6 +477,8 @@ const elements = {
   accountSettingsPane: document.querySelector("#accountSettingsPane"),
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
   userAccessSettingsPane: document.querySelector("#userAccessSettingsPane"),
+  adminUsersShell: document.querySelector("#adminUsersShell"),
+  adminAddUserStage: document.querySelector("#adminAddUserStage"),
   adminUsersMenuItem: document.querySelector("#adminUsersMenuItem"),
   adminUsersBackButton: document.querySelector("#adminUsersBackButton"),
   adminOpenAddUserButton: document.querySelector("#adminOpenAddUserButton"),
@@ -4130,6 +4132,12 @@ function createAdminAddUserView() {
   note.className = "admin-form-note";
   note.textContent = "Tool visibility and any additional account details are managed from the user page after registration.";
 
+  const error = document.createElement("div");
+  error.className = `field-error${state.adminUsersError ? "" : " is-hidden"}`;
+  error.role = "status";
+  error.setAttribute("aria-live", "polite");
+  error.textContent = state.adminUsersError;
+
   const actions = document.createElement("div");
   actions.className = "card-actions admin-form-actions";
 
@@ -4147,7 +4155,7 @@ function createAdminAddUserView() {
   submitButton.textContent = state.adminAddUserBusy ? "Registering..." : "Register user";
 
   actions.append(cancelButton, submitButton);
-  panel.append(title, copy, emailField, nameField, note, actions);
+  panel.append(title, copy, emailField, nameField, note, error, actions);
   wrapper.append(panel);
   return wrapper;
 }
@@ -4276,12 +4284,19 @@ function renderAdminUsersPane() {
     elements.adminUsersMenuItem.classList.toggle("is-hidden", !adminVisible);
   }
 
-  if (!elements.userAccessSettingsPane || !elements.adminUsersContent) {
+  if (
+    !elements.userAccessSettingsPane
+    || !elements.adminUsersShell
+    || !elements.adminUsersContent
+    || !elements.adminAddUserStage
+  ) {
     return;
   }
 
   if (!adminVisible) {
     elements.userAccessSettingsPane.classList.add("is-hidden");
+    elements.adminUsersShell.classList.remove("is-hidden");
+    elements.adminAddUserStage.classList.add("is-hidden");
     return;
   }
 
@@ -4302,9 +4317,15 @@ function renderAdminUsersPane() {
   }
 
   if (state.adminView === "add") {
-    elements.adminUsersContent.replaceChildren(createAdminAddUserView());
+    elements.adminUsersShell.classList.add("is-hidden");
+    elements.adminAddUserStage.classList.remove("is-hidden");
+    elements.adminAddUserStage.replaceChildren(createAdminAddUserView());
     return;
   }
+
+  elements.adminUsersShell.classList.remove("is-hidden");
+  elements.adminAddUserStage.classList.add("is-hidden");
+  elements.adminAddUserStage.replaceChildren();
 
   if (state.adminView === "detail") {
     elements.adminUsersContent.replaceChildren(createAdminUserDetailView(getAdminSelectedUser()));
@@ -6131,7 +6152,11 @@ function bindEvents() {
 
       if (state.adminUsersError) {
         state.adminUsersError = "";
-        syncAdminUsersError();
+        if (state.adminView === "add") {
+          renderAdminUsersPane();
+        } else {
+          syncAdminUsersError();
+        }
       }
     });
 
@@ -6186,6 +6211,7 @@ function bindEvents() {
 
       const cancelAddButton = event.target.closest("[data-admin-cancel-add-user]");
       if (cancelAddButton) {
+        state.adminUsersError = "";
         openAdminUsersList({ preserveSearch: true, refresh: false });
         return;
       }

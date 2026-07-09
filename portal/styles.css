@@ -2984,6 +2984,11 @@ body[data-modal="billing"] .app-shell {
   width: 100%;
 }
 
+.admin-add-user-stage {
+  display: flex;
+  align-items: flex-start;
+}
+
 .admin-user-access-head {
   display: flex;
   justify-content: space-between;
@@ -3015,6 +3020,10 @@ body[data-modal="billing"] .app-shell {
 .admin-detail-grid {
   display: grid;
   gap: 1rem;
+}
+
+.admin-users-add-view {
+  width: min(100%, 40rem);
 }
 
 .admin-users-toolbar {
@@ -3118,6 +3127,16 @@ body[data-modal="billing"] .app-shell {
   border: 1px solid var(--line);
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.82);
+}
+
+.admin-add-panel {
+  gap: 1.15rem;
+  padding: 1.25rem;
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 253, 0.94)),
+    rgba(255, 255, 255, 0.92);
+  box-shadow: 0 18px 38px rgba(25, 38, 54, 0.08);
 }
 
 .admin-panel-copy,
@@ -3257,6 +3276,7 @@ body[data-modal="billing"] .app-shell {
     justify-content: flex-start;
   }
 
+  .admin-add-user-stage,
   .admin-detail-hero,
   .admin-users-toolbar {
     flex-direction: column;

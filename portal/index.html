@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=51" />
+    <link rel="stylesheet" href="./styles.css?v=52" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -839,7 +839,7 @@ Owner said afternoons are easier."
           </div>
 
           <div id="userAccessSettingsPane" class="settings-pane-grid is-hidden">
-            <article class="glass-card settings-card admin-user-access-card">
+            <article id="adminUsersShell" class="glass-card settings-card admin-user-access-card">
               <div class="card-head admin-user-access-head">
                 <div class="admin-user-access-copy">
                   <h3>Registered users</h3>
@@ -870,6 +870,7 @@ Owner said afternoons are easier."
               <div id="adminUsersError" class="field-error is-hidden" role="status" aria-live="polite"></div>
               <div id="adminUsersContent" class="admin-users-content"></div>
             </article>
+            <div id="adminAddUserStage" class="admin-add-user-stage is-hidden"></div>
           </div>
         </div>
       </section>
@@ -927,6 +928,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=60"></script>
+    <script src="./app.js?v=61"></script>
   </body>
 </html>
