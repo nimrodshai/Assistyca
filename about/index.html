@@ -6,12 +6,12 @@
     <title>About Nimrod Shai | Assistyca</title>
     <meta
       name="description"
-      content="Meet Nimrod Shai, a programmer since 2013 who now builds AI agents and automations for business owners through Assistyca."
+      content="Nimrod Shai is a programmer since 2013, now building AI agents and automations for business owners through Assistyca."
     />
     <meta property="og:title" content="About Nimrod Shai | Assistyca" />
     <meta
       property="og:description"
-      content="Programming since 2013. Building AI agents and automations for business owners now."
+      content="Programmer since 2013. Building AI agents and automations for business owners."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://assistyca.com/about" />
@@ -40,18 +40,16 @@
 
       :root {
         color-scheme: light;
-        --paper: #f5efe3;
-        --paper-deep: #efe4d1;
-        --surface: rgba(255, 252, 246, 0.82);
-        --surface-strong: rgba(255, 248, 238, 0.95);
-        --line: rgba(35, 42, 52, 0.12);
-        --line-strong: rgba(35, 42, 52, 0.22);
-        --ink: #17212b;
-        --muted: #566171;
-        --accent: #0d766f;
-        --accent-soft: rgba(13, 118, 111, 0.12);
-        --warm: #c36a2d;
-        --shadow: 0 28px 72px rgba(23, 33, 43, 0.13);
+        --bg: #f4efe7;
+        --bg-deep: #ece3d6;
+        --card: rgba(255, 252, 247, 0.82);
+        --card-strong: rgba(255, 255, 255, 0.72);
+        --ink: #18212a;
+        --muted: #5a6676;
+        --line: rgba(24, 33, 42, 0.12);
+        --accent: #0c766d;
+        --accent-soft: rgba(12, 118, 109, 0.12);
+        --shadow: 0 24px 70px rgba(24, 33, 42, 0.12);
       }
 
       * {
@@ -60,17 +58,17 @@
 
       html,
       body {
-        margin: 0;
         min-height: 100%;
+        margin: 0;
       }
 
       body {
         font-family: "Manrope", "Segoe UI", sans-serif;
         color: var(--ink);
         background:
-          radial-gradient(circle at top left, rgba(13, 118, 111, 0.18), transparent 28%),
-          radial-gradient(circle at 88% 18%, rgba(195, 106, 45, 0.2), transparent 22%),
-          linear-gradient(155deg, var(--paper), var(--paper-deep));
+          radial-gradient(circle at top left, rgba(12, 118, 109, 0.16), transparent 30%),
+          radial-gradient(circle at 82% 18%, rgba(203, 118, 53, 0.16), transparent 20%),
+          linear-gradient(155deg, var(--bg), var(--bg-deep));
       }
 
       body::before {
@@ -79,10 +77,10 @@
         inset: 0;
         pointer-events: none;
         background-image:
-          linear-gradient(rgba(255, 255, 255, 0.18) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px);
-        background-size: 36px 36px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.4), transparent 85%);
+          linear-gradient(rgba(255, 255, 255, 0.2) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.2) 1px, transparent 1px);
+        background-size: 34px 34px;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 85%);
       }
 
       a {
@@ -90,12 +88,44 @@
       }
 
       .page {
-        width: min(100%, 76rem);
+        width: min(100%, 72rem);
+        min-height: 100vh;
         margin: 0 auto;
-        padding: 1.4rem 1.15rem 4rem;
+        padding: 1.2rem;
+        display: grid;
+        align-items: center;
       }
 
-      .masthead {
+      .shell {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 36px;
+        background: var(--card);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+
+      .shell::after {
+        content: "";
+        position: absolute;
+        inset: auto -8% -28% auto;
+        width: 18rem;
+        aspect-ratio: 1;
+        border-radius: 999px;
+        background: radial-gradient(circle, rgba(12, 118, 109, 0.18), transparent 68%);
+        pointer-events: none;
+      }
+
+      .content {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        gap: 2rem;
+        padding: clamp(1.5rem, 4vw, 3rem);
+      }
+
+      .topbar {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -105,468 +135,227 @@
       .brand {
         display: inline-flex;
         align-items: center;
-        padding: 0.4rem 0;
       }
 
       .brand img {
-        width: clamp(9.5rem, 20vw, 12rem);
+        width: clamp(9.25rem, 18vw, 11.5rem);
         height: auto;
         display: block;
       }
 
-      .section-label {
+      .tag {
         display: inline-flex;
         align-items: center;
-        min-height: 2.5rem;
-        padding: 0.65rem 0.95rem;
+        min-height: 2.35rem;
+        padding: 0.6rem 0.85rem;
         border-radius: 999px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.6);
+        background: rgba(255, 255, 255, 0.56);
+        color: var(--muted);
         text-transform: uppercase;
         letter-spacing: 0.16em;
-        font-size: 0.75rem;
+        font-size: 0.73rem;
         font-weight: 700;
-        color: var(--muted);
-      }
-
-      .hero,
-      .panel,
-      .closing {
-        border: 1px solid var(--line);
-        background: var(--surface);
-        backdrop-filter: blur(14px);
-        box-shadow: var(--shadow);
       }
 
       .hero {
         display: grid;
-        gap: 1.2rem;
-        margin-top: 1.35rem;
-        padding: clamp(1.4rem, 4vw, 2.8rem);
-        border-radius: 34px;
+        gap: 2rem;
       }
 
       .eyebrow {
-        margin: 0 0 0.9rem;
+        margin: 0 0 0.95rem;
         color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
         font-size: 0.78rem;
         font-weight: 800;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-      }
-
-      h1,
-      h2 {
-        margin: 0;
-        letter-spacing: -0.05em;
-        line-height: 0.95;
-        font-family: Georgia, "Times New Roman", serif;
       }
 
       h1 {
-        max-width: 10.5ch;
-        font-size: clamp(3rem, 8vw, 6.6rem);
+        margin: 0;
+        max-width: 12ch;
+        font-size: clamp(3rem, 7vw, 5.8rem);
+        line-height: 0.92;
+        letter-spacing: -0.06em;
       }
 
-      h2 {
-        font-size: clamp(1.9rem, 4vw, 3rem);
+      .headline {
+        font-weight: 700;
       }
 
-      .lede,
-      .supporting,
-      .card p,
-      .closing p {
+      .body-copy {
+        max-width: 39rem;
+        margin: 1.2rem 0 0;
         color: var(--muted);
+        font-size: 1.08rem;
         line-height: 1.72;
       }
 
-      .lede {
-        max-width: 41rem;
-        margin: 1.2rem 0 0;
-        font-size: 1.12rem;
+      .body-copy strong {
+        color: var(--ink);
       }
 
-      .supporting {
-        max-width: 38rem;
-        margin: 1rem 0 0;
-        font-size: 1rem;
-      }
-
-      .pill-row {
+      .actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 0.75rem;
-        margin-top: 1.4rem;
+        gap: 0.8rem;
+        margin-top: 1.5rem;
       }
 
-      .pill {
+      .button {
         display: inline-flex;
         align-items: center;
-        min-height: 2.65rem;
-        padding: 0.7rem 0.95rem;
+        justify-content: center;
+        min-height: 3.15rem;
+        padding: 0.9rem 1.15rem;
         border-radius: 999px;
-        border: 1px solid rgba(13, 118, 111, 0.14);
+        border: 1px solid transparent;
+        text-decoration: none;
+        font-size: 0.96rem;
+        font-weight: 700;
+        transition:
+          transform 160ms ease,
+          box-shadow 160ms ease,
+          background 160ms ease,
+          border-color 160ms ease;
+      }
+
+      .button:hover,
+      .button:focus-visible {
+        transform: translateY(-1px);
+      }
+
+      .button.primary {
+        background: var(--ink);
+        color: #fffdf8;
+        box-shadow: 0 16px 34px rgba(24, 33, 42, 0.18);
+      }
+
+      .meta {
+        display: grid;
+        gap: 0.85rem;
+        align-content: start;
+      }
+
+      .note,
+      .list {
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: var(--card-strong);
+        padding: 1rem;
+      }
+
+      .note-title,
+      .list-title {
+        margin: 0 0 0.45rem;
+        font-size: 0.8rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .note p {
+        margin: 0;
+        color: var(--ink);
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+
+      .proofs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+      }
+
+      .proof {
+        display: inline-flex;
+        align-items: center;
+        min-height: 2.5rem;
+        padding: 0.65rem 0.85rem;
+        border-radius: 999px;
         background: var(--accent-soft);
         color: var(--accent);
-        font-size: 0.95rem;
+        font-size: 0.92rem;
         font-weight: 700;
       }
 
-      .hero-side {
-        display: grid;
-        gap: 1rem;
-      }
-
-      .portrait-shell {
-        position: relative;
-        overflow: hidden;
-        min-height: 20rem;
-        padding: 1.4rem;
-        border-radius: 28px;
-        border: 1px solid var(--line);
-        background:
-          radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.58), transparent 28%),
-          radial-gradient(circle at bottom right, rgba(13, 118, 111, 0.24), transparent 36%),
-          linear-gradient(145deg, rgba(255, 250, 244, 0.98), rgba(240, 232, 219, 0.94));
-      }
-
-      .portrait-shell::after {
-        content: "";
-        position: absolute;
-        inset: 1rem;
-        border: 1px solid rgba(23, 33, 43, 0.08);
-        border-radius: 22px;
-      }
-
-      .monogram {
-        position: relative;
-        z-index: 1;
-        display: grid;
-        place-items: center;
-        width: min(100%, 15rem);
-        aspect-ratio: 1;
-        margin-left: auto;
-        border-radius: 2rem;
-        border: 1px solid rgba(23, 33, 43, 0.1);
-        background: rgba(255, 255, 255, 0.74);
-        color: var(--ink);
-        font-family: Georgia, "Times New Roman", serif;
-        font-size: clamp(3.8rem, 10vw, 6rem);
-        letter-spacing: -0.08em;
-        box-shadow: 0 18px 42px rgba(23, 33, 43, 0.1);
-      }
-
-      .portrait-caption {
-        position: absolute;
-        left: 1.4rem;
-        bottom: 1.4rem;
-        z-index: 1;
-        max-width: 14rem;
-      }
-
-      .portrait-caption strong,
-      .fact strong,
-      .step-number,
-      .closing a {
-        color: var(--ink);
-      }
-
-      .portrait-caption strong {
-        display: block;
-        font-size: 1.15rem;
-        letter-spacing: -0.03em;
-      }
-
-      .portrait-caption span {
-        display: block;
+      .footer {
         margin-top: 0.4rem;
         color: var(--muted);
-        line-height: 1.55;
+        font-size: 0.92rem;
       }
 
-      .facts {
-        display: grid;
-        gap: 0.8rem;
-      }
-
-      .fact {
-        padding: 1rem 1.05rem;
-        border-radius: 22px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.72);
-      }
-
-      .fact span {
-        display: block;
-        margin-bottom: 0.38rem;
-        color: var(--muted);
-        font-size: 0.8rem;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-      }
-
-      .fact strong {
-        display: block;
-        font-size: 1rem;
-        line-height: 1.5;
-      }
-
-      .grid {
-        display: grid;
-        gap: 1rem;
-        margin-top: 1rem;
-      }
-
-      .panel {
-        padding: 1.35rem;
-        border-radius: 28px;
-      }
-
-      .card p {
-        margin: 0.9rem 0 0;
-        font-size: 0.99rem;
-      }
-
-      .story {
-        margin-top: 1rem;
-      }
-
-      .steps {
-        display: grid;
-        gap: 0.95rem;
-        margin-top: 1.2rem;
-      }
-
-      .step {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 0.9rem;
-        align-items: start;
-      }
-
-      .step-number {
-        display: grid;
-        place-items: center;
-        width: 2.6rem;
-        aspect-ratio: 1;
-        border-radius: 999px;
-        border: 1px solid var(--line-strong);
-        background: rgba(255, 255, 255, 0.72);
-        font-family: Georgia, "Times New Roman", serif;
-        font-size: 1.2rem;
-      }
-
-      .step strong {
-        display: block;
-        margin-bottom: 0.25rem;
-        font-size: 1rem;
-      }
-
-      .step p {
-        margin: 0;
-      }
-
-      .closing {
-        margin-top: 1rem;
-        padding: 1.5rem;
-        border-radius: 28px;
-      }
-
-      .closing h2 {
-        max-width: 11ch;
-      }
-
-      .closing p {
-        max-width: 38rem;
-        margin: 1rem 0 0;
-      }
-
-      .closing a {
-        text-decoration-thickness: 1px;
-        text-underline-offset: 0.18em;
-      }
-
-      @media (min-width: 920px) {
+      @media (min-width: 900px) {
         .hero {
-          grid-template-columns: minmax(0, 1.15fr) minmax(18rem, 0.85fr);
-          align-items: start;
-        }
-
-        .grid {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
-
-        .story {
-          display: grid;
-          grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
-          gap: 1rem;
+          grid-template-columns: minmax(0, 1.1fr) minmax(18rem, 0.64fr);
+          align-items: end;
         }
       }
 
-      @media (max-width: 919px) {
-        .monogram {
-          margin-left: 0;
+      @media (max-width: 640px) {
+        .topbar {
+          flex-direction: column;
+          align-items: flex-start;
         }
 
-        .portrait-shell {
-          min-height: 16rem;
+        h1 {
+          max-width: none;
         }
       }
     </style>
   </head>
   <body>
     <main class="page">
-      <header class="masthead">
-        <div class="brand" aria-label="Assistyca">
-          <img src="../assets/AssistycaLogoTitleWeb.png" alt="Assistyca" />
+      <section class="shell" aria-labelledby="about-title">
+        <div class="content">
+          <header class="topbar">
+            <div class="brand" aria-label="Assistyca">
+              <img src="../assets/AssistycaLogoTitleWeb.png" alt="Assistyca" />
+            </div>
+            <span class="tag">About</span>
+          </header>
+
+          <div class="hero">
+            <div>
+              <p class="eyebrow">Nimrod Shai</p>
+              <h1 id="about-title" class="headline">
+                I’m Nimrod Shai. I build AI agents and automations for business owners.
+              </h1>
+              <p class="body-copy">
+                I’ve been programming since <strong>2013</strong>. Today I use that
+                experience to build practical systems that help businesses respond
+                faster, follow up better, and spend less time on repetitive work.
+              </p>
+              <div class="actions">
+                <a class="button primary" href="mailto:nimrod.shai@gmail.com">Email me</a>
+              </div>
+            </div>
+
+            <aside class="meta" aria-label="Quick details">
+              <div class="note">
+                <p class="note-title">What this page is</p>
+                <p>A simple public page about who I am and what I’m building now.</p>
+              </div>
+
+              <div class="list">
+                <p class="list-title">Current focus</p>
+                <div class="proofs" aria-label="Focus areas">
+                  <span class="proof">Programmer since 2013</span>
+                  <span class="proof">AI agents</span>
+                  <span class="proof">Business automations</span>
+                </div>
+              </div>
+
+            </aside>
+          </div>
+
+          <p class="footer">
+            Assistyca is where I build practical systems for AI-driven business
+            operations.
+          </p>
         </div>
-        <span class="section-label">About</span>
-      </header>
-
-      <section class="hero" aria-labelledby="about-title">
-        <div>
-          <p class="eyebrow">Nimrod Shai</p>
-          <h1 id="about-title">Programming since 2013. Building AI agents and automations for business owners now.</h1>
-          <p class="lede">
-            I help businesses turn repetitive work into systems that respond faster,
-            follow up reliably, and keep moving even when the owner is focused somewhere
-            else.
-          </p>
-          <p class="supporting">
-            Assistyca is where I combine hands-on engineering, product thinking, and
-            practical automation to build tools that remove friction from day-to-day
-            operations instead of adding more software overhead.
-          </p>
-          <div class="pill-row" aria-label="Highlights">
-            <span class="pill">Programmer since 2013</span>
-            <span class="pill">AI agents and business automations</span>
-            <span class="pill">Built for real-world workflows</span>
-          </div>
-        </div>
-
-        <aside class="hero-side" aria-label="Profile details">
-          <div class="portrait-shell">
-            <div class="monogram" aria-hidden="true">NS</div>
-            <div class="portrait-caption">
-              <strong>Builder, programmer, operator.</strong>
-              <span>
-                Focused on useful systems that save business owners time and keep
-                customer conversations moving.
-              </span>
-            </div>
-          </div>
-
-          <div class="facts">
-            <div class="fact">
-              <span>Current focus</span>
-              <strong>AI agents, workflow automation, and business-facing tools</strong>
-            </div>
-            <div class="fact">
-              <span>Approach</span>
-              <strong>Pragmatic systems that fit how a business already works</strong>
-            </div>
-            <div class="fact">
-              <span>Outcome</span>
-              <strong>Less manual chasing, faster responses, and cleaner operations</strong>
-            </div>
-          </div>
-        </aside>
-      </section>
-
-      <section class="grid" aria-label="About Assistyca work">
-        <article class="panel card">
-          <p class="eyebrow">What I Build</p>
-          <h2>Useful automation, not demo-ware.</h2>
-          <p>
-            I build agents and automations that answer, draft, qualify, follow up, and
-            hand work off clearly. The goal is always the same: fewer repetitive tasks
-            and more dependable execution.
-          </p>
-        </article>
-
-        <article class="panel card">
-          <p class="eyebrow">Who It Helps</p>
-          <h2>Business owners who need leverage.</h2>
-          <p>
-            Assistyca is built for owners and small teams who want real operational help:
-            faster customer handling, better continuity, and systems that keep working
-            when attention is stretched thin.
-          </p>
-        </article>
-
-        <article class="panel card">
-          <p class="eyebrow">What Matters</p>
-          <h2>Clarity, speed, and practical value.</h2>
-          <p>
-            I care more about whether a system saves time and reduces friction than
-            whether it sounds impressive. Good automation should feel calm, reliable, and
-            immediately useful.
-          </p>
-        </article>
-      </section>
-
-      <section class="story" aria-label="Working style">
-        <article class="panel card">
-          <p class="eyebrow">The Arc</p>
-          <h2>From writing code to designing working systems.</h2>
-          <p>
-            I started programming in 2013. Today that foundation shows up in a different
-            kind of build: AI agents, automation flows, and business tools that sit close
-            to real conversations, approvals, handoffs, and follow-up work.
-          </p>
-          <p>
-            The through-line is still programming. The difference is that the output now
-            reaches further into the business itself, where software can remove friction
-            from the everyday decisions that usually stay manual.
-          </p>
-        </article>
-
-        <article class="panel card">
-          <p class="eyebrow">How I Work</p>
-          <h2>Start with the workflow, then build the right system around it.</h2>
-          <div class="steps">
-            <div class="step">
-              <div class="step-number">1</div>
-              <div>
-                <strong>Map the bottleneck</strong>
-                <p>
-                  Find the repeated conversations, follow-ups, approvals, or admin tasks
-                  that drain time and attention.
-                </p>
-              </div>
-            </div>
-            <div class="step">
-              <div class="step-number">2</div>
-              <div>
-                <strong>Design the flow</strong>
-                <p>
-                  Turn the manual pattern into something structured: prompts, rules,
-                  routing, approvals, memory, and integrations where needed.
-                </p>
-              </div>
-            </div>
-            <div class="step">
-              <div class="step-number">3</div>
-              <div>
-                <strong>Refine it in real use</strong>
-                <p>
-                  Tighten the edge cases, improve the handoffs, and keep shaping the
-                  system until it feels dependable for everyday business use.
-                </p>
-              </div>
-            </div>
-          </div>
-        </article>
-      </section>
-
-      <section class="closing" aria-labelledby="contact-title">
-        <p class="eyebrow">Contact</p>
-        <h2 id="contact-title">If a workflow keeps stealing time, it can probably be redesigned.</h2>
-        <p>
-          If you run a business and want to turn repetitive work into a calmer system,
-          reach out at <a href="mailto:nimrod.shai@gmail.com">nimrod.shai@gmail.com</a>.
-        </p>
       </section>
     </main>
   </body>
