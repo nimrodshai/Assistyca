@@ -81,6 +81,53 @@ class PortalUserAccessTests(unittest.TestCase):
 
         self.assertEqual(int(feature_assignment_row["count"] or 0), 0)
 
+    def test_delete_user_handles_legacy_feature_assignments_without_cascade(self) -> None:
+        self.database.register_user("owner@example.com")
+
+        with self.database._connection() as conn:
+            conn.execute("ALTER TABLE feature_assignments RENAME TO feature_assignments_old")
+            conn.execute(
+                """
+                CREATE TABLE feature_assignments (
+                    user_id INTEGER NOT NULL,
+                    feature_id TEXT NOT NULL,
+                    is_assigned INTEGER NOT NULL DEFAULT 1,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    assigned_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, feature_id),
+                    FOREIGN KEY(user_id) REFERENCES users(id),
+                    FOREIGN KEY(feature_id) REFERENCES features(feature_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO feature_assignments (
+                    user_id,
+                    feature_id,
+                    is_assigned,
+                    metadata_json,
+                    assigned_at,
+                    updated_at
+                )
+                SELECT
+                    user_id,
+                    feature_id,
+                    is_assigned,
+                    metadata_json,
+                    assigned_at,
+                    updated_at
+                FROM feature_assignments_old
+                """
+            )
+            conn.execute("DROP TABLE feature_assignments_old")
+
+        deleted_user = self.database.delete_user("owner@example.com")
+
+        self.assertEqual(deleted_user["email"], "owner@example.com")
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+
     def test_delete_portal_whatsapp_store_for_connection_removes_cached_file(self) -> None:
         connection = {
             "userId": 7,

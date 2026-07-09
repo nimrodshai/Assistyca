@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import smtplib
+import sqlite3
 import ssl
 import threading
 import time
@@ -1638,13 +1639,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "message": str(exc),
             })
             return
+        except sqlite3.IntegrityError as exc:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "delete_blocked",
+                "message": f"Delete blocked by related saved data: {exc}",
+            })
+            return
 
-        delete_portal_whatsapp_store_for_connection(
-            root=self.root,
-            connection=store_connection,
-            store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
-            store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
-        )
+        try:
+            delete_portal_whatsapp_store_for_connection(
+                root=self.root,
+                connection=store_connection,
+                store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
+                store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
+            )
+        except OSError:
+            pass
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,

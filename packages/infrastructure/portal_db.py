@@ -24,6 +24,21 @@ DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 RAW_CENTS_QUANT = Decimal("0.0001")
 USD_QUANT = Decimal("0.01")
+USER_OWNED_TABLES = (
+    "feature_activation_events",
+    "feature_activations",
+    "feature_entitlements",
+    "feature_assignments",
+    "billing_customers",
+    "whatsapp_reengagement_notifications",
+    "whatsapp_reengagement_runs",
+    "whatsapp_conversation_messages",
+    "whatsapp_conversations",
+    "whatsapp_approval_index",
+    "whatsapp_connections",
+    "usage_events",
+    "user_billing",
+)
 
 
 @dataclass
@@ -1697,6 +1712,16 @@ class PortalDatabase:
             user = self._load_user_row(conn, normalized_email)
             if user is None:
                 raise KeyError(f"Unknown user: {normalized_email}")
+
+            user_id = int(user.get("id") or 0)
+            if user_id > 0:
+                existing_tables = {
+                    str(row["name"])
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+                }
+                for table_name in USER_OWNED_TABLES:
+                    if table_name in existing_tables:
+                        conn.execute(f"DELETE FROM {table_name} WHERE user_id = ?", (user_id,))
 
             conn.execute("DELETE FROM users WHERE email = ?", (normalized_email,))
             return user
