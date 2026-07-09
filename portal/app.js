@@ -2977,6 +2977,17 @@ function deriveDisplayName(email) {
   return readable ? capitalizeWords(readable) : "Client";
 }
 
+function deriveInitialsLabel(value, fallback = "C") {
+  const source = normalizeText(value);
+  if (!source) {
+    return fallback;
+  }
+
+  const parts = source.split(/\s+/).filter(Boolean);
+  const initials = parts.slice(0, 2).map((part) => part[0]).join("");
+  return (initials || fallback).toUpperCase();
+}
+
 function getDisplayName() {
   return clientState.settings.displayName.trim() || deriveDisplayName(activeEmail);
 }
@@ -2995,10 +3006,7 @@ function getWorkspaceName() {
 }
 
 function getAvatarLabel() {
-  const source = getDisplayName() || activeEmail;
-  const parts = source.split(/\s+/).filter(Boolean);
-  const initials = parts.slice(0, 2).map((part) => part[0]).join("");
-  return (initials || "G").toUpperCase();
+  return deriveInitialsLabel(getDisplayName() || activeEmail, "G");
 }
 
 function setView(view) {
@@ -4562,6 +4570,7 @@ function createAdminUserDetailView(user) {
     );
   }
 
+  const displayLabel = user.displayName || deriveDisplayName(user.email);
   const draftFeatureIds = getAdminUserDraftFeatureIds(user.email, user.assignedFeatureIds);
   const hasChanges = !featureIdListsMatch(draftFeatureIds, user.assignedFeatureIds);
   const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
@@ -4584,9 +4593,33 @@ function createAdminUserDetailView(user) {
   const wrapper = document.createElement("div");
   wrapper.className = "admin-users-view admin-users-detail-view";
 
+  const hero = document.createElement("section");
+  hero.className = "admin-detail-hero glass-card";
+
+  const heroIdentity = document.createElement("div");
+  heroIdentity.className = "admin-detail-identity";
+
+  const avatar = document.createElement("span");
+  avatar.className = "admin-detail-avatar";
+  avatar.textContent = deriveInitialsLabel(displayLabel, "C");
+
+  const heroCopy = document.createElement("div");
+  heroCopy.className = "admin-detail-copy";
+
+  const heroEyebrow = document.createElement("p");
+  heroEyebrow.className = "eyebrow";
+  heroEyebrow.textContent = "Portal account";
+
+  const heroName = document.createElement("h2");
+  heroName.className = "admin-detail-name";
+  heroName.textContent = displayLabel;
+
+  const heroEmail = document.createElement("p");
+  heroEmail.className = "admin-detail-email";
+  heroEmail.textContent = user.email;
+
   const strip = document.createElement("div");
   strip.className = "admin-detail-strip";
-
   const roleBadge = document.createElement("span");
   roleBadge.className = "feature-status";
   roleBadge.textContent = user.isAdmin ? "Admin" : "Client";
@@ -4596,14 +4629,23 @@ function createAdminUserDetailView(user) {
   toolsBadge.textContent = `${draftFeatureIds.length} visible tool${draftFeatureIds.length === 1 ? "" : "s"}`;
 
   strip.append(roleBadge, toolsBadge);
+  heroCopy.append(heroEyebrow, heroName, heroEmail, strip);
+  heroIdentity.append(avatar, heroCopy);
+  hero.append(heroIdentity);
 
   const grid = document.createElement("div");
   grid.className = "admin-detail-grid";
 
   const infoPanel = document.createElement("section");
   infoPanel.className = "admin-detail-panel";
+  const infoHead = document.createElement("div");
+  infoHead.className = "admin-detail-panel-head";
+  const infoEyebrow = document.createElement("p");
+  infoEyebrow.className = "eyebrow admin-detail-panel-eyebrow";
+  infoEyebrow.textContent = "Account details";
   const infoTitle = document.createElement("h4");
   infoTitle.textContent = "Account";
+  infoHead.append(infoEyebrow, infoTitle);
   const infoRows = document.createElement("div");
   infoRows.className = "detail-stack";
   infoRows.append(
@@ -4635,13 +4677,19 @@ function createAdminUserDetailView(user) {
   deleteNote.textContent = deleteDisabledReason
     || "Deletes this user's portal access, assigned tools, billing history, WhatsApp setup, and saved messages.";
 
-  infoPanel.append(infoTitle, infoRows, infoActions, deleteNote);
+  infoPanel.append(infoHead, infoRows, infoActions, deleteNote);
 
   const accessPanel = document.createElement("section");
   accessPanel.className = "admin-detail-panel admin-detail-access-panel";
 
+  const accessHead = document.createElement("div");
+  accessHead.className = "admin-detail-panel-head";
+  const accessEyebrow = document.createElement("p");
+  accessEyebrow.className = "eyebrow admin-detail-panel-eyebrow";
+  accessEyebrow.textContent = "Tool visibility";
   const accessTitle = document.createElement("h4");
   accessTitle.textContent = "Visible tools";
+  accessHead.append(accessEyebrow, accessTitle);
 
   const accessCopy = document.createElement("p");
   accessCopy.className = "admin-panel-copy";
@@ -4757,10 +4805,10 @@ function createAdminUserDetailView(user) {
     saveButton.textContent = isSaving ? "Saving…" : "Save changes";
     actions.append(saveButton);
   }
-  accessPanel.append(accessTitle, accessCopy, picker, assignedShell, actions);
+  accessPanel.append(accessHead, accessCopy, picker, assignedShell, actions);
 
   grid.append(infoPanel, accessPanel);
-  wrapper.append(strip, grid);
+  wrapper.append(hero, grid);
   return wrapper;
 }
 
