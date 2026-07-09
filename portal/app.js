@@ -4311,7 +4311,7 @@ function renderAdminUsersPane() {
   }
   if (elements.adminOpenAddUserButton) {
     elements.adminOpenAddUserButton.classList.toggle("is-hidden", state.adminView !== "list");
-    elements.adminOpenAddUserButton.disabled = state.adminUsersLoading;
+    elements.adminOpenAddUserButton.disabled = false;
   }
 
   if (state.adminView === "add") {
