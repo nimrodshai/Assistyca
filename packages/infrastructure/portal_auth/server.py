@@ -49,6 +49,7 @@ from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
+from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
 from packages.infrastructure.whatsapp_reengagement import load_whatsapp_reengagement_config
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
@@ -868,7 +869,7 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: dict[
 def send_api_headers(handler: SimpleHTTPRequestHandler, *, content_length: int | None = None) -> None:
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-    handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    handler.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
     handler.send_header("Content-Type", JSON_CONTENT_TYPE)
     handler.send_header("Cache-Control", "no-store")
     if content_length is not None:
@@ -912,6 +913,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path.startswith("/api/whatsapp/")
@@ -962,6 +964,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/approvals")
         ):
             self._handle_api_post(parsed)
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urllib_parse.urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        if path.startswith("/api/admin/"):
+            self._handle_api_delete(parsed)
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -1101,6 +1112,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path.startswith("/api/approvals"):
             self._handle_whatsapp_approval_api_submit(parsed)
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_api_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        path = parsed.path.rstrip("/") or "/"
+        if path.startswith("/api/admin/users/"):
+            self._handle_admin_users_delete(parsed)
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -1551,6 +1570,92 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_admin_users_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_admin_user()
+        if authenticated is None:
+            return
+
+        session, current_user = authenticated
+        path = parsed.path.rstrip("/") or "/"
+        parts = [part for part in path.split("/") if part]
+        if len(parts) != 4 or parts[:3] != ["api", "admin", "users"]:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        email = normalize_email(urllib_parse.unquote(parts[3]))
+        if not is_valid_email(email):
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_email",
+                "message": "Enter a valid email address.",
+            })
+            return
+
+        target_user = self.database.get_user(email)
+        if target_user is None or not bool(target_user.get("isActive")):
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": f"Unknown user: {email}",
+            })
+            return
+
+        if normalize_email(session.email) == email:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "cannot_delete_self",
+                "message": "You can't delete the admin account you're using right now.",
+            })
+            return
+
+        if bool(target_user.get("isAdmin")) and self.database.count_admin_users() <= 1:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "last_admin",
+                "message": "Add another admin before deleting the last admin account.",
+            })
+            return
+
+        store_connection = self.database.get_whatsapp_connection(email) or {
+            "userId": int(target_user.get("id") or 0),
+            "email": email,
+        }
+
+        try:
+            deleted_user = self.database.delete_user(email)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_request",
+                "message": str(exc),
+            })
+            return
+        except KeyError as exc:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": str(exc),
+            })
+            return
+
+        delete_portal_whatsapp_store_for_connection(
+            root=self.root,
+            connection=store_connection,
+            store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
+            store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
+        )
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "User deleted.",
+            "user": self._serialize_admin_user(deleted_user),
+            "currentUser": {
+                "email": normalize_email(current_user.get("email")),
+                "displayName": normalize_text(current_user.get("displayName")),
+                "isAdmin": bool(current_user.get("isAdmin")),
+            },
+        })
 
     def _request_scheme(self) -> str:
         forwarded = normalize_text(self.headers.get("X-Forwarded-Proto"))

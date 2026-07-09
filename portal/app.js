@@ -320,6 +320,7 @@ const state = {
   adminUsersError: "",
   adminAddUserBusy: false,
   adminSaveBusyByEmail: {},
+  adminDeleteBusyByEmail: {},
   adminUserDrafts: {},
   adminView: "list",
   adminSelectedUserEmail: "",
@@ -744,6 +745,29 @@ function upsertAdminUserState(user) {
   return normalizedUser;
 }
 
+function removeAdminUserState(email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return;
+  }
+
+  state.adminUsers = state.adminUsers.filter((user) => user.email !== normalizedEmail);
+
+  const { [normalizedEmail]: _draft, ...nextDrafts } = state.adminUserDrafts;
+  state.adminUserDrafts = nextDrafts;
+
+  const { [normalizedEmail]: _saveBusy, ...nextSaveBusy } = state.adminSaveBusyByEmail;
+  state.adminSaveBusyByEmail = nextSaveBusy;
+
+  const { [normalizedEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
+  state.adminDeleteBusyByEmail = nextDeleteBusy;
+
+  if (normalizeEmail(state.adminSelectedUserEmail) === normalizedEmail) {
+    state.adminSelectedUserEmail = "";
+    state.adminView = "list";
+  }
+}
+
 function getSettingsModeContent(mode = state.settingsMode) {
   const normalizedMode = normalizeSettingsMode(mode);
   if (normalizedMode !== "users") {
@@ -832,6 +856,24 @@ function syncAdminUsersError() {
   elements.adminUsersError.classList.toggle("is-hidden", !state.adminUsersError);
 }
 
+function getAdminUserDeleteDisabledReason(user) {
+  const normalizedEmail = normalizeEmail(user?.email || "");
+  if (!normalizedEmail) {
+    return "Select a valid user first.";
+  }
+
+  if (normalizedEmail === normalizeEmail(authSession?.email || activeEmail || "")) {
+    return "You can't delete the admin account you're using right now.";
+  }
+
+  const activeAdminCount = state.adminUsers.filter((entry) => entry.isActive && entry.isAdmin).length;
+  if (user?.isAdmin && activeAdminCount <= 1) {
+    return "Add another admin before deleting the last admin account.";
+  }
+
+  return "";
+}
+
 function resetAdminState() {
   state.adminUsers = [];
   state.adminFeatures = [];
@@ -840,6 +882,7 @@ function resetAdminState() {
   state.adminUsersError = "";
   state.adminAddUserBusy = false;
   state.adminSaveBusyByEmail = {};
+  state.adminDeleteBusyByEmail = {};
   state.adminUserDrafts = {};
   state.adminView = "list";
   state.adminSelectedUserEmail = "";
@@ -4316,6 +4359,9 @@ function createAdminUserDetailView(user) {
   const draftFeatureIds = getAdminUserDraftFeatureIds(user.email, user.assignedFeatureIds);
   const hasChanges = !featureIdListsMatch(draftFeatureIds, user.assignedFeatureIds);
   const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
+  const isDeleting = Boolean(state.adminDeleteBusyByEmail[user.email]);
+  const deleteDisabledReason = getAdminUserDeleteDisabledReason(user);
+  const inputsDisabled = isSaving || isDeleting;
   const featureLookup = new Map(state.adminFeatures.map((feature) => [feature.featureId, feature]));
   const assignedFeatures = draftFeatureIds.map((featureId) => (
     featureLookup.get(featureId) || {
@@ -4358,7 +4404,24 @@ function createAdminUserDetailView(user) {
     createAdminDetailRow("Registered", formatAdminDateTime(user.registeredAt) || "Unknown"),
     createAdminDetailRow("Last login", user.lastLoginAt ? formatAdminDateTime(user.lastLoginAt) : "No login yet"),
   );
-  infoPanel.append(infoTitle, infoRows);
+
+  const infoActions = document.createElement("div");
+  infoActions.className = "admin-detail-panel-actions";
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "ghost-button danger small";
+  deleteButton.dataset.adminDeleteUser = user.email;
+  deleteButton.disabled = isSaving || isDeleting || Boolean(deleteDisabledReason);
+  deleteButton.textContent = isDeleting ? "Deleting..." : "Delete user";
+  infoActions.append(deleteButton);
+
+  const deleteNote = document.createElement("p");
+  deleteNote.className = `admin-danger-note${deleteDisabledReason ? " is-warn" : ""}`;
+  deleteNote.textContent = deleteDisabledReason
+    || "Deletes this user's portal access, assigned tools, billing history, WhatsApp setup, and saved messages.";
+
+  infoPanel.append(infoTitle, infoRows, infoActions, deleteNote);
 
   const accessPanel = document.createElement("section");
   accessPanel.className = "admin-detail-panel admin-detail-access-panel";
@@ -4387,6 +4450,7 @@ function createAdminUserDetailView(user) {
   searchInput.placeholder = "Click to browse all tools or type to filter";
   searchInput.value = state.adminFeatureSearch;
   searchInput.autocomplete = "off";
+  searchInput.disabled = inputsDisabled;
   searchInput.dataset.adminFeatureSearchInput = "true";
   searchInput.setAttribute("aria-expanded", String(showToolResults));
 
@@ -4413,7 +4477,7 @@ function createAdminUserDetailView(user) {
   } else {
     results.append(
       ...availableFeatures.map((feature) => createAdminFeatureSearchResult(feature, {
-        disabled: isSaving,
+        disabled: inputsDisabled,
         userEmail: user.email,
       })),
     );
@@ -4447,7 +4511,7 @@ function createAdminUserDetailView(user) {
     assignedList.append(
       ...assignedFeatures.map((feature) => createAdminAssignedFeatureBadge(feature, {
         userEmail: user.email,
-        disabled: isSaving,
+        disabled: inputsDisabled,
       })),
     );
   }
@@ -4459,7 +4523,9 @@ function createAdminUserDetailView(user) {
 
   const summary = document.createElement("span");
   summary.className = "admin-user-summary";
-  if (isSaving) {
+  if (isDeleting) {
+    summary.textContent = "Deleting user…";
+  } else if (isSaving) {
     summary.textContent = "Saving changes…";
   } else if (hasChanges) {
     summary.textContent = "Changes not saved";
@@ -4468,7 +4534,7 @@ function createAdminUserDetailView(user) {
   }
 
   actions.append(summary);
-  if (hasChanges || isSaving) {
+  if ((hasChanges || isSaving) && !isDeleting) {
     const saveButton = document.createElement("button");
     saveButton.type = "button";
     saveButton.className = "primary-button small";
@@ -4713,6 +4779,60 @@ async function saveAdminUserFeatures(email) {
     renderApp();
     if (didSucceed) {
       setStatus("User access saved");
+    }
+  }
+}
+
+async function deleteAdminUser(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
+  if (!isAdminUser() || !user || state.adminDeleteBusyByEmail[normalizedEmail]) {
+    return;
+  }
+
+  const disabledReason = getAdminUserDeleteDisabledReason(user);
+  if (disabledReason) {
+    state.adminUsersError = disabledReason;
+    renderApp();
+    return;
+  }
+
+  const label = user.displayName || deriveDisplayName(user.email);
+  const confirmed = window.confirm(
+    `Delete ${label} (${normalizedEmail})?\n\nThis removes their portal access, assigned tools, billing history, WhatsApp setup, and saved messages.`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  state.adminDeleteBusyByEmail = {
+    ...state.adminDeleteBusyByEmail,
+    [normalizedEmail]: true,
+  };
+  state.adminUsersError = "";
+  renderApp();
+
+  let didSucceed = false;
+  try {
+    await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}`, {
+      method: "DELETE",
+      headers: getSessionAuthHeaders(),
+    });
+
+    persistJson(getClientKey(normalizedEmail), null);
+    removeAdminUserState(normalizedEmail);
+    state.adminFeatureSearch = "";
+    state.adminFeaturePickerOpen = false;
+    didSucceed = true;
+    void refreshAdminUsers({ render: false });
+  } catch (error) {
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t delete that user right now.");
+  } finally {
+    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminDeleteBusyByEmail;
+    state.adminDeleteBusyByEmail = nextBusy;
+    renderApp();
+    if (didSucceed) {
+      setStatus("User deleted");
     }
   }
 }
@@ -6474,6 +6594,12 @@ function bindEvents() {
       if (cancelAddButton) {
         state.adminUsersError = "";
         openAdminUsersList({ preserveSearch: true, refresh: false });
+        return;
+      }
+
+      const deleteUserButton = target.closest("[data-admin-delete-user]");
+      if (deleteUserButton) {
+        void deleteAdminUser(deleteUserButton.dataset.adminDeleteUser || "");
         return;
       }
 

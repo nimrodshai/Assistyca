@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
+from packages.infrastructure.whatsapp_portal_service import portal_whatsapp_store_path_for_connection
 
 
 DEFAULT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
@@ -52,6 +54,53 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertEqual([feature["featureId"] for feature in assigned_features], [FOLLOW_UP_FEATURE_ID])
         self.assertFalse(assignments[DEFAULT_FEATURE_ID]["isAssigned"])
         self.assertTrue(assignments[FOLLOW_UP_FEATURE_ID]["isAssigned"])
+
+    def test_delete_user_removes_account_and_related_records(self) -> None:
+        self.database.register_user("owner@example.com", is_admin=True)
+        self.database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="12345",
+            phone_number_id="12345",
+            owner_wa_id="15551234567",
+            connection_status="connected",
+        )
+        self.assertEqual(self.database.count_admin_users(), 1)
+
+        deleted_user = self.database.delete_user("owner@example.com")
+
+        self.assertEqual(deleted_user["email"], "owner@example.com")
+        self.assertEqual(self.database.count_registered_users(), 0)
+        self.assertEqual(self.database.count_admin_users(), 0)
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+        self.assertIsNone(self.database.get_whatsapp_connection("owner@example.com"))
+        with self.database._connection() as conn:
+            feature_assignment_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM feature_assignments WHERE user_id = ?",
+                (int(deleted_user["id"]),),
+            ).fetchone()
+
+        self.assertEqual(int(feature_assignment_row["count"] or 0), 0)
+
+    def test_delete_portal_whatsapp_store_for_connection_removes_cached_file(self) -> None:
+        connection = {
+            "userId": 7,
+            "email": "owner@example.com",
+        }
+        store_cache = {}
+        store_path = portal_whatsapp_store_path_for_connection(Path(self.temp_dir.name), connection)
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        store_path.write_text('{"threads":{},"approvals":{}}\n', encoding="utf-8")
+        store_cache[str(store_path.resolve())] = object()
+
+        deleted_path = delete_portal_whatsapp_store_for_connection(
+            root=Path(self.temp_dir.name),
+            connection=connection,
+            store_cache=store_cache,
+        )
+
+        self.assertEqual(deleted_path, store_path.resolve())
+        self.assertFalse(store_path.exists())
+        self.assertEqual(store_cache, {})
 
 
 if __name__ == "__main__":

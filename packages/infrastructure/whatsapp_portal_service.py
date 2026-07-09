@@ -68,6 +68,31 @@ def portal_whatsapp_store_path_for_connection(root: Path, connection: dict[str, 
     return store_root / f"{identifier}.json"
 
 
+def delete_portal_whatsapp_store_for_connection(
+    *,
+    root: Path,
+    connection: dict[str, Any],
+    store_cache: dict[str, BackendStore] | None = None,
+    store_lock: Any | None = None,
+) -> Path:
+    data_path = portal_whatsapp_store_path_for_connection(root, connection).resolve()
+    cache_key = str(data_path)
+
+    if store_cache is not None:
+        if store_lock is None:
+            store_cache.pop(cache_key, None)
+        else:
+            with store_lock:
+                store_cache.pop(cache_key, None)
+
+    try:
+        data_path.unlink()
+    except FileNotFoundError:
+        pass
+
+    return data_path
+
+
 def build_portal_service_from_connection(
     *,
     root: Path,

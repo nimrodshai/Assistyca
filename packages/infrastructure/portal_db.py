@@ -1500,6 +1500,19 @@ class PortalDatabase:
             row = fresh_conn.execute("SELECT COUNT(*) AS count FROM users WHERE is_active = 1").fetchone()
             return int(row["count"] or 0) if row else 0
 
+    def count_admin_users(self, conn: sqlite3.Connection | None = None, *, include_inactive: bool = False) -> int:
+        where_clause = "WHERE is_admin = 1"
+        if not include_inactive:
+            where_clause += " AND is_active = 1"
+
+        if conn is not None:
+            row = conn.execute(f"SELECT COUNT(*) AS count FROM users {where_clause}").fetchone()
+            return int(row["count"] or 0) if row else 0
+
+        with self._connection() as fresh_conn:
+            row = fresh_conn.execute(f"SELECT COUNT(*) AS count FROM users {where_clause}").fetchone()
+            return int(row["count"] or 0) if row else 0
+
     def list_registered_emails(self) -> frozenset[str]:
         with self._connection() as conn:
             rows = conn.execute(
@@ -1674,6 +1687,19 @@ class PortalDatabase:
             )
             self._ensure_default_feature_assignments_for_user(conn, user_id)
             return self._load_user_row(conn, normalized_email) or {}
+
+    def delete_user(self, email: str) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_email)
+            if user is None:
+                raise KeyError(f"Unknown user: {normalized_email}")
+
+            conn.execute("DELETE FROM users WHERE email = ?", (normalized_email,))
+            return user
 
     def set_user_billing(
         self,
