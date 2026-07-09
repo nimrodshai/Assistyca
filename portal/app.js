@@ -4792,15 +4792,11 @@ async function deleteAdminUser(email) {
 
   const disabledReason = getAdminUserDeleteDisabledReason(user);
   if (disabledReason) {
-    state.adminUsersError = disabledReason;
-    renderApp();
+    window.alert(disabledReason);
     return;
   }
 
-  const label = user.displayName || deriveDisplayName(user.email);
-  const confirmed = window.confirm(
-    `Delete ${label} (${normalizedEmail})?\n\nThis removes their portal access, assigned tools, billing history, WhatsApp setup, and saved messages.`,
-  );
+  const confirmed = window.confirm("Are you sure?");
   if (!confirmed) {
     return;
   }
@@ -4826,7 +4822,7 @@ async function deleteAdminUser(email) {
     didSucceed = true;
     void refreshAdminUsers({ render: false });
   } catch (error) {
-    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t delete that user right now.");
+    window.alert(formatApiErrorMessage(error, "We couldn’t delete that user right now."));
   } finally {
     const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminDeleteBusyByEmail;
     state.adminDeleteBusyByEmail = nextBusy;
