@@ -3037,6 +3037,7 @@ body[data-modal="billing"] .app-shell {
 
 .admin-users-add-view {
   width: min(100%, 40rem);
+  gap: 1.15rem;
 }
 
 .admin-users-toolbar {
@@ -3140,16 +3141,6 @@ body[data-modal="billing"] .app-shell {
   border: 1px solid var(--line);
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.82);
-}
-
-.admin-add-panel {
-  gap: 1.15rem;
-  padding: 1.25rem;
-  border-radius: 28px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 253, 0.94)),
-    rgba(255, 255, 255, 0.92);
-  box-shadow: 0 18px 38px rgba(25, 38, 54, 0.08);
 }
 
 .admin-panel-copy,

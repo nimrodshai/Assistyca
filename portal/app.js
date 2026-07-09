@@ -730,7 +730,7 @@ function getSettingsModeContent(mode = state.settingsMode) {
   if (state.adminView === "add") {
     return {
       title: "Register user",
-      description: "Create a new portal account. You can set visible tools after the user is created.",
+      description: "",
     };
   }
 
@@ -4093,16 +4093,6 @@ function createAdminAddUserView() {
   const wrapper = document.createElement("div");
   wrapper.className = "admin-users-view admin-users-add-view";
 
-  const panel = document.createElement("section");
-  panel.className = "admin-detail-panel admin-add-panel";
-
-  const title = document.createElement("h4");
-  title.textContent = "Register a new user";
-
-  const copy = document.createElement("p");
-  copy.className = "admin-panel-copy";
-  copy.textContent = "Create the account first. You can choose which tools they see on the next screen.";
-
   const emailField = document.createElement("label");
   emailField.className = "field";
   const emailLabel = document.createElement("span");
@@ -4127,10 +4117,6 @@ function createAdminAddUserView() {
   nameInput.dataset.adminNewDisplayName = "true";
   nameField.append(nameLabel, nameInput);
 
-  const note = document.createElement("p");
-  note.className = "admin-form-note";
-  note.textContent = "Tool visibility and any additional account details are managed from the user page after registration.";
-
   const error = document.createElement("div");
   error.className = `field-error${state.adminUsersError ? "" : " is-hidden"}`;
   error.role = "status";
@@ -4154,8 +4140,7 @@ function createAdminAddUserView() {
   submitButton.textContent = state.adminAddUserBusy ? "Registering..." : "Register user";
 
   actions.append(cancelButton, submitButton);
-  panel.append(title, copy, emailField, nameField, note, error, actions);
-  wrapper.append(panel);
+  wrapper.append(emailField, nameField, error, actions);
   return wrapper;
 }
 
@@ -5255,6 +5240,7 @@ function updateSettingsButtons() {
   }
   if (elements.settingsDescription) {
     elements.settingsDescription.textContent = modeContent.description;
+    elements.settingsDescription.classList.toggle("is-hidden", !modeContent.description);
   }
 
   const showAccount = state.settingsMode === "account";
