@@ -72,6 +72,9 @@ DEFAULT_BILLING_MINIMUM = 50.0
 RESEND_API_URL = "https://api.resend.com/emails"
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 SESSION_TOKEN_VERSION = 1
+STATIC_PAGE_ALIASES: dict[str, Path] = {
+    "/about": Path("about/index.html"),
+}
 
 
 @dataclass
@@ -978,6 +981,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         self.send_error(HTTPStatus.NOT_FOUND)
 
+    def send_head(self):  # type: ignore[override]
+        parsed = urllib_parse.urlparse(self.path)
+        static_alias = resolve_static_page_alias(parsed.path)
+        if static_alias is not None:
+            return self._send_static_page(static_alias)
+        return super().send_head()
+
     def _handle_api_get(self, parsed: urllib_parse.ParseResult) -> None:
         path = parsed.path.rstrip("/") or "/"
         if path == "/api/auth/session":
@@ -1326,6 +1336,37 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or "0")
         return self.rfile.read(length) if length > 0 else b""
+
+    def _send_static_page(self, relative_path: Path):
+        file_path = (self.root / relative_path).resolve()
+        root_path = self.root.resolve()
+        try:
+            file_path.relative_to(root_path)
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+
+        if not file_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+
+        try:
+            handle = file_path.open("rb")
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return None
+
+        stats = file_path.stat()
+        content_type = self.guess_type(str(file_path))
+        if content_type.startswith("text/"):
+            content_type = f"{content_type}; charset=utf-8"
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(stats.st_size))
+        self.send_header("Last-Modified", self.date_time_string(stats.st_mtime))
+        self.end_headers()
+        return handle
 
     def _send_text(self, status: HTTPStatus, body: str) -> None:
         payload = body.encode("utf-8")
@@ -2429,6 +2470,14 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     server.whatsapp_stores = {}  # type: ignore[attr-defined]
     server.whatsapp_store_lock = threading.RLock()  # type: ignore[attr-defined]
     return server
+
+
+def resolve_static_page_alias(path: str) -> Path | None:
+    normalized_path = str(path or "").strip() or "/"
+    if not normalized_path.startswith("/"):
+        normalized_path = f"/{normalized_path}"
+    normalized_path = normalized_path.rstrip("/") or "/"
+    return STATIC_PAGE_ALIASES.get(normalized_path)
 
 
 def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) -> Callable[[dict[str, Any], str], str]:
