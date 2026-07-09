@@ -2851,13 +2851,15 @@ body[data-modal="billing"] .app-shell {
   min-width: 12rem;
 }
 
-.feature-activation-actions .primary-button.is-loading {
+.feature-activation-actions .primary-button.is-loading,
+.admin-form-actions .primary-button.is-loading {
   position: relative;
   padding-right: 2.8rem;
   cursor: progress;
 }
 
-.feature-activation-actions .primary-button.is-loading::after {
+.feature-activation-actions .primary-button.is-loading::after,
+.admin-form-actions .primary-button.is-loading::after {
   content: "";
   position: absolute;
   right: 0.95rem;

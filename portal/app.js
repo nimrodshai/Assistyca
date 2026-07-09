@@ -1251,13 +1251,6 @@ async function apiRequest(path, options = {}) {
   }
 }
 
-function wait(ms) {
-  const delay = Math.max(0, Number(ms) || 0);
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, delay);
-  });
-}
-
 function getClientKey(email) {
   const safeEmail = normalizeEmail(email) || "guest";
   return `${CLIENT_STATE_PREFIX}:${safeEmail}`;
@@ -4276,11 +4269,12 @@ function createAdminAddUserView() {
   cancelButton.type = "button";
   cancelButton.className = "ghost-button";
   cancelButton.dataset.adminCancelAddUser = "true";
+  cancelButton.disabled = state.adminAddUserBusy;
   cancelButton.textContent = "Cancel";
 
   const submitButton = document.createElement("button");
   submitButton.type = "button";
-  submitButton.className = "primary-button";
+  submitButton.className = `primary-button${state.adminAddUserBusy ? " is-loading" : ""}`;
   submitButton.dataset.adminCreateUser = "true";
   submitButton.disabled = state.adminAddUserBusy;
   submitButton.textContent = state.adminAddUserBusy ? "Registering..." : "Register user";
@@ -4587,34 +4581,6 @@ async function refreshAdminUsers(options = {}) {
   }
 }
 
-async function refreshAdminUsersUntilUserVisible(email, options = {}) {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail || !isAdminUser()) {
-    return null;
-  }
-
-  const attempts = Math.max(1, Number(options.attempts || 3));
-  const retryDelayMs = Math.max(0, Number(options.retryDelayMs || 250));
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    await refreshAdminUsers({
-      render: false,
-      timeoutMs: options.timeoutMs || 15000,
-    });
-
-    const user = state.adminUsers.find((entry) => entry.email === normalizedEmail) || null;
-    if (user) {
-      return user;
-    }
-
-    if (attempt < attempts - 1 && retryDelayMs > 0) {
-      await wait(retryDelayMs);
-    }
-  }
-
-  return null;
-}
-
 async function addAdminUser() {
   if (!isAdminUser() || state.adminAddUserBusy) {
     return;
@@ -4635,7 +4601,7 @@ async function addAdminUser() {
 
   let didSucceed = false;
   try {
-    await apiRequest("/api/admin/users", {
+    const response = await apiRequest("/api/admin/users", {
       method: "POST",
       headers: getSessionAuthHeaders(),
       body: {
@@ -4646,15 +4612,16 @@ async function addAdminUser() {
 
     state.adminNewUserEmail = "";
     state.adminNewUserDisplayName = "";
-    const createdUser = await refreshAdminUsersUntilUserVisible(email);
-    if (!createdUser) {
-      state.adminUsersError = "We couldn’t confirm that the user was saved. Please try again in a moment.";
-      return;
-    }
+    const createdUser = upsertAdminUserState(response.user || {
+      email,
+      displayName,
+      assignedFeatureIds: [],
+    });
 
     state.adminView = "detail";
     state.adminSelectedUserEmail = createdUser?.email || email;
     didSucceed = true;
+    void refreshAdminUsers({ render: false });
   } catch (error) {
     state.adminUsersError = formatApiErrorMessage(error, "We couldn’t add that user right now.");
   } finally {
