@@ -4084,8 +4084,8 @@ function createAdminAssignedFeatureBadge(feature, options = {}) {
 function createAdminFeatureSearchResult(feature, options = {}) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `admin-tool-result${options.isAssigned ? " is-assigned" : ""}`;
-  button.disabled = Boolean(options.disabled) || Boolean(options.isAssigned);
+  button.className = "admin-tool-result";
+  button.disabled = Boolean(options.disabled);
   button.dataset.adminAddFeature = String(feature?.featureId || "").trim();
   button.dataset.adminUserEmail = normalizeEmail(options.userEmail || "");
 
@@ -4106,7 +4106,7 @@ function createAdminFeatureSearchResult(feature, options = {}) {
 
   const stateBadge = document.createElement("span");
   stateBadge.className = "admin-tool-result-state";
-  stateBadge.textContent = options.isAssigned ? "Added" : "Add";
+  stateBadge.textContent = "Add";
 
   button.append(copy, stateBadge);
   return button;
@@ -4306,7 +4306,7 @@ function createAdminUserDetailView(user) {
     }
   ));
   const filteredFeatures = getFilteredAdminFeatures();
-  const showToolResults = state.adminFeaturePickerOpen || Boolean(normalizeText(state.adminFeatureSearch));
+  const showToolResults = state.adminFeaturePickerOpen;
 
   const wrapper = document.createElement("div");
   wrapper.className = "admin-users-view admin-users-detail-view";
@@ -4349,12 +4349,14 @@ function createAdminUserDetailView(user) {
   accessCopy.className = "admin-panel-copy";
   accessCopy.textContent = "Search from all available tools, add what this user should see, and remove tools directly from the assigned list.";
 
+  const availableFeatures = filteredFeatures.filter((feature) => !draftFeatureIds.includes(feature.featureId));
+
   const picker = document.createElement("div");
   picker.className = "admin-tool-picker";
+  picker.dataset.adminFeaturePicker = "true";
 
   const searchField = document.createElement("label");
   searchField.className = "field admin-tool-search-field";
-  searchField.dataset.adminFeaturePicker = "true";
 
   const searchLabel = document.createElement("span");
   searchLabel.textContent = "Search tools";
@@ -4365,27 +4367,31 @@ function createAdminUserDetailView(user) {
   searchInput.value = state.adminFeatureSearch;
   searchInput.autocomplete = "off";
   searchInput.dataset.adminFeatureSearchInput = "true";
+  searchInput.setAttribute("aria-expanded", String(showToolResults));
 
   searchField.append(searchLabel, searchInput);
 
   const results = document.createElement("div");
   results.className = `admin-tool-results${showToolResults ? "" : " is-hidden"}`;
-  results.dataset.adminFeaturePicker = "true";
 
   if (!state.adminFeatures.length) {
     const empty = document.createElement("p");
     empty.className = "admin-empty-copy";
     empty.textContent = "No active tools are available to assign.";
     results.append(empty);
-  } else if (!filteredFeatures.length) {
+  } else if (!availableFeatures.length && !state.adminFeatureSearch) {
+    const empty = document.createElement("p");
+    empty.className = "admin-empty-copy";
+    empty.textContent = "All tools are already assigned.";
+    results.append(empty);
+  } else if (!availableFeatures.length) {
     const empty = document.createElement("p");
     empty.className = "admin-empty-copy";
     empty.textContent = "No tools match that search.";
     results.append(empty);
   } else {
     results.append(
-      ...filteredFeatures.map((feature) => createAdminFeatureSearchResult(feature, {
-        isAssigned: draftFeatureIds.includes(feature.featureId),
+      ...availableFeatures.map((feature) => createAdminFeatureSearchResult(feature, {
         disabled: isSaving || state.adminUsersLoading,
         userEmail: user.email,
       })),
@@ -6453,6 +6459,8 @@ function bindEvents() {
       }
 
       if (target.dataset.adminFeatureSearchInput === "true" && event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
         state.adminFeatureSearch = "";
         state.adminFeaturePickerOpen = false;
         renderAdminUsersPane();
@@ -6504,6 +6512,9 @@ function bindEvents() {
     const billingHelpButton = elements.billingHelpButton;
     const billingHelpPopover = elements.billingHelpPopover;
     const featureMenuWrap = elements.featureStudioMenuWrap;
+    const pickerTarget = event.target instanceof Element
+      ? event.target.closest("[data-admin-feature-picker=\"true\"]")
+      : null;
     if (
       state.billingHelpOpen
       && billingHelpPopover
@@ -6522,6 +6533,11 @@ function bindEvents() {
       && !elements.featureStudioMenuButton.contains(event.target)
     ) {
       closeFeatureStudioMenu();
+    }
+
+    if (state.adminFeaturePickerOpen && !pickerTarget) {
+      state.adminFeaturePickerOpen = false;
+      renderAdminUsersPane();
     }
 
     if (!elements.accountMenu.contains(event.target) && !elements.accountMenuButton.contains(event.target)) {
