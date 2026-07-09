@@ -351,6 +351,9 @@ let settingsPanelCloseTimer = null;
 let authAlertOpenFrame = null;
 let authAlertCloseTimer = null;
 let authAlertReturnFocus = null;
+let authAlertPrimaryAction = null;
+let authAlertSecondaryAction = null;
+let authAlertFocusTarget = "primary";
 let billingHelpOpenFrame = null;
 let billingHelpCloseTimer = null;
 let billingHelpReturnFocus = null;
@@ -367,6 +370,7 @@ const elements = {
   authAlertEyebrow: document.querySelector("#authAlertEyebrow"),
   authAlertTitle: document.querySelector("#authAlertTitle"),
   authAlertMessage: document.querySelector("#authAlertMessage"),
+  authAlertSecondaryButton: document.querySelector("#authAlertSecondaryButton"),
   authAlertDismissButton: document.querySelector("#authAlertDismissButton"),
   appView: document.querySelector("#appView"),
   emailInput: document.querySelector("#emailInput"),
@@ -1186,16 +1190,29 @@ function openAuthAlert(title, message, options = {}) {
   if (elements.authAlertMessage) {
     elements.authAlertMessage.textContent = String(message || "If you need help, contact me and I’ll take care of it.");
   }
+  const secondaryButtonLabel = normalizeText(options.secondaryButtonLabel);
+  if (elements.authAlertSecondaryButton) {
+    elements.authAlertSecondaryButton.textContent = secondaryButtonLabel || "Cancel";
+    elements.authAlertSecondaryButton.classList.toggle("is-hidden", !secondaryButtonLabel);
+  }
   if (elements.authAlertDismissButton) {
     elements.authAlertDismissButton.textContent = String(options.buttonLabel || "OK");
   }
 
+  authAlertPrimaryAction = typeof options.onPrimary === "function" ? options.onPrimary : null;
+  authAlertSecondaryAction = typeof options.onSecondary === "function" ? options.onSecondary : null;
+  authAlertFocusTarget = options.focusTarget === "secondary" && secondaryButtonLabel
+    ? "secondary"
+    : "primary";
   authAlertReturnFocus = options.returnFocus || null;
   state.authAlertOpen = true;
   syncAuthAlertState();
 
   window.requestAnimationFrame(() => {
-    elements.authAlertDismissButton?.focus();
+    const focusTarget = authAlertFocusTarget === "secondary"
+      ? elements.authAlertSecondaryButton
+      : elements.authAlertDismissButton;
+    focusTarget?.focus();
   });
 }
 
@@ -1236,6 +1253,9 @@ function closeAuthAlert() {
 
   const returnFocus = authAlertReturnFocus;
   authAlertReturnFocus = null;
+  authAlertPrimaryAction = null;
+  authAlertSecondaryAction = null;
+  authAlertFocusTarget = "primary";
 
   window.requestAnimationFrame(() => {
     if (returnFocus === "otp") {
@@ -1252,6 +1272,22 @@ function closeAuthAlert() {
       returnFocus.focus();
     }
   });
+}
+
+function handleAuthAlertPrimaryAction() {
+  const action = authAlertPrimaryAction;
+  closeAuthAlert();
+  if (typeof action === "function") {
+    action();
+  }
+}
+
+function handleAuthAlertSecondaryAction() {
+  const action = authAlertSecondaryAction;
+  closeAuthAlert();
+  if (typeof action === "function") {
+    action();
+  }
 }
 
 async function apiRequest(path, options = {}) {
@@ -4783,7 +4819,7 @@ async function saveAdminUserFeatures(email) {
   }
 }
 
-async function deleteAdminUser(email) {
+function deleteAdminUser(email) {
   const normalizedEmail = normalizeEmail(email);
   const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
   if (!isAdminUser() || !user || state.adminDeleteBusyByEmail[normalizedEmail]) {
@@ -4792,12 +4828,34 @@ async function deleteAdminUser(email) {
 
   const disabledReason = getAdminUserDeleteDisabledReason(user);
   if (disabledReason) {
-    window.alert(disabledReason);
+    openAuthAlert("Delete user unavailable", disabledReason, {
+      eyebrow: "Delete user",
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    });
     return;
   }
 
-  const confirmed = window.confirm("Are you sure?");
-  if (!confirmed) {
+  const label = user.displayName || deriveDisplayName(user.email);
+  openAuthAlert(
+    "Are you sure?",
+    `Delete ${label} (${normalizedEmail})? This removes their portal access, assigned tools, billing history, WhatsApp setup, and saved messages.`,
+    {
+      eyebrow: "Delete user",
+      buttonLabel: "Delete user",
+      secondaryButtonLabel: "Cancel",
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+      focusTarget: "secondary",
+      onPrimary: () => {
+        void confirmAdminUserDelete(normalizedEmail);
+      },
+    },
+  );
+}
+
+async function confirmAdminUserDelete(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
+  if (!isAdminUser() || !user || state.adminDeleteBusyByEmail[normalizedEmail]) {
     return;
   }
 
@@ -4822,7 +4880,13 @@ async function deleteAdminUser(email) {
     didSucceed = true;
     void refreshAdminUsers({ render: false });
   } catch (error) {
-    window.alert(formatApiErrorMessage(error, "We couldn’t delete that user right now."));
+    openAuthAlert(
+      "Couldn’t delete user",
+      formatApiErrorMessage(error, "We couldn’t delete that user right now."),
+      {
+        eyebrow: "Delete user",
+      },
+    );
   } finally {
     const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminDeleteBusyByEmail;
     state.adminDeleteBusyByEmail = nextBusy;
@@ -6319,10 +6383,11 @@ function bindEvents() {
   elements.sendCodeButton.addEventListener("click", () => {
     void handlePrimaryAuthAction();
   });
-  elements.authAlertDismissButton.addEventListener("click", closeAuthAlert);
+  elements.authAlertDismissButton.addEventListener("click", handleAuthAlertPrimaryAction);
+  elements.authAlertSecondaryButton.addEventListener("click", handleAuthAlertSecondaryAction);
   elements.authAlertOverlay.addEventListener("click", (event) => {
     if (event.target === elements.authAlertOverlay) {
-      closeAuthAlert();
+      handleAuthAlertSecondaryAction();
     }
   });
   elements.changeEmailButton.addEventListener("click", () => {
@@ -6702,7 +6767,7 @@ function bindEvents() {
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (state.authAlertOpen) {
-        closeAuthAlert();
+        handleAuthAlertSecondaryAction();
         return;
       }
 

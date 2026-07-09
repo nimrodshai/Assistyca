@@ -1851,9 +1851,12 @@ body[data-modal="billing"] .app-shell {
 
 .auth-alert-actions {
   display: flex;
+  gap: 0.65rem;
   justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
+.auth-alert-actions .ghost-button.small,
 .auth-alert-actions .primary-button.small {
   min-width: 6.5rem;
 }
