@@ -435,6 +435,7 @@ const elements = {
   billingHistoryCount: document.querySelector("#billingHistoryCount"),
   billingHistoryList: document.querySelector("#billingHistoryList"),
   closeSettingsButton: document.querySelector("#closeSettingsButton"),
+  settingsSwitcher: document.querySelector("#settingsSwitcher"),
   settingsTitle: document.querySelector("#settingsTitle"),
   settingsDescription: document.querySelector("#settingsDescription"),
   toneGuidance: document.querySelector("#toneGuidance"),
@@ -473,7 +474,6 @@ const elements = {
   settingsButtons: Array.from(document.querySelectorAll("#settingsPanel [data-settings-mode]")),
   accountSettingsPane: document.querySelector("#accountSettingsPane"),
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
-  userAccessSettingsButton: document.querySelector("#userAccessSettingsButton"),
   userAccessSettingsPane: document.querySelector("#userAccessSettingsPane"),
   adminUsersMenuItem: document.querySelector("#adminUsersMenuItem"),
   adminUserEmailInput: document.querySelector("#adminUserEmailInput"),
@@ -3803,9 +3803,6 @@ function renderAdminUsersPane() {
   if (elements.adminUsersMenuItem) {
     elements.adminUsersMenuItem.classList.toggle("is-hidden", !adminVisible);
   }
-  if (elements.userAccessSettingsButton) {
-    elements.userAccessSettingsButton.classList.toggle("is-hidden", !adminVisible);
-  }
 
   if (!elements.userAccessSettingsPane || !elements.adminUsersList) {
     return;
@@ -4871,12 +4868,13 @@ function updateSettingsButtons() {
   const modeContent = getSettingsModeContent(state.settingsMode);
 
   for (const button of elements.settingsButtons) {
-    if (button.dataset.settingsMode === "users") {
-      button.classList.toggle("is-hidden", !adminVisible);
-    }
     const isActive = button.dataset.settingsMode === state.settingsMode;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-selected", String(isActive));
+  }
+
+  if (elements.settingsSwitcher) {
+    elements.settingsSwitcher.classList.toggle("is-hidden", state.settingsMode === "users");
   }
 
   if (elements.settingsTitle) {
