@@ -316,6 +316,7 @@ const state = {
   adminUsers: [],
   adminFeatures: [],
   adminUsersLoading: false,
+  adminUsersNeedsRender: false,
   adminUsersError: "",
   adminAddUserBusy: false,
   adminSaveBusyByEmail: {},
@@ -807,6 +808,16 @@ function removeAdminUserDraftFeature(email, featureId) {
   setAdminUserDraftFeatureIds(email, Array.from(nextFeatureIds));
 }
 
+function buildAdminUserDrafts(users = [], previousUsersByEmail = new Map(), previousDrafts = {}) {
+  return Object.fromEntries(users.map((user) => {
+    const previousUser = previousUsersByEmail.get(user.email) || null;
+    const previousAssigned = previousUser?.assignedFeatureIds || [];
+    const previousDraft = sortUniqueFeatureIds(previousDrafts[user.email] || previousAssigned);
+    const shouldPreserveDraft = previousUser && !featureIdListsMatch(previousDraft, previousAssigned);
+    return [user.email, shouldPreserveDraft ? previousDraft : [...user.assignedFeatureIds]];
+  }));
+}
+
 function featureIdListsMatch(first = [], second = []) {
   const left = sortUniqueFeatureIds(first);
   const right = sortUniqueFeatureIds(second);
@@ -825,6 +836,7 @@ function resetAdminState() {
   state.adminUsers = [];
   state.adminFeatures = [];
   state.adminUsersLoading = false;
+  state.adminUsersNeedsRender = false;
   state.adminUsersError = "";
   state.adminAddUserBusy = false;
   state.adminSaveBusyByEmail = {};
@@ -4060,6 +4072,15 @@ function focusAdminFeatureSearchInput(selectionStart = null, selectionEnd = sele
   });
 }
 
+function getEventTargetElement(event) {
+  const target = event.target;
+  if (target instanceof Element) {
+    return target;
+  }
+
+  return target instanceof Node ? target.parentElement : null;
+}
+
 function createAdminAssignedFeatureBadge(feature, options = {}) {
   const badge = document.createElement("div");
   badge.className = "admin-tool-badge";
@@ -4392,7 +4413,7 @@ function createAdminUserDetailView(user) {
   } else {
     results.append(
       ...availableFeatures.map((feature) => createAdminFeatureSearchResult(feature, {
-        disabled: isSaving || state.adminUsersLoading,
+        disabled: isSaving,
         userEmail: user.email,
       })),
     );
@@ -4426,7 +4447,7 @@ function createAdminUserDetailView(user) {
     assignedList.append(
       ...assignedFeatures.map((feature) => createAdminAssignedFeatureBadge(feature, {
         userEmail: user.email,
-        disabled: isSaving || state.adminUsersLoading,
+        disabled: isSaving,
       })),
     );
   }
@@ -4521,17 +4542,28 @@ function renderAdminUsersPane() {
 }
 
 async function refreshAdminUsers(options = {}) {
-  if (!isAdminUser() || state.adminUsersLoading) {
+  const shouldRender = options.render !== false;
+  if (!isAdminUser()) {
+    return null;
+  }
+
+  if (state.adminUsersLoading) {
+    if (shouldRender) {
+      state.adminUsersNeedsRender = true;
+    }
     return null;
   }
 
   state.adminUsersLoading = true;
+  state.adminUsersNeedsRender = shouldRender;
   state.adminUsersError = "";
-  if (options.render !== false && view === "app") {
+  if (shouldRender && view === "app") {
     renderApp();
   }
 
   try {
+    const previousUsersByEmail = new Map(state.adminUsers.map((user) => [user.email, user]));
+    const previousDrafts = state.adminUserDrafts;
     const response = await apiRequest("/api/admin/users", {
       headers: getSessionAuthHeaders(),
       timeoutMs: options.timeoutMs || 15000,
@@ -4551,9 +4583,7 @@ async function refreshAdminUsers(options = {}) {
     state.adminUsers = sortAdminUsers((Array.isArray(response.users) ? response.users : [])
       .map((user) => normalizeAdminUserRecord(user))
       .filter((user) => user.email));
-    state.adminUserDrafts = Object.fromEntries(
-      state.adminUsers.map((user) => [user.email, [...user.assignedFeatureIds]]),
-    );
+    state.adminUserDrafts = buildAdminUserDrafts(state.adminUsers, previousUsersByEmail, previousDrafts);
     if (state.adminView === "detail" && !state.adminUsers.some((user) => user.email === state.adminSelectedUserEmail)) {
       state.adminView = "list";
       state.adminSelectedUserEmail = "";
@@ -4581,7 +4611,8 @@ async function refreshAdminUsers(options = {}) {
     return null;
   } finally {
     state.adminUsersLoading = false;
-    if (options.render !== false && view === "app") {
+    if (view === "app" && state.adminUsersNeedsRender) {
+      state.adminUsersNeedsRender = false;
       renderApp();
     }
   }
@@ -6264,7 +6295,8 @@ function bindEvents() {
   }
   if (elements.featureStudioMenu) {
     elements.featureStudioMenu.addEventListener("click", (event) => {
-      const item = event.target.closest("[data-feature-action]");
+      const target = getEventTargetElement(event);
+      const item = target?.closest("[data-feature-action]");
       if (!item) {
         return;
       }
@@ -6392,23 +6424,24 @@ function bindEvents() {
     });
 
     elements.userAccessSettingsPane.addEventListener("click", (event) => {
-      if (!(event.target instanceof Element)) {
+      const target = getEventTargetElement(event);
+      if (!target) {
         return;
       }
 
-      const openUserButton = event.target.closest("[data-admin-open-user]");
+      const openUserButton = target.closest("[data-admin-open-user]");
       if (openUserButton) {
         openAdminUserDetail(openUserButton.dataset.adminOpenUser || "");
         return;
       }
 
-      const openAddUserButton = event.target.closest("[data-admin-open-add-user]");
+      const openAddUserButton = target.closest("[data-admin-open-add-user]");
       if (openAddUserButton) {
         openAdminAddUser();
         return;
       }
 
-      const addFeatureButton = event.target.closest("[data-admin-add-feature]");
+      const addFeatureButton = target.closest("[data-admin-add-feature]");
       if (addFeatureButton) {
         addAdminUserDraftFeature(
           addFeatureButton.dataset.adminUserEmail || "",
@@ -6421,7 +6454,7 @@ function bindEvents() {
         return;
       }
 
-      const removeFeatureButton = event.target.closest("[data-admin-remove-feature]");
+      const removeFeatureButton = target.closest("[data-admin-remove-feature]");
       if (removeFeatureButton) {
         removeAdminUserDraftFeature(
           removeFeatureButton.dataset.adminUserEmail || "",
@@ -6431,20 +6464,20 @@ function bindEvents() {
         return;
       }
 
-      const createUserButton = event.target.closest("[data-admin-create-user]");
+      const createUserButton = target.closest("[data-admin-create-user]");
       if (createUserButton) {
         void addAdminUser();
         return;
       }
 
-      const cancelAddButton = event.target.closest("[data-admin-cancel-add-user]");
+      const cancelAddButton = target.closest("[data-admin-cancel-add-user]");
       if (cancelAddButton) {
         state.adminUsersError = "";
         openAdminUsersList({ preserveSearch: true, refresh: false });
         return;
       }
 
-      const saveButton = event.target.closest("[data-admin-save-user]");
+      const saveButton = target.closest("[data-admin-save-user]");
       if (!saveButton) {
         return;
       }
@@ -6512,9 +6545,8 @@ function bindEvents() {
     const billingHelpButton = elements.billingHelpButton;
     const billingHelpPopover = elements.billingHelpPopover;
     const featureMenuWrap = elements.featureStudioMenuWrap;
-    const pickerTarget = event.target instanceof Element
-      ? event.target.closest("[data-admin-feature-picker=\"true\"]")
-      : null;
+    const target = getEventTargetElement(event);
+    const pickerTarget = target?.closest("[data-admin-feature-picker=\"true\"]") || null;
     if (
       state.billingHelpOpen
       && billingHelpPopover
