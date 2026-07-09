@@ -3020,9 +3020,9 @@ body[data-modal="billing"] .app-shell {
 
 .admin-user-access-head {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 1rem;
-  align-items: flex-start;
+  align-items: center;
   flex-wrap: wrap;
 }
 

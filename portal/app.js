@@ -40,7 +40,7 @@ const SETTINGS_MODE_CONTENT = {
   },
   users: {
     title: "Registered users",
-    description: "Search registered users and open one to manage which tools they can see.",
+    description: "",
   },
 };
 const LOCAL_APPROVAL_URL = "../approval.html";
@@ -4129,17 +4129,15 @@ function createAdminUsersListView() {
   const searchField = document.createElement("label");
   searchField.className = "field admin-users-search-field";
 
-  const searchLabel = document.createElement("span");
-  searchLabel.textContent = "Search users";
-
   const searchInput = document.createElement("input");
   searchInput.type = "search";
-  searchInput.placeholder = "Search by name or email";
+  searchInput.placeholder = "Search name or email";
+  searchInput.setAttribute("aria-label", "Search users");
   searchInput.value = state.adminUserSearch;
   searchInput.autocomplete = "off";
   searchInput.dataset.adminSearchInput = "true";
 
-  searchField.append(searchLabel, searchInput);
+  searchField.append(searchInput);
 
   const filteredUsers = getFilteredAdminUsers();
   const countBadge = document.createElement("span");
