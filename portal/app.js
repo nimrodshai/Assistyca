@@ -478,7 +478,6 @@ const elements = {
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
   userAccessSettingsPane: document.querySelector("#userAccessSettingsPane"),
   adminUsersShell: document.querySelector("#adminUsersShell"),
-  adminAddUserStage: document.querySelector("#adminAddUserStage"),
   adminUsersMenuItem: document.querySelector("#adminUsersMenuItem"),
   adminUsersBackButton: document.querySelector("#adminUsersBackButton"),
   adminOpenAddUserButton: document.querySelector("#adminOpenAddUserButton"),
@@ -4288,7 +4287,6 @@ function renderAdminUsersPane() {
     !elements.userAccessSettingsPane
     || !elements.adminUsersShell
     || !elements.adminUsersContent
-    || !elements.adminAddUserStage
   ) {
     return;
   }
@@ -4296,7 +4294,7 @@ function renderAdminUsersPane() {
   if (!adminVisible) {
     elements.userAccessSettingsPane.classList.add("is-hidden");
     elements.adminUsersShell.classList.remove("is-hidden");
-    elements.adminAddUserStage.classList.add("is-hidden");
+    elements.adminUsersShell.classList.remove("is-add-view");
     return;
   }
 
@@ -4317,15 +4315,15 @@ function renderAdminUsersPane() {
   }
 
   if (state.adminView === "add") {
-    elements.adminUsersShell.classList.add("is-hidden");
-    elements.adminAddUserStage.classList.remove("is-hidden");
-    elements.adminAddUserStage.replaceChildren(createAdminAddUserView());
+    elements.adminUsersShell.classList.add("is-add-view");
+    if (elements.adminUsersError) {
+      elements.adminUsersError.classList.add("is-hidden");
+    }
+    elements.adminUsersContent.replaceChildren(createAdminAddUserView());
     return;
   }
 
-  elements.adminUsersShell.classList.remove("is-hidden");
-  elements.adminAddUserStage.classList.add("is-hidden");
-  elements.adminAddUserStage.replaceChildren();
+  elements.adminUsersShell.classList.remove("is-add-view");
 
   if (state.adminView === "detail") {
     elements.adminUsersContent.replaceChildren(createAdminUserDetailView(getAdminSelectedUser()));

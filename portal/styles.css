@@ -2984,9 +2984,22 @@ body[data-modal="billing"] .app-shell {
   width: 100%;
 }
 
-.admin-add-user-stage {
-  display: flex;
-  align-items: flex-start;
+.admin-user-access-card.is-add-view {
+  width: min(100%, 40rem);
+  padding: 0;
+  gap: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.admin-user-access-card.is-add-view .admin-user-access-head,
+.admin-user-access-card.is-add-view > #adminUsersError {
+  display: none;
+}
+
+.admin-user-access-card.is-add-view .admin-users-content {
+  width: 100%;
 }
 
 .admin-user-access-head {
@@ -3276,7 +3289,6 @@ body[data-modal="billing"] .app-shell {
     justify-content: flex-start;
   }
 
-  .admin-add-user-stage,
   .admin-detail-hero,
   .admin-users-toolbar {
     flex-direction: column;
