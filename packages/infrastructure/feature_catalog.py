@@ -95,7 +95,7 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
         {
             "featureId": "whatsapp-business-follow-up-outreach-writer",
             "name": "WhatsApp Re-engagement Assistant",
-            "description": "Stores customer conversations and drafts a ready-to-send re-engagement message when a thread has been quiet for more than six months.",
+            "description": "Helps you reconnect with past customers using ready-to-send WhatsApp follow-ups, so more quiet conversations turn back into active work.",
             "channel": "WhatsApp",
             "mode": "Weekly follow-up",
             "launchUrl": DEFAULT_LAUNCH_URL,

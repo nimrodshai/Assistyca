@@ -60,7 +60,7 @@ features:
     status: draft
     channel: whatsapp
     mode: follow_up_writer
-    description: Stores customer conversation history and surfaces a ready-made re-engagement message when a thread has been quiet for more than six months.
+    description: Helps you reconnect with past customers using ready-to-send WhatsApp follow-ups, so more quiet conversations turn back into active work.
 
 agent:
   name: "Assistant"

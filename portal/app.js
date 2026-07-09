@@ -127,7 +127,7 @@ const DEFAULT_FEATURES = [
   {
     id: "whatsapp-business-follow-up-outreach-writer",
     name: "WhatsApp Re-engagement Assistant",
-    description: "Stores conversation history and drafts a ready-to-send re-engagement message when a customer has been quiet for more than six months.",
+    description: "Helps you reconnect with past customers using ready-to-send WhatsApp follow-ups, so more quiet conversations turn back into active work.",
     channel: "WhatsApp",
     mode: "Weekly follow-up",
     status: "non-active",
@@ -373,7 +373,6 @@ const elements = {
   featureStudioExampleMessage: document.querySelector("#featureStudioExampleMessage"),
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
-  featureStudioLaunchNote: document.querySelector("#featureStudioLaunchNote"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
   featureActivationPhoneNumberIdHelpButton: document.querySelector("#featureActivationPhoneNumberIdHelpButton"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
@@ -1147,7 +1146,7 @@ function getFeaturePricing(feature = getSelectedFeature()) {
 
 function buildFeaturePitch(feature = getSelectedFeature()) {
   if (feature?.id === "whatsapp-business-follow-up-outreach-writer") {
-    return "WhatsApp Re-engagement Assistant keeps old customer threads from disappearing. It saves the conversation history, checks for threads that have been quiet for more than six months, and sends you a copy-ready outreach message inside WhatsApp so you can reconnect with context instead of starting cold.";
+    return "WhatsApp Re-engagement Assistant makes it easy to follow up with past customers without starting from scratch. It prepares outreach messages you can review and send, helping you restart conversations, stay top of mind, and bring more opportunities back into your pipeline.";
   }
 
   return "WhatsApp Reply Assistant helps you respond faster without sounding rushed. It turns incoming messages into clear, polished reply drafts that keep leads warm, reduce missed opportunities after hours, and make follow-up feel consistent and professional. You stay in control of every send while moving quicker, quoting with more confidence, and turning more conversations into booked work.";
@@ -4298,13 +4297,6 @@ function updateFeatureStudioHeader() {
     elements.featureStudioLaunchButton.textContent = isSetupComplete
       ? "Open tool editor"
       : "Start setup";
-  }
-
-  if (elements.featureStudioLaunchNote) {
-    elements.featureStudioLaunchNote.hidden = isActivated || studioView === "activation";
-    elements.featureStudioLaunchNote.textContent = isSetupComplete
-      ? "Your WhatsApp setup is saved. Review the tool editor, then activate the feature when you’re ready."
-      : "Start setup to connect your WhatsApp account.";
   }
 
   renderFeatureActivationFieldErrors();
