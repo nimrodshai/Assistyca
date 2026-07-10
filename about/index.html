@@ -129,7 +129,7 @@
       }
 
       .brand img {
-        width: clamp(13rem, 22vw, 18.5rem);
+        width: clamp(12.4rem, 20vw, 17.4rem);
         height: auto;
       }
 
@@ -167,9 +167,9 @@
         grid-template-columns: minmax(0, 1.12fr) minmax(19rem, 0.88fr);
         align-items: center;
         gap: clamp(2rem, 4vw, 4.5rem);
-        min-height: calc(100vh - 7rem);
+        min-height: clamp(31rem, calc(100svh - 12rem), 39rem);
         padding-top: 2.4rem;
-        padding-bottom: 2.8rem;
+        padding-bottom: 1.9rem;
       }
 
       .hero-copy {
@@ -191,7 +191,7 @@
       }
 
       .hero-copy p {
-        max-width: 28rem;
+        max-width: 31rem;
         margin: 1.65rem 0 0;
         color: var(--muted);
         font-size: clamp(1.12rem, 2vw, 1.28rem);
@@ -261,16 +261,42 @@
         justify-content: flex-end;
       }
 
+      .hero-visual::before {
+        content: "";
+        position: absolute;
+        inset: 8% -6% 6% 8%;
+        background:
+          radial-gradient(circle at 62% 72%, rgba(255, 255, 255, 0.92), transparent 20%),
+          radial-gradient(circle at 75% 28%, rgba(255, 255, 255, 0.7), transparent 18%),
+          radial-gradient(circle at 65% 88%, rgba(226, 217, 201, 0.34), transparent 28%);
+        pointer-events: none;
+      }
+
       .hero-visual img {
         position: absolute;
-        right: -10%;
-        bottom: -4%;
-        width: clamp(24rem, 43vw, 42rem);
+        right: -18%;
+        bottom: -10%;
+        width: clamp(30rem, 58vw, 56rem);
         max-width: none;
         height: auto;
         object-fit: contain;
         object-position: right bottom;
-        filter: saturate(0.92) contrast(0.98);
+        filter: saturate(0.95) contrast(0.985);
+        pointer-events: none;
+        -webkit-mask-image: linear-gradient(
+          90deg,
+          transparent 0%,
+          rgba(0, 0, 0, 0.08) 18%,
+          rgba(0, 0, 0, 0.7) 28%,
+          #000 38%
+        );
+        mask-image: linear-gradient(
+          90deg,
+          transparent 0%,
+          rgba(0, 0, 0, 0.08) 18%,
+          rgba(0, 0, 0, 0.7) 28%,
+          #000 38%
+        );
       }
 
       .benefits-wrap {
@@ -462,10 +488,14 @@
           order: 2;
         }
 
+        .hero-visual::before {
+          inset: 8% -8% 8% 0;
+        }
+
         .hero-visual img {
-          right: -4%;
-          bottom: -2%;
-          width: min(100%, 34rem);
+          right: -8%;
+          bottom: -4%;
+          width: min(120%, 41rem);
         }
 
         .benefits {
@@ -530,9 +560,14 @@
           min-height: 22rem;
         }
 
+        .hero-visual::before {
+          inset: 10% -10% 8% -6%;
+        }
+
         .hero-visual img {
-          right: -6%;
-          width: 110%;
+          right: -16%;
+          bottom: -3%;
+          width: 128%;
         }
 
         .final-cta {
@@ -573,8 +608,8 @@
               <span class="hero-line">for Business Owners</span>
             </h1>
             <p>
-              Save time. Reduce costs. Scale with ease. I build smart solutions
-              that work for you.
+              Save time. Reduce costs. Scale with ease.<br />
+              I build smart solutions that work for you.
             </p>
             <div class="hero-actions">
               <a class="button-primary" href="mailto:nimrod.shai@gmail.com">Let&apos;s Talk</a>
@@ -583,7 +618,12 @@
           </div>
 
           <div class="hero-visual" aria-hidden="true">
-            <img src="../assets/zen-hero-stones.png" alt="" />
+            <img
+              id="hero-image"
+              src="../assets/zen-hero-stones-transparent.png"
+              data-source="../assets/zen-hero-stones-transparent.png"
+              alt=""
+            />
           </div>
         </section>
 
@@ -728,5 +768,66 @@
         </section>
       </main>
     </div>
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        const heroImage = document.getElementById("hero-image");
+        if (!heroImage || heroImage.dataset.keyed === "true") {
+          return;
+        }
+
+        const source = heroImage.dataset.source || heroImage.getAttribute("src");
+        if (!source) {
+          return;
+        }
+
+        const image = new Image();
+        image.decoding = "async";
+        image.onload = () => {
+          try {
+            const canvas = document.createElement("canvas");
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+
+            const context = canvas.getContext("2d", { willReadFrequently: true });
+            if (!context) {
+              return;
+            }
+
+            context.drawImage(image, 0, 0);
+            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+
+            for (let index = 0; index < data.length; index += 4) {
+              const red = data[index];
+              const green = data[index + 1];
+              const blue = data[index + 2];
+              const alpha = data[index + 3];
+              const brightest = Math.max(red, green, blue);
+              const darkest = Math.min(red, green, blue);
+              const average = (red + green + blue) / 3;
+              const spread = brightest - darkest;
+
+              if (average > 243 && spread < 24) {
+                data[index + 3] = 0;
+                continue;
+              }
+
+              if (average > 228 && spread < 22) {
+                const keepRatio = Math.max(0, Math.min(1, (243 - average) / 15));
+                data[index + 3] = Math.round(alpha * keepRatio);
+              }
+            }
+
+            context.putImageData(imageData, 0, 0);
+            heroImage.src = canvas.toDataURL("image/png");
+            heroImage.dataset.keyed = "true";
+          } catch (error) {
+            console.warn("Hero image cleanup skipped.", error);
+          }
+        };
+
+        image.src = source;
+      });
+    </script>
   </body>
 </html>
