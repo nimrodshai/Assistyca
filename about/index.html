@@ -799,10 +799,11 @@
     <div class="page">
       <div class="site-header-shell">
         <header class="site-header" id="top">
-          <a class="brand" href="#top" aria-label="Assistyca home">
+          <a class="brand" href="#home" aria-label="Assistyca home">
             <img src="../assets/AssistycaLogoTitle.png" alt="Assistyca" />
           </a>
           <nav class="nav" aria-label="Page navigation">
+            <a data-section="home" href="#home">Home</a>
             <a data-section="services" href="#services">Services</a>
             <a data-section="how-it-works" href="#how-it-works">How It Works</a>
             <a data-section="about-me" href="#about-me">About Me</a>
@@ -812,7 +813,7 @@
       </div>
 
       <main>
-        <section class="hero" aria-labelledby="hero-title">
+        <section class="hero" id="home" aria-labelledby="hero-title">
           <div class="hero-copy">
             <h1 id="hero-title">
               <span class="hero-line">AI Agents &amp; Automations</span>
@@ -1055,6 +1056,8 @@
         const initialHash = window.location.hash.replace("#", "");
         if (initialHash) {
           setActiveLink(initialHash);
+        } else {
+          setActiveLink("home");
         }
 
         if (sectionTargets.length > 0) {
