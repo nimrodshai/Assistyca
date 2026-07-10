@@ -6276,6 +6276,19 @@ function updatePromptFields() {
   elements.exampleReplies.value = prompt.exampleReplies;
 }
 
+function setMonitorDeliveryPanelState(panel, isActive) {
+  if (!panel) {
+    return;
+  }
+
+  panel.classList.toggle("is-active", isActive);
+  panel.setAttribute("aria-hidden", String(!isActive));
+
+  for (const control of panel.querySelectorAll("input, select, textarea, button")) {
+    control.disabled = !isActive;
+  }
+}
+
 function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
   const isMonitor = isMonitorFeature(getSelectedFeature());
   const sharedPromptCards = [
@@ -6289,15 +6302,10 @@ function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
       card.classList.toggle("is-hidden", isMonitor);
     }
   }
-  if (elements.monitorEmailField) {
-    elements.monitorEmailField.classList.toggle("is-hidden", settings.deliveryChannel !== "email");
-  }
-  if (elements.monitorTelegramField) {
-    elements.monitorTelegramField.classList.toggle("is-hidden", settings.deliveryChannel !== "telegram");
-  }
-  if (elements.monitorWhatsAppField) {
-    elements.monitorWhatsAppField.classList.toggle("is-hidden", settings.deliveryChannel !== "whatsapp");
-  }
+
+  setMonitorDeliveryPanelState(elements.monitorEmailField, settings.deliveryChannel === "email");
+  setMonitorDeliveryPanelState(elements.monitorTelegramField, settings.deliveryChannel === "telegram");
+  setMonitorDeliveryPanelState(elements.monitorWhatsAppField, settings.deliveryChannel === "whatsapp");
 }
 
 function updateMonitorFields() {
