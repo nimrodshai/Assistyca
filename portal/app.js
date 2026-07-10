@@ -6337,7 +6337,9 @@ function updateMonitorFields() {
     elements.monitorDeliveryChannel.value = monitorSettings.deliveryChannel;
   }
   if (elements.monitorEmailSummary) {
-    elements.monitorEmailSummary.textContent = activeEmail || "Workspace account email";
+    const emailSummary = activeEmail || "Workspace account email";
+    elements.monitorEmailSummary.textContent = emailSummary;
+    elements.monitorEmailSummary.title = emailSummary;
   }
   if (elements.monitorTelegramChatId) {
     elements.monitorTelegramChatId.value = monitorSettings.telegramChatId;
