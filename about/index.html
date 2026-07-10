@@ -436,71 +436,30 @@
 
       .about-visual {
         position: relative;
-        min-height: clamp(31rem, 46vw, 41rem);
+        min-height: clamp(32rem, 48vw, 43rem);
         overflow: visible;
       }
 
       .about-visual::before {
-        content: "";
-        position: absolute;
-        left: -10%;
-        right: 1%;
-        bottom: 2.8%;
-        height: 1.25rem;
-        border-radius: 999px;
-        background: radial-gradient(
-          ellipse at center,
-          rgba(166, 144, 111, 0.24) 0%,
-          rgba(166, 144, 111, 0.12) 36%,
-          rgba(166, 144, 111, 0.04) 62%,
-          transparent 100%
-        );
-        filter: blur(7px);
-        z-index: 0;
-        pointer-events: none;
+        content: none;
       }
 
       .about-visual::after {
-        content: "";
-        position: absolute;
-        left: -1%;
-        top: 32%;
-        width: clamp(18.5rem, 32vw, 24rem);
-        aspect-ratio: 0.92;
-        border-radius: 42% 46% 52% 38% / 48% 44% 56% 52%;
-        background: radial-gradient(
-          circle at 40% 35%,
-          rgba(255, 255, 255, 0.96) 0%,
-          rgba(243, 239, 231, 0.94) 60%,
-          rgba(243, 239, 231, 0.26) 100%
-        );
-        transform: rotate(-27deg);
-        opacity: 0.98;
-        z-index: 1;
-        pointer-events: none;
+        content: none;
       }
 
-      .about-outline,
-      .about-vase {
+      .about-art {
         position: absolute;
         max-width: none;
         height: auto;
         pointer-events: none;
       }
 
-      .about-outline {
-        left: -18%;
-        top: 0.5%;
-        width: clamp(35rem, 62vw, 49rem);
-        z-index: 2;
-      }
-
-      .about-vase {
-        right: -1.5%;
-        bottom: -7.5%;
-        width: clamp(25rem, 35vw, 29.5rem);
-        z-index: 3;
-        filter: drop-shadow(0 18px 22px rgba(145, 122, 88, 0.14));
+      .about-art {
+        right: -8%;
+        bottom: -6%;
+        width: clamp(34rem, 56vw, 47rem);
+        filter: saturate(0.98) contrast(0.99);
       }
 
       .section {
@@ -656,28 +615,10 @@
           min-height: 36rem;
         }
 
-        .about-visual::before {
-          left: -8%;
-          right: 2%;
-          bottom: 3.2%;
-        }
-
-        .about-outline {
-          left: -13%;
-          top: 2%;
-          width: clamp(36rem, 62vw, 48rem);
-        }
-
-        .about-vase {
-          right: -3%;
-          bottom: -8%;
-          width: clamp(25.5rem, 38vw, 29.5rem);
-        }
-
-        .about-visual::after {
-          left: 3%;
-          top: 33%;
-          width: clamp(19rem, 33vw, 24rem);
+        .about-art {
+          right: -10%;
+          bottom: -7%;
+          width: clamp(36rem, 59vw, 48rem);
         }
       }
 
@@ -737,22 +678,10 @@
           overflow: hidden;
         }
 
-        .about-outline {
-          left: -18%;
-          top: 2%;
-          width: 136%;
-        }
-
-        .about-vase {
-          right: -4%;
-          bottom: -6%;
-          width: min(100%, 25rem);
-        }
-
-        .about-visual::after {
-          left: 10%;
-          top: 34%;
-          width: min(66vw, 19rem);
+        .about-art {
+          right: -12%;
+          bottom: -9%;
+          width: 122%;
         }
 
         .section h2,
@@ -835,22 +764,10 @@
           min-height: 24rem;
         }
 
-        .about-outline {
-          left: -24%;
-          top: 0;
-          width: 148%;
-        }
-
-        .about-vase {
-          right: -8%;
-          bottom: -6%;
-          width: min(100%, 23.5rem);
-        }
-
-        .about-visual::after {
-          left: 8%;
-          top: 36%;
-          width: min(70vw, 16.5rem);
+        .about-art {
+          right: -18%;
+          bottom: -10%;
+          width: 138%;
         }
 
         .desktop-break {
@@ -955,19 +872,14 @@
 
           <div class="about-visual" aria-hidden="true">
             <img
-              class="about-outline"
-              src="../assets/about-blob-outline-line.png"
-              alt=""
-            />
-            <img
-              class="about-vase"
-              src="../assets/about-vase-branch.png"
+              class="about-art"
+              src="../assets/about-user-art.png"
               data-keyed-image
-              data-key-clear="242"
-              data-key-soft="220"
-              data-key-spread="58"
-              data-key-soft-spread="44"
-              data-source="../assets/about-vase-branch.png"
+              data-key-clear="246"
+              data-key-soft="226"
+              data-key-spread="10"
+              data-key-soft-spread="10"
+              data-source="../assets/about-user-art.png"
               alt=""
             />
           </div>
