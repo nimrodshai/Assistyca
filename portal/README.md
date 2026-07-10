@@ -17,6 +17,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself
 - The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes inbound webhooks by phone number ID
+- The Scheduled Web Monitor runs in the backend on a daily, weekly, or monthly cadence, uses the shared OpenAI gateway plus the web search tool, and sends alerts by email, Telegram, or WhatsApp
 - WhatsApp approval pages and webhook handling now live inside the portal backend at `/approval/<approval_id>` and `/webhooks/whatsapp`
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
@@ -28,6 +29,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - Clients sign in with email and a one-time code.
 - The code is now issued by `scripts/run_portal_server.py` and verified by the server instead of being mocked in the browser.
 - Set either the SMTP variables or the Resend variables so the server can actually email the code.
+- The same mail configuration is also used when a Scheduled Web Monitor alert is configured for email delivery.
 - Registered emails now live in the backend SQLite database at `portal/portal.db` by default.
 - Set `PORTAL_DB_SEED_REGISTERED_EMAILS` to bootstrap the database the first time it starts. `PORTAL_REGISTERED_EMAILS` is still accepted as a legacy bootstrap alias.
 - Set `PORTAL_DB_SEED_ADMIN_EMAILS` to promote bootstrap users to admin on startup. `PORTAL_ADMIN_EMAILS` is still accepted as a legacy alias.
@@ -67,8 +69,15 @@ Required environment variables on Render:
 - `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the backend
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
+- `TELEGRAM_BOT_TOKEN` when you want Scheduled Web Monitor alerts to be delivered through Telegram
 - `PORTAL_WHATSAPP_STORE_ROOT` optional override for the per-user WhatsApp approval JSON files. If unset, the portal uses `PORTAL_DATA_ROOT/portal-whatsapp`.
 - `PUBLIC_BASE_URL` recommended for production so approval links and the connection payload always point at the public portal hostname
+- `PORTAL_SCHEDULED_MONITOR_ENABLED` enables the recurring Scheduled Web Monitor worker. The default is `1`.
+- `PORTAL_SCHEDULED_MONITOR_POLL_SECONDS` controls how often the backend checks for due monitor runs. The default is `300`.
+- `PORTAL_SCHEDULED_MONITOR_MODEL` overrides the OpenAI model used for recurring monitor searches. The default is `gpt-5.5`.
+- `PORTAL_SCHEDULED_MONITOR_SEARCH_CONTEXT_SIZE` controls the OpenAI web search context size. Supported values are `low`, `medium`, and `high`. The default is `medium`.
+- `PORTAL_SCHEDULED_MONITOR_MAX_OUTPUT_TOKENS` caps each monitor search response. The default is `1800`.
+- `PORTAL_SCHEDULED_MONITOR_MAX_ITEMS_PER_RUN` limits how many alerts a single run may send. The default is `5`.
 - `PORTAL_BILLING_INPUT_TOKEN_PRICE_MULTIPLIER` controls the input-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_OUTPUT_TOKEN_PRICE_MULTIPLIER` controls the output-token multiplier for the default billing plan. The default is `1.5`.
 - `PORTAL_BILLING_MULTIPLIER` is still accepted as a legacy fallback for both billing multipliers.
@@ -81,6 +90,9 @@ Required environment variables on Render:
 - `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_STORE_ID` optional per-feature override for the WhatsApp Reply Assistant store ID
 - `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_VARIANT_ID` optional per-feature override for the WhatsApp Reply Assistant plan or variant ID
 - `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_PRODUCT_ID` optional per-feature product matcher when you want entitlement checks to follow a specific Lemon Squeezy product
+- `LEMON_SQUEEZY_SCHEDULED_MONITOR_STORE_ID` optional per-feature override for the Scheduled Web Monitor store ID
+- `LEMON_SQUEEZY_SCHEDULED_MONITOR_VARIANT_ID` optional per-feature override for the Scheduled Web Monitor plan or variant ID
+- `LEMON_SQUEEZY_SCHEDULED_MONITOR_PRODUCT_ID` optional per-feature product matcher when you want entitlement checks to follow a specific Lemon Squeezy product
 - `LEMON_SQUEEZY_SIGNING_SECRET` optional now, but needed once you accept Lemon Squeezy webhooks
 - `LEMON_SQUEEZY_ACTIVATION_REDIRECT_URL` optional override for where checkout should return after payment. If unset, the portal uses `PUBLIC_BASE_URL/portal/#features`
 - `FEATURE_ACTIVATION_PAYMENT_STATUS_CACHE_TTL_SECONDS` optional cache TTL for backend payment-status refreshes. The default is `120`.
@@ -117,6 +129,12 @@ The portal setup form now saves only the WhatsApp tenant fields needed per works
 
 The shared Meta app secrets stay server-side in environment variables and should never be stored in portal client state.
 The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.
+
+For Scheduled Web Monitor delivery:
+
+- Email uses the same SMTP or Resend configuration as OTP delivery.
+- Telegram requires `TELEGRAM_BOT_TOKEN` plus a saved chat id in the tool editor.
+- WhatsApp requires the workspace's saved WhatsApp connection plus `WHATSAPP_ACCESS_TOKEN`.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.
 

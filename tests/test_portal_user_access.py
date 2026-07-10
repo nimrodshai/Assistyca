@@ -11,6 +11,7 @@ from packages.infrastructure.whatsapp_portal_service import portal_whatsapp_stor
 
 DEFAULT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 FOLLOW_UP_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer"
+MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier"
 
 
 class PortalUserAccessTests(unittest.TestCase):
@@ -54,6 +55,34 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertEqual([feature["featureId"] for feature in assigned_features], [FOLLOW_UP_FEATURE_ID])
         self.assertFalse(assignments[DEFAULT_FEATURE_ID]["isAssigned"])
         self.assertTrue(assignments[FOLLOW_UP_FEATURE_ID]["isAssigned"])
+        self.assertFalse(assignments[MONITOR_FEATURE_ID]["isAssigned"])
+
+    def test_set_user_feature_assignments_preserves_existing_metadata(self) -> None:
+        self.database.register_user("owner@example.com")
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            MONITOR_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "searchPrompt": "Court holidays and criminal law conferences",
+                    "deliveryChannel": "email",
+                    "emailAddress": "owner@example.com",
+                }
+            },
+        )
+
+        self.database.set_user_feature_assignments("owner@example.com", [FOLLOW_UP_FEATURE_ID])
+
+        assignments = {
+            assignment["featureId"]: assignment
+            for assignment in self.database.list_feature_assignments("owner@example.com")
+        }
+
+        self.assertFalse(assignments[MONITOR_FEATURE_ID]["isAssigned"])
+        self.assertEqual(
+            assignments[MONITOR_FEATURE_ID]["metadata"]["settings"]["searchPrompt"],
+            "Court holidays and criminal law conferences",
+        )
 
     def test_delete_user_removes_account_and_related_records(self) -> None:
         self.database.register_user("owner@example.com", is_admin=True)
@@ -104,7 +133,7 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertIsNotNone(self.database.get_whatsapp_connection("better@example.com"))
         self.assertEqual(
             [feature["featureId"] for feature in self.database.list_assigned_features("better@example.com")],
-            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID],
+            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
         )
 
     def test_update_user_identity_rejects_duplicate_email(self) -> None:

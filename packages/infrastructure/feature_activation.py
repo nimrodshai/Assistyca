@@ -12,6 +12,8 @@ from packages.infrastructure.lemon_squeezy_api import LemonSqueezyClient
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyConfigurationError
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyRequestError
 from packages.infrastructure.lemon_squeezy_api import load_lemon_squeezy_config
+from packages.tools.scheduled_monitor.monitor import build_monitor_setup_status
+from packages.tools.scheduled_monitor.monitor import normalize_monitor_settings
 from packages.infrastructure.portal_db import PortalDatabase
 
 
@@ -184,6 +186,54 @@ class FeatureActivationService:
         return {
             "features": feature_states,
             "paymentStatus": payment_summary or self._default_payment_status(),
+        }
+
+    def save_feature_config(
+        self,
+        email: str,
+        *,
+        feature_id: str,
+        prompt: dict[str, Any] | None = None,
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        feature = self._require_assigned_feature(email, feature_id)
+        if feature is None:
+            return {
+                "ok": False,
+                "error": "feature_not_available",
+                "message": "This tool is not available for this account.",
+            }
+
+        normalized_feature_id = normalize_text(feature.get("featureId"))
+        assignment = self.database.get_feature_assignment(email, normalized_feature_id) or {}
+        existing_metadata = assignment.get("metadata") if isinstance(assignment.get("metadata"), dict) else {}
+
+        prompt_payload = prompt if isinstance(prompt, dict) else (
+            existing_metadata.get("prompt") if isinstance(existing_metadata.get("prompt"), dict) else {}
+        )
+        settings_payload = settings if isinstance(settings, dict) else (
+            existing_metadata.get("settings") if isinstance(existing_metadata.get("settings"), dict) else {}
+        )
+        if normalized_feature_id == "scheduled-web-monitor-notifier":
+            settings_payload = normalize_monitor_settings(settings_payload)
+
+        self.database.save_feature_assignment_metadata(
+            email,
+            normalized_feature_id,
+            metadata={
+                **existing_metadata,
+                "prompt": prompt_payload,
+                "settings": settings_payload,
+            },
+        )
+        updated_feature = self._require_assigned_feature(email, normalized_feature_id) or feature
+        feature_state = self._build_feature_state(email, updated_feature, refresh_payment=False)
+        return {
+            "ok": True,
+            "message": "Tool settings saved.",
+            "feature": feature_state,
+            "setupStatus": feature_state.get("setupStatus", {}),
+            "paymentStatus": feature_state.get("paymentStatus", self._default_payment_status()),
         }
 
     def activate_feature(
@@ -394,6 +444,15 @@ class FeatureActivationService:
     ) -> dict[str, Any]:
         feature_id = normalize_text(feature.get("featureId"))
         activation = self.database.get_feature_activation(email, feature_id) or {}
+        assignment = feature.get("assignment") if isinstance(feature.get("assignment"), dict) else {}
+        assignment_metadata = assignment.get("metadata") if isinstance(assignment.get("metadata"), dict) else {}
+        saved_prompt = assignment_metadata.get("prompt") if isinstance(assignment_metadata.get("prompt"), dict) else {}
+        saved_settings = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
+        resolved_prompt = {
+            **(feature.get("prompt") if isinstance(feature.get("prompt"), dict) else {}),
+            **saved_prompt,
+        }
+        resolved_settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
         resolved_setup_status = setup_status or self._resolve_setup_status(email, feature=feature)
         resolved_payment_status = payment_status or self._resolve_payment_status(
             email,
@@ -435,15 +494,21 @@ class FeatureActivationService:
             },
             "requirements": dict(feature.get("requirements") or {}),
             "pricing": dict(feature.get("pricing") or {}),
-            "prompt": dict(feature.get("prompt") or {}),
-            "assignment": dict(feature.get("assignment") or {}),
+            "prompt": resolved_prompt,
+            "settings": resolved_settings,
+            "assignment": dict(assignment or {}),
             "metadata": dict(feature.get("metadata") or {}),
         }
 
     def _resolve_setup_status(self, email: str, *, feature: dict[str, Any]) -> dict[str, Any]:
         requirements = feature.get("requirements") if isinstance(feature.get("requirements"), dict) else {}
+        feature_id = normalize_text(feature.get("featureId"))
+        assignment = feature.get("assignment") if isinstance(feature.get("assignment"), dict) else {}
+        assignment_metadata = assignment.get("metadata") if isinstance(assignment.get("metadata"), dict) else {}
+        settings = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
         requires_whatsapp_connection = bool(requirements.get("requiresWhatsAppConnection"))
-        if not requires_whatsapp_connection:
+        requires_monitor_config = bool(requirements.get("requiresScheduledMonitorConfig"))
+        if not requires_whatsapp_connection and not requires_monitor_config:
             return {
                 "required": False,
                 "ready": True,
@@ -456,6 +521,12 @@ class FeatureActivationService:
             and normalize_text(connection.get("ownerWaId"))
             and normalize_text(connection.get("connectionStatus")) == "connected"
         )
+        if feature_id == "scheduled-web-monitor-notifier" or requires_monitor_config:
+            return build_monitor_setup_status(
+                settings,
+                whatsapp_connection=connection,
+            )
+
         return {
             "required": True,
             "ready": ready,

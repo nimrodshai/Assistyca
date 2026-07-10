@@ -48,6 +48,7 @@ const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
+const MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
   "WhatsApp Reply Approval Bot",
@@ -87,6 +88,18 @@ const DEFAULT_FEATURE_WHATSAPP = {
   verified_name: "",
   connected_at: "",
   last_tested_at: "",
+};
+const DEFAULT_MONITOR_SETTINGS = {
+  searchPrompt: "",
+  cadence: "weekly",
+  weekday: "monday",
+  monthDay: 1,
+  timeOfDay: "09:00",
+  timezone: "",
+  deliveryChannel: "email",
+  emailAddress: "",
+  telegramChatId: "",
+  whatsappRecipient: "",
 };
 
 const DEFAULT_PROMPT = {
@@ -170,6 +183,46 @@ const DEFAULT_FEATURES = [
     assignment: {},
     paymentStatus: null,
     metadata: {},
+    whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
+    savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
+  },
+  {
+    id: MONITOR_FEATURE_ID,
+    name: "Scheduled Web Monitor",
+    description: "Searches the web on a daily, weekly, or monthly schedule and sends source-backed alerts about the events, dates, and opportunities you care about.",
+    channel: "Alerts",
+    mode: "Scheduled search",
+    status: "non-active",
+    activated: false,
+    setupComplete: false,
+    launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
+    pricing: { ...DEFAULT_FEATURE_PRICING },
+    prompt: {
+      ...DEFAULT_PROMPT,
+      toneGuidance: "Clear, useful, and concise. Make alerts easy to scan and act on.",
+      replyRules: "Only alert when there is a real match with a credible public source. Prefer source-backed specifics over vague mentions.",
+      businessNotes: "Region, niche, timing rules, or context that helps the monitor decide what matters most.",
+      escalationGuidance: "Mark items urgent when a deadline is close, an event is approaching soon, or the result clearly needs quick human follow-up.",
+      exampleReplies: "Good: \"The Israeli Criminal Defense Conference published its 2026 agenda. Registration closes Aug 12. Source: https://example.com\"\nBad: \"There might be something interesting online soon.\"",
+      scenario: "monitor",
+    },
+    requirements: {
+      requiresScheduledMonitorConfig: true,
+    },
+    billing: {
+      required: true,
+      provider: "lemon_squeezy",
+      storeId: "",
+      productId: "",
+      variantId: "",
+    },
+    assignment: {},
+    paymentStatus: null,
+    metadata: {
+      setupSurface: "editor",
+    },
+    settings: { ...DEFAULT_MONITOR_SETTINGS },
+    savedSettings: { ...DEFAULT_MONITOR_SETTINGS },
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
@@ -263,6 +316,14 @@ const SCENARIOS = {
     user: "Thanks, I’ll think about it and get back to you.",
     ask: "Hi Maya, just checking in in case you still need help with the leak repair we discussed. If you want to pick it back up, send me a message and I’ll take it from there.",
     insight: "Keeps old conversations from going cold without sounding pushy.",
+  },
+  monitor: {
+    label: "Scheduled alert",
+    sender: "Scheduled monitor",
+    meta: "Weekly web search",
+    user: "Watch for criminal defense law conferences, holiday reminders, and any registration deadlines worth sharing.",
+    ask: "The Israeli Criminal Defense Conference opened registration for Sept 18-19, 2026. Early-bird pricing ends Aug 12. Source: https://example.com",
+    insight: "Turns vague watchlists into source-backed alerts on a schedule.",
   },
 };
 
@@ -365,6 +426,7 @@ let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
 let featureActivationTransitionAction = "";
+let featureConfigBusy = false;
 
 const elements = {
   authView: document.querySelector("#authView"),
@@ -401,6 +463,7 @@ const elements = {
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorActivationText: document.querySelector("#featureStudioEditorActivationText"),
+  featureStudioEditorSaveButton: document.querySelector("#featureStudioEditorSaveButton"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
@@ -416,6 +479,24 @@ const elements = {
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
+  monitorTargetCard: document.querySelector("#monitorTargetCard"),
+  monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
+  monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
+  monitorSearchPrompt: document.querySelector("#monitorSearchPrompt"),
+  monitorCadence: document.querySelector("#monitorCadence"),
+  monitorWeekdayField: document.querySelector("#monitorWeekdayField"),
+  monitorWeekday: document.querySelector("#monitorWeekday"),
+  monitorMonthDayField: document.querySelector("#monitorMonthDayField"),
+  monitorMonthDay: document.querySelector("#monitorMonthDay"),
+  monitorTimeOfDay: document.querySelector("#monitorTimeOfDay"),
+  monitorTimezone: document.querySelector("#monitorTimezone"),
+  monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
+  monitorEmailField: document.querySelector("#monitorEmailField"),
+  monitorEmailAddress: document.querySelector("#monitorEmailAddress"),
+  monitorTelegramField: document.querySelector("#monitorTelegramField"),
+  monitorTelegramChatId: document.querySelector("#monitorTelegramChatId"),
+  monitorWhatsAppField: document.querySelector("#monitorWhatsAppField"),
+  monitorWhatsAppRecipient: document.querySelector("#monitorWhatsAppRecipient"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
   featureStudioMenu: document.querySelector("#featureStudioMenu"),
@@ -526,6 +607,18 @@ if (authChallenge && authChallenge.expiresAt && Date.now() > authChallenge.expir
 
 function defaultTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function listTimeZones() {
+  if (typeof Intl.supportedValuesOf === "function") {
+    try {
+      return Intl.supportedValuesOf("timeZone");
+    } catch {
+      return ["UTC", "Asia/Jerusalem", "America/New_York", "Europe/London"];
+    }
+  }
+
+  return ["UTC", "Asia/Jerusalem", "America/New_York", "Europe/London"];
 }
 
 function normalizeEmail(email) {
@@ -1166,6 +1259,14 @@ function isWhatsAppFeature(feature) {
   return String(feature?.channel || "").trim().toLowerCase() === "whatsapp";
 }
 
+function isMonitorFeature(feature = getSelectedFeature()) {
+  return Boolean(feature && feature.id === MONITOR_FEATURE_ID);
+}
+
+function usesEditorSetup(feature = getSelectedFeature()) {
+  return Boolean(feature?.metadata && feature.metadata.setupSurface === "editor");
+}
+
 function normalizeCountryCode(value) {
   const code = String(value || "").trim().toUpperCase();
   return /^[A-Z]{2}$/.test(code) ? code : "";
@@ -1553,6 +1654,7 @@ function loadClientState(email) {
       ).trim(),
       pricing: normalizeFeaturePricing(feature?.pricing || {}),
       prompt: normalizePrompt(feature?.prompt || {}, fallbackPrompt),
+      savedPrompt: normalizePrompt(feature?.savedPrompt || feature?.prompt || {}, fallbackPrompt),
       requirements: normalizeFeatureRequirements(feature?.requirements || {}),
       billing: normalizeFeatureBilling(feature?.billing || {}),
       assignment: feature?.assignment && typeof feature.assignment === "object"
@@ -1562,6 +1664,8 @@ function loadClientState(email) {
       metadata: feature?.metadata && typeof feature.metadata === "object"
         ? { ...feature.metadata }
         : {},
+      settings: normalizeFeatureMonitorSettings(feature?.settings || {}),
+      savedSettings: normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {}),
       whatsapp: normalizeFeatureWhatsApp(feature?.whatsapp || feature?.activation || {}),
       savedWhatsApp: normalizeFeatureWhatsApp(
         feature?.savedWhatsApp
@@ -1628,6 +1732,11 @@ function normalizeFeatureRequirements(requirements = {}) {
       ?? source.requires_whatsapp_connection
       ?? false,
     ),
+    requiresScheduledMonitorConfig: Boolean(
+      source.requiresScheduledMonitorConfig
+      ?? source.requires_scheduled_monitor_config
+      ?? false,
+    ),
   };
 }
 
@@ -1685,11 +1794,35 @@ function normalizeFeatureWhatsApp(config = {}) {
   };
 }
 
+function normalizeFeatureMonitorSettings(settings = {}) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const cadence = String(source.cadence || DEFAULT_MONITOR_SETTINGS.cadence).trim().toLowerCase();
+  const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
+  const monthDay = Number.parseInt(source.monthDay, 10);
+
+  return {
+    searchPrompt: String(source.searchPrompt || "").trim(),
+    cadence: ["daily", "weekly", "monthly"].includes(cadence) ? cadence : DEFAULT_MONITOR_SETTINGS.cadence,
+    weekday: String(source.weekday || DEFAULT_MONITOR_SETTINGS.weekday).trim().toLowerCase() || DEFAULT_MONITOR_SETTINGS.weekday,
+    monthDay: Number.isFinite(monthDay) ? Math.min(31, Math.max(1, monthDay)) : DEFAULT_MONITOR_SETTINGS.monthDay,
+    timeOfDay: /^\d{2}:\d{2}$/.test(String(source.timeOfDay || "")) ? String(source.timeOfDay) : DEFAULT_MONITOR_SETTINGS.timeOfDay,
+    timezone: String(source.timezone || "").trim(),
+    deliveryChannel: ["email", "telegram", "whatsapp"].includes(deliveryChannel) ? deliveryChannel : DEFAULT_MONITOR_SETTINGS.deliveryChannel,
+    emailAddress: normalizeEmail(source.emailAddress || ""),
+    telegramChatId: String(source.telegramChatId || "").trim(),
+    whatsappRecipient: String(source.whatsappRecipient || "").trim(),
+  };
+}
+
 function getFeaturePricing(feature = getSelectedFeature()) {
   return normalizeFeaturePricing(feature?.pricing || DEFAULT_FEATURE_PRICING);
 }
 
 function buildFeaturePitch(feature = getSelectedFeature()) {
+  if (feature?.id === MONITOR_FEATURE_ID) {
+    return "Scheduled Web Monitor keeps watch for the dates, opportunities, and public updates that matter to this client. It turns a plain-language brief into recurring web research, then sends concise alerts with source links so the right person hears about conferences, holidays, deadlines, or niche developments before they slip by.";
+  }
+
   if (feature?.id === "whatsapp-business-follow-up-outreach-writer") {
     return "WhatsApp Re-engagement Assistant makes it easy to follow up with past customers without starting from scratch. It prepares outreach messages you can review and send, helping you restart conversations, stay top of mind, and bring more opportunities back into your pipeline.";
   }
@@ -1763,9 +1896,10 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
   const requirements = normalizeFeatureRequirements(serverFeature?.requirements || existingFeature?.requirements || {});
   const billing = normalizeFeatureBilling(serverFeature?.billing || existingFeature?.billing || {});
   const prompt = normalizePrompt(
-    existingFeature?.prompt || serverFeature?.prompt || {},
+    serverFeature?.prompt || existingFeature?.prompt || {},
     serverFeature?.prompt || DEFAULT_PROMPT,
   );
+  const savedPrompt = normalizePrompt(serverFeature?.prompt || existingFeature?.savedPrompt || existingFeature?.prompt || {}, serverFeature?.prompt || DEFAULT_PROMPT);
   const pricing = normalizeFeaturePricing(serverFeature?.pricing || existingFeature?.pricing || {});
   const paymentStatus = normalizeFeaturePaymentStatus(serverFeature?.paymentStatus || existingFeature?.paymentStatus || null);
   const metadata = serverFeature?.metadata && typeof serverFeature.metadata === "object"
@@ -1784,6 +1918,8 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
   const savedWhatsApp = isWhatsAppFeature({ channel })
     ? normalizeFeatureWhatsApp(existingFeature?.savedWhatsApp || existingFeature?.whatsapp || serverFeature?.whatsapp || {})
     : normalizeFeatureWhatsApp({});
+  const settings = normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.settings || {});
+  const savedSettings = normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.savedSettings || existingFeature?.settings || {});
 
   return {
     id: featureId,
@@ -1797,11 +1933,14 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
     launchUrl: String(serverFeature?.launchUrl || existingFeature?.launchUrl || DEFAULT_FEATURE_LAUNCH_URL).trim(),
     pricing,
     prompt,
+    savedPrompt,
     requirements,
     billing,
     assignment,
     paymentStatus,
     metadata,
+    settings,
+    savedSettings,
     whatsapp,
     savedWhatsApp,
   };
@@ -1888,6 +2027,68 @@ async function refreshFeatureActivationStates(options = {}) {
   return response;
 }
 
+async function saveSelectedFeatureConfig(options = {}) {
+  if (featureConfigBusy) {
+    return null;
+  }
+
+  const feature = getSelectedFeature();
+  if (!feature || !hasFeatureConfigChanges(feature)) {
+    if (options.render !== false && view === "app") {
+      renderApp();
+    }
+    setStatus("No settings changes to save.");
+    return null;
+  }
+
+  featureConfigBusy = true;
+  try {
+    if (options.render !== false && view === "app") {
+      renderApp();
+    }
+    setStatus(String(options.statusMessage || "Saving tool settings..."));
+    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        prompt: { ...feature.prompt },
+        settings: { ...feature.settings },
+      },
+    });
+
+    applyServerFeatureStates([response.feature || {}], { persist: true });
+    state.paymentStatus = response.paymentStatus || state.paymentStatus;
+    persistClientState();
+    if (options.render !== false && view === "app") {
+      renderApp();
+    }
+    setStatus(String(response.message || "Tool settings saved."));
+    return response;
+  } catch (error) {
+    if (options.alertOnError !== false) {
+      openFeatureActivationAlert(
+        "Couldn’t save the settings",
+        formatApiErrorMessage(error, "We couldn’t save these tool settings right now."),
+        {
+          eyebrow: "Try again",
+          returnFocus: elements.featureStudioEditorSaveButton,
+        },
+      );
+    }
+    if (options.render !== false && view === "app") {
+      renderApp();
+    }
+    setStatus("Couldn’t save the tool settings.");
+    throw error;
+  } finally {
+    featureConfigBusy = false;
+    if (options.render !== false && view === "app") {
+      renderApp();
+    }
+    updateFeatureStudioHeader();
+  }
+}
+
 async function refreshWhatsAppConnection(options = {}) {
   if (!isSignedIn()) {
     return null;
@@ -1961,6 +2162,10 @@ function getSelectedFeature() {
 
 function getSelectedPrompt() {
   return getSelectedFeature()?.prompt || { ...DEFAULT_PROMPT };
+}
+
+function getSavedFeaturePrompt(feature = getSelectedFeature()) {
+  return normalizePrompt(feature?.savedPrompt || feature?.prompt || {}, DEFAULT_PROMPT);
 }
 
 function normalizeFeatureStudioView(view) {
@@ -2047,6 +2252,9 @@ function setFeatureActivationState(feature, activated) {
 }
 
 function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
+  if (usesEditorSetup(feature)) {
+    return "editor";
+  }
   return isFeatureSetupComplete(feature) ? "editor" : "overview";
 }
 
@@ -2055,11 +2263,22 @@ function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
 }
 
 function getActivationBackView(feature = getSelectedFeature()) {
+  if (usesEditorSetup(feature)) {
+    return "editor";
+  }
   return isFeatureActivated(feature) ? "editor" : "overview";
 }
 
 function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
   return normalizeFeatureWhatsApp(feature?.whatsapp || {});
+}
+
+function getSelectedFeatureSettings(feature = getSelectedFeature()) {
+  return normalizeFeatureMonitorSettings(feature?.settings || {});
+}
+
+function getSavedFeatureSettings(feature = getSelectedFeature()) {
+  return normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {});
 }
 
 function getSavedFeatureWhatsApp(feature = getSelectedFeature()) {
@@ -2079,6 +2298,27 @@ function hasFeatureActivationChanges(feature = getSelectedFeature()) {
   const editableKeys = ["business_account_id", "owner_wa_id"];
 
   return editableKeys.some((key) => String(current[key] || "").trim() !== String(saved[key] || "").trim());
+}
+
+function hasFeatureConfigChanges(feature = getSelectedFeature()) {
+  if (!feature) {
+    return false;
+  }
+
+  const currentPrompt = feature?.prompt || getSelectedPrompt();
+  const savedPrompt = getSavedFeaturePrompt(feature);
+  const promptKeys = Object.keys(DEFAULT_PROMPT);
+  if (promptKeys.some((key) => String(currentPrompt[key] || "") !== String(savedPrompt[key] || ""))) {
+    return true;
+  }
+
+  if (!isMonitorFeature(feature)) {
+    return false;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const savedSettings = getSavedFeatureSettings(feature);
+  return Object.keys(DEFAULT_MONITOR_SETTINGS).some((key) => String(currentSettings[key] || "") !== String(savedSettings[key] || ""));
 }
 
 function isFeatureActivationBusy(feature = getSelectedFeature()) {
@@ -5604,7 +5844,43 @@ async function toggleSelectedFeatureEditorActivation() {
     return;
   }
 
-  if (!isFeatureSetupComplete(feature)) {
+  if (usesEditorSetup(feature)) {
+    let configResponse = null;
+    if (hasFeatureConfigChanges(feature)) {
+      try {
+        configResponse = await saveSelectedFeatureConfig({
+          statusMessage: "Saving settings before activation...",
+        });
+      } catch {
+        return;
+      }
+    }
+
+    const refreshedFeature = getSelectedFeature() || feature;
+    const setupStatus = configResponse?.setupStatus || refreshedFeature.setupStatus || {};
+    if (!isFeatureSetupComplete(refreshedFeature) || setupStatus.ready === false) {
+      const issues = Array.isArray(setupStatus.issues) ? setupStatus.issues : [];
+      const firstIssue = issues[0] || {};
+      const message = String(
+        setupStatus.message
+        || firstIssue.message
+        || "Finish the monitor settings before turning this tool on.",
+      ).trim();
+      openFeatureActivationAlert(
+        "Finish setup first",
+        message,
+        {
+          eyebrow: "One thing left",
+          returnFocus: elements.featureStudioEditorSaveButton,
+        },
+      );
+      window.requestAnimationFrame(() => {
+        getMonitorFieldElement(firstIssue.field)?.focus();
+      });
+      setStatus(message);
+      return;
+    }
+  } else if (!isFeatureSetupComplete(feature)) {
     startFeatureActivation({
       statusMessage: hasFeatureWhatsAppDetails(feature)
         ? "Finish WhatsApp setup before turning this tool on."
@@ -5657,17 +5933,30 @@ async function toggleSelectedFeatureEditorActivation() {
     }
 
     if (payload.error === "setup_required") {
-      startFeatureActivation({
-        statusMessage: payload.message || "Finish WhatsApp setup before turning this tool on.",
-      });
-      openFeatureActivationAlert(
-        "Finish setup first",
-        payload.message || "Finish WhatsApp setup before turning this tool on.",
-        {
-          eyebrow: "One thing left",
-          returnFocus: elements.featureStudioActivationButton,
-        },
-      );
+      const message = payload.message || "Finish setup before turning this tool on.";
+      if (usesEditorSetup(feature)) {
+        openFeatureActivationAlert(
+          "Finish setup first",
+          message,
+          {
+            eyebrow: "One thing left",
+            returnFocus: elements.featureStudioEditorSaveButton,
+          },
+        );
+      } else {
+        startFeatureActivation({
+          statusMessage: payload.message || "Finish WhatsApp setup before turning this tool on.",
+        });
+        openFeatureActivationAlert(
+          "Finish setup first",
+          payload.message || "Finish WhatsApp setup before turning this tool on.",
+          {
+            eyebrow: "One thing left",
+            returnFocus: elements.featureStudioActivationButton,
+          },
+        );
+      }
+      setStatus(message);
       return;
     }
 
@@ -5891,14 +6180,27 @@ function updateFeatureStudioHeader() {
     elements.featureStudioActivationSection.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationSection.setAttribute("aria-busy", String(activationBusy));
   }
+  const isEditorSetup = usesEditorSetup(feature);
   if (elements.featureStudioEditorActivationText) {
     elements.featureStudioEditorActivationText.textContent = isActivated
       ? "This tool is active now. You can turn it off anytime without losing your setup or editor settings."
-      : isSetupComplete
+      : isEditorSetup
+        ? isSetupComplete
+          ? "Your monitor settings are saved. Review the editor, then activate the tool when everything looks right."
+          : "Add the monitor schedule and delivery details, save them, and then activate the tool."
+        : isSetupComplete
         ? "Your WhatsApp setup is complete. Review the editor, then activate the tool when everything looks right."
         : hasFeatureWhatsAppDetails(feature)
           ? "Your WhatsApp details are saved, but setup still needs to be completed before you can activate this tool."
           : "Finish WhatsApp setup before turning this tool on.";
+  }
+  if (elements.featureStudioEditorSaveButton) {
+    const saveBusy = Boolean(featureConfigBusy);
+    const hasConfigChanges = hasFeatureConfigChanges(feature);
+    elements.featureStudioEditorSaveButton.textContent = saveBusy ? "Saving settings..." : "Save settings";
+    elements.featureStudioEditorSaveButton.disabled = saveBusy || transitionBusy || !hasConfigChanges;
+    elements.featureStudioEditorSaveButton.classList.toggle("is-loading", saveBusy);
+    elements.featureStudioEditorSaveButton.setAttribute("aria-busy", String(saveBusy));
   }
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.textContent = transitionBusy
@@ -5907,6 +6209,8 @@ function updateFeatureStudioHeader() {
         : "Activating..."
       : isActivated
         ? "Deactivate tool"
+        : isEditorSetup && !isSetupComplete
+          ? "Activate tool"
         : isSetupComplete
           ? "Activate tool"
           : hasFeatureWhatsAppDetails(feature)
@@ -5928,6 +6232,99 @@ function updatePromptFields() {
   elements.businessNotes.value = prompt.businessNotes;
   elements.escalationGuidance.value = prompt.escalationGuidance;
   elements.exampleReplies.value = prompt.exampleReplies;
+}
+
+function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
+  if (elements.monitorWeekdayField) {
+    elements.monitorWeekdayField.classList.toggle("is-hidden", settings.cadence !== "weekly");
+  }
+  if (elements.monitorMonthDayField) {
+    elements.monitorMonthDayField.classList.toggle("is-hidden", settings.cadence !== "monthly");
+  }
+  if (elements.monitorEmailField) {
+    elements.monitorEmailField.classList.toggle("is-hidden", settings.deliveryChannel !== "email");
+  }
+  if (elements.monitorTelegramField) {
+    elements.monitorTelegramField.classList.toggle("is-hidden", settings.deliveryChannel !== "telegram");
+  }
+  if (elements.monitorWhatsAppField) {
+    elements.monitorWhatsAppField.classList.toggle("is-hidden", settings.deliveryChannel !== "whatsapp");
+  }
+}
+
+function updateMonitorFields() {
+  const feature = getSelectedFeature();
+  const isMonitor = isMonitorFeature(feature);
+  if (elements.monitorTargetCard) {
+    elements.monitorTargetCard.classList.toggle("is-hidden", !isMonitor);
+  }
+  if (elements.monitorScheduleCard) {
+    elements.monitorScheduleCard.classList.toggle("is-hidden", !isMonitor);
+  }
+  if (elements.monitorDeliveryCard) {
+    elements.monitorDeliveryCard.classList.toggle("is-hidden", !isMonitor);
+  }
+  if (!isMonitor) {
+    return;
+  }
+
+  const monitorSettings = getSelectedFeatureSettings(feature);
+  if (elements.monitorSearchPrompt) {
+    elements.monitorSearchPrompt.value = monitorSettings.searchPrompt;
+  }
+  if (elements.monitorCadence) {
+    elements.monitorCadence.value = monitorSettings.cadence;
+  }
+  if (elements.monitorWeekday) {
+    elements.monitorWeekday.value = monitorSettings.weekday;
+  }
+  if (elements.monitorMonthDay) {
+    elements.monitorMonthDay.value = String(monitorSettings.monthDay);
+  }
+  if (elements.monitorTimeOfDay) {
+    elements.monitorTimeOfDay.value = monitorSettings.timeOfDay;
+  }
+  if (elements.monitorTimezone) {
+    elements.monitorTimezone.value = monitorSettings.timezone;
+  }
+  if (elements.monitorDeliveryChannel) {
+    elements.monitorDeliveryChannel.value = monitorSettings.deliveryChannel;
+  }
+  if (elements.monitorEmailAddress) {
+    elements.monitorEmailAddress.value = monitorSettings.emailAddress;
+  }
+  if (elements.monitorTelegramChatId) {
+    elements.monitorTelegramChatId.value = monitorSettings.telegramChatId;
+  }
+  if (elements.monitorWhatsAppRecipient) {
+    elements.monitorWhatsAppRecipient.value = monitorSettings.whatsappRecipient;
+  }
+  updateMonitorFieldVisibility(monitorSettings);
+}
+
+function populateMonitorTimezoneOptions() {
+  if (!elements.monitorTimezone) {
+    return;
+  }
+
+  const currentValue = elements.monitorTimezone.value;
+  const timeZones = Array.from(new Set([
+    "",
+    clientState?.settings?.timezone || "",
+    defaultTimeZone(),
+    ...listTimeZones(),
+  ].filter((value) => typeof value === "string"))).filter((value, index) => value || index === 0);
+
+  const options = timeZones.map((timeZone) => {
+    const option = document.createElement("option");
+    option.value = timeZone;
+    option.textContent = timeZone || "Use account timezone";
+    return option;
+  });
+  elements.monitorTimezone.replaceChildren(...options);
+  elements.monitorTimezone.value = currentValue && timeZones.includes(currentValue)
+    ? currentValue
+    : (getSelectedFeatureSettings().timezone || "");
 }
 
 function updateTabButtons() {
@@ -6061,6 +6458,8 @@ function renderApp() {
   updatePanelVisibility();
   updateFeatureList();
   updateFeatureActivationFields();
+  populateMonitorTimezoneOptions();
+  updateMonitorFields();
   updatePromptFields();
   updatePreview();
   updateSimulatorPanel();
@@ -6586,6 +6985,43 @@ function syncPromptField(key) {
   };
 }
 
+function syncMonitorSettingsField(key) {
+  return (event) => {
+    const feature = getSelectedFeature();
+    if (!feature || !isMonitorFeature(feature)) {
+      return;
+    }
+
+    const nextSettings = normalizeFeatureMonitorSettings({
+      ...getSelectedFeatureSettings(feature),
+      [key]: event.target.value,
+    });
+
+    feature.settings = nextSettings;
+    updateMonitorFieldVisibility(nextSettings);
+    persistClientState();
+    updateFeatureStudioHeader();
+    setStatus(hasFeatureConfigChanges(feature) ? "Settings ready to save." : "No settings changes to save.");
+  };
+}
+
+function getMonitorFieldElement(field) {
+  const fieldMap = {
+    searchPrompt: elements.monitorSearchPrompt,
+    cadence: elements.monitorCadence,
+    weekday: elements.monitorWeekday,
+    monthDay: elements.monitorMonthDay,
+    timeOfDay: elements.monitorTimeOfDay,
+    timezone: elements.monitorTimezone,
+    deliveryChannel: elements.monitorDeliveryChannel,
+    emailAddress: elements.monitorEmailAddress,
+    telegramChatId: elements.monitorTelegramChatId,
+    whatsappRecipient: elements.monitorWhatsAppRecipient,
+  };
+
+  return fieldMap[field] || elements.monitorSearchPrompt || null;
+}
+
 function syncSettingsField(key) {
   return (event) => {
     clientState.settings[key] = event.target.value;
@@ -6739,9 +7175,9 @@ function bindEvents() {
         return;
       }
 
-      if (isFeatureSetupComplete(feature)) {
+      if (usesEditorSetup(feature) || isFeatureSetupComplete(feature)) {
         setFeatureStudioView("editor");
-        setStatus("Tool editor opened.");
+        setStatus(usesEditorSetup(feature) && !isFeatureSetupComplete(feature) ? "Continue setup in the tool editor." : "Tool editor opened.");
         return;
       }
 
@@ -6777,6 +7213,11 @@ function bindEvents() {
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.addEventListener("click", () => {
       void toggleSelectedFeatureEditorActivation();
+    });
+  }
+  if (elements.featureStudioEditorSaveButton) {
+    elements.featureStudioEditorSaveButton.addEventListener("click", () => {
+      void saveSelectedFeatureConfig();
     });
   }
   if (elements.featureStudioMenuButton) {
@@ -7204,6 +7645,36 @@ function bindEvents() {
   elements.escalationGuidance.addEventListener("input", syncPromptField("escalationGuidance"));
   elements.exampleReplies.addEventListener("input", syncPromptField("exampleReplies"));
   elements.scenarioSelect.addEventListener("change", syncPromptField("scenario"));
+  if (elements.monitorSearchPrompt) {
+    elements.monitorSearchPrompt.addEventListener("input", syncMonitorSettingsField("searchPrompt"));
+  }
+  if (elements.monitorCadence) {
+    elements.monitorCadence.addEventListener("change", syncMonitorSettingsField("cadence"));
+  }
+  if (elements.monitorWeekday) {
+    elements.monitorWeekday.addEventListener("change", syncMonitorSettingsField("weekday"));
+  }
+  if (elements.monitorMonthDay) {
+    elements.monitorMonthDay.addEventListener("input", syncMonitorSettingsField("monthDay"));
+  }
+  if (elements.monitorTimeOfDay) {
+    elements.monitorTimeOfDay.addEventListener("change", syncMonitorSettingsField("timeOfDay"));
+  }
+  if (elements.monitorTimezone) {
+    elements.monitorTimezone.addEventListener("change", syncMonitorSettingsField("timezone"));
+  }
+  if (elements.monitorDeliveryChannel) {
+    elements.monitorDeliveryChannel.addEventListener("change", syncMonitorSettingsField("deliveryChannel"));
+  }
+  if (elements.monitorEmailAddress) {
+    elements.monitorEmailAddress.addEventListener("input", syncMonitorSettingsField("emailAddress"));
+  }
+  if (elements.monitorTelegramChatId) {
+    elements.monitorTelegramChatId.addEventListener("input", syncMonitorSettingsField("telegramChatId"));
+  }
+  if (elements.monitorWhatsAppRecipient) {
+    elements.monitorWhatsAppRecipient.addEventListener("input", syncMonitorSettingsField("whatsappRecipient"));
+  }
 
   elements.displayNameInput.addEventListener("input", syncSettingsField("displayName"));
   elements.workspaceNameInput.addEventListener("input", syncSettingsField("workspaceName"));

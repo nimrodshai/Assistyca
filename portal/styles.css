@@ -2932,6 +2932,12 @@ body[data-modal="billing"] .app-shell {
   min-width: 12rem;
 }
 
+.monitor-settings-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .setup-copy {
   margin: 0;
   color: var(--muted);
@@ -3735,6 +3741,7 @@ body[data-modal="billing"] .app-shell {
   .feature-list-grid,
   .studio-hero,
   .studio-fields,
+  .monitor-settings-grid,
   .preview-grid,
   .simulator-grid,
   .simulator-form-grid,

@@ -28,6 +28,8 @@ USER_OWNED_TABLES = (
     "feature_activation_events",
     "feature_activations",
     "feature_entitlements",
+    "feature_monitor_notifications",
+    "feature_monitor_runs",
     "feature_assignments",
     "billing_customers",
     "whatsapp_reengagement_notifications",
@@ -300,6 +302,38 @@ CREATE TABLE IF NOT EXISTS feature_activation_events (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS feature_monitor_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    feature_id TEXT NOT NULL DEFAULT '',
+    scheduled_for TEXT NOT NULL,
+    findings_count INTEGER NOT NULL DEFAULT 0,
+    notifications_sent INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'completed',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS feature_monitor_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    feature_id TEXT NOT NULL DEFAULT '',
+    item_key TEXT NOT NULL DEFAULT '',
+    scheduled_for TEXT NOT NULL,
+    delivery_channel TEXT NOT NULL DEFAULT '',
+    delivery_target TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    event_date TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_name TEXT NOT NULL DEFAULT '',
+    message_text TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
@@ -334,6 +368,12 @@ CREATE INDEX IF NOT EXISTS idx_feature_activations_user_active
 ON feature_activations(user_id, is_active, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_activation_events_user_feature
 ON feature_activation_events(user_id, feature_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_monitor_runs_user_schedule
+ON feature_monitor_runs(user_id, feature_id, scheduled_for);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_monitor_notifications_user_item
+ON feature_monitor_notifications(user_id, feature_id, item_key);
+CREATE INDEX IF NOT EXISTS idx_feature_monitor_notifications_user_schedule
+ON feature_monitor_notifications(user_id, feature_id, scheduled_for DESC);
 """
 
 
@@ -2442,6 +2482,68 @@ class PortalDatabase:
             )
             return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
 
+    def save_feature_assignment_metadata(
+        self,
+        email: str,
+        feature_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            existing = conn.execute(
+                """
+                SELECT is_assigned, assigned_at
+                FROM feature_assignments
+                WHERE user_id = ? AND feature_id = ?
+                LIMIT 1
+                """,
+                (user_id, normalized_feature_id),
+            ).fetchone()
+            if existing is None:
+                feature = self._load_feature_row(conn, feature_id=normalized_feature_id)
+                if feature is None:
+                    raise KeyError(f"Unknown feature: {normalized_feature_id}")
+                assigned_at = now
+                is_assigned = 1
+            else:
+                assigned_at = existing["assigned_at"] or now
+                is_assigned = 1 if bool(existing["is_assigned"]) else 0
+
+            conn.execute(
+                """
+                INSERT INTO feature_assignments (
+                    user_id,
+                    feature_id,
+                    is_assigned,
+                    metadata_json,
+                    assigned_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, feature_id) DO UPDATE SET
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    normalized_feature_id,
+                    is_assigned,
+                    metadata_json,
+                    assigned_at,
+                    now,
+                ),
+            )
+            return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
+
     def set_user_feature_assignments(
         self,
         email: str,
@@ -2480,21 +2582,26 @@ class PortalDatabase:
 
             existing_rows = conn.execute(
                 """
-                SELECT feature_id, assigned_at
+                SELECT feature_id, assigned_at, metadata_json
                 FROM feature_assignments
                 WHERE user_id = ?
                 """,
                 (user_id,),
             ).fetchall()
-            existing_assigned_at = {
-                normalize_text(row["feature_id"]): row["assigned_at"]
+            existing_assignment_data = {
+                normalize_text(row["feature_id"]): {
+                    "assigned_at": row["assigned_at"],
+                    "metadata_json": normalize_text(row["metadata_json"]) or "{}",
+                }
                 for row in existing_rows
                 if normalize_text(row["feature_id"])
             }
 
             requested_feature_id_set = set(requested_feature_ids)
             for active_feature_id in active_feature_ids:
-                assigned_at = existing_assigned_at.get(active_feature_id) or now
+                existing_assignment = existing_assignment_data.get(active_feature_id) or {}
+                assigned_at = existing_assignment.get("assigned_at") or now
+                metadata_json = normalize_text(existing_assignment.get("metadata_json")) or "{}"
                 conn.execute(
                     """
                     INSERT INTO feature_assignments (
@@ -2514,7 +2621,7 @@ class PortalDatabase:
                         user_id,
                         active_feature_id,
                         1 if active_feature_id in requested_feature_id_set else 0,
-                        "{}",
+                        metadata_json,
                         assigned_at,
                         now,
                     ),
@@ -2613,6 +2720,77 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, user_id=user_id)
+
+    def list_active_feature_monitor_targets(self, feature_id: str) -> list[dict[str, Any]]:
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_feature_id:
+            return []
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    u.id AS user_id,
+                    u.email,
+                    u.display_name,
+                    f.prompt_json,
+                    fa.metadata_json AS assignment_metadata_json,
+                    act.activated_at,
+                    act.updated_at AS activation_updated_at,
+                    act.metadata_json AS activation_metadata_json,
+                    w.phone_number_id,
+                    w.owner_wa_id,
+                    w.connection_status
+                FROM feature_activations AS act
+                INNER JOIN users AS u
+                    ON u.id = act.user_id
+                INNER JOIN feature_assignments AS fa
+                    ON fa.user_id = u.id AND fa.feature_id = act.feature_id
+                INNER JOIN features AS f
+                    ON f.feature_id = act.feature_id
+                LEFT JOIN whatsapp_connections AS w
+                    ON w.user_id = u.id
+                WHERE u.is_active = 1
+                  AND act.feature_id = ?
+                  AND act.is_active = 1
+                  AND fa.is_assigned = 1
+                ORDER BY u.id ASC
+                """,
+                (normalized_feature_id,),
+            ).fetchall()
+
+            targets: list[dict[str, Any]] = []
+            for row in rows:
+                payload = _row_to_dict(row) or {}
+                prompt_payload = _load_json_dict(payload.get("prompt_json"))
+                assignment_metadata = _load_json_dict(payload.get("assignment_metadata_json"))
+                activation_metadata = _load_json_dict(payload.get("activation_metadata_json"))
+                settings_payload = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
+                prompt_overrides = assignment_metadata.get("prompt") if isinstance(assignment_metadata.get("prompt"), dict) else {}
+                targets.append(
+                    {
+                        "userId": int(payload.get("user_id") or 0),
+                        "email": normalize_email(payload.get("email")),
+                        "displayName": normalize_text(payload.get("display_name")),
+                        "featureId": normalized_feature_id,
+                        "prompt": {
+                            **(prompt_payload if isinstance(prompt_payload, dict) else {}),
+                            **prompt_overrides,
+                        },
+                        "settings": settings_payload if isinstance(settings_payload, dict) else {},
+                        "activatedAt": payload.get("activated_at"),
+                        "activationUpdatedAt": payload.get("activation_updated_at"),
+                        "activationMetadata": activation_metadata if isinstance(activation_metadata, dict) else {},
+                        "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+                        "ownerWaId": normalize_text(payload.get("owner_wa_id")),
+                        "whatsappConnection": {
+                            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+                            "ownerWaId": normalize_text(payload.get("owner_wa_id")),
+                            "connectionStatus": normalize_text(payload.get("connection_status")),
+                        },
+                    }
+                )
+            return targets
 
     def list_active_whatsapp_reengagement_targets(self, feature_id: str) -> list[dict[str, Any]]:
         normalized_feature_id = normalize_text(feature_id)
@@ -2933,6 +3111,273 @@ class PortalDatabase:
             "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
             "createdAt": payload.get("created_at"),
         }
+
+    def get_feature_monitor_run(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        scheduled_for: str | datetime,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0 or not normalized_feature_id:
+            return None
+
+        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM feature_monitor_runs
+                WHERE user_id = ? AND feature_id = ? AND scheduled_for = ?
+                LIMIT 1
+                """,
+                (int(user_id), normalized_feature_id, scheduled_for_value),
+            ).fetchone()
+        payload = _row_to_dict(row) or {}
+        if not payload:
+            return None
+        return {
+            "id": int(payload.get("id") or 0),
+            "userId": int(payload.get("user_id") or 0),
+            "featureId": normalize_text(payload.get("feature_id")),
+            "scheduledFor": payload.get("scheduled_for"),
+            "findingsCount": int(payload.get("findings_count") or 0),
+            "notificationsSent": int(payload.get("notifications_sent") or 0),
+            "status": normalize_text(payload.get("status")),
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
+    def get_latest_feature_monitor_run(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0 or not normalized_feature_id:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT scheduled_for
+                FROM feature_monitor_runs
+                WHERE user_id = ? AND feature_id = ?
+                ORDER BY scheduled_for DESC
+                LIMIT 1
+                """,
+                (int(user_id), normalized_feature_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_feature_monitor_run(
+            user_id=int(user_id),
+            feature_id=normalized_feature_id,
+            scheduled_for=row["scheduled_for"],
+        )
+
+    def save_feature_monitor_run(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        scheduled_for: str | datetime,
+        findings_count: int = 0,
+        notifications_sent: int = 0,
+        status: str = "completed",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0:
+            raise ValueError("User id is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT created_at
+                FROM feature_monitor_runs
+                WHERE user_id = ? AND feature_id = ? AND scheduled_for = ?
+                LIMIT 1
+                """,
+                (int(user_id), normalized_feature_id, scheduled_for_value),
+            ).fetchone()
+            created_at = existing["created_at"] if existing and existing["created_at"] else now
+            conn.execute(
+                """
+                INSERT INTO feature_monitor_runs (
+                    user_id,
+                    feature_id,
+                    scheduled_for,
+                    findings_count,
+                    notifications_sent,
+                    status,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, feature_id, scheduled_for) DO UPDATE SET
+                    findings_count = excluded.findings_count,
+                    notifications_sent = excluded.notifications_sent,
+                    status = excluded.status,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(user_id),
+                    normalized_feature_id,
+                    scheduled_for_value,
+                    max(0, int(findings_count)),
+                    max(0, int(notifications_sent)),
+                    normalize_text(status) or "completed",
+                    metadata_json,
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_feature_monitor_run(
+            user_id=int(user_id),
+            feature_id=normalized_feature_id,
+            scheduled_for=scheduled_for_value,
+        ) or {}
+
+    def get_feature_monitor_notification(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        item_key: str,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        normalized_item_key = normalize_text(item_key)
+        if user_id <= 0 or not normalized_feature_id or not normalized_item_key:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM feature_monitor_notifications
+                WHERE user_id = ? AND feature_id = ? AND item_key = ?
+                LIMIT 1
+                """,
+                (int(user_id), normalized_feature_id, normalized_item_key),
+            ).fetchone()
+        payload = _row_to_dict(row) or {}
+        if not payload:
+            return None
+        return {
+            "id": int(payload.get("id") or 0),
+            "userId": int(payload.get("user_id") or 0),
+            "featureId": normalize_text(payload.get("feature_id")),
+            "itemKey": normalize_text(payload.get("item_key")),
+            "scheduledFor": payload.get("scheduled_for"),
+            "deliveryChannel": normalize_text(payload.get("delivery_channel")),
+            "deliveryTarget": normalize_text(payload.get("delivery_target")),
+            "title": normalize_text(payload.get("title")),
+            "eventDate": normalize_text(payload.get("event_date")),
+            "sourceUrl": normalize_text(payload.get("source_url")),
+            "sourceName": normalize_text(payload.get("source_name")),
+            "messageText": normalize_text(payload.get("message_text")),
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+            "createdAt": payload.get("created_at"),
+        }
+
+    def save_feature_monitor_notification(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        item_key: str,
+        scheduled_for: str | datetime,
+        delivery_channel: str = "",
+        delivery_target: str = "",
+        title: str = "",
+        event_date: str = "",
+        source_url: str = "",
+        source_name: str = "",
+        message_text: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_feature_id = normalize_text(feature_id)
+        normalized_item_key = normalize_text(item_key)
+        if user_id <= 0:
+            raise ValueError("User id is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+        if not normalized_item_key:
+            raise ValueError("Item key is required.")
+
+        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT created_at
+                FROM feature_monitor_notifications
+                WHERE user_id = ? AND feature_id = ? AND item_key = ?
+                LIMIT 1
+                """,
+                (int(user_id), normalized_feature_id, normalized_item_key),
+            ).fetchone()
+            created_at = existing["created_at"] if existing and existing["created_at"] else now
+            conn.execute(
+                """
+                INSERT INTO feature_monitor_notifications (
+                    user_id,
+                    feature_id,
+                    item_key,
+                    scheduled_for,
+                    delivery_channel,
+                    delivery_target,
+                    title,
+                    event_date,
+                    source_url,
+                    source_name,
+                    message_text,
+                    metadata_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, feature_id, item_key) DO UPDATE SET
+                    scheduled_for = excluded.scheduled_for,
+                    delivery_channel = excluded.delivery_channel,
+                    delivery_target = excluded.delivery_target,
+                    title = excluded.title,
+                    event_date = excluded.event_date,
+                    source_url = excluded.source_url,
+                    source_name = excluded.source_name,
+                    message_text = excluded.message_text,
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    int(user_id),
+                    normalized_feature_id,
+                    normalized_item_key,
+                    scheduled_for_value,
+                    normalize_text(delivery_channel),
+                    normalize_text(delivery_target),
+                    normalize_text(title),
+                    normalize_text(event_date),
+                    normalize_text(source_url),
+                    normalize_text(source_name),
+                    normalize_text(message_text),
+                    metadata_json,
+                    created_at,
+                ),
+            )
+        return self.get_feature_monitor_notification(
+            user_id=int(user_id),
+            feature_id=normalized_feature_id,
+            item_key=normalized_item_key,
+        ) or {}
 
     def get_billing_customer(self, email: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)

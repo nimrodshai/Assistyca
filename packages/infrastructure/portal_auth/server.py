@@ -53,6 +53,8 @@ from packages.infrastructure.whatsapp_portal_service import build_portal_service
 from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
 from packages.infrastructure.whatsapp_reengagement import load_whatsapp_reengagement_config
+from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
+from packages.tools.scheduled_monitor.monitor import load_scheduled_monitor_config
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import normalize_text
 from packages.tools.whatsapp_reply_approval.server import parse_form_encoded as parse_whatsapp_form_encoded
@@ -2033,7 +2035,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         parts = [part for part in parsed.path.rstrip("/").split("/") if part]
-        if len(parts) != 4 or parts[0] != "api" or parts[1] != "features" or parts[3] != "activation":
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "features":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
@@ -2048,10 +2050,29 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        service = self._feature_activation_service()
+        action_name = normalize_text(parts[3]).lower()
+
+        if action_name == "config":
+            result = service.save_feature_config(
+                session.email,
+                feature_id=feature_id,
+                prompt=payload.get("prompt") if isinstance(payload.get("prompt"), dict) else None,
+                settings=payload.get("settings") if isinstance(payload.get("settings"), dict) else None,
+            )
+            if not result.get("ok") and result.get("error") == "feature_not_available":
+                json_response(self, HTTPStatus.NOT_FOUND, result)
+                return
+            json_response(self, HTTPStatus.OK, result)
+            return
+
+        if action_name != "activation":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
         action = normalize_text(payload.get("action")).lower()
         feature_name = normalize_text(payload.get("featureName") or payload.get("feature_name"))
         channel = normalize_text(payload.get("channel"))
-        service = self._feature_activation_service()
 
         if action == "activate":
             result = service.activate_feature(
@@ -2614,6 +2635,30 @@ def main() -> int:
     else:
         print("WhatsApp re-engagement scheduler is disabled.", flush=True)
 
+    monitor_config = load_scheduled_monitor_config()
+    monitor_stop_event = threading.Event()
+    monitor_thread: threading.Thread | None = None
+    if monitor_config.enabled:
+        monitor = ScheduledMonitorScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=monitor_config,
+        )
+        monitor_thread = threading.Thread(
+            target=monitor.serve_forever,
+            args=(monitor_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="scheduled-monitor-scheduler",
+        )
+        monitor_thread.start()
+        print(
+            "Scheduled web monitor enabled. "
+            f"Polls every {monitor_config.poll_seconds} seconds using {monitor_config.model}.",
+            flush=True,
+        )
+    else:
+        print("Scheduled web monitor is disabled.", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -2622,6 +2667,9 @@ def main() -> int:
         scheduler_stop_event.set()
         if scheduler_thread is not None:
             scheduler_thread.join(timeout=1.0)
+        monitor_stop_event.set()
+        if monitor_thread is not None:
+            monitor_thread.join(timeout=1.0)
         server.server_close()
 
     return 0

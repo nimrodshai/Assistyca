@@ -64,6 +64,17 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
         or normalize_text(os.getenv("LEMON_SQUEEZY_VARIANT_ID"))
     )
     whatsapp_follow_up_product_id = normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_FOLLOW_UP_PRODUCT_ID"))
+    scheduled_monitor_store_id = (
+        normalize_text(os.getenv("LEMON_SQUEEZY_SCHEDULED_MONITOR_STORE_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_STORE_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_STORE_ID"))
+    )
+    scheduled_monitor_variant_id = (
+        normalize_text(os.getenv("LEMON_SQUEEZY_SCHEDULED_MONITOR_VARIANT_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_VARIANT_ID"))
+        or normalize_text(os.getenv("LEMON_SQUEEZY_VARIANT_ID"))
+    )
+    scheduled_monitor_product_id = normalize_text(os.getenv("LEMON_SQUEEZY_SCHEDULED_MONITOR_PRODUCT_ID"))
 
     return [
         {
@@ -125,6 +136,42 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
                     "schedule": "sunday_morning",
                     "inactivityMonths": 6,
                 },
+            },
+        },
+        {
+            "featureId": "scheduled-web-monitor-notifier",
+            "name": "Scheduled Web Monitor",
+            "description": "Searches the web on a daily, weekly, or monthly schedule and sends source-backed alerts about the events, dates, and opportunities you care about.",
+            "channel": "Alerts",
+            "mode": "Scheduled search",
+            "launchUrl": DEFAULT_LAUNCH_URL,
+            "sortOrder": 120,
+            "isActive": True,
+            "defaultAssigned": True,
+            "prompt": {
+                **DEFAULT_PROMPT,
+                "toneGuidance": "Clear, useful, and concise. Make alerts easy to scan and act on.",
+                "replyRules": "Only alert when there is a real match with a credible public source. Prefer source-backed specifics over vague mentions.",
+                "businessNotes": "Region, niche, timing rules, or context that helps the monitor decide what matters most.",
+                "escalationGuidance": "Mark items urgent when a deadline is close, an event is approaching soon, or the result clearly needs quick human follow-up.",
+                "exampleReplies": "Good: 'The Israeli Criminal Defense Conference published its 2026 agenda. Registration closes Aug 12. Source: https://example.com'\nBad: 'There might be something interesting online soon.'",
+                "scenario": "monitor",
+            },
+            "pricing": dict(DEFAULT_FEATURE_PRICING),
+            "requirements": {
+                "requiresScheduledMonitorConfig": True,
+            },
+            "billing": {
+                "required": True,
+                "provider": "lemon_squeezy",
+                "storeId": scheduled_monitor_store_id,
+                "productId": scheduled_monitor_product_id,
+                "variantId": scheduled_monitor_variant_id,
+            },
+            "metadata": {
+                "catalogSource": "default_feature_catalog",
+                "setupSurface": "editor",
+                "deliveryChannels": ["email", "telegram", "whatsapp"],
             },
         }
     ]
