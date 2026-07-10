@@ -17,7 +17,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself
 - The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes inbound webhooks by phone number ID
-- The Scheduled Web Monitor runs in the backend on a daily, weekly, or monthly cadence, uses the shared OpenAI gateway plus the web search tool, and sends alerts by email, Telegram, or WhatsApp
+- The Scheduled Web Monitor runs in the backend on a recurring day interval, uses the shared OpenAI gateway plus the web search tool, and sends alerts by email, Telegram, or WhatsApp
 - WhatsApp approval pages and webhook handling now live inside the portal backend at `/approval/<approval_id>` and `/webhooks/whatsapp`
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
@@ -132,7 +132,8 @@ The browser no longer persists these WhatsApp setup fields in local storage; the
 
 For Scheduled Web Monitor delivery:
 
-- Email uses the same SMTP or Resend configuration as OTP delivery.
+- Clients add a simple watch list in the tool editor, one item per line, then choose how many days should pass between checks.
+- Email uses the workspace account email plus the same SMTP or Resend configuration as OTP delivery.
 - Telegram requires `TELEGRAM_BOT_TOKEN` plus a saved chat id in the tool editor.
 - WhatsApp requires the workspace's saved WhatsApp connection plus `WHATSAPP_ACCESS_TOKEN`.
 

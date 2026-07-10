@@ -99,27 +99,29 @@ class FeatureActivationTests(unittest.TestCase):
                     "scenario": "monitor",
                 },
                 settings={
-                    "searchPrompt": "Criminal defense law conferences in Israel",
-                    "cadence": "weekly",
-                    "weekday": "friday",
-                    "timeOfDay": "10:30",
-                    "timezone": "Asia/Jerusalem",
+                    "watchItems": [
+                        "Criminal defense law conferences in Israel",
+                        "Court holidays that affect legal work",
+                    ],
+                    "intervalDays": 7,
                     "deliveryChannel": "email",
-                    "emailAddress": "OWNER@EXAMPLE.COM",
                 },
             )
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["setupStatus"]["ready"])
         self.assertTrue(result["feature"]["setupComplete"])
-        self.assertEqual(result["feature"]["settings"]["emailAddress"], "owner@example.com")
+        self.assertEqual(
+            result["feature"]["settings"]["watchItems"],
+            ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
+        )
+        self.assertEqual(result["feature"]["settings"]["intervalDays"], 7)
         self.assertEqual(result["feature"]["prompt"]["scenario"], "monitor")
 
         assignment = self.database.get_feature_assignment("owner@example.com", MONITOR_FEATURE_ID)
-        self.assertEqual(assignment["metadata"]["settings"]["emailAddress"], "owner@example.com")
         self.assertEqual(
-            assignment["metadata"]["settings"]["searchPrompt"],
-            "Criminal defense law conferences in Israel",
+            assignment["metadata"]["settings"]["watchItems"],
+            ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
         )
 
     def test_monitor_activation_requires_saved_config_before_payment(self) -> None:
@@ -156,12 +158,12 @@ class FeatureActivationTests(unittest.TestCase):
                 "owner@example.com",
                 feature_id=MONITOR_FEATURE_ID,
                 settings={
-                    "searchPrompt": "Legal conferences and holiday reminders",
-                    "cadence": "daily",
-                    "timeOfDay": "09:00",
-                    "timezone": "UTC",
+                    "watchItems": [
+                        "Legal conferences",
+                        "Holiday reminders",
+                    ],
+                    "intervalDays": 3,
                     "deliveryChannel": "email",
-                    "emailAddress": "owner@example.com",
                 },
             )
             second_result = service.activate_feature(

@@ -32,12 +32,12 @@ class ScheduledMonitorTests(unittest.TestCase):
             MONITOR_FEATURE_ID,
             metadata={
                 "settings": {
-                    "searchPrompt": "Criminal defense law conferences and nearby holiday reminders",
-                    "cadence": "daily",
-                    "timeOfDay": "09:00",
-                    "timezone": "UTC",
+                    "watchItems": [
+                        "Criminal defense law conferences",
+                        "Nearby holiday reminders",
+                    ],
+                    "intervalDays": 1,
                     "deliveryChannel": "email",
-                    "emailAddress": "owner@example.com",
                 }
             },
         )
@@ -46,6 +46,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             feature_id=MONITOR_FEATURE_ID,
             feature_name="Scheduled Web Monitor",
             is_active=True,
+            activated_at="2026-07-09T09:00:00+00:00",
         )
 
     def test_scheduler_dedupes_runs_and_notifications(self) -> None:
@@ -123,7 +124,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
 
         self.assertFalse(second_summary["ran"])
-        self.assertEqual(second_summary["runs"][0]["reason"], "already_ran")
+        self.assertEqual(second_summary["runs"][0]["reason"], "not_due")
         self.assertEqual(len(delivered_messages), 1)
 
         self.assertTrue(third_summary["ran"])

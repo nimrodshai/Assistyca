@@ -90,16 +90,10 @@ const DEFAULT_FEATURE_WHATSAPP = {
   last_tested_at: "",
 };
 const DEFAULT_MONITOR_SETTINGS = {
-  searchPrompt: "",
-  cadence: "weekly",
-  weekday: "monday",
-  monthDay: 1,
-  timeOfDay: "09:00",
-  timezone: "",
+  watchItems: [],
+  intervalDays: 7,
   deliveryChannel: "email",
-  emailAddress: "",
   telegramChatId: "",
-  whatsappRecipient: "",
 };
 
 const DEFAULT_PROMPT = {
@@ -482,21 +476,18 @@ const elements = {
   monitorTargetCard: document.querySelector("#monitorTargetCard"),
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
-  monitorSearchPrompt: document.querySelector("#monitorSearchPrompt"),
-  monitorCadence: document.querySelector("#monitorCadence"),
-  monitorWeekdayField: document.querySelector("#monitorWeekdayField"),
-  monitorWeekday: document.querySelector("#monitorWeekday"),
-  monitorMonthDayField: document.querySelector("#monitorMonthDayField"),
-  monitorMonthDay: document.querySelector("#monitorMonthDay"),
-  monitorTimeOfDay: document.querySelector("#monitorTimeOfDay"),
-  monitorTimezone: document.querySelector("#monitorTimezone"),
+  monitorWatchItems: document.querySelector("#monitorWatchItems"),
+  monitorIntervalDays: document.querySelector("#monitorIntervalDays"),
   monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
   monitorEmailField: document.querySelector("#monitorEmailField"),
-  monitorEmailAddress: document.querySelector("#monitorEmailAddress"),
+  monitorEmailSummary: document.querySelector("#monitorEmailSummary"),
   monitorTelegramField: document.querySelector("#monitorTelegramField"),
   monitorTelegramChatId: document.querySelector("#monitorTelegramChatId"),
   monitorWhatsAppField: document.querySelector("#monitorWhatsAppField"),
-  monitorWhatsAppRecipient: document.querySelector("#monitorWhatsAppRecipient"),
+  monitorWhatsAppSetupButton: document.querySelector("#monitorWhatsAppSetupButton"),
+  featureToneCard: document.querySelector("#featureToneCard"),
+  featureRulesCard: document.querySelector("#featureRulesCard"),
+  featureContextCard: document.querySelector("#featureContextCard"),
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
   featureStudioMenu: document.querySelector("#featureStudioMenu"),
@@ -1794,23 +1785,50 @@ function normalizeFeatureWhatsApp(config = {}) {
   };
 }
 
+function normalizeMonitorWatchItems(value) {
+  const rawItems = Array.isArray(value)
+    ? value
+    : splitLines(String(value || "").replace(/;/g, "\n"));
+  const normalizedItems = [];
+  const seen = new Set();
+
+  for (const item of rawItems) {
+    const cleaned = String(item || "").replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim();
+    if (!cleaned) {
+      continue;
+    }
+
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalizedItems.push(cleaned);
+  }
+
+  return normalizedItems;
+}
+
 function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
-  const cadence = String(source.cadence || DEFAULT_MONITOR_SETTINGS.cadence).trim().toLowerCase();
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
-  const monthDay = Number.parseInt(source.monthDay, 10);
+  const intervalDays = Number.parseInt(source.intervalDays, 10);
+  const legacyCadence = String(source.cadence || "").trim().toLowerCase();
 
   return {
-    searchPrompt: String(source.searchPrompt || "").trim(),
-    cadence: ["daily", "weekly", "monthly"].includes(cadence) ? cadence : DEFAULT_MONITOR_SETTINGS.cadence,
-    weekday: String(source.weekday || DEFAULT_MONITOR_SETTINGS.weekday).trim().toLowerCase() || DEFAULT_MONITOR_SETTINGS.weekday,
-    monthDay: Number.isFinite(monthDay) ? Math.min(31, Math.max(1, monthDay)) : DEFAULT_MONITOR_SETTINGS.monthDay,
-    timeOfDay: /^\d{2}:\d{2}$/.test(String(source.timeOfDay || "")) ? String(source.timeOfDay) : DEFAULT_MONITOR_SETTINGS.timeOfDay,
-    timezone: String(source.timezone || "").trim(),
+    watchItems: normalizeMonitorWatchItems(source.watchItems || source.searchPrompt || ""),
+    intervalDays: Number.isFinite(intervalDays)
+      ? Math.min(365, Math.max(1, intervalDays))
+      : legacyCadence === "daily"
+        ? 1
+        : legacyCadence === "weekly"
+          ? 7
+          : legacyCadence === "monthly"
+            ? 30
+            : DEFAULT_MONITOR_SETTINGS.intervalDays,
     deliveryChannel: ["email", "telegram", "whatsapp"].includes(deliveryChannel) ? deliveryChannel : DEFAULT_MONITOR_SETTINGS.deliveryChannel,
-    emailAddress: normalizeEmail(source.emailAddress || ""),
     telegramChatId: String(source.telegramChatId || "").trim(),
-    whatsappRecipient: String(source.whatsappRecipient || "").trim(),
   };
 }
 
@@ -2318,7 +2336,9 @@ function hasFeatureConfigChanges(feature = getSelectedFeature()) {
 
   const currentSettings = getSelectedFeatureSettings(feature);
   const savedSettings = getSavedFeatureSettings(feature);
-  return Object.keys(DEFAULT_MONITOR_SETTINGS).some((key) => String(currentSettings[key] || "") !== String(savedSettings[key] || ""));
+  return Object.keys(DEFAULT_MONITOR_SETTINGS).some(
+    (key) => JSON.stringify(currentSettings[key] ?? "") !== JSON.stringify(savedSettings[key] ?? ""),
+  );
 }
 
 function isFeatureActivationBusy(feature = getSelectedFeature()) {
@@ -5660,6 +5680,9 @@ async function activateSelectedFeature() {
     });
 
     applyWhatsAppConnectionToFeatures(response.connection || whatsapp, { persist: false });
+    if (usesEditorSetup(feature)) {
+      await refreshFeatureActivationStates({ render: false });
+    }
     const savedFeature = getSelectedFeature();
     if (savedFeature) {
       savedFeature.status = getFeatureActivationState(savedFeature);
@@ -5669,7 +5692,10 @@ async function activateSelectedFeature() {
     persistClientState();
     closeFeatureStudioMenu();
     const readyFeature = getSelectedFeature();
-    const liveReady = isFeatureSetupComplete(readyFeature);
+    const liveReady = Boolean(
+      readyFeature
+      && (isFeatureSetupComplete(readyFeature) || readyFeature.setupStatus?.ready),
+    );
 
     if (!liveReady) {
       state.featureStudioView = "activation";
@@ -5704,7 +5730,9 @@ async function activateSelectedFeature() {
     window.scrollTo(0, 0);
     openAuthAlert(
       "Setup succeeded",
-      "Your WhatsApp setup succeeded. This feature is now ready to be activated. Before turning it on, review the tool editor and make sure everything is set up to your taste.",
+      usesEditorSetup(feature)
+        ? "Your WhatsApp delivery setup was saved. Head back to the editor and finish activating this tool when you're ready."
+        : "Your WhatsApp setup succeeded. This feature is now ready to be activated. Before turning it on, review the tool editor and make sure everything is set up to your taste.",
       {
         eyebrow: "Nice work",
         buttonLabel: "Open tool editor",
@@ -5713,7 +5741,11 @@ async function activateSelectedFeature() {
         returnFocus: elements.featureStudioEditorToggleButton,
       },
     );
-    setStatus("Setup saved. Review the tool editor before activating.");
+    setStatus(
+      usesEditorSetup(feature)
+        ? "WhatsApp setup saved. Return to the editor when you're ready."
+        : "Setup saved. Review the tool editor before activating.",
+    );
   } catch (error) {
     const payload = error?.payload || {};
     if (Array.isArray(payload.issues) && payload.issues.length) {
@@ -6152,9 +6184,13 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
     elements.featureStudioLaunchButton.disabled = false;
-    elements.featureStudioLaunchButton.textContent = isSetupComplete
-      ? "Open tool editor"
-      : "Start setup";
+    elements.featureStudioLaunchButton.textContent = usesEditorSetup(feature)
+      ? isSetupComplete
+        ? "Open tool editor"
+        : "Continue setup"
+      : isSetupComplete
+        ? "Open tool editor"
+        : "Start setup";
   }
 
   renderFeatureActivationFieldErrors();
@@ -6186,8 +6222,8 @@ function updateFeatureStudioHeader() {
       ? "This tool is active now. You can turn it off anytime without losing your setup or editor settings."
       : isEditorSetup
         ? isSetupComplete
-          ? "Your monitor settings are saved. Review the editor, then activate the tool when everything looks right."
-          : "Add the monitor schedule and delivery details, save them, and then activate the tool."
+          ? "Your watch list and delivery settings are saved. Activate the tool when you're ready for alerts to start going out."
+          : "Add the watch list, choose how many days between checks, and set where alerts should be delivered."
         : isSetupComplete
         ? "Your WhatsApp setup is complete. Review the editor, then activate the tool when everything looks right."
         : hasFeatureWhatsAppDetails(feature)
@@ -6210,7 +6246,7 @@ function updateFeatureStudioHeader() {
       : isActivated
         ? "Deactivate tool"
         : isEditorSetup && !isSetupComplete
-          ? "Activate tool"
+          ? "Finish setup"
         : isSetupComplete
           ? "Activate tool"
           : hasFeatureWhatsAppDetails(feature)
@@ -6235,11 +6271,17 @@ function updatePromptFields() {
 }
 
 function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
-  if (elements.monitorWeekdayField) {
-    elements.monitorWeekdayField.classList.toggle("is-hidden", settings.cadence !== "weekly");
-  }
-  if (elements.monitorMonthDayField) {
-    elements.monitorMonthDayField.classList.toggle("is-hidden", settings.cadence !== "monthly");
+  const isMonitor = isMonitorFeature(getSelectedFeature());
+  const sharedPromptCards = [
+    elements.featureToneCard,
+    elements.featureRulesCard,
+    elements.featureContextCard,
+  ];
+
+  for (const card of sharedPromptCards) {
+    if (card) {
+      card.classList.toggle("is-hidden", isMonitor);
+    }
   }
   if (elements.monitorEmailField) {
     elements.monitorEmailField.classList.toggle("is-hidden", settings.deliveryChannel !== "email");
@@ -6265,66 +6307,33 @@ function updateMonitorFields() {
     elements.monitorDeliveryCard.classList.toggle("is-hidden", !isMonitor);
   }
   if (!isMonitor) {
+    updateMonitorFieldVisibility(DEFAULT_MONITOR_SETTINGS);
     return;
   }
 
   const monitorSettings = getSelectedFeatureSettings(feature);
-  if (elements.monitorSearchPrompt) {
-    elements.monitorSearchPrompt.value = monitorSettings.searchPrompt;
+  if (elements.monitorWatchItems) {
+    elements.monitorWatchItems.value = monitorSettings.watchItems.join("\n");
   }
-  if (elements.monitorCadence) {
-    elements.monitorCadence.value = monitorSettings.cadence;
-  }
-  if (elements.monitorWeekday) {
-    elements.monitorWeekday.value = monitorSettings.weekday;
-  }
-  if (elements.monitorMonthDay) {
-    elements.monitorMonthDay.value = String(monitorSettings.monthDay);
-  }
-  if (elements.monitorTimeOfDay) {
-    elements.monitorTimeOfDay.value = monitorSettings.timeOfDay;
-  }
-  if (elements.monitorTimezone) {
-    elements.monitorTimezone.value = monitorSettings.timezone;
+  if (elements.monitorIntervalDays) {
+    elements.monitorIntervalDays.value = String(monitorSettings.intervalDays);
   }
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.value = monitorSettings.deliveryChannel;
   }
-  if (elements.monitorEmailAddress) {
-    elements.monitorEmailAddress.value = monitorSettings.emailAddress;
+  if (elements.monitorEmailSummary) {
+    elements.monitorEmailSummary.textContent = activeEmail
+      ? `Alerts will go to ${activeEmail}.`
+      : "Alerts will go to this workspace's account email.";
   }
   if (elements.monitorTelegramChatId) {
     elements.monitorTelegramChatId.value = monitorSettings.telegramChatId;
-  }
-  if (elements.monitorWhatsAppRecipient) {
-    elements.monitorWhatsAppRecipient.value = monitorSettings.whatsappRecipient;
   }
   updateMonitorFieldVisibility(monitorSettings);
 }
 
 function populateMonitorTimezoneOptions() {
-  if (!elements.monitorTimezone) {
-    return;
-  }
-
-  const currentValue = elements.monitorTimezone.value;
-  const timeZones = Array.from(new Set([
-    "",
-    clientState?.settings?.timezone || "",
-    defaultTimeZone(),
-    ...listTimeZones(),
-  ].filter((value) => typeof value === "string"))).filter((value, index) => value || index === 0);
-
-  const options = timeZones.map((timeZone) => {
-    const option = document.createElement("option");
-    option.value = timeZone;
-    option.textContent = timeZone || "Use account timezone";
-    return option;
-  });
-  elements.monitorTimezone.replaceChildren(...options);
-  elements.monitorTimezone.value = currentValue && timeZones.includes(currentValue)
-    ? currentValue
-    : (getSelectedFeatureSettings().timezone || "");
+  // The scheduled monitor now uses a simple day interval instead of exposed time/timezone controls.
 }
 
 function updateTabButtons() {
@@ -7007,19 +7016,13 @@ function syncMonitorSettingsField(key) {
 
 function getMonitorFieldElement(field) {
   const fieldMap = {
-    searchPrompt: elements.monitorSearchPrompt,
-    cadence: elements.monitorCadence,
-    weekday: elements.monitorWeekday,
-    monthDay: elements.monitorMonthDay,
-    timeOfDay: elements.monitorTimeOfDay,
-    timezone: elements.monitorTimezone,
+    watchItems: elements.monitorWatchItems,
+    intervalDays: elements.monitorIntervalDays,
     deliveryChannel: elements.monitorDeliveryChannel,
-    emailAddress: elements.monitorEmailAddress,
     telegramChatId: elements.monitorTelegramChatId,
-    whatsappRecipient: elements.monitorWhatsAppRecipient,
   };
 
-  return fieldMap[field] || elements.monitorSearchPrompt || null;
+  return fieldMap[field] || elements.monitorWatchItems || null;
 }
 
 function syncSettingsField(key) {
@@ -7645,35 +7648,22 @@ function bindEvents() {
   elements.escalationGuidance.addEventListener("input", syncPromptField("escalationGuidance"));
   elements.exampleReplies.addEventListener("input", syncPromptField("exampleReplies"));
   elements.scenarioSelect.addEventListener("change", syncPromptField("scenario"));
-  if (elements.monitorSearchPrompt) {
-    elements.monitorSearchPrompt.addEventListener("input", syncMonitorSettingsField("searchPrompt"));
+  if (elements.monitorWatchItems) {
+    elements.monitorWatchItems.addEventListener("input", syncMonitorSettingsField("watchItems"));
   }
-  if (elements.monitorCadence) {
-    elements.monitorCadence.addEventListener("change", syncMonitorSettingsField("cadence"));
-  }
-  if (elements.monitorWeekday) {
-    elements.monitorWeekday.addEventListener("change", syncMonitorSettingsField("weekday"));
-  }
-  if (elements.monitorMonthDay) {
-    elements.monitorMonthDay.addEventListener("input", syncMonitorSettingsField("monthDay"));
-  }
-  if (elements.monitorTimeOfDay) {
-    elements.monitorTimeOfDay.addEventListener("change", syncMonitorSettingsField("timeOfDay"));
-  }
-  if (elements.monitorTimezone) {
-    elements.monitorTimezone.addEventListener("change", syncMonitorSettingsField("timezone"));
+  if (elements.monitorIntervalDays) {
+    elements.monitorIntervalDays.addEventListener("input", syncMonitorSettingsField("intervalDays"));
   }
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.addEventListener("change", syncMonitorSettingsField("deliveryChannel"));
   }
-  if (elements.monitorEmailAddress) {
-    elements.monitorEmailAddress.addEventListener("input", syncMonitorSettingsField("emailAddress"));
-  }
   if (elements.monitorTelegramChatId) {
     elements.monitorTelegramChatId.addEventListener("input", syncMonitorSettingsField("telegramChatId"));
   }
-  if (elements.monitorWhatsAppRecipient) {
-    elements.monitorWhatsAppRecipient.addEventListener("input", syncMonitorSettingsField("whatsappRecipient"));
+  if (elements.monitorWhatsAppSetupButton) {
+    elements.monitorWhatsAppSetupButton.addEventListener("click", () => {
+      startFeatureActivation({ statusMessage: "WhatsApp setup opened." });
+    });
   }
 
   elements.displayNameInput.addEventListener("input", syncSettingsField("displayName"));

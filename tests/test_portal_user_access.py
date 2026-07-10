@@ -64,9 +64,12 @@ class PortalUserAccessTests(unittest.TestCase):
             MONITOR_FEATURE_ID,
             metadata={
                 "settings": {
-                    "searchPrompt": "Court holidays and criminal law conferences",
+                    "watchItems": [
+                        "Court holidays",
+                        "Criminal law conferences",
+                    ],
+                    "intervalDays": 7,
                     "deliveryChannel": "email",
-                    "emailAddress": "owner@example.com",
                 }
             },
         )
@@ -80,8 +83,8 @@ class PortalUserAccessTests(unittest.TestCase):
 
         self.assertFalse(assignments[MONITOR_FEATURE_ID]["isAssigned"])
         self.assertEqual(
-            assignments[MONITOR_FEATURE_ID]["metadata"]["settings"]["searchPrompt"],
-            "Court holidays and criminal law conferences",
+            assignments[MONITOR_FEATURE_ID]["metadata"]["settings"]["watchItems"],
+            ["Court holidays", "Criminal law conferences"],
         )
 
     def test_delete_user_removes_account_and_related_records(self) -> None:

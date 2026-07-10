@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import calendar
 import json
 import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from datetime import time as time_of_day
 from datetime import timedelta
 from datetime import timezone
 from hashlib import sha256
 from typing import Any
-from zoneinfo import ZoneInfo
-from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.notification_delivery import email_delivery_available
 from packages.infrastructure.notification_delivery import load_mail_delivery_config
@@ -28,6 +24,7 @@ from packages.infrastructure.notification_delivery import whatsapp_delivery_avai
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.portal_db import parse_datetime
 
 
 MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier"
@@ -39,28 +36,12 @@ DEFAULT_MONITOR_MAX_OUTPUT_TOKENS = 1800
 DEFAULT_MONITOR_MAX_ITEMS = 5
 
 DEFAULT_MONITOR_SETTINGS = {
-    "searchPrompt": "",
-    "cadence": "weekly",
-    "weekday": "monday",
-    "monthDay": 1,
-    "timeOfDay": "09:00",
-    "timezone": "",
+    "watchItems": [],
+    "intervalDays": 7,
     "deliveryChannel": "email",
-    "emailAddress": "",
     "telegramChatId": "",
-    "whatsappRecipient": "",
 }
 
-WEEKDAY_NAMES = (
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-)
-SUPPORTED_CADENCES = frozenset({"daily", "weekly", "monthly"})
 SUPPORTED_DELIVERY_CHANNELS = frozenset({"email", "telegram", "whatsapp"})
 
 
@@ -118,72 +99,65 @@ def normalize_search_context_size(value: Any) -> str:
     return DEFAULT_MONITOR_SEARCH_CONTEXT_SIZE
 
 
-def normalize_weekday(value: Any) -> str:
-    text = normalize_text(value).lower()
-    if text in WEEKDAY_NAMES:
-        return text
-    if text[:3] in {name[:3] for name in WEEKDAY_NAMES}:
-        match = next((name for name in WEEKDAY_NAMES if name.startswith(text[:3])), "")
-        if match:
-            return match
-    return "monday"
+def normalize_watch_items(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        text = normalize_text(value)
+        raw_items = re.split(r"(?:\r?\n|;)+", text) if text else []
+
+    normalized_items: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", normalize_text(item))
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_items.append(cleaned)
+    return normalized_items
 
 
-def normalize_time_of_day(value: Any) -> str:
-    text = normalize_text(value)
-    if re.fullmatch(r"\d{2}:\d{2}", text):
-        hour_text, minute_text = text.split(":", 1)
-        hour = safe_int(hour_text, 9)
-        minute = safe_int(minute_text, 0)
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return f"{hour:02d}:{minute:02d}"
-    return "09:00"
+def normalize_interval_days(value: Any, default: int = DEFAULT_MONITOR_SETTINGS["intervalDays"]) -> int:
+    candidate = safe_int(value, default)
+    return max(1, min(365, candidate))
 
 
-def resolve_timezone(name: Any) -> timezone | ZoneInfo:
-    normalized_name = normalize_text(name)
-    if normalized_name:
-        try:
-            return ZoneInfo(normalized_name)
-        except ZoneInfoNotFoundError:
-            pass
-    return datetime.now().astimezone().tzinfo or timezone.utc
+def resolve_monitor_brief(settings: dict[str, Any]) -> str:
+    watch_items = normalize_watch_items(settings.get("watchItems"))
+    if watch_items:
+        return "\n".join(f"- {item}" for item in watch_items)
+    return normalize_text(settings.get("searchPrompt"))
 
 
 def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     source = settings if isinstance(settings, dict) else {}
-    cadence = normalize_text(source.get("cadence")).lower()
-    if cadence not in SUPPORTED_CADENCES:
-        cadence = DEFAULT_MONITOR_SETTINGS["cadence"]
-
     delivery_channel = normalize_text(source.get("deliveryChannel")).lower()
     if delivery_channel not in SUPPORTED_DELIVERY_CHANNELS:
         delivery_channel = DEFAULT_MONITOR_SETTINGS["deliveryChannel"]
 
-    timezone_name = normalize_text(source.get("timezone"))
-    if timezone_name:
-        try:
-            ZoneInfo(timezone_name)
-        except ZoneInfoNotFoundError:
-            timezone_name = ""
-
     return {
-        "searchPrompt": normalize_text(source.get("searchPrompt")),
-        "cadence": cadence,
-        "weekday": normalize_weekday(source.get("weekday")),
-        "monthDay": max(1, min(31, safe_int(source.get("monthDay"), 1))),
-        "timeOfDay": normalize_time_of_day(source.get("timeOfDay")),
-        "timezone": timezone_name,
+        "watchItems": normalize_watch_items(source.get("watchItems") or source.get("searchPrompt")),
+        "intervalDays": normalize_interval_days(
+            source.get("intervalDays")
+            or (
+                1 if normalize_text(source.get("cadence")).lower() == "daily"
+                else 7 if normalize_text(source.get("cadence")).lower() == "weekly"
+                else 30 if normalize_text(source.get("cadence")).lower() == "monthly"
+                else DEFAULT_MONITOR_SETTINGS["intervalDays"]
+            )
+        ),
         "deliveryChannel": delivery_channel,
-        "emailAddress": normalize_email(source.get("emailAddress")),
         "telegramChatId": normalize_text(source.get("telegramChatId")),
-        "whatsappRecipient": normalize_text(source.get("whatsappRecipient")),
     }
 
 
 def validate_monitor_settings(
     settings: dict[str, Any] | None,
     *,
+    user_email: str = "",
     email_available: bool | None = None,
     telegram_available: bool | None = None,
     whatsapp_available: bool | None = None,
@@ -191,18 +165,19 @@ def validate_monitor_settings(
 ) -> list[dict[str, str]]:
     normalized = normalize_monitor_settings(settings)
     issues: list[dict[str, str]] = []
-    if not normalized["searchPrompt"]:
-        issues.append({"field": "searchPrompt", "message": "Add what the monitor should search for."})
+    if not normalized["watchItems"]:
+        issues.append({"field": "watchItems", "message": "Add at least one thing this monitor should check."})
 
     delivery_channel = normalized["deliveryChannel"]
     email_enabled = email_delivery_available(load_mail_delivery_config()) if email_available is None else bool(email_available)
     telegram_enabled = telegram_delivery_available() if telegram_available is None else bool(telegram_available)
     whatsapp_enabled = whatsapp_delivery_available() if whatsapp_available is None else bool(whatsapp_available)
     connection = whatsapp_connection if isinstance(whatsapp_connection, dict) else {}
+    recipient_email = normalize_email(user_email)
 
     if delivery_channel == "email":
-        if not normalized["emailAddress"]:
-            issues.append({"field": "emailAddress", "message": "Add the email address that should receive alerts."})
+        if not recipient_email:
+            issues.append({"field": "deliveryChannel", "message": "This workspace does not have a valid account email for alerts yet."})
         if not email_enabled:
             issues.append({"field": "deliveryChannel", "message": "Email delivery is not configured on the backend yet."})
     elif delivery_channel == "telegram":
@@ -211,12 +186,13 @@ def validate_monitor_settings(
         if not telegram_enabled:
             issues.append({"field": "deliveryChannel", "message": "Telegram delivery is not configured on the backend yet."})
     elif delivery_channel == "whatsapp":
-        recipient = normalized["whatsappRecipient"] or normalize_text(connection.get("ownerWaId"))
-        if not recipient:
-            issues.append({"field": "whatsappRecipient", "message": "Add the WhatsApp number that should receive alerts."})
         if not whatsapp_enabled:
             issues.append({"field": "deliveryChannel", "message": "WhatsApp delivery is not configured on the backend yet."})
-        if normalize_text(connection.get("connectionStatus")) != "connected" or not normalize_text(connection.get("phoneNumberId")):
+        if (
+            normalize_text(connection.get("connectionStatus")) != "connected"
+            or not normalize_text(connection.get("phoneNumberId"))
+            or not normalize_text(connection.get("ownerWaId"))
+        ):
             issues.append({"field": "deliveryChannel", "message": "Connect WhatsApp before using WhatsApp alerts."})
 
     return issues
@@ -225,10 +201,11 @@ def validate_monitor_settings(
 def build_monitor_setup_status(
     settings: dict[str, Any] | None,
     *,
+    user_email: str = "",
     whatsapp_connection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_monitor_settings(settings)
-    issues = validate_monitor_settings(normalized, whatsapp_connection=whatsapp_connection)
+    issues = validate_monitor_settings(normalized, user_email=user_email, whatsapp_connection=whatsapp_connection)
     if not issues:
         return {
             "required": True,
@@ -250,40 +227,32 @@ def build_monitor_setup_status(
     }
 
 
-def latest_scheduled_slot(moment: datetime, settings: dict[str, Any], tz: timezone | ZoneInfo) -> datetime:
-    local_moment = moment.astimezone(tz)
-    hour_text, minute_text = normalize_time_of_day(settings.get("timeOfDay")).split(":", 1)
-    schedule_time = time_of_day(int(hour_text), int(minute_text), tzinfo=tz)
-    cadence = normalize_text(settings.get("cadence")).lower()
+def resolve_due_monitor_slot(
+    *,
+    now: datetime,
+    settings: dict[str, Any],
+    activated_at: str,
+    last_scheduled_for: str,
+) -> datetime | None:
+    current_time = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    current_time = current_time.astimezone(timezone.utc)
+    interval_days = normalize_interval_days(settings.get("intervalDays"))
+    interval = timedelta(days=interval_days)
 
-    if cadence == "daily":
-        scheduled_local = datetime.combine(local_moment.date(), schedule_time, tzinfo=tz)
-        if scheduled_local > local_moment:
-            scheduled_local -= timedelta(days=1)
-        return scheduled_local.astimezone(timezone.utc)
+    if normalize_text(last_scheduled_for):
+        latest_slot = parse_datetime(last_scheduled_for).astimezone(timezone.utc)
+        next_slot = latest_slot + interval
+        if next_slot > current_time:
+            return None
+        elapsed_cycles = (current_time - next_slot) // interval
+        return next_slot + (elapsed_cycles * interval)
 
-    if cadence == "monthly":
-        target_day = max(1, min(31, safe_int(settings.get("monthDay"), 1)))
-        year = local_moment.year
-        month = local_moment.month
-        day = min(target_day, calendar.monthrange(year, month)[1])
-        scheduled_local = datetime.combine(datetime(year, month, day).date(), schedule_time, tzinfo=tz)
-        if scheduled_local > local_moment:
-            month -= 1
-            if month <= 0:
-                month = 12
-                year -= 1
-            day = min(target_day, calendar.monthrange(year, month)[1])
-            scheduled_local = datetime.combine(datetime(year, month, day).date(), schedule_time, tzinfo=tz)
-        return scheduled_local.astimezone(timezone.utc)
-
-    target_weekday = WEEKDAY_NAMES.index(normalize_weekday(settings.get("weekday")))
-    days_since_schedule = (local_moment.weekday() - target_weekday) % 7
-    scheduled_day = local_moment.date() - timedelta(days=days_since_schedule)
-    scheduled_local = datetime.combine(scheduled_day, schedule_time, tzinfo=tz)
-    if scheduled_local > local_moment:
-        scheduled_local -= timedelta(days=7)
-    return scheduled_local.astimezone(timezone.utc)
+    activation_time = parse_datetime(activated_at).astimezone(timezone.utc) if normalize_text(activated_at) else current_time
+    first_slot = activation_time + interval
+    if first_slot > current_time:
+        return None
+    elapsed_cycles = (current_time - first_slot) // interval
+    return first_slot + (elapsed_cycles * interval)
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -341,6 +310,7 @@ def build_monitor_prompt(
     max_items: int,
 ) -> str:
     prompt = target.get("prompt") if isinstance(target.get("prompt"), dict) else {}
+    watch_items = normalize_watch_items(settings.get("watchItems"))
     lines = [
         "Search the public web and find only relevant, real-world updates for this business monitor.",
         "Return valid JSON only.",
@@ -367,6 +337,7 @@ def build_monitor_prompt(
         "If nothing relevant is found, return an empty items array.",
         "Prefer concrete events, deadlines, conference announcements, holiday dates, or changes with a source URL.",
         "Never invent a source, URL, event date, or organization.",
+        "Only include matches that are genuinely useful enough to float up to the client.",
         f"Tone guidance: {normalize_text(prompt.get('toneGuidance')) or 'Clear, useful, and concise.'}",
         f"Prioritization rules: {normalize_text(prompt.get('replyRules')) or 'Only alert when there is a concrete, useful match.'}",
     ]
@@ -381,7 +352,11 @@ def build_monitor_prompt(
         lines.append(f"Example alert style: {example_replies}")
     if normalize_text(last_successful_run_at):
         lines.append(f"Last successful run: {normalize_text(last_successful_run_at)}")
-    lines.append(f"Monitor brief: {normalize_text(settings.get('searchPrompt'))}")
+    lines.append("Things to check:")
+    if watch_items:
+        lines.extend(f"- {item}" for item in watch_items)
+    else:
+        lines.append(f"- {resolve_monitor_brief(settings)}")
     return "\n".join(lines).strip()
 
 
@@ -479,7 +454,7 @@ class ScheduledMonitorScheduler:
             metadata={
                 "featureId": MONITOR_FEATURE_ID,
                 "deliveryChannel": settings.get("deliveryChannel"),
-                "cadence": settings.get("cadence"),
+                "intervalDays": settings.get("intervalDays"),
             },
             tools=[{"type": "web_search", "search_context_size": self.config.search_context_size}],
         )
@@ -522,7 +497,7 @@ class ScheduledMonitorScheduler:
         delivery_target = ""
         delivery_message_id = ""
         if channel == "email":
-            delivery_target = normalize_email(settings.get("emailAddress"))
+            delivery_target = normalize_email(target.get("email"))
             subject = build_notification_subject(target, len(items))
             send_email_notification(
                 to_email=delivery_target,
@@ -536,7 +511,7 @@ class ScheduledMonitorScheduler:
             result = response.get("result") if isinstance(response.get("result"), dict) else {}
             delivery_message_id = normalize_text(result.get("message_id"))
         elif channel == "whatsapp":
-            delivery_target = normalize_text(settings.get("whatsappRecipient")) or normalize_text(target.get("ownerWaId"))
+            delivery_target = normalize_text(target.get("ownerWaId"))
             delivery_message_id = send_whatsapp_notification(
                 phone_number_id=normalize_text(target.get("phoneNumberId")),
                 recipient_wa_id=delivery_target,
@@ -549,7 +524,11 @@ class ScheduledMonitorScheduler:
 
     def _process_target(self, *, target: dict[str, Any], now: datetime) -> dict[str, Any]:
         settings = normalize_monitor_settings(target.get("settings"))
-        setup_status = build_monitor_setup_status(settings, whatsapp_connection=target.get("whatsappConnection"))
+        setup_status = build_monitor_setup_status(
+            settings,
+            user_email=normalize_email(target.get("email")),
+            whatsapp_connection=target.get("whatsappConnection"),
+        )
         if not setup_status["ready"]:
             return {
                 "userId": int(target.get("userId") or 0),
@@ -559,8 +538,25 @@ class ScheduledMonitorScheduler:
                 "notificationsSent": 0,
             }
 
-        tz = resolve_timezone(settings.get("timezone"))
-        scheduled_for = latest_scheduled_slot(now, settings, tz)
+        last_run = self.database.get_latest_feature_monitor_run(
+            user_id=int(target.get("userId") or 0),
+            feature_id=MONITOR_FEATURE_ID,
+        )
+        scheduled_for = resolve_due_monitor_slot(
+            now=now,
+            settings=settings,
+            activated_at=normalize_text(target.get("activatedAt") or target.get("activationUpdatedAt")),
+            last_scheduled_for=normalize_text(last_run.get("scheduledFor")) if last_run else "",
+        )
+        if scheduled_for is None:
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": "skipped",
+                "reason": "not_due",
+                "notificationsSent": 0,
+            }
+
         existing_run = self.database.get_feature_monitor_run(
             user_id=int(target.get("userId") or 0),
             feature_id=MONITOR_FEATURE_ID,
@@ -647,6 +643,8 @@ class ScheduledMonitorScheduler:
                 "summary": summary,
                 "items": items,
                 "newItemIds": [normalize_text(item.get("id")) for item in new_items],
+                "watchItems": settings.get("watchItems"),
+                "intervalDays": settings.get("intervalDays"),
                 "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
                 "deliveryTarget": delivery_target,
                 **search_metadata,
@@ -673,7 +671,7 @@ class ScheduledMonitorScheduler:
 
         targets = self.database.list_active_feature_monitor_targets(MONITOR_FEATURE_ID)
         runs = [self._process_target(target=target, now=current_time) for target in targets]
-        completed_runs = [run for run in runs if normalize_text(run.get("reason")) != "already_ran"]
+        completed_runs = [run for run in runs if normalize_text(run.get("status")) != "skipped"]
         return {
             "ok": True,
             "ran": bool(completed_runs),

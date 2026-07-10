@@ -524,6 +524,7 @@ class FeatureActivationService:
         if feature_id == "scheduled-web-monitor-notifier" or requires_monitor_config:
             return build_monitor_setup_status(
                 settings,
+                user_email=email,
                 whatsapp_connection=connection,
             )
 

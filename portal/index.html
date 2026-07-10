@@ -343,17 +343,17 @@
         <div id="toolEditorSection" class="studio-fields">
           <article id="monitorTargetCard" class="glass-card config-card is-hidden">
             <div class="card-head">
-              <h3>What to watch</h3>
+              <h3>What to check</h3>
             </div>
 
             <label class="field">
-              <span>Search brief</span>
+              <span>Watch list</span>
               <textarea
-                id="monitorSearchPrompt"
-                rows="5"
-                placeholder="Example: Find upcoming conferences for criminal defense lawyers in Israel, plus major legal holidays or registration deadlines that matter in the next 90 days."
+                id="monitorWatchItems"
+                rows="6"
+                placeholder="Criminal defense law conferences&#10;Court holidays&#10;Registration deadlines for legal events"
               ></textarea>
-              <small class="field-help">Describe the events, signals, dates, or opportunities this client wants to hear about.</small>
+              <small class="field-help">Add one thing per line so the monitor knows exactly what to look for and float up.</small>
             </label>
           </article>
 
@@ -364,42 +364,9 @@
 
             <div class="monitor-settings-grid">
               <label class="field compact">
-                <span>Cadence</span>
-                <select id="monitorCadence">
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly</option>
-                  <option value="monthly">Monthly</option>
-                </select>
-              </label>
-
-              <label id="monitorWeekdayField" class="field compact">
-                <span>Weekday</span>
-                <select id="monitorWeekday">
-                  <option value="monday">Monday</option>
-                  <option value="tuesday">Tuesday</option>
-                  <option value="wednesday">Wednesday</option>
-                  <option value="thursday">Thursday</option>
-                  <option value="friday">Friday</option>
-                  <option value="saturday">Saturday</option>
-                  <option value="sunday">Sunday</option>
-                </select>
-              </label>
-
-              <label id="monitorMonthDayField" class="field compact is-hidden">
-                <span>Day of month</span>
-                <input id="monitorMonthDay" type="number" min="1" max="31" inputmode="numeric" />
-              </label>
-
-              <label class="field compact">
-                <span>Time</span>
-                <input id="monitorTimeOfDay" type="time" />
-              </label>
-
-              <label class="field compact">
-                <span>Timezone</span>
-                <select id="monitorTimezone">
-                  <option value="">Use account timezone</option>
-                </select>
+                <span>Check every</span>
+                <input id="monitorIntervalDays" type="number" min="1" max="365" inputmode="numeric" />
+                <small class="field-help">Use days. Examples: 1 for daily, 7 for weekly, 14 for every other week.</small>
               </label>
             </div>
           </article>
@@ -419,26 +386,26 @@
                 </select>
               </label>
 
-              <label id="monitorEmailField" class="field compact">
-                <span>Email address</span>
-                <input id="monitorEmailAddress" type="email" autocomplete="email" placeholder="alerts@example.com" />
-              </label>
+              <div id="monitorEmailField" class="field compact">
+                <span>Email delivery</span>
+                <p id="monitorEmailSummary" class="field-help">Alerts will go to your account email.</p>
+              </div>
 
               <label id="monitorTelegramField" class="field compact is-hidden">
                 <span>Telegram chat id</span>
                 <input id="monitorTelegramChatId" type="text" autocomplete="off" placeholder="123456789" />
-                <small class="field-help">Use the chat id or channel handle that your bot can send to.</small>
+                <small class="field-help">Paste the chat id that our bot should deliver alerts into.</small>
               </label>
 
-              <label id="monitorWhatsAppField" class="field compact is-hidden">
-                <span>WhatsApp recipient</span>
-                <input id="monitorWhatsAppRecipient" type="text" inputmode="numeric" autocomplete="off" placeholder="15551234567" />
-                <small class="field-help">Leave blank to use the connected owner WhatsApp number.</small>
-              </label>
+              <div id="monitorWhatsAppField" class="field compact is-hidden">
+                <span>WhatsApp delivery</span>
+                <p class="field-help">Alerts will use this workspace's connected WhatsApp number.</p>
+                <button id="monitorWhatsAppSetupButton" class="ghost-button small" type="button">Open WhatsApp setup</button>
+              </div>
             </div>
           </article>
 
-          <article class="glass-card config-card">
+          <article id="featureToneCard" class="glass-card config-card">
             <div class="card-head">
               <h3>Tone</h3>
             </div>
@@ -462,7 +429,7 @@
             </label>
           </article>
 
-          <article class="glass-card config-card">
+          <article id="featureRulesCard" class="glass-card config-card">
             <div class="card-head">
               <h3>Reply rules</h3>
             </div>
@@ -486,7 +453,7 @@
             </label>
           </article>
 
-          <article class="glass-card config-card">
+          <article id="featureContextCard" class="glass-card config-card">
             <div class="card-head">
               <h3>Business context</h3>
             </div>
