@@ -7056,7 +7056,7 @@ function renderMonitorWatchItems(items = []) {
   if (!watchItems.length) {
     const empty = document.createElement("p");
     empty.className = "monitor-watch-badge-empty";
-    empty.textContent = "No watch items yet. Add the first thing this monitor should check.";
+    empty.textContent = "Badges appear here once you add an item.";
     elements.monitorWatchItemsList.replaceChildren(empty);
     return;
   }
