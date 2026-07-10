@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>About Nimrod Shai | Assistyca</title>
+    <title>Assistyca | Nimrod Shai</title>
     <meta
       name="description"
-      content="Nimrod Shai is a programmer since 2013, now building AI agents and automations for business owners through Assistyca."
+      content="Assistyca by Nimrod Shai builds AI agents and automations for business owners who want to save time, reduce costs, and scale with ease."
     />
-    <meta property="og:title" content="About Nimrod Shai | Assistyca" />
+    <meta property="og:title" content="Assistyca | Nimrod Shai" />
     <meta
       property="og:description"
-      content="Programmer since 2013. Building AI agents and automations for business owners."
+      content="AI agents and automations for business owners, built by Nimrod Shai."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://assistyca.com/about" />
@@ -40,20 +40,26 @@
 
       :root {
         color-scheme: light;
-        --bg: #f4efe7;
-        --bg-deep: #ece3d6;
-        --card: rgba(255, 252, 247, 0.82);
-        --card-strong: rgba(255, 255, 255, 0.72);
-        --ink: #18212a;
-        --muted: #5a6676;
-        --line: rgba(24, 33, 42, 0.12);
-        --accent: #0c766d;
-        --accent-soft: rgba(12, 118, 109, 0.12);
-        --shadow: 0 24px 70px rgba(24, 33, 42, 0.12);
+        --bg: #fbf8f1;
+        --bg-deep: #f3efe6;
+        --surface: rgba(255, 255, 255, 0.72);
+        --surface-soft: rgba(244, 241, 235, 0.9);
+        --ink: #132038;
+        --muted: #667185;
+        --line: rgba(19, 32, 56, 0.1);
+        --accent: #6aa7a3;
+        --accent-deep: #4f9290;
+        --accent-soft: rgba(106, 167, 163, 0.14);
+        --sand: #d8d0c2;
+        --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
       }
 
       * {
         box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
       }
 
       html,
@@ -66,9 +72,9 @@
         font-family: "Manrope", "Segoe UI", sans-serif;
         color: var(--ink);
         background:
-          radial-gradient(circle at top left, rgba(12, 118, 109, 0.16), transparent 30%),
-          radial-gradient(circle at 82% 18%, rgba(203, 118, 53, 0.16), transparent 20%),
-          linear-gradient(155deg, var(--bg), var(--bg-deep));
+          radial-gradient(circle at top left, rgba(106, 167, 163, 0.1), transparent 28%),
+          radial-gradient(circle at top right, rgba(223, 215, 199, 0.55), transparent 34%),
+          linear-gradient(180deg, var(--bg), var(--bg-deep));
       }
 
       body::before {
@@ -76,60 +82,45 @@
         position: fixed;
         inset: 0;
         pointer-events: none;
-        background-image:
-          linear-gradient(rgba(255, 255, 255, 0.2) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.2) 1px, transparent 1px);
-        background-size: 34px 34px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 85%);
+        background:
+          radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.72), transparent 26%),
+          radial-gradient(circle at 85% 16%, rgba(255, 255, 255, 0.46), transparent 30%);
       }
 
       a {
         color: inherit;
+        text-decoration: none;
+      }
+
+      img,
+      svg {
+        display: block;
       }
 
       .page {
-        width: min(100%, 72rem);
-        min-height: 100vh;
-        margin: 0 auto;
-        padding: 1.2rem;
-        display: grid;
-        align-items: center;
-      }
-
-      .shell {
         position: relative;
         overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 36px;
-        background: var(--card);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(16px);
       }
 
-      .shell::after {
-        content: "";
-        position: absolute;
-        inset: auto -8% -28% auto;
-        width: 18rem;
-        aspect-ratio: 1;
-        border-radius: 999px;
-        background: radial-gradient(circle, rgba(12, 118, 109, 0.18), transparent 68%);
-        pointer-events: none;
+      .site-header,
+      .hero,
+      .benefits,
+      .section,
+      .final-cta {
+        width: min(100%, 88rem);
+        margin: 0 auto;
+        padding-left: clamp(1.3rem, 4vw, 5rem);
+        padding-right: clamp(1.3rem, 4vw, 5rem);
       }
 
-      .content {
-        position: relative;
-        z-index: 1;
-        display: grid;
-        gap: 2rem;
-        padding: clamp(1.5rem, 4vw, 3rem);
-      }
-
-      .topbar {
+      .site-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
+        padding-top: 2.15rem;
+        position: relative;
+        z-index: 5;
       }
 
       .brand {
@@ -138,225 +129,604 @@
       }
 
       .brand img {
-        width: clamp(9.25rem, 18vw, 11.5rem);
+        width: clamp(13rem, 22vw, 18.5rem);
         height: auto;
-        display: block;
       }
 
-      .tag {
-        display: inline-flex;
+      .nav {
+        display: flex;
         align-items: center;
-        min-height: 2.35rem;
-        padding: 0.6rem 0.85rem;
+        gap: clamp(1rem, 2.2vw, 2.5rem);
+      }
+
+      .nav a {
+        font-size: 1.03rem;
+        color: var(--ink);
+        transition:
+          color 160ms ease,
+          transform 160ms ease;
+      }
+
+      .nav a:hover,
+      .nav a:focus-visible {
+        color: var(--accent-deep);
+        transform: translateY(-1px);
+      }
+
+      .nav .nav-cta {
+        min-height: 3rem;
+        padding: 0.8rem 1.65rem;
         border-radius: 999px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.56);
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.16em;
-        font-size: 0.73rem;
-        font-weight: 700;
+        color: #ffffff;
+        background: linear-gradient(135deg, #73b2ad, #5e9e9a);
+        box-shadow: 0 14px 28px rgba(106, 167, 163, 0.24);
       }
 
       .hero {
         display: grid;
-        gap: 2rem;
+        grid-template-columns: minmax(0, 1.12fr) minmax(19rem, 0.88fr);
+        align-items: center;
+        gap: clamp(2rem, 4vw, 4.5rem);
+        min-height: calc(100vh - 7rem);
+        padding-top: 2.4rem;
+        padding-bottom: 2.8rem;
       }
 
-      .eyebrow {
-        margin: 0 0 0.95rem;
-        color: var(--accent);
-        text-transform: uppercase;
-        letter-spacing: 0.16em;
-        font-size: 0.78rem;
-        font-weight: 800;
+      .hero-copy {
+        max-width: 55rem;
       }
 
       h1 {
         margin: 0;
-        max-width: 12ch;
-        font-size: clamp(3rem, 7vw, 5.8rem);
-        line-height: 0.92;
-        letter-spacing: -0.06em;
+        max-width: none;
+        font-size: clamp(2.95rem, 4.5vw, 4.55rem);
+        line-height: 0.98;
+        letter-spacing: -0.065em;
+        font-weight: 500;
       }
 
-      .headline {
-        font-weight: 700;
+      .hero-line {
+        display: block;
+        white-space: nowrap;
       }
 
-      .body-copy {
-        max-width: 39rem;
-        margin: 1.2rem 0 0;
+      .hero-copy p {
+        max-width: 28rem;
+        margin: 1.65rem 0 0;
         color: var(--muted);
-        font-size: 1.08rem;
-        line-height: 1.72;
-      }
-
-      .body-copy strong {
-        color: var(--ink);
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.8rem;
-        margin-top: 1.5rem;
-      }
-
-      .button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 3.15rem;
-        padding: 0.9rem 1.15rem;
-        border-radius: 999px;
-        border: 1px solid transparent;
-        text-decoration: none;
-        font-size: 0.96rem;
-        font-weight: 700;
-        transition:
-          transform 160ms ease,
-          box-shadow 160ms ease,
-          background 160ms ease,
-          border-color 160ms ease;
-      }
-
-      .button:hover,
-      .button:focus-visible {
-        transform: translateY(-1px);
-      }
-
-      .button.primary {
-        background: var(--ink);
-        color: #fffdf8;
-        box-shadow: 0 16px 34px rgba(24, 33, 42, 0.18);
-      }
-
-      .meta {
-        display: grid;
-        gap: 0.85rem;
-        align-content: start;
-      }
-
-      .note,
-      .list {
-        border: 1px solid var(--line);
-        border-radius: 24px;
-        background: var(--card-strong);
-        padding: 1rem;
-      }
-
-      .note-title,
-      .list-title {
-        margin: 0 0 0.45rem;
-        font-size: 0.8rem;
-        font-weight: 800;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: var(--muted);
-      }
-
-      .note p {
-        margin: 0;
-        color: var(--ink);
-        font-size: 1rem;
+        font-size: clamp(1.12rem, 2vw, 1.28rem);
         line-height: 1.6;
       }
 
-      .proofs {
+      .hero-actions {
         display: flex;
+        align-items: center;
         flex-wrap: wrap;
-        gap: 0.65rem;
+        gap: 1rem 1.65rem;
+        margin-top: 2.2rem;
       }
 
-      .proof {
+      .button-primary,
+      .button-secondary {
         display: inline-flex;
         align-items: center;
-        min-height: 2.5rem;
-        padding: 0.65rem 0.85rem;
+        justify-content: center;
+        min-height: 3.45rem;
+        font-size: 1rem;
+        font-weight: 600;
+        transition:
+          transform 180ms ease,
+          color 180ms ease,
+          box-shadow 180ms ease;
+      }
+
+      .button-primary {
+        min-width: 10.9rem;
+        padding: 0.9rem 1.5rem;
         border-radius: 999px;
-        background: var(--accent-soft);
-        color: var(--accent);
-        font-size: 0.92rem;
+        color: #ffffff;
+        background: linear-gradient(135deg, #72b0ac, #5f9f9a);
+        box-shadow: 0 18px 36px rgba(106, 167, 163, 0.24);
+      }
+
+      .button-secondary {
+        position: relative;
+        color: var(--ink);
+      }
+
+      .button-secondary::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0.6rem;
+        height: 0.12rem;
+        border-radius: 999px;
+        background: var(--accent);
+      }
+
+      .button-primary:hover,
+      .button-primary:focus-visible,
+      .button-secondary:hover,
+      .button-secondary:focus-visible {
+        transform: translateY(-1px);
+      }
+
+      .hero-visual {
+        position: relative;
+        min-height: clamp(28rem, 44vw, 38rem);
+        overflow: visible;
+        display: flex;
+        align-items: flex-end;
+        justify-content: flex-end;
+      }
+
+      .hero-visual img {
+        position: absolute;
+        right: -10%;
+        bottom: -4%;
+        width: clamp(24rem, 43vw, 42rem);
+        max-width: none;
+        height: auto;
+        object-fit: contain;
+        object-position: right bottom;
+        filter: saturate(0.92) contrast(0.98);
+      }
+
+      .benefits-wrap {
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.34);
+        backdrop-filter: blur(12px);
+      }
+
+      .benefits {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 2rem;
+        padding-top: 2.2rem;
+        padding-bottom: 2.25rem;
+      }
+
+      .benefit {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 1.25rem;
+        align-items: center;
+      }
+
+      .benefit-icon {
+        width: 4.75rem;
+        height: 4.75rem;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.9), rgba(106, 167, 163, 0.14));
+      }
+
+      .benefit-icon svg {
+        width: 2.2rem;
+        height: 2.2rem;
+        stroke: var(--accent-deep);
+        fill: none;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .benefit h3 {
+        margin: 0;
+        font-size: 1.8rem;
+        letter-spacing: -0.04em;
+        font-weight: 500;
+      }
+
+      .benefit p {
+        margin: 0.45rem 0 0;
+        max-width: 17rem;
+        color: var(--muted);
+        font-size: 1.02rem;
+        line-height: 1.55;
+      }
+
+      .section {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+        gap: clamp(2rem, 4vw, 5rem);
+        padding-top: clamp(4rem, 9vw, 7rem);
+        padding-bottom: clamp(3rem, 8vw, 5.4rem);
+      }
+
+      .section-label {
+        margin: 0 0 0.8rem;
+        color: var(--accent-deep);
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        font-size: 0.76rem;
         font-weight: 700;
       }
 
-      .footer {
-        margin-top: 0.4rem;
+      .section h2 {
+        margin: 0;
+        max-width: 11ch;
+        font-size: clamp(2.3rem, 4.6vw, 3.5rem);
+        line-height: 1.02;
+        letter-spacing: -0.055em;
+        font-weight: 500;
+      }
+
+      .section-intro p {
+        max-width: 24rem;
+        margin: 1rem 0 0;
         color: var(--muted);
-        font-size: 0.92rem;
+        line-height: 1.65;
       }
 
-      @media (min-width: 900px) {
-        .hero {
-          grid-template-columns: minmax(0, 1.1fr) minmax(18rem, 0.64fr);
-          align-items: end;
-        }
+      .service-list,
+      .workflow-list {
+        display: grid;
+        gap: 0;
+        border-top: 1px solid var(--line);
       }
 
-      @media (max-width: 640px) {
-        .topbar {
+      .service-item,
+      .workflow-item {
+        padding: 1.35rem 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .service-item h3,
+      .workflow-item h3 {
+        margin: 0;
+        font-size: 1.35rem;
+        font-weight: 600;
+        letter-spacing: -0.035em;
+      }
+
+      .service-item p,
+      .workflow-item p {
+        margin: 0.45rem 0 0;
+        max-width: 34rem;
+        color: var(--muted);
+        line-height: 1.65;
+      }
+
+      .about-panel {
+        display: grid;
+        gap: 1.2rem;
+        padding-top: 0.15rem;
+      }
+
+      .about-panel .quote {
+        margin: 0;
+        max-width: 34rem;
+        font-size: clamp(1.35rem, 2.2vw, 1.75rem);
+        line-height: 1.5;
+        letter-spacing: -0.035em;
+      }
+
+      .about-panel p {
+        margin: 0;
+        max-width: 34rem;
+        color: var(--muted);
+        line-height: 1.72;
+      }
+
+      .final-cta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+        padding-top: 2.4rem;
+        padding-bottom: 4.8rem;
+      }
+
+      .final-cta h2 {
+        margin: 0;
+        max-width: 14ch;
+        font-size: clamp(2rem, 4vw, 3rem);
+        line-height: 1.05;
+        letter-spacing: -0.05em;
+        font-weight: 500;
+      }
+
+      .final-cta p {
+        margin: 0.6rem 0 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      @media (max-width: 980px) {
+        .site-header {
           flex-direction: column;
           align-items: flex-start;
         }
 
+        .nav {
+          flex-wrap: wrap;
+        }
+
+        .hero,
+        .section,
+        .final-cta {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          min-height: auto;
+          padding-top: 2rem;
+        }
+
+        .hero-visual {
+          min-height: 26rem;
+          order: 2;
+        }
+
+        .hero-visual img {
+          right: -4%;
+          bottom: -2%;
+          width: min(100%, 34rem);
+        }
+
+        .benefits {
+          grid-template-columns: 1fr;
+        }
+
+        .benefit p {
+          max-width: none;
+        }
+
+        .section h2,
+        .final-cta h2 {
+          max-width: none;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .site-header,
+        .hero,
+        .benefits,
+        .section,
+        .final-cta {
+          padding-left: 1.2rem;
+          padding-right: 1.2rem;
+        }
+
+        .brand {
+          width: min(16rem, 60vw);
+        }
+
+        .brand img {
+          width: 100%;
+        }
+
+        .nav {
+          gap: 0.85rem 1.2rem;
+        }
+
+        .nav a {
+          font-size: 0.96rem;
+        }
+
         h1 {
           max-width: none;
+          font-size: clamp(2.85rem, 14vw, 4.35rem);
+        }
+
+        .hero-line {
+          display: inline;
+        }
+
+        .hero-copy p {
+          max-width: none;
+          font-size: 1.04rem;
+        }
+
+        .hero-actions {
+          gap: 0.9rem 1.2rem;
+        }
+
+        .hero-visual {
+          min-height: 22rem;
+        }
+
+        .hero-visual img {
+          right: -6%;
+          width: 110%;
+        }
+
+        .final-cta {
+          align-items: flex-start;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+          scroll-behavior: auto !important;
         }
       }
     </style>
   </head>
   <body>
-    <main class="page">
-      <section class="shell" aria-labelledby="about-title">
-        <div class="content">
-          <header class="topbar">
-            <div class="brand" aria-label="Assistyca">
-              <img src="../assets/AssistycaLogoTitleWeb.png" alt="Assistyca" />
+    <div class="page">
+      <header class="site-header" id="top">
+        <a class="brand" href="#top" aria-label="Assistyca home">
+          <img src="../assets/AssistycaLogoTitle.png" alt="Assistyca" />
+        </a>
+        <nav class="nav" aria-label="Page navigation">
+          <a href="#services">Services</a>
+          <a href="#how-it-works">How It Works</a>
+          <a href="#about-me">About Me</a>
+          <a class="nav-cta" href="mailto:nimrod.shai@gmail.com">Let&apos;s Talk</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="hero-title">
+          <div class="hero-copy">
+            <h1 id="hero-title">
+              <span class="hero-line">AI Agents &amp; Automations</span>
+              <span class="hero-line">for Business Owners</span>
+            </h1>
+            <p>
+              Save time. Reduce costs. Scale with ease. I build smart solutions
+              that work for you.
+            </p>
+            <div class="hero-actions">
+              <a class="button-primary" href="mailto:nimrod.shai@gmail.com">Let&apos;s Talk</a>
+              <a class="button-secondary" href="#how-it-works">See How It Works</a>
             </div>
-            <span class="tag">About</span>
-          </header>
-
-          <div class="hero">
-            <div>
-              <p class="eyebrow">Nimrod Shai</p>
-              <h1 id="about-title" class="headline">
-                I’m Nimrod Shai. I build AI agents and automations for business owners.
-              </h1>
-              <p class="body-copy">
-                I’ve been programming since <strong>2013</strong>. Today I use that
-                experience to build practical systems that help businesses respond
-                faster, follow up better, and spend less time on repetitive work.
-              </p>
-              <div class="actions">
-                <a class="button primary" href="mailto:nimrod.shai@gmail.com">Email me</a>
-              </div>
-            </div>
-
-            <aside class="meta" aria-label="Quick details">
-              <div class="note">
-                <p class="note-title">What this page is</p>
-                <p>A simple public page about who I am and what I’m building now.</p>
-              </div>
-
-              <div class="list">
-                <p class="list-title">Current focus</p>
-                <div class="proofs" aria-label="Focus areas">
-                  <span class="proof">Programmer since 2013</span>
-                  <span class="proof">AI agents</span>
-                  <span class="proof">Business automations</span>
-                </div>
-              </div>
-
-            </aside>
           </div>
 
-          <p class="footer">
-            Assistyca is where I build practical systems for AI-driven business
-            operations.
-          </p>
+          <div class="hero-visual" aria-hidden="true">
+            <img src="../assets/zen-hero-stones.png" alt="" />
+          </div>
+        </section>
+
+        <div class="benefits-wrap">
+          <section class="benefits" aria-label="Key benefits">
+            <article class="benefit">
+              <div class="benefit-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="8.25"></circle>
+                  <path d="M12 7.4V12l3.15 3.15"></path>
+                </svg>
+              </div>
+              <div>
+                <h3>Save Time</h3>
+                <p>Automate repetitive tasks and focus on what matters.</p>
+              </div>
+            </article>
+
+            <article class="benefit">
+              <div class="benefit-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4.5 15.5 9 11l4 4 6.5-8"></path>
+                  <path d="M15.5 7H19.5V11"></path>
+                  <path d="M4 19.5H20"></path>
+                </svg>
+              </div>
+              <div>
+                <h3>Boost Efficiency</h3>
+                <p>AI agents and workflows that get more done.</p>
+              </div>
+            </article>
+
+            <article class="benefit">
+              <div class="benefit-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="7.5" r="3.1"></circle>
+                  <path d="M5.2 18.8c1.7-3 4-4.5 6.8-4.5s5.1 1.5 6.8 4.5"></path>
+                </svg>
+              </div>
+              <div>
+                <h3>Built for You</h3>
+                <p>Custom solutions tailored to your business goals.</p>
+              </div>
+            </article>
+          </section>
         </div>
-      </section>
-    </main>
+
+        <section class="section" id="services" aria-labelledby="services-title">
+          <div class="section-intro">
+            <p class="section-label">Services</p>
+            <h2 id="services-title">What I build for businesses that want leverage.</h2>
+            <p>
+              I focus on practical systems that reduce manual work and improve how
+              teams respond, follow up, and operate day to day.
+            </p>
+          </div>
+          <div class="service-list">
+            <article class="service-item">
+              <h3>AI agents for customer conversations</h3>
+              <p>
+                Reply assistants, lead qualification flows, and support systems that
+                keep conversations moving without constant owner involvement.
+              </p>
+            </article>
+            <article class="service-item">
+              <h3>Automations for internal operations</h3>
+              <p>
+                Follow-ups, approvals, routing, reminders, and recurring workflows
+                that remove repetitive admin work from the week.
+              </p>
+            </article>
+            <article class="service-item">
+              <h3>Business-specific implementation</h3>
+              <p>
+                Every setup is shaped around the real workflow, not dropped in as a
+                generic template that creates more friction than it solves.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="how-it-works" aria-labelledby="workflow-title">
+          <div class="section-intro">
+            <p class="section-label">How It Works</p>
+            <h2 id="workflow-title">Simple process. Real systems. Clear outcomes.</h2>
+            <p>
+              I start with the bottleneck, design around the actual workflow, and
+              keep refining until it feels dependable in real use.
+            </p>
+          </div>
+          <div class="workflow-list">
+            <article class="workflow-item">
+              <h3>1. Find the drag</h3>
+              <p>
+                We identify the repetitive conversations, tasks, or coordination work
+                that keeps stealing time from the business.
+              </p>
+            </article>
+            <article class="workflow-item">
+              <h3>2. Build the right system</h3>
+              <p>
+                I turn that process into a cleaner structure with AI, automation, and
+                the right amount of control where it matters.
+              </p>
+            </article>
+            <article class="workflow-item">
+              <h3>3. Make it useful in practice</h3>
+              <p>
+                The goal is not a demo. The goal is something you can actually use to
+                save time, reduce overhead, and keep work moving.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="about-me" aria-labelledby="about-title">
+          <div class="section-intro">
+            <p class="section-label">About Me</p>
+            <h2 id="about-title">Built by Nimrod Shai.</h2>
+          </div>
+          <div class="about-panel">
+            <p class="quote">
+              I’ve been programming since 2013. Today I build AI agents and
+              automations for business owners who want calmer operations and smarter
+              systems.
+            </p>
+            <p>
+              Assistyca is the umbrella for that work. The focus is simple: build
+              tools that are useful, clear, and grounded in how a business actually
+              runs.
+            </p>
+          </div>
+        </section>
+
+        <section class="final-cta" aria-labelledby="cta-title">
+          <div>
+            <p class="section-label">Contact</p>
+            <h2 id="cta-title">If this looks like the kind of system you want, let&apos;s talk.</h2>
+            <p>Tell me what part of the business feels too manual right now.</p>
+          </div>
+          <a class="button-primary" href="mailto:nimrod.shai@gmail.com">Email Nimrod</a>
+        </section>
+      </main>
+    </div>
   </body>
 </html>
