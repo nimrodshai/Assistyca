@@ -124,9 +124,9 @@
         z-index: 40;
         background: linear-gradient(
           180deg,
-          rgba(251, 248, 241, 0.9) 0%,
-          rgba(251, 248, 241, 0.72) 72%,
-          rgba(251, 248, 241, 0.26) 100%
+          rgba(251, 248, 241, 0.84) 0%,
+          rgba(251, 248, 241, 0.56) 74%,
+          rgba(251, 248, 241, 0.12) 100%
         );
         backdrop-filter: blur(18px) saturate(140%);
         -webkit-backdrop-filter: blur(18px) saturate(140%);
@@ -140,8 +140,8 @@
         background: linear-gradient(
           90deg,
           transparent,
-          rgba(19, 32, 56, 0.08) 16%,
-          rgba(19, 32, 56, 0.08) 84%,
+          rgba(19, 32, 56, 0.01) 18%,
+          rgba(19, 32, 56, 0.01) 82%,
           transparent
         );
       }
@@ -151,8 +151,8 @@
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
-        padding-top: 0.95rem;
-        padding-bottom: 0.95rem;
+        padding-top: 0.75rem;
+        padding-bottom: 0.82rem;
         position: relative;
         z-index: 5;
       }
@@ -163,20 +163,20 @@
       }
 
       .brand img {
-        width: clamp(12.4rem, 20vw, 17.4rem);
+        width: clamp(11.8rem, 18vw, 16rem);
         height: auto;
       }
 
       .nav {
         display: flex;
         align-items: center;
-        gap: clamp(1rem, 2.2vw, 2.5rem);
+        gap: clamp(1rem, 1.8vw, 2.15rem);
       }
 
       .nav a {
         position: relative;
         padding: 0.35rem 0;
-        font-size: 1.03rem;
+        font-size: 1rem;
         color: var(--ink);
         transition:
           color 160ms ease,
@@ -188,8 +188,8 @@
         position: absolute;
         left: 50%;
         bottom: -0.22rem;
-        width: 2.7rem;
-        height: 0.14rem;
+        width: 2.5rem;
+        height: 0.12rem;
         border-radius: 999px;
         background: var(--accent);
         transform: translateX(-50%) scaleX(0);
@@ -212,8 +212,8 @@
       }
 
       .nav .nav-cta {
-        min-height: 3rem;
-        padding: 0.8rem 1.65rem;
+        min-height: 2.86rem;
+        padding: 0.76rem 1.52rem;
         border-radius: 999px;
         color: #ffffff;
         background: linear-gradient(135deg, #73b2ad, #5e9e9a);
@@ -360,113 +360,116 @@
       .about-spotlight {
         position: relative;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(22rem, 0.98fr);
+        grid-template-columns: minmax(0, 0.94fr) minmax(24rem, 1.06fr);
         align-items: center;
-        gap: clamp(2rem, 5vw, 6rem);
-        min-height: max(34rem, calc(100svh - var(--header-space)));
-        padding-top: clamp(2.6rem, 6vw, 4.8rem);
-        padding-bottom: clamp(2.4rem, 5vw, 4.6rem);
+        gap: clamp(2.6rem, 6vw, 7rem);
+        min-height: calc(100svh - var(--header-space));
+        padding-top: clamp(3.1rem, 5vw, 4.15rem);
+        padding-bottom: clamp(1.3rem, 3vw, 2.3rem);
       }
 
       .about-spotlight::before {
         content: "";
         position: absolute;
-        inset: 10% 0 auto auto;
-        width: min(48vw, 38rem);
-        height: min(48vw, 38rem);
-        background: radial-gradient(circle, rgba(255, 255, 255, 0.82), transparent 72%);
-        filter: blur(4px);
+        right: 7%;
+        top: 18%;
+        width: min(30vw, 23rem);
+        height: min(30vw, 23rem);
+        background: radial-gradient(circle, rgba(255, 255, 255, 0.46), transparent 72%);
+        filter: blur(3px);
+        opacity: 0.78;
         pointer-events: none;
       }
 
       .about-copy {
-        max-width: 36rem;
+        max-width: 37rem;
       }
 
       .about-copy h2 {
         margin: 0;
-        font-size: clamp(3.3rem, 6vw, 5rem);
-        line-height: 0.97;
+        font-size: clamp(3rem, 5.1vw, 4.55rem);
+        line-height: 0.985;
         letter-spacing: -0.065em;
         font-weight: 500;
       }
 
       .about-divider {
-        width: 3.7rem;
+        width: 3.55rem;
         height: 0.16rem;
-        margin: 1.25rem 0 1.85rem;
+        margin: 1.15rem 0 1.95rem;
         border-radius: 999px;
         background: linear-gradient(90deg, #73b2ad, #5d9f9a);
       }
 
       .about-lead {
         margin: 0;
-        max-width: 16ch;
+        max-width: 27rem;
         color: var(--accent-deep);
-        font-size: clamp(1.7rem, 3vw, 2.65rem);
-        line-height: 1.34;
+        font-size: clamp(1.55rem, 2.65vw, 2.25rem);
+        line-height: 1.38;
         letter-spacing: -0.045em;
         font-weight: 500;
       }
 
       .about-body {
         display: grid;
-        gap: 1.45rem;
-        margin-top: 2.4rem;
+        gap: 1.75rem;
+        margin-top: 2.2rem;
       }
 
       .about-body p {
         margin: 0;
-        max-width: 31rem;
+        max-width: 35rem;
         color: rgba(19, 32, 56, 0.9);
-        font-size: 1.12rem;
-        line-height: 1.7;
+        font-size: 1rem;
+        line-height: 1.72;
       }
 
       .about-signature {
-        width: clamp(15rem, 28vw, 22rem);
-        margin-top: 2.3rem;
+        width: clamp(14.5rem, 23vw, 18.7rem);
+        margin-top: 1.9rem;
       }
 
       .about-visual {
         position: relative;
-        min-height: clamp(31rem, 50vw, 44rem);
+        min-height: clamp(29rem, 44vw, 39rem);
       }
 
       .about-visual::before {
         content: "";
         position: absolute;
-        left: 14%;
-        right: 6%;
-        bottom: 4%;
-        height: 1.35rem;
+        left: 7%;
+        right: -4%;
+        bottom: 5.5%;
+        height: 1rem;
         border-radius: 999px;
         background: radial-gradient(
           ellipse at center,
-          rgba(166, 144, 111, 0.24) 0%,
-          rgba(166, 144, 111, 0.12) 36%,
-          rgba(166, 144, 111, 0.02) 70%,
+          rgba(166, 144, 111, 0.22) 0%,
+          rgba(166, 144, 111, 0.12) 34%,
+          rgba(166, 144, 111, 0.04) 62%,
           transparent 100%
         );
-        filter: blur(4px);
+        filter: blur(6px);
       }
 
       .about-visual::after {
         content: "";
         position: absolute;
-        left: 16%;
-        top: 29%;
-        width: clamp(14rem, 26vw, 23rem);
+        left: 9%;
+        top: 34%;
+        width: clamp(13rem, 23vw, 19rem);
         aspect-ratio: 0.9;
         border-radius: 42% 46% 52% 38% / 48% 44% 56% 52%;
         background: radial-gradient(
-          circle at 40% 38%,
-          rgba(255, 255, 255, 0.96),
-          rgba(245, 241, 233, 0.92) 54%,
-          rgba(240, 235, 227, 0.76) 78%,
-          rgba(240, 235, 227, 0.1) 100%
+          circle at 42% 38%,
+          rgba(255, 255, 255, 0.98),
+          rgba(247, 243, 236, 0.95) 52%,
+          rgba(242, 238, 231, 0.84) 74%,
+          rgba(242, 238, 231, 0.18) 100%
         );
         transform: rotate(-28deg);
+        opacity: 0.88;
       }
 
       .about-outline,
@@ -478,18 +481,18 @@
       }
 
       .about-outline {
-        left: -6%;
-        top: 2%;
-        width: clamp(28rem, 58vw, 48rem);
-        opacity: 0.86;
+        left: 1%;
+        top: 7%;
+        width: clamp(28rem, 49vw, 43rem);
+        opacity: 0.88;
         filter: saturate(0.94) contrast(0.99);
       }
 
       .about-vase {
-        right: 2%;
-        bottom: 1%;
-        width: clamp(19rem, 34vw, 31rem);
-        filter: saturate(0.95) contrast(0.985) drop-shadow(0 26px 34px rgba(145, 122, 88, 0.18));
+        right: 1%;
+        bottom: 0.8%;
+        width: clamp(20rem, 29vw, 26rem);
+        filter: saturate(0.95) contrast(0.985) drop-shadow(0 18px 26px rgba(145, 122, 88, 0.14));
       }
 
       .section {
@@ -578,6 +581,100 @@
         margin: 0.6rem 0 0;
         color: var(--muted);
         line-height: 1.6;
+      }
+
+      @media (max-width: 1200px) {
+        .site-header {
+          padding-top: 0.68rem;
+          padding-bottom: 0.76rem;
+        }
+
+        .brand img {
+          width: clamp(10.6rem, 15.8vw, 13.3rem);
+        }
+
+        .nav {
+          gap: 1.35rem;
+        }
+
+        .nav .nav-cta {
+          min-height: 2.7rem;
+          padding: 0.72rem 1.42rem;
+        }
+
+        .about-spotlight {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1.04fr);
+          gap: clamp(1.4rem, 2.2vw, 2.3rem);
+          min-height: calc(100svh - var(--header-space) + 6rem);
+          padding-top: 4.05rem;
+          padding-bottom: 3.35rem;
+        }
+
+        .about-copy {
+          max-width: 32rem;
+        }
+
+        .about-copy h2 {
+          font-size: clamp(3.35rem, 5.15vw, 4.35rem);
+        }
+
+        .about-divider {
+          margin: 1.2rem 0 1.95rem;
+        }
+
+        .about-lead {
+          max-width: 30.5rem;
+          font-size: clamp(1.6rem, 2.15vw, 2rem);
+          line-height: 1.34;
+        }
+
+        .about-body {
+          margin-top: 2.35rem;
+          gap: 1.85rem;
+        }
+
+        .about-body p {
+          max-width: 31.5rem;
+          font-size: 1.03rem;
+          line-height: 1.74;
+        }
+
+        .about-signature {
+          width: 15.7rem;
+          margin-top: 2.05rem;
+        }
+
+        .about-visual {
+          min-height: 35rem;
+        }
+
+        .about-visual::before {
+          left: 10%;
+          right: -1%;
+          bottom: 7.3%;
+          height: 1.2rem;
+          filter: blur(7px);
+        }
+
+        .about-visual::after {
+          left: 13%;
+          top: 37%;
+          width: clamp(17rem, 30vw, 22.5rem);
+          opacity: 0.86;
+        }
+
+        .about-outline {
+          left: 4%;
+          top: 2%;
+          width: clamp(33.5rem, 58vw, 42rem);
+        }
+
+        .about-vase {
+          right: 0;
+          bottom: 0.4%;
+          width: clamp(24rem, 36.5vw, 27.75rem);
+          filter: saturate(0.95) contrast(0.985) drop-shadow(0 20px 28px rgba(145, 122, 88, 0.16));
+        }
       }
 
       @media (max-width: 980px) {
