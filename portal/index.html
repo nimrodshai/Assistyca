@@ -348,12 +348,19 @@
 
             <label class="field">
               <span>Watch list</span>
-              <textarea
-                id="monitorWatchItems"
-                rows="6"
-                placeholder="Criminal defense law conferences&#10;Court holidays&#10;Registration deadlines for legal events"
-              ></textarea>
-              <small class="field-help">Add one thing per line so the monitor knows exactly what to look for and float up.</small>
+              <div id="monitorWatchItemsEditor" class="monitor-watch-editor">
+                <div id="monitorWatchItemsList" class="monitor-watch-list" role="list"></div>
+                <div class="monitor-watch-input-row">
+                  <input
+                    id="monitorWatchItemInput"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="Add one thing to check"
+                  />
+                  <button id="monitorWatchItemAddButton" class="ghost-button small" type="button">Add</button>
+                </div>
+              </div>
+              <small class="field-help">Add one thing at a time. They’ll show up as badges you can remove.</small>
             </label>
           </article>
 
