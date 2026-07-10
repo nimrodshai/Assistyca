@@ -384,7 +384,7 @@
             </div>
 
             <div class="monitor-settings-grid">
-              <label class="field compact">
+              <label class="field compact monitor-delivery-channel-field">
                 <span>Channel</span>
                 <select id="monitorDeliveryChannel">
                   <option value="email">Email</option>
@@ -396,21 +396,15 @@
               <div class="monitor-delivery-detail">
                 <div id="monitorEmailField" class="field compact monitor-delivery-panel is-active" aria-hidden="false">
                   <span>Email delivery</span>
-                  <div class="monitor-delivery-card">
-                    <div class="monitor-delivery-card-head">
-                      <span class="monitor-delivery-chip">Workspace inbox</span>
-                      <span class="monitor-delivery-tag">Active</span>
-                    </div>
-                    <p id="monitorEmailSummary" class="monitor-delivery-target">Workspace account email</p>
+                  <div class="monitor-delivery-surface">
+                    <p class="monitor-delivery-caption">Alerts will go to</p>
+                    <p id="monitorEmailSummary" class="monitor-delivery-value">Workspace account email</p>
                   </div>
                 </div>
 
                 <label id="monitorTelegramField" class="field compact monitor-delivery-panel" aria-hidden="true">
                   <span>Telegram chat id</span>
-                  <div class="monitor-delivery-card monitor-delivery-card-form">
-                    <div class="monitor-delivery-card-head">
-                      <span class="monitor-delivery-chip">Bot destination</span>
-                    </div>
+                  <div class="monitor-delivery-surface monitor-delivery-surface-form">
                     <input id="monitorTelegramChatId" type="text" autocomplete="off" placeholder="123456789" disabled />
                     <small class="field-help">Paste the chat id that our bot should deliver alerts into.</small>
                   </div>
@@ -418,13 +412,12 @@
 
                 <div id="monitorWhatsAppField" class="field compact monitor-delivery-panel" aria-hidden="true">
                   <span>WhatsApp delivery</span>
-                  <div class="monitor-delivery-card">
-                    <div class="monitor-delivery-card-head">
-                      <span class="monitor-delivery-chip">Connected line</span>
-                      <span class="monitor-delivery-tag">Workspace</span>
+                  <div class="monitor-delivery-surface">
+                    <p class="monitor-delivery-caption">Using the connected workspace number</p>
+                    <div class="monitor-delivery-inline">
+                      <p class="monitor-delivery-value">WhatsApp on file</p>
+                      <button id="monitorWhatsAppSetupButton" class="ghost-button small monitor-delivery-link" type="button" disabled>Open setup</button>
                     </div>
-                    <p class="monitor-delivery-target">WhatsApp alerts use the saved workspace number.</p>
-                    <button id="monitorWhatsAppSetupButton" class="ghost-button small monitor-delivery-inline-action" type="button" disabled>Open WhatsApp setup</button>
                   </div>
                 </div>
               </div>
