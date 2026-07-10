@@ -46,7 +46,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertEqual(final_url, f"{self.base_url}/about")
         self.assertIn("Assistyca | Nimrod Shai", body)
         self.assertIn("AI Agents &amp; Automations", body)
-        self.assertIn("I’ve been programming since", body)
+        self.assertIn("I build smart systems", body)
+        self.assertIn("With a background in technology and a passion for", body)
 
 
 if __name__ == "__main__":
