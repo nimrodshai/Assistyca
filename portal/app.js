@@ -6353,13 +6353,16 @@ function updateFeatureStudioHeader() {
 
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.textContent = activationBusy
-      ? isActivated
-        ? "Saving details..."
-        : "Saving setup..."
-      : isActivated
-        ? "Save details"
-        : "Save setup";
+    setButtonLabel(
+      elements.featureStudioActivationButton,
+      activationBusy
+        ? isActivated
+          ? "Saving details..."
+          : "Saving setup..."
+        : isActivated
+          ? "Save details"
+          : "Save setup",
+    );
     elements.featureStudioActivationButton.disabled = activationBusy || !hasActivationChanges;
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
@@ -6376,20 +6379,31 @@ function updateFeatureStudioHeader() {
   }
   const isEditorSetup = usesEditorSetup(feature);
   if (elements.featureStudioEditorToggleButton) {
-    elements.featureStudioEditorToggleButton.textContent = transitionBusy
-      ? featureActivationTransitionAction === "deactivate"
-        ? "Turning off..."
-        : "Activating..."
-      : isActivated
-        ? "Deactivate tool"
-        : isEditorSetup && !isSetupComplete
-          ? "Finish setup"
-        : isSetupComplete
-          ? "Activate tool"
-          : hasFeatureWhatsAppDetails(feature)
-            ? "Finish WhatsApp setup"
-            : "Start WhatsApp setup";
-    elements.featureStudioEditorToggleButton.className = isActivated ? "ghost-button danger" : "primary-button";
+    setButtonLabel(
+      elements.featureStudioEditorToggleButton,
+      transitionBusy
+        ? featureActivationTransitionAction === "deactivate"
+          ? "Turning off..."
+          : "Activating..."
+        : isActivated
+          ? "Deactivate tool"
+          : isEditorSetup && !isSetupComplete
+            ? "Finish setup"
+            : isSetupComplete
+              ? "Activate tool"
+              : hasFeatureWhatsAppDetails(feature)
+                ? "Finish WhatsApp setup"
+                : "Start WhatsApp setup",
+    );
+
+    const editorToggleClasses = [isActivated ? "ghost-button" : "primary-button"];
+    if (isActivated) {
+      editorToggleClasses.push("danger");
+    }
+    if (isMonitorFeature(feature)) {
+      editorToggleClasses.push("monitor-activate-button");
+    }
+    elements.featureStudioEditorToggleButton.className = editorToggleClasses.join(" ");
     elements.featureStudioEditorToggleButton.disabled = transitionBusy;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
   }
@@ -6405,6 +6419,20 @@ function updatePromptFields() {
   elements.businessNotes.value = prompt.businessNotes;
   elements.escalationGuidance.value = prompt.escalationGuidance;
   elements.exampleReplies.value = prompt.exampleReplies;
+}
+
+function setButtonLabel(button, text) {
+  if (!button) {
+    return;
+  }
+
+  const label = button.querySelector("[data-button-label]");
+  if (label) {
+    label.textContent = text;
+    return;
+  }
+
+  button.textContent = text;
 }
 
 function setMonitorDeliveryPanelState(panel, isActive) {
