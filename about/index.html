@@ -548,29 +548,16 @@
       }
 
       .service-card-icon {
-        width: 7.1rem;
-        height: 7.1rem;
-        border-radius: 999px;
+        width: 7.35rem;
+        height: 7.35rem;
         display: grid;
         place-items: center;
-        color: var(--accent-deep);
-        background: radial-gradient(
-          circle at 30% 28%,
-          rgba(255, 255, 255, 0.98),
-          rgba(242, 245, 240, 0.96) 60%,
-          rgba(232, 238, 232, 0.9) 100%
-        );
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
       }
 
-      .service-card-icon svg {
-        width: 3.35rem;
-        height: 3.35rem;
-        stroke: currentColor;
-        fill: none;
-        stroke-width: 1.8;
-        stroke-linecap: round;
-        stroke-linejoin: round;
+      .service-card-icon img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
       }
 
       .service-card-number {
@@ -1216,11 +1203,7 @@
           <div class="services-cards">
             <article class="service-card">
               <div class="service-card-icon" aria-hidden="true">
-                <svg viewBox="0 0 64 64" role="presentation">
-                  <circle cx="27" cy="27" r="18"></circle>
-                  <path d="M39.8 39.8 52 52"></path>
-                  <path d="M35 15.5a13.8 13.8 0 0 1 6.3 11.8"></path>
-                </svg>
+                <img src="../assets/services-process-automation.png" alt="" />
               </div>
               <div class="service-card-number">01</div>
               <h3>Process Automation</h3>
@@ -1233,17 +1216,7 @@
 
             <article class="service-card">
               <div class="service-card-icon" aria-hidden="true">
-                <svg viewBox="0 0 64 64" role="presentation">
-                  <rect x="16" y="18" width="32" height="26" rx="8"></rect>
-                  <path d="M26 14v4"></path>
-                  <path d="M38 14v4"></path>
-                  <path d="M32 44v6"></path>
-                  <circle cx="25" cy="31" r="2"></circle>
-                  <circle cx="39" cy="31" r="2"></circle>
-                  <path d="M24 38c2.6-2 5.4-3 8-3s5.4 1 8 3"></path>
-                  <path d="M16 31h-5"></path>
-                  <path d="M53 31h-5"></path>
-                </svg>
+                <img src="../assets/services-ai-agents.png" alt="" />
               </div>
               <div class="service-card-number">02</div>
               <h3>AI Agents</h3>
@@ -1256,14 +1229,7 @@
 
             <article class="service-card">
               <div class="service-card-icon" aria-hidden="true">
-                <svg viewBox="0 0 64 64" role="presentation">
-                  <path d="M12 48h40"></path>
-                  <rect x="16" y="33" width="8" height="15"></rect>
-                  <rect x="29" y="27" width="8" height="21"></rect>
-                  <rect x="42" y="19" width="8" height="29"></rect>
-                  <path d="m34 18 8-8 6 1"></path>
-                  <path d="M50 11v10"></path>
-                </svg>
+                <img src="../assets/services-optimization-growth.png" alt="" />
               </div>
               <div class="service-card-number">03</div>
               <h3>Optimization &amp; Growth</h3>
