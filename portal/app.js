@@ -425,6 +425,8 @@ let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
 let featureActivationTransitionAction = "";
+let monitorManualRunBusy = false;
+let monitorManualRunTargetId = "";
 let featureConfigBusy = false;
 let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
@@ -464,6 +466,7 @@ const elements = {
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
+  featureStudioMonitorRunButton: document.querySelector("#featureStudioMonitorRunButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
   featureStudioPitch: document.querySelector("#featureStudioPitch"),
@@ -2498,6 +2501,14 @@ function hasFeatureConfigChanges(feature = getSelectedFeature()) {
 
 function isFeatureActivationBusy(feature = getSelectedFeature()) {
   return Boolean(featureActivationBusy && getSelectedFeatureStudioView(feature) === "activation");
+}
+
+function isMonitorManualRunBusy(feature = getSelectedFeature()) {
+  return Boolean(
+    monitorManualRunBusy
+    && feature
+    && feature.id === monitorManualRunTargetId,
+  );
 }
 
 function formatFeatureActivationFieldLabel(key) {
@@ -6016,6 +6027,85 @@ function openPaymentCheckout(checkoutUrl) {
   return true;
 }
 
+async function runSelectedMonitorNow() {
+  if (monitorManualRunBusy) {
+    return;
+  }
+
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature) || !isFeatureActivated(feature)) {
+    return;
+  }
+
+  if (hasPendingFeatureConfigAutosave(feature.id) || hasFeatureConfigChanges(feature) || featureConfigBusy) {
+    try {
+      await flushSelectedFeatureConfigAutosave({
+        featureId: feature.id,
+        alertOnError: true,
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+        statusMessage: "Saving settings before running...",
+      });
+    } catch {
+      return;
+    }
+  }
+
+  monitorManualRunBusy = true;
+  monitorManualRunTargetId = feature.id;
+  try {
+    updateFeatureStudioHeader();
+    setStatus("Running the manual monitor check...");
+    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {},
+      timeoutMs: 90000,
+    });
+
+    setStatus(String(response.message || "Manual run finished."));
+  } catch (error) {
+    const payload = error?.payload || {};
+    if (payload.error === "setup_required") {
+      const setupStatus = payload.setupStatus || {};
+      const issues = Array.isArray(setupStatus.issues) ? setupStatus.issues : [];
+      const firstIssue = issues[0] || {};
+      const message = String(
+        payload.message
+        || setupStatus.message
+        || firstIssue.message
+        || "Finish the monitor settings before running this manually.",
+      ).trim();
+      openFeatureActivationAlert(
+        "Finish setup first",
+        message,
+        {
+          eyebrow: "One thing left",
+          returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+        },
+      );
+      window.requestAnimationFrame(() => {
+        getMonitorFieldElement(firstIssue.field)?.focus();
+      });
+      setStatus(message);
+      return;
+    }
+
+    openFeatureActivationAlert(
+      "Couldn’t run the monitor",
+      formatApiErrorMessage(error, "We couldn’t run the manual monitor right now."),
+      {
+        eyebrow: "Try again",
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Couldn’t run the manual monitor.");
+  } finally {
+    monitorManualRunBusy = false;
+    monitorManualRunTargetId = "";
+    updateFeatureStudioHeader();
+  }
+}
+
 async function toggleSelectedFeatureEditorActivation() {
   if (featureActivationTransitionBusy) {
     return;
@@ -6264,6 +6354,7 @@ function updateFeatureStudioHeader() {
   const studioView = getSelectedFeatureStudioView(feature);
   const activationBusy = isFeatureActivationBusy(feature);
   const transitionBusy = isFeatureActivationTransitionBusy(feature);
+  const manualRunBusy = isMonitorManualRunBusy(feature);
   const hasActivationChanges = hasFeatureActivationChanges(feature);
 
   state.featureStudioView = studioView;
@@ -6386,12 +6477,19 @@ function updateFeatureStudioHeader() {
           ? "Finish setup"
         : isSetupComplete
           ? "Activate tool"
-          : hasFeatureWhatsAppDetails(feature)
+        : hasFeatureWhatsAppDetails(feature)
             ? "Finish WhatsApp setup"
             : "Start WhatsApp setup";
     elements.featureStudioEditorToggleButton.className = isActivated ? "ghost-button danger" : "primary-button";
-    elements.featureStudioEditorToggleButton.disabled = transitionBusy;
+    elements.featureStudioEditorToggleButton.disabled = transitionBusy || manualRunBusy;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
+  }
+  if (elements.featureStudioMonitorRunButton) {
+    const showManualRun = isMonitorFeature(feature) && isActivated;
+    elements.featureStudioMonitorRunButton.hidden = !showManualRun;
+    elements.featureStudioMonitorRunButton.textContent = manualRunBusy ? "Running..." : "Run now";
+    elements.featureStudioMonitorRunButton.disabled = !showManualRun || transitionBusy || manualRunBusy;
+    elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
   }
 
   buildFeatureStudioMenu(feature);
@@ -7582,6 +7680,11 @@ function bindEvents() {
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.addEventListener("click", () => {
       void toggleSelectedFeatureEditorActivation();
+    });
+  }
+  if (elements.featureStudioMonitorRunButton) {
+    elements.featureStudioMonitorRunButton.addEventListener("click", () => {
+      void runSelectedMonitorNow();
     });
   }
   if (elements.featureStudioMenuButton) {

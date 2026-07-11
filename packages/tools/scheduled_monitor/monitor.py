@@ -423,6 +423,52 @@ class ScheduledMonitorScheduler:
         self.database = database
         self.config = config or load_scheduled_monitor_config()
 
+    def _normalize_now(self, now: datetime | None = None) -> datetime:
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        return current_time.astimezone(timezone.utc)
+
+    def _build_target_for_email(self, email: str) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return None
+
+        feature = self.database.get_assigned_feature(normalized_email, MONITOR_FEATURE_ID)
+        if feature is None:
+            return None
+
+        activation = self.database.get_feature_activation(normalized_email, MONITOR_FEATURE_ID) or {}
+        assignment = feature.get("assignment") if isinstance(feature.get("assignment"), dict) else {}
+        assignment_metadata = assignment.get("metadata") if isinstance(assignment.get("metadata"), dict) else {}
+        saved_prompt = assignment_metadata.get("prompt") if isinstance(assignment_metadata.get("prompt"), dict) else {}
+        saved_settings = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
+        default_prompt = feature.get("prompt") if isinstance(feature.get("prompt"), dict) else {}
+        whatsapp_connection = self.database.get_whatsapp_connection(normalized_email) or {}
+        user = self.database.get_user(normalized_email) or {}
+
+        return {
+            "userId": int(activation.get("userId") or user.get("id") or 0),
+            "email": normalized_email,
+            "displayName": normalize_text(user.get("displayName")),
+            "featureId": MONITOR_FEATURE_ID,
+            "prompt": {
+                **default_prompt,
+                **saved_prompt,
+            },
+            "settings": saved_settings if isinstance(saved_settings, dict) else {},
+            "activatedAt": activation.get("activatedAt"),
+            "activationUpdatedAt": activation.get("updatedAt"),
+            "activationMetadata": activation.get("metadata") if isinstance(activation.get("metadata"), dict) else {},
+            "phoneNumberId": normalize_text(whatsapp_connection.get("phoneNumberId")),
+            "ownerWaId": normalize_text(whatsapp_connection.get("ownerWaId")),
+            "whatsappConnection": {
+                "phoneNumberId": normalize_text(whatsapp_connection.get("phoneNumberId")),
+                "ownerWaId": normalize_text(whatsapp_connection.get("ownerWaId")),
+                "connectionStatus": normalize_text(whatsapp_connection.get("connectionStatus")),
+            },
+        }
+
     def _run_search(
         self,
         *,
@@ -522,56 +568,14 @@ class ScheduledMonitorScheduler:
 
         return len(items), delivery_target, delivery_message_id
 
-    def _process_target(self, *, target: dict[str, Any], now: datetime) -> dict[str, Any]:
-        settings = normalize_monitor_settings(target.get("settings"))
-        setup_status = build_monitor_setup_status(
-            settings,
-            user_email=normalize_email(target.get("email")),
-            whatsapp_connection=target.get("whatsappConnection"),
-        )
-        if not setup_status["ready"]:
-            return {
-                "userId": int(target.get("userId") or 0),
-                "email": normalize_email(target.get("email")),
-                "status": "skipped",
-                "reason": setup_status["message"],
-                "notificationsSent": 0,
-            }
-
-        last_run = self.database.get_latest_feature_monitor_run(
-            user_id=int(target.get("userId") or 0),
-            feature_id=MONITOR_FEATURE_ID,
-        )
-        scheduled_for = resolve_due_monitor_slot(
-            now=now,
-            settings=settings,
-            activated_at=normalize_text(target.get("activatedAt") or target.get("activationUpdatedAt")),
-            last_scheduled_for=normalize_text(last_run.get("scheduledFor")) if last_run else "",
-        )
-        if scheduled_for is None:
-            return {
-                "userId": int(target.get("userId") or 0),
-                "email": normalize_email(target.get("email")),
-                "status": "skipped",
-                "reason": "not_due",
-                "notificationsSent": 0,
-            }
-
-        existing_run = self.database.get_feature_monitor_run(
-            user_id=int(target.get("userId") or 0),
-            feature_id=MONITOR_FEATURE_ID,
-            scheduled_for=scheduled_for,
-        )
-        if existing_run is not None:
-            return {
-                "userId": int(target.get("userId") or 0),
-                "email": normalize_email(target.get("email")),
-                "status": "skipped",
-                "reason": "already_ran",
-                "scheduledFor": scheduled_for.isoformat(),
-                "notificationsSent": 0,
-            }
-
+    def _execute_target(
+        self,
+        *,
+        target: dict[str, Any],
+        settings: dict[str, Any],
+        scheduled_for: datetime,
+        persist_run: bool,
+    ) -> dict[str, Any]:
         summary, items, search_metadata = self._run_search(
             target=target,
             settings=settings,
@@ -632,24 +636,39 @@ class ScheduledMonitorScheduler:
         elif items and not new_items:
             status = "duplicate_matches"
 
-        run_record = self.database.save_feature_monitor_run(
-            user_id=int(target.get("userId") or 0),
-            feature_id=MONITOR_FEATURE_ID,
-            scheduled_for=scheduled_for,
-            findings_count=len(items),
-            notifications_sent=notifications_sent,
-            status=status,
-            metadata={
-                "summary": summary,
-                "items": items,
-                "newItemIds": [normalize_text(item.get("id")) for item in new_items],
-                "watchItems": settings.get("watchItems"),
-                "intervalDays": settings.get("intervalDays"),
-                "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
-                "deliveryTarget": delivery_target,
-                **search_metadata,
-            },
-        )
+        run_metadata = {
+            "summary": summary,
+            "items": items,
+            "newItemIds": [normalize_text(item.get("id")) for item in new_items],
+            "watchItems": settings.get("watchItems"),
+            "intervalDays": settings.get("intervalDays"),
+            "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
+            "deliveryTarget": delivery_target,
+            **search_metadata,
+        }
+        if persist_run:
+            run_record = self.database.save_feature_monitor_run(
+                user_id=int(target.get("userId") or 0),
+                feature_id=MONITOR_FEATURE_ID,
+                scheduled_for=scheduled_for,
+                findings_count=len(items),
+                notifications_sent=notifications_sent,
+                status=status,
+                metadata=run_metadata,
+            )
+        else:
+            run_record = {
+                "id": 0,
+                "userId": int(target.get("userId") or 0),
+                "featureId": MONITOR_FEATURE_ID,
+                "scheduledFor": scheduled_for.isoformat(),
+                "findingsCount": len(items),
+                "notificationsSent": notifications_sent,
+                "status": status,
+                "metadata": run_metadata,
+                "createdAt": scheduled_for.isoformat(),
+                "updatedAt": scheduled_for.isoformat(),
+            }
         return {
             "userId": int(target.get("userId") or 0),
             "email": normalize_email(target.get("email")),
@@ -660,14 +679,68 @@ class ScheduledMonitorScheduler:
             "run": run_record,
         }
 
+    def _process_target(self, *, target: dict[str, Any], now: datetime) -> dict[str, Any]:
+        settings = normalize_monitor_settings(target.get("settings"))
+        setup_status = build_monitor_setup_status(
+            settings,
+            user_email=normalize_email(target.get("email")),
+            whatsapp_connection=target.get("whatsappConnection"),
+        )
+        if not setup_status["ready"]:
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": "skipped",
+                "reason": setup_status["message"],
+                "notificationsSent": 0,
+            }
+
+        last_run = self.database.get_latest_feature_monitor_run(
+            user_id=int(target.get("userId") or 0),
+            feature_id=MONITOR_FEATURE_ID,
+        )
+        scheduled_for = resolve_due_monitor_slot(
+            now=now,
+            settings=settings,
+            activated_at=normalize_text(target.get("activatedAt") or target.get("activationUpdatedAt")),
+            last_scheduled_for=normalize_text(last_run.get("scheduledFor")) if last_run else "",
+        )
+        if scheduled_for is None:
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": "skipped",
+                "reason": "not_due",
+                "notificationsSent": 0,
+            }
+
+        existing_run = self.database.get_feature_monitor_run(
+            user_id=int(target.get("userId") or 0),
+            feature_id=MONITOR_FEATURE_ID,
+            scheduled_for=scheduled_for,
+        )
+        if existing_run is not None:
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": "skipped",
+                "reason": "already_ran",
+                "scheduledFor": scheduled_for.isoformat(),
+                "notificationsSent": 0,
+            }
+
+        return self._execute_target(
+            target=target,
+            settings=settings,
+            scheduled_for=scheduled_for,
+            persist_run=True,
+        )
+
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         if not self.config.enabled:
             return {"ok": True, "ran": False, "reason": "disabled"}
 
-        current_time = now or datetime.now(timezone.utc)
-        if current_time.tzinfo is None:
-            current_time = current_time.replace(tzinfo=timezone.utc)
-        current_time = current_time.astimezone(timezone.utc)
+        current_time = self._normalize_now(now)
 
         targets = self.database.list_active_feature_monitor_targets(MONITOR_FEATURE_ID)
         runs = [self._process_target(target=target, now=current_time) for target in targets]
@@ -677,6 +750,71 @@ class ScheduledMonitorScheduler:
             "ran": bool(completed_runs),
             "targets": len(targets),
             "runs": runs,
+        }
+
+    def run_for_email(self, email: str, *, now: datetime | None = None) -> dict[str, Any]:
+        if not self.config.enabled:
+            return {
+                "ok": False,
+                "error": "disabled",
+                "message": "Scheduled web monitor is not enabled on the backend right now.",
+            }
+
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return {
+                "ok": False,
+                "error": "invalid_email",
+                "message": "A valid email is required.",
+            }
+
+        feature = self.database.get_assigned_feature(normalized_email, MONITOR_FEATURE_ID)
+        if feature is None:
+            return {
+                "ok": False,
+                "error": "feature_not_available",
+                "message": "This tool is not available for this account.",
+            }
+
+        activation = self.database.get_feature_activation(normalized_email, MONITOR_FEATURE_ID) or {}
+        if not bool(activation.get("isActive")):
+            return {
+                "ok": False,
+                "error": "activation_required",
+                "message": "Activate the tool before running it manually.",
+            }
+
+        target = self._build_target_for_email(normalized_email)
+        if target is None:
+            return {
+                "ok": False,
+                "error": "feature_not_available",
+                "message": "This tool is not available for this account.",
+            }
+
+        settings = normalize_monitor_settings(target.get("settings"))
+        setup_status = build_monitor_setup_status(
+            settings,
+            user_email=normalized_email,
+            whatsapp_connection=target.get("whatsappConnection"),
+        )
+        if not setup_status["ready"]:
+            return {
+                "ok": False,
+                "error": "setup_required",
+                "message": setup_status["message"],
+                "setupStatus": setup_status,
+            }
+
+        run = self._execute_target(
+            target=target,
+            settings=settings,
+            scheduled_for=self._normalize_now(now),
+            persist_run=False,
+        )
+        return {
+            "ok": True,
+            "run": run,
         }
 
     def serve_forever(self, stop_event: Any, *, log: Any | None = None) -> None:
