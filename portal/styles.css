@@ -2941,6 +2941,7 @@ body[data-modal="billing"] .app-shell {
 
 .editor-activation-card {
   gap: 0.9rem;
+  margin-bottom: 50px;
   background:
     linear-gradient(145deg, rgba(15, 118, 110, 0.08), rgba(30, 136, 229, 0.04)),
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 253, 0.92));

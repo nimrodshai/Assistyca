@@ -15,6 +15,7 @@ migrateLegacyStorage();
 const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
+const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
 const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
 const TAB_ALIASES = new Map([
@@ -422,6 +423,8 @@ let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
 let featureActivationTransitionAction = "";
 let featureConfigBusy = false;
+let featureConfigSavePromise = null;
+const featureConfigAutosaveTimers = new Map();
 
 const elements = {
   authView: document.querySelector("#authView"),
@@ -458,7 +461,6 @@ const elements = {
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorActivationText: document.querySelector("#featureStudioEditorActivationText"),
-  featureStudioEditorSaveButton: document.querySelector("#featureStudioEditorSaveButton"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
@@ -2049,66 +2051,153 @@ async function refreshFeatureActivationStates(options = {}) {
   return response;
 }
 
-async function saveSelectedFeatureConfig(options = {}) {
-  if (featureConfigBusy) {
+function clearFeatureConfigAutosaveTimer(featureId) {
+  const normalizedFeatureId = String(featureId || "").trim();
+  if (!normalizedFeatureId) {
+    return;
+  }
+
+  const timerId = featureConfigAutosaveTimers.get(normalizedFeatureId);
+  if (timerId) {
+    window.clearTimeout(timerId);
+    featureConfigAutosaveTimers.delete(normalizedFeatureId);
+  }
+}
+
+function clearAllFeatureConfigAutosaves() {
+  for (const timerId of featureConfigAutosaveTimers.values()) {
+    window.clearTimeout(timerId);
+  }
+  featureConfigAutosaveTimers.clear();
+}
+
+function hasPendingFeatureConfigAutosave(featureId = state.selectedFeatureId) {
+  const normalizedFeatureId = String(featureId || "").trim();
+  return normalizedFeatureId ? featureConfigAutosaveTimers.has(normalizedFeatureId) : false;
+}
+
+function getFeatureConfigReturnFocus() {
+  return elements.featureStudioEditorToggleButton || elements.featureStudioActivationButton || null;
+}
+
+function scheduleSelectedFeatureConfigAutosave(feature = getSelectedFeature(), options = {}) {
+  const featureId = String(feature?.id || "").trim();
+  if (!featureId) {
+    return;
+  }
+
+  clearFeatureConfigAutosaveTimer(featureId);
+  const delayMs = Number.isFinite(options.delayMs)
+    ? Math.max(0, Number(options.delayMs))
+    : FEATURE_CONFIG_AUTOSAVE_DELAY_MS;
+  if (options.status !== false) {
+    setStatus("Saving changes...");
+  }
+
+  const timerId = window.setTimeout(() => {
+    featureConfigAutosaveTimers.delete(featureId);
+    void flushSelectedFeatureConfigAutosave({
+      featureId,
+      render: view === "app" && state.selectedFeatureId === featureId,
+      alertOnError: false,
+    }).catch(() => {});
+  }, delayMs);
+  featureConfigAutosaveTimers.set(featureId, timerId);
+}
+
+async function flushSelectedFeatureConfigAutosave(options = {}) {
+  const featureId = String(options.featureId || state.selectedFeatureId || "").trim();
+  if (!featureId) {
     return null;
   }
 
-  const feature = getSelectedFeature();
+  clearFeatureConfigAutosaveTimer(featureId);
+  return saveSelectedFeatureConfig({
+    featureId,
+    render: options.render !== false && view === "app" && state.selectedFeatureId === featureId,
+    alertOnError: options.alertOnError === true,
+    returnFocus: options.returnFocus || getFeatureConfigReturnFocus(),
+    statusMessage: options.statusMessage || "Saving changes...",
+    noChangesMessage: options.noChangesMessage || "Saved",
+  });
+}
+
+async function saveSelectedFeatureConfig(options = {}) {
+  if (featureConfigBusy && featureConfigSavePromise) {
+    try {
+      await featureConfigSavePromise;
+    } catch {
+      // Let the next save attempt continue so autosave can retry with the latest data.
+    }
+  }
+
+  const featureId = String(options.featureId || getSelectedFeature()?.id || "").trim();
+  const feature = featureId ? getFeatureById(featureId) : getSelectedFeature();
+  const shouldRender = options.render !== false && view === "app" && state.selectedFeatureId === featureId;
   if (!feature || !hasFeatureConfigChanges(feature)) {
-    if (options.render !== false && view === "app") {
+    if (shouldRender) {
       renderApp();
     }
-    setStatus("No settings changes to save.");
+    if (options.noChangesMessage !== false) {
+      setStatus(String(options.noChangesMessage || "Saved"));
+    }
     return null;
   }
 
   featureConfigBusy = true;
-  try {
-    if (options.render !== false && view === "app") {
-      renderApp();
-    }
-    setStatus(String(options.statusMessage || "Saving tool settings..."));
-    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
-      method: "POST",
-      headers: getSessionAuthHeaders(),
-      body: {
-        prompt: { ...feature.prompt },
-        settings: { ...feature.settings },
-      },
-    });
-
-    applyServerFeatureStates([response.feature || {}], { persist: true });
-    state.paymentStatus = response.paymentStatus || state.paymentStatus;
-    persistClientState();
-    if (options.render !== false && view === "app") {
-      renderApp();
-    }
-    setStatus(String(response.message || "Tool settings saved."));
-    return response;
-  } catch (error) {
-    if (options.alertOnError !== false) {
-      openFeatureActivationAlert(
-        "Couldn’t save the settings",
-        formatApiErrorMessage(error, "We couldn’t save these tool settings right now."),
-        {
-          eyebrow: "Try again",
-          returnFocus: elements.featureStudioEditorSaveButton,
+  let currentSavePromise = null;
+  currentSavePromise = (async () => {
+    try {
+      if (shouldRender) {
+        renderApp();
+      }
+      setStatus(String(options.statusMessage || "Saving tool settings..."));
+      const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
+        method: "POST",
+        headers: getSessionAuthHeaders(),
+        body: {
+          prompt: { ...feature.prompt },
+          settings: { ...feature.settings },
         },
-      );
+      });
+
+      applyServerFeatureStates([response.feature || {}], { persist: true });
+      state.paymentStatus = response.paymentStatus || state.paymentStatus;
+      persistClientState();
+      if (shouldRender) {
+        renderApp();
+      }
+      setStatus(String(response.message || "Tool settings saved."));
+      return response;
+    } catch (error) {
+      if (options.alertOnError !== false) {
+        openFeatureActivationAlert(
+          "Couldn’t save the settings",
+          formatApiErrorMessage(error, "We couldn’t save these tool settings right now."),
+          {
+            eyebrow: "Try again",
+            returnFocus: options.returnFocus || getFeatureConfigReturnFocus(),
+          },
+        );
+      }
+      if (shouldRender) {
+        renderApp();
+      }
+      setStatus("Couldn’t save the tool settings.");
+      throw error;
+    } finally {
+      featureConfigBusy = false;
+      if (featureConfigSavePromise === currentSavePromise) {
+        featureConfigSavePromise = null;
+      }
+      if (shouldRender) {
+        renderApp();
+      }
+      updateFeatureStudioHeader();
     }
-    if (options.render !== false && view === "app") {
-      renderApp();
-    }
-    setStatus("Couldn’t save the tool settings.");
-    throw error;
-  } finally {
-    featureConfigBusy = false;
-    if (options.render !== false && view === "app") {
-      renderApp();
-    }
-    updateFeatureStudioHeader();
-  }
+  })();
+  featureConfigSavePromise = currentSavePromise;
+  return await currentSavePromise;
 }
 
 async function refreshWhatsAppConnection(options = {}) {
@@ -5884,9 +5973,12 @@ async function toggleSelectedFeatureEditorActivation() {
 
   if (usesEditorSetup(feature)) {
     let configResponse = null;
-    if (hasFeatureConfigChanges(feature)) {
+    if (hasPendingFeatureConfigAutosave(feature.id) || hasFeatureConfigChanges(feature) || featureConfigBusy) {
       try {
-        configResponse = await saveSelectedFeatureConfig({
+        configResponse = await flushSelectedFeatureConfigAutosave({
+          featureId: feature.id,
+          alertOnError: true,
+          returnFocus: elements.featureStudioEditorToggleButton,
           statusMessage: "Saving settings before activation...",
         });
       } catch {
@@ -5909,7 +6001,7 @@ async function toggleSelectedFeatureEditorActivation() {
         message,
         {
           eyebrow: "One thing left",
-          returnFocus: elements.featureStudioEditorSaveButton,
+          returnFocus: elements.featureStudioEditorToggleButton,
         },
       );
       window.requestAnimationFrame(() => {
@@ -5978,7 +6070,7 @@ async function toggleSelectedFeatureEditorActivation() {
           message,
           {
             eyebrow: "One thing left",
-            returnFocus: elements.featureStudioEditorSaveButton,
+            returnFocus: elements.featureStudioEditorToggleButton,
           },
         );
       } else {
@@ -6235,14 +6327,6 @@ function updateFeatureStudioHeader() {
         : hasFeatureWhatsAppDetails(feature)
           ? "Your WhatsApp details are saved, but setup still needs to be completed before you can activate this tool."
           : "Finish WhatsApp setup before turning this tool on.";
-  }
-  if (elements.featureStudioEditorSaveButton) {
-    const saveBusy = Boolean(featureConfigBusy);
-    const hasConfigChanges = hasFeatureConfigChanges(feature);
-    elements.featureStudioEditorSaveButton.textContent = saveBusy ? "Saving settings..." : "Save settings";
-    elements.featureStudioEditorSaveButton.disabled = saveBusy || transitionBusy || !hasConfigChanges;
-    elements.featureStudioEditorSaveButton.classList.toggle("is-loading", saveBusy);
-    elements.featureStudioEditorSaveButton.setAttribute("aria-busy", String(saveBusy));
   }
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.textContent = transitionBusy
@@ -6987,6 +7071,7 @@ async function signOut() {
   resetAdminState();
   persistLastPrimaryTab();
   closeBillingHelp();
+  clearAllFeatureConfigAutosaves();
 
   persistJson(AUTH_SESSION_KEY, null);
   clearHash();
@@ -7008,7 +7093,7 @@ function syncPromptField(key) {
     updateHeader();
     updateFeatureStudioHeader();
     updatePreview();
-    setStatus("Saved");
+    scheduleSelectedFeatureConfigAutosave(feature);
   };
 }
 
@@ -7028,7 +7113,7 @@ function syncMonitorSettingsField(key) {
     updateMonitorFieldVisibility(nextSettings);
     persistClientState();
     updateFeatureStudioHeader();
-    setStatus(hasFeatureConfigChanges(feature) ? "Settings ready to save." : "No settings changes to save.");
+    scheduleSelectedFeatureConfigAutosave(feature);
   };
 }
 
@@ -7096,7 +7181,7 @@ function setMonitorWatchItems(items, options = {}) {
   persistClientState();
   updateMonitorFields();
   updateFeatureStudioHeader();
-  setStatus(hasFeatureConfigChanges(feature) ? "Settings ready to save." : "No settings changes to save.");
+  scheduleSelectedFeatureConfigAutosave(feature);
 
   if (options.focusInput !== false) {
     window.requestAnimationFrame(() => {
@@ -7356,11 +7441,6 @@ function bindEvents() {
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.addEventListener("click", () => {
       void toggleSelectedFeatureEditorActivation();
-    });
-  }
-  if (elements.featureStudioEditorSaveButton) {
-    elements.featureStudioEditorSaveButton.addEventListener("click", () => {
-      void saveSelectedFeatureConfig();
     });
   }
   if (elements.featureStudioMenuButton) {
