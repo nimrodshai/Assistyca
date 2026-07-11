@@ -372,10 +372,17 @@
             </div>
 
             <div class="monitor-settings-grid">
-              <label class="field compact">
-                <span>Check every</span>
-                <input id="monitorIntervalDays" type="number" min="1" max="365" inputmode="numeric" />
-                <small class="field-help">Use days. Examples: 1 for daily, 7 for weekly, 14 for every other week.</small>
+              <label class="field compact monitor-schedule-inline-field">
+                <span class="monitor-schedule-inline-copy">Check every</span>
+                <input
+                  id="monitorIntervalDays"
+                  type="number"
+                  min="1"
+                  max="365"
+                  inputmode="numeric"
+                  aria-label="Check every number of days"
+                />
+                <span class="monitor-schedule-inline-copy">days</span>
               </label>
             </div>
           </article>

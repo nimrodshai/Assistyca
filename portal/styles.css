@@ -2962,6 +2962,35 @@ body[data-modal="billing"] .app-shell {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+#monitorScheduleCard .monitor-settings-grid {
+  grid-template-columns: 1fr;
+}
+
+.monitor-schedule-inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  justify-self: start;
+}
+
+.monitor-schedule-inline-copy {
+  color: var(--muted-strong);
+  font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.monitor-schedule-inline-field input {
+  width: 4.75rem;
+  min-width: 4.75rem;
+  min-height: 3.35rem;
+  padding: 0.72rem 0.5rem;
+  border-radius: 1.15rem;
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
 #monitorDeliveryCard .monitor-settings-grid {
   gap: 0.95rem 1rem;
   grid-template-columns: minmax(14rem, 18rem) minmax(18rem, 1fr);
