@@ -2080,6 +2080,29 @@ function getFeatureConfigReturnFocus() {
   return elements.featureStudioEditorToggleButton || elements.featureStudioActivationButton || null;
 }
 
+function sendFeatureConfigKeepalive(feature = getSelectedFeature()) {
+  if (!isSignedIn() || !feature || !hasFeatureConfigChanges(feature)) {
+    return;
+  }
+
+  try {
+    const headers = new Headers(getSessionAuthHeaders());
+    headers.set("Content-Type", "application/json");
+    void fetch(buildApiUrl(`/api/features/${encodeURIComponent(feature.id)}/config`), {
+      method: "POST",
+      headers,
+      cache: "no-store",
+      keepalive: true,
+      body: JSON.stringify({
+        prompt: { ...feature.prompt },
+        settings: { ...feature.settings },
+      }),
+    });
+  } catch {
+    // Ignore unload-time save failures; the normal autosave path already handles surfaced errors.
+  }
+}
+
 function scheduleSelectedFeatureConfigAutosave(feature = getSelectedFeature(), options = {}) {
   const featureId = String(feature?.id || "").trim();
   if (!featureId) {
@@ -7113,7 +7136,11 @@ function syncMonitorSettingsField(key) {
     updateMonitorFieldVisibility(nextSettings);
     persistClientState();
     updateFeatureStudioHeader();
-    scheduleSelectedFeatureConfigAutosave(feature);
+    void flushSelectedFeatureConfigAutosave({
+      featureId: feature.id,
+      alertOnError: false,
+      noChangesMessage: false,
+    }).catch(() => {});
   };
 }
 
@@ -7181,7 +7208,11 @@ function setMonitorWatchItems(items, options = {}) {
   persistClientState();
   updateMonitorFields();
   updateFeatureStudioHeader();
-  scheduleSelectedFeatureConfigAutosave(feature);
+  void flushSelectedFeatureConfigAutosave({
+    featureId: feature.id,
+    alertOnError: false,
+    noChangesMessage: false,
+  }).catch(() => {});
 
   if (options.focusInput !== false) {
     window.requestAnimationFrame(() => {
@@ -7844,6 +7875,15 @@ function bindEvents() {
 
     if (!route.tab) {
       setHashForTab(state.settingsOpen ? "settings" : state.activeTab);
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    clearAllFeatureConfigAutosaves();
+    for (const feature of clientState.features) {
+      if (hasFeatureConfigChanges(feature)) {
+        sendFeatureConfigKeepalive(feature);
+      }
     }
   });
 
