@@ -75,6 +75,25 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertEqual(features_by_id[MONITOR_FEATURE_ID]["name"], "Scheduled Web Monitor")
         self.assertTrue(features_by_id[FOLLOW_UP_FEATURE_ID]["billing"]["required"])
 
+    def test_bootstrap_paid_emails_mark_billing_features_entitled(self) -> None:
+        paid_database = PortalDatabase(
+            Path(self.temp_dir.name) / "paid.db",
+            bootstrap_paid_emails={"owner@example.com"},
+        )
+        service = FeatureActivationService(paid_database, config=FeatureActivationConfig())
+
+        result = service.list_feature_states("owner@example.com")
+
+        features_by_id = {feature["featureId"]: feature for feature in result["features"]}
+        self.assertTrue(features_by_id[DEFAULT_FEATURE_ID]["paymentStatus"]["isEntitled"])
+        self.assertTrue(features_by_id[FOLLOW_UP_FEATURE_ID]["paymentStatus"]["isEntitled"])
+        self.assertTrue(features_by_id[MONITOR_FEATURE_ID]["paymentStatus"]["isEntitled"])
+
+        billing_customer = paid_database.get_billing_customer("owner@example.com")
+        self.assertIsNotNone(billing_customer)
+        self.assertEqual(billing_customer["subscriptionStatus"], "active")
+        self.assertEqual(billing_customer["metadata"]["source"], "bootstrap_paid_emails")
+
     def test_save_monitor_feature_config_persists_settings_and_marks_setup_ready(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 

@@ -45,10 +45,22 @@ def load_database(path: str | None) -> PortalDatabase:
             if email:
                 bootstrap_admin_emails.add(email)
 
+    bootstrap_paid_emails: set[str] = set()
+    for env_name in ("PORTAL_DB_SEED_PAID_EMAILS", "PORTAL_PAID_EMAILS"):
+        raw = os.getenv(env_name, "")
+        if not raw.strip():
+            continue
+
+        for chunk in re.split(r"[,;\n]+", raw):
+            email = normalize_email(chunk)
+            if email:
+                bootstrap_paid_emails.add(email)
+
     return PortalDatabase(
         db_path,
         bootstrap_registered_emails=bootstrap_emails,
         bootstrap_admin_emails=bootstrap_admin_emails,
+        bootstrap_paid_emails=bootstrap_paid_emails,
     )
 
 

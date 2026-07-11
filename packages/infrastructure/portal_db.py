@@ -22,6 +22,7 @@ DEFAULT_CURRENCY = "USD"
 DEFAULT_MONTHLY_MINIMUM_CENTS = 5000
 DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER = 1.5
+BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS = "active"
 RAW_CENTS_QUANT = Decimal("0.0001")
 USD_QUANT = Decimal("0.01")
 USER_OWNED_TABLES = (
@@ -528,6 +529,7 @@ class PortalDatabase:
         *,
         bootstrap_registered_emails: Iterable[str] = (),
         bootstrap_admin_emails: Iterable[str] = (),
+        bootstrap_paid_emails: Iterable[str] = (),
         default_currency: str = DEFAULT_CURRENCY,
         default_monthly_minimum_cents: int = DEFAULT_MONTHLY_MINIMUM_CENTS,
         default_input_token_price_multiplier: float = DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER,
@@ -546,6 +548,9 @@ class PortalDatabase:
         )
         self.bootstrap_admin_emails = tuple(
             sorted({email for email in (normalize_email(value) for value in bootstrap_admin_emails) if email})
+        )
+        self.bootstrap_paid_emails = tuple(
+            sorted({email for email in (normalize_email(value) for value in bootstrap_paid_emails) if email})
         )
         self._init_lock = threading.Lock()
         self._initialize()
@@ -575,6 +580,8 @@ class PortalDatabase:
                 if self.bootstrap_admin_emails:
                     self._seed_admin_emails(conn, self.bootstrap_admin_emails)
                 self._sync_feature_catalog(conn)
+                if self.bootstrap_paid_emails:
+                    self._seed_paid_emails(conn, self.bootstrap_paid_emails)
                 self._ensure_default_feature_assignments(conn)
 
     def _sync_feature_catalog(self, conn: sqlite3.Connection) -> None:
@@ -750,6 +757,167 @@ class PortalDatabase:
                 effective_from=now,
                 updated_at=now,
             )
+
+    def _seed_paid_emails(self, conn: sqlite3.Connection, emails: Iterable[str]) -> None:
+        feature_rows = conn.execute(
+            """
+            SELECT
+                feature_id,
+                billing_provider,
+                billing_product_id,
+                billing_variant_id
+            FROM features
+            WHERE is_active = 1
+              AND billing_required = 1
+            ORDER BY sort_order ASC, feature_id ASC
+            """
+        ).fetchall()
+        if not feature_rows:
+            return
+
+        now = now_iso()
+        for email in emails:
+            normalized_email = normalize_email(email)
+            if not normalized_email:
+                continue
+
+            user_id = self._upsert_user(
+                conn,
+                normalized_email,
+                registered_at=now,
+                display_name="",
+                is_active=True,
+                notes="",
+                is_admin=False,
+                update_profile=False,
+            )
+            self._ensure_user_billing(
+                conn,
+                user_id,
+                currency=self.default_billing_plan.currency,
+                monthly_minimum_cents=self.default_billing_plan.monthly_minimum_cents,
+                input_token_price_multiplier=self.default_billing_plan.input_token_price_multiplier,
+                output_token_price_multiplier=self.default_billing_plan.output_token_price_multiplier,
+                effective_from=now,
+                updated_at=now,
+            )
+
+            billing_metadata_json = json.dumps(
+                {
+                    "source": "bootstrap_paid_emails",
+                    "seededEmail": normalized_email,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+            existing_billing = conn.execute(
+                "SELECT created_at FROM billing_customers WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            billing_created_at = (
+                existing_billing["created_at"]
+                if existing_billing and existing_billing["created_at"]
+                else now
+            )
+            conn.execute(
+                """
+                INSERT INTO billing_customers (
+                    user_id,
+                    provider,
+                    external_customer_id,
+                    external_subscription_id,
+                    external_subscription_item_id,
+                    subscription_status,
+                    product_id,
+                    variant_id,
+                    checkout_url,
+                    customer_portal_url,
+                    last_checked_at,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, '', '', '', ?, '', '', '', '', ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    subscription_status = excluded.subscription_status,
+                    last_checked_at = excluded.last_checked_at,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    "bootstrap",
+                    BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS,
+                    now,
+                    billing_metadata_json,
+                    billing_created_at,
+                    now,
+                ),
+            )
+
+            for row in feature_rows:
+                feature_id = normalize_text(row["feature_id"])
+                if not feature_id:
+                    continue
+
+                entitlement_metadata_json = json.dumps(
+                    {
+                        "source": "bootstrap_paid_emails",
+                        "seededEmail": normalized_email,
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                )
+                existing_entitlement = conn.execute(
+                    "SELECT created_at FROM feature_entitlements WHERE user_id = ? AND feature_id = ?",
+                    (user_id, feature_id),
+                ).fetchone()
+                entitlement_created_at = (
+                    existing_entitlement["created_at"]
+                    if existing_entitlement and existing_entitlement["created_at"]
+                    else now
+                )
+                conn.execute(
+                    """
+                    INSERT INTO feature_entitlements (
+                        user_id,
+                        feature_id,
+                        provider,
+                        external_customer_id,
+                        external_subscription_id,
+                        external_subscription_item_id,
+                        entitlement_status,
+                        product_id,
+                        variant_id,
+                        checkout_url,
+                        customer_portal_url,
+                        last_checked_at,
+                        metadata_json,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, '', '', '', ?, ?, ?, '', '', ?, ?, ?, ?)
+                    ON CONFLICT(user_id, feature_id) DO UPDATE SET
+                        provider = excluded.provider,
+                        entitlement_status = excluded.entitlement_status,
+                        product_id = excluded.product_id,
+                        variant_id = excluded.variant_id,
+                        last_checked_at = excluded.last_checked_at,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        user_id,
+                        feature_id,
+                        normalize_text(row["billing_provider"]) or "bootstrap",
+                        BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS,
+                        normalize_text(row["billing_product_id"]),
+                        normalize_text(row["billing_variant_id"]),
+                        now,
+                        entitlement_metadata_json,
+                        entitlement_created_at,
+                        now,
+                    ),
+                )
 
     def _upsert_user(
         self,

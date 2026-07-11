@@ -33,6 +33,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - Registered emails now live in the backend SQLite database at `portal/portal.db` by default.
 - Set `PORTAL_DB_SEED_REGISTERED_EMAILS` to bootstrap the database the first time it starts. `PORTAL_REGISTERED_EMAILS` is still accepted as a legacy bootstrap alias.
 - Set `PORTAL_DB_SEED_ADMIN_EMAILS` to promote bootstrap users to admin on startup. `PORTAL_ADMIN_EMAILS` is still accepted as a legacy alias.
+- Set `PORTAL_DB_SEED_PAID_EMAILS` to mark specific portal users as entitled for all billing-required tools on startup. `PORTAL_PAID_EMAILS` is still accepted as a legacy alias.
 - Set `PORTAL_SUPPORT_PHONE` to the phone number shown to anyone who is not registered.
 - The simulator is still browser-local, so it can be tested before any WhatsApp webhook or approval server exists, but the real approval flow is now routed through the Meta connection and backend webhook setup.
 
@@ -64,6 +65,7 @@ Required environment variables on Render:
 - `PORTAL_DATA_ROOT` optional shared directory for portal-owned runtime files. If unset, the portal uses the parent directory of `PORTAL_DB_PATH`.
 - `PORTAL_DB_SEED_REGISTERED_EMAILS` for the comma-separated list of portal users used only when the database starts empty
 - `PORTAL_DB_SEED_ADMIN_EMAILS` for the comma-separated list of admin portal users that get promoted on startup
+- `PORTAL_DB_SEED_PAID_EMAILS` for the comma-separated list of portal users that should be treated as paid and entitled for billing-required tools during debugging or controlled internal testing
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
 - `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the backend

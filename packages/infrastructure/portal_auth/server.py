@@ -118,6 +118,7 @@ class PortalConfig:
     db_path: Path = DEFAULT_DB_PATH
     seed_registered_emails: frozenset[str] = field(default_factory=frozenset)
     seed_admin_emails: frozenset[str] = field(default_factory=frozenset)
+    seed_paid_emails: frozenset[str] = field(default_factory=frozenset)
     support_phone: str = ""
     billing_data_path: Path = Path("portal/billing.sample.json")
     billing_markup_multiplier: float = DEFAULT_BILLING_MULTIPLIER
@@ -545,6 +546,10 @@ def load_config() -> PortalConfig:
         read_email_list_env("PORTAL_DB_SEED_ADMIN_EMAILS"),
         read_email_list_env("PORTAL_ADMIN_EMAILS"),
     )
+    seed_paid_emails = frozenset().union(
+        read_email_list_env("PORTAL_DB_SEED_PAID_EMAILS"),
+        read_email_list_env("PORTAL_PAID_EMAILS"),
+    )
 
     return PortalConfig(
         product_name=os.getenv("PORTAL_PRODUCT_NAME", DEFAULT_PRODUCT_NAME).strip() or DEFAULT_PRODUCT_NAME,
@@ -556,6 +561,7 @@ def load_config() -> PortalConfig:
         db_path=db_path,
         seed_registered_emails=seed_registered_emails,
         seed_admin_emails=seed_admin_emails,
+        seed_paid_emails=seed_paid_emails,
         support_phone=os.getenv("PORTAL_SUPPORT_PHONE", "").strip(),
         billing_data_path=billing_data_path,
         billing_markup_multiplier=legacy_markup_multiplier,
@@ -2476,6 +2482,7 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
         config.db_path,
         bootstrap_registered_emails=config.seed_registered_emails,
         bootstrap_admin_emails=config.seed_admin_emails,
+        bootstrap_paid_emails=config.seed_paid_emails,
         default_currency=config.billing_currency,
         default_monthly_minimum_cents=max(0, int(round(config.billing_minimum_monthly_charge * 100))),
         default_input_token_price_multiplier=config.billing_input_token_price_multiplier,
