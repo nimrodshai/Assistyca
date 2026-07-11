@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=59" />
+    <link rel="stylesheet" href="./styles.css?v=57" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -341,18 +341,9 @@
         </section>
 
         <div id="toolEditorSection" class="studio-fields">
-          <article id="monitorTargetCard" class="glass-card config-card monitor-setup-card monitor-setup-card-target is-hidden">
-            <div class="card-head monitor-card-head monitor-target-head">
-              <div class="monitor-card-icon" aria-hidden="true">
-                <svg viewBox="0 0 48 48" fill="none">
-                  <rect x="14" y="12" width="20" height="24" rx="4.5" stroke="currentColor" stroke-width="2.5" />
-                  <path d="M20 12.5c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
-                  <path d="m19.5 22.5 2.5 2.5 5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-                  <path d="M20 28h8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
-                  <path d="m29.5 31.5 1.6 1.6 3.4-3.8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </div>
-              <div class="monitor-card-copy monitor-target-copy">
+          <article id="monitorTargetCard" class="glass-card config-card is-hidden">
+            <div class="card-head monitor-target-head">
+              <div class="monitor-target-copy">
                 <h3>What to check</h3>
                 <p>Add the topics, events, or deadlines to watch.</p>
               </div>
@@ -367,14 +358,7 @@
                   autocomplete="off"
                   placeholder="Add a topic, event, or deadline"
                 />
-                <button id="monitorWatchItemAddButton" class="primary-button monitor-watch-add-button" type="button">
-                  <span class="monitor-button-icon" aria-hidden="true">
-                    <svg viewBox="0 0 20 20" fill="none">
-                      <path d="M10 4.5v11M4.5 10h11" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
-                    </svg>
-                  </span>
-                  <span>Add</span>
-                </button>
+                <button id="monitorWatchItemAddButton" class="ghost-button small" type="button">Add</button>
               </div>
               <div class="monitor-watch-list-shell">
                 <div id="monitorWatchItemsList" class="monitor-watch-list" role="list"></div>
@@ -382,122 +366,48 @@
             </div>
           </article>
 
-          <article id="monitorScheduleCard" class="glass-card config-card monitor-setup-card monitor-setup-card-schedule is-hidden">
-            <div class="monitor-card-layout monitor-card-layout-schedule">
-              <div class="monitor-card-main">
-                <div class="card-head monitor-card-head">
-                  <div class="monitor-card-icon" aria-hidden="true">
-                    <svg viewBox="0 0 48 48" fill="none">
-                      <rect x="11" y="13" width="26" height="22" rx="5" stroke="currentColor" stroke-width="2.5" />
-                      <path d="M17 9v8M31 9v8M11 20h26" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
-                      <circle cx="18" cy="25.5" r="1.6" fill="currentColor" />
-                      <circle cx="24" cy="25.5" r="1.6" fill="currentColor" />
-                      <circle cx="30" cy="25.5" r="1.6" fill="currentColor" />
-                    </svg>
-                  </div>
-                  <div class="monitor-card-copy">
-                    <h3>Schedule</h3>
-                    <p>Set how often we check for updates.</p>
-                  </div>
-                </div>
+          <article id="monitorScheduleCard" class="glass-card config-card is-hidden">
+            <div class="card-head">
+              <h3>Schedule</h3>
+            </div>
 
-                <div class="monitor-settings-grid">
-                  <label class="field compact monitor-schedule-inline-field">
-                    <span class="monitor-schedule-inline-copy">Check every</span>
-                    <span class="monitor-schedule-number-shell">
-                      <input
-                        id="monitorIntervalDays"
-                        type="number"
-                        min="1"
-                        max="365"
-                        inputmode="numeric"
-                        aria-label="Check every number of days"
-                      />
-                    </span>
-                    <span class="monitor-schedule-inline-copy">days</span>
-                  </label>
-                </div>
-              </div>
-
-              <div class="monitor-schedule-illustration" aria-hidden="true">
-                <svg viewBox="0 0 320 220" fill="none">
-                  <defs>
-                    <radialGradient id="monitorScheduleGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(172 116) rotate(90) scale(92 96)">
-                      <stop stop-color="#EAF6EE" />
-                      <stop offset="1" stop-color="#EFF8F2" stop-opacity="0" />
-                    </radialGradient>
-                    <filter id="monitorScheduleShadow" x="108" y="52" width="138" height="150" color-interpolation-filters="sRGB">
-                      <feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#4D8E69" flood-opacity="0.12" />
-                    </filter>
-                  </defs>
-                  <circle cx="176" cy="116" r="88" fill="url(#monitorScheduleGlow)" />
-                  <path d="M106 144c0-12 10-22 22-22h14l-18 60h-8c-6 0-10-4-10-10v-28Z" fill="#DCEEE2" />
-                  <path d="M122 176c-12 1-22 8-29 20 13 0 23-3 31-8-1 8 1 15 7 21 1-9 0-16-4-23 9 1 18-1 27-6-9-4-19-6-32-4Z" fill="#CFE7D6" />
-                  <g filter="url(#monitorScheduleShadow)">
-                    <path d="M146 74h56c16 0 28 12 28 28v66h-108l24-94Z" fill="#FFFFFF" />
-                    <path d="M154 74h48c15 0 26 11 28 26l3 18h-95l16-44Z" fill="#B2DEBC" />
-                    <path d="M182 61v16M207 61v16M231 61v16M256 61v16" stroke="#6CA181" stroke-width="6" stroke-linecap="round" />
-                    <rect x="170" y="125" width="16" height="16" rx="3" fill="#EEF4EF" transform="rotate(4 170 125)" />
-                    <rect x="202" y="126" width="16" height="16" rx="3" fill="#EEF4EF" transform="rotate(4 202 126)" />
-                    <rect x="233" y="127" width="16" height="16" rx="3" fill="#EEF4EF" transform="rotate(4 233 127)" />
-                    <rect x="176" y="154" width="16" height="16" rx="3" fill="#EEF4EF" transform="rotate(4 176 154)" />
-                    <rect x="208" y="155" width="16" height="16" rx="3" fill="#EEF4EF" transform="rotate(4 208 155)" />
-                    <rect x="239" y="156" width="16" height="16" rx="3" fill="#EEF4EF" transform="rotate(4 239 156)" />
-                  </g>
-                  <circle cx="270" cy="180" r="28" fill="#FFFFFF" stroke="#1F8A73" stroke-width="3" />
-                  <path d="M270 165v16l9 6" stroke="#1F8A73" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </div>
+            <div class="monitor-settings-grid">
+              <label class="field compact monitor-schedule-inline-field">
+                <span class="monitor-schedule-inline-copy">Check every</span>
+                <input
+                  id="monitorIntervalDays"
+                  type="number"
+                  min="1"
+                  max="365"
+                  inputmode="numeric"
+                  aria-label="Check every number of days"
+                />
+                <span class="monitor-schedule-inline-copy">days</span>
+              </label>
             </div>
           </article>
 
-          <article id="monitorDeliveryCard" class="glass-card config-card monitor-setup-card monitor-setup-card-delivery is-hidden">
-            <div class="card-head monitor-card-head">
-              <div class="monitor-card-icon" aria-hidden="true">
-                <svg viewBox="0 0 48 48" fill="none">
-                  <rect x="11" y="14" width="26" height="20" rx="4.5" stroke="currentColor" stroke-width="2.5" />
-                  <path d="m14 18 10 8 10-8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </div>
-              <div class="monitor-card-copy">
-                <h3>Delivery</h3>
-                <p>Choose how and where to receive alerts.</p>
-              </div>
+          <article id="monitorDeliveryCard" class="glass-card config-card is-hidden">
+            <div class="card-head">
+              <h3>Delivery</h3>
             </div>
 
             <div class="monitor-settings-grid">
               <label class="field compact monitor-delivery-channel-field">
                 <span>Channel</span>
-                <div class="monitor-delivery-channel-control">
-                  <span class="monitor-delivery-channel-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none">
-                      <rect x="3.5" y="5" width="17" height="14" rx="3" stroke="currentColor" stroke-width="2" />
-                      <path d="m6 8 6 5 6-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                  </span>
-                  <select id="monitorDeliveryChannel">
-                    <option value="email">Email</option>
-                    <option value="telegram">Telegram</option>
-                    <option value="whatsapp">WhatsApp</option>
-                  </select>
-                </div>
+                <select id="monitorDeliveryChannel">
+                  <option value="email">Email</option>
+                  <option value="telegram">Telegram</option>
+                  <option value="whatsapp">WhatsApp</option>
+                </select>
               </label>
 
               <div class="monitor-delivery-detail">
                 <div id="monitorEmailField" class="field compact monitor-delivery-panel is-active" aria-hidden="false">
                   <span>Email delivery</span>
-                  <div class="monitor-delivery-divider" aria-hidden="true"></div>
                   <div class="monitor-delivery-surface">
-                    <div class="monitor-delivery-surface-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" fill="none">
-                        <rect x="3.5" y="5" width="17" height="14" rx="3" stroke="currentColor" stroke-width="1.9" />
-                        <path d="m6 8 6 5 6-5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
-                      </svg>
-                    </div>
-                    <div class="monitor-delivery-surface-copy">
-                      <p class="monitor-delivery-caption">ALERTS WILL GO TO</p>
-                      <p id="monitorEmailSummary" class="monitor-delivery-value">Workspace account email</p>
-                    </div>
+                    <p class="monitor-delivery-caption">Alerts will go to</p>
+                    <p id="monitorEmailSummary" class="monitor-delivery-value">Workspace account email</p>
                   </div>
                 </div>
 
@@ -598,23 +508,9 @@ Bad: 'Sure, anything is possible.'"
 
           <div class="editor-activation-row">
             <div class="feature-page-actions editor-activation-actions">
-              <button id="featureStudioEditorToggleButton" class="primary-button monitor-activate-button" type="button">
-                <span class="monitor-button-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none">
-                    <path d="M12 4.8 13.9 9l4.6.5-3.4 3 1 4.5L12 14.8 7.9 17l1-4.5-3.4-3 4.6-.5L12 4.8Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" />
-                  </svg>
-                </span>
-                <span data-button-label>Activate tool</span>
+              <button id="featureStudioEditorToggleButton" class="primary-button" type="button">
+                Activate tool
               </button>
-            </div>
-            <div class="monitor-activation-note">
-              <span class="monitor-activation-note-icon">
-                <svg viewBox="0 0 24 24" fill="none">
-                  <path d="M12 3.5 18.5 6v5.5c0 4.1-2.6 7.3-6.5 9-3.9-1.7-6.5-4.9-6.5-9V6L12 3.5Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" />
-                  <path d="m9.3 12.2 1.8 1.8 3.7-4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </span>
-              <span>You can change these settings <em>anytime</em></span>
             </div>
           </div>
         </div>
@@ -1104,6 +1000,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=70"></script>
+    <script src="./app.js?v=68"></script>
   </body>
 </html>
