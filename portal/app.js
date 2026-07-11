@@ -1803,6 +1803,23 @@ function normalizeFeaturePaymentStatus(paymentStatus = null) {
   };
 }
 
+function normalizeFeatureSetupStatus(setupStatus = null) {
+  const source = setupStatus && typeof setupStatus === "object" ? setupStatus : {};
+  const rawIssues = Array.isArray(source.issues) ? source.issues : [];
+  return {
+    required: Boolean(source.required ?? false),
+    ready: Boolean(source.ready ?? !source.required),
+    requirementKey: String(source.requirementKey || source.requirement_key || "").trim(),
+    message: String(source.message || "").trim(),
+    issues: rawIssues
+      .filter((issue) => issue && typeof issue === "object")
+      .map((issue) => ({
+        field: String(issue.field || "").trim(),
+        message: String(issue.message || "").trim(),
+      })),
+  };
+}
+
 function normalizeFeatureWhatsApp(config = {}) {
   const source = config && typeof config === "object" ? config : {};
   const businessAccountId = String(source.business_account_id || source.businessAccountId || "").trim();
@@ -1968,6 +1985,7 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
   const savedPrompt = normalizePrompt(serverFeature?.prompt || existingFeature?.savedPrompt || existingFeature?.prompt || {}, serverFeature?.prompt || DEFAULT_PROMPT);
   const pricing = normalizeFeaturePricing(serverFeature?.pricing || existingFeature?.pricing || {});
   const paymentStatus = normalizeFeaturePaymentStatus(serverFeature?.paymentStatus || existingFeature?.paymentStatus || null);
+  const setupStatus = normalizeFeatureSetupStatus(serverFeature?.setupStatus || serverFeature?.setup_status || existingFeature?.setupStatus || null);
   const metadata = serverFeature?.metadata && typeof serverFeature.metadata === "object"
     ? { ...serverFeature.metadata }
     : existingFeature?.metadata && typeof existingFeature.metadata === "object"
@@ -2004,6 +2022,7 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
     billing,
     assignment,
     paymentStatus,
+    setupStatus,
     metadata,
     settings,
     savedSettings,
@@ -6037,6 +6056,30 @@ async function runSelectedMonitorNow() {
     return;
   }
 
+  if (feature.setupStatus?.ready === false) {
+    const setupStatus = feature.setupStatus || {};
+    const issues = Array.isArray(setupStatus.issues) ? setupStatus.issues : [];
+    const firstIssue = issues[0] || {};
+    const message = String(
+      setupStatus.message
+      || firstIssue.message
+      || "Finish the monitor setup before running it manually.",
+    ).trim();
+    openFeatureActivationAlert(
+      "Finish setup first",
+      message,
+      {
+        eyebrow: "One thing left",
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+      },
+    );
+    window.requestAnimationFrame(() => {
+      getMonitorFieldElement(firstIssue.field)?.focus();
+    });
+    setStatus(message);
+    return;
+  }
+
   if (hasPendingFeatureConfigAutosave(feature.id) || hasFeatureConfigChanges(feature) || featureConfigBusy) {
     try {
       await flushSelectedFeatureConfigAutosave({
@@ -6486,10 +6529,12 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureStudioMonitorRunButton) {
     const showManualRun = isMonitorFeature(feature) && isActivated;
+    const manualRunReady = showManualRun && feature.setupStatus?.ready !== false;
     elements.featureStudioMonitorRunButton.hidden = !showManualRun;
     elements.featureStudioMonitorRunButton.textContent = manualRunBusy ? "Running..." : "Run now";
-    elements.featureStudioMonitorRunButton.disabled = !showManualRun || transitionBusy || manualRunBusy;
+    elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || manualRunBusy;
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
+    elements.featureStudioMonitorRunButton.title = manualRunReady ? "" : String(feature.setupStatus?.message || "");
   }
 
   buildFeatureStudioMenu(feature);

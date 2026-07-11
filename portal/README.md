@@ -71,6 +71,7 @@ Required environment variables on Render:
 - `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the backend
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
+- `OPENAI_API_KEY` for Scheduled Web Monitor searches and any other backend OpenAI-powered tool execution
 - `TELEGRAM_BOT_TOKEN` when you want Scheduled Web Monitor alerts to be delivered through Telegram
 - `PORTAL_WHATSAPP_STORE_ROOT` optional override for the per-user WhatsApp approval JSON files. If unset, the portal uses `PORTAL_DATA_ROOT/portal-whatsapp`.
 - `PUBLIC_BASE_URL` recommended for production so approval links and the connection payload always point at the public portal hostname

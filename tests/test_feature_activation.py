@@ -102,6 +102,7 @@ class FeatureActivationTests(unittest.TestCase):
             {
                 "PORTAL_SMTP_HOST": "smtp.example.com",
                 "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
             },
             clear=False,
         ):
@@ -143,6 +144,32 @@ class FeatureActivationTests(unittest.TestCase):
             ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
         )
 
+    def test_save_monitor_feature_config_requires_openai_backend(self) -> None:
+        service = FeatureActivationService(self.database, config=FeatureActivationConfig())
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "",
+            },
+            clear=False,
+        ):
+            result = service.save_feature_config(
+                "owner@example.com",
+                feature_id=MONITOR_FEATURE_ID,
+                settings={
+                    "watchItems": ["Legal conferences"],
+                    "intervalDays": 7,
+                    "deliveryChannel": "email",
+                },
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["setupStatus"]["ready"])
+        self.assertIn("OPENAI_API_KEY", result["setupStatus"]["message"])
+
     def test_monitor_activation_requires_saved_config_before_payment(self) -> None:
         client = FakeLemonSqueezyClient(checkout_url="https://checkout.example.com/monitor")
         service = FeatureActivationService(
@@ -170,6 +197,7 @@ class FeatureActivationTests(unittest.TestCase):
             {
                 "PORTAL_SMTP_HOST": "smtp.example.com",
                 "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
             },
             clear=False,
         ):

@@ -102,6 +102,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             {
                 "PORTAL_SMTP_HOST": "smtp.example.com",
                 "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
             },
             clear=False,
         ), mock.patch(
@@ -227,6 +228,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             {
                 "PORTAL_SMTP_HOST": "smtp.example.com",
                 "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
             },
             clear=False,
         ), mock.patch(

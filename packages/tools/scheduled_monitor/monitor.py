@@ -161,12 +161,24 @@ def validate_monitor_settings(
     email_available: bool | None = None,
     telegram_available: bool | None = None,
     whatsapp_available: bool | None = None,
+    openai_available: bool | None = None,
     whatsapp_connection: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     normalized = normalize_monitor_settings(settings)
     issues: list[dict[str, str]] = []
     if not normalized["watchItems"]:
         issues.append({"field": "watchItems", "message": "Add at least one thing this monitor should check."})
+
+    openai_enabled = (
+        bool(normalize_text(load_openai_config(strict_tracking=False).api_key))
+        if openai_available is None
+        else bool(openai_available)
+    )
+    if not openai_enabled:
+        issues.append({
+            "field": "watchItems",
+            "message": "Scheduled Web Monitor is not configured on the backend yet. Add OPENAI_API_KEY to enable searches.",
+        })
 
     delivery_channel = normalized["deliveryChannel"]
     email_enabled = email_delivery_available(load_mail_delivery_config()) if email_available is None else bool(email_available)
@@ -202,10 +214,16 @@ def build_monitor_setup_status(
     settings: dict[str, Any] | None,
     *,
     user_email: str = "",
+    openai_available: bool | None = None,
     whatsapp_connection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_monitor_settings(settings)
-    issues = validate_monitor_settings(normalized, user_email=user_email, whatsapp_connection=whatsapp_connection)
+    issues = validate_monitor_settings(
+        normalized,
+        user_email=user_email,
+        openai_available=openai_available,
+        whatsapp_connection=whatsapp_connection,
+    )
     if not issues:
         return {
             "required": True,
