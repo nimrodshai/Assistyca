@@ -96,6 +96,8 @@ const DEFAULT_MONITOR_SETTINGS = {
   deliveryChannel: "email",
   telegramChatId: "",
 };
+const MONITOR_INTERVAL_DAYS_MIN = 1;
+const MONITOR_INTERVAL_DAYS_MAX = 365;
 
 const DEFAULT_PROMPT = {
   toneGuidance: "Warm, direct, and practical. Keep replies human, short, and grounded.",
@@ -1816,6 +1818,18 @@ function normalizeMonitorWatchItems(value) {
   return normalizedItems;
 }
 
+function normalizeMonitorIntervalDays(value, fallback = DEFAULT_MONITOR_SETTINGS.intervalDays) {
+  const parsedFallback = Number.parseInt(fallback, 10);
+  const safeFallback = Number.isFinite(parsedFallback)
+    ? Math.min(MONITOR_INTERVAL_DAYS_MAX, Math.max(MONITOR_INTERVAL_DAYS_MIN, parsedFallback))
+    : DEFAULT_MONITOR_SETTINGS.intervalDays;
+  const intervalDays = Number.parseInt(value, 10);
+
+  return Number.isFinite(intervalDays)
+    ? Math.min(MONITOR_INTERVAL_DAYS_MAX, Math.max(MONITOR_INTERVAL_DAYS_MIN, intervalDays))
+    : safeFallback;
+}
+
 function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
@@ -1825,7 +1839,7 @@ function normalizeFeatureMonitorSettings(settings = {}) {
   return {
     watchItems: normalizeMonitorWatchItems(source.watchItems || source.searchPrompt || ""),
     intervalDays: Number.isFinite(intervalDays)
-      ? Math.min(365, Math.max(1, intervalDays))
+      ? normalizeMonitorIntervalDays(intervalDays)
       : legacyCadence === "daily"
         ? 1
         : legacyCadence === "weekly"
@@ -7144,6 +7158,64 @@ function syncMonitorSettingsField(key) {
   };
 }
 
+function syncMonitorIntervalDaysField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature)) {
+    return;
+  }
+
+  const rawValue = String(event.target.value || "").trim();
+  if (!rawValue) {
+    return;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const normalizedIntervalDays = normalizeMonitorIntervalDays(rawValue, currentSettings.intervalDays);
+  const normalizedValue = String(normalizedIntervalDays);
+
+  if (event.target.value !== normalizedValue) {
+    event.target.value = normalizedValue;
+  }
+  if (currentSettings.intervalDays === normalizedIntervalDays) {
+    return;
+  }
+
+  feature.settings = normalizeFeatureMonitorSettings({
+    ...currentSettings,
+    intervalDays: normalizedIntervalDays,
+  });
+  persistClientState();
+  updateFeatureStudioHeader();
+  scheduleSelectedFeatureConfigAutosave(feature);
+}
+
+function finalizeMonitorIntervalDaysField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature)) {
+    return;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const rawValue = String(event.target.value || "").trim();
+
+  if (!rawValue) {
+    event.target.value = String(currentSettings.intervalDays);
+  } else {
+    const normalizedValue = String(normalizeMonitorIntervalDays(rawValue, currentSettings.intervalDays));
+    if (event.target.value !== normalizedValue) {
+      event.target.value = normalizedValue;
+    }
+  }
+
+  if (hasPendingFeatureConfigAutosave(feature.id)) {
+    void flushSelectedFeatureConfigAutosave({
+      featureId: feature.id,
+      alertOnError: false,
+      noChangesMessage: false,
+    }).catch(() => {});
+  }
+}
+
 function createMonitorWatchItemBadge(item, index) {
   const badge = document.createElement("div");
   badge.className = "monitor-watch-badge";
@@ -7945,7 +8017,8 @@ function bindEvents() {
     });
   }
   if (elements.monitorIntervalDays) {
-    elements.monitorIntervalDays.addEventListener("input", syncMonitorSettingsField("intervalDays"));
+    elements.monitorIntervalDays.addEventListener("input", syncMonitorIntervalDaysField);
+    elements.monitorIntervalDays.addEventListener("blur", finalizeMonitorIntervalDaysField);
   }
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.addEventListener("change", syncMonitorSettingsField("deliveryChannel"));
