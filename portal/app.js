@@ -11,6 +11,7 @@ const AUTH_SESSION_KEY = `${STORAGE_PREFIX}.portal.auth-session`;
 const AUTH_CHALLENGE_KEY = `${STORAGE_PREFIX}.portal.auth-challenge`;
 const CLIENT_STATE_PREFIX = `${STORAGE_PREFIX}.client-state`;
 const LAST_PRIMARY_TAB_KEY = `${STORAGE_PREFIX}.portal.last-primary-tab`;
+const MONITOR_WATCH_DRAFT_PREFIX = `${STORAGE_PREFIX}.portal.monitor-watch-draft`;
 migrateLegacyStorage();
 const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
@@ -405,6 +406,7 @@ const state = {
   billingLoading: false,
   billingError: "",
   billingHelpOpen: false,
+  monitorWatchItemDraft: "",
   lastPrimaryTab: normalizeTab(loadJson(LAST_PRIMARY_TAB_KEY, "features")) || "features",
 };
 
@@ -480,7 +482,9 @@ const elements = {
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
   monitorWatchItemsEditor: document.querySelector("#monitorWatchItemsEditor"),
+  monitorWatchItemsList: document.querySelector("#monitorWatchItemsList"),
   monitorWatchItemInput: document.querySelector("#monitorWatchItemInput"),
+  monitorWatchItemAddButton: document.querySelector("#monitorWatchItemAddButton"),
   monitorIntervalDays: document.querySelector("#monitorIntervalDays"),
   monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
   monitorEmailField: document.querySelector("#monitorEmailField"),
@@ -1580,6 +1584,31 @@ async function apiRequest(path, options = {}) {
 function getClientKey(email) {
   const safeEmail = normalizeEmail(email) || "guest";
   return `${CLIENT_STATE_PREFIX}:${safeEmail}`;
+}
+
+function getMonitorWatchDraftKey(featureId, email = activeEmail) {
+  const safeFeatureId = String(featureId || "").trim();
+  if (!safeFeatureId) {
+    return "";
+  }
+
+  const safeEmail = normalizeEmail(email) || "guest";
+  return `${MONITOR_WATCH_DRAFT_PREFIX}:${safeEmail}:${safeFeatureId}`;
+}
+
+function loadMonitorWatchDraft(featureId, email = activeEmail) {
+  const key = getMonitorWatchDraftKey(featureId, email);
+  return key ? String(loadJson(key, "") || "") : "";
+}
+
+function persistMonitorWatchDraft(value, featureId, email = activeEmail) {
+  const key = getMonitorWatchDraftKey(featureId, email);
+  if (!key) {
+    return;
+  }
+
+  const draft = String(value || "");
+  persistJson(key, draft ? draft : null);
 }
 
 function loadClientState(email) {
@@ -6431,8 +6460,10 @@ function updateMonitorFields() {
   }
 
   const monitorSettings = getSelectedFeatureSettings(feature);
+  state.monitorWatchItemDraft = loadMonitorWatchDraft(feature.id);
+  renderMonitorWatchItems(monitorSettings.watchItems);
   if (elements.monitorWatchItemInput) {
-    elements.monitorWatchItemInput.value = monitorSettings.watchItems.join("\n");
+    elements.monitorWatchItemInput.value = state.monitorWatchItemDraft;
   }
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.value = String(monitorSettings.intervalDays);
@@ -7202,40 +7233,151 @@ function syncMonitorWatchItemsField(event) {
     return;
   }
 
+  state.monitorWatchItemDraft = event.target.value;
+  persistMonitorWatchDraft(state.monitorWatchItemDraft, feature.id);
+}
+
+function createMonitorWatchItemBadge(item, index) {
+  const badge = document.createElement("div");
+  badge.className = "monitor-watch-badge";
+  badge.setAttribute("role", "listitem");
+
+  const label = document.createElement("span");
+  label.className = "monitor-watch-badge-label";
+  label.textContent = item || "Untitled";
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "monitor-watch-badge-remove";
+  removeButton.dataset.monitorRemoveWatchItemIndex = String(index);
+  removeButton.setAttribute("aria-label", `Remove ${item || "watch item"}`);
+  removeButton.textContent = "×";
+
+  badge.append(label, removeButton);
+  return badge;
+}
+
+function renderMonitorWatchItems(items = []) {
+  if (!elements.monitorWatchItemsList) {
+    return;
+  }
+
+  const watchItems = normalizeMonitorWatchItems(items);
+  if (!watchItems.length) {
+    const empty = document.createElement("p");
+    empty.className = "monitor-watch-badge-empty";
+    empty.textContent = "Items you add show up here.";
+    elements.monitorWatchItemsList.replaceChildren(empty);
+    return;
+  }
+
+  elements.monitorWatchItemsList.replaceChildren(
+    ...watchItems.map((item, index) => createMonitorWatchItemBadge(item, index)),
+  );
+}
+
+function setMonitorWatchItems(items, options = {}) {
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature)) {
+    return false;
+  }
+
   const currentSettings = getSelectedFeatureSettings(feature);
   const nextSettings = normalizeFeatureMonitorSettings({
     ...currentSettings,
-    watchItems: event.target.value,
+    watchItems: items,
   });
 
   if (JSON.stringify(nextSettings.watchItems) === JSON.stringify(currentSettings.watchItems)) {
-    return;
+    if (options.clearDraft === true) {
+      state.monitorWatchItemDraft = "";
+      persistMonitorWatchDraft("", feature.id);
+      if (elements.monitorWatchItemInput) {
+        elements.monitorWatchItemInput.value = "";
+      }
+    }
+    if (options.focusInput !== false) {
+      window.requestAnimationFrame(() => {
+        elements.monitorWatchItemInput?.focus();
+      });
+    }
+    return false;
   }
 
   feature.settings = nextSettings;
+  if (options.clearDraft === true) {
+    state.monitorWatchItemDraft = "";
+    persistMonitorWatchDraft("", feature.id);
+  }
   persistClientState();
+  updateMonitorFields();
   updateFeatureStudioHeader();
-  scheduleSelectedFeatureConfigAutosave(feature);
+  void flushSelectedFeatureConfigAutosave({
+    featureId: feature.id,
+    alertOnError: false,
+    noChangesMessage: false,
+  }).catch(() => {});
+
+  if (options.focusInput !== false) {
+    window.requestAnimationFrame(() => {
+      elements.monitorWatchItemInput?.focus();
+    });
+  }
+  return true;
+}
+
+function addMonitorWatchItems(rawValue = state.monitorWatchItemDraft || "", options = {}) {
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature)) {
+    return false;
+  }
+
+  const nextItems = normalizeMonitorWatchItems(rawValue);
+  if (!nextItems.length) {
+    state.monitorWatchItemDraft = String(rawValue || "");
+    persistMonitorWatchDraft(state.monitorWatchItemDraft, feature.id);
+    if (options.focusInput !== false) {
+      window.requestAnimationFrame(() => {
+        elements.monitorWatchItemInput?.focus();
+      });
+    }
+    return false;
+  }
+
+  const currentItems = getSelectedFeatureSettings(feature).watchItems;
+  const didChange = setMonitorWatchItems([...currentItems, ...nextItems], {
+    clearDraft: true,
+    focusInput: options.focusInput !== false,
+  });
+  if (didChange && options.announce !== false) {
+    setStatus("Watch item added.");
+  }
+  return didChange;
 }
 
 function finalizeMonitorWatchItemsField(event) {
+  const draftValue = String(event.target.value || "");
+  addMonitorWatchItems(draftValue, { focusInput: false, announce: false });
+}
+
+function removeMonitorWatchItem(index) {
   const feature = getSelectedFeature();
   if (!feature || !isMonitorFeature(feature)) {
-    return;
+    return false;
   }
 
-  const normalizedValue = getSelectedFeatureSettings(feature).watchItems.join("\n");
-  if (event.target.value !== normalizedValue) {
-    event.target.value = normalizedValue;
+  const currentItems = getSelectedFeatureSettings(feature).watchItems;
+  const itemIndex = Number.parseInt(index, 10);
+  if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= currentItems.length) {
+    return false;
   }
 
-  if (hasPendingFeatureConfigAutosave(feature.id)) {
-    void flushSelectedFeatureConfigAutosave({
-      featureId: feature.id,
-      alertOnError: false,
-      noChangesMessage: false,
-    }).catch(() => {});
+  const nextItems = currentItems.filter((_, currentIndex) => currentIndex !== itemIndex);
+  const didChange = setMonitorWatchItems(nextItems);
+  if (didChange) {
+    setStatus(nextItems.length ? "Watch item removed." : "Watch list cleared.");
   }
+  return didChange;
 }
 
 function getMonitorFieldElement(field) {
@@ -7878,7 +8020,38 @@ function bindEvents() {
   elements.scenarioSelect.addEventListener("change", syncPromptField("scenario"));
   if (elements.monitorWatchItemInput) {
     elements.monitorWatchItemInput.addEventListener("input", syncMonitorWatchItemsField);
+    elements.monitorWatchItemInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === "," || event.key === ";") {
+        event.preventDefault();
+        addMonitorWatchItems(event.currentTarget.value);
+      }
+    });
+    elements.monitorWatchItemInput.addEventListener("paste", (event) => {
+      const pastedText = event.clipboardData?.getData("text") || "";
+      const parsedItems = normalizeMonitorWatchItems(pastedText);
+      if (parsedItems.length > 1 || /[\n;,]/.test(pastedText)) {
+        event.preventDefault();
+        addMonitorWatchItems(pastedText, { focusInput: false });
+      }
+    });
     elements.monitorWatchItemInput.addEventListener("blur", finalizeMonitorWatchItemsField);
+  }
+  if (elements.monitorWatchItemAddButton) {
+    elements.monitorWatchItemAddButton.addEventListener("click", () => {
+      addMonitorWatchItems(elements.monitorWatchItemInput?.value || "");
+    });
+  }
+  if (elements.monitorWatchItemsList) {
+    elements.monitorWatchItemsList.addEventListener("click", (event) => {
+      const target = getEventTargetElement(event);
+      const removeButton = target?.closest("[data-monitor-remove-watch-item-index]");
+      if (!removeButton) {
+        return;
+      }
+
+      event.preventDefault();
+      removeMonitorWatchItem(removeButton.dataset.monitorRemoveWatchItemIndex || "");
+    });
   }
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.addEventListener("input", syncMonitorIntervalDaysField);

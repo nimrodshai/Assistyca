@@ -350,15 +350,20 @@
             </div>
 
             <div id="monitorWatchItemsEditor" class="monitor-watch-editor">
-              <label class="field compact monitor-watch-textarea-field" for="monitorWatchItemInput">
-                <span class="sr-only">Watch list</span>
-                <textarea
+              <label class="sr-only" for="monitorWatchItemInput">Add watch item</label>
+              <div class="monitor-watch-input-row">
+                <input
                   id="monitorWatchItemInput"
-                  rows="5"
-                  placeholder="One line per item&#10;Criminal defense law conferences in Israel&#10;Court holiday calendar&#10;Regulatory filing deadlines"
-                ></textarea>
-              </label>
-              <p class="field-help monitor-watch-help">One line per item. Changes save automatically.</p>
+                  type="text"
+                  autocomplete="off"
+                  placeholder="Add a topic, event, or deadline"
+                />
+                <button id="monitorWatchItemAddButton" class="ghost-button small" type="button">Add</button>
+              </div>
+              <div class="monitor-watch-list-shell">
+                <div id="monitorWatchItemsList" class="monitor-watch-list" role="list"></div>
+              </div>
+              <p class="field-help monitor-watch-help">Press Enter to add. Changes save automatically.</p>
             </div>
           </article>
 
