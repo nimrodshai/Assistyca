@@ -171,6 +171,7 @@
         display: flex;
         align-items: center;
         gap: clamp(1rem, 1.8vw, 2.15rem);
+        position: relative;
       }
 
       .nav a {
@@ -183,18 +184,19 @@
           transform 160ms ease;
       }
 
-      .nav a[data-section]::after {
-        content: "";
+      .nav-indicator {
         position: absolute;
-        left: 50%;
         bottom: -0.22rem;
         width: 2.5rem;
         height: 0.12rem;
         border-radius: 999px;
         background: var(--accent);
-        transform: translateX(-50%) scaleX(0);
-        transform-origin: center;
-        transition: transform 180ms ease;
+        opacity: 0;
+        transform: translateX(0);
+        transition:
+          transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 160ms ease;
+        pointer-events: none;
       }
 
       .nav a:hover,
@@ -205,10 +207,6 @@
 
       .nav a[data-active="true"] {
         color: var(--accent-deep);
-      }
-
-      .nav a[data-active="true"]::after {
-        transform: translateX(-50%) scaleX(1);
       }
 
       .nav .nav-cta {
@@ -807,6 +805,7 @@
             <a data-section="about-me" href="#about-me">About Me</a>
             <a data-section="services" href="#services">Services</a>
             <a data-section="how-it-works" href="#how-it-works">How It Works</a>
+            <span class="nav-indicator" aria-hidden="true"></span>
             <a class="nav-cta" href="mailto:nimrod.shai@gmail.com">Let&apos;s Talk</a>
           </nav>
         </header>
@@ -1043,14 +1042,40 @@
         });
 
         const navLinks = Array.from(document.querySelectorAll(".nav a[data-section]"));
+        const navIndicator = document.querySelector(".nav-indicator");
         const sectionTargets = navLinks
           .map((link) => document.getElementById(link.dataset.section || ""))
           .filter(Boolean);
+
+        const updateNavIndicator = () => {
+          if (!navIndicator) {
+            return;
+          }
+
+          const activeLink = navLinks.find((link) => link.dataset.active === "true");
+          if (!activeLink) {
+            navIndicator.style.opacity = "0";
+            return;
+          }
+
+          const navRect = activeLink.parentElement?.getBoundingClientRect();
+          const linkRect = activeLink.getBoundingClientRect();
+          if (!navRect) {
+            return;
+          }
+
+          const indicatorWidth = navIndicator.getBoundingClientRect().width || 40;
+          const offset = linkRect.left - navRect.left + (linkRect.width - indicatorWidth) / 2;
+          navIndicator.style.transform = `translateX(${offset}px)`;
+          navIndicator.style.opacity = "1";
+        };
 
         const setActiveLink = (activeId) => {
           navLinks.forEach((link) => {
             link.dataset.active = link.dataset.section === activeId ? "true" : "false";
           });
+
+          updateNavIndicator();
         };
 
         const initialHash = window.location.hash.replace("#", "");
@@ -1079,6 +1104,9 @@
 
           sectionTargets.forEach((section) => observer.observe(section));
         }
+
+        window.addEventListener("load", updateNavIndicator);
+        window.addEventListener("resize", updateNavIndicator);
       });
     </script>
   </body>
