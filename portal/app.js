@@ -405,7 +405,6 @@ const state = {
   billingLoading: false,
   billingError: "",
   billingHelpOpen: false,
-  monitorWatchItemDraft: "",
   lastPrimaryTab: normalizeTab(loadJson(LAST_PRIMARY_TAB_KEY, "features")) || "features",
 };
 
@@ -462,7 +461,6 @@ const elements = {
   featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
-  featureStudioEditorActivationText: document.querySelector("#featureStudioEditorActivationText"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
@@ -482,9 +480,7 @@ const elements = {
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
   monitorWatchItemsEditor: document.querySelector("#monitorWatchItemsEditor"),
-  monitorWatchItemsList: document.querySelector("#monitorWatchItemsList"),
   monitorWatchItemInput: document.querySelector("#monitorWatchItemInput"),
-  monitorWatchItemAddButton: document.querySelector("#monitorWatchItemAddButton"),
   monitorIntervalDays: document.querySelector("#monitorIntervalDays"),
   monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
   monitorEmailField: document.querySelector("#monitorEmailField"),
@@ -5690,7 +5686,6 @@ function openFeatureStudio(featureId, view = null) {
     return;
   }
 
-  state.monitorWatchItemDraft = "";
   state.selectedFeatureId = feature.id;
   state.activeTab = "features";
   state.settingsOpen = false;
@@ -5703,7 +5698,6 @@ function openFeatureStudio(featureId, view = null) {
 }
 
 function closeFeatureStudio() {
-  state.monitorWatchItemDraft = "";
   state.selectedFeatureId = null;
   state.featureStudioView = "overview";
   state.activeTab = "features";
@@ -6352,19 +6346,6 @@ function updateFeatureStudioHeader() {
     elements.featureStudioActivationSection.setAttribute("aria-busy", String(activationBusy));
   }
   const isEditorSetup = usesEditorSetup(feature);
-  if (elements.featureStudioEditorActivationText) {
-    elements.featureStudioEditorActivationText.textContent = isActivated
-      ? "This tool is active now. You can turn it off anytime without losing your setup or editor settings."
-      : isEditorSetup
-        ? isSetupComplete
-          ? "Your watch list and delivery settings are saved. Activate the tool when you're ready for alerts to start going out."
-          : "Add the watch list, choose how many days between checks, and set where alerts should be delivered."
-        : isSetupComplete
-        ? "Your WhatsApp setup is complete. Review the editor, then activate the tool when everything looks right."
-        : hasFeatureWhatsAppDetails(feature)
-          ? "Your WhatsApp details are saved, but setup still needs to be completed before you can activate this tool."
-          : "Finish WhatsApp setup before turning this tool on.";
-  }
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.textContent = transitionBusy
       ? featureActivationTransitionAction === "deactivate"
@@ -6450,9 +6431,8 @@ function updateMonitorFields() {
   }
 
   const monitorSettings = getSelectedFeatureSettings(feature);
-  renderMonitorWatchItems(monitorSettings.watchItems);
   if (elements.monitorWatchItemInput) {
-    elements.monitorWatchItemInput.value = state.monitorWatchItemDraft || "";
+    elements.monitorWatchItemInput.value = monitorSettings.watchItems.join("\n");
   }
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.value = String(monitorSettings.intervalDays);
@@ -7216,130 +7196,46 @@ function finalizeMonitorIntervalDaysField(event) {
   }
 }
 
-function createMonitorWatchItemBadge(item, index) {
-  const badge = document.createElement("div");
-  badge.className = "monitor-watch-badge";
-  badge.setAttribute("role", "listitem");
-
-  const label = document.createElement("span");
-  label.className = "monitor-watch-badge-label";
-  label.textContent = item || "Untitled";
-
-  const removeButton = document.createElement("button");
-  removeButton.type = "button";
-  removeButton.className = "monitor-watch-badge-remove";
-  removeButton.dataset.monitorRemoveWatchItemIndex = String(index);
-  removeButton.setAttribute("aria-label", `Remove ${item || "watch item"}`);
-  removeButton.textContent = "×";
-
-  badge.append(label, removeButton);
-  return badge;
-}
-
-function renderMonitorWatchItems(items = []) {
-  if (!elements.monitorWatchItemsList) {
-    return;
-  }
-
-  const watchItems = normalizeMonitorWatchItems(items);
-  if (!watchItems.length) {
-    const empty = document.createElement("p");
-    empty.className = "monitor-watch-badge-empty";
-    empty.textContent = "Badges appear here once you add an item.";
-    elements.monitorWatchItemsList.replaceChildren(empty);
-    return;
-  }
-
-  elements.monitorWatchItemsList.replaceChildren(
-    ...watchItems.map((item, index) => createMonitorWatchItemBadge(item, index)),
-  );
-}
-
-function setMonitorWatchItems(items, options = {}) {
+function syncMonitorWatchItemsField(event) {
   const feature = getSelectedFeature();
   if (!feature || !isMonitorFeature(feature)) {
-    return false;
+    return;
   }
 
   const currentSettings = getSelectedFeatureSettings(feature);
   const nextSettings = normalizeFeatureMonitorSettings({
     ...currentSettings,
-    watchItems: items,
+    watchItems: event.target.value,
   });
 
   if (JSON.stringify(nextSettings.watchItems) === JSON.stringify(currentSettings.watchItems)) {
-    if (options.focusInput !== false) {
-      window.requestAnimationFrame(() => {
-        elements.monitorWatchItemInput?.focus();
-      });
-    }
-    return false;
+    return;
   }
 
   feature.settings = nextSettings;
   persistClientState();
-  updateMonitorFields();
   updateFeatureStudioHeader();
-  void flushSelectedFeatureConfigAutosave({
-    featureId: feature.id,
-    alertOnError: false,
-    noChangesMessage: false,
-  }).catch(() => {});
-
-  if (options.focusInput !== false) {
-    window.requestAnimationFrame(() => {
-      elements.monitorWatchItemInput?.focus();
-    });
-  }
-  return true;
+  scheduleSelectedFeatureConfigAutosave(feature);
 }
 
-function addMonitorWatchItems(rawValue = state.monitorWatchItemDraft || "") {
-  const nextItems = normalizeMonitorWatchItems(rawValue);
-  if (!nextItems.length) {
-    window.requestAnimationFrame(() => {
-      elements.monitorWatchItemInput?.focus();
-    });
-    return false;
-  }
-
-  const feature = getSelectedFeature();
-  const currentItems = feature && isMonitorFeature(feature)
-    ? getSelectedFeatureSettings(feature).watchItems
-    : [];
-  const didChange = setMonitorWatchItems([...currentItems, ...nextItems], { focusInput: false });
-
-  state.monitorWatchItemDraft = "";
-  if (elements.monitorWatchItemInput) {
-    elements.monitorWatchItemInput.value = "";
-  }
-  if (didChange) {
-    setStatus("Watch item added.");
-  }
-  window.requestAnimationFrame(() => {
-    elements.monitorWatchItemInput?.focus();
-  });
-  return didChange;
-}
-
-function removeMonitorWatchItem(index) {
+function finalizeMonitorWatchItemsField(event) {
   const feature = getSelectedFeature();
   if (!feature || !isMonitorFeature(feature)) {
-    return false;
+    return;
   }
 
-  const currentItems = getSelectedFeatureSettings(feature).watchItems;
-  const itemIndex = Number.parseInt(index, 10);
-  if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= currentItems.length) {
-    return false;
+  const normalizedValue = getSelectedFeatureSettings(feature).watchItems.join("\n");
+  if (event.target.value !== normalizedValue) {
+    event.target.value = normalizedValue;
   }
 
-  const nextItems = currentItems.filter((_, currentIndex) => currentIndex !== itemIndex);
-  const didChange = setMonitorWatchItems(nextItems);
-  if (didChange) {
-    setStatus(nextItems.length ? "Watch item removed." : "Watch list cleared.");
+  if (hasPendingFeatureConfigAutosave(feature.id)) {
+    void flushSelectedFeatureConfigAutosave({
+      featureId: feature.id,
+      alertOnError: false,
+      noChangesMessage: false,
+    }).catch(() => {});
   }
-  return didChange;
 }
 
 function getMonitorFieldElement(field) {
@@ -7981,40 +7877,8 @@ function bindEvents() {
   elements.exampleReplies.addEventListener("input", syncPromptField("exampleReplies"));
   elements.scenarioSelect.addEventListener("change", syncPromptField("scenario"));
   if (elements.monitorWatchItemInput) {
-    elements.monitorWatchItemInput.addEventListener("input", (event) => {
-      state.monitorWatchItemDraft = event.target.value;
-    });
-    elements.monitorWatchItemInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === "," || event.key === ";") {
-        event.preventDefault();
-        addMonitorWatchItems(event.currentTarget.value);
-      }
-    });
-    elements.monitorWatchItemInput.addEventListener("paste", (event) => {
-      const pastedText = event.clipboardData?.getData("text") || "";
-      const parsedItems = normalizeMonitorWatchItems(pastedText);
-      if (parsedItems.length > 1 || /[\n;,]/.test(pastedText)) {
-        event.preventDefault();
-        addMonitorWatchItems(pastedText);
-      }
-    });
-  }
-  if (elements.monitorWatchItemAddButton) {
-    elements.monitorWatchItemAddButton.addEventListener("click", () => {
-      addMonitorWatchItems(elements.monitorWatchItemInput?.value || "");
-    });
-  }
-  if (elements.monitorWatchItemsList) {
-    elements.monitorWatchItemsList.addEventListener("click", (event) => {
-      const target = getEventTargetElement(event);
-      const removeButton = target?.closest("[data-monitor-remove-watch-item-index]");
-      if (!removeButton) {
-        return;
-      }
-
-      event.preventDefault();
-      removeMonitorWatchItem(removeButton.dataset.monitorRemoveWatchItemIndex || "");
-    });
+    elements.monitorWatchItemInput.addEventListener("input", syncMonitorWatchItemsField);
+    elements.monitorWatchItemInput.addEventListener("blur", finalizeMonitorWatchItemsField);
   }
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.addEventListener("input", syncMonitorIntervalDaysField);
