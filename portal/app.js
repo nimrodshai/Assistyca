@@ -6311,6 +6311,9 @@ function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
 function updateMonitorFields() {
   const feature = getSelectedFeature();
   const isMonitor = isMonitorFeature(feature);
+  if (elements.featureStudioEditorSection) {
+    elements.featureStudioEditorSection.classList.toggle("is-monitor-flow", isMonitor);
+  }
   if (elements.monitorTargetCard) {
     elements.monitorTargetCard.classList.toggle("is-hidden", !isMonitor);
   }

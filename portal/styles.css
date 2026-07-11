@@ -2911,6 +2911,30 @@ body[data-modal="billing"] .app-shell {
   align-items: start;
 }
 
+.studio-fields.is-monitor-flow {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(100%, 38rem);
+  gap: 1rem;
+}
+
+.studio-fields.is-monitor-flow > .config-card,
+.studio-fields.is-monitor-flow > .setup-card {
+  width: 100%;
+}
+
+.studio-fields.is-monitor-flow .setup-card {
+  grid-column: auto;
+}
+
+.studio-fields.is-monitor-flow #monitorScheduleCard .monitor-settings-grid,
+.studio-fields.is-monitor-flow #monitorDeliveryCard .monitor-settings-grid {
+  grid-template-columns: 1fr;
+}
+
+.studio-fields.is-monitor-flow #monitorDeliveryCard .monitor-settings-grid {
+  gap: 0.85rem;
+}
+
 .setup-card {
   grid-column: 1 / -1;
 }
