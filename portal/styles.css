@@ -2937,12 +2937,16 @@ body[data-modal="billing"] .app-shell {
 .editor-activation-row {
   grid-column: 1 / -1;
   display: flex;
+  align-items: center;
   justify-content: flex-start;
+  gap: 1.8rem;
+  flex-wrap: wrap;
   margin-bottom: 50px;
 }
 
 .editor-activation-actions {
   justify-content: flex-start;
+  flex: 0 0 auto;
 }
 
 .editor-activation-actions .primary-button,
@@ -2954,24 +2958,24 @@ body[data-modal="billing"] .app-shell {
   position: relative;
   overflow: hidden;
   gap: 1.4rem;
-  padding: clamp(1.45rem, 2vw, 2rem);
+  padding: clamp(1.55rem, 2vw, 2.15rem);
   border-radius: 32px;
-  border: 1px solid rgba(136, 167, 147, 0.18);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(251, 253, 251, 0.95));
+  border: 1px solid rgba(206, 216, 224, 0.7);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(252, 253, 253, 0.97));
   box-shadow:
-    0 24px 58px rgba(25, 38, 54, 0.08),
+    0 20px 54px rgba(25, 38, 54, 0.07),
     inset 0 1px 0 rgba(255, 255, 255, 0.92);
 }
 
 .monitor-setup-card::after {
   content: "";
   position: absolute;
-  left: -4rem;
-  bottom: -9rem;
+  right: -6rem;
+  top: -5rem;
   width: 18rem;
   height: 18rem;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(160, 208, 171, 0.14), transparent 68%);
+  background: radial-gradient(circle, rgba(214, 240, 220, 0.4), transparent 68%);
   pointer-events: none;
 }
 
@@ -2987,14 +2991,14 @@ body[data-modal="billing"] .app-shell {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 4.35rem;
-  height: 4.35rem;
+  width: 4.15rem;
+  height: 4.15rem;
   border-radius: 50%;
-  background: linear-gradient(180deg, #f0faee, #e8f6e6);
-  color: #2f7b56;
+  background: linear-gradient(180deg, #f3fbf9, #ebf7f4);
+  color: #1b8a7c;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.94),
-    0 14px 34px rgba(100, 148, 116, 0.16);
+    0 12px 28px rgba(123, 176, 168, 0.12);
 }
 
 .monitor-card-icon svg {
@@ -3011,24 +3015,24 @@ body[data-modal="billing"] .app-shell {
 
 .monitor-card-copy h3 {
   margin: 0;
-  color: #0f3e30;
+  color: #142231;
   font-family: var(--font-display);
-  font-size: clamp(1.4rem, 1.9vw, 1.75rem);
+  font-size: clamp(1.32rem, 1.8vw, 1.72rem);
   font-weight: 750;
   letter-spacing: -0.045em;
   line-height: 1.05;
 }
 
 .monitor-setup-card-target .monitor-card-copy h3 {
-  font-size: clamp(1.9rem, 2.6vw, 2.6rem);
+  font-size: clamp(1.82rem, 2.4vw, 2.32rem);
 }
 
 .monitor-card-copy p {
   margin: 0;
   max-width: 36ch;
-  color: #5b6776;
-  font-size: 1.02rem;
-  line-height: 1.55;
+  color: #6d7988;
+  font-size: 0.98rem;
+  line-height: 1.52;
 }
 
 .monitor-card-layout {
@@ -3077,12 +3081,12 @@ body[data-modal="billing"] .app-shell {
 }
 
 .monitor-watch-input-row input {
-  min-height: 4.35rem;
+  min-height: 4.5rem;
   padding-inline: 1.35rem;
   border-radius: 1.45rem;
-  border: 1.5px solid rgba(109, 163, 125, 0.36);
+  border: 2px solid rgba(38, 151, 132, 0.86);
   background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 12px 30px rgba(25, 38, 54, 0.06);
+  box-shadow: 0 10px 22px rgba(25, 38, 54, 0.04);
   font-size: 1.03rem;
 }
 
@@ -3112,25 +3116,26 @@ body[data-modal="billing"] .app-shell {
 
 .monitor-watch-add-button {
   min-width: 9.75rem;
-  min-height: 4.35rem;
+  min-height: 4.5rem;
   padding-inline: 1.45rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.72rem;
-  background: linear-gradient(135deg, #28774f, #1b6947);
-  box-shadow: 0 18px 32px rgba(33, 114, 76, 0.22);
+  border-radius: 1.35rem;
+  background: linear-gradient(135deg, #269986, #1f7e73);
+  box-shadow: 0 16px 28px rgba(39, 137, 123, 0.2);
 }
 
 .monitor-watch-list-shell {
-  min-height: 6.2rem;
+  min-height: 5.6rem;
   padding: 1.1rem;
-  border: 1px solid rgba(156, 195, 169, 0.3);
+  border: 1px solid rgba(227, 234, 239, 0.94);
   border-radius: 1.6rem;
-  background: linear-gradient(180deg, rgba(247, 252, 248, 0.96), rgba(255, 255, 255, 0.98));
+  background: linear-gradient(180deg, rgba(251, 253, 253, 0.98), rgba(255, 255, 255, 0.98));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 14px 30px rgba(25, 38, 54, 0.05);
+    0 10px 22px rgba(25, 38, 54, 0.035);
 }
 
 .monitor-watch-list {
@@ -3147,12 +3152,12 @@ body[data-modal="billing"] .app-shell {
   align-items: center;
   gap: 0.5rem;
   max-width: 100%;
-  padding: 0.55rem 0.65rem 0.55rem 0.92rem;
-  border: 1px solid rgba(139, 188, 152, 0.28);
+  padding: 0.62rem 0.74rem 0.62rem 0.98rem;
+  border: 1px solid rgba(224, 231, 236, 0.94);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.98);
   color: var(--text);
-  box-shadow: 0 10px 20px rgba(25, 38, 54, 0.05);
+  box-shadow: 0 8px 18px rgba(25, 38, 54, 0.04);
 }
 
 .monitor-watch-badge::before {
@@ -3160,8 +3165,8 @@ body[data-modal="billing"] .app-shell {
   width: 0.52rem;
   height: 0.52rem;
   border-radius: 50%;
-  background: #6bc36c;
-  box-shadow: 0 0 0 0.24rem rgba(107, 195, 108, 0.16);
+  background: #69b8af;
+  box-shadow: 0 0 0 0.24rem rgba(105, 184, 175, 0.14);
   flex: 0 0 auto;
 }
 
@@ -3232,17 +3237,17 @@ body[data-modal="billing"] .app-shell {
   gap: 1rem;
   justify-self: start;
   align-self: start;
-  padding: 1rem 1.15rem;
-  border: 1px solid rgba(136, 167, 147, 0.18);
+  padding: 0.85rem 0;
+  border: 0;
   border-radius: 1.55rem;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 249, 0.96));
-  box-shadow: 0 16px 32px rgba(25, 38, 54, 0.05);
+  background: transparent;
+  box-shadow: none;
 }
 
 .monitor-schedule-inline-copy {
-  color: #1e2832;
-  font-size: 1.08rem;
-  font-weight: 700;
+  color: #647184;
+  font-size: 1.02rem;
+  font-weight: 650;
   line-height: 1.2;
 }
 
@@ -3252,32 +3257,41 @@ body[data-modal="billing"] .app-shell {
   align-items: center;
 }
 
+.monitor-schedule-number-shell::before,
 .monitor-schedule-number-shell::after {
   content: "";
   position: absolute;
   right: 1rem;
-  top: 50%;
-  width: 0.72rem;
-  height: 0.72rem;
+  width: 0.56rem;
+  height: 0.56rem;
   border-right: 2px solid rgba(44, 63, 77, 0.72);
   border-bottom: 2px solid rgba(44, 63, 77, 0.72);
-  transform: translateY(-65%) rotate(45deg);
   pointer-events: none;
 }
 
+.monitor-schedule-number-shell::before {
+  top: calc(50% - 0.45rem);
+  transform: translateY(-50%) rotate(225deg);
+}
+
+.monitor-schedule-number-shell::after {
+  top: calc(50% + 0.45rem);
+  transform: translateY(-50%) rotate(45deg);
+}
+
 .monitor-schedule-inline-field input {
-  width: 7rem;
-  min-width: 7rem;
-  min-height: 4.1rem;
-  padding: 0.5rem 2.2rem 0.5rem 0.75rem;
-  border-radius: 1.1rem;
-  border: 1px solid rgba(20, 28, 38, 0.08);
+  width: 8.5rem;
+  min-width: 8.5rem;
+  min-height: 4.2rem;
+  padding: 0.5rem 2.35rem 0.5rem 0.75rem;
+  border-radius: 1.2rem;
+  border: 1px solid rgba(221, 227, 233, 0.96);
   background: #fff;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 10px 20px rgba(25, 38, 54, 0.05);
+    0 10px 20px rgba(25, 38, 54, 0.035);
   text-align: center;
-  font-size: 1.55rem;
+  font-size: 1.32rem;
   font-weight: 750;
   letter-spacing: -0.04em;
   appearance: textfield;
@@ -3297,7 +3311,7 @@ body[data-modal="billing"] .app-shell {
 }
 
 .monitor-schedule-illustration svg {
-  width: min(100%, 18rem);
+  width: min(100%, 18.5rem);
   height: auto;
   display: block;
 }
@@ -3311,8 +3325,8 @@ body[data-modal="billing"] .app-shell {
 
 .monitor-delivery-channel-field > span,
 .monitor-delivery-panel > span {
-  color: #24303b;
-  font-size: 1rem;
+  color: #5f6d7f;
+  font-size: 0.96rem;
   font-weight: 700;
   line-height: 1.25;
 }
@@ -3328,7 +3342,7 @@ body[data-modal="billing"] .app-shell {
   transform: translateY(-50%);
   width: 1.25rem;
   height: 1.25rem;
-  color: #677282;
+  color: #428b83;
   pointer-events: none;
 }
 
@@ -3356,18 +3370,25 @@ body[data-modal="billing"] .app-shell {
   min-height: 4.1rem;
   padding: 0.85rem 3.1rem 0.85rem 3.2rem;
   border-radius: 1.35rem;
-  border: 1px solid rgba(20, 28, 38, 0.08);
+  border: 1px solid rgba(220, 227, 232, 0.96);
   background: rgba(255, 255, 255, 0.98);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.88),
-    0 14px 28px rgba(25, 38, 54, 0.05);
+    0 10px 20px rgba(25, 38, 54, 0.03);
 }
 
 .monitor-delivery-detail {
   display: grid;
   align-items: start;
   align-content: start;
+  gap: 0.85rem;
   min-width: 0;
+}
+
+.monitor-delivery-divider {
+  height: 1px;
+  width: 100%;
+  background: rgba(223, 230, 235, 0.96);
 }
 
 .monitor-delivery-panel {
@@ -3383,14 +3404,14 @@ body[data-modal="billing"] .app-shell {
   display: grid;
   gap: 0.18rem;
   min-width: 0;
-  min-height: 5.85rem;
-  padding: 1rem 1.1rem 1rem 4.85rem;
-  border: 1px solid rgba(156, 195, 169, 0.3);
+  min-height: 6rem;
+  padding: 1rem 1.1rem 1rem 5rem;
+  border: 1px solid rgba(220, 227, 232, 0.96);
   border-radius: 1.45rem;
-  background: linear-gradient(180deg, rgba(246, 251, 247, 0.96), rgba(255, 255, 255, 0.98));
+  background: linear-gradient(180deg, rgba(251, 253, 253, 0.98), rgba(255, 255, 255, 0.98));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 12px 26px rgba(25, 38, 54, 0.04);
+    0 10px 20px rgba(25, 38, 54, 0.03);
   align-content: center;
 }
 
@@ -3401,19 +3422,19 @@ body[data-modal="billing"] .app-shell {
   transform: translateY(-50%);
   display: grid;
   place-items: center;
-  width: 2.6rem;
-  height: 2.6rem;
+  width: 3.05rem;
+  height: 3.05rem;
   border-radius: 50%;
-  background: linear-gradient(180deg, #ecf8ea, #e4f3e3);
-  color: #2f7b56;
+  background: linear-gradient(180deg, #f1fbf8, #e8f6f2);
+  color: #2b8a81;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 10px 22px rgba(100, 148, 116, 0.14);
+    0 10px 20px rgba(123, 176, 168, 0.12);
 }
 
 .monitor-delivery-surface-icon svg {
-  width: 1.3rem;
-  height: 1.3rem;
+  width: 1.45rem;
+  height: 1.45rem;
 }
 
 .monitor-delivery-surface-copy {
@@ -3424,19 +3445,19 @@ body[data-modal="billing"] .app-shell {
 
 .monitor-delivery-caption {
   margin: 0;
-  color: #5f6b79;
-  font-size: 0.94rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  color: #7d8794;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   line-height: 1.3;
-  text-transform: none;
+  text-transform: uppercase;
 }
 
 .monitor-delivery-value {
   margin: 0;
   min-width: 0;
-  color: #26313c;
-  font-size: 1.08rem;
+  color: #172433;
+  font-size: 1.04rem;
   font-weight: 750;
   letter-spacing: -0.02em;
   line-height: 1.3;
@@ -3476,18 +3497,18 @@ body[data-modal="billing"] .app-shell {
 }
 
 .studio-fields.is-monitor-flow .monitor-activate-button {
-  min-width: 19rem;
-  min-height: 4.75rem;
+  min-width: 22rem;
+  min-height: 4.6rem;
   padding-inline: 1.85rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.82rem;
-  border-radius: 1.55rem;
+  border-radius: 1.45rem;
   font-size: 1.12rem;
   font-weight: 750;
-  background: linear-gradient(135deg, #2b7b54, #1b6846);
-  box-shadow: 0 18px 32px rgba(33, 114, 76, 0.24);
+  background: linear-gradient(135deg, #269986, #1f7e73);
+  box-shadow: 0 16px 28px rgba(39, 137, 123, 0.2);
 }
 
 .studio-fields.is-monitor-flow .monitor-activate-button .monitor-button-icon {
@@ -3504,6 +3525,34 @@ body[data-modal="billing"] .app-shell {
 
 .studio-fields.is-monitor-flow .monitor-activate-button.ghost-button .monitor-button-icon {
   color: #8c2f14;
+}
+
+.monitor-activation-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8rem;
+  color: #8190a2;
+  font-size: 0.98rem;
+  line-height: 1.4;
+}
+
+.monitor-activation-note em {
+  font-style: italic;
+}
+
+.monitor-activation-note-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  color: #8f9bab;
+  flex: 0 0 auto;
+}
+
+.monitor-activation-note-icon svg {
+  width: 100%;
+  height: 100%;
 }
 
 @media (max-width: 980px) {
@@ -3552,12 +3601,13 @@ body[data-modal="billing"] .app-shell {
     width: 100%;
     flex-wrap: wrap;
     gap: 0.75rem;
+    padding: 0;
   }
 
   .monitor-schedule-inline-field input {
-    width: 6.1rem;
-    min-width: 6.1rem;
-    font-size: 1.35rem;
+    width: 7.25rem;
+    min-width: 7.25rem;
+    font-size: 1.2rem;
   }
 
   .monitor-schedule-illustration {
@@ -3593,6 +3643,10 @@ body[data-modal="billing"] .app-shell {
   .studio-fields.is-monitor-flow .monitor-activate-button {
     width: 100%;
     min-width: 0;
+  }
+
+  .monitor-activation-note {
+    width: 100%;
   }
 }
 
