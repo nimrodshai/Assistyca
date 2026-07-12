@@ -98,6 +98,60 @@ const DEFAULT_MONITOR_SETTINGS = {
   deliveryChannel: "email",
   telegramChatId: "",
 };
+const MANUAL_PRICING_SNAPSHOT = {
+  source: "manual",
+  sourceUrl: "https://developers.openai.com/api/docs/pricing",
+  fetchedAt: "2026-07-12T00:00:00Z",
+  inputMultiplier: 1.5,
+  outputMultiplier: 1.5,
+  cards: [
+    {
+      band: "Lean",
+      modelId: "gpt-5.4-nano",
+      modelName: "GPT-5.4 Nano",
+      openai: {
+        inputUsdPer1MTokens: 0.2,
+        outputUsdPer1MTokens: 1.25,
+      },
+      ours: {
+        inputUsdPer1MTokens: 0.3,
+        outputUsdPer1MTokens: 1.875,
+      },
+      totalOpenAIUsdPer1MTokens: 1.45,
+      totalOurUsdPer1MTokens: 2.175,
+    },
+    {
+      band: "Balanced",
+      modelId: "gpt-5.4",
+      modelName: "GPT-5.4",
+      openai: {
+        inputUsdPer1MTokens: 2.5,
+        outputUsdPer1MTokens: 15,
+      },
+      ours: {
+        inputUsdPer1MTokens: 3.75,
+        outputUsdPer1MTokens: 22.5,
+      },
+      totalOpenAIUsdPer1MTokens: 17.5,
+      totalOurUsdPer1MTokens: 26.25,
+    },
+    {
+      band: "Premium",
+      modelId: "gpt-5.5",
+      modelName: "GPT-5.5",
+      openai: {
+        inputUsdPer1MTokens: 5,
+        outputUsdPer1MTokens: 30,
+      },
+      ours: {
+        inputUsdPer1MTokens: 7.5,
+        outputUsdPer1MTokens: 45,
+      },
+      totalOpenAIUsdPer1MTokens: 35,
+      totalOurUsdPer1MTokens: 52.5,
+    },
+  ],
+};
 const MONITOR_INTERVAL_DAYS_MIN = 1;
 const MONITOR_INTERVAL_DAYS_MAX = 365;
 
@@ -546,7 +600,6 @@ const elements = {
   pricingStatusBanner: document.querySelector("#pricingStatusBanner"),
   pricingStatusMessage: document.querySelector("#pricingStatusMessage"),
   pricingStatusMeta: document.querySelector("#pricingStatusMeta"),
-  pricingRefreshButton: document.querySelector("#pricingRefreshButton"),
   pricingCardGrid: document.querySelector("#pricingCardGrid"),
   closeSettingsButton: document.querySelector("#closeSettingsButton"),
   settingsSwitcher: document.querySelector("#settingsSwitcher"),
@@ -4786,20 +4839,10 @@ function createPricingEmptyState(message, meta = "") {
 }
 
 function updatePricingPanel() {
-  const snapshot = state.pricingSnapshot && typeof state.pricingSnapshot === "object" ? state.pricingSnapshot : null;
+  const snapshot = state.pricingSnapshot && typeof state.pricingSnapshot === "object"
+    ? state.pricingSnapshot
+    : MANUAL_PRICING_SNAPSHOT;
   const cards = Array.isArray(snapshot?.cards) ? snapshot.cards : [];
-  const hasError = Boolean(state.pricingError);
-  const isLoading = state.pricingLoading;
-
-  if (elements.pricingStatusBanner) {
-    elements.pricingStatusBanner.classList.toggle("is-warn", hasError);
-    elements.pricingStatusBanner.classList.toggle("is-loading", isLoading && !snapshot);
-  }
-
-  if (elements.pricingRefreshButton) {
-    elements.pricingRefreshButton.disabled = isLoading;
-    elements.pricingRefreshButton.textContent = hasError ? "Try again" : "Refresh pricing";
-  }
 
   if (elements.pricingMultiplierValue) {
     const multiplier = Number(snapshot?.inputMultiplier ?? DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER;
@@ -4811,47 +4854,29 @@ function updatePricingPanel() {
   }
 
   if (elements.pricingSourceType) {
-    elements.pricingSourceType.textContent = snapshot?.source === "database" ? "Saved catalog" : "OpenAI markdown";
+    elements.pricingSourceType.textContent = "Manual snapshot";
   }
 
   if (elements.pricingSourceLabel) {
-    elements.pricingSourceLabel.textContent = hasError && !snapshot
-      ? "Pricing unavailable"
-      : snapshot?.source === "database"
-        ? "Using saved pricing snapshot"
-        : "Synced from OpenAI pricing";
+    elements.pricingSourceLabel.textContent = "Manual pricing list";
   }
 
   if (elements.pricingSourceMeta) {
-    elements.pricingSourceMeta.textContent = hasError
-      ? state.pricingError
-      : formatPricingTimestamp(snapshot?.fetchedAt);
+    elements.pricingSourceMeta.textContent = `Verified manually against OpenAI pricing. ${formatPricingTimestamp(snapshot?.fetchedAt)}`;
   }
 
   if (elements.pricingStatusMessage) {
-    elements.pricingStatusMessage.textContent = hasError
-      ? state.pricingError
-      : isLoading && !snapshot
-        ? "Loading pricing data..."
-        : "Three representative models are shown below using our 1.5x pricing.";
+    elements.pricingStatusMessage.textContent = "Three representative models are shown below using our manual 1.5x pricing.";
   }
 
   if (elements.pricingStatusMeta) {
-    elements.pricingStatusMeta.textContent = snapshot?.sourceUrl
-      ? `Source: ${snapshot.sourceUrl}`
-      : "We’ll keep the last loaded pricing visible if a refresh fails.";
+    elements.pricingStatusMeta.textContent = "Update these values manually when OpenAI pricing changes.";
   }
 
   if (elements.pricingCardGrid) {
     if (!cards.length) {
-      const message = hasError
-        ? "Pricing cards are not available right now."
-        : isLoading
-          ? "Loading model pricing..."
-          : "Pricing cards will appear here once the catalog loads.";
-      const meta = hasError
-        ? "Refresh pricing to try again."
-        : "We’ll show one lean model, one middle-tier model, and one premium model.";
+      const message = "Pricing cards are not available right now.";
+      const meta = "Add manual prices to MANUAL_PRICING_SNAPSHOT in portal/app.js.";
       elements.pricingCardGrid.replaceChildren(createPricingEmptyState(message, meta));
     } else {
       elements.pricingCardGrid.replaceChildren(...cards.map((card) => buildPricingCard(card)));
@@ -4860,34 +4885,10 @@ function updatePricingPanel() {
 }
 
 async function refreshPricingSnapshot(options = {}) {
-  if (!authSession?.token) {
-    state.pricingSnapshot = null;
-    state.pricingLoading = false;
-    state.pricingError = "";
-    return;
-  }
-
-  if (state.pricingLoading && !options.force) {
-    return;
-  }
-
-  state.pricingLoading = true;
+  state.pricingSnapshot = MANUAL_PRICING_SNAPSHOT;
+  state.pricingLoading = false;
   state.pricingError = "";
-  renderApp();
-
-  try {
-    const response = await apiRequest("/api/pricing", {
-      headers: {
-        Authorization: `Bearer ${authSession.token}`,
-      },
-    });
-
-    state.pricingSnapshot = response && typeof response === "object" ? response : null;
-    state.pricingError = "";
-  } catch (error) {
-    state.pricingError = formatApiErrorMessage(error, "We couldn’t load pricing right now.");
-  } finally {
-    state.pricingLoading = false;
+  if (options.render !== false) {
     renderApp();
   }
 }
@@ -7931,11 +7932,6 @@ function bindEvents() {
   if (elements.billingRefreshButton) {
     elements.billingRefreshButton.addEventListener("click", () => {
       void refreshBillingReport();
-    });
-  }
-  if (elements.pricingRefreshButton) {
-    elements.pricingRefreshButton.addEventListener("click", () => {
-      void refreshPricingSnapshot({ force: true });
     });
   }
   if (elements.billingHelpButton) {
