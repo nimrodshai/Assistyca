@@ -25,6 +25,7 @@ from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import parse_datetime
+from packages.infrastructure.tool_model_selection import resolve_tool_model
 
 
 MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier"
@@ -36,6 +37,7 @@ DEFAULT_MONITOR_MAX_OUTPUT_TOKENS = 1800
 DEFAULT_MONITOR_MAX_ITEMS = 5
 
 DEFAULT_MONITOR_SETTINGS = {
+    "model": DEFAULT_MONITOR_MODEL,
     "watchItems": [],
     "intervalDays": 7,
     "deliveryChannel": "email",
@@ -139,6 +141,7 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
         delivery_channel = DEFAULT_MONITOR_SETTINGS["deliveryChannel"]
 
     return {
+        "model": resolve_tool_model(source, default=DEFAULT_MONITOR_MODEL),
         "watchItems": normalize_watch_items(source.get("watchItems") or source.get("searchPrompt")),
         "intervalDays": normalize_interval_days(
             source.get("intervalDays")
@@ -498,6 +501,7 @@ class ScheduledMonitorScheduler:
             user_id=int(target.get("userId") or 0),
             feature_id=MONITOR_FEATURE_ID,
         )
+        selected_model = resolve_tool_model(settings, default=self.config.model)
         prompt = build_monitor_prompt(
             target=target,
             settings=settings,
@@ -510,7 +514,7 @@ class ScheduledMonitorScheduler:
             tool_id=MONITOR_FEATURE_ID,
             billing_email=normalize_email(target.get("email")),
             prompt=prompt,
-            model=self.config.model,
+            model=selected_model,
             max_output_tokens=self.config.max_output_tokens,
             usage_recorder=self.database,
             price_resolver=self.database.get_model_price,
@@ -519,6 +523,7 @@ class ScheduledMonitorScheduler:
                 "featureId": MONITOR_FEATURE_ID,
                 "deliveryChannel": settings.get("deliveryChannel"),
                 "intervalDays": settings.get("intervalDays"),
+                "selectedModel": selected_model,
             },
             tools=[{"type": "web_search", "search_context_size": self.config.search_context_size}],
         )

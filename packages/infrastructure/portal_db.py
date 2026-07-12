@@ -3076,17 +3076,21 @@ class PortalDatabase:
                     w.metadata_json,
                     w.connected_at,
                     w.last_tested_at,
-                    fa.activated_at,
-                    fa.updated_at AS activation_updated_at,
-                    fa.metadata_json AS activation_metadata_json
-                FROM feature_activations AS fa
+                    act.activated_at,
+                    act.updated_at AS activation_updated_at,
+                    act.metadata_json AS activation_metadata_json,
+                    assign.metadata_json AS assignment_metadata_json
+                FROM feature_activations AS act
                 INNER JOIN users AS u
-                    ON u.id = fa.user_id
+                    ON u.id = act.user_id
                 INNER JOIN whatsapp_connections AS w
                     ON w.user_id = u.id
+                INNER JOIN feature_assignments AS assign
+                    ON assign.user_id = u.id AND assign.feature_id = act.feature_id
                 WHERE u.is_active = 1
-                  AND fa.feature_id = ?
-                  AND fa.is_active = 1
+                  AND act.feature_id = ?
+                  AND act.is_active = 1
+                  AND assign.is_assigned = 1
                   AND w.connection_status = 'connected'
                   AND w.phone_number_id <> ''
                   AND w.owner_wa_id <> ''
@@ -3100,6 +3104,8 @@ class PortalDatabase:
                 payload = _row_to_dict(row) or {}
                 connection_metadata = _load_json_dict(payload.get("metadata_json"))
                 activation_metadata = _load_json_dict(payload.get("activation_metadata_json"))
+                assignment_metadata = _load_json_dict(payload.get("assignment_metadata_json"))
+                settings_payload = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
                 targets.append(
                     {
                         "userId": int(payload.get("user_id") or 0),
@@ -3112,6 +3118,7 @@ class PortalDatabase:
                         "verifiedName": normalize_text(payload.get("verified_name")),
                         "connectionStatus": normalize_text(payload.get("connection_status")),
                         "metadata": connection_metadata if isinstance(connection_metadata, dict) else {},
+                        "settings": settings_payload if isinstance(settings_payload, dict) else {},
                         "connectedAt": payload.get("connected_at"),
                         "lastTestedAt": payload.get("last_tested_at"),
                         "featureId": normalized_feature_id,

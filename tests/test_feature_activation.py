@@ -119,6 +119,7 @@ class FeatureActivationTests(unittest.TestCase):
                     "scenario": "monitor",
                 },
                 settings={
+                    "model": "gpt-5.4",
                     "watchItems": [
                         "Criminal defense law conferences in Israel",
                         "Court holidays that affect legal work",
@@ -135,14 +136,33 @@ class FeatureActivationTests(unittest.TestCase):
             result["feature"]["settings"]["watchItems"],
             ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
         )
+        self.assertEqual(result["feature"]["settings"]["model"], "gpt-5.4")
         self.assertEqual(result["feature"]["settings"]["intervalDays"], 7)
         self.assertEqual(result["feature"]["prompt"]["scenario"], "monitor")
 
         assignment = self.database.get_feature_assignment("owner@example.com", MONITOR_FEATURE_ID)
+        self.assertEqual(assignment["metadata"]["settings"]["model"], "gpt-5.4")
         self.assertEqual(
             assignment["metadata"]["settings"]["watchItems"],
             ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
         )
+
+    def test_save_non_monitor_feature_config_persists_selected_model(self) -> None:
+        service = FeatureActivationService(self.database, config=FeatureActivationConfig())
+
+        result = service.save_feature_config(
+            "owner@example.com",
+            feature_id=FOLLOW_UP_FEATURE_ID,
+            settings={
+                "model": "gpt-5.4-nano",
+            },
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["feature"]["settings"]["model"], "gpt-5.4-nano")
+
+        assignment = self.database.get_feature_assignment("owner@example.com", FOLLOW_UP_FEATURE_ID)
+        self.assertEqual(assignment["metadata"]["settings"]["model"], "gpt-5.4-nano")
 
     def test_save_monitor_feature_config_requires_openai_backend(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())

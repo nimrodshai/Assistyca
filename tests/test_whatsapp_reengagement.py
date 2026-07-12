@@ -5,6 +5,8 @@ import unittest
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
@@ -79,6 +81,15 @@ class WhatsAppReengagementTests(unittest.TestCase):
 
     def test_scheduler_sends_one_reengagement_message_for_dormant_conversation(self) -> None:
         self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                }
+            },
+        )
         self.database.set_feature_activation(
             "owner@example.com",
             feature_id=REENGAGEMENT_FEATURE_ID,
@@ -119,12 +130,24 @@ class WhatsAppReengagementTests(unittest.TestCase):
             ),
         )
 
-        summary = scheduler.run_pending(now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
+        fake_response = SimpleNamespace(
+            output_text="Hi Maya, just checking in in case you still need help with this.",
+            request_id="req_123",
+            response_id="resp_123",
+            model="gpt-5.4",
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ) as mock_openai_response:
+            summary = scheduler.run_pending(now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
 
         self.assertTrue(summary["ran"])
         self.assertEqual(len(sent_messages), 1)
-        self.assertIn("This client wasn't reached in a long time", sent_messages[0])
+        self.assertIn("just checking in", sent_messages[0])
         self.assertIn("Maya Cohen", sent_messages[0])
+        self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4")
 
         conversation = self.database.get_whatsapp_conversation(
             "15550001111",

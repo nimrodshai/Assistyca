@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfoNotFoundError
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.tool_model_selection import resolve_tool_model
 
 
 REENGAGEMENT_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer"
@@ -283,6 +284,8 @@ class WhatsAppReengagementScheduler:
         conversation: dict[str, Any],
         messages: list[dict[str, Any]],
     ) -> tuple[str, str, str, dict[str, Any]]:
+        settings = connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
+        selected_model = resolve_tool_model(settings, default=self.config.model)
         prompt = build_reengagement_prompt(
             connection=connection,
             conversation=conversation,
@@ -294,7 +297,7 @@ class WhatsAppReengagementScheduler:
                 tool_id=REENGAGEMENT_FEATURE_ID,
                 billing_email=normalize_text(connection.get("email")).lower(),
                 prompt=prompt,
-                model=self.config.model,
+                model=selected_model,
                 max_output_tokens=160,
                 usage_recorder=self.database,
                 price_resolver=self.database.get_model_price,
@@ -303,6 +306,7 @@ class WhatsAppReengagementScheduler:
                     "conversationId": normalize_text(conversation.get("conversationId")),
                     "senderWaId": normalize_text(conversation.get("senderWaId")),
                     "featureId": REENGAGEMENT_FEATURE_ID,
+                    "selectedModel": selected_model,
                 },
             )
             draft_text = clean_generated_draft(result.output_text)

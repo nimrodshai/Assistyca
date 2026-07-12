@@ -32,6 +32,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             MONITOR_FEATURE_ID,
             metadata={
                 "settings": {
+                    "model": "gpt-5.4",
                     "watchItems": [
                         "Criminal defense law conferences",
                         "Nearby holiday reminders",
@@ -162,6 +163,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             MONITOR_FEATURE_ID,
             metadata={
                 "settings": {
+                    "model": "gpt-5.4-nano",
                     "watchItems": [
                         "Criminal defense law conferences",
                     ],
@@ -234,7 +236,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         ), mock.patch(
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             return_value=fake_response,
-        ), mock.patch(
+        ) as mock_openai_response, mock.patch(
             "packages.tools.scheduled_monitor.monitor.send_email_notification",
             side_effect=fake_send_email_notification,
         ):
@@ -246,6 +248,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(manual_result["run"]["status"], "completed")
         self.assertEqual(manual_result["run"]["notificationsSent"], 1)
         self.assertEqual(len(delivered_messages), 1)
+        self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4-nano")
 
         self.assertTrue(first_scheduled_summary["ran"])
         self.assertEqual(first_scheduled_summary["runs"][0]["status"], "duplicate_matches")

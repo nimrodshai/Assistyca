@@ -93,6 +93,7 @@ const DEFAULT_FEATURE_WHATSAPP = {
   last_tested_at: "",
 };
 const DEFAULT_MONITOR_SETTINGS = {
+  model: "gpt-5.5",
   watchItems: [],
   intervalDays: 7,
   deliveryChannel: "email",
@@ -160,6 +161,16 @@ const MANUAL_PRICING_SNAPSHOT = {
 };
 const MONITOR_INTERVAL_DAYS_MIN = 1;
 const MONITOR_INTERVAL_DAYS_MAX = 365;
+const DEFAULT_TOOL_MODEL = DEFAULT_MONITOR_SETTINGS.model;
+const DEFAULT_FEATURE_SETTINGS = {
+  model: DEFAULT_TOOL_MODEL,
+};
+const DEFAULT_TOOL_MODEL_OPTIONS = MANUAL_PRICING_SNAPSHOT.cards.map((card) => ({
+  id: String(card?.modelId || "").trim(),
+  name: String(card?.modelName || card?.modelId || "Model").trim(),
+  band: String(card?.band || "").trim(),
+  summary: String(card?.description || "").trim(),
+})).filter((option) => option.id);
 
 const DEFAULT_PROMPT = {
   toneGuidance: "Warm, direct, and practical. Keep replies human, short, and grounded.",
@@ -207,6 +218,8 @@ const DEFAULT_FEATURES = [
     assignment: {},
     paymentStatus: null,
     metadata: {},
+    settings: { ...DEFAULT_FEATURE_SETTINGS },
+    savedSettings: { ...DEFAULT_FEATURE_SETTINGS },
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
@@ -242,6 +255,8 @@ const DEFAULT_FEATURES = [
     assignment: {},
     paymentStatus: null,
     metadata: {},
+    settings: { ...DEFAULT_FEATURE_SETTINGS },
+    savedSettings: { ...DEFAULT_FEATURE_SETTINGS },
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
@@ -560,6 +575,10 @@ const elements = {
   monitorTelegramChatId: document.querySelector("#monitorTelegramChatId"),
   monitorWhatsAppField: document.querySelector("#monitorWhatsAppField"),
   monitorWhatsAppSetupButton: document.querySelector("#monitorWhatsAppSetupButton"),
+  featureModelCard: document.querySelector("#featureModelCard"),
+  featureModelSelect: document.querySelector("#featureModelSelect"),
+  featureModelBand: document.querySelector("#featureModelBand"),
+  featureModelSummary: document.querySelector("#featureModelSummary"),
   featureToneCard: document.querySelector("#featureToneCard"),
   featureRulesCard: document.querySelector("#featureRulesCard"),
   featureContextCard: document.querySelector("#featureContextCard"),
@@ -1767,8 +1786,12 @@ function loadClientState(email) {
       metadata: feature?.metadata && typeof feature.metadata === "object"
         ? { ...feature.metadata }
         : {},
-      settings: normalizeFeatureMonitorSettings(feature?.settings || {}),
-      savedSettings: normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {}),
+      settings: featureId === MONITOR_FEATURE_ID
+        ? normalizeFeatureMonitorSettings(feature?.settings || {})
+        : normalizeFeatureSettings(feature?.settings || {}),
+      savedSettings: featureId === MONITOR_FEATURE_ID
+        ? normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {})
+        : normalizeFeatureSettings(feature?.savedSettings || feature?.settings || {}),
       whatsapp: normalizeFeatureWhatsApp(feature?.whatsapp || feature?.activation || {}),
       savedWhatsApp: normalizeFeatureWhatsApp(
         feature?.savedWhatsApp
@@ -1951,6 +1974,27 @@ function normalizeMonitorIntervalDays(value, fallback = DEFAULT_MONITOR_SETTINGS
     : safeFallback;
 }
 
+function normalizeFeatureModel(value, fallback = DEFAULT_TOOL_MODEL) {
+  const normalizedValue = String(value || "").trim();
+  const normalizedFallback = String(fallback || DEFAULT_TOOL_MODEL).trim() || DEFAULT_TOOL_MODEL;
+  const availableIds = new Set(DEFAULT_TOOL_MODEL_OPTIONS.map((option) => option.id));
+
+  if (normalizedValue && availableIds.has(normalizedValue)) {
+    return normalizedValue;
+  }
+  if (availableIds.has(normalizedFallback)) {
+    return normalizedFallback;
+  }
+  return DEFAULT_TOOL_MODEL;
+}
+
+function normalizeFeatureSettings(settings = {}) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  return {
+    model: normalizeFeatureModel(source.model),
+  };
+}
+
 function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
@@ -1958,6 +2002,7 @@ function normalizeFeatureMonitorSettings(settings = {}) {
   const legacyCadence = String(source.cadence || "").trim().toLowerCase();
 
   return {
+    ...normalizeFeatureSettings(source),
     watchItems: normalizeMonitorWatchItems(source.watchItems || source.searchPrompt || ""),
     intervalDays: Number.isFinite(intervalDays)
       ? normalizeMonitorIntervalDays(intervalDays)
@@ -2078,8 +2123,12 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
   const savedWhatsApp = isWhatsAppFeature({ channel })
     ? normalizeFeatureWhatsApp(existingFeature?.savedWhatsApp || existingFeature?.whatsapp || serverFeature?.whatsapp || {})
     : normalizeFeatureWhatsApp({});
-  const settings = normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.settings || {});
-  const savedSettings = normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.savedSettings || existingFeature?.settings || {});
+  const settings = featureId === MONITOR_FEATURE_ID
+    ? normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.settings || {})
+    : normalizeFeatureSettings(serverFeature?.settings || existingFeature?.settings || {});
+  const savedSettings = featureId === MONITOR_FEATURE_ID
+    ? normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.savedSettings || existingFeature?.settings || {})
+    : normalizeFeatureSettings(serverFeature?.settings || existingFeature?.savedSettings || existingFeature?.settings || {});
 
   return {
     id: featureId,
@@ -2545,11 +2594,15 @@ function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
 }
 
 function getSelectedFeatureSettings(feature = getSelectedFeature()) {
-  return normalizeFeatureMonitorSettings(feature?.settings || {});
+  return isMonitorFeature(feature)
+    ? normalizeFeatureMonitorSettings(feature?.settings || {})
+    : normalizeFeatureSettings(feature?.settings || {});
 }
 
 function getSavedFeatureSettings(feature = getSelectedFeature()) {
-  return normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {});
+  return isMonitorFeature(feature)
+    ? normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {})
+    : normalizeFeatureSettings(feature?.savedSettings || feature?.settings || {});
 }
 
 function getSavedFeatureWhatsApp(feature = getSelectedFeature()) {
@@ -2584,7 +2637,11 @@ function hasFeatureConfigChanges(feature = getSelectedFeature()) {
   }
 
   if (!isMonitorFeature(feature)) {
-    return false;
+    const currentSettings = getSelectedFeatureSettings(feature);
+    const savedSettings = getSavedFeatureSettings(feature);
+    return Object.keys(DEFAULT_FEATURE_SETTINGS).some(
+      (key) => JSON.stringify(currentSettings[key] ?? "") !== JSON.stringify(savedSettings[key] ?? ""),
+    );
   }
 
   const currentSettings = getSelectedFeatureSettings(feature);
@@ -6812,6 +6869,7 @@ function updatePromptFields() {
   elements.businessNotes.value = prompt.businessNotes;
   elements.escalationGuidance.value = prompt.escalationGuidance;
   elements.exampleReplies.value = prompt.exampleReplies;
+  updateFeatureModelFields();
 }
 
 function setMonitorDeliveryPanelState(panel, isActive) {
@@ -6887,6 +6945,50 @@ function updateMonitorFields() {
     elements.monitorTelegramChatId.value = monitorSettings.telegramChatId;
   }
   updateMonitorFieldVisibility(monitorSettings);
+}
+
+function getFeatureModelOptions() {
+  return DEFAULT_TOOL_MODEL_OPTIONS.map((option) => ({ ...option }));
+}
+
+function getFeatureModelOptionById(modelId) {
+  const normalizedModelId = String(modelId || "").trim();
+  return getFeatureModelOptions().find((option) => option.id === normalizedModelId) || null;
+}
+
+function updateFeatureModelFields() {
+  const feature = getSelectedFeature();
+  const settings = getSelectedFeatureSettings(feature);
+  const modelOptions = getFeatureModelOptions();
+  const selectedOption = getFeatureModelOptionById(settings.model) || modelOptions[0] || null;
+
+  if (elements.featureModelSelect) {
+    const existingSignature = Array.from(elements.featureModelSelect.options)
+      .map((option) => `${option.value}:${option.textContent || ""}`)
+      .join("|");
+    const nextSignature = modelOptions.map((option) => `${option.id}:${option.name}`).join("|");
+    if (existingSignature !== nextSignature) {
+      elements.featureModelSelect.replaceChildren(
+        ...modelOptions.map((option) => {
+          const element = document.createElement("option");
+          element.value = option.id;
+          element.textContent = option.name;
+          return element;
+        }),
+      );
+    }
+    const nextValue = selectedOption?.id || "";
+    if (String(elements.featureModelSelect.value || "").trim() !== nextValue) {
+      elements.featureModelSelect.value = nextValue;
+    }
+  }
+
+  if (elements.featureModelBand) {
+    elements.featureModelBand.textContent = selectedOption?.band || "Model";
+  }
+  if (elements.featureModelSummary) {
+    elements.featureModelSummary.textContent = selectedOption?.summary || "Choose which model this tool should use.";
+  }
 }
 
 function populateMonitorTimezoneOptions() {
@@ -7562,6 +7664,40 @@ function syncPromptField(key) {
     updatePreview();
     scheduleSelectedFeatureConfigAutosave(feature);
   };
+}
+
+function syncFeatureModelField(event) {
+  const feature = getSelectedFeature();
+  if (!feature) {
+    return;
+  }
+
+  const nextModel = normalizeFeatureModel(event.target.value, getSelectedFeatureSettings(feature).model);
+  if (event.target.value !== nextModel) {
+    event.target.value = nextModel;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  if (currentSettings.model === nextModel) {
+    updateFeatureModelFields();
+    return;
+  }
+
+  const nextSettings = isMonitorFeature(feature)
+    ? normalizeFeatureMonitorSettings({
+      ...currentSettings,
+      model: nextModel,
+    })
+    : normalizeFeatureSettings({
+      ...currentSettings,
+      model: nextModel,
+    });
+
+  feature.settings = nextSettings;
+  persistClientState();
+  updateFeatureStudioHeader();
+  updateFeatureModelFields();
+  scheduleSelectedFeatureConfigAutosave(feature);
 }
 
 function syncMonitorSettingsField(key) {
@@ -8462,6 +8598,9 @@ function bindEvents() {
   elements.escalationGuidance.addEventListener("input", syncPromptField("escalationGuidance"));
   elements.exampleReplies.addEventListener("input", syncPromptField("exampleReplies"));
   elements.scenarioSelect.addEventListener("change", syncPromptField("scenario"));
+  if (elements.featureModelSelect) {
+    elements.featureModelSelect.addEventListener("change", syncFeatureModelField);
+  }
   if (elements.monitorWatchItemInput) {
     elements.monitorWatchItemInput.addEventListener("input", syncMonitorWatchItemsField);
     elements.monitorWatchItemInput.addEventListener("keydown", (event) => {
