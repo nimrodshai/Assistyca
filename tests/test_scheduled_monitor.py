@@ -121,18 +121,20 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_summary["targets"], 1)
         self.assertEqual(first_summary["runs"][0]["status"], "completed")
         self.assertEqual(first_summary["runs"][0]["notificationsSent"], 1)
-        self.assertEqual(len(delivered_messages), 1)
+        self.assertEqual(len(delivered_messages), 2)
         self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
 
         self.assertFalse(second_summary["ran"])
         self.assertEqual(second_summary["runs"][0]["reason"], "not_due")
-        self.assertEqual(len(delivered_messages), 1)
+        self.assertEqual(len(delivered_messages), 2)
 
         self.assertTrue(third_summary["ran"])
         self.assertEqual(third_summary["runs"][0]["status"], "duplicate_matches")
         self.assertEqual(third_summary["runs"][0]["notificationsSent"], 0)
-        self.assertEqual(len(delivered_messages), 1)
+        self.assertEqual(len(delivered_messages), 2)
+        self.assertIn("There are no new results to report right now.", delivered_messages[1]["text"])
+        self.assertIn("already covered in earlier alerts", delivered_messages[1]["text"])
 
         first_run = self.database.get_feature_monitor_run(
             user_id=1,
@@ -154,6 +156,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_run["notificationsSent"], 1)
         self.assertIsNotNone(second_run)
         self.assertEqual(second_run["status"], "duplicate_matches")
+        self.assertTrue(second_run["metadata"]["noResultsNotificationSent"])
         self.assertIsNotNone(notification)
         self.assertEqual(notification["deliveryTarget"], "owner@example.com")
 
@@ -247,13 +250,15 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(manual_result["ok"])
         self.assertEqual(manual_result["run"]["status"], "completed")
         self.assertEqual(manual_result["run"]["notificationsSent"], 1)
-        self.assertEqual(len(delivered_messages), 1)
+        self.assertEqual(len(delivered_messages), 2)
+        self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4-nano")
 
         self.assertTrue(first_scheduled_summary["ran"])
         self.assertEqual(first_scheduled_summary["runs"][0]["status"], "duplicate_matches")
         self.assertEqual(first_scheduled_summary["runs"][0]["scheduledFor"], "2026-07-08T09:00:00+00:00")
-        self.assertEqual(len(delivered_messages), 1)
+        self.assertEqual(len(delivered_messages), 2)
+        self.assertIn("There are no new results to report right now.", delivered_messages[1]["text"])
 
         scheduled_run = self.database.get_feature_monitor_run(
             user_id=1,
@@ -263,6 +268,79 @@ class ScheduledMonitorTests(unittest.TestCase):
 
         self.assertIsNotNone(scheduled_run)
         self.assertEqual(scheduled_run["status"], "duplicate_matches")
+        self.assertTrue(scheduled_run["metadata"]["noResultsNotificationSent"])
+
+    def test_scheduler_sends_no_results_update_when_nothing_new_is_found(self) -> None:
+        self._configure_monitor()
+        delivered_messages: list[dict[str, str]] = []
+
+        def fake_send_email_notification(**kwargs) -> None:
+            delivered_messages.append(
+                {
+                    "to": str(kwargs.get("to_email") or ""),
+                    "subject": str(kwargs.get("subject") or ""),
+                    "text": str(kwargs.get("text_body") or ""),
+                }
+            )
+
+        fake_response = SimpleNamespace(
+            output_text=json.dumps(
+                {
+                    "summary": "No relevant updates were found.",
+                    "items": [],
+                }
+            ),
+            request_id="req_empty",
+            response_id="resp_empty",
+            model="gpt-5.4",
+        )
+
+        scheduler = ScheduledMonitorScheduler(
+            self.database,
+            config=ScheduledMonitorConfig(
+                enabled=True,
+                poll_seconds=60,
+                model="gpt-5.5",
+                search_context_size="medium",
+                max_output_tokens=1200,
+                max_items_per_run=5,
+            ),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.call_openai_response",
+            return_value=fake_response,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            side_effect=fake_send_email_notification,
+        ):
+            summary = scheduler.run_pending(now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
+
+        self.assertTrue(summary["ran"])
+        self.assertEqual(summary["runs"][0]["status"], "no_matches")
+        self.assertEqual(summary["runs"][0]["notificationsSent"], 0)
+        self.assertEqual(len(delivered_messages), 1)
+        self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
+        self.assertIn("I searched the public web for the following topics:", delivered_messages[0]["text"])
+        self.assertIn("Criminal defense law conferences", delivered_messages[0]["text"])
+        self.assertIn("There are no new results to report right now.", delivered_messages[0]["text"])
+
+        run = self.database.get_feature_monitor_run(
+            user_id=1,
+            feature_id=MONITOR_FEATURE_ID,
+            scheduled_for="2026-07-10T09:00:00+00:00",
+        )
+        self.assertIsNotNone(run)
+        self.assertEqual(run["status"], "no_matches")
+        self.assertTrue(run["metadata"]["noResultsNotificationSent"])
 
 
 if __name__ == "__main__":

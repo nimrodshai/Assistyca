@@ -6370,7 +6370,13 @@ function openPaymentCheckout(checkoutUrl) {
 function getManualMonitorRunAlertTone(run = {}) {
   const status = String(run?.status || "").trim().toLowerCase();
   const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
-  return status === "completed" && notificationsSent > 0 ? "success" : "warning";
+  const metadata = run?.run?.metadata && typeof run.run.metadata === "object"
+    ? run.run.metadata
+    : run?.metadata && typeof run.metadata === "object"
+      ? run.metadata
+      : {};
+  const noResultsNotificationSent = Boolean(metadata.noResultsNotificationSent);
+  return (status === "completed" && notificationsSent > 0) || noResultsNotificationSent ? "success" : "warning";
 }
 
 function getManualMonitorRunAlertIcon(run = {}) {
@@ -6404,12 +6410,23 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
       : {};
   const deliveryChannel = String(metadata.deliveryChannel || "").trim().toLowerCase();
   const deliveryTarget = String(metadata.deliveryTarget || "").trim();
+  const noResultsNotificationSent = Boolean(metadata.noResultsNotificationSent);
 
   if (status === "no_matches") {
+    if (noResultsNotificationSent) {
+      return deliveryChannel === "email" && deliveryTarget
+        ? `The monitor completed successfully, searched your saved topics, found no new results, and sent that update to ${deliveryTarget}.`
+        : "The monitor completed successfully, searched your saved topics, found no new results, and sent an update about that.";
+    }
     return "The monitor completed successfully, but it did not find any relevant new matches, so no alert was sent.";
   }
 
   if (status === "duplicate_matches") {
+    if (noResultsNotificationSent) {
+      return deliveryChannel === "email" && deliveryTarget
+        ? `The monitor completed successfully, found nothing new to report, and sent that update to ${deliveryTarget}.`
+        : "The monitor completed successfully, found nothing new to report, and sent that update.";
+    }
     return "The monitor found relevant items, but they were already sent before, so no new alert was sent.";
   }
 

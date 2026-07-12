@@ -387,6 +387,11 @@ def build_notification_subject(target: dict[str, Any], item_count: int) -> str:
     return f"{MONITOR_FEATURE_NAME}: {count_label} for {name}"
 
 
+def build_no_results_subject(target: dict[str, Any]) -> str:
+    name = normalize_text(target.get("displayName")) or normalize_text(target.get("email")) or "your workspace"
+    return f"{MONITOR_FEATURE_NAME}: no new results for {name}"
+
+
 def build_notification_text(
     *,
     target: dict[str, Any],
@@ -419,6 +424,38 @@ def build_notification_text(
             lines.append(f"Source: {source}")
         if item["urgency"]:
             lines.append(f"Urgency: {item['urgency']}")
+    return "\n".join(lines)
+
+
+def build_no_results_text(
+    *,
+    settings: dict[str, Any],
+    scheduled_for: datetime,
+    status: str = "no_matches",
+) -> str:
+    watch_items = normalize_watch_items(settings.get("watchItems"))
+    lines = [
+        MONITOR_FEATURE_NAME,
+        "",
+        f"Run: {scheduled_for.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        "I searched the public web for the following topics:",
+    ]
+    if watch_items:
+        lines.extend(f"- {item}" for item in watch_items)
+    else:
+        brief = resolve_monitor_brief(settings)
+        lines.append(f"- {brief or 'Your saved watch list'}")
+
+    lines.extend(
+        [
+            "",
+            (
+                "There are no new results to report right now."
+                if normalize_text(status) == "no_matches"
+                else "There are no new results to report right now. Any relevant matches were already covered in earlier alerts."
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -544,6 +581,43 @@ class ScheduledMonitorScheduler:
             },
         )
 
+    def _deliver_message(
+        self,
+        *,
+        target: dict[str, Any],
+        subject: str,
+        message_text: str,
+        html_body: str = "",
+        channel: str = "",
+    ) -> tuple[str, str]:
+        resolved_channel = normalize_text(channel or target.get("deliveryChannel")).lower()
+        delivery_target = ""
+        delivery_message_id = ""
+        if resolved_channel == "email":
+            delivery_target = normalize_email(target.get("email"))
+            send_email_notification(
+                to_email=delivery_target,
+                subject=subject,
+                text_body=message_text,
+                html_body=html_body or build_notification_html(subject, message_text),
+            )
+        elif resolved_channel == "telegram":
+            delivery_target = normalize_text(target.get("telegramChatId"))
+            response = send_telegram_notification(chat_id=delivery_target, text=message_text)
+            result = response.get("result") if isinstance(response.get("result"), dict) else {}
+            delivery_message_id = normalize_text(result.get("message_id"))
+        elif resolved_channel == "whatsapp":
+            delivery_target = normalize_text(target.get("ownerWaId"))
+            delivery_message_id = send_whatsapp_notification(
+                phone_number_id=normalize_text(target.get("phoneNumberId")),
+                recipient_wa_id=delivery_target,
+                message_text=message_text,
+            )
+        else:
+            raise RuntimeError(f"Unsupported delivery channel: {resolved_channel}")
+
+        return delivery_target, delivery_message_id
+
     def _deliver_items(
         self,
         *,
@@ -562,34 +636,41 @@ class ScheduledMonitorScheduler:
             items=items,
             scheduled_for=scheduled_for,
         )
-        channel = normalize_text(settings.get("deliveryChannel")).lower()
-        delivery_target = ""
-        delivery_message_id = ""
-        if channel == "email":
-            delivery_target = normalize_email(target.get("email"))
-            subject = build_notification_subject(target, len(items))
-            send_email_notification(
-                to_email=delivery_target,
-                subject=subject,
-                text_body=message_text,
-                html_body=build_notification_html(subject, message_text),
-            )
-        elif channel == "telegram":
-            delivery_target = normalize_text(settings.get("telegramChatId"))
-            response = send_telegram_notification(chat_id=delivery_target, text=message_text)
-            result = response.get("result") if isinstance(response.get("result"), dict) else {}
-            delivery_message_id = normalize_text(result.get("message_id"))
-        elif channel == "whatsapp":
-            delivery_target = normalize_text(target.get("ownerWaId"))
-            delivery_message_id = send_whatsapp_notification(
-                phone_number_id=normalize_text(target.get("phoneNumberId")),
-                recipient_wa_id=delivery_target,
-                message_text=message_text,
-            )
-        else:
-            raise RuntimeError(f"Unsupported delivery channel: {channel}")
+        delivery_target, delivery_message_id = self._deliver_message(
+            target={
+                **target,
+                "telegramChatId": settings.get("telegramChatId"),
+            },
+            subject=build_notification_subject(target, len(items)),
+            message_text=message_text,
+            channel=normalize_text(settings.get("deliveryChannel")),
+        )
 
         return len(items), delivery_target, delivery_message_id
+
+    def _deliver_no_results_notification(
+        self,
+        *,
+        target: dict[str, Any],
+        settings: dict[str, Any],
+        scheduled_for: datetime,
+        status: str,
+    ) -> tuple[bool, str, str]:
+        message_text = build_no_results_text(
+            settings=settings,
+            scheduled_for=scheduled_for,
+            status=status,
+        )
+        delivery_target, delivery_message_id = self._deliver_message(
+            target={
+                **target,
+                "telegramChatId": settings.get("telegramChatId"),
+            },
+            subject=build_no_results_subject(target),
+            message_text=message_text,
+            channel=normalize_text(settings.get("deliveryChannel")),
+        )
+        return True, delivery_target, delivery_message_id
 
     def _execute_target(
         self,
@@ -617,6 +698,13 @@ class ScheduledMonitorScheduler:
         notifications_sent = 0
         delivery_target = ""
         delivery_message_id = ""
+        no_results_notification_sent = False
+        status = "completed"
+        if not items:
+            status = "no_matches"
+        elif items and not new_items:
+            status = "duplicate_matches"
+
         if new_items:
             notifications_sent, delivery_target, delivery_message_id = self._deliver_items(
                 target=target,
@@ -624,6 +712,13 @@ class ScheduledMonitorScheduler:
                 items=new_items,
                 summary=summary,
                 scheduled_for=scheduled_for,
+            )
+        elif status in {"no_matches", "duplicate_matches"}:
+            no_results_notification_sent, delivery_target, delivery_message_id = self._deliver_no_results_notification(
+                target=target,
+                settings=settings,
+                scheduled_for=scheduled_for,
+                status=status,
             )
 
         for item in new_items:
@@ -653,12 +748,6 @@ class ScheduledMonitorScheduler:
                 },
             )
 
-        status = "completed"
-        if not items:
-            status = "no_matches"
-        elif items and not new_items:
-            status = "duplicate_matches"
-
         run_metadata = {
             "summary": summary,
             "items": items,
@@ -667,6 +756,9 @@ class ScheduledMonitorScheduler:
             "intervalDays": settings.get("intervalDays"),
             "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
             "deliveryTarget": delivery_target,
+            "noResultsNotificationSent": no_results_notification_sent,
+            "noResultsReason": status if status in {"no_matches", "duplicate_matches"} else "",
+            "deliveryMessageId": delivery_message_id,
             **search_metadata,
         }
         if persist_run:

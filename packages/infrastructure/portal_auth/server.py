@@ -886,10 +886,17 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     status = normalize_text(payload.get("status"))
     notifications_sent = max(0, int(payload.get("notificationsSent") or 0))
     findings_count = max(0, int(payload.get("findingsCount") or 0))
+    run_record = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    metadata = run_record.get("metadata") if isinstance(run_record.get("metadata"), dict) else {}
+    no_results_notification_sent = bool(metadata.get("noResultsNotificationSent"))
 
     if status == "no_matches":
+        if no_results_notification_sent:
+            return "Manual run finished. No relevant matches were found, and a no-results update was sent."
         return "Manual run finished. No relevant matches were found."
     if status == "duplicate_matches":
+        if no_results_notification_sent:
+            return "Manual run finished. Everything relevant had already been sent before, and a no-results update was sent."
         return "Manual run finished. Everything relevant had already been sent before."
     if notifications_sent > 0:
         label = "alert" if notifications_sent == 1 else "alerts"
