@@ -852,53 +852,48 @@ Owner said afternoons are easier."
         </div>
 
         <div class="panel-intro pricing-intro">
-          <div>
+          <div class="pricing-intro-copy">
             <p class="eyebrow">Pricing</p>
-            <h1>Three reference models, priced the Assistyca way.</h1>
+            <h1>Choose the model tier that fits the work.</h1>
             <p class="lede compact">
-              These prices are maintained manually and show our client rate at 1.5x the OpenAI base token cost.
+              Clear usage pricing for lightweight automations, everyday workflows, and more demanding reasoning tasks.
             </p>
           </div>
 
-          <div id="pricingSourceBadge" class="pricing-source-badge" role="status" aria-live="polite">
-            <span class="pricing-source-dot" aria-hidden="true"></span>
-            <div>
-              <strong id="pricingSourceLabel">Manual pricing list</strong>
-              <span id="pricingSourceMeta">Verified against OpenAI pricing and updated by hand.</span>
-            </div>
+          <div id="pricingSourceBadge" class="pricing-updated-badge" role="status" aria-live="polite">
+            <span class="pricing-updated-label">Updated</span>
+            <strong id="pricingSourceMeta">Jul 12, 2026</strong>
           </div>
         </div>
 
         <section class="pricing-banner glass-card">
           <div class="pricing-banner-copy">
-            <p class="eyebrow">Markup</p>
-            <h2>OpenAI base price × <span id="pricingMultiplierValue">1.5</span></h2>
+            <p class="eyebrow">Usage Pricing</p>
+            <h2>Three tiers, one simple structure.</h2>
             <p>
-              These are the rates we present to clients on this page. Each card shows our input and output price per 1M tokens.
+              Each tier below shows separate input and output rates per 1M tokens, so you can match cost to the complexity of the workflow.
             </p>
           </div>
 
           <div class="pricing-banner-stats">
             <div class="pricing-banner-stat">
-              <span>Models shown</span>
+              <span>Available tiers</span>
               <strong id="pricingCardCount">3</strong>
             </div>
             <div class="pricing-banner-stat">
-              <span>Source</span>
-              <strong id="pricingSourceType">OpenAI markdown</strong>
+              <span>Billing unit</span>
+              <strong>Per 1M tokens</strong>
+            </div>
+            <div class="pricing-banner-stat">
+              <span>Input pricing</span>
+              <strong>Tracked separately</strong>
+            </div>
+            <div class="pricing-banner-stat">
+              <span>Output pricing</span>
+              <strong>Tracked separately</strong>
             </div>
           </div>
         </section>
-
-        <div id="pricingStatusBanner" class="pricing-status-banner glass-card" role="status" aria-live="polite">
-          <div class="pricing-status-copy">
-            <p class="eyebrow">Pricing status</p>
-            <p id="pricingStatusMessage" class="pricing-status-message">This page uses a manual price list.</p>
-            <p id="pricingStatusMeta" class="pricing-status-meta">
-              There is no automatic sync running here.
-            </p>
-          </div>
-        </div>
 
         <div id="pricingCardGrid" class="pricing-card-grid"></div>
       </section>

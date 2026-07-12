@@ -102,13 +102,13 @@ const MANUAL_PRICING_SNAPSHOT = {
   source: "manual",
   sourceUrl: "https://developers.openai.com/api/docs/pricing",
   fetchedAt: "2026-07-12T00:00:00Z",
-  inputMultiplier: 1.5,
-  outputMultiplier: 1.5,
   cards: [
     {
       band: "Lean",
       modelId: "gpt-5.4-nano",
       modelName: "GPT-5.4 Nano",
+      description: "For lightweight automations and high-volume tasks where efficiency matters most.",
+      useCases: ["Short prompts", "Extraction", "Classification"],
       openai: {
         inputUsdPer1MTokens: 0.2,
         outputUsdPer1MTokens: 1.25,
@@ -124,6 +124,10 @@ const MANUAL_PRICING_SNAPSHOT = {
       band: "Balanced",
       modelId: "gpt-5.4",
       modelName: "GPT-5.4",
+      description: "For most day-to-day assistants and workflows that need a strong mix of cost and capability.",
+      useCases: ["Client replies", "Workflow agents", "Daily operations"],
+      featured: true,
+      highlightLabel: "Most popular",
       openai: {
         inputUsdPer1MTokens: 2.5,
         outputUsdPer1MTokens: 15,
@@ -139,6 +143,8 @@ const MANUAL_PRICING_SNAPSHOT = {
       band: "Premium",
       modelId: "gpt-5.5",
       modelName: "GPT-5.5",
+      description: "For the most demanding tasks, deeper reasoning, and higher-stakes outputs.",
+      useCases: ["Deep reasoning", "Long context", "Critical drafting"],
       openai: {
         inputUsdPer1MTokens: 5,
         outputUsdPer1MTokens: 30,
@@ -4746,14 +4752,14 @@ function formatUsdPerMillion(value) {
 function formatPricingTimestamp(value) {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) {
-    return "Waiting for a fresh sync.";
+    return "Date unavailable";
   }
 
-  return `Updated ${new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }).format(date)}`;
+  }).format(date);
 }
 
 function createPricingMetric(label, value, detail) {
@@ -4777,47 +4783,89 @@ function createPricingMetric(label, value, detail) {
   return metric;
 }
 
+function createPricingTag(text) {
+  const tag = document.createElement("span");
+  tag.className = "pricing-card-tag";
+  tag.textContent = text;
+  return tag;
+}
+
 function buildPricingCard(card) {
   const article = document.createElement("article");
-  article.className = "glass-card pricing-card";
+  article.className = `glass-card pricing-card${card.featured ? " is-featured" : ""}`.trim();
 
   const head = document.createElement("div");
   head.className = "pricing-card-head";
+
+  const top = document.createElement("div");
+  top.className = "pricing-card-top";
 
   const badge = document.createElement("span");
   badge.className = "pricing-card-band";
   badge.textContent = card.band || "Tier";
 
+  top.append(badge);
+
+  if (card.highlightLabel) {
+    const highlight = document.createElement("span");
+    highlight.className = "pricing-card-highlight";
+    highlight.textContent = card.highlightLabel;
+    top.append(highlight);
+  }
+
+  const titleBlock = document.createElement("div");
+  titleBlock.className = "pricing-card-title";
+
   const modelName = document.createElement("h3");
   modelName.textContent = card.modelName || card.modelId || "Model";
 
+  const summary = document.createElement("p");
+  summary.className = "pricing-card-summary";
+  summary.textContent = String(card.description || "").trim();
+
   const subtitle = document.createElement("p");
   subtitle.className = "pricing-card-model-id";
-  subtitle.textContent = card.modelId || "";
+  subtitle.textContent = `Model: ${card.modelId || ""}`;
 
-  head.append(badge, modelName, subtitle);
+  titleBlock.append(modelName, summary, subtitle);
+  head.append(top, titleBlock);
 
-  const body = document.createElement("div");
-  body.className = "pricing-card-body";
-  body.append(
+  const rates = document.createElement("div");
+  rates.className = "pricing-card-rates";
+  rates.append(
     createPricingMetric(
-      "Our input / 1M",
+      "Input",
       formatUsdPerMillion(card?.ours?.inputUsdPer1MTokens),
-      `OpenAI ${formatUsdPerMillion(card?.openai?.inputUsdPer1MTokens)}`,
+      "per 1M tokens",
     ),
     createPricingMetric(
-      "Our output / 1M",
+      "Output",
       formatUsdPerMillion(card?.ours?.outputUsdPer1MTokens),
-      `OpenAI ${formatUsdPerMillion(card?.openai?.outputUsdPer1MTokens)}`,
-    ),
-    createPricingMetric(
-      "Total reference",
-      formatUsdPerMillion(card?.totalOurUsdPer1MTokens),
-      `OpenAI ${formatUsdPerMillion(card?.totalOpenAIUsdPer1MTokens)}`,
+      "per 1M tokens",
     ),
   );
 
-  article.append(head, body);
+  const body = document.createElement("div");
+  body.className = "pricing-card-body";
+  body.append(rates);
+
+  const footer = document.createElement("div");
+  footer.className = "pricing-card-footer";
+
+  const footerLabel = document.createElement("span");
+  footerLabel.className = "pricing-card-footer-label";
+  footerLabel.textContent = "Best for";
+
+  const tags = document.createElement("div");
+  tags.className = "pricing-card-tags";
+  const useCases = Array.isArray(card.useCases) ? card.useCases : [];
+  if (useCases.length) {
+    tags.replaceChildren(...useCases.map((item) => createPricingTag(item)));
+  }
+
+  footer.append(footerLabel, tags);
+
+  article.append(head, body, footer);
   return article;
 }
 
@@ -4844,33 +4892,12 @@ function updatePricingPanel() {
     : MANUAL_PRICING_SNAPSHOT;
   const cards = Array.isArray(snapshot?.cards) ? snapshot.cards : [];
 
-  if (elements.pricingMultiplierValue) {
-    const multiplier = Number(snapshot?.inputMultiplier ?? DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER;
-    elements.pricingMultiplierValue.textContent = multiplier.toFixed(1);
-  }
-
   if (elements.pricingCardCount) {
     elements.pricingCardCount.textContent = String(cards.length || 0);
   }
 
-  if (elements.pricingSourceType) {
-    elements.pricingSourceType.textContent = "Manual snapshot";
-  }
-
-  if (elements.pricingSourceLabel) {
-    elements.pricingSourceLabel.textContent = "Manual pricing list";
-  }
-
   if (elements.pricingSourceMeta) {
-    elements.pricingSourceMeta.textContent = `Verified manually against OpenAI pricing. ${formatPricingTimestamp(snapshot?.fetchedAt)}`;
-  }
-
-  if (elements.pricingStatusMessage) {
-    elements.pricingStatusMessage.textContent = "Three representative models are shown below using our manual 1.5x pricing.";
-  }
-
-  if (elements.pricingStatusMeta) {
-    elements.pricingStatusMeta.textContent = "Update these values manually when OpenAI pricing changes.";
+    elements.pricingSourceMeta.textContent = formatPricingTimestamp(snapshot?.fetchedAt);
   }
 
   if (elements.pricingCardGrid) {
