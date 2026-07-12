@@ -25,6 +25,33 @@ DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS = "active"
 RAW_CENTS_QUANT = Decimal("0.0001")
 USD_QUANT = Decimal("0.01")
+DEFAULT_MODEL_PRICE_PROVIDER = "openai"
+DEFAULT_MODEL_PRICE_NOTES = (
+    "OpenAI standard short-context pricing seeded from "
+    "https://developers.openai.com/api/docs/pricing on 2026-07-12."
+)
+DEFAULT_MODEL_PRICES = (
+    {
+        "model_name": "gpt-5.5",
+        "input_usd_per_1m_tokens": 5.0,
+        "output_usd_per_1m_tokens": 30.0,
+    },
+    {
+        "model_name": "gpt-5.4",
+        "input_usd_per_1m_tokens": 2.5,
+        "output_usd_per_1m_tokens": 15.0,
+    },
+    {
+        "model_name": "gpt-5.4-mini",
+        "input_usd_per_1m_tokens": 0.75,
+        "output_usd_per_1m_tokens": 4.5,
+    },
+    {
+        "model_name": "gpt-5.4-nano",
+        "input_usd_per_1m_tokens": 0.2,
+        "output_usd_per_1m_tokens": 1.25,
+    },
+)
 USER_OWNED_TABLES = (
     "feature_activation_events",
     "feature_activations",
@@ -497,6 +524,11 @@ def cents_to_usd(value: Any) -> float:
     return float((cents / Decimal("100")).quantize(USD_QUANT, rounding=ROUND_HALF_UP))
 
 
+def cents_per_1k_tokens_from_usd_per_1m_tokens(value: Any) -> float:
+    usd_per_1m_tokens = to_decimal(value)
+    return float((usd_per_1m_tokens / Decimal("10")).quantize(RAW_CENTS_QUANT, rounding=ROUND_HALF_UP))
+
+
 def calculate_charge_cents(tokens: Any, price_cents_per_1k_tokens: Any, multiplier: Any) -> Decimal:
     token_count = to_decimal(tokens)
     price = to_decimal(price_cents_per_1k_tokens)
@@ -575,6 +607,7 @@ class PortalDatabase:
                 self._migrate_user_billing_table(conn)
                 self._migrate_usage_events_table(conn)
                 self._ensure_usage_events_tool_indexes(conn)
+                self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
                 if self.bootstrap_admin_emails:
@@ -701,6 +734,44 @@ class PortalDatabase:
             ON usage_events(user_id, tool_id, model_name, used_at DESC)
             """
         )
+
+    def _seed_default_model_prices(self, conn: sqlite3.Connection) -> None:
+        now = now_iso()
+        for record in DEFAULT_MODEL_PRICES:
+            model_name = normalize_text(record.get("model_name"))
+            if not model_name:
+                continue
+            existing = conn.execute(
+                "SELECT 1 FROM model_prices WHERE model_name = ?",
+                (model_name,),
+            ).fetchone()
+            if existing is not None:
+                continue
+            conn.execute(
+                """
+                INSERT INTO model_prices (
+                    model_name,
+                    currency,
+                    input_price_cents_per_1k_tokens,
+                    output_price_cents_per_1k_tokens,
+                    provider,
+                    notes,
+                    is_active,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    model_name,
+                    self.default_billing_plan.currency,
+                    cents_per_1k_tokens_from_usd_per_1m_tokens(record.get("input_usd_per_1m_tokens")),
+                    cents_per_1k_tokens_from_usd_per_1m_tokens(record.get("output_usd_per_1m_tokens")),
+                    DEFAULT_MODEL_PRICE_PROVIDER,
+                    DEFAULT_MODEL_PRICE_NOTES,
+                    now,
+                    now,
+                ),
+            )
 
     def _seed_registered_emails(self, conn: sqlite3.Connection, emails: Iterable[str]) -> None:
         now = now_iso()
