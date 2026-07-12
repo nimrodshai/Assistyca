@@ -6367,6 +6367,68 @@ function openPaymentCheckout(checkoutUrl) {
   return true;
 }
 
+function getManualMonitorRunAlertTone(run = {}) {
+  const status = String(run?.status || "").trim().toLowerCase();
+  const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
+  return status === "completed" && notificationsSent > 0 ? "success" : "warning";
+}
+
+function getManualMonitorRunAlertIcon(run = {}) {
+  return getManualMonitorRunAlertTone(run) === "success" ? "✓" : "!";
+}
+
+function getManualMonitorRunAlertTitle(run = {}) {
+  const status = String(run?.status || "").trim().toLowerCase();
+  const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
+
+  if (status === "no_matches") {
+    return "No matches found";
+  }
+  if (status === "duplicate_matches") {
+    return "Nothing new to send";
+  }
+  if (notificationsSent > 0) {
+    return notificationsSent === 1 ? "Alert sent" : "Alerts sent";
+  }
+  return "Run finished";
+}
+
+function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run finished.") {
+  const status = String(run?.status || "").trim().toLowerCase();
+  const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
+  const findingsCount = Math.max(0, Number(run?.findingsCount || 0));
+  const metadata = run?.run?.metadata && typeof run.run.metadata === "object"
+    ? run.run.metadata
+    : run?.metadata && typeof run.metadata === "object"
+      ? run.metadata
+      : {};
+  const deliveryChannel = String(metadata.deliveryChannel || "").trim().toLowerCase();
+  const deliveryTarget = String(metadata.deliveryTarget || "").trim();
+
+  if (status === "no_matches") {
+    return "The monitor completed successfully, but it did not find any relevant new matches, so no alert was sent.";
+  }
+
+  if (status === "duplicate_matches") {
+    return "The monitor found relevant items, but they were already sent before, so no new alert was sent.";
+  }
+
+  if (notificationsSent > 0) {
+    const alertLabel = notificationsSent === 1 ? "alert" : "alerts";
+    if (deliveryChannel === "email" && deliveryTarget) {
+      return `The monitor completed successfully and sent ${notificationsSent} ${alertLabel} to ${deliveryTarget}.`;
+    }
+    return `The monitor completed successfully and sent ${notificationsSent} ${alertLabel}.`;
+  }
+
+  if (findingsCount > 0) {
+    const matchLabel = findingsCount === 1 ? "match" : "matches";
+    return `The monitor finished and found ${findingsCount} ${matchLabel}, but no alert was delivered.`;
+  }
+
+  return fallbackMessage;
+}
+
 async function runSelectedMonitorNow() {
   if (monitorManualRunBusy) {
     return;
@@ -6426,7 +6488,19 @@ async function runSelectedMonitorNow() {
       timeoutMs: 90000,
     });
 
-    setStatus(String(response.message || "Manual run finished."));
+    const completionMessage = String(response.message || "Manual run finished.");
+    setStatus(completionMessage);
+    openAuthAlert(
+      getManualMonitorRunAlertTitle(response.run),
+      getManualMonitorRunAlertMessage(response.run, completionMessage),
+      {
+        eyebrow: "Run finished",
+        buttonLabel: "OK",
+        icon: getManualMonitorRunAlertIcon(response.run),
+        tone: getManualMonitorRunAlertTone(response.run),
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+      },
+    );
   } catch (error) {
     const payload = error?.payload || {};
     if (payload.error === "setup_required") {
