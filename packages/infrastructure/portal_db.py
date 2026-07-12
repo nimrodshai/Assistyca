@@ -2174,6 +2174,30 @@ class PortalDatabase:
 
         return _row_to_dict(row)
 
+    def list_model_prices(self, *, provider: str = "", active_only: bool = True) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        normalized_provider = normalize_text(provider)
+        if normalized_provider:
+            clauses.append("provider = ?")
+            params.append(normalized_provider)
+
+        if active_only:
+            clauses.append("is_active = 1")
+
+        where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = (
+            "SELECT * FROM model_prices"
+            f"{where_sql} "
+            "ORDER BY input_price_cents_per_1k_tokens ASC, output_price_cents_per_1k_tokens ASC, model_name ASC"
+        )
+
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [_row_to_dict(row) for row in rows if row is not None]
+
     def record_otp_requested(self, email: str) -> None:
         normalized_email = normalize_email(email)
         if not normalized_email:

@@ -150,6 +150,7 @@
 
             <div id="accountMenu" class="menu-popover is-hidden" role="menu">
               <button class="menu-item" type="button" data-menu-action="billing">Billing</button>
+              <button class="menu-item" type="button" data-menu-action="pricing">Pricing</button>
               <button class="menu-item" type="button" data-menu-action="settings">Settings</button>
               <button
                 id="adminUsersMenuItem"
@@ -840,6 +841,70 @@ Owner said afternoons are easier."
             <div id="billingHistoryList" class="billing-history-list"></div>
           </article>
         </div>
+      </section>
+
+      <section id="pricingPanel" class="tab-panel pricing-page is-hidden">
+        <div class="billing-page-header">
+          <button id="backToPricingToolsButton" class="feature-back-button billing-back-button" type="button">
+            <span aria-hidden="true">&lt;</span>
+            <span>Back to tools</span>
+          </button>
+        </div>
+
+        <div class="panel-intro pricing-intro">
+          <div>
+            <p class="eyebrow">Pricing</p>
+            <h1>Three reference models, priced the Assistyca way.</h1>
+            <p class="lede compact">
+              We refresh from OpenAI pricing and show our client rate at 1.5x the base token cost.
+            </p>
+          </div>
+
+          <div id="pricingSourceBadge" class="pricing-source-badge" role="status" aria-live="polite">
+            <span class="pricing-source-dot" aria-hidden="true"></span>
+            <div>
+              <strong id="pricingSourceLabel">Loading pricing…</strong>
+              <span id="pricingSourceMeta">Pulling the latest reference models.</span>
+            </div>
+          </div>
+        </div>
+
+        <section class="pricing-banner glass-card">
+          <div class="pricing-banner-copy">
+            <p class="eyebrow">Markup</p>
+            <h2>OpenAI base price × <span id="pricingMultiplierValue">1.5</span></h2>
+            <p>
+              These are the rates we present to clients on this page. Each card shows our input and output price per 1M tokens.
+            </p>
+          </div>
+
+          <div class="pricing-banner-stats">
+            <div class="pricing-banner-stat">
+              <span>Models shown</span>
+              <strong id="pricingCardCount">3</strong>
+            </div>
+            <div class="pricing-banner-stat">
+              <span>Source</span>
+              <strong id="pricingSourceType">OpenAI markdown</strong>
+            </div>
+          </div>
+        </section>
+
+        <div id="pricingStatusBanner" class="pricing-status-banner glass-card" role="status" aria-live="polite">
+          <div class="pricing-status-copy">
+            <p class="eyebrow">Pricing status</p>
+            <p id="pricingStatusMessage" class="pricing-status-message">Loading pricing data...</p>
+            <p id="pricingStatusMeta" class="pricing-status-meta">
+              We’ll keep the last loaded pricing visible if a refresh fails.
+            </p>
+          </div>
+
+          <button id="pricingRefreshButton" class="ghost-button small pricing-refresh-button" type="button">
+            Refresh pricing
+          </button>
+        </div>
+
+        <div id="pricingCardGrid" class="pricing-card-grid"></div>
       </section>
 
       <section

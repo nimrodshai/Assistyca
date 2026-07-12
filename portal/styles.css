@@ -980,6 +980,12 @@ body[data-modal="billing"] .app-shell {
   gap: 1rem;
 }
 
+.pricing-page {
+  width: min(100%, 76rem);
+  justify-self: center;
+  gap: 1rem;
+}
+
 .billing-page-header {
   display: flex;
   align-items: center;
@@ -1289,6 +1295,272 @@ body[data-modal="billing"] .app-shell {
 
 .billing-status-banner.is-loading {
   opacity: 0.96;
+}
+
+.pricing-intro {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+  align-items: end;
+}
+
+.pricing-source-badge {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.95rem 1rem;
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 252, 0.88)),
+    linear-gradient(135deg, rgba(15, 118, 110, 0.08), rgba(30, 136, 229, 0.04));
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  box-shadow: 0 18px 48px rgba(16, 38, 40, 0.08);
+}
+
+.pricing-source-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #17958a, #2f7de1);
+  box-shadow: 0 0 0 8px rgba(23, 149, 138, 0.09);
+}
+
+.pricing-source-badge strong,
+.pricing-source-badge span {
+  display: block;
+}
+
+.pricing-source-badge strong {
+  font-size: 0.96rem;
+  color: var(--text);
+}
+
+.pricing-source-badge span {
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.pricing-banner {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+  align-items: stretch;
+  padding: 1.4rem;
+  border-radius: 32px;
+  background:
+    radial-gradient(circle at right top, rgba(84, 172, 160, 0.22), transparent 26%),
+    linear-gradient(135deg, #102826 0%, #153741 52%, #143b56 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 28px 80px rgba(16, 38, 40, 0.22);
+  color: #eef9f8;
+}
+
+.pricing-banner-copy {
+  display: grid;
+  gap: 0.6rem;
+  align-content: start;
+}
+
+.pricing-banner-copy h2 {
+  margin: 0;
+  font-size: clamp(1.9rem, 3vw, 2.8rem);
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+
+.pricing-banner-copy p:last-child {
+  margin: 0;
+  max-width: 46ch;
+  color: rgba(238, 249, 248, 0.78);
+}
+
+.pricing-banner-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.pricing-banner-stat {
+  display: grid;
+  gap: 0.4rem;
+  align-content: end;
+  min-height: 8.5rem;
+  padding: 1rem 1.05rem;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.pricing-banner-stat span {
+  color: rgba(238, 249, 248, 0.72);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pricing-banner-stat strong {
+  font-size: 1.12rem;
+  line-height: 1.15;
+}
+
+.pricing-status-banner {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 1.05rem 1.15rem;
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 252, 0.88)),
+    linear-gradient(135deg, rgba(15, 118, 110, 0.06), rgba(30, 136, 229, 0.04));
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  box-shadow: 0 20px 50px rgba(16, 38, 40, 0.08);
+}
+
+.pricing-status-banner.is-warn {
+  border-color: rgba(204, 92, 49, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 248, 244, 0.94)),
+    linear-gradient(135deg, rgba(204, 92, 49, 0.06), rgba(15, 118, 110, 0.03));
+}
+
+.pricing-status-banner.is-loading {
+  opacity: 0.96;
+}
+
+.pricing-status-copy {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.pricing-status-message {
+  margin: 0;
+  color: var(--text);
+  font-size: 1.02rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.35;
+}
+
+.pricing-status-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.pricing-refresh-button {
+  justify-self: end;
+  white-space: nowrap;
+  min-width: 10.5rem;
+}
+
+.pricing-card-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+}
+
+.pricing-card {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  min-height: 18rem;
+  padding: 1.25rem;
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 252, 0.92)),
+    linear-gradient(135deg, rgba(15, 118, 110, 0.06), rgba(30, 136, 229, 0.03));
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  box-shadow: 0 24px 56px rgba(16, 38, 40, 0.08);
+}
+
+.pricing-card-head {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.pricing-card-head h3 {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: -0.04em;
+}
+
+.pricing-card-band {
+  justify-self: start;
+  padding: 0.42rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pricing-card-model-id {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.pricing-card-body {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.pricing-metric {
+  display: grid;
+  gap: 0.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(20, 28, 38, 0.08);
+}
+
+.pricing-metric span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.pricing-metric strong {
+  color: var(--text);
+  font-size: 1.45rem;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.pricing-metric small {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.pricing-card-empty {
+  grid-column: 1 / -1;
+  min-height: auto;
+}
+
+.pricing-card-empty strong {
+  font-size: 1.02rem;
+  color: var(--text);
+}
+
+.pricing-card-empty p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
 }
 
 .billing-status-copy {

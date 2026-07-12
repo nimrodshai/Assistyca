@@ -17,7 +17,7 @@ const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
 const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
-const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "settings"]);
+const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
@@ -28,6 +28,7 @@ const TAB_LABELS = {
   preview: "Preview",
   simulator: "Simulator",
   billing: "Billing",
+  pricing: "Pricing",
   settings: "Settings",
 };
 const VALID_SETTINGS_MODES = new Set(["account", "preferences", "users"]);
@@ -406,6 +407,9 @@ const state = {
   billingLoading: false,
   billingError: "",
   billingHelpOpen: false,
+  pricingSnapshot: null,
+  pricingLoading: false,
+  pricingError: "",
   monitorWatchItemDraft: "",
   lastPrimaryTab: normalizeTab(loadJson(LAST_PRIMARY_TAB_KEY, "features")) || "features",
 };
@@ -512,6 +516,8 @@ const elements = {
   simulatorPanel: document.querySelector("#simulatorPanel"),
   billingPanel: document.querySelector("#billingPanel"),
   billingBackButton: document.querySelector("#backToToolsButton"),
+  pricingPanel: document.querySelector("#pricingPanel"),
+  pricingBackButton: document.querySelector("#backToPricingToolsButton"),
   settingsPanel: document.querySelector("#settingsPanel"),
   billingStatusBanner: document.querySelector("#billingStatusBanner"),
   billingStatusMessage: document.querySelector("#billingStatusMessage"),
@@ -531,6 +537,17 @@ const elements = {
   billingModelList: document.querySelector("#billingModelList"),
   billingHistoryCount: document.querySelector("#billingHistoryCount"),
   billingHistoryList: document.querySelector("#billingHistoryList"),
+  pricingSourceBadge: document.querySelector("#pricingSourceBadge"),
+  pricingSourceLabel: document.querySelector("#pricingSourceLabel"),
+  pricingSourceMeta: document.querySelector("#pricingSourceMeta"),
+  pricingMultiplierValue: document.querySelector("#pricingMultiplierValue"),
+  pricingCardCount: document.querySelector("#pricingCardCount"),
+  pricingSourceType: document.querySelector("#pricingSourceType"),
+  pricingStatusBanner: document.querySelector("#pricingStatusBanner"),
+  pricingStatusMessage: document.querySelector("#pricingStatusMessage"),
+  pricingStatusMeta: document.querySelector("#pricingStatusMeta"),
+  pricingRefreshButton: document.querySelector("#pricingRefreshButton"),
+  pricingCardGrid: document.querySelector("#pricingCardGrid"),
   closeSettingsButton: document.querySelector("#closeSettingsButton"),
   settingsSwitcher: document.querySelector("#settingsSwitcher"),
   settingsTitle: document.querySelector("#settingsTitle"),
@@ -3645,8 +3662,11 @@ function setActiveTab(tab, options = {}) {
 
   closeMenu();
   renderApp();
-  if (nextTab === "billing") {
+  if (nextTab === "billing" || nextTab === "pricing") {
     window.scrollTo(0, 0);
+  }
+  if (nextTab === "pricing") {
+    void refreshPricingSnapshot();
   }
 }
 
@@ -4652,6 +4672,222 @@ async function refreshBillingReport() {
     setBillingError(formatApiErrorMessage(error, "We couldn’t load billing data right now."));
   } finally {
     state.billingLoading = false;
+    renderApp();
+  }
+}
+
+function formatUsdPerMillion(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return "—";
+  }
+
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: amount >= 10 ? 0 : 2,
+    maximumFractionDigits: amount >= 10 ? 1 : 2,
+  }).format(amount);
+}
+
+function formatPricingTimestamp(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return "Waiting for a fresh sync.";
+  }
+
+  return `Updated ${new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(date)}`;
+}
+
+function createPricingMetric(label, value, detail) {
+  const metric = document.createElement("div");
+  metric.className = "pricing-metric";
+
+  const labelElement = document.createElement("span");
+  labelElement.textContent = label;
+
+  const valueElement = document.createElement("strong");
+  valueElement.textContent = value;
+
+  metric.append(labelElement, valueElement);
+
+  if (detail) {
+    const detailElement = document.createElement("small");
+    detailElement.textContent = detail;
+    metric.append(detailElement);
+  }
+
+  return metric;
+}
+
+function buildPricingCard(card) {
+  const article = document.createElement("article");
+  article.className = "glass-card pricing-card";
+
+  const head = document.createElement("div");
+  head.className = "pricing-card-head";
+
+  const badge = document.createElement("span");
+  badge.className = "pricing-card-band";
+  badge.textContent = card.band || "Tier";
+
+  const modelName = document.createElement("h3");
+  modelName.textContent = card.modelName || card.modelId || "Model";
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "pricing-card-model-id";
+  subtitle.textContent = card.modelId || "";
+
+  head.append(badge, modelName, subtitle);
+
+  const body = document.createElement("div");
+  body.className = "pricing-card-body";
+  body.append(
+    createPricingMetric(
+      "Our input / 1M",
+      formatUsdPerMillion(card?.ours?.inputUsdPer1MTokens),
+      `OpenAI ${formatUsdPerMillion(card?.openai?.inputUsdPer1MTokens)}`,
+    ),
+    createPricingMetric(
+      "Our output / 1M",
+      formatUsdPerMillion(card?.ours?.outputUsdPer1MTokens),
+      `OpenAI ${formatUsdPerMillion(card?.openai?.outputUsdPer1MTokens)}`,
+    ),
+    createPricingMetric(
+      "Total reference",
+      formatUsdPerMillion(card?.totalOurUsdPer1MTokens),
+      `OpenAI ${formatUsdPerMillion(card?.totalOpenAIUsdPer1MTokens)}`,
+    ),
+  );
+
+  article.append(head, body);
+  return article;
+}
+
+function createPricingEmptyState(message, meta = "") {
+  const empty = document.createElement("article");
+  empty.className = "glass-card pricing-card pricing-card-empty";
+
+  const title = document.createElement("strong");
+  title.textContent = message;
+  empty.append(title);
+
+  if (meta) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = meta;
+    empty.append(paragraph);
+  }
+
+  return empty;
+}
+
+function updatePricingPanel() {
+  const snapshot = state.pricingSnapshot && typeof state.pricingSnapshot === "object" ? state.pricingSnapshot : null;
+  const cards = Array.isArray(snapshot?.cards) ? snapshot.cards : [];
+  const hasError = Boolean(state.pricingError);
+  const isLoading = state.pricingLoading;
+
+  if (elements.pricingStatusBanner) {
+    elements.pricingStatusBanner.classList.toggle("is-warn", hasError);
+    elements.pricingStatusBanner.classList.toggle("is-loading", isLoading && !snapshot);
+  }
+
+  if (elements.pricingRefreshButton) {
+    elements.pricingRefreshButton.disabled = isLoading;
+    elements.pricingRefreshButton.textContent = hasError ? "Try again" : "Refresh pricing";
+  }
+
+  if (elements.pricingMultiplierValue) {
+    const multiplier = Number(snapshot?.inputMultiplier ?? DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER;
+    elements.pricingMultiplierValue.textContent = multiplier.toFixed(1);
+  }
+
+  if (elements.pricingCardCount) {
+    elements.pricingCardCount.textContent = String(cards.length || 0);
+  }
+
+  if (elements.pricingSourceType) {
+    elements.pricingSourceType.textContent = snapshot?.source === "database" ? "Saved catalog" : "OpenAI markdown";
+  }
+
+  if (elements.pricingSourceLabel) {
+    elements.pricingSourceLabel.textContent = hasError && !snapshot
+      ? "Pricing unavailable"
+      : snapshot?.source === "database"
+        ? "Using saved pricing snapshot"
+        : "Synced from OpenAI pricing";
+  }
+
+  if (elements.pricingSourceMeta) {
+    elements.pricingSourceMeta.textContent = hasError
+      ? state.pricingError
+      : formatPricingTimestamp(snapshot?.fetchedAt);
+  }
+
+  if (elements.pricingStatusMessage) {
+    elements.pricingStatusMessage.textContent = hasError
+      ? state.pricingError
+      : isLoading && !snapshot
+        ? "Loading pricing data..."
+        : "Three representative models are shown below using our 1.5x pricing.";
+  }
+
+  if (elements.pricingStatusMeta) {
+    elements.pricingStatusMeta.textContent = snapshot?.sourceUrl
+      ? `Source: ${snapshot.sourceUrl}`
+      : "We’ll keep the last loaded pricing visible if a refresh fails.";
+  }
+
+  if (elements.pricingCardGrid) {
+    if (!cards.length) {
+      const message = hasError
+        ? "Pricing cards are not available right now."
+        : isLoading
+          ? "Loading model pricing..."
+          : "Pricing cards will appear here once the catalog loads.";
+      const meta = hasError
+        ? "Refresh pricing to try again."
+        : "We’ll show one lean model, one middle-tier model, and one premium model.";
+      elements.pricingCardGrid.replaceChildren(createPricingEmptyState(message, meta));
+    } else {
+      elements.pricingCardGrid.replaceChildren(...cards.map((card) => buildPricingCard(card)));
+    }
+  }
+}
+
+async function refreshPricingSnapshot(options = {}) {
+  if (!authSession?.token) {
+    state.pricingSnapshot = null;
+    state.pricingLoading = false;
+    state.pricingError = "";
+    return;
+  }
+
+  if (state.pricingLoading && !options.force) {
+    return;
+  }
+
+  state.pricingLoading = true;
+  state.pricingError = "";
+  renderApp();
+
+  try {
+    const response = await apiRequest("/api/pricing", {
+      headers: {
+        Authorization: `Bearer ${authSession.token}`,
+      },
+    });
+
+    state.pricingSnapshot = response && typeof response === "object" ? response : null;
+    state.pricingError = "";
+  } catch (error) {
+    state.pricingError = formatApiErrorMessage(error, "We couldn’t load pricing right now.");
+  } finally {
+    state.pricingLoading = false;
     renderApp();
   }
 }
@@ -6675,15 +6911,17 @@ function updateSettingsButtons() {
 function updatePanelVisibility() {
   const inStudio = state.activeTab === "features" && Boolean(state.selectedFeatureId);
   const inBilling = state.activeTab === "billing";
+  const inPricing = state.activeTab === "pricing";
   const feature = inStudio ? getSelectedFeature() : null;
   const studioView = inStudio ? getSelectedFeatureStudioView(feature) : "overview";
-  elements.appBar.classList.toggle("is-hidden", inStudio || inBilling);
+  elements.appBar.classList.toggle("is-hidden", inStudio || inBilling || inPricing);
   elements.appView.classList.toggle("is-feature-page", inStudio);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
   elements.previewPanel.classList.toggle("is-hidden", state.activeTab !== "preview");
   elements.simulatorPanel.classList.toggle("is-hidden", state.activeTab !== "simulator");
   elements.billingPanel.classList.toggle("is-hidden", state.activeTab !== "billing");
+  elements.pricingPanel.classList.toggle("is-hidden", state.activeTab !== "pricing");
   if (elements.featureStudioActivationSection && feature) {
     elements.featureStudioActivationSection.classList.toggle("is-hidden", studioView !== "activation");
   }
@@ -6766,6 +7004,7 @@ function renderApp() {
   updatePreview();
   updateSimulatorPanel();
   updateBillingPanel();
+  updatePricingPanel();
   updateSettingsButtons();
   updateSettingsFields();
   setStatus("Saved");
@@ -6847,6 +7086,9 @@ function refreshView() {
 
     setView("app");
     renderApp();
+    if (state.activeTab === "pricing") {
+      void refreshPricingSnapshot();
+    }
     return;
   }
 
@@ -7136,6 +7378,9 @@ function completeSignIn(session) {
   state.billingReport = null;
   state.billingLoading = true;
   state.billingError = "";
+  state.pricingSnapshot = null;
+  state.pricingLoading = false;
+  state.pricingError = "";
   state.paymentStatus = null;
   resetAdminState();
   setHashForTab("features");
@@ -7254,6 +7499,9 @@ async function signOut() {
   state.billingReport = null;
   state.billingLoading = false;
   state.billingError = "";
+  state.pricingSnapshot = null;
+  state.pricingLoading = false;
+  state.pricingError = "";
   state.paymentStatus = null;
   state.requestCountryCode = "";
   state.settingsOpen = false;
@@ -7550,6 +7798,11 @@ function handleMenuAction(action) {
     return;
   }
 
+  if (action === "pricing") {
+    setActiveTab("pricing");
+    return;
+  }
+
   if (action === "admin-users") {
     openAdminUsersList();
     return;
@@ -7600,6 +7853,9 @@ async function bootstrapAuthState() {
       state.billingReport = null;
       state.billingLoading = true;
       state.billingError = "";
+      state.pricingSnapshot = null;
+      state.pricingLoading = false;
+      state.pricingError = "";
       state.paymentStatus = null;
       resetAdminState();
       refreshView();
@@ -7633,6 +7889,9 @@ async function bootstrapAuthState() {
   state.billingReport = null;
   state.billingLoading = false;
   state.billingError = "";
+  state.pricingSnapshot = null;
+  state.pricingLoading = false;
+  state.pricingError = "";
   state.paymentStatus = null;
   refreshView();
 }
@@ -7672,6 +7931,11 @@ function bindEvents() {
   if (elements.billingRefreshButton) {
     elements.billingRefreshButton.addEventListener("click", () => {
       void refreshBillingReport();
+    });
+  }
+  if (elements.pricingRefreshButton) {
+    elements.pricingRefreshButton.addEventListener("click", () => {
+      void refreshPricingSnapshot({ force: true });
     });
   }
   if (elements.billingHelpButton) {
@@ -7777,6 +8041,12 @@ function bindEvents() {
   }
   if (elements.billingBackButton) {
     elements.billingBackButton.addEventListener("click", () => {
+      setActiveTab("features");
+      window.scrollTo(0, 0);
+    });
+  }
+  if (elements.pricingBackButton) {
+    elements.pricingBackButton.addEventListener("click", () => {
       setActiveTab("features");
       window.scrollTo(0, 0);
     });
@@ -8128,6 +8398,9 @@ function bindEvents() {
       state.lastPrimaryTab = route.tab;
       persistLastPrimaryTab();
       renderApp();
+      if (route.tab === "pricing") {
+        void refreshPricingSnapshot();
+      }
       return;
     }
 

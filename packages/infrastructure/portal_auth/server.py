@@ -39,6 +39,8 @@ from urllib import request as urllib_request
 
 from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.feature_activation import FeatureActivationService
+from packages.infrastructure.openai_pricing import OpenAIPricingError
+from packages.infrastructure.openai_pricing import build_pricing_snapshot_json
 from packages.infrastructure.portal_db import DEFAULT_CURRENCY
 from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
@@ -945,6 +947,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/pricing"
+            or path.startswith("/api/pricing/")
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -966,6 +970,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/pricing"
+            or path.startswith("/api/pricing/")
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -987,6 +993,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/pricing"
+            or path.startswith("/api/pricing/")
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -1069,6 +1077,38 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 )
                 report["sourceLabel"] = "Sample billing data" if report.get("source") == "defaults" else "Billing data"
             json_response(self, HTTPStatus.OK, report)
+            return
+
+        if path.startswith("/api/pricing"):
+            token = self._extract_session_token()
+            session = self.store.get_session(token) if token else None
+            if session is None:
+                json_response(self, HTTPStatus.UNAUTHORIZED, {
+                    "ok": False,
+                    "message": "No valid session.",
+                })
+                return
+
+            try:
+                snapshot = build_pricing_snapshot_json(
+                    self.database,
+                    input_multiplier=self.config.billing_input_token_price_multiplier,
+                    output_multiplier=self.config.billing_output_token_price_multiplier,
+                )
+            except OpenAIPricingError as exc:
+                json_response(self, HTTPStatus.BAD_GATEWAY, {
+                    "ok": False,
+                    "message": str(exc),
+                })
+                return
+            except Exception:
+                json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {
+                    "ok": False,
+                    "message": "Could not load pricing right now.",
+                })
+                return
+
+            json_response(self, HTTPStatus.OK, snapshot)
             return
 
         if path == "/api/features":
