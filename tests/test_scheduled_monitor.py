@@ -654,6 +654,187 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(result["run"]["run"]["metadata"]["cancelled"])
         self.assertIsNone(self.database.get_latest_feature_monitor_run(user_id=1, feature_id=MONITOR_FEATURE_ID))
 
+    def test_manual_run_uses_saved_business_profile_and_renders_editor_button(self) -> None:
+        self._configure_monitor()
+        self.database.update_user_profile(
+            "owner@example.com",
+            profile={
+                "businessSummary": "Boutique AI lab that submits papers and sends speakers to industry events.",
+                "customerNotes": "Research leads and developer advocates.",
+                "assistantGuidance": "Prioritize paper deadlines, CFPs, and travel planning dates.",
+            },
+        )
+        delivered_messages: list[dict[str, str]] = []
+
+        def fake_send_email_notification(**kwargs) -> None:
+            delivered_messages.append(
+                {
+                    "to": str(kwargs.get("to_email") or ""),
+                    "subject": str(kwargs.get("subject") or ""),
+                    "text": str(kwargs.get("text_body") or ""),
+                    "html": str(kwargs.get("html_body") or ""),
+                }
+            )
+
+        fake_response = SimpleNamespace(
+            output_text=json.dumps(
+                {
+                    "summary": "Found one relevant update.",
+                    "items": [
+                        {
+                            "id": "event-123",
+                            "title": "SEDE 2026 paper submission deadline is July 15, 2026",
+                            "summary": "The CFP lists July 15, 2026 as the paper submission deadline.",
+                            "why_it_matters": "Your team submits papers and needs lead time for review and travel coordination.",
+                            "event_date": "2026-07-15",
+                            "source_name": "ISCA",
+                            "source_url": "https://www.isca-hq.org/SEDE/CFP.html",
+                            "urgency": "high",
+                        }
+                    ],
+                }
+            ),
+            request_id="req_profile",
+            response_id="resp_profile",
+            model="gpt-5.5",
+        )
+
+        scheduler = ScheduledMonitorScheduler(
+            self.database,
+            config=ScheduledMonitorConfig(
+                enabled=True,
+                poll_seconds=60,
+                model="gpt-5.5",
+                search_context_size="medium",
+                max_output_tokens=1200,
+                max_items_per_run=5,
+            ),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "PUBLIC_BASE_URL": "https://portal.example.com",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.call_openai_response",
+            return_value=fake_response,
+        ) as mock_openai_response, mock.patch(
+            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            side_effect=fake_send_email_notification,
+        ):
+            result = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
+
+        self.assertTrue(result["ok"])
+        prompt = mock_openai_response.call_args.kwargs["prompt"]
+        self.assertIn("About the client or business: Boutique AI lab that submits papers and sends speakers to industry events.", prompt)
+        self.assertIn("Typical customers and requests: Research leads and developer advocates.", prompt)
+        self.assertIn("Always keep in mind: Prioritize paper deadlines, CFPs, and travel planning dates.", prompt)
+        self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
+        self.assertIn("Open tool editor", delivered_messages[0]["html"])
+        self.assertIn(
+            "https://portal.example.com/portal/#features/scheduled-web-monitor-notifier/editor",
+            delivered_messages[0]["html"],
+        )
+        self.assertIn("Why this matters for your business", delivered_messages[0]["html"])
+
+    def test_results_email_sorts_items_and_humanizes_dates(self) -> None:
+        self._configure_monitor()
+        delivered_messages: list[dict[str, str]] = []
+
+        def fake_send_email_notification(**kwargs) -> None:
+            delivered_messages.append(
+                {
+                    "to": str(kwargs.get("to_email") or ""),
+                    "subject": str(kwargs.get("subject") or ""),
+                    "text": str(kwargs.get("text_body") or ""),
+                    "html": str(kwargs.get("html_body") or ""),
+                }
+            )
+
+        fake_response = SimpleNamespace(
+            output_text=json.dumps(
+                {
+                    "summary": "Found a couple of relevant updates.",
+                    "items": [
+                        {
+                            "id": "event-devday",
+                            "title": "OpenAI DevDay 2026 announced for September 29, 2026",
+                            "summary": "The event date is listed for September 29, 2026 in San Francisco.",
+                            "why_it_matters": "This affects travel and staffing plans for conference attendance.",
+                            "event_date": "2026-09-29",
+                            "source_name": "OpenAI DevDay",
+                            "source_url": "https://devday.openai.com/",
+                            "urgency": "medium",
+                        },
+                        {
+                            "id": "event-sede",
+                            "title": "SEDE 2026 paper submission deadline is July 15, 2026",
+                            "summary": "The CFP lists July 15, 2026 as the paper submission deadline.",
+                            "why_it_matters": "Your team needs immediate writing and review time before the deadline.",
+                            "event_date": "2026-07-15",
+                            "source_name": "ISCA",
+                            "source_url": "https://www.isca-hq.org/SEDE/CFP.html",
+                            "urgency": "high",
+                        },
+                    ],
+                }
+            ),
+            request_id="req_sorted",
+            response_id="resp_sorted",
+            model="gpt-5.5",
+        )
+
+        scheduler = ScheduledMonitorScheduler(
+            self.database,
+            config=ScheduledMonitorConfig(
+                enabled=True,
+                poll_seconds=60,
+                model="gpt-5.5",
+                search_context_size="medium",
+                max_output_tokens=1200,
+                max_items_per_run=5,
+            ),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "PUBLIC_BASE_URL": "https://portal.example.com",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.call_openai_response",
+            return_value=fake_response,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            side_effect=fake_send_email_notification,
+        ):
+            result = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
+
+        self.assertTrue(result["ok"])
+        text_body = delivered_messages[0]["text"]
+        html_body = delivered_messages[0]["html"]
+        self.assertLess(
+            text_body.find("SEDE 2026 paper submission deadline is July 15, 2026"),
+            text_body.find("OpenAI DevDay 2026 announced for September 29, 2026"),
+        )
+        self.assertIn("When: July 15, 2026 (in 2 days)", text_body)
+        self.assertIn("High priority", html_body)
+        self.assertIn("July 15, 2026 (in 2 days)", html_body)
+        self.assertLess(
+            html_body.find("SEDE 2026 paper submission deadline is July 15, 2026"),
+            html_body.find("OpenAI DevDay 2026 announced for September 29, 2026"),
+        )
+        self.assertIn(">View source<", html_body)
+
 
 if __name__ == "__main__":
     unittest.main()

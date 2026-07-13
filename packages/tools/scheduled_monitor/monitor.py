@@ -6,13 +6,16 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from datetime import datetime
 from datetime import time as dt_time
 from datetime import timedelta
 from datetime import timezone
 from hashlib import sha256
+from html import escape
 from typing import Any
 from typing import Callable
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -463,7 +466,7 @@ def build_monitor_prompt(
         '    {',
         '      "id": "stable-unique-id-or-empty",',
         '      "title": "item title",',
-        '      "summary": "what happened",',
+        '      "summary": "what to know about the upcoming event or deadline",',
         '      "why_it_matters": "why the client should care",',
         '      "event_date": "YYYY-MM-DD or empty",',
         '      "source_name": "publisher name",',
@@ -477,8 +480,11 @@ def build_monitor_prompt(
         f"Only include at most {max_items} items.",
         "If nothing relevant is found, return an empty items array.",
         "Prefer concrete events, deadlines, conference announcements, holiday dates, or changes with a source URL.",
+        "Prefer future or upcoming events and deadlines. Avoid past dates unless the update still creates a current decision or action for this client.",
         "Never invent a source, URL, event date, or organization.",
         "Only include matches that are genuinely useful enough to float up to the client.",
+        "Use the shared client context and business context to make why_it_matters specific to the client's real goals, customers, region, timing, or workflow.",
+        "Avoid generic why_it_matters lines like 'this helps planning' unless you also explain what planning decision it affects for this client.",
         f"Tone guidance: {normalize_text(prompt.get('toneGuidance')) or 'Clear, useful, and concise.'}",
         f"Prioritization rules: {normalize_text(prompt.get('replyRules')) or 'Only alert when there is a concrete, useful match.'}",
     ]
@@ -513,6 +519,274 @@ def build_no_results_subject(target: dict[str, Any]) -> str:
     return "Quick monitor update: nothing new yet"
 
 
+def parse_event_date(value: Any) -> date | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def format_checked_timestamp(value: datetime) -> str:
+    checked_at = value.astimezone(timezone.utc)
+    return f"{checked_at.strftime('%b')} {checked_at.day}, {checked_at.year} at {checked_at.strftime('%H:%M')} UTC"
+
+
+def format_event_date(value: Any) -> str:
+    event_date = parse_event_date(value)
+    if event_date is None:
+        return normalize_text(value)
+    return f"{event_date.strftime('%B')} {event_date.day}, {event_date.year}"
+
+
+def format_relative_event_date(value: Any, *, scheduled_for: datetime) -> str:
+    event_date = parse_event_date(value)
+    if event_date is None:
+        return ""
+
+    delta_days = (event_date - scheduled_for.astimezone(timezone.utc).date()).days
+    if delta_days == 0:
+        return "Today"
+    if delta_days == 1:
+        return "Tomorrow"
+    if delta_days > 1:
+        return f"In {delta_days} days"
+    if delta_days == -1:
+        return "Yesterday"
+    return f"{abs(delta_days)} days ago"
+
+
+def format_event_timing(value: Any, *, scheduled_for: datetime) -> str:
+    display_date = format_event_date(value)
+    relative_date = format_relative_event_date(value, scheduled_for=scheduled_for)
+    if display_date and relative_date:
+        return f"{display_date} ({relative_date.lower()})"
+    return display_date or relative_date
+
+
+def normalize_urgency(value: Any) -> str:
+    urgency = normalize_text(value).lower()
+    if urgency in {"high", "medium", "low"}:
+        return urgency
+    return "medium"
+
+
+def humanize_urgency(value: Any) -> str:
+    return normalize_urgency(value).capitalize()
+
+
+def sort_alert_items(items: list[dict[str, Any]], *, scheduled_for: datetime) -> list[dict[str, Any]]:
+    reference_date = scheduled_for.astimezone(timezone.utc).date()
+    urgency_rank = {"high": 0, "medium": 1, "low": 2}
+
+    def sort_key(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        event_date = parse_event_date(item.get("eventDate"))
+        if event_date is None:
+            date_group = 1
+            date_rank = 999999
+        else:
+            delta_days = (event_date - reference_date).days
+            if delta_days >= 0:
+                date_group = 0
+                date_rank = delta_days
+            else:
+                date_group = 2
+                date_rank = abs(delta_days)
+        return (
+            urgency_rank.get(normalize_urgency(item.get("urgency")), 1),
+            date_group,
+            date_rank,
+            normalize_text(item.get("title")).lower(),
+        )
+
+    return sorted(items, key=sort_key)
+
+
+def count_time_sensitive_items(items: list[dict[str, Any]], *, scheduled_for: datetime) -> int:
+    reference_date = scheduled_for.astimezone(timezone.utc).date()
+    count = 0
+    for item in items:
+        if normalize_urgency(item.get("urgency")) == "high":
+            count += 1
+            continue
+        event_date = parse_event_date(item.get("eventDate"))
+        if event_date is None:
+            continue
+        delta_days = (event_date - reference_date).days
+        if 0 <= delta_days <= 14:
+            count += 1
+    return count
+
+
+def build_notification_overview(
+    *,
+    target: dict[str, Any],
+    items: list[dict[str, Any]],
+    scheduled_for: datetime,
+) -> str:
+    item_count = len(items)
+    if item_count <= 0:
+        return "Nothing new worth sending right now."
+
+    parts = [
+        (
+            "Found 1 relevant future event or deadline."
+            if item_count == 1
+            else f"Found {item_count} relevant future events and deadlines."
+        )
+    ]
+    time_sensitive_count = count_time_sensitive_items(items, scheduled_for=scheduled_for)
+    if time_sensitive_count:
+        if time_sensitive_count == item_count and item_count > 1:
+            parts.append("All of them need attention soon.")
+        elif time_sensitive_count == 1:
+            parts.append("1 needs attention soon.")
+        else:
+            parts.append(f"{time_sensitive_count} need attention soon.")
+
+    prompt = target.get("prompt") if isinstance(target.get("prompt"), dict) else {}
+    has_business_context = bool(
+        build_shared_profile_notes(target.get("profile"))
+        or normalize_text(prompt.get("businessNotes"))
+    )
+    parts.append(
+        "Prioritized using your saved watch list and business context."
+        if has_business_context
+        else "Prioritized using your saved watch list."
+    )
+    return " ".join(parts)
+
+
+def build_notification_heading(item_count: int) -> str:
+    return (
+        "1 upcoming update worth tracking"
+        if item_count == 1
+        else f"{item_count} upcoming updates worth tracking"
+    )
+
+
+def build_source_text(item: dict[str, Any]) -> str:
+    source_name = normalize_text(item.get("sourceName"))
+    source_url = normalize_text(item.get("sourceUrl"))
+    if source_name and source_url:
+        return f"{source_name} - {source_url}"
+    return source_name or source_url
+
+
+def build_tool_editor_url(target: dict[str, Any]) -> str:
+    base_url = normalize_text(os.getenv("PUBLIC_BASE_URL")).rstrip("/")
+    feature_id = normalize_text(target.get("featureId")) or MONITOR_FEATURE_ID
+    if not base_url or not feature_id:
+        return ""
+
+    portal_base = base_url if base_url.endswith("/portal") else f"{base_url}/portal"
+    return f"{portal_base}/#features/{quote(feature_id)}/editor"
+
+
+def escape_html_text(value: Any) -> str:
+    return escape(str(value or ""), quote=True)
+
+
+def build_results_supporting_note(summary: str, overview: str) -> str:
+    note = normalize_text(summary)
+    if not note:
+        return ""
+    if len(note) > 180:
+        return ""
+    if note.casefold() in overview.casefold():
+        return ""
+    return note
+
+
+def build_email_shell(
+    *,
+    eyebrow: str,
+    title: str,
+    checked_label: str,
+    overview: str,
+    body_html: str,
+    button_label: str = "",
+    button_url: str = "",
+    supporting_note: str = "",
+) -> str:
+    action_html = ""
+    if button_label and button_url:
+        action_html = (
+            f'<a class="email-button" href="{escape_html_text(button_url)}">{escape_html_text(button_label)}</a>'
+        )
+
+    note_html = ""
+    if supporting_note:
+        note_html = f'<p class="email-note">{escape_html_text(supporting_note)}</p>'
+
+    return (
+        "<!doctype html>"
+        "<html>"
+        "<head>"
+        "<meta charset=\"utf-8\" />"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />"
+        "<style>"
+        "body{margin:0;padding:0;background:#eef4fa;color:#223548;font-family:Avenir Next,Segoe UI,Helvetica Neue,sans-serif;}"
+        ".email-shell{width:100%;background:#eef4fa;padding:24px 12px;box-sizing:border-box;}"
+        ".email-card{max-width:700px;margin:0 auto;background:#ffffff;border:1px solid #dce7f0;border-radius:24px;overflow:hidden;}"
+        ".email-header{padding:32px 32px 12px;}"
+        ".email-eyebrow{margin:0 0 10px;font-size:12px;line-height:1.4;letter-spacing:0.14em;text-transform:uppercase;color:#6f8296;font-weight:700;}"
+        ".email-title{margin:0;font-size:34px;line-height:1.1;letter-spacing:-0.04em;color:#122230;font-weight:800;}"
+        ".email-meta{margin:14px 0 0;font-size:13px;line-height:1.5;color:#6b7f92;}"
+        ".email-summary{margin:16px 0 0;font-size:17px;line-height:1.7;color:#31465c;}"
+        ".email-note{margin:12px 0 0;font-size:14px;line-height:1.6;color:#5a6f84;}"
+        ".email-button{display:inline-block;margin-top:20px;padding:12px 18px;border-radius:999px;background:#0f5bd8;color:#ffffff !important;text-decoration:none;font-size:14px;font-weight:700;}"
+        ".email-section{padding:0 32px 22px;}"
+        ".alert-card{background:#f8fbff;border:1px solid #dbe7f3;border-radius:18px;padding:22px;}"
+        ".alert-pill{display:inline-block;margin:0 8px 8px 0;padding:6px 10px;border-radius:999px;background:#e8eef6;color:#445a70;font-size:12px;font-weight:700;line-height:1.2;}"
+        ".alert-pill.high{background:#fee7e6;color:#a53b32;}"
+        ".alert-pill.medium{background:#fff1d9;color:#9b6513;}"
+        ".alert-pill.low{background:#e6f4ea;color:#2d7a43;}"
+        ".alert-pill.relative{background:#e4efff;color:#1f5cb7;}"
+        ".alert-title{margin:4px 0 0;font-size:24px;line-height:1.35;color:#16304a;font-weight:700;}"
+        ".alert-label{margin:16px 0 0;font-size:11px;line-height:1.4;letter-spacing:0.12em;text-transform:uppercase;color:#70869a;font-weight:700;}"
+        ".alert-copy{margin:6px 0 0;font-size:16px;line-height:1.7;color:#31465c;}"
+        ".alert-meta{margin:16px 0 0;font-size:14px;line-height:1.6;color:#576d82;}"
+        ".alert-source a{color:#0f5bd8;text-decoration:none;font-weight:700;}"
+        ".email-list{margin:10px 0 0;padding-left:18px;color:#31465c;font-size:16px;line-height:1.7;}"
+        ".email-list li{margin:0 0 6px;}"
+        ".email-footer{padding:0 32px 32px;font-size:13px;line-height:1.6;color:#71879a;}"
+        "@media only screen and (max-width:640px){"
+        ".email-shell{padding:16px 10px;}"
+        ".email-header{padding:24px 20px 8px;}"
+        ".email-section{padding:0 20px 18px;}"
+        ".email-footer{padding:0 20px 24px;}"
+        ".email-title{font-size:28px;}"
+        ".alert-title{font-size:21px;}"
+        ".email-summary,.alert-copy,.email-list{font-size:15px;}"
+        ".email-button{display:block;text-align:center;}"
+        "}"
+        "</style>"
+        "</head>"
+        "<body>"
+        "<div class=\"email-shell\">"
+        "<div class=\"email-card\">"
+        "<div class=\"email-header\">"
+        f"<p class=\"email-eyebrow\">{escape_html_text(eyebrow)}</p>"
+        f"<h1 class=\"email-title\">{escape_html_text(title)}</h1>"
+        f"<p class=\"email-meta\">Checked {escape_html_text(checked_label)}.</p>"
+        f"<p class=\"email-summary\">{escape_html_text(overview)}</p>"
+        f"{note_html}"
+        f"{action_html}"
+        "</div>"
+        f"{body_html}"
+        "<div class=\"email-footer\">"
+        "You can update the watch list, timing, and delivery details any time in the tool editor."
+        "</div>"
+        "</div>"
+        "</div>"
+        "</body>"
+        "</html>"
+    )
+
+
 def build_notification_text(
     *,
     target: dict[str, Any],
@@ -520,31 +794,30 @@ def build_notification_text(
     items: list[dict[str, Any]],
     scheduled_for: datetime,
 ) -> str:
+    sorted_items = sort_alert_items(items, scheduled_for=scheduled_for)
     lines = [
         "Quick monitor update",
         "",
-        f"Checked on {scheduled_for.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.",
-        summary or "I found a few new things you may want to look at.",
+        f"Checked {format_checked_timestamp(scheduled_for)}.",
+        build_notification_overview(target=target, items=sorted_items, scheduled_for=scheduled_for),
     ]
-    for index, item in enumerate(items, start=1):
+    for index, item in enumerate(sorted_items, start=1):
         lines.extend(
             [
                 "",
                 f"{index}. {item['title']}",
-                item["summary"] or "Relevant update found.",
+                f"What to know: {item['summary'] or 'Relevant future update found.'}",
             ]
         )
         if item["whyItMatters"]:
-            lines.append(f"Why it matters: {item['whyItMatters']}")
-        if item["eventDate"]:
-            lines.append(f"Date: {item['eventDate']}")
-        if item["sourceName"] or item["sourceUrl"]:
-            source = item["sourceName"] or item["sourceUrl"]
-            if item["sourceUrl"] and item["sourceUrl"] != source:
-                source = f"{source} - {item['sourceUrl']}"
+            lines.append(f"Why this matters for your business: {item['whyItMatters']}")
+        event_timing = format_event_timing(item.get("eventDate"), scheduled_for=scheduled_for)
+        if event_timing:
+            lines.append(f"When: {event_timing}")
+        source = build_source_text(item)
+        if source:
             lines.append(f"Source: {source}")
-        if item["urgency"]:
-            lines.append(f"Urgency: {item['urgency']}")
+        lines.append(f"Priority: {humanize_urgency(item.get('urgency'))}")
     return "\n".join(lines)
 
 
@@ -556,10 +829,19 @@ def build_no_results_text(
     recent_results_already_sent: bool = False,
 ) -> str:
     watch_items = normalize_watch_items(settings.get("watchItems"))
+    follow_up_message = (
+        "I already sent the latest results earlier."
+        if normalize_text(status) == "no_matches" and recent_results_already_sent
+        else ""
+        if normalize_text(status) == "no_matches"
+        else "Nothing new to send right now. I already shared the useful matches earlier."
+    )
     lines = [
         "Quick monitor update",
         "",
-        f"Checked on {scheduled_for.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.",
+        f"Checked {format_checked_timestamp(scheduled_for)}.",
+        "Nothing new worth sending right now.",
+        "",
         "Here's what I checked:",
     ]
     if watch_items:
@@ -568,30 +850,133 @@ def build_no_results_text(
         brief = resolve_monitor_brief(settings)
         lines.append(f"- {brief or 'Your saved watch list'}")
 
-    lines.extend(
-        [
-            "",
-            (
-                "Nothing new worth sending right now. I already sent the latest results earlier."
-                if normalize_text(status) == "no_matches" and recent_results_already_sent
-                else "Nothing new worth sending right now."
-                if normalize_text(status) == "no_matches"
-                else "Nothing new to send right now. I already shared the useful matches earlier."
-            ),
-        ]
-    )
+    if follow_up_message:
+        lines.extend(["", follow_up_message])
     return "\n".join(lines)
 
 
-def build_notification_html(subject: str, text_body: str) -> str:
-    safe_subject = subject.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    safe_body = text_body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br />")
-    return (
-        "<!doctype html><html><body style=\"font-family:Arial,sans-serif;background:#f4f7fb;padding:24px;\">"
-        "<div style=\"max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #dce7f0;border-radius:20px;padding:24px;\">"
-        f"<h1 style=\"margin:0 0 18px;font-size:24px;line-height:1.2;color:#122230;\">{safe_subject}</h1>"
-        f"<div style=\"font-size:15px;line-height:1.6;color:#334155;\">{safe_body}</div>"
-        "</div></body></html>"
+def build_notification_html(
+    *,
+    target: dict[str, Any],
+    summary: str,
+    items: list[dict[str, Any]],
+    scheduled_for: datetime,
+) -> str:
+    sorted_items = sort_alert_items(items, scheduled_for=scheduled_for)
+    sections: list[str] = []
+    for item in sorted_items:
+        urgency = normalize_urgency(item.get("urgency"))
+        relative_date = format_relative_event_date(item.get("eventDate"), scheduled_for=scheduled_for)
+        event_timing = format_event_timing(item.get("eventDate"), scheduled_for=scheduled_for)
+        source_name = normalize_text(item.get("sourceName"))
+        source_url = normalize_text(item.get("sourceUrl"))
+        source_html = ""
+        if source_name and source_url:
+            source_html = (
+                f"{escape_html_text(source_name)}"
+                f" <span aria-hidden=\"true\">&middot;</span> "
+                f"<a href=\"{escape_html_text(source_url)}\">View source</a>"
+            )
+        elif source_url:
+            source_html = f"<a href=\"{escape_html_text(source_url)}\">View source</a>"
+        elif source_name:
+            source_html = escape_html_text(source_name)
+
+        pill_html = [f"<span class=\"alert-pill {escape_html_text(urgency)}\">{escape_html_text(humanize_urgency(urgency))} priority</span>"]
+        if relative_date:
+            pill_html.append(f"<span class=\"alert-pill relative\">{escape_html_text(relative_date)}</span>")
+
+        section_parts = [
+            "<div class=\"email-section\">",
+            "<div class=\"alert-card\">",
+            "".join(pill_html),
+            f"<h2 class=\"alert-title\">{escape_html_text(item.get('title'))}</h2>",
+            "<p class=\"alert-label\">What to know</p>",
+            f"<p class=\"alert-copy\">{escape_html_text(item.get('summary') or 'Relevant future update found.')}</p>",
+        ]
+        if item.get("whyItMatters"):
+            section_parts.extend(
+                [
+                    "<p class=\"alert-label\">Why this matters for your business</p>",
+                    f"<p class=\"alert-copy\">{escape_html_text(item.get('whyItMatters'))}</p>",
+                ]
+            )
+        if event_timing:
+            section_parts.extend(
+                [
+                    "<p class=\"alert-label\">When</p>",
+                    f"<p class=\"alert-copy\">{escape_html_text(event_timing)}</p>",
+                ]
+            )
+        if source_html:
+            section_parts.append(f"<p class=\"alert-meta alert-source\">Source: {source_html}</p>")
+        section_parts.extend(["</div>", "</div>"])
+        sections.append("".join(section_parts))
+
+    overview = build_notification_overview(target=target, items=sorted_items, scheduled_for=scheduled_for)
+    return build_email_shell(
+        eyebrow="Scheduled Web Monitor",
+        title=build_notification_heading(len(sorted_items)),
+        checked_label=format_checked_timestamp(scheduled_for),
+        overview=overview,
+        supporting_note=build_results_supporting_note(summary, overview),
+        body_html="".join(sections),
+        button_label="Open tool editor",
+        button_url=build_tool_editor_url(target),
+    )
+
+
+def build_no_results_html(
+    *,
+    target: dict[str, Any],
+    settings: dict[str, Any],
+    scheduled_for: datetime,
+    status: str = "no_matches",
+    recent_results_already_sent: bool = False,
+) -> str:
+    watch_items = normalize_watch_items(settings.get("watchItems"))
+    if not watch_items:
+        watch_items = [resolve_monitor_brief(settings) or "Your saved watch list"]
+
+    supporting_note = (
+        "The latest useful results were already shared earlier."
+        if normalize_text(status) != "no_matches" or recent_results_already_sent
+        else ""
+    )
+    body_html = (
+        "<div class=\"email-section\">"
+        "<div class=\"alert-card\">"
+        "<p class=\"alert-label\">Checked topics</p>"
+        "<ul class=\"email-list\">"
+        + "".join(f"<li>{escape_html_text(item)}</li>" for item in watch_items)
+        + "</ul>"
+        "</div>"
+        "</div>"
+    )
+    return build_email_shell(
+        eyebrow="Scheduled Web Monitor",
+        title="Nothing new worth sending yet",
+        checked_label=format_checked_timestamp(scheduled_for),
+        overview="I checked your saved watch list and did not find a new source-backed update worth sending right now.",
+        supporting_note=supporting_note,
+        body_html=body_html,
+        button_label="Open tool editor",
+        button_url=build_tool_editor_url(target),
+    )
+
+
+def build_fallback_notification_html(subject: str, text_body: str) -> str:
+    body_html = "".join(
+        f"<div class=\"email-section\"><div class=\"alert-card\"><p class=\"alert-copy\">{escape_html_text(line)}</p></div></div>"
+        for line in text_body.splitlines()
+        if line.strip()
+    )
+    return build_email_shell(
+        eyebrow="Scheduled Web Monitor",
+        title=subject,
+        checked_label="just now",
+        overview="Here is the latest monitor message.",
+        body_html=body_html,
     )
 
 
@@ -637,6 +1022,7 @@ class ScheduledMonitorScheduler:
             "userId": int(activation.get("userId") or user.get("id") or 0),
             "email": normalized_email,
             "displayName": normalize_text(user.get("displayName")),
+            "profile": user.get("profile") if isinstance(user.get("profile"), dict) else {},
             "featureId": MONITOR_FEATURE_ID,
             "prompt": {
                 **default_prompt,
@@ -735,7 +1121,7 @@ class ScheduledMonitorScheduler:
                 to_email=delivery_target,
                 subject=subject,
                 text_body=message_text,
-                html_body=html_body or build_notification_html(subject, message_text),
+                html_body=html_body or build_fallback_notification_html(subject, message_text),
             )
         elif resolved_channel == "telegram":
             delivery_target = normalize_text(target.get("telegramChatId"))
@@ -772,6 +1158,12 @@ class ScheduledMonitorScheduler:
             items=items,
             scheduled_for=scheduled_for,
         )
+        html_body = build_notification_html(
+            target=target,
+            summary=summary,
+            items=items,
+            scheduled_for=scheduled_for,
+        )
         delivery_target, delivery_message_id = self._deliver_message(
             target={
                 **target,
@@ -779,6 +1171,7 @@ class ScheduledMonitorScheduler:
             },
             subject=build_notification_subject(target, len(items)),
             message_text=message_text,
+            html_body=html_body,
             channel=normalize_text(settings.get("deliveryChannel")),
         )
 
@@ -799,6 +1192,13 @@ class ScheduledMonitorScheduler:
             status=status,
             recent_results_already_sent=recent_results_already_sent,
         )
+        html_body = build_no_results_html(
+            target=target,
+            settings=settings,
+            scheduled_for=scheduled_for,
+            status=status,
+            recent_results_already_sent=recent_results_already_sent,
+        )
         delivery_target, delivery_message_id = self._deliver_message(
             target={
                 **target,
@@ -806,6 +1206,7 @@ class ScheduledMonitorScheduler:
             },
             subject=build_no_results_subject(target),
             message_text=message_text,
+            html_body=html_body,
             channel=normalize_text(settings.get("deliveryChannel")),
         )
         return True, delivery_target, delivery_message_id
