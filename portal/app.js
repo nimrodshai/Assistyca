@@ -19,6 +19,7 @@ const SETTINGS_PANEL_ANIMATION_MS = 320;
 const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
 const ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS = 500;
 const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
+const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const VALID_TABS = new Set(["features", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
 const TAB_ALIASES = new Map([
@@ -556,6 +557,10 @@ let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
 let accountProfileAutosaveTimer = null;
 let accountProfileSavePromise = null;
+let whatsappConnectionPollTimer = null;
+let whatsappConnectionPollInFlight = false;
+let whatsappConnectionPollActive = false;
+let whatsappConnectionPollFeatureId = "";
 
 const elements = {
   authView: document.querySelector("#authView"),
@@ -2764,6 +2769,89 @@ async function refreshWhatsAppConnection(options = {}) {
   return response.connection || null;
 }
 
+function clearWhatsAppConnectionPollTimer() {
+  if (whatsappConnectionPollTimer !== null) {
+    window.clearTimeout(whatsappConnectionPollTimer);
+    whatsappConnectionPollTimer = null;
+  }
+}
+
+function shouldPollWhatsAppConnection(feature = getSelectedFeature()) {
+  return Boolean(
+    isSignedIn()
+    && document.body.dataset.view === "app"
+    && state.activeTab === "features"
+    && feature
+    && isWhatsAppFeature(feature)
+    && !hasFeatureActivationChanges(feature)
+    && !featureActivationBusy,
+  );
+}
+
+async function pollWhatsAppConnectionHealth() {
+  const feature = getSelectedFeature();
+  const featureId = String(feature?.id || "").trim();
+  if (whatsappConnectionPollInFlight || !shouldPollWhatsAppConnection(feature)) {
+    if (!shouldPollWhatsAppConnection(feature)) {
+      clearWhatsAppConnectionPollTimer();
+      whatsappConnectionPollActive = false;
+    }
+    return;
+  }
+
+  whatsappConnectionPollInFlight = true;
+  try {
+    await refreshWhatsAppConnection({ render: false });
+    if (
+      document.body.dataset.view === "app"
+      && state.activeTab === "features"
+      && String(getSelectedFeature()?.id || "").trim() === featureId
+    ) {
+      renderApp({ preserveStatus: true });
+    }
+  } catch {
+    // Keep the current UI and try again on the next poll.
+  } finally {
+    whatsappConnectionPollInFlight = false;
+    clearWhatsAppConnectionPollTimer();
+    if (shouldPollWhatsAppConnection()) {
+      whatsappConnectionPollTimer = window.setTimeout(() => {
+        void pollWhatsAppConnectionHealth();
+      }, WHATSAPP_CONNECTION_POLL_MS);
+    } else {
+      whatsappConnectionPollActive = false;
+    }
+  }
+}
+
+function syncWhatsAppConnectionPolling() {
+  const feature = getSelectedFeature();
+  const featureId = String(feature?.id || "").trim();
+
+  if (!shouldPollWhatsAppConnection(feature)) {
+    clearWhatsAppConnectionPollTimer();
+    whatsappConnectionPollActive = false;
+    whatsappConnectionPollFeatureId = featureId;
+    return;
+  }
+
+  const isNewTarget = !whatsappConnectionPollActive || whatsappConnectionPollFeatureId !== featureId;
+  whatsappConnectionPollActive = true;
+  whatsappConnectionPollFeatureId = featureId;
+
+  if (isNewTarget) {
+    clearWhatsAppConnectionPollTimer();
+    void pollWhatsAppConnectionHealth();
+    return;
+  }
+
+  if (whatsappConnectionPollTimer === null && !whatsappConnectionPollInFlight) {
+    whatsappConnectionPollTimer = window.setTimeout(() => {
+      void pollWhatsAppConnectionHealth();
+    }, WHATSAPP_CONNECTION_POLL_MS);
+  }
+}
+
 function formatNextBillingDate(reference = new Date()) {
   const moment = new Date(reference.getTime());
   moment.setDate(1);
@@ -2991,7 +3079,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
     },
     owner: {
       title: "No approval alert sent yet",
-      copy: "The first live message will trigger an approval alert to your phone.",
+      copy: "The first live message from another number will trigger an approval alert to your phone.",
     },
     note: "",
   };
@@ -3016,7 +3104,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   } else if (isConnected) {
     content.inbound = {
       title: "Waiting for the first live message",
-      copy: "Ask someone to message your connected WhatsApp number. That will confirm Assistyca is receiving real incoming messages.",
+      copy: "Ask someone else to message your connected WhatsApp number. Messages from your approval phone are treated as your commands, so they will not create a customer draft.",
     };
   }
 
@@ -3042,12 +3130,12 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   } else if (isConnected) {
     content.owner = {
       title: "No approval alert sent yet",
-      copy: `When the first live message arrives, we’ll alert ${ownerLabel}.`,
+      copy: `When the first live message from another number arrives, we’ll alert ${ownerLabel}.`,
     };
   }
 
   if (isConnected && !health.lastInboundAt && whatsapp.webhook_url) {
-    content.note = `If someone messages your connected WhatsApp number and nothing reaches Assistyca, make sure Meta is forwarding new messages to ${whatsapp.webhook_url}.`;
+    content.note = `If another number messages your connected WhatsApp number and nothing reaches Assistyca, make sure Meta is forwarding new messages to ${whatsapp.webhook_url}.`;
   }
 
   return content;
@@ -3078,7 +3166,7 @@ function buildFeatureEditorWhatsAppHealthNotice(feature = getSelectedFeature()) 
     return {
       tone: "neutral",
       title: "Still waiting for the first live WhatsApp message",
-      copy: "Ask someone to message your connected WhatsApp number. If nothing reaches Assistyca, incoming messages are not being forwarded yet.",
+      copy: "Ask someone else to message your connected WhatsApp number. Messages from your approval phone are treated as your commands. If nothing reaches Assistyca, incoming messages are not being forwarded yet.",
     };
   }
 
@@ -4338,6 +4426,7 @@ function setView(view) {
   }
   elements.authView.classList.toggle("is-hidden", view !== "auth");
   elements.appView.classList.toggle("is-hidden", view !== "app");
+  syncWhatsAppConnectionPolling();
 }
 
 function setStatus(message) {
@@ -8329,7 +8418,7 @@ function updatePersonalDetailsFields() {
   }
 }
 
-function renderApp() {
+function renderApp(options = {}) {
   updateHeader();
   updateTabButtons();
   updateFeatureStudioHeader();
@@ -8346,7 +8435,10 @@ function renderApp() {
   updateSettingsButtons();
   updateSettingsFields();
   updatePersonalDetailsFields();
-  setStatus("Saved");
+  syncWhatsAppConnectionPolling();
+  if (options.preserveStatus !== true) {
+    setStatus("Saved");
+  }
 }
 
 function renderAuth(preferredEmail = "", messageOverride = "") {
