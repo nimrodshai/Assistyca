@@ -17,6 +17,7 @@ const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
 const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
+const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
 const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
 const TAB_ALIASES = new Map([
@@ -504,6 +505,8 @@ let authAlertEscapeDismiss = true;
 let billingHelpOpenFrame = null;
 let billingHelpCloseTimer = null;
 let billingHelpReturnFocus = null;
+let billingRefreshPromise = null;
+let billingLastRefreshCompletedAt = 0;
 let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
@@ -3428,8 +3431,8 @@ function getBillingStatusCopy(report, hasError, isLoading) {
 
   if (isLoading) {
     return {
-      message: report ? "Refreshing the billing snapshot..." : "Loading billing data...",
-      meta: report ? "Showing the last loaded snapshot while I refresh." : "This usually takes just a moment.",
+      message: report ? "Checking latest billing..." : "Loading billing data...",
+      meta: report ? "Keeping the current numbers visible while this updates." : "This usually takes just a moment.",
     };
   }
 
@@ -3828,6 +3831,9 @@ function setActiveTab(tab, options = {}) {
   renderApp();
   if (nextTab === "billing" || nextTab === "pricing") {
     window.scrollTo(0, 0);
+  }
+  if (nextTab === "billing") {
+    void refreshBillingReportForActiveTab();
   }
   if (nextTab === "pricing") {
     void refreshPricingSnapshot();
@@ -4651,7 +4657,8 @@ function updateBillingPanel() {
 
   if (elements.billingStatusBanner) {
     elements.billingStatusBanner.classList.toggle("is-warn", hasError);
-    elements.billingStatusBanner.classList.toggle("is-loading", isLoading);
+    elements.billingStatusBanner.classList.toggle("is-loading", state.billingLoading);
+    elements.billingStatusBanner.setAttribute("aria-busy", String(state.billingLoading));
   }
   if (elements.billingStatusMessage) {
     elements.billingStatusMessage.textContent = statusCopy.message;
@@ -4661,7 +4668,10 @@ function updateBillingPanel() {
   }
   if (elements.billingRefreshButton) {
     elements.billingRefreshButton.disabled = state.billingLoading;
-    elements.billingRefreshButton.textContent = hasError ? "Try again" : "Refresh billing";
+    elements.billingRefreshButton.textContent = state.billingLoading
+      ? (report ? "Checking latest..." : "Loading...")
+      : hasError ? "Try again" : "Refresh billing";
+    elements.billingRefreshButton.setAttribute("aria-busy", String(state.billingLoading));
   }
 
   if (isRefreshing) {
@@ -4810,7 +4820,15 @@ function updateBillingPanel() {
   }
 }
 
-async function refreshBillingReport() {
+function refreshBillingReportForActiveTab(options = {}) {
+  if (state.activeTab !== "billing") {
+    return null;
+  }
+
+  return refreshBillingReport(options);
+}
+
+async function refreshBillingReport(options = {}) {
   if (!authSession?.token) {
     state.billingReport = null;
     state.billingLoading = false;
@@ -4818,25 +4836,57 @@ async function refreshBillingReport() {
     return;
   }
 
+  if (billingRefreshPromise) {
+    return billingRefreshPromise;
+  }
+
+  const force = Boolean(options.force);
+  if (
+    !force
+    && state.billingReport
+    && !state.billingError
+    && Date.now() - billingLastRefreshCompletedAt < BILLING_ENTRY_REFRESH_COOLDOWN_MS
+  ) {
+    return null;
+  }
+
+  const requestToken = String(authSession.token);
   state.billingLoading = true;
   state.billingError = "";
   renderApp();
 
-  try {
-    const response = await apiRequest("/api/billing", {
-      headers: {
-        Authorization: `Bearer ${authSession.token}`,
-      },
-    });
+  billingRefreshPromise = (async () => {
+    try {
+      const response = await apiRequest("/api/billing", {
+        headers: {
+          Authorization: `Bearer ${requestToken}`,
+        },
+      });
 
-    state.billingReport = normalizeBillingReport(response);
-    state.billingError = "";
-  } catch (error) {
-    setBillingError(formatApiErrorMessage(error, "We couldn’t load billing data right now."));
-  } finally {
-    state.billingLoading = false;
-    renderApp();
-  }
+      if (String(authSession?.token || "") !== requestToken) {
+        return null;
+      }
+
+      state.billingReport = normalizeBillingReport(response);
+      state.billingError = "";
+      billingLastRefreshCompletedAt = Date.now();
+      return state.billingReport;
+    } catch (error) {
+      if (String(authSession?.token || "") !== requestToken) {
+        return null;
+      }
+      setBillingError(formatApiErrorMessage(error, "We couldn’t load billing data right now."));
+      return null;
+    } finally {
+      billingRefreshPromise = null;
+      if (String(authSession?.token || "") === requestToken) {
+        state.billingLoading = false;
+        renderApp();
+      }
+    }
+  })();
+
+  return billingRefreshPromise;
 }
 
 function formatUsdPerMillion(value) {
@@ -7472,6 +7522,9 @@ function refreshView() {
 
     setView("app");
     renderApp();
+    if (state.activeTab === "billing") {
+      void refreshBillingReportForActiveTab();
+    }
     if (state.activeTab === "pricing") {
       void refreshPricingSnapshot();
     }
@@ -8350,7 +8403,7 @@ function bindEvents() {
   });
   if (elements.billingRefreshButton) {
     elements.billingRefreshButton.addEventListener("click", () => {
-      void refreshBillingReport();
+      void refreshBillingReport({ force: true });
     });
   }
   if (elements.billingHelpButton) {
@@ -8819,6 +8872,9 @@ function bindEvents() {
       state.lastPrimaryTab = route.tab;
       persistLastPrimaryTab();
       renderApp();
+      if (route.tab === "billing") {
+        void refreshBillingReportForActiveTab();
+      }
       if (route.tab === "pricing") {
         void refreshPricingSnapshot();
       }
