@@ -3412,13 +3412,36 @@ function resolveMonitorAnchorDate(feature, now = new Date()) {
   return currentTime;
 }
 
+function hasMonitorScheduleConfigChanges(feature = getSelectedFeature()) {
+  if (!feature || !isMonitorFeature(feature)) {
+    return false;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const savedSettings = getSavedFeatureSettings(feature);
+  const currentScheduleTime = normalizeMonitorScheduleTime(currentSettings.scheduleTimeLocal, "");
+  const savedScheduleTime = normalizeMonitorScheduleTime(savedSettings.scheduleTimeLocal, "");
+  const currentScheduleTimezone = currentScheduleTime
+    ? normalizeMonitorScheduleTimezone(currentSettings.scheduleTimezone, getWorkspaceTimeZone()) || getWorkspaceTimeZone()
+    : "";
+  const savedScheduleTimezone = savedScheduleTime
+    ? normalizeMonitorScheduleTimezone(savedSettings.scheduleTimezone, getWorkspaceTimeZone()) || getWorkspaceTimeZone()
+    : "";
+
+  return (
+    normalizeMonitorIntervalDays(currentSettings.intervalDays) !== normalizeMonitorIntervalDays(savedSettings.intervalDays)
+    || currentScheduleTime !== savedScheduleTime
+    || currentScheduleTimezone !== savedScheduleTimezone
+  );
+}
+
 function resolveMonitorNextRunAt(feature, now = new Date()) {
   if (!feature || !isMonitorFeature(feature)) {
     return "";
   }
 
   const explicitNextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
-  if (explicitNextRunAt) {
+  if (explicitNextRunAt && !hasMonitorScheduleConfigChanges(feature)) {
     return explicitNextRunAt;
   }
 
@@ -8820,12 +8843,12 @@ function syncMonitorScheduleTimeField(event) {
     return;
   }
 
-  const normalizedTime = normalizeMonitorScheduleTime(event.target.value, getMonitorScheduleTime(feature));
+  const rawValue = String(event.target.value || "").trim();
+  const normalizedTime = normalizeMonitorScheduleTime(rawValue, "");
   if (!normalizedTime) {
-    event.target.value = getMonitorScheduleTime(feature);
     return;
   }
-  if (event.target.value !== normalizedTime) {
+  if (event.type !== "input" && event.target.value !== normalizedTime) {
     event.target.value = normalizedTime;
   }
 
@@ -8856,6 +8879,14 @@ function finalizeMonitorScheduleTimeField(event) {
 
   const normalizedTime = normalizeMonitorScheduleTime(event.target.value, getMonitorScheduleTime(feature));
   event.target.value = normalizedTime || getMonitorScheduleTime(feature);
+
+  if (hasPendingFeatureConfigAutosave(feature.id)) {
+    void flushSelectedFeatureConfigAutosave({
+      featureId: feature.id,
+      alertOnError: false,
+      noChangesMessage: false,
+    }).catch(() => {});
+  }
 }
 
 function finalizeMonitorIntervalDaysField(event) {
@@ -9802,6 +9833,7 @@ function bindEvents() {
     elements.monitorIntervalDays.addEventListener("blur", finalizeMonitorIntervalDaysField);
   }
   if (elements.monitorScheduleTime) {
+    elements.monitorScheduleTime.addEventListener("input", syncMonitorScheduleTimeField);
     elements.monitorScheduleTime.addEventListener("change", syncMonitorScheduleTimeField);
     elements.monitorScheduleTime.addEventListener("blur", finalizeMonitorScheduleTimeField);
   }
