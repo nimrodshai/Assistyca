@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=60" />
+    <link rel="stylesheet" href="./styles.css?v=61" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -125,6 +125,7 @@
 
         <nav class="tab-strip" aria-label="Assistyca tabs">
           <button class="tab-button is-active" data-tab="features" type="button">Tools</button>
+          <button class="tab-button" data-tab="personal-details" type="button">Personal details</button>
           <button class="tab-button" data-tab="preview" type="button" hidden>Preview</button>
           <button class="tab-button" data-tab="simulator" type="button" hidden>Simulator</button>
         </nav>
@@ -180,6 +181,85 @@
         </div>
 
         <div id="featureList" class="feature-list-grid"></div>
+      </section>
+
+      <section id="personalDetailsPanel" class="tab-panel is-hidden">
+        <div class="panel-intro">
+          <div>
+            <p class="eyebrow">Shared context</p>
+            <h1>Personal details</h1>
+            <p class="lede compact">
+              Tell us a bit about yourself or your business once, and we’ll use it as shared context across your tools.
+            </p>
+          </div>
+          <div class="personal-details-save-note">Saved automatically</div>
+        </div>
+
+        <div class="personal-details-layout">
+          <div class="personal-details-stack">
+            <article class="glass-card settings-card personal-details-story-card">
+              <div class="card-head">
+                <h3>What helps most</h3>
+                <p>Short, concrete details usually outperform long generic descriptions.</p>
+              </div>
+
+              <div class="personal-details-story-list" role="list">
+                <div class="personal-details-story-item" role="listitem">
+                  <strong>What you do</strong>
+                  <p>Services, products, region, hours, price style, or anything central to your work.</p>
+                </div>
+                <div class="personal-details-story-item" role="listitem">
+                  <strong>Who you help</strong>
+                  <p>Your typical customers, the kinds of requests they send, and what usually matters most to them.</p>
+                </div>
+                <div class="personal-details-story-item" role="listitem">
+                  <strong>What to keep in mind</strong>
+                  <p>Policies, tone preferences, red lines, or facts the tools should avoid guessing.</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="glass-card settings-card personal-details-preview-card">
+              <div class="card-head">
+                <h3>Shared context preview</h3>
+                <p>This is the kind of reusable context your tools will receive.</p>
+              </div>
+              <pre id="personalDetailsPreview" class="personal-details-preview">Add a few details here and we’ll reuse them across your tools as shared context.</pre>
+            </article>
+          </div>
+
+          <article class="glass-card settings-card personal-details-form-card">
+            <label class="field">
+              <span>About you or your business</span>
+              <textarea
+                id="profileBusinessSummaryInput"
+                rows="6"
+                placeholder="What you do, where you operate, what you sell or offer, and the most important facts someone should know first."
+              ></textarea>
+              <small class="field-help">Example: “We install and repair air conditioners across central Israel. Most jobs are residential, and we usually answer quickly but never promise a same-day slot until a human confirms it.”</small>
+            </label>
+
+            <label class="field">
+              <span>Your typical customers and requests</span>
+              <textarea
+                id="profileCustomerNotesInput"
+                rows="5"
+                placeholder="Who you usually help, how they describe their needs, and what they care about most."
+              ></textarea>
+              <small class="field-help">Example: “Most people contact us after hours with urgent issues, price checks, or appointment questions. They care about speed, clarity, and whether we service their area.”</small>
+            </label>
+
+            <label class="field">
+              <span>Anything the tools should always keep in mind</span>
+              <textarea
+                id="profileAssistantGuidanceInput"
+                rows="5"
+                placeholder="Policies, boundaries, preferred tone, words to avoid, or facts the tools should never invent."
+              ></textarea>
+              <small class="field-help">This shared guidance is added on top of each tool’s own configuration.</small>
+            </label>
+          </article>
+        </div>
       </section>
 
       <section id="featureStudioPanel" class="tab-panel feature-page is-hidden">
@@ -519,6 +599,7 @@
                 rows="3"
                 placeholder="Service area, hours, pricing hints, and any details the agent should know before replying."
               ></textarea>
+              <small class="field-help">Shared personal details from the top menu are added automatically alongside these tool-specific notes.</small>
             </label>
 
             <label class="field">
@@ -1084,6 +1165,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=75"></script>
+    <script src="./app.js?v=76"></script>
   </body>
 </html>

@@ -14,6 +14,7 @@ It is intentionally separate from the reusable spec and client config layers.
 ## Portal layout
 
 - `Features` for the client account and its assigned capabilities. Click one to open the tool preview or editor.
+- `Personal details` for shared business or personal context that should follow the user across tools.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself
 - The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes inbound webhooks by phone number ID

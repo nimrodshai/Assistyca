@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_otp_requested_at TEXT,
     last_otp_verified_at TEXT,
     notes TEXT NOT NULL DEFAULT '',
+    profile_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -413,6 +414,15 @@ def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def normalize_user_profile(value: Any) -> dict[str, str]:
+    payload = value if isinstance(value, dict) else {}
+    return {
+        "businessSummary": normalize_text(payload.get("businessSummary"))[:4000],
+        "customerNotes": normalize_text(payload.get("customerNotes"))[:4000],
+        "assistantGuidance": normalize_text(payload.get("assistantGuidance"))[:4000],
+    }
+
+
 def humanize_identifier(value: Any) -> str:
     text = normalize_text(value)
     if not text:
@@ -679,6 +689,8 @@ class PortalDatabase:
         }
         if "is_admin" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        if "profile_json" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'")
 
     def _migrate_user_billing_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -1131,6 +1143,7 @@ class PortalDatabase:
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
                 u.notes,
+                u.profile_json,
                 u.created_at,
                 u.updated_at,
                 COALESCE(b.currency, ?) AS billing_currency,
@@ -1173,6 +1186,7 @@ class PortalDatabase:
                 "lastLoginAt": payload.get("last_login_at"),
                 "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
                 "lastOtpVerifiedAt": payload.get("last_otp_verified_at"),
+                "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
                 "usageCount": int(usage_stats["usage_count"] or 0) if usage_stats else 0,
                 "lastUsageAt": usage_stats["last_usage_at"] if usage_stats else None,
                 "billing": {
@@ -1197,6 +1211,7 @@ class PortalDatabase:
             "last_login_at",
             "last_otp_requested_at",
             "last_otp_verified_at",
+            "profile_json",
         ):
             payload.pop(key, None)
         payload.pop("billing_currency", None)
@@ -1842,6 +1857,7 @@ class PortalDatabase:
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
                 u.notes,
+                u.profile_json,
                 u.created_at,
                 u.updated_at,
                 COALESCE(b.currency, ?) AS billing_currency,
@@ -1890,6 +1906,7 @@ class PortalDatabase:
                     "lastLoginAt": payload.get("last_login_at"),
                     "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
                     "lastOtpVerifiedAt": payload.get("last_otp_verified_at"),
+                    "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
                     "usageCount": int(payload.get("usage_count") or 0),
                     "lastUsageAt": payload.get("last_usage_at"),
                     "billing": {
@@ -1917,6 +1934,7 @@ class PortalDatabase:
                 "last_otp_requested_at",
                 "last_otp_verified_at",
                 "notes",
+                "profile_json",
                 "created_at",
                 "updated_at",
                 "billing_currency",
@@ -2248,6 +2266,32 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_user_row(conn, normalized_email)
+
+    def update_user_profile(self, email: str, *, profile: dict[str, Any] | None = None) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        normalized_profile = normalize_user_profile(profile)
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_email)
+            if user is None:
+                raise KeyError(f"Unknown user: {normalized_email}")
+
+            conn.execute(
+                """
+                UPDATE users
+                SET profile_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(normalized_profile, ensure_ascii=True, sort_keys=True),
+                    now_iso(),
+                    int(user.get("id") or 0),
+                ),
+            )
+            return self._load_user_row(conn, normalized_email) or {}
 
     def save_whatsapp_message(
         self,
@@ -2996,6 +3040,7 @@ class PortalDatabase:
                     u.id AS user_id,
                     u.email,
                     u.display_name,
+                    u.profile_json,
                     f.prompt_json,
                     fa.metadata_json AS assignment_metadata_json,
                     act.activated_at,
@@ -3035,6 +3080,7 @@ class PortalDatabase:
                         "userId": int(payload.get("user_id") or 0),
                         "email": normalize_email(payload.get("email")),
                         "displayName": normalize_text(payload.get("display_name")),
+                        "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
                         "featureId": normalized_feature_id,
                         "prompt": {
                             **(prompt_payload if isinstance(prompt_payload, dict) else {}),
@@ -3068,6 +3114,7 @@ class PortalDatabase:
                     u.id AS user_id,
                     u.email,
                     u.display_name,
+                    u.profile_json,
                     w.business_account_id,
                     w.phone_number_id,
                     w.owner_wa_id,
@@ -3112,6 +3159,7 @@ class PortalDatabase:
                         "userId": int(payload.get("user_id") or 0),
                         "email": normalize_email(payload.get("email")),
                         "displayName": normalize_text(payload.get("display_name")),
+                        "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
                         "businessAccountId": normalize_text(payload.get("business_account_id")),
                         "phoneNumberId": normalize_text(payload.get("phone_number_id")),
                         "ownerWaId": normalize_text(payload.get("owner_wa_id")),

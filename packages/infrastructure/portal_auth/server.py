@@ -46,6 +46,7 @@ from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.portal_db import normalize_user_profile
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
@@ -977,6 +978,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/account/profile"
             or path == "/api/pricing"
             or path.startswith("/api/pricing/")
             or path.startswith("/api/admin/")
@@ -1000,6 +1002,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/account/profile"
             or path == "/api/pricing"
             or path.startswith("/api/pricing/")
             or path.startswith("/api/admin/")
@@ -1023,6 +1026,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path == "/api/account/profile"
             or path == "/api/pricing"
             or path.startswith("/api/pricing/")
             or path.startswith("/api/admin/")
@@ -1074,11 +1078,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "email": session.email,
                 "token": session.token,
                 "displayName": normalize_text(user.get("displayName")),
+                "profile": normalize_user_profile(user.get("profile")),
                 "isAdmin": bool(user.get("isAdmin")),
                 "issuedAt": to_millis(session.issued_at),
                 "expiresAt": to_millis(session.expires_at),
                 "requestCountry": self._request_country(),
             })
+            return
+
+        if path == "/api/account/profile":
+            self._handle_account_profile_get()
             return
 
         if path.startswith("/api/billing"):
@@ -1193,6 +1202,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/auth/logout":
             self._handle_logout()
+            return
+
+        if path == "/api/account/profile":
+            self._handle_account_profile_post()
             return
 
         if path == "/api/whatsapp/test":
@@ -1405,6 +1418,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "email": result["email"],
             "sessionToken": result["token"],
             "displayName": normalize_text(user.get("displayName")),
+            "profile": normalize_user_profile(user.get("profile")),
             "isAdmin": bool(user.get("isAdmin")),
             "issuedAt": result["issuedAt"],
             "expiresAt": result["expiresAt"],
@@ -1422,6 +1436,69 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         self.store.revoke_session(token)
         json_response(self, HTTPStatus.OK, {"ok": True})
+
+    def _handle_account_profile_get(self) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, user = authenticated
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "email": normalize_email(session.email),
+            "displayName": normalize_text(user.get("displayName")),
+            "profile": normalize_user_profile(user.get("profile")),
+        })
+
+    def _handle_account_profile_post(self) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        raw_profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
+        if not isinstance(raw_profile, dict):
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_profile",
+                "message": "profile must be an object.",
+            })
+            return
+
+        try:
+            user = self.database.update_user_profile(session.email, profile=raw_profile)
+        except KeyError as exc:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": str(exc),
+            })
+            return
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_profile",
+                "message": str(exc),
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Personal details saved.",
+            "email": normalize_email(user.get("email")),
+            "displayName": normalize_text(user.get("displayName")),
+            "profile": normalize_user_profile(user.get("profile")),
+        })
 
     def _handle_whatsapp_test(self) -> None:
         token = self._extract_session_token()

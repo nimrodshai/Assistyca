@@ -128,6 +128,21 @@ def normalize_watch_items(value: Any) -> list[str]:
     return normalized_items
 
 
+def build_shared_profile_notes(profile: Any) -> list[str]:
+    payload = profile if isinstance(profile, dict) else {}
+    notes: list[str] = []
+    business_summary = normalize_text(payload.get("businessSummary"))
+    customer_notes = normalize_text(payload.get("customerNotes"))
+    assistant_guidance = normalize_text(payload.get("assistantGuidance"))
+    if business_summary:
+        notes.append(f"About the client or business: {business_summary}")
+    if customer_notes:
+        notes.append(f"Typical customers and requests: {customer_notes}")
+    if assistant_guidance:
+        notes.append(f"Always keep in mind: {assistant_guidance}")
+    return notes
+
+
 def normalize_interval_days(value: Any, default: int = DEFAULT_MONITOR_SETTINGS["intervalDays"]) -> int:
     candidate = safe_int(value, default)
     return max(1, min(365, candidate))
@@ -387,6 +402,7 @@ def build_monitor_prompt(
 ) -> str:
     prompt = target.get("prompt") if isinstance(target.get("prompt"), dict) else {}
     watch_items = normalize_watch_items(settings.get("watchItems"))
+    shared_profile_notes = build_shared_profile_notes(target.get("profile"))
     lines = [
         "Search the public web and find only relevant, real-world updates for this business monitor.",
         "Return valid JSON only.",
@@ -417,6 +433,9 @@ def build_monitor_prompt(
         f"Tone guidance: {normalize_text(prompt.get('toneGuidance')) or 'Clear, useful, and concise.'}",
         f"Prioritization rules: {normalize_text(prompt.get('replyRules')) or 'Only alert when there is a concrete, useful match.'}",
     ]
+    if shared_profile_notes:
+        lines.append("Shared client context:")
+        lines.extend(f"- {item}" for item in shared_profile_notes)
     business_notes = normalize_text(prompt.get("businessNotes"))
     if business_notes:
         lines.append(f"Business context: {business_notes}")

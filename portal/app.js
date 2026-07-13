@@ -17,15 +17,20 @@ const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
 const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
+const ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS = 500;
 const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
-const VALID_TABS = new Set(["features", "preview", "simulator", "billing", "pricing", "settings"]);
+const VALID_TABS = new Set(["features", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
+  ["personal", "personal-details"],
+  ["profile", "personal-details"],
+  ["details", "personal-details"],
 ]);
 const TAB_LABELS = {
   features: "Tools",
+  "personal-details": "Personal details",
   preview: "Preview",
   simulator: "Simulator",
   billing: "Billing",
@@ -191,6 +196,11 @@ const DEFAULT_SETTINGS = {
   displayName: "",
   workspaceName: "Assistyca",
   timezone: defaultTimeZone(),
+};
+const DEFAULT_ACCOUNT_PROFILE = {
+  businessSummary: "",
+  customerNotes: "",
+  assistantGuidance: "",
 };
 
 const DEFAULT_FEATURES = [
@@ -520,6 +530,8 @@ let monitorManualRunOverlayVisible = false;
 let featureConfigBusy = false;
 let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
+let accountProfileAutosaveTimer = null;
+let accountProfileSavePromise = null;
 
 const elements = {
   authView: document.querySelector("#authView"),
@@ -605,6 +617,11 @@ const elements = {
   accountLabel: document.querySelector("#accountLabel"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   featuresPanel: document.querySelector("#featuresPanel"),
+  personalDetailsPanel: document.querySelector("#personalDetailsPanel"),
+  profileBusinessSummaryInput: document.querySelector("#profileBusinessSummaryInput"),
+  profileCustomerNotesInput: document.querySelector("#profileCustomerNotesInput"),
+  profileAssistantGuidanceInput: document.querySelector("#profileAssistantGuidanceInput"),
+  personalDetailsPreview: document.querySelector("#personalDetailsPreview"),
   previewPanel: document.querySelector("#previewPanel"),
   simulatorPanel: document.querySelector("#simulatorPanel"),
   billingPanel: document.querySelector("#billingPanel"),
@@ -1758,6 +1775,7 @@ function loadClientState(email) {
   const saved = loadJson(getClientKey(email), null) || {};
   const savedPrompt = saved.guidance || {};
   const savedSimulator = saved.simulator || {};
+  const profile = normalizeAccountProfile(saved.profile || {});
   const featuresSource = Array.isArray(saved.features) && saved.features.length
     ? saved.features
     : DEFAULT_FEATURES;
@@ -1857,6 +1875,7 @@ function loadClientState(email) {
   if (didMigrateLegacyDescription) {
     persistJson(getClientKey(email), {
       ...saved,
+      profile,
       settings,
       features,
       simulator,
@@ -1864,9 +1883,19 @@ function loadClientState(email) {
   }
 
   return {
+    profile,
     settings,
     features,
     simulator,
+  };
+}
+
+function normalizeAccountProfile(profile = {}) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  return {
+    businessSummary: String(source.businessSummary || "").trim(),
+    customerNotes: String(source.customerNotes || "").trim(),
+    assistantGuidance: String(source.assistantGuidance || "").trim(),
   };
 }
 
@@ -2308,6 +2337,91 @@ function clearAllFeatureConfigAutosaves() {
     window.clearTimeout(timerId);
   }
   featureConfigAutosaveTimers.clear();
+}
+
+function clearAccountProfileAutosaveTimer() {
+  if (accountProfileAutosaveTimer !== null) {
+    window.clearTimeout(accountProfileAutosaveTimer);
+    accountProfileAutosaveTimer = null;
+  }
+}
+
+function sendAccountProfileKeepalive() {
+  if (!isSignedIn()) {
+    return;
+  }
+
+  try {
+    const headers = new Headers(getSessionAuthHeaders());
+    headers.set("Content-Type", "application/json");
+    void fetch(buildApiUrl("/api/account/profile"), {
+      method: "POST",
+      headers,
+      cache: "no-store",
+      keepalive: true,
+      body: JSON.stringify({
+        profile: normalizeAccountProfile(clientState.profile),
+      }),
+    });
+  } catch {
+    // Ignore unload-time save failures; the normal autosave path already handles surfaced errors.
+  }
+}
+
+async function flushAccountProfileAutosave(options = {}) {
+  clearAccountProfileAutosaveTimer();
+  if (!isSignedIn()) {
+    return null;
+  }
+  if (accountProfileSavePromise) {
+    return accountProfileSavePromise;
+  }
+
+  accountProfileSavePromise = (async () => {
+    try {
+      const response = await apiRequest("/api/account/profile", {
+        method: "POST",
+        headers: getSessionAuthHeaders(),
+        body: {
+          profile: normalizeAccountProfile(clientState.profile),
+        },
+      });
+      applyRemoteAccountProfile(response);
+      if (options.render !== false && document.body.dataset.view === "app") {
+        updatePersonalDetailsFields();
+      }
+      setStatus(String(response.message || "Saved"));
+      return response;
+    } catch (error) {
+      const status = Number(error?.status || 0);
+      if (status === 401 || status === 403) {
+        clearAuthSession();
+      }
+      setStatus("Couldn’t save personal details.");
+      throw error;
+    } finally {
+      accountProfileSavePromise = null;
+    }
+  })();
+
+  return accountProfileSavePromise;
+}
+
+function scheduleAccountProfileAutosave(options = {}) {
+  clearAccountProfileAutosaveTimer();
+  const delayMs = Number.isFinite(options.delayMs)
+    ? Math.max(0, Number(options.delayMs))
+    : ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS;
+  if (options.status !== false) {
+    setStatus("Saving personal details...");
+  }
+
+  accountProfileAutosaveTimer = window.setTimeout(() => {
+    accountProfileAutosaveTimer = null;
+    void flushAccountProfileAutosave({
+      render: document.body.dataset.view === "app" && state.activeTab === "personal-details",
+    }).catch(() => {});
+  }, delayMs);
 }
 
 function hasPendingFeatureConfigAutosave(featureId = state.selectedFeatureId) {
@@ -3875,8 +3989,50 @@ function splitLines(value) {
     .filter(Boolean);
 }
 
+function appendProfilePromptLines(lines, label, value) {
+  const parts = splitLines(value);
+  if (!parts.length) {
+    return lines;
+  }
+
+  const [first, ...rest] = parts;
+  lines.push(`${label}: ${first}`);
+  lines.push(...rest);
+  return lines;
+}
+
 function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function buildAccountProfilePromptLines(profile = clientState.profile) {
+  const normalized = normalizeAccountProfile(profile);
+  const lines = [];
+  appendProfilePromptLines(lines, "About the client or business", normalized.businessSummary);
+  appendProfilePromptLines(lines, "Typical customers and requests", normalized.customerNotes);
+  appendProfilePromptLines(lines, "Always keep in mind", normalized.assistantGuidance);
+  return lines;
+}
+
+function buildAccountProfilePreviewText(profile = clientState.profile) {
+  const lines = buildAccountProfilePromptLines(profile);
+  if (!lines.length) {
+    return "Add a few details here and we’ll reuse them across your tools as shared context.";
+  }
+
+  return [
+    "Shared client context",
+    ...bulletList(lines),
+  ].join("\n");
+}
+
+function applyRemoteAccountProfile(payload = {}) {
+  if (!payload || typeof payload !== "object" || !payload.profile || typeof payload.profile !== "object") {
+    return;
+  }
+
+  clientState.profile = normalizeAccountProfile(payload.profile);
+  persistClientState();
 }
 
 function nowIso() {
@@ -3929,12 +4085,24 @@ function buildResponseText(prompt = getSelectedPrompt()) {
 
 function buildCompiledPrompt(feature = getSelectedFeature()) {
   const prompt = feature?.prompt || getSelectedPrompt();
+  const sharedProfileLines = buildAccountProfilePromptLines();
   const lines = [
     "Client tool draft",
     "",
     `Tool: ${feature?.name || "Unassigned tool"}`,
     `Channel: ${feature?.channel || "Web"}`,
     `Mode: ${feature?.mode || "Default"}`,
+  ];
+
+  if (sharedProfileLines.length) {
+    lines.push(
+      "",
+      "Shared client context",
+      ...bulletList(sharedProfileLines),
+    );
+  }
+
+  lines.push(
     "",
     "Reply style",
     `- ${prompt.responseStyle}`,
@@ -3945,7 +4113,7 @@ function buildCompiledPrompt(feature = getSelectedFeature()) {
     "Reply rules",
     ...bulletList(splitLines(prompt.replyRules)),
     "",
-    "Business notes",
+    "Tool-specific business notes",
     ...bulletList(splitLines(prompt.businessNotes)),
     "",
     "Escalation rules",
@@ -3953,7 +4121,7 @@ function buildCompiledPrompt(feature = getSelectedFeature()) {
     "",
     "Example replies",
     ...bulletList(splitLines(prompt.exampleReplies)),
-  ];
+  );
 
   return lines.join("\n").trim();
 }
@@ -7421,6 +7589,7 @@ function updatePanelVisibility() {
   elements.appBar.classList.toggle("is-hidden", inStudio || inBilling || inPricing);
   elements.appView.classList.toggle("is-feature-page", inStudio);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
+  elements.personalDetailsPanel.classList.toggle("is-hidden", state.activeTab !== "personal-details");
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
   elements.previewPanel.classList.toggle("is-hidden", state.activeTab !== "preview");
   elements.simulatorPanel.classList.toggle("is-hidden", state.activeTab !== "simulator");
@@ -7495,6 +7664,21 @@ function updateSettingsFields() {
   renderAdminUsersPane();
 }
 
+function updatePersonalDetailsFields() {
+  if (elements.profileBusinessSummaryInput) {
+    elements.profileBusinessSummaryInput.value = clientState.profile.businessSummary;
+  }
+  if (elements.profileCustomerNotesInput) {
+    elements.profileCustomerNotesInput.value = clientState.profile.customerNotes;
+  }
+  if (elements.profileAssistantGuidanceInput) {
+    elements.profileAssistantGuidanceInput.value = clientState.profile.assistantGuidance;
+  }
+  if (elements.personalDetailsPreview) {
+    elements.personalDetailsPreview.textContent = buildAccountProfilePreviewText();
+  }
+}
+
 function renderApp() {
   updateHeader();
   updateTabButtons();
@@ -7511,6 +7695,7 @@ function renderApp() {
   updatePricingPanel();
   updateSettingsButtons();
   updateSettingsFields();
+  updatePersonalDetailsFields();
   setStatus("Saved");
 }
 
@@ -7858,6 +8043,7 @@ function completeSignIn(session) {
 
   activeEmail = email;
   clientState = loadClientState(activeEmail);
+  applyRemoteAccountProfile(session);
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
   authSession = {
     email: activeEmail,
@@ -8333,6 +8519,17 @@ function syncSettingsField(key) {
   };
 }
 
+function syncAccountProfileField(key) {
+  return (event) => {
+    clientState.profile[key] = event.target.value;
+    persistClientState();
+    if (elements.personalDetailsPreview) {
+      elements.personalDetailsPreview.textContent = buildAccountProfilePreviewText();
+    }
+    scheduleAccountProfileAutosave();
+  };
+}
+
 function handleMenuAction(action) {
   if (action === "billing") {
     setActiveTab("billing");
@@ -8388,6 +8585,7 @@ async function bootstrapAuthState() {
       state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
       activeEmail = normalizeEmail(authSession?.email || "");
       clientState = loadClientState(activeEmail);
+      applyRemoteAccountProfile(response);
       state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
       clearAuthChallenge();
       persistJson(AUTH_SESSION_KEY, authSession);
@@ -8955,6 +9153,10 @@ function bindEvents() {
   });
 
   window.addEventListener("pagehide", () => {
+    if (accountProfileAutosaveTimer !== null) {
+      clearAccountProfileAutosaveTimer();
+      sendAccountProfileKeepalive();
+    }
     clearAllFeatureConfigAutosaves();
     for (const feature of clientState.features) {
       if (hasFeatureConfigChanges(feature)) {
@@ -9041,6 +9243,15 @@ function bindEvents() {
   elements.displayNameInput.addEventListener("input", syncSettingsField("displayName"));
   elements.workspaceNameInput.addEventListener("input", syncSettingsField("workspaceName"));
   elements.timezoneSelect.addEventListener("change", syncSettingsField("timezone"));
+  if (elements.profileBusinessSummaryInput) {
+    elements.profileBusinessSummaryInput.addEventListener("input", syncAccountProfileField("businessSummary"));
+  }
+  if (elements.profileCustomerNotesInput) {
+    elements.profileCustomerNotesInput.addEventListener("input", syncAccountProfileField("customerNotes"));
+  }
+  if (elements.profileAssistantGuidanceInput) {
+    elements.profileAssistantGuidanceInput.addEventListener("input", syncAccountProfileField("assistantGuidance"));
+  }
 
   if (elements.simulatorPresetSelect) {
     elements.simulatorPresetSelect.addEventListener("change", (event) => {

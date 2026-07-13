@@ -177,6 +177,21 @@ def build_context_excerpt(messages: list[dict[str, Any]], limit: int = 12) -> st
     return "\n".join(lines).strip()
 
 
+def build_shared_profile_notes(profile: Any) -> list[str]:
+    payload = profile if isinstance(profile, dict) else {}
+    notes: list[str] = []
+    business_summary = normalize_text(payload.get("businessSummary"))
+    customer_notes = normalize_text(payload.get("customerNotes"))
+    assistant_guidance = normalize_text(payload.get("assistantGuidance"))
+    if business_summary:
+        notes.append(f"About the client or business: {business_summary}")
+    if customer_notes:
+        notes.append(f"Typical customers and requests: {customer_notes}")
+    if assistant_guidance:
+        notes.append(f"Always keep in mind: {assistant_guidance}")
+    return notes
+
+
 def build_reengagement_prompt(
     *,
     connection: dict[str, Any],
@@ -187,6 +202,7 @@ def build_reengagement_prompt(
     assistant = assistant_metadata.get("assistant") if isinstance(assistant_metadata.get("assistant"), dict) else {}
     tone_guidance = normalize_text(assistant.get("tone_guidance")) or "Warm, direct, and practical."
     business_notes = normalize_text(assistant.get("business_notes"))
+    shared_profile_notes = build_shared_profile_notes(connection.get("profile"))
     last_message_at = normalize_text(conversation.get("lastMessageAt"))
     context = build_context_excerpt(messages)
     customer_name = short_customer_name(conversation)
@@ -200,6 +216,8 @@ def build_reengagement_prompt(
     ]
     if business_notes:
         sections.append(f"Business notes: {business_notes}")
+    if shared_profile_notes:
+        sections.append("Shared client context:\n" + "\n".join(f"- {item}" for item in shared_profile_notes))
     sections.extend(
         [
             f"Customer name: {customer_name}",
