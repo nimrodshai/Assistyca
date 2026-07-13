@@ -1380,6 +1380,69 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [event for event in events if event.get("thread_id") and event.get("message_text")]
 
 
+def extract_status_error_message(status_payload: dict[str, Any]) -> str:
+    errors = status_payload.get("errors", [])
+    if not isinstance(errors, list):
+        return ""
+
+    parts: list[str] = []
+    for item in errors:
+        if not isinstance(item, dict):
+            continue
+        code = normalize_text(item.get("code"))
+        title = normalize_text(item.get("title") or item.get("message"))
+        details = ""
+        error_data = item.get("error_data")
+        if isinstance(error_data, dict):
+            details = normalize_text(error_data.get("details"))
+        chunk = " ".join(part for part in [code, title, details] if part).strip()
+        if chunk:
+            parts.append(chunk)
+
+    return " | ".join(parts)
+
+
+def extract_status_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+
+    if "entry" not in payload or not isinstance(payload.get("entry"), list):
+        return events
+
+    for entry in payload.get("entry", []):
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("changes", []) or []:
+            if not isinstance(change, dict):
+                continue
+            value = change.get("value", {})
+            if not isinstance(value, dict):
+                continue
+            metadata = value.get("metadata", {})
+            statuses = value.get("statuses", [])
+            if not isinstance(statuses, list):
+                continue
+            for status_payload in statuses:
+                if not isinstance(status_payload, dict):
+                    continue
+                status_name = normalize_text(status_payload.get("status")).lower()
+                message_id = normalize_text(status_payload.get("id"))
+                if not status_name or not message_id:
+                    continue
+                events.append(
+                    {
+                        "message_id": message_id,
+                        "status": status_name,
+                        "recipient_wa_id": normalize_text(status_payload.get("recipient_id")),
+                        "timestamp": normalize_text(status_payload.get("timestamp")) or now_iso(),
+                        "metadata": metadata if isinstance(metadata, dict) else {},
+                        "error_message": extract_status_error_message(status_payload),
+                        "raw_payload": payload,
+                    }
+                )
+
+    return events
+
+
 def extract_message_text(message: dict[str, Any]) -> str:
     text = get_nested(message, "text", "body", default="")
     if text:

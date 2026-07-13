@@ -210,9 +210,9 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertEqual(body["ownerMessageId"], "wamid.sample-1")
-        self.assertEqual(body["connection"]["metadata"]["lastOwnerNotificationStatus"], "sent")
+        self.assertEqual(body["connection"]["metadata"]["lastOwnerNotificationStatus"], "requested")
         self.assertEqual(body["connection"]["metadata"]["lastOwnerNotificationMessageId"], "wamid.sample-1")
-        self.assertIn("confirms assistyca can reach your phone", str(body["message"]).lower())
+        self.assertIn("confirms delivery", str(body["message"]).lower())
 
     def test_feature_sample_endpoint_requires_live_send_configuration(self) -> None:
         status, body = self._request(
@@ -225,6 +225,61 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "setup_required")
         self.assertIn("working backend access token", str(body["message"]).lower())
+
+    def test_whatsapp_status_webhook_marks_latest_owner_alert_delivered(self) -> None:
+        self.server.database.update_whatsapp_connection_metadata(
+            email="owner@example.com",
+            metadata_updates={
+                "lastOwnerNotificationStatus": "requested",
+                "lastOwnerNotificationMessageId": "wamid.sample-1",
+            },
+        )
+
+        request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "12345",
+                                        },
+                                        "statuses": [
+                                            {
+                                                "id": "wamid.sample-1",
+                                                "status": "delivered",
+                                                "recipient_id": "15551234567",
+                                                "timestamp": "1720861200",
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            status = response.status
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["receivedStatuses"], 1)
+        self.assertEqual(body["results"][0]["type"], "status")
+        connection = self.server.database.get_whatsapp_connection("owner@example.com")
+        self.assertIsNotNone(connection)
+        metadata = connection["metadata"]
+        self.assertEqual(metadata["lastOwnerNotificationStatus"], "delivered")
+        self.assertEqual(metadata["lastOwnerNotificationMessageId"], "wamid.sample-1")
 
 
 if __name__ == "__main__":

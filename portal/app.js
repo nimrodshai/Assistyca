@@ -3124,12 +3124,33 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
         ? `We kept the incoming message, but the alert did not reach ${ownerLabel} on ${lastOwnerNotificationAt}.`
         : `We kept the incoming message, but the alert did not reach ${ownerLabel}.`,
     };
+  } else if (lastOwnerStatus === "requested") {
+    content.owner = {
+      title: "Latest approval alert is waiting for delivery confirmation",
+      copy: lastOwnerNotificationAt
+        ? `We asked WhatsApp to send the latest alert to ${ownerLabel} on ${lastOwnerNotificationAt}. We’re waiting for delivery confirmation.`
+        : `We asked WhatsApp to send the latest alert to ${ownerLabel}. We’re waiting for delivery confirmation.`,
+    };
   } else if (lastOwnerStatus === "sent") {
     content.owner = {
-      title: "Latest approval alert was sent",
+      title: "Latest approval alert is on the way",
+      copy: lastOwnerNotificationAt
+        ? `WhatsApp accepted the latest alert for ${ownerLabel} on ${lastOwnerNotificationAt}. We’re still waiting for delivery confirmation.`
+        : `WhatsApp accepted the latest alert for ${ownerLabel}. We’re still waiting for delivery confirmation.`,
+    };
+  } else if (lastOwnerStatus === "delivered") {
+    content.owner = {
+      title: "Latest approval alert was delivered",
       copy: lastOwnerNotificationAt
         ? `The latest approval alert reached ${ownerLabel} on ${lastOwnerNotificationAt}.`
         : `The latest approval alert reached ${ownerLabel}.`,
+    };
+  } else if (lastOwnerStatus === "read") {
+    content.owner = {
+      title: "Latest approval alert was opened",
+      copy: lastOwnerNotificationAt
+        ? `${ownerLabel} opened the latest approval alert on ${lastOwnerNotificationAt}.`
+        : `${ownerLabel} opened the latest approval alert.`,
     };
   } else if (lastOwnerStatus === "pending" && health.lastInboundAt) {
     content.owner = {
@@ -3168,6 +3189,14 @@ function buildFeatureEditorWhatsAppHealthNotice(feature = getSelectedFeature()) 
       tone: "warning",
       title: "The latest approval alert hit a temporary issue",
       copy: "We kept the incoming message, but the alert did not reach your phone. Open WhatsApp setup and save again after the issue clears.",
+    };
+  }
+
+  if (["requested", "sent"].includes(lastOwnerStatus)) {
+    return {
+      tone: "neutral",
+      title: "Waiting for WhatsApp delivery confirmation",
+      copy: "The latest alert was accepted by WhatsApp, but we have not seen a delivered receipt yet.",
     };
   }
 
@@ -4374,6 +4403,11 @@ function closeBillingHelp() {
   }
 
   setBillingHelpOpen(false);
+}
+
+function closePersonalDetailsTips() {
+  // The personal details page uses inline guidance now, but the view-routing
+  // cleanup still calls this helper when switching panels.
 }
 
 function ensureBillingMenuItem() {
@@ -7701,17 +7735,17 @@ async function sendSelectedWhatsAppReplySample() {
     applyWhatsAppConnectionToFeatures(response.connection || null, { persist: true });
     renderApp({ preserveStatus: true });
     openAuthAlert(
-      "Sample sent",
-      response.message || "A sample WhatsApp alert was sent to your phone. This confirms Assistyca can reach your WhatsApp.",
+      "Sample requested",
+      response.message || "We asked WhatsApp to send a sample alert to your phone. We’ll update the status here when delivery is confirmed.",
       {
-        eyebrow: "Check WhatsApp",
+        eyebrow: "Waiting for confirmation",
         buttonLabel: "OK",
-        icon: "✓",
-        tone: "success",
+        icon: "!",
+        tone: "warning",
         returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
       },
     );
-    setStatus("Sample WhatsApp alert sent.");
+    setStatus("Sample WhatsApp alert requested.");
   } catch (error) {
     try {
       await refreshWhatsAppConnection({ render: false });

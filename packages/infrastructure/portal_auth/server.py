@@ -61,6 +61,7 @@ from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
 from packages.tools.scheduled_monitor.monitor import load_scheduled_monitor_config
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+from packages.tools.whatsapp_reply_approval.server import extract_status_events
 from packages.tools.whatsapp_reply_approval.server import normalize_text
 from packages.tools.whatsapp_reply_approval.server import parse_form_encoded as parse_whatsapp_form_encoded
 from packages.tools.whatsapp_reply_approval.server import parse_json_body as parse_whatsapp_json_body
@@ -2244,19 +2245,41 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         status: str,
         error_message: str = "",
         notification_message_id: str = "",
+        event_at: str = "",
     ) -> None:
         approval_payload = approval if isinstance(approval, dict) else {}
+        metadata_updates = {
+            "lastOwnerNotificationAt": event_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "lastOwnerNotificationStatus": normalize_text(status),
+            "lastOwnerNotificationError": normalize_text(error_message),
+            "lastOwnerNotificationMessageId": normalize_text(notification_message_id),
+        }
+        if approval_payload:
+            metadata_updates["lastApprovalCreatedAt"] = (
+                normalize_text(approval_payload.get("created_at"))
+                or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            )
+            metadata_updates["lastApprovalId"] = normalize_text(approval_payload.get("approval_id"))
         self.database.update_whatsapp_connection_metadata(
             user_id=int(connection.get("userId") or 0),
-            metadata_updates={
-                "lastApprovalCreatedAt": normalize_text(approval_payload.get("created_at"))
-                or datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                "lastApprovalId": normalize_text(approval_payload.get("approval_id")),
-                "lastOwnerNotificationAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                "lastOwnerNotificationStatus": normalize_text(status),
-                "lastOwnerNotificationError": normalize_text(error_message),
-                "lastOwnerNotificationMessageId": normalize_text(notification_message_id),
-            },
+            metadata_updates=metadata_updates,
+        )
+
+    def _record_whatsapp_owner_delivery_event(
+        self,
+        connection: dict[str, Any],
+        event: dict[str, Any],
+    ) -> None:
+        self._record_whatsapp_owner_notification_activity(
+            connection,
+            approval=None,
+            status=normalize_text(event.get("status")).lower(),
+            error_message=normalize_text(event.get("error_message")),
+            notification_message_id=normalize_text(event.get("message_id")),
+            event_at=(
+                self._parse_whatsapp_message_timestamp(event.get("timestamp"))
+                or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            ),
         )
 
     def _handle_whatsapp_connection_get(self) -> None:
@@ -2477,7 +2500,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 email=session.email,
                 metadata_updates={
                     "lastOwnerNotificationAt": sent_at,
-                    "lastOwnerNotificationStatus": "sent",
+                    "lastOwnerNotificationStatus": "requested",
                     "lastOwnerNotificationError": "",
                     "lastOwnerNotificationMessageId": owner_message_id,
                 },
@@ -2486,8 +2509,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
                 "message": (
-                    f"Sample alert sent to {owner_label}. "
-                    "This confirms Assistyca can reach your phone. It does not confirm incoming customer messages are forwarding yet."
+                    f"Sample alert requested for {owner_label}. "
+                    "We’ll update the status here as soon as WhatsApp confirms delivery. "
+                    "This still does not confirm incoming customer messages are forwarding yet."
                 ),
                 "ownerMessageId": owner_message_id,
                 "connection": self._serialize_whatsapp_connection(updated_connection),
@@ -2909,10 +2933,54 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        status_events = extract_status_events(payload)
         events = extract_inbound_events(payload)
         approvals: list[dict[str, Any]] = []
         results: list[dict[str, Any]] = []
         routed_user_ids: set[int] = set()
+
+        for status_event in status_events:
+            metadata = status_event.get("metadata") if isinstance(status_event.get("metadata"), dict) else {}
+            phone_number_id = normalize_text(metadata.get("phone_number_id"))
+            if not phone_number_id:
+                results.append({
+                    "type": "status_error",
+                    "message_id": status_event.get("message_id", ""),
+                    "error": "Missing phone_number_id in status metadata.",
+                })
+                continue
+
+            connection = self.database.get_whatsapp_connection_by_phone_number_id(phone_number_id)
+            if not connection:
+                results.append({
+                    "type": "status_error",
+                    "message_id": status_event.get("message_id", ""),
+                    "phone_number_id": phone_number_id,
+                    "error": "No portal workspace is connected to this phone number ID.",
+                })
+                continue
+
+            routed_user_ids.add(int(connection.get("userId") or 0))
+            connection_metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
+            latest_owner_message_id = normalize_text(connection_metadata.get("lastOwnerNotificationMessageId"))
+            event_message_id = normalize_text(status_event.get("message_id"))
+            if not latest_owner_message_id or latest_owner_message_id != event_message_id:
+                results.append({
+                    "type": "status_ignored",
+                    "message_id": event_message_id,
+                    "phone_number_id": phone_number_id,
+                    "status": normalize_text(status_event.get("status")).lower(),
+                })
+                continue
+
+            self._record_whatsapp_owner_delivery_event(connection, status_event)
+            results.append({
+                "type": "status",
+                "message_id": event_message_id,
+                "phone_number_id": phone_number_id,
+                "status": normalize_text(status_event.get("status")).lower(),
+                "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+            })
 
         for event in events:
             metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
@@ -2999,7 +3067,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         status=(
                             "failed"
                             if normalize_text(result.get("owner_notification_error"))
-                            else "sent"
+                            else "requested"
                             if normalize_text(result.get("owner_notification_message_id"))
                             else "pending"
                         ),
@@ -3024,6 +3092,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
+            "receivedStatuses": len(status_events),
             "received": len(events),
             "approvals": approvals,
             "results": results,
