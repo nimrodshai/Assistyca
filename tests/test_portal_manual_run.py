@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
+
+
+WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 
 
 class PortalManualRunTests(unittest.TestCase):
@@ -138,6 +143,88 @@ class PortalManualRunTests(unittest.TestCase):
         self.assertEqual(post_result["status"], 200)
         self.assertEqual(post_result["body"]["run"]["status"], "cancelled")
         self.assertIn("cancelled", str(post_result["body"]["message"]).lower())
+
+
+class PortalWhatsAppSampleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db"),
+        )
+        self.server.database.register_user("owner@example.com")
+        self.server.database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="12345",
+            phone_number_id="12345",
+            owner_wa_id="15551234567",
+            connection_status="connected",
+        )
+        code, _ = self.server.store.issue_challenge("owner@example.com")
+        ok, _, result = self.server.store.verify_code("owner@example.com", code)
+        assert ok and result is not None
+        self.session_token = result["token"]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def _request(self, method: str, path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
+        request = urllib_request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                body = json.loads(response.read().decode("utf-8"))
+                return response.status, body
+        except urllib_error.HTTPError as exc:
+            body = json.loads(exc.read().decode("utf-8"))
+            return exc.code, body
+
+    def test_feature_sample_endpoint_sends_owner_alert_and_updates_health_metadata(self) -> None:
+        with mock.patch.dict(os.environ, {"WHATSAPP_ACCESS_TOKEN": "test-token"}, clear=False):
+            with mock.patch(
+                "packages.infrastructure.portal_auth.server.PortalWhatsAppService.send_sample_owner_message",
+                return_value=("wamid.sample-1", "Sample reply alert from Assistyca"),
+            ):
+                status, body = self._request(
+                    "POST",
+                    f"/api/features/{WHATSAPP_REPLY_ASSISTANT_FEATURE_ID}/sample",
+                    {},
+                )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["ownerMessageId"], "wamid.sample-1")
+        self.assertEqual(body["connection"]["metadata"]["lastOwnerNotificationStatus"], "sent")
+        self.assertEqual(body["connection"]["metadata"]["lastOwnerNotificationMessageId"], "wamid.sample-1")
+        self.assertIn("confirms assistyca can reach your phone", str(body["message"]).lower())
+
+    def test_feature_sample_endpoint_requires_live_send_configuration(self) -> None:
+        status, body = self._request(
+            "POST",
+            f"/api/features/{WHATSAPP_REPLY_ASSISTANT_FEATURE_ID}/sample",
+            {},
+        )
+
+        self.assertEqual(status, 409)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "setup_required")
+        self.assertIn("working backend access token", str(body["message"]).lower())
 
 
 if __name__ == "__main__":

@@ -59,6 +59,7 @@ const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
 const MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier";
+const WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
   "WhatsApp Reply Approval Bot",
@@ -552,6 +553,8 @@ let monitorManualRunRequestId = "";
 let monitorManualRunCancelling = false;
 let monitorManualRunCancellationError = "";
 let monitorManualRunOverlayVisible = false;
+let whatsappSampleMessageBusy = false;
+let whatsappSampleMessageTargetId = "";
 let featureConfigBusy = false;
 let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
@@ -598,6 +601,7 @@ const elements = {
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
+  featureStudioWhatsAppSampleButton: document.querySelector("#featureStudioWhatsAppSampleButton"),
   featureStudioMonitorRunButton: document.querySelector("#featureStudioMonitorRunButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
@@ -1431,6 +1435,10 @@ function isWhatsAppFeature(feature) {
 
 function isMonitorFeature(feature = getSelectedFeature()) {
   return Boolean(feature && feature.id === MONITOR_FEATURE_ID);
+}
+
+function isWhatsAppReplyAssistantFeature(feature = getSelectedFeature()) {
+  return Boolean(feature && feature.id === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
 }
 
 function usesEditorSetup(feature = getSelectedFeature()) {
@@ -3180,6 +3188,24 @@ function hasFeatureActivationChanges(feature = getSelectedFeature()) {
   const editableKeys = ["business_account_id", "owner_wa_id"];
 
   return editableKeys.some((key) => String(current[key] || "").trim() !== String(saved[key] || "").trim());
+}
+
+function canSendWhatsAppReplySample(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  return Boolean(
+    isWhatsAppReplyAssistantFeature(feature)
+    && isWhatsAppFeature(feature)
+    && whatsapp.connection_status === "connected"
+  );
+}
+
+function isWhatsAppReplySampleBusy(feature = getSelectedFeature()) {
+  return Boolean(
+    whatsappSampleMessageBusy
+    && feature
+    && feature.id
+    && feature.id === whatsappSampleMessageTargetId
+  );
 }
 
 function hasFeatureConfigChanges(feature = getSelectedFeature()) {
@@ -7637,6 +7663,81 @@ async function runSelectedMonitorNow() {
   }
 }
 
+async function sendSelectedWhatsAppReplySample() {
+  if (whatsappSampleMessageBusy) {
+    return;
+  }
+
+  const feature = getSelectedFeature();
+  if (!feature || !isWhatsAppReplyAssistantFeature(feature) || !canSendWhatsAppReplySample(feature)) {
+    setStatus("Finish WhatsApp setup before sending a sample.");
+    return;
+  }
+
+  if (hasFeatureActivationChanges(feature)) {
+    openFeatureActivationAlert(
+      "Save the latest details first",
+      "Save your WhatsApp details before sending a sample so the test goes to the right phone.",
+      {
+        eyebrow: "Almost there",
+        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Save the latest WhatsApp details before sending a sample.");
+    return;
+  }
+
+  whatsappSampleMessageBusy = true;
+  whatsappSampleMessageTargetId = feature.id;
+  try {
+    updateFeatureStudioHeader();
+    setStatus("Sending a sample WhatsApp alert...");
+    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/sample`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {},
+    });
+
+    applyWhatsAppConnectionToFeatures(response.connection || null, { persist: true });
+    renderApp({ preserveStatus: true });
+    openAuthAlert(
+      "Sample sent",
+      response.message || "A sample WhatsApp alert was sent to your phone. This confirms Assistyca can reach your WhatsApp.",
+      {
+        eyebrow: "Check WhatsApp",
+        buttonLabel: "OK",
+        icon: "✓",
+        tone: "success",
+        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Sample WhatsApp alert sent.");
+  } catch (error) {
+    try {
+      await refreshWhatsAppConnection({ render: false });
+    } catch {
+      // Keep the current UI if the follow-up refresh fails.
+    }
+    renderApp({ preserveStatus: true });
+    openFeatureActivationAlert(
+      "Couldn’t send the sample",
+      formatApiErrorMessage(
+        error,
+        "We couldn’t send a sample WhatsApp alert right now. Check the saved connection details and try again.",
+      ),
+      {
+        eyebrow: "Try again",
+        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Couldn’t send the sample WhatsApp alert.");
+  } finally {
+    whatsappSampleMessageBusy = false;
+    whatsappSampleMessageTargetId = "";
+    updateFeatureStudioHeader();
+  }
+}
+
 async function toggleSelectedFeatureEditorActivation() {
   if (featureActivationTransitionBusy) {
     return;
@@ -8047,6 +8148,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioActivationSection.setAttribute("aria-busy", String(activationBusy));
   }
   const isEditorSetup = usesEditorSetup(feature);
+  const sampleMessageBusy = isWhatsAppReplySampleBusy(feature);
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.textContent = transitionBusy
       ? featureActivationTransitionAction === "deactivate"
@@ -8062,8 +8164,22 @@ function updateFeatureStudioHeader() {
             ? "Finish WhatsApp setup"
             : "Start WhatsApp setup";
     elements.featureStudioEditorToggleButton.className = isActivated ? "ghost-button danger" : "primary-button";
-    elements.featureStudioEditorToggleButton.disabled = transitionBusy || manualRunBusy;
+    elements.featureStudioEditorToggleButton.disabled = transitionBusy || manualRunBusy || sampleMessageBusy;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
+  }
+  if (elements.featureStudioWhatsAppSampleButton) {
+    const showSampleButton = canSendWhatsAppReplySample(feature);
+    const sampleReady = showSampleButton && !hasFeatureActivationChanges(feature);
+    elements.featureStudioWhatsAppSampleButton.hidden = !showSampleButton;
+    elements.featureStudioWhatsAppSampleButton.textContent = sampleMessageBusy ? "Sending sample..." : "Send sample";
+    elements.featureStudioWhatsAppSampleButton.disabled = activationBusy || transitionBusy || sampleMessageBusy || !sampleReady;
+    elements.featureStudioWhatsAppSampleButton.classList.toggle("is-loading", sampleMessageBusy);
+    elements.featureStudioWhatsAppSampleButton.setAttribute("aria-busy", String(sampleMessageBusy));
+    elements.featureStudioWhatsAppSampleButton.title = sampleMessageBusy
+      ? "Sending a sample WhatsApp alert now"
+      : sampleReady
+        ? "Send a sample approval alert to your WhatsApp"
+        : "Save the latest WhatsApp details before sending a sample";
   }
   if (elements.featureStudioMonitorRunButton) {
     const showManualRun = isMonitorFeature(feature) && isActivated;
@@ -9563,6 +9679,11 @@ function bindEvents() {
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.addEventListener("click", () => {
       void toggleSelectedFeatureEditorActivation();
+    });
+  }
+  if (elements.featureStudioWhatsAppSampleButton) {
+    elements.featureStudioWhatsAppSampleButton.addEventListener("click", () => {
+      void sendSelectedWhatsAppReplySample();
     });
   }
   if (elements.featureStudioMonitorRunButton) {

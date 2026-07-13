@@ -81,6 +81,7 @@ JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 SESSION_TOKEN_VERSION = 1
 SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
 }
@@ -2414,6 +2415,83 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.NOT_FOUND, result)
                 return
             json_response(self, HTTPStatus.OK, result)
+            return
+
+        if action_name == "sample":
+            if feature_id != WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
+                json_response(self, HTTPStatus.NOT_FOUND, {
+                    "ok": False,
+                    "error": "feature_not_available",
+                    "message": "This tool does not support sample WhatsApp alerts.",
+                })
+                return
+
+            resolved = self._resolve_whatsapp_service_for_session(session)
+            if resolved is None:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "setup_required",
+                    "message": "Finish WhatsApp setup before sending a sample.",
+                })
+                return
+
+            connection, whatsapp_service = resolved
+            if normalize_text(connection.get("connectionStatus")) != "connected":
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "setup_required",
+                    "message": "Finish WhatsApp setup before sending a sample.",
+                })
+                return
+
+            if not whatsapp_service.config.live_send_enabled:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "setup_required",
+                    "message": "Finish WhatsApp setup with a working backend access token before sending a sample.",
+                })
+                return
+
+            sent_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            try:
+                owner_message_id, _ = whatsapp_service.send_sample_owner_message()
+            except Exception as exc:  # noqa: BLE001 - surface real WhatsApp failures in the UI
+                updated_connection = self.database.update_whatsapp_connection_metadata(
+                    email=session.email,
+                    metadata_updates={
+                        "lastOwnerNotificationAt": sent_at,
+                        "lastOwnerNotificationStatus": "failed",
+                        "lastOwnerNotificationError": str(exc),
+                        "lastOwnerNotificationMessageId": "",
+                    },
+                ) or connection
+                json_response(self, HTTPStatus.BAD_GATEWAY, {
+                    "ok": False,
+                    "error": "sample_send_failed",
+                    "message": f"Sample WhatsApp alert failed: {exc}",
+                    "connection": self._serialize_whatsapp_connection(updated_connection),
+                })
+                return
+
+            updated_connection = self.database.update_whatsapp_connection_metadata(
+                email=session.email,
+                metadata_updates={
+                    "lastOwnerNotificationAt": sent_at,
+                    "lastOwnerNotificationStatus": "sent",
+                    "lastOwnerNotificationError": "",
+                    "lastOwnerNotificationMessageId": owner_message_id,
+                },
+            ) or connection
+            owner_label = normalize_text(connection.get("ownerWaId")) or "your WhatsApp"
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": (
+                    f"Sample alert sent to {owner_label}. "
+                    "This confirms Assistyca can reach your phone. It does not confirm incoming customer messages are forwarding yet."
+                ),
+                "ownerMessageId": owner_message_id,
+                "connection": self._serialize_whatsapp_connection(updated_connection),
+            })
             return
 
         if action_name == "run":

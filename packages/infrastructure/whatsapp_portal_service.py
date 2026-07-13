@@ -137,6 +137,22 @@ def build_portal_service_from_connection(
     return PortalWhatsAppService(config, store)
 
 
+def build_sample_owner_notification_text(client_name: str) -> str:
+    workspace_label = normalize_text(client_name) or "your workspace"
+    lines = [
+        "Sample reply alert from Assistyca",
+        "",
+        f"This is a test message for {workspace_label}.",
+        "",
+        "Example customer: Maya Cohen",
+        "Example message: Hi, are you available tomorrow afternoon?",
+        "Example suggested reply: Hi Maya, yes, I can help. What time works best for you?",
+        "",
+        "Nothing was sent to a customer. This sample only confirms we can reach your WhatsApp.",
+    ]
+    return "\n".join(lines)
+
+
 class PortalWhatsAppService:
     def __init__(self, config: RuntimeConfig, store: BackendStore):
         self.config = config
@@ -230,6 +246,16 @@ class PortalWhatsAppService:
             },
         )
         return message_id
+
+    def send_sample_owner_message(self) -> tuple[str, str]:
+        if not self.config.live_send_enabled:
+            raise RuntimeError(
+                "Finish WhatsApp setup with a working backend access token before sending a sample."
+            )
+
+        message_text = build_sample_owner_notification_text(self.config.client_name)
+        message_id = self.send_owner_message(None, message_text=message_text)
+        return message_id, message_text
 
     def resolve_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
         context_id = normalize_text(event.get("reply_to_message_id"))
