@@ -6809,6 +6809,10 @@ function openFeatureStudio(featureId, view = null) {
   setHashForTab("features", feature.id, state.featureStudioView);
   renderApp();
   window.scrollTo(0, 0);
+
+  if (isSignedIn() && isMonitorFeature(feature)) {
+    void refreshFeatureActivationStates().catch(() => {});
+  }
 }
 
 function closeFeatureStudio() {
@@ -7321,12 +7325,29 @@ async function requestMonitorManualRunCancellation() {
 
 async function runSelectedMonitorNow() {
   if (monitorManualRunBusy) {
+    if (monitorManualRunTargetId && getSelectedFeature()?.id === monitorManualRunTargetId) {
+      syncMonitorManualRunOverlay();
+      setStatus("A monitor test is already running.");
+    } else {
+      setStatus("A monitor test is already running. Refresh if this does not clear in a moment.");
+    }
     return;
   }
 
-  const feature = getSelectedFeature();
-  if (!feature || !isMonitorFeature(feature) || !isFeatureActivated(feature)) {
+  const initialFeature = getSelectedFeature();
+  if (!initialFeature || !isMonitorFeature(initialFeature) || !isFeatureActivated(initialFeature)) {
+    setStatus("Refresh the tool and try the monitor test again.");
     return;
+  }
+
+  let feature = initialFeature;
+  if (feature.setupStatus?.ready === false) {
+    try {
+      await refreshFeatureActivationStates({ render: false });
+      feature = getFeatureById(initialFeature.id) || initialFeature;
+    } catch {
+      feature = getFeatureById(initialFeature.id) || initialFeature;
+    }
   }
 
   if (feature.setupStatus?.ready === false) {
@@ -7827,7 +7848,7 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureStudioMonitorRunButton) {
     const showManualRun = isMonitorFeature(feature) && isActivated;
-    const manualRunReady = showManualRun && feature.setupStatus?.ready !== false;
+    const manualRunReady = showManualRun;
     elements.featureStudioMonitorRunButton.hidden = !showManualRun;
     elements.featureStudioMonitorRunButton.textContent = manualRunBusy
       ? monitorManualRunCancelling
@@ -7842,7 +7863,9 @@ function updateFeatureStudioHeader() {
         ? "The current monitor test is being cancelled"
         : "A monitor test is currently running"
       : manualRunReady
-        ? "Run a test without changing the schedule"
+        ? feature.setupStatus?.ready === false
+          ? "Run a test now. We'll check the latest setup first."
+          : "Run a test without changing the schedule"
         : String(feature.setupStatus?.message || "");
   }
 
