@@ -378,7 +378,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(run["status"], "no_matches")
         self.assertTrue(run["metadata"]["noResultsNotificationSent"])
 
-    def test_manual_rerun_replays_recent_results_when_live_search_goes_empty(self) -> None:
+    def test_manual_rerun_marks_empty_search_as_inconsistent_when_recent_results_exist(self) -> None:
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
@@ -458,16 +458,15 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(first_run["ok"])
         self.assertEqual(first_run["run"]["status"], "completed")
         self.assertTrue(second_run["ok"])
-        self.assertEqual(second_run["run"]["status"], "completed")
-        self.assertEqual(second_run["run"]["notificationsSent"], 1)
-        self.assertEqual(len(delivered_messages), 2)
-        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor test: latest results")
-        self.assertIn("latest results again from your recent monitor test", delivered_messages[1]["text"])
-        self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[1]["text"])
-        self.assertTrue(second_run["run"]["run"]["metadata"]["replayedRecentResults"])
+        self.assertEqual(second_run["run"]["status"], "inconsistent_results")
+        self.assertEqual(second_run["run"]["notificationsSent"], 0)
+        self.assertEqual(len(delivered_messages), 1)
+        self.assertFalse(second_run["run"]["run"]["metadata"]["noResultsNotificationSent"])
+        self.assertEqual(second_run["run"]["run"]["metadata"]["recentResultsCount"], 1)
+        self.assertEqual(second_run["run"]["run"]["metadata"]["recentResultsMinutesAgo"], 30)
         self.assertEqual(second_run["run"]["run"]["metadata"]["liveSearchStatus"], "no_matches")
 
-    def test_manual_rerun_replays_recent_results_when_live_search_returns_duplicates(self) -> None:
+    def test_manual_rerun_keeps_duplicate_matches_status_when_live_search_repeats_results(self) -> None:
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
@@ -536,12 +535,12 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(first_run["ok"])
         self.assertEqual(first_run["run"]["status"], "completed")
         self.assertTrue(second_run["ok"])
-        self.assertEqual(second_run["run"]["status"], "completed")
-        self.assertEqual(second_run["run"]["notificationsSent"], 1)
+        self.assertEqual(second_run["run"]["status"], "duplicate_matches")
+        self.assertEqual(second_run["run"]["notificationsSent"], 0)
         self.assertEqual(len(delivered_messages), 2)
-        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor test: latest results")
-        self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[1]["text"])
-        self.assertTrue(second_run["run"]["run"]["metadata"]["replayedRecentResults"])
+        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor update: nothing new yet")
+        self.assertIn("Nothing new to send right now.", delivered_messages[1]["text"])
+        self.assertTrue(second_run["run"]["run"]["metadata"]["noResultsNotificationSent"])
         self.assertEqual(second_run["run"]["run"]["metadata"]["liveSearchStatus"], "duplicate_matches")
 
     def test_manual_run_cancellation_skips_delivery(self) -> None:

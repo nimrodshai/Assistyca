@@ -897,7 +897,20 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     metadata = run_record.get("metadata") if isinstance(run_record.get("metadata"), dict) else {}
     no_results_notification_sent = bool(metadata.get("noResultsNotificationSent"))
     recent_results_already_sent = bool(metadata.get("recentResultsAlreadySent"))
-    replayed_recent_results = bool(metadata.get("replayedRecentResults"))
+    recent_results_count = max(0, int(metadata.get("recentResultsCount") or 0))
+    recent_results_minutes_ago = max(0, int(metadata.get("recentResultsMinutesAgo") or 0))
+
+    if status == "inconsistent_results":
+        count_label = "1 result" if recent_results_count == 1 else f"{recent_results_count} results"
+        recency_label = (
+            f"{recent_results_minutes_ago} minutes earlier"
+            if recent_results_minutes_ago > 0
+            else "earlier"
+        )
+        return (
+            "Manual run finished, but the search came back empty while the previous run found "
+            f"{count_label} {recency_label}. No no-results update was sent."
+        )
 
     if status == "no_matches":
         if recent_results_already_sent:
@@ -914,8 +927,6 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     if status == "cancelled":
         return "Manual test cancelled before any new update was sent."
     if notifications_sent > 0:
-        if replayed_recent_results:
-            return "Manual run finished. Sent the latest results again."
         return "Manual run finished. Sent the results."
     if findings_count > 0:
         label = "match" if findings_count == 1 else "matches"

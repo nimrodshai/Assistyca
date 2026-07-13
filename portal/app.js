@@ -6645,7 +6645,7 @@ function getManualMonitorRunAlertTone(run = {}) {
         ? run.metadata
         : {};
   const noResultsNotificationSent = Boolean(metadata.noResultsNotificationSent);
-  if (status === "cancelled") {
+  if (status === "cancelled" || status === "inconsistent_results") {
     return "warning";
   }
   return (status === "completed" && notificationsSent > 0) || noResultsNotificationSent ? "success" : "warning";
@@ -6667,6 +6667,9 @@ function getManualMonitorRunAlertTitle(run = {}) {
 
   if (status === "cancelled") {
     return "Test cancelled";
+  }
+  if (status === "inconsistent_results") {
+    return "Results changed unexpectedly";
   }
   if (status === "no_matches") {
     return recentResultsAlreadySent ? "Nothing new right now" : "No matches found";
@@ -6693,9 +6696,22 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
   const deliveryTarget = String(metadata.deliveryTarget || "").trim();
   const noResultsNotificationSent = Boolean(metadata.noResultsNotificationSent);
   const recentResultsAlreadySent = Boolean(metadata.recentResultsAlreadySent);
+  const recentResultsCount = Math.max(0, Number(metadata.recentResultsCount || 0));
+  const recentResultsMinutesAgo = Math.max(0, Number(metadata.recentResultsMinutesAgo || 0));
 
   if (status === "cancelled") {
     return "The monitor test was cancelled before any new update was delivered.";
+  }
+
+  if (status === "inconsistent_results") {
+    const countLabel = recentResultsCount === 1 ? "1 result" : `${recentResultsCount} results`;
+    const recencyLabel = recentResultsMinutesAgo > 0
+      ? `${recentResultsMinutesAgo} minutes earlier`
+      : "earlier";
+    const pronoun = recentResultsCount === 1 ? "it" : "them";
+    return deliveryChannel === "email" && deliveryTarget
+      ? `This test came back empty, but the previous run found ${countLabel} ${recencyLabel} and sent ${pronoun} to ${deliveryTarget}. We didn’t send a no-results update because that mismatch may be a search bug.`
+      : `This test came back empty, but the previous run found ${countLabel} ${recencyLabel}. We didn’t send a no-results update because that mismatch may be a search bug.`;
   }
 
   if (status === "no_matches") {

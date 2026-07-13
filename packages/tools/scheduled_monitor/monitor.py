@@ -377,21 +377,6 @@ def normalize_alert_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def notification_to_alert_item(notification: dict[str, Any]) -> dict[str, Any]:
-    payload = notification if isinstance(notification, dict) else {}
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    return {
-        "id": normalize_text(payload.get("itemKey")) or normalize_text(payload.get("id")),
-        "title": normalize_text(payload.get("title")) or "Untitled alert",
-        "summary": normalize_text(metadata.get("summary")),
-        "whyItMatters": normalize_text(metadata.get("whyItMatters")),
-        "eventDate": normalize_text(payload.get("eventDate")),
-        "sourceName": normalize_text(payload.get("sourceName")),
-        "sourceUrl": normalize_text(payload.get("sourceUrl")),
-        "urgency": normalize_text(metadata.get("urgency")).lower() or "medium",
-    }
-
-
 def build_monitor_prompt(
     *,
     target: dict[str, Any],
@@ -458,10 +443,6 @@ def build_monitor_prompt(
 def build_notification_subject(target: dict[str, Any], item_count: int) -> str:
     count_label = "1 new match" if item_count == 1 else f"{item_count} new matches"
     return f"Quick monitor update: {count_label}"
-
-
-def build_manual_replay_subject() -> str:
-    return "Quick monitor test: latest results"
 
 
 def build_no_results_subject(target: dict[str, Any]) -> str:
@@ -666,6 +647,9 @@ class ScheduledMonitorScheduler:
                 "requestId": result.request_id,
                 "responseId": result.response_id,
                 "model": normalize_text(result.model),
+                "promptHash": sha256(prompt.encode("utf-8")).hexdigest()[:24],
+                "rawItems": raw_items[: self.config.max_items_per_run],
+                "rawItemsCount": len(raw_items),
             },
         )
 
@@ -714,7 +698,6 @@ class ScheduledMonitorScheduler:
         items: list[dict[str, Any]],
         summary: str,
         scheduled_for: datetime,
-        subject: str = "",
     ) -> tuple[int, str, str]:
         if not items:
             return 0, "", ""
@@ -730,7 +713,7 @@ class ScheduledMonitorScheduler:
                 **target,
                 "telegramChatId": settings.get("telegramChatId"),
             },
-            subject=subject or build_notification_subject(target, len(items)),
+            subject=build_notification_subject(target, len(items)),
             message_text=message_text,
             channel=normalize_text(settings.get("deliveryChannel")),
         )
@@ -801,11 +784,23 @@ class ScheduledMonitorScheduler:
                 ]
             recent_results_already_sent = bool(recent_notifications)
             recent_results_sent_at = normalize_text(recent_notifications[0].get("scheduledFor")) if recent_notifications else ""
-            recent_items: list[dict[str, Any]] = []
-            for notification in recent_notifications:
-                recent_item = notification_to_alert_item(notification)
-                if recent_item.get("id"):
-                    recent_items.append(recent_item)
+            recent_results_batch = [
+                notification
+                for notification in recent_notifications
+                if normalize_text(notification.get("scheduledFor")) == recent_results_sent_at
+            ] if recent_results_sent_at else []
+            recent_results_count = len(recent_results_batch)
+            recent_results_minutes_ago = 0
+            if recent_results_sent_at:
+                recent_results_minutes_ago = max(
+                    0,
+                    int(
+                        (
+                            scheduled_for.astimezone(timezone.utc)
+                            - parse_datetime(recent_results_sent_at).astimezone(timezone.utc)
+                        ).total_seconds() // 60
+                    ),
+                )
 
             new_items: list[dict[str, Any]] = []
             for item in items:
@@ -822,13 +817,18 @@ class ScheduledMonitorScheduler:
             delivery_message_id = ""
             no_results_notification_sent = False
             status = "completed"
-            replayed_recent_results = False
             if not items:
                 status = "no_matches"
             elif items and not new_items:
                 status = "duplicate_matches"
 
             live_search_status = status
+            if (
+                not persist_run
+                and live_search_status == "no_matches"
+                and recent_results_count > 0
+            ):
+                status = "inconsistent_results"
 
             if new_items:
                 self._raise_if_cancelled(cancel_check)
@@ -839,20 +839,6 @@ class ScheduledMonitorScheduler:
                     summary=summary,
                     scheduled_for=scheduled_for,
                 )
-            elif not persist_run and recent_items and status in {"no_matches", "duplicate_matches"}:
-                self._raise_if_cancelled(cancel_check)
-                replayed_recent_results = True
-                summary = "Here are the latest results again from your recent monitor test."
-                items = recent_items
-                notifications_sent, delivery_target, delivery_message_id = self._deliver_items(
-                    target=target,
-                    settings=settings,
-                    items=recent_items,
-                    summary=summary,
-                    scheduled_for=scheduled_for,
-                    subject=build_manual_replay_subject(),
-                )
-                status = "completed"
             elif status in {"no_matches", "duplicate_matches"}:
                 self._raise_if_cancelled(cancel_check)
                 no_results_notification_sent, delivery_target, delivery_message_id = self._deliver_no_results_notification(
@@ -903,7 +889,8 @@ class ScheduledMonitorScheduler:
                 "noResultsReason": live_search_status if live_search_status in {"no_matches", "duplicate_matches"} else "",
                 "recentResultsAlreadySent": recent_results_already_sent if live_search_status == "no_matches" else False,
                 "recentResultsSentAt": recent_results_sent_at if live_search_status == "no_matches" else "",
-                "replayedRecentResults": replayed_recent_results,
+                "recentResultsCount": recent_results_count if live_search_status == "no_matches" else 0,
+                "recentResultsMinutesAgo": recent_results_minutes_ago if live_search_status == "no_matches" else 0,
                 "liveSearchStatus": live_search_status,
                 "deliveryMessageId": delivery_message_id,
                 **search_metadata,
