@@ -2496,7 +2496,7 @@ async function refreshFeatureActivationStates(options = {}) {
 
   applyServerFeatureStates(response.features || [], { persist: true, resetMissing: true });
   state.paymentStatus = response.paymentStatus || null;
-  if (options.render !== false && view === "app") {
+  if (options.render !== false && document.body.dataset.view === "app") {
     renderApp();
   }
   return response;
@@ -2659,7 +2659,7 @@ function scheduleSelectedFeatureConfigAutosave(feature = getSelectedFeature(), o
     featureConfigAutosaveTimers.delete(featureId);
     void flushSelectedFeatureConfigAutosave({
       featureId,
-      render: view === "app" && state.selectedFeatureId === featureId,
+      render: document.body.dataset.view === "app" && state.selectedFeatureId === featureId,
       alertOnError: false,
     }).catch(() => {});
   }, delayMs);
@@ -2675,7 +2675,7 @@ async function flushSelectedFeatureConfigAutosave(options = {}) {
   clearFeatureConfigAutosaveTimer(featureId);
   return saveSelectedFeatureConfig({
     featureId,
-    render: options.render !== false && view === "app" && state.selectedFeatureId === featureId,
+    render: options.render !== false && document.body.dataset.view === "app" && state.selectedFeatureId === featureId,
     alertOnError: options.alertOnError === true,
     returnFocus: options.returnFocus || getFeatureConfigReturnFocus(),
     statusMessage: options.statusMessage || "Saving changes...",
@@ -2694,7 +2694,7 @@ async function saveSelectedFeatureConfig(options = {}) {
 
   const featureId = String(options.featureId || getSelectedFeature()?.id || "").trim();
   const feature = featureId ? getFeatureById(featureId) : getSelectedFeature();
-  const shouldRender = options.render !== false && view === "app" && state.selectedFeatureId === featureId;
+  const shouldRender = options.render !== false && document.body.dataset.view === "app" && state.selectedFeatureId === featureId;
   if (!feature || !hasFeatureConfigChanges(feature)) {
     if (shouldRender) {
       renderApp();
@@ -2774,7 +2774,7 @@ async function refreshWhatsAppConnection(options = {}) {
   });
 
   applyWhatsAppConnectionToFeatures(response.connection || null, { persist: true });
-  if (options.render !== false && view === "app") {
+  if (options.render !== false && document.body.dataset.view === "app") {
     renderApp();
   }
   return response.connection || null;
@@ -6629,7 +6629,7 @@ async function refreshAdminUsers(options = {}) {
   state.adminUsersLoading = true;
   state.adminUsersNeedsRender = shouldRender;
   state.adminUsersError = "";
-  if (shouldRender && view === "app") {
+  if (shouldRender && document.body.dataset.view === "app") {
     renderApp();
   }
 
@@ -6683,7 +6683,7 @@ async function refreshAdminUsers(options = {}) {
     return null;
   } finally {
     state.adminUsersLoading = false;
-    if (view === "app" && state.adminUsersNeedsRender) {
+    if (document.body.dataset.view === "app" && state.adminUsersNeedsRender) {
       state.adminUsersNeedsRender = false;
       renderApp();
     }
@@ -7774,7 +7774,7 @@ async function waitForWhatsAppReplySampleConfirmation(featureId, ownerMessageId)
       // Keep waiting until timeout in case the next refresh succeeds.
     }
 
-    if (view === "app") {
+    if (document.body.dataset.view === "app") {
       renderApp({ preserveStatus: true });
     }
 
