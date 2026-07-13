@@ -895,8 +895,13 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     run_record = payload.get("run") if isinstance(payload.get("run"), dict) else {}
     metadata = run_record.get("metadata") if isinstance(run_record.get("metadata"), dict) else {}
     no_results_notification_sent = bool(metadata.get("noResultsNotificationSent"))
+    recent_results_already_sent = bool(metadata.get("recentResultsAlreadySent"))
 
     if status == "no_matches":
+        if recent_results_already_sent:
+            if no_results_notification_sent:
+                return "Manual run finished. Nothing new was found right now, the latest results had already been sent earlier, and a no-results update was sent."
+            return "Manual run finished. Nothing new was found right now, and the latest results had already been sent earlier."
         if no_results_notification_sent:
             return "Manual run finished. No relevant matches were found, and a no-results update was sent."
         return "Manual run finished. No relevant matches were found."

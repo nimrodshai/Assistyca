@@ -3619,6 +3619,60 @@ class PortalDatabase:
             "createdAt": payload.get("created_at"),
         }
 
+    def list_feature_monitor_notifications(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        since_scheduled_for: str | datetime | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0 or not normalized_feature_id:
+            return []
+
+        query = """
+                SELECT *
+                FROM feature_monitor_notifications
+                WHERE user_id = ? AND feature_id = ?
+                """
+        params: list[Any] = [int(user_id), normalized_feature_id]
+        if since_scheduled_for is not None:
+            query += " AND scheduled_for >= ?"
+            params.append(parse_datetime(since_scheduled_for).astimezone(timezone.utc).isoformat())
+        query += """
+                ORDER BY scheduled_for DESC, id DESC
+                LIMIT ?
+                """
+        params.append(max(1, int(limit)))
+
+        notifications: list[dict[str, Any]] = []
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        for row in rows:
+            payload = _row_to_dict(row) or {}
+            if not payload:
+                continue
+            notifications.append(
+                {
+                    "id": int(payload.get("id") or 0),
+                    "userId": int(payload.get("user_id") or 0),
+                    "featureId": normalize_text(payload.get("feature_id")),
+                    "itemKey": normalize_text(payload.get("item_key")),
+                    "scheduledFor": payload.get("scheduled_for"),
+                    "deliveryChannel": normalize_text(payload.get("delivery_channel")),
+                    "deliveryTarget": normalize_text(payload.get("delivery_target")),
+                    "title": normalize_text(payload.get("title")),
+                    "eventDate": normalize_text(payload.get("event_date")),
+                    "sourceUrl": normalize_text(payload.get("source_url")),
+                    "sourceName": normalize_text(payload.get("source_name")),
+                    "messageText": normalize_text(payload.get("message_text")),
+                    "metadata": _load_json_dict(payload.get("metadata_json")),
+                    "createdAt": payload.get("created_at"),
+                }
+            )
+        return notifications
+
     def save_feature_monitor_notification(
         self,
         *,

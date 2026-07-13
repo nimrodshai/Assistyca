@@ -36,6 +36,7 @@ DEFAULT_MONITOR_POLL_SECONDS = 300
 DEFAULT_MONITOR_SEARCH_CONTEXT_SIZE = "medium"
 DEFAULT_MONITOR_MAX_OUTPUT_TOKENS = 1800
 DEFAULT_MONITOR_MAX_ITEMS = 5
+RECENT_SENT_RESULTS_LOOKBACK = timedelta(hours=1)
 
 DEFAULT_MONITOR_SETTINGS = {
     "model": DEFAULT_MONITOR_MODEL,
@@ -469,6 +470,7 @@ def build_no_results_text(
     settings: dict[str, Any],
     scheduled_for: datetime,
     status: str = "no_matches",
+    recent_results_already_sent: bool = False,
 ) -> str:
     watch_items = normalize_watch_items(settings.get("watchItems"))
     lines = [
@@ -487,7 +489,9 @@ def build_no_results_text(
         [
             "",
             (
-                "Nothing new worth sending right now."
+                "Nothing new worth sending right now. I already sent the latest results earlier."
+                if normalize_text(status) == "no_matches" and recent_results_already_sent
+                else "Nothing new worth sending right now."
                 if normalize_text(status) == "no_matches"
                 else "Nothing new to send right now. I already shared the useful matches earlier."
             ),
@@ -700,11 +704,13 @@ class ScheduledMonitorScheduler:
         settings: dict[str, Any],
         scheduled_for: datetime,
         status: str,
+        recent_results_already_sent: bool = False,
     ) -> tuple[bool, str, str]:
         message_text = build_no_results_text(
             settings=settings,
             scheduled_for=scheduled_for,
             status=status,
+            recent_results_already_sent=recent_results_already_sent,
         )
         delivery_target, delivery_message_id = self._deliver_message(
             target={
@@ -738,6 +744,23 @@ class ScheduledMonitorScheduler:
                 cancel_check=cancel_check,
             )
             self._raise_if_cancelled(cancel_check)
+
+            recent_notifications = self.database.list_feature_monitor_notifications(
+                user_id=int(target.get("userId") or 0),
+                feature_id=MONITOR_FEATURE_ID,
+                since_scheduled_for=scheduled_for - RECENT_SENT_RESULTS_LOOKBACK,
+                limit=self.config.max_items_per_run,
+            )
+            settings_saved_at = normalize_text(target.get("settingsSavedAt"))
+            if settings_saved_at:
+                settings_saved_moment = parse_datetime(settings_saved_at).astimezone(timezone.utc)
+                recent_notifications = [
+                    notification
+                    for notification in recent_notifications
+                    if parse_datetime(notification.get("scheduledFor")).astimezone(timezone.utc) >= settings_saved_moment
+                ]
+            recent_results_already_sent = bool(recent_notifications)
+            recent_results_sent_at = normalize_text(recent_notifications[0].get("scheduledFor")) if recent_notifications else ""
 
             new_items: list[dict[str, Any]] = []
             for item in items:
@@ -775,6 +798,7 @@ class ScheduledMonitorScheduler:
                     settings=settings,
                     scheduled_for=scheduled_for,
                     status=status,
+                    recent_results_already_sent=recent_results_already_sent if status == "no_matches" else False,
                 )
 
             for item in new_items:
@@ -815,6 +839,8 @@ class ScheduledMonitorScheduler:
                 "deliveryTarget": delivery_target,
                 "noResultsNotificationSent": no_results_notification_sent,
                 "noResultsReason": status if status in {"no_matches", "duplicate_matches"} else "",
+                "recentResultsAlreadySent": recent_results_already_sent if status == "no_matches" else False,
+                "recentResultsSentAt": recent_results_sent_at if status == "no_matches" else "",
                 "deliveryMessageId": delivery_message_id,
                 **search_metadata,
             }
