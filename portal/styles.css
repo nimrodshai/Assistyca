@@ -3536,10 +3536,9 @@ body[data-modal="billing"] .app-shell {
 }
 
 .monitor-schedule-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.85rem 1rem;
+  display: grid;
+  gap: 0.85rem;
+  justify-items: start;
 }
 
 .monitor-schedule-inline-field {
