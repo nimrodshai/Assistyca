@@ -97,6 +97,10 @@ const DEFAULT_FEATURE_WHATSAPP = {
   verified_name: "",
   connected_at: "",
   last_tested_at: "",
+  configured: false,
+  live_send_enabled: false,
+  webhook_url: "",
+  metadata: {},
 };
 const DEFAULT_MONITOR_SETTINGS = {
   model: "gpt-5.5",
@@ -604,6 +608,13 @@ const elements = {
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
+  featureActivationNumberStatusTitle: document.querySelector("#featureActivationNumberStatusTitle"),
+  featureActivationNumberStatusCopy: document.querySelector("#featureActivationNumberStatusCopy"),
+  featureActivationInboundStatusTitle: document.querySelector("#featureActivationInboundStatusTitle"),
+  featureActivationInboundStatusCopy: document.querySelector("#featureActivationInboundStatusCopy"),
+  featureActivationOwnerStatusTitle: document.querySelector("#featureActivationOwnerStatusTitle"),
+  featureActivationOwnerStatusCopy: document.querySelector("#featureActivationOwnerStatusCopy"),
+  featureActivationWebhookHint: document.querySelector("#featureActivationWebhookHint"),
   monitorTargetCard: document.querySelector("#monitorTargetCard"),
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
@@ -633,6 +644,9 @@ const elements = {
   featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
   featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
   featureStudioMenu: document.querySelector("#featureStudioMenu"),
+  featureStudioWhatsAppHealthNotice: document.querySelector("#featureStudioWhatsAppHealthNotice"),
+  featureStudioWhatsAppHealthNoticeTitle: document.querySelector("#featureStudioWhatsAppHealthNoticeTitle"),
+  featureStudioWhatsAppHealthNoticeCopy: document.querySelector("#featureStudioWhatsAppHealthNoticeCopy"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
   accountAvatar: document.querySelector("#accountAvatar"),
@@ -2020,6 +2034,24 @@ function normalizeFeatureSetupStatus(setupStatus = null) {
   };
 }
 
+function normalizeFeatureWhatsAppMetadata(metadata = null) {
+  const source = metadata && typeof metadata === "object" ? metadata : {};
+  return {
+    lastInboundAt: String(source.lastInboundAt || source.last_inbound_at || "").trim(),
+    lastInboundSenderName: String(source.lastInboundSenderName || source.last_inbound_sender_name || "").trim(),
+    lastInboundSenderWaId: String(source.lastInboundSenderWaId || source.last_inbound_sender_wa_id || "").trim(),
+    lastInboundPreview: String(source.lastInboundPreview || source.last_inbound_preview || "").trim(),
+    lastInboundMessageId: String(source.lastInboundMessageId || source.last_inbound_message_id || "").trim(),
+    lastInboundPhoneNumberId: String(source.lastInboundPhoneNumberId || source.last_inbound_phone_number_id || "").trim(),
+    lastApprovalCreatedAt: String(source.lastApprovalCreatedAt || source.last_approval_created_at || "").trim(),
+    lastApprovalId: String(source.lastApprovalId || source.last_approval_id || "").trim(),
+    lastOwnerNotificationAt: String(source.lastOwnerNotificationAt || source.last_owner_notification_at || "").trim(),
+    lastOwnerNotificationStatus: String(source.lastOwnerNotificationStatus || source.last_owner_notification_status || "").trim(),
+    lastOwnerNotificationError: String(source.lastOwnerNotificationError || source.last_owner_notification_error || "").trim(),
+    lastOwnerNotificationMessageId: String(source.lastOwnerNotificationMessageId || source.last_owner_notification_message_id || "").trim(),
+  };
+}
+
 function normalizeFeatureWhatsApp(config = {}) {
   const source = config && typeof config === "object" ? config : {};
   const businessAccountId = String(source.business_account_id || source.businessAccountId || "").trim();
@@ -2035,6 +2067,10 @@ function normalizeFeatureWhatsApp(config = {}) {
     verified_name: String(source.verified_name || source.verifiedName || "").trim(),
     connected_at: String(source.connected_at || source.connectedAt || "").trim(),
     last_tested_at: String(source.last_tested_at || source.lastTestedAt || "").trim(),
+    configured: Boolean(source.configured ?? false),
+    live_send_enabled: Boolean(source.live_send_enabled ?? source.liveSendEnabled ?? false),
+    webhook_url: String(source.webhook_url || source.webhookUrl || "").trim(),
+    metadata: normalizeFeatureWhatsAppMetadata(source.metadata || {}),
   };
 }
 
@@ -2918,6 +2954,137 @@ function getSavedFeatureWhatsApp(feature = getSelectedFeature()) {
     : normalizeFeatureWhatsApp(DEFAULT_FEATURE_WHATSAPP);
 }
 
+function getFeatureWhatsAppHealth(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  return normalizeFeatureWhatsAppMetadata(whatsapp.metadata || {});
+}
+
+function getFeatureWhatsAppOwnerLabel(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  return String(whatsapp.owner_wa_id || whatsapp.display_phone_number || "your phone").trim() || "your phone";
+}
+
+function getFeatureWhatsAppConnectedLabel(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  return String(whatsapp.verified_name || whatsapp.display_phone_number || whatsapp.business_account_id || "your WhatsApp number").trim() || "your WhatsApp number";
+}
+
+function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  const health = getFeatureWhatsAppHealth(feature);
+  const isConnected = whatsapp.connection_status === "connected";
+  const numberLabel = getFeatureWhatsAppConnectedLabel(feature);
+  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
+  const lastInboundAt = health.lastInboundAt ? formatAdminDateTime(health.lastInboundAt) : "";
+  const lastOwnerNotificationAt = health.lastOwnerNotificationAt ? formatAdminDateTime(health.lastOwnerNotificationAt) : "";
+  const lastInboundSender = String(health.lastInboundSenderName || health.lastInboundSenderWaId || "a customer").trim() || "a customer";
+  const lastOwnerStatus = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
+
+  const content = {
+    number: {
+      title: "Add your details",
+      copy: "Save the Phone Number ID and the phone that should receive approval alerts.",
+    },
+    inbound: {
+      title: "Waiting for the first live message",
+      copy: "Once someone messages your connected WhatsApp number, we’ll show that Assistyca received it here.",
+    },
+    owner: {
+      title: "No approval alert sent yet",
+      copy: "The first live message will trigger an approval alert to your phone.",
+    },
+    note: "",
+  };
+
+  if (hasFeatureWhatsAppDetails(feature)) {
+    content.number = isConnected
+      ? {
+          title: "Phone number verified",
+          copy: `${numberLabel} is saved and ready for live checks.`,
+        }
+      : {
+          title: "Still need to verify the number",
+          copy: "The details are saved, but Assistyca still needs to confirm this Phone Number ID with Meta.",
+        };
+  }
+
+  if (health.lastInboundAt) {
+    content.inbound = {
+      title: "Live message received",
+      copy: `Assistyca last received a WhatsApp message on ${lastInboundAt} from ${lastInboundSender}.`,
+    };
+  } else if (isConnected) {
+    content.inbound = {
+      title: "Waiting for the first live message",
+      copy: "Ask someone to message your connected WhatsApp number. That will confirm Assistyca is receiving real incoming messages.",
+    };
+  }
+
+  if (lastOwnerStatus === "failed") {
+    content.owner = {
+      title: "Latest approval alert hit a temporary issue",
+      copy: lastOwnerNotificationAt
+        ? `We kept the incoming message, but the alert did not reach ${ownerLabel} on ${lastOwnerNotificationAt}.`
+        : `We kept the incoming message, but the alert did not reach ${ownerLabel}.`,
+    };
+  } else if (lastOwnerStatus === "sent") {
+    content.owner = {
+      title: "Latest approval alert was sent",
+      copy: lastOwnerNotificationAt
+        ? `The latest approval alert reached ${ownerLabel} on ${lastOwnerNotificationAt}.`
+        : `The latest approval alert reached ${ownerLabel}.`,
+    };
+  } else if (lastOwnerStatus === "pending" && health.lastInboundAt) {
+    content.owner = {
+      title: "Approval alert is still pending",
+      copy: `Assistyca received the message and is still trying to alert ${ownerLabel}.`,
+    };
+  } else if (isConnected) {
+    content.owner = {
+      title: "No approval alert sent yet",
+      copy: `When the first live message arrives, we’ll alert ${ownerLabel}.`,
+    };
+  }
+
+  if (isConnected && !health.lastInboundAt && whatsapp.webhook_url) {
+    content.note = `If someone messages your connected WhatsApp number and nothing reaches Assistyca, make sure Meta is forwarding new messages to ${whatsapp.webhook_url}.`;
+  }
+
+  return content;
+}
+
+function buildFeatureEditorWhatsAppHealthNotice(feature = getSelectedFeature()) {
+  if (!feature || !isWhatsAppFeature(feature) || !isFeatureActivated(feature)) {
+    return null;
+  }
+
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  if (whatsapp.connection_status !== "connected") {
+    return null;
+  }
+
+  const health = getFeatureWhatsAppHealth(feature);
+  const lastOwnerStatus = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
+
+  if (lastOwnerStatus === "failed") {
+    return {
+      tone: "warning",
+      title: "The latest approval alert hit a temporary issue",
+      copy: "We kept the incoming message, but the alert did not reach your phone. Open WhatsApp setup and save again after the issue clears.",
+    };
+  }
+
+  if (!health.lastInboundAt) {
+    return {
+      tone: "neutral",
+      title: "Still waiting for the first live WhatsApp message",
+      copy: "Ask someone to message your connected WhatsApp number. If nothing reaches Assistyca, incoming messages are not being forwarded yet.",
+    };
+  }
+
+  return null;
+}
+
 function hasFeatureActivationChanges(feature = getSelectedFeature()) {
   const current = getSelectedFeatureWhatsApp(feature);
   const saved = getSavedFeatureWhatsApp(feature);
@@ -3107,6 +3274,10 @@ function getFeatureActivationNoticeLabel() {
 
   if (/^checking\b/i.test(notice)) {
     return "Checking connection";
+  }
+
+  if (/^setup saved\b/i.test(notice)) {
+    return "Setup saved";
   }
 
   if (/^whatsapp confirmed\b/i.test(notice)) {
@@ -7554,6 +7725,54 @@ function updateFeatureActivationFields() {
   }
 }
 
+function updateFeatureActivationStatus(feature = getSelectedFeature()) {
+  const content = buildFeatureActivationStatusContent(feature);
+
+  if (elements.featureActivationNumberStatusTitle) {
+    elements.featureActivationNumberStatusTitle.textContent = content.number.title;
+  }
+  if (elements.featureActivationNumberStatusCopy) {
+    elements.featureActivationNumberStatusCopy.textContent = content.number.copy;
+  }
+  if (elements.featureActivationInboundStatusTitle) {
+    elements.featureActivationInboundStatusTitle.textContent = content.inbound.title;
+  }
+  if (elements.featureActivationInboundStatusCopy) {
+    elements.featureActivationInboundStatusCopy.textContent = content.inbound.copy;
+  }
+  if (elements.featureActivationOwnerStatusTitle) {
+    elements.featureActivationOwnerStatusTitle.textContent = content.owner.title;
+  }
+  if (elements.featureActivationOwnerStatusCopy) {
+    elements.featureActivationOwnerStatusCopy.textContent = content.owner.copy;
+  }
+  if (elements.featureActivationWebhookHint) {
+    elements.featureActivationWebhookHint.textContent = content.note;
+    elements.featureActivationWebhookHint.classList.toggle("is-hidden", !content.note);
+  }
+}
+
+function updateFeatureStudioWhatsAppHealthNotice(feature = getSelectedFeature()) {
+  const notice = buildFeatureEditorWhatsAppHealthNotice(feature);
+  const element = elements.featureStudioWhatsAppHealthNotice;
+  if (!element || !elements.featureStudioWhatsAppHealthNoticeTitle || !elements.featureStudioWhatsAppHealthNoticeCopy) {
+    return;
+  }
+
+  if (!notice) {
+    element.classList.add("is-hidden");
+    element.dataset.tone = "";
+    elements.featureStudioWhatsAppHealthNoticeTitle.textContent = "";
+    elements.featureStudioWhatsAppHealthNoticeCopy.textContent = "";
+    return;
+  }
+
+  element.classList.remove("is-hidden");
+  element.dataset.tone = notice.tone || "neutral";
+  elements.featureStudioWhatsAppHealthNoticeTitle.textContent = notice.title;
+  elements.featureStudioWhatsAppHealthNoticeCopy.textContent = notice.copy;
+}
+
 function renderFeatureActivationFieldErrors() {
   const fieldStates = [
     {
@@ -7712,6 +7931,8 @@ function updateFeatureStudioHeader() {
         : "Start setup";
   }
 
+  updateFeatureActivationStatus(feature);
+  updateFeatureStudioWhatsAppHealthNotice(feature);
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
     elements.featureStudioActivationButton.textContent = activationBusy

@@ -79,6 +79,23 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertEqual([message["direction"] for message in messages], ["inbound", "outbound"])
 
+    def test_update_whatsapp_connection_metadata_merges_new_health_fields(self) -> None:
+        self._connect_whatsapp()
+
+        updated = self.database.update_whatsapp_connection_metadata(
+            email="owner@example.com",
+            metadata_updates={
+                "lastInboundAt": "2026-07-13T09:15:00+00:00",
+                "lastOwnerNotificationStatus": "sent",
+            },
+        )
+
+        self.assertIsNotNone(updated)
+        metadata = updated["metadata"]
+        self.assertEqual(metadata["assistant"]["tone_guidance"], "Warm and practical.")
+        self.assertEqual(metadata["lastInboundAt"], "2026-07-13T09:15:00+00:00")
+        self.assertEqual(metadata["lastOwnerNotificationStatus"], "sent")
+
     def test_scheduler_sends_one_reengagement_message_for_dormant_conversation(self) -> None:
         self._connect_whatsapp()
         self.database.save_feature_assignment_metadata(

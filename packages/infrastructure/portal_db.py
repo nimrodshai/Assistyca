@@ -3028,6 +3028,47 @@ class PortalDatabase:
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, user_id=user_id)
 
+    def update_whatsapp_connection_metadata(
+        self,
+        *,
+        email: str | None = None,
+        user_id: int | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        updates = metadata_updates if isinstance(metadata_updates, dict) else {}
+        if not updates:
+            return self.get_whatsapp_connection_by_user_id(int(user_id or 0)) if user_id else self.get_whatsapp_connection(email or "")
+
+        with self._connection() as conn:
+            connection = None
+            if user_id is not None and int(user_id) > 0:
+                connection = self._load_whatsapp_connection_row(conn, user_id=int(user_id))
+            elif email is not None:
+                connection = self._load_whatsapp_connection_row(conn, email=email)
+
+            if connection is None:
+                return None
+
+            current_metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
+            merged_metadata = {
+                **current_metadata,
+                **updates,
+            }
+
+            conn.execute(
+                """
+                UPDATE whatsapp_connections
+                SET metadata_json = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (
+                    json.dumps(merged_metadata, ensure_ascii=True, sort_keys=True),
+                    now_iso(),
+                    int(connection.get("userId") or 0),
+                ),
+            )
+            return self._load_whatsapp_connection_row(conn, user_id=int(connection.get("userId") or 0))
+
     def list_active_feature_monitor_targets(self, feature_id: str) -> list[dict[str, Any]]:
         normalized_feature_id = normalize_text(feature_id)
         if not normalized_feature_id:

@@ -342,10 +342,38 @@
           <header class="feature-activation-hero">
             <div class="feature-activation-hero-copy">
               <p class="eyebrow">WhatsApp setup</p>
-              <h2>Connect your WhatsApp account</h2>
+              <h2>Connect your WhatsApp number</h2>
               <p class="feature-page-description">
-                We need these details so the feature can work with your WhatsApp account.
+                We use this to watch for new customer messages and send approval alerts to your phone.
               </p>
+
+              <div class="feature-activation-status-grid" aria-live="polite">
+                <article class="feature-activation-status-card">
+                  <p class="feature-activation-status-label">Number check</p>
+                  <h3 id="featureActivationNumberStatusTitle">Add your details</h3>
+                  <p id="featureActivationNumberStatusCopy" class="feature-activation-status-copy">
+                    Save the Phone Number ID and the phone that should receive approval alerts.
+                  </p>
+                </article>
+
+                <article class="feature-activation-status-card">
+                  <p class="feature-activation-status-label">Live messages</p>
+                  <h3 id="featureActivationInboundStatusTitle">Waiting for the first live message</h3>
+                  <p id="featureActivationInboundStatusCopy" class="feature-activation-status-copy">
+                    Once someone messages your connected WhatsApp number, we’ll show that Assistyca received it here.
+                  </p>
+                </article>
+
+                <article class="feature-activation-status-card">
+                  <p class="feature-activation-status-label">Approval alerts</p>
+                  <h3 id="featureActivationOwnerStatusTitle">No approval alert sent yet</h3>
+                  <p id="featureActivationOwnerStatusCopy" class="feature-activation-status-copy">
+                    The first live message will trigger an approval alert to your phone.
+                  </p>
+                </article>
+              </div>
+
+              <p id="featureActivationWebhookHint" class="feature-activation-note is-hidden"></p>
             </div>
 
             <div class="feature-activation-hero-form">
@@ -397,6 +425,11 @@
         </section>
 
         <div id="toolEditorSection" class="studio-fields">
+          <section id="featureStudioWhatsAppHealthNotice" class="feature-inline-notice is-hidden" aria-live="polite">
+            <p id="featureStudioWhatsAppHealthNoticeTitle" class="feature-inline-notice-title"></p>
+            <p id="featureStudioWhatsAppHealthNoticeCopy" class="feature-inline-notice-copy"></p>
+          </section>
+
           <article id="monitorTargetCard" class="glass-card config-card is-hidden">
             <div class="card-head monitor-target-head">
               <div class="monitor-target-copy">

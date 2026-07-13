@@ -1579,7 +1579,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "message": "WhatsApp confirmed the connection.",
+            "message": "Setup saved. The phone number ID was verified. Send a real WhatsApp message next to confirm Assistyca receives it.",
             "phoneNumberId": result.get("phone_number_id", phone_number_id),
             "displayPhoneNumber": display_phone_number,
             "verifiedName": verified_name,
@@ -2159,6 +2159,52 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             },
         )
 
+    def _record_whatsapp_inbound_activity(
+        self,
+        connection: dict[str, Any],
+        event: dict[str, Any],
+        *,
+        phone_number_id: str,
+    ) -> None:
+        received_at = (
+            self._parse_whatsapp_message_timestamp(event.get("timestamp"))
+            or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        )
+        self.database.update_whatsapp_connection_metadata(
+            user_id=int(connection.get("userId") or 0),
+            metadata_updates={
+                "lastInboundAt": received_at,
+                "lastInboundSenderName": normalize_text(event.get("sender_name")),
+                "lastInboundSenderWaId": normalize_text(event.get("sender_wa_id")),
+                "lastInboundPreview": normalize_text(event.get("message_text"))[:240],
+                "lastInboundMessageId": normalize_text(event.get("source_message_id")),
+                "lastInboundPhoneNumberId": normalize_text(phone_number_id),
+            },
+        )
+
+    def _record_whatsapp_owner_notification_activity(
+        self,
+        connection: dict[str, Any],
+        *,
+        approval: dict[str, Any] | None,
+        status: str,
+        error_message: str = "",
+        notification_message_id: str = "",
+    ) -> None:
+        approval_payload = approval if isinstance(approval, dict) else {}
+        self.database.update_whatsapp_connection_metadata(
+            user_id=int(connection.get("userId") or 0),
+            metadata_updates={
+                "lastApprovalCreatedAt": normalize_text(approval_payload.get("created_at"))
+                or datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "lastApprovalId": normalize_text(approval_payload.get("approval_id")),
+                "lastOwnerNotificationAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "lastOwnerNotificationStatus": normalize_text(status),
+                "lastOwnerNotificationError": normalize_text(error_message),
+                "lastOwnerNotificationMessageId": normalize_text(notification_message_id),
+            },
+        )
+
     def _handle_whatsapp_connection_get(self) -> None:
         session = self._require_authenticated_session()
         if session is None:
@@ -2274,7 +2320,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "message": "WhatsApp confirmed the connection.",
+            "message": "Setup saved. The phone number ID was verified. Send a real WhatsApp message next to confirm Assistyca receives it.",
             "connection": self._serialize_whatsapp_connection(connection),
             "liveTested": True,
             "requiresAccessToken": False,
@@ -2777,6 +2823,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     results.append(owner_result)
                     continue
 
+                self._record_whatsapp_inbound_activity(
+                    connection,
+                    event,
+                    phone_number_id=phone_number_id,
+                )
                 message_record = self.database.save_whatsapp_message(
                     user_id=int(connection.get("userId") or 0),
                     conversation_id=normalize_text(event.get("thread_id")) or normalize_text(event.get("sender_wa_id")),
@@ -2811,8 +2862,27 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         user_id=int(connection.get("userId") or 0),
                         phone_number_id=phone_number_id,
                     )
+                    self._record_whatsapp_owner_notification_activity(
+                        connection,
+                        approval=approval,
+                        status=(
+                            "failed"
+                            if normalize_text(result.get("owner_notification_error"))
+                            else "sent"
+                            if normalize_text(result.get("owner_notification_message_id"))
+                            else "pending"
+                        ),
+                        error_message=normalize_text(result.get("owner_notification_error")),
+                        notification_message_id=normalize_text(result.get("owner_notification_message_id")),
+                    )
                 results.append(result)
             except Exception as exc:  # pragma: no cover - keep webhook resilient
+                self._record_whatsapp_owner_notification_activity(
+                    connection,
+                    approval=None,
+                    status="failed",
+                    error_message=str(exc),
+                )
                 results.append({
                     "type": "error",
                     "thread_id": event.get("thread_id", ""),
