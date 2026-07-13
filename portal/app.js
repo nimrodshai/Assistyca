@@ -638,6 +638,9 @@ const elements = {
   billingHelpCloseButton: document.querySelector("#billingHelpCloseButton"),
   billingHelpBody: document.querySelector("#billingHelpBody"),
   billingRefreshButton: document.querySelector("#billingRefreshButton"),
+  billingHelpStrip: document.querySelector("#billingHelpStrip"),
+  billingHero: document.querySelector("#billingHero"),
+  billingGrid: document.querySelector("#billingGrid"),
   billingCurrentMonthLabel: document.querySelector("#billingCurrentMonthLabel"),
   billingCurrentSummary: document.querySelector("#billingCurrentSummary"),
   billingCurrentTokens: document.querySelector("#billingCurrentTokens"),
@@ -3357,7 +3360,7 @@ function normalizeBillingReport(report = {}) {
     minimumMonthlyCharge,
     source: String(report.source || "empty"),
     sourceLabel: String(report.sourceLabel || "").trim()
-      || (report.source === "database" ? "Latest billing snapshot" : report.source === "defaults" ? "Sample billing data" : "Billing data"),
+      || (report.source === "database" ? "Latest billing data" : report.source === "defaults" ? "Sample billing data" : "Billing data"),
     currentMonth: {
       ...currentMonth,
       currency,
@@ -3539,12 +3542,8 @@ function enrichBillingReportWithCatalog(report) {
 function getBillingStatusCopy(report, hasError, isLoading) {
   if (hasError) {
     return {
-      message: report
-        ? "The latest refresh didn’t come through, but your last snapshot is still visible."
-        : "I’m having trouble reaching billing right now.",
-      meta: report
-        ? "Refresh billing to try again. I’ll keep the last good snapshot on screen while we wait."
-        : "Try Refresh billing. If it keeps failing, I’ll check the billing connection.",
+      message: "We're having temporary billing issues and we're on it.",
+      meta: "",
     };
   }
 
@@ -3634,7 +3633,7 @@ function getBillingStatusLabel(report) {
   }
 
   if (report.source === "database" || report.source === "account") {
-    return "Latest billing snapshot";
+    return "Latest billing data";
   }
 
   if (report.source === "defaults") {
@@ -4836,6 +4835,21 @@ function updateBillingPanel() {
   const isRefreshing = state.billingLoading && Boolean(report);
   const currency = report?.currency || "USD";
   const statusCopy = getBillingStatusCopy(report, hasError, state.billingLoading);
+  const showOnlyErrorState = hasError;
+
+  if (showOnlyErrorState && state.billingHelpOpen) {
+    setBillingHelpOpen(false);
+  }
+
+  if (elements.billingHelpStrip) {
+    elements.billingHelpStrip.classList.toggle("is-hidden", showOnlyErrorState);
+  }
+  if (elements.billingHero) {
+    elements.billingHero.classList.toggle("is-hidden", showOnlyErrorState);
+  }
+  if (elements.billingGrid) {
+    elements.billingGrid.classList.toggle("is-hidden", showOnlyErrorState);
+  }
 
   if (elements.billingStatusBanner) {
     elements.billingStatusBanner.classList.toggle("is-warn", hasError);
@@ -4847,9 +4861,11 @@ function updateBillingPanel() {
   }
   if (elements.billingStatusMeta) {
     elements.billingStatusMeta.textContent = statusCopy.meta;
+    elements.billingStatusMeta.classList.toggle("is-hidden", !statusCopy.meta);
   }
   if (elements.billingRefreshButton) {
     elements.billingRefreshButton.disabled = state.billingLoading;
+    elements.billingRefreshButton.classList.toggle("is-hidden", showOnlyErrorState);
     elements.billingRefreshButton.textContent = state.billingLoading
       ? (report ? "Checking latest..." : "Loading...")
       : hasError ? "Try again" : "Refresh billing";
@@ -5057,6 +5073,7 @@ async function refreshBillingReport(options = {}) {
       if (String(authSession?.token || "") !== requestToken) {
         return null;
       }
+      state.billingReport = null;
       setBillingError(formatApiErrorMessage(error, "We couldn’t load billing data right now."));
       return null;
     } finally {

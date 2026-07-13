@@ -862,12 +862,12 @@ Owner said afternoons are easier."
             <p class="eyebrow">Billing</p>
             <h1>Track tokens by tool, model, and month.</h1>
             <p class="lede compact">
-              See the current month, every previous month, and the billing snapshot at a glance.
+              See the current month, past months, and usage details in one place.
             </p>
           </div>
         </div>
 
-        <div class="billing-help-strip glass-card">
+        <div id="billingHelpStrip" class="billing-help-strip glass-card">
           <div class="billing-help-copy">
             <p class="eyebrow">How billing works</p>
             <p id="billingCurrentSummary" class="billing-help-summary">
@@ -889,7 +889,7 @@ Owner said afternoons are easier."
           </div>
         </div>
 
-        <section class="billing-hero glass-card">
+        <section id="billingHero" class="billing-hero glass-card">
           <div class="billing-hero-copy">
             <p class="eyebrow">Current month</p>
             <h2 id="billingCurrentMonthLabel">This month</h2>
@@ -918,7 +918,7 @@ Owner said afternoons are easier."
             <p class="eyebrow">Billing status</p>
             <p id="billingStatusMessage" class="billing-status-message">Loading billing data...</p>
             <p id="billingStatusMeta" class="billing-status-meta">
-              We’ll keep the last loaded snapshot visible if a refresh fails.
+              This usually takes just a moment.
             </p>
           </div>
 
@@ -927,7 +927,7 @@ Owner said afternoons are easier."
           </button>
         </div>
 
-        <div class="billing-grid">
+        <div id="billingGrid" class="billing-grid">
           <article class="glass-card billing-card">
             <div class="card-head">
               <h3>By tool</h3>
