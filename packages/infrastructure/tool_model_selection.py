@@ -15,6 +15,12 @@ TOOL_MODEL_OPTIONS = (
         "summary": "Lowest cost for lightweight tasks and high-volume automation.",
     },
     {
+        "id": "gpt-5.4-mini",
+        "name": "GPT-5.4 Mini",
+        "band": "Efficient",
+        "summary": "A lower-cost step up from nano for strong everyday replies and drafting.",
+    },
+    {
         "id": "gpt-5.4",
         "name": "GPT-5.4",
         "band": "Balanced",
