@@ -3041,6 +3041,7 @@ class PortalDatabase:
                             **prompt_overrides,
                         },
                         "settings": settings_payload if isinstance(settings_payload, dict) else {},
+                        "settingsSavedAt": normalize_text(assignment_metadata.get("settingsSavedAt")),
                         "activatedAt": payload.get("activated_at"),
                         "activationUpdatedAt": payload.get("activation_updated_at"),
                         "activationMetadata": activation_metadata if isinstance(activation_metadata, dict) else {},
@@ -3425,21 +3426,29 @@ class PortalDatabase:
         *,
         user_id: int,
         feature_id: str,
+        before_scheduled_for: str | datetime | None = None,
     ) -> dict[str, Any] | None:
         normalized_feature_id = normalize_text(feature_id)
         if user_id <= 0 or not normalized_feature_id:
             return None
 
-        with self._connection() as conn:
-            row = conn.execute(
-                """
+        query = """
                 SELECT scheduled_for
                 FROM feature_monitor_runs
                 WHERE user_id = ? AND feature_id = ?
+                """
+        params: list[Any] = [int(user_id), normalized_feature_id]
+        if before_scheduled_for is not None:
+            query += " AND scheduled_for < ?"
+            params.append(parse_datetime(before_scheduled_for).astimezone(timezone.utc).isoformat())
+        query += """
                 ORDER BY scheduled_for DESC
                 LIMIT 1
-                """,
-                (int(user_id), normalized_feature_id),
+                """
+        with self._connection() as conn:
+            row = conn.execute(
+                query,
+                tuple(params),
             ).fetchone()
         if row is None:
             return None
@@ -3447,6 +3456,56 @@ class PortalDatabase:
             user_id=int(user_id),
             feature_id=normalized_feature_id,
             scheduled_for=row["scheduled_for"],
+        )
+
+    def claim_feature_monitor_run(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        scheduled_for: str | datetime,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0:
+            raise ValueError("User id is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO feature_monitor_runs (
+                    user_id,
+                    feature_id,
+                    scheduled_for,
+                    findings_count,
+                    notifications_sent,
+                    status,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, 0, 0, 'running', ?, ?, ?)
+                ON CONFLICT(user_id, feature_id, scheduled_for) DO NOTHING
+                """,
+                (
+                    int(user_id),
+                    normalized_feature_id,
+                    scheduled_for_value,
+                    metadata_json,
+                    now,
+                    now,
+                ),
+            )
+            if cursor.rowcount <= 0:
+                return None
+        return self.get_feature_monitor_run(
+            user_id=int(user_id),
+            feature_id=normalized_feature_id,
+            scheduled_for=scheduled_for_value,
         )
 
     def save_feature_monitor_run(

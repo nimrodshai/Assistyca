@@ -11,6 +11,7 @@ from datetime import timedelta
 from datetime import timezone
 from hashlib import sha256
 from typing import Any
+from typing import Callable
 
 from packages.infrastructure.notification_delivery import email_delivery_available
 from packages.infrastructure.notification_delivery import load_mail_delivery_config
@@ -45,6 +46,10 @@ DEFAULT_MONITOR_SETTINGS = {
 }
 
 SUPPORTED_DELIVERY_CHANNELS = frozenset({"email", "telegram", "whatsapp"})
+
+
+class ManualRunCancelledError(RuntimeError):
+    """Raised when a user cancels a manual monitor test before delivery starts."""
 
 
 @dataclass
@@ -253,27 +258,61 @@ def resolve_due_monitor_slot(
     now: datetime,
     settings: dict[str, Any],
     activated_at: str,
+    settings_saved_at: str = "",
     last_scheduled_for: str,
+) -> datetime | None:
+    next_slot = resolve_next_monitor_slot(
+        now=now,
+        settings=settings,
+        activated_at=activated_at,
+        settings_saved_at=settings_saved_at,
+        last_scheduled_for=last_scheduled_for,
+    )
+    if next_slot is None:
+        return None
+
+    current_time = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    current_time = current_time.astimezone(timezone.utc)
+    if next_slot > current_time:
+        return None
+    return next_slot
+
+
+def resolve_next_monitor_slot(
+    *,
+    now: datetime,
+    settings: dict[str, Any],
+    activated_at: str = "",
+    settings_saved_at: str = "",
+    last_scheduled_for: str = "",
 ) -> datetime | None:
     current_time = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     current_time = current_time.astimezone(timezone.utc)
     interval_days = normalize_interval_days(settings.get("intervalDays"))
     interval = timedelta(days=interval_days)
 
-    if normalize_text(last_scheduled_for):
-        latest_slot = parse_datetime(last_scheduled_for).astimezone(timezone.utc)
-        next_slot = latest_slot + interval
-        if next_slot > current_time:
-            return None
-        elapsed_cycles = (current_time - next_slot) // interval
-        return next_slot + (elapsed_cycles * interval)
+    anchor_candidates = []
+    if normalize_text(activated_at):
+        anchor_candidates.append(parse_datetime(activated_at).astimezone(timezone.utc))
+    if normalize_text(settings_saved_at):
+        anchor_candidates.append(parse_datetime(settings_saved_at).astimezone(timezone.utc))
 
-    activation_time = parse_datetime(activated_at).astimezone(timezone.utc) if normalize_text(activated_at) else current_time
-    first_slot = activation_time + interval
-    if first_slot > current_time:
+    reset_anchor = max(anchor_candidates) if anchor_candidates else None
+    latest_slot = parse_datetime(last_scheduled_for).astimezone(timezone.utc) if normalize_text(last_scheduled_for) else None
+    if latest_slot is not None and (reset_anchor is None or latest_slot >= reset_anchor):
+        base_slot = latest_slot
+    else:
+        base_slot = reset_anchor
+
+    if base_slot is None:
         return None
-    elapsed_cycles = (current_time - first_slot) // interval
-    return first_slot + (elapsed_cycles * interval)
+
+    next_slot = base_slot + interval
+    if next_slot > current_time:
+        return next_slot
+
+    elapsed_cycles = (current_time - next_slot) // interval
+    return next_slot + (elapsed_cycles * interval)
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
@@ -487,6 +526,10 @@ class ScheduledMonitorScheduler:
             current_time = current_time.replace(tzinfo=timezone.utc)
         return current_time.astimezone(timezone.utc)
 
+    def _raise_if_cancelled(self, cancel_check: Callable[[], bool] | None = None) -> None:
+        if callable(cancel_check) and bool(cancel_check()):
+            raise ManualRunCancelledError("Manual run cancelled.")
+
     def _build_target_for_email(self, email: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)
         if not normalized_email:
@@ -515,6 +558,7 @@ class ScheduledMonitorScheduler:
                 **saved_prompt,
             },
             "settings": saved_settings if isinstance(saved_settings, dict) else {},
+            "settingsSavedAt": normalize_text(assignment_metadata.get("settingsSavedAt")),
             "activatedAt": activation.get("activatedAt"),
             "activationUpdatedAt": activation.get("updatedAt"),
             "activationMetadata": activation.get("metadata") if isinstance(activation.get("metadata"), dict) else {},
@@ -533,10 +577,13 @@ class ScheduledMonitorScheduler:
         target: dict[str, Any],
         settings: dict[str, Any],
         scheduled_for: datetime,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        self._raise_if_cancelled(cancel_check)
         last_run = self.database.get_latest_feature_monitor_run(
             user_id=int(target.get("userId") or 0),
             feature_id=MONITOR_FEATURE_ID,
+            before_scheduled_for=scheduled_for,
         )
         selected_model = resolve_tool_model(settings, default=self.config.model)
         prompt = build_monitor_prompt(
@@ -679,120 +726,167 @@ class ScheduledMonitorScheduler:
         settings: dict[str, Any],
         scheduled_for: datetime,
         persist_run: bool,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        summary, items, search_metadata = self._run_search(
-            target=target,
-            settings=settings,
-            scheduled_for=scheduled_for,
-        )
-        new_items: list[dict[str, Any]] = []
-        for item in items:
-            if self.database.get_feature_monitor_notification(
-                user_id=int(target.get("userId") or 0),
-                feature_id=MONITOR_FEATURE_ID,
-                item_key=normalize_text(item.get("id")),
-            ):
-                continue
-            new_items.append(item)
-
-        notifications_sent = 0
-        delivery_target = ""
-        delivery_message_id = ""
-        no_results_notification_sent = False
-        status = "completed"
-        if not items:
-            status = "no_matches"
-        elif items and not new_items:
-            status = "duplicate_matches"
-
-        if new_items:
-            notifications_sent, delivery_target, delivery_message_id = self._deliver_items(
-                target=target,
-                settings=settings,
-                items=new_items,
-                summary=summary,
-                scheduled_for=scheduled_for,
-            )
-        elif status in {"no_matches", "duplicate_matches"}:
-            no_results_notification_sent, delivery_target, delivery_message_id = self._deliver_no_results_notification(
+        summary = ""
+        items: list[dict[str, Any]] = []
+        search_metadata: dict[str, Any] = {}
+        try:
+            self._raise_if_cancelled(cancel_check)
+            summary, items, search_metadata = self._run_search(
                 target=target,
                 settings=settings,
                 scheduled_for=scheduled_for,
-                status=status,
+                cancel_check=cancel_check,
             )
+            self._raise_if_cancelled(cancel_check)
 
-        for item in new_items:
-            self.database.save_feature_monitor_notification(
-                user_id=int(target.get("userId") or 0),
-                feature_id=MONITOR_FEATURE_ID,
-                item_key=normalize_text(item.get("id")),
-                scheduled_for=scheduled_for,
-                delivery_channel=normalize_text(settings.get("deliveryChannel")),
-                delivery_target=delivery_target,
-                title=normalize_text(item.get("title")),
-                event_date=normalize_text(item.get("eventDate")),
-                source_url=normalize_text(item.get("sourceUrl")),
-                source_name=normalize_text(item.get("sourceName")),
-                message_text=build_notification_text(
+            new_items: list[dict[str, Any]] = []
+            for item in items:
+                if self.database.get_feature_monitor_notification(
+                    user_id=int(target.get("userId") or 0),
+                    feature_id=MONITOR_FEATURE_ID,
+                    item_key=normalize_text(item.get("id")),
+                ):
+                    continue
+                new_items.append(item)
+
+            notifications_sent = 0
+            delivery_target = ""
+            delivery_message_id = ""
+            no_results_notification_sent = False
+            status = "completed"
+            if not items:
+                status = "no_matches"
+            elif items and not new_items:
+                status = "duplicate_matches"
+
+            if new_items:
+                self._raise_if_cancelled(cancel_check)
+                notifications_sent, delivery_target, delivery_message_id = self._deliver_items(
                     target=target,
+                    settings=settings,
+                    items=new_items,
                     summary=summary,
-                    items=[item],
                     scheduled_for=scheduled_for,
-                ),
-                metadata={
-                    "summary": normalize_text(item.get("summary")),
-                    "whyItMatters": normalize_text(item.get("whyItMatters")),
-                    "urgency": normalize_text(item.get("urgency")),
-                    "deliveryMessageId": delivery_message_id,
-                    **search_metadata,
-                },
-            )
+                )
+            elif status in {"no_matches", "duplicate_matches"}:
+                self._raise_if_cancelled(cancel_check)
+                no_results_notification_sent, delivery_target, delivery_message_id = self._deliver_no_results_notification(
+                    target=target,
+                    settings=settings,
+                    scheduled_for=scheduled_for,
+                    status=status,
+                )
 
-        run_metadata = {
-            "summary": summary,
-            "items": items,
-            "newItemIds": [normalize_text(item.get("id")) for item in new_items],
-            "watchItems": settings.get("watchItems"),
-            "intervalDays": settings.get("intervalDays"),
-            "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
-            "deliveryTarget": delivery_target,
-            "noResultsNotificationSent": no_results_notification_sent,
-            "noResultsReason": status if status in {"no_matches", "duplicate_matches"} else "",
-            "deliveryMessageId": delivery_message_id,
-            **search_metadata,
-        }
-        if persist_run:
-            run_record = self.database.save_feature_monitor_run(
-                user_id=int(target.get("userId") or 0),
-                feature_id=MONITOR_FEATURE_ID,
-                scheduled_for=scheduled_for,
-                findings_count=len(items),
-                notifications_sent=notifications_sent,
-                status=status,
-                metadata=run_metadata,
-            )
-        else:
+            for item in new_items:
+                self.database.save_feature_monitor_notification(
+                    user_id=int(target.get("userId") or 0),
+                    feature_id=MONITOR_FEATURE_ID,
+                    item_key=normalize_text(item.get("id")),
+                    scheduled_for=scheduled_for,
+                    delivery_channel=normalize_text(settings.get("deliveryChannel")),
+                    delivery_target=delivery_target,
+                    title=normalize_text(item.get("title")),
+                    event_date=normalize_text(item.get("eventDate")),
+                    source_url=normalize_text(item.get("sourceUrl")),
+                    source_name=normalize_text(item.get("sourceName")),
+                    message_text=build_notification_text(
+                        target=target,
+                        summary=summary,
+                        items=[item],
+                        scheduled_for=scheduled_for,
+                    ),
+                    metadata={
+                        "summary": normalize_text(item.get("summary")),
+                        "whyItMatters": normalize_text(item.get("whyItMatters")),
+                        "urgency": normalize_text(item.get("urgency")),
+                        "deliveryMessageId": delivery_message_id,
+                        **search_metadata,
+                    },
+                )
+
+            run_metadata = {
+                "summary": summary,
+                "items": items,
+                "newItemIds": [normalize_text(item.get("id")) for item in new_items],
+                "watchItems": settings.get("watchItems"),
+                "intervalDays": settings.get("intervalDays"),
+                "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
+                "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
+                "deliveryTarget": delivery_target,
+                "noResultsNotificationSent": no_results_notification_sent,
+                "noResultsReason": status if status in {"no_matches", "duplicate_matches"} else "",
+                "deliveryMessageId": delivery_message_id,
+                **search_metadata,
+            }
+            if persist_run:
+                run_record = self.database.save_feature_monitor_run(
+                    user_id=int(target.get("userId") or 0),
+                    feature_id=MONITOR_FEATURE_ID,
+                    scheduled_for=scheduled_for,
+                    findings_count=len(items),
+                    notifications_sent=notifications_sent,
+                    status=status,
+                    metadata=run_metadata,
+                )
+            else:
+                run_record = {
+                    "id": 0,
+                    "userId": int(target.get("userId") or 0),
+                    "featureId": MONITOR_FEATURE_ID,
+                    "scheduledFor": scheduled_for.isoformat(),
+                    "findingsCount": len(items),
+                    "notificationsSent": notifications_sent,
+                    "status": status,
+                    "metadata": run_metadata,
+                    "createdAt": scheduled_for.isoformat(),
+                    "updatedAt": scheduled_for.isoformat(),
+                }
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": status,
+                "scheduledFor": scheduled_for.isoformat(),
+                "findingsCount": len(items),
+                "notificationsSent": notifications_sent,
+                "run": run_record,
+            }
+        except ManualRunCancelledError:
+            cancelled_metadata = {
+                "summary": summary,
+                "items": items,
+                "newItemIds": [],
+                "watchItems": settings.get("watchItems"),
+                "intervalDays": settings.get("intervalDays"),
+                "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
+                "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
+                "deliveryTarget": "",
+                "noResultsNotificationSent": False,
+                "cancelled": True,
+                **search_metadata,
+            }
             run_record = {
                 "id": 0,
                 "userId": int(target.get("userId") or 0),
                 "featureId": MONITOR_FEATURE_ID,
                 "scheduledFor": scheduled_for.isoformat(),
                 "findingsCount": len(items),
-                "notificationsSent": notifications_sent,
-                "status": status,
-                "metadata": run_metadata,
+                "notificationsSent": 0,
+                "status": "cancelled",
+                "metadata": cancelled_metadata,
                 "createdAt": scheduled_for.isoformat(),
                 "updatedAt": scheduled_for.isoformat(),
             }
-        return {
-            "userId": int(target.get("userId") or 0),
-            "email": normalize_email(target.get("email")),
-            "status": status,
-            "scheduledFor": scheduled_for.isoformat(),
-            "findingsCount": len(items),
-            "notificationsSent": notifications_sent,
-            "run": run_record,
-        }
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": "cancelled",
+                "scheduledFor": scheduled_for.isoformat(),
+                "findingsCount": len(items),
+                "notificationsSent": 0,
+                "run": run_record,
+            }
 
     def _process_target(self, *, target: dict[str, Any], now: datetime) -> dict[str, Any]:
         settings = normalize_monitor_settings(target.get("settings"))
@@ -818,6 +912,7 @@ class ScheduledMonitorScheduler:
             now=now,
             settings=settings,
             activated_at=normalize_text(target.get("activatedAt") or target.get("activationUpdatedAt")),
+            settings_saved_at=normalize_text(target.get("settingsSavedAt")),
             last_scheduled_for=normalize_text(last_run.get("scheduledFor")) if last_run else "",
         )
         if scheduled_for is None:
@@ -844,12 +939,50 @@ class ScheduledMonitorScheduler:
                 "notificationsSent": 0,
             }
 
-        return self._execute_target(
-            target=target,
-            settings=settings,
+        claim = self.database.claim_feature_monitor_run(
+            user_id=int(target.get("userId") or 0),
+            feature_id=MONITOR_FEATURE_ID,
             scheduled_for=scheduled_for,
-            persist_run=True,
+            metadata={
+                "claimedAt": self._normalize_now().isoformat(),
+                "watchItems": settings.get("watchItems"),
+                "intervalDays": settings.get("intervalDays"),
+                "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
+                "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
+            },
         )
+        if claim is None:
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": "skipped",
+                "reason": "already_claimed",
+                "scheduledFor": scheduled_for.isoformat(),
+                "notificationsSent": 0,
+            }
+
+        try:
+            return self._execute_target(
+                target=target,
+                settings=settings,
+                scheduled_for=scheduled_for,
+                persist_run=True,
+            )
+        except Exception as exc:
+            self.database.save_feature_monitor_run(
+                user_id=int(target.get("userId") or 0),
+                feature_id=MONITOR_FEATURE_ID,
+                scheduled_for=scheduled_for,
+                findings_count=0,
+                notifications_sent=0,
+                status="failed",
+                metadata={
+                    "error": str(exc),
+                    "claimedAt": claim.get("createdAt"),
+                    "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
+                },
+            )
+            raise
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         if not self.config.enabled:
@@ -867,7 +1000,13 @@ class ScheduledMonitorScheduler:
             "runs": runs,
         }
 
-    def run_for_email(self, email: str, *, now: datetime | None = None) -> dict[str, Any]:
+    def run_for_email(
+        self,
+        email: str,
+        *,
+        now: datetime | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         if not self.config.enabled:
             return {
                 "ok": False,
@@ -926,6 +1065,7 @@ class ScheduledMonitorScheduler:
             settings=settings,
             scheduled_for=self._normalize_now(now),
             persist_run=False,
+            cancel_check=cancel_check,
         )
         return {
             "ok": True,
@@ -956,5 +1096,6 @@ __all__ = [
     "build_monitor_setup_status",
     "load_scheduled_monitor_config",
     "normalize_monitor_settings",
+    "resolve_next_monitor_slot",
     "validate_monitor_settings",
 ]

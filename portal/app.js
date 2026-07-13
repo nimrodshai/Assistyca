@@ -497,6 +497,10 @@ let authAlertReturnFocus = null;
 let authAlertPrimaryAction = null;
 let authAlertSecondaryAction = null;
 let authAlertFocusTarget = "primary";
+let authAlertCloseOnPrimary = true;
+let authAlertCloseOnSecondary = true;
+let authAlertBackdropDismiss = true;
+let authAlertEscapeDismiss = true;
 let billingHelpOpenFrame = null;
 let billingHelpCloseTimer = null;
 let billingHelpReturnFocus = null;
@@ -506,6 +510,9 @@ let featureActivationTransitionTargetId = "";
 let featureActivationTransitionAction = "";
 let monitorManualRunBusy = false;
 let monitorManualRunTargetId = "";
+let monitorManualRunRequestId = "";
+let monitorManualRunCancelling = false;
+let monitorManualRunCancellationError = "";
 let featureConfigBusy = false;
 let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
@@ -514,6 +521,7 @@ const elements = {
   authView: document.querySelector("#authView"),
   authCard: document.querySelector("#authCard"),
   authAlertOverlay: document.querySelector("#authAlertOverlay"),
+  authAlertDialog: document.querySelector("#authAlertDialog"),
   authAlertIcon: document.querySelector("#authAlertIcon"),
   authAlertEyebrow: document.querySelector("#authAlertEyebrow"),
   authAlertTitle: document.querySelector("#authAlertTitle"),
@@ -568,6 +576,8 @@ const elements = {
   monitorWatchItemInput: document.querySelector("#monitorWatchItemInput"),
   monitorWatchItemAddButton: document.querySelector("#monitorWatchItemAddButton"),
   monitorIntervalDays: document.querySelector("#monitorIntervalDays"),
+  monitorNextRun: document.querySelector("#monitorNextRun"),
+  monitorNextRunValue: document.querySelector("#monitorNextRunValue"),
   monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
   monitorEmailField: document.querySelector("#monitorEmailField"),
   monitorEmailSummary: document.querySelector("#monitorEmailSummary"),
@@ -1513,9 +1523,11 @@ function syncAuthAlertState() {
 }
 
 function openAuthAlert(title, message, options = {}) {
+  const iconMode = normalizeText(options.iconMode).toLowerCase();
   if (elements.authAlertIcon) {
-    elements.authAlertIcon.textContent = String(options.icon || "!");
     elements.authAlertIcon.dataset.tone = String(options.tone || "warning");
+    elements.authAlertIcon.classList.toggle("is-spinner", iconMode === "spinner");
+    elements.authAlertIcon.textContent = iconMode === "spinner" ? "" : String(options.icon || "!");
   }
   if (elements.authAlertEyebrow) {
     elements.authAlertEyebrow.textContent = String(options.eyebrow || "Sign-in help");
@@ -1527,20 +1539,33 @@ function openAuthAlert(title, message, options = {}) {
   if (elements.authAlertMessage) {
     elements.authAlertMessage.textContent = String(message || "If you need help, contact me and I’ll take care of it.");
   }
+  if (elements.authAlertDialog) {
+    elements.authAlertDialog.dataset.mode = iconMode === "spinner" ? "loading" : "default";
+  }
   const secondaryButtonLabel = normalizeText(options.secondaryButtonLabel);
+  const hidePrimaryButton = Boolean(options.hidePrimaryButton);
   if (elements.authAlertSecondaryButton) {
     elements.authAlertSecondaryButton.textContent = secondaryButtonLabel || "Cancel";
     elements.authAlertSecondaryButton.classList.toggle("is-hidden", !secondaryButtonLabel);
+    elements.authAlertSecondaryButton.disabled = Boolean(options.secondaryDisabled);
   }
   if (elements.authAlertDismissButton) {
     elements.authAlertDismissButton.textContent = String(options.buttonLabel || "OK");
+    elements.authAlertDismissButton.classList.toggle("is-hidden", hidePrimaryButton);
+    elements.authAlertDismissButton.disabled = Boolean(options.primaryDisabled);
   }
 
   authAlertPrimaryAction = typeof options.onPrimary === "function" ? options.onPrimary : null;
   authAlertSecondaryAction = typeof options.onSecondary === "function" ? options.onSecondary : null;
+  authAlertCloseOnPrimary = options.closeOnPrimary !== false;
+  authAlertCloseOnSecondary = options.closeOnSecondary !== false;
+  authAlertBackdropDismiss = options.dismissOnBackdrop !== false;
+  authAlertEscapeDismiss = options.dismissOnEscape !== false;
   authAlertFocusTarget = options.focusTarget === "secondary" && secondaryButtonLabel
     ? "secondary"
-    : "primary";
+    : hidePrimaryButton && secondaryButtonLabel
+      ? "secondary"
+      : "primary";
   authAlertReturnFocus = options.returnFocus || null;
   state.authAlertOpen = true;
   syncAuthAlertState();
@@ -1549,7 +1574,12 @@ function openAuthAlert(title, message, options = {}) {
     const focusTarget = authAlertFocusTarget === "secondary"
       ? elements.authAlertSecondaryButton
       : elements.authAlertDismissButton;
-    focusTarget?.focus();
+    if (focusTarget && !focusTarget.disabled && !focusTarget.classList.contains("is-hidden")) {
+      focusTarget.focus();
+      return;
+    }
+
+    elements.authAlertDialog?.focus();
   });
 }
 
@@ -1593,6 +1623,10 @@ function closeAuthAlert() {
   authAlertPrimaryAction = null;
   authAlertSecondaryAction = null;
   authAlertFocusTarget = "primary";
+  authAlertCloseOnPrimary = true;
+  authAlertCloseOnSecondary = true;
+  authAlertBackdropDismiss = true;
+  authAlertEscapeDismiss = true;
 
   window.requestAnimationFrame(() => {
     if (returnFocus === "otp") {
@@ -1613,7 +1647,9 @@ function closeAuthAlert() {
 
 function handleAuthAlertPrimaryAction() {
   const action = authAlertPrimaryAction;
-  closeAuthAlert();
+  if (authAlertCloseOnPrimary) {
+    closeAuthAlert();
+  }
   if (typeof action === "function") {
     action();
   }
@@ -1621,7 +1657,9 @@ function handleAuthAlertPrimaryAction() {
 
 function handleAuthAlertSecondaryAction() {
   const action = authAlertSecondaryAction;
-  closeAuthAlert();
+  if (authAlertCloseOnSecondary) {
+    closeAuthAlert();
+  }
   if (typeof action === "function") {
     action();
   }
@@ -1910,6 +1948,10 @@ function normalizeFeatureSetupStatus(setupStatus = null) {
     ready: Boolean(source.ready ?? !source.required),
     requirementKey: String(source.requirementKey || source.requirement_key || "").trim(),
     message: String(source.message || "").trim(),
+    settingsSavedAt: String(source.settingsSavedAt || source.settings_saved_at || "").trim(),
+    lastRunAt: String(source.lastRunAt || source.last_run_at || "").trim(),
+    lastRunStatus: String(source.lastRunStatus || source.last_run_status || "").trim(),
+    nextRunAt: String(source.nextRunAt || source.next_run_at || "").trim(),
     issues: rawIssues
       .filter((issue) => issue && typeof issue === "object")
       .map((issue) => ({
@@ -2140,6 +2182,10 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
     activated,
     setupComplete,
     launchUrl: String(serverFeature?.launchUrl || existingFeature?.launchUrl || DEFAULT_FEATURE_LAUNCH_URL).trim(),
+    settingsSavedAt: String(serverFeature?.settingsSavedAt || setupStatus.settingsSavedAt || existingFeature?.settingsSavedAt || "").trim(),
+    lastRunAt: String(serverFeature?.lastRunAt || setupStatus.lastRunAt || existingFeature?.lastRunAt || "").trim(),
+    lastRunStatus: String(serverFeature?.lastRunStatus || setupStatus.lastRunStatus || existingFeature?.lastRunStatus || "").trim(),
+    nextRunAt: String(serverFeature?.nextRunAt || setupStatus.nextRunAt || existingFeature?.nextRunAt || "").trim(),
     pricing,
     prompt,
     savedPrompt,
@@ -2943,6 +2989,26 @@ function formatBillingDate(value) {
 }
 
 function formatAdminDateTime(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
+function formatMonitorNextRunDate(value) {
   const text = String(value || "").trim();
   if (!text) {
     return "";
@@ -6372,10 +6438,13 @@ function getManualMonitorRunAlertTone(run = {}) {
   const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
   const metadata = run?.run?.metadata && typeof run.run.metadata === "object"
     ? run.run.metadata
-    : run?.metadata && typeof run.metadata === "object"
-      ? run.metadata
-      : {};
+      : run?.metadata && typeof run.metadata === "object"
+        ? run.metadata
+        : {};
   const noResultsNotificationSent = Boolean(metadata.noResultsNotificationSent);
+  if (status === "cancelled") {
+    return "warning";
+  }
   return (status === "completed" && notificationsSent > 0) || noResultsNotificationSent ? "success" : "warning";
 }
 
@@ -6387,6 +6456,9 @@ function getManualMonitorRunAlertTitle(run = {}) {
   const status = String(run?.status || "").trim().toLowerCase();
   const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
 
+  if (status === "cancelled") {
+    return "Test cancelled";
+  }
   if (status === "no_matches") {
     return "No matches found";
   }
@@ -6396,7 +6468,7 @@ function getManualMonitorRunAlertTitle(run = {}) {
   if (notificationsSent > 0) {
     return notificationsSent === 1 ? "Alert sent" : "Alerts sent";
   }
-  return "Run finished";
+  return "Test finished";
 }
 
 function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run finished.") {
@@ -6411,6 +6483,10 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
   const deliveryChannel = String(metadata.deliveryChannel || "").trim().toLowerCase();
   const deliveryTarget = String(metadata.deliveryTarget || "").trim();
   const noResultsNotificationSent = Boolean(metadata.noResultsNotificationSent);
+
+  if (status === "cancelled") {
+    return "The monitor test was cancelled before any new update was delivered.";
+  }
 
   if (status === "no_matches") {
     if (noResultsNotificationSent) {
@@ -6444,6 +6520,85 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
   }
 
   return fallbackMessage;
+}
+
+function createManualMonitorRunRequestId() {
+  if (typeof window.crypto?.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+
+  return `monitor-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function openMonitorManualRunAlert() {
+  const isCancelling = monitorManualRunCancelling;
+  const message = isCancelling
+    ? "Stopping the test after the current search step so nothing new gets sent."
+    : monitorManualRunCancellationError
+      ? `The test is still running. ${monitorManualRunCancellationError}`
+      : "We’re checking your saved topics now. The rest of the tool is temporarily locked until the test finishes.";
+
+  openAuthAlert(
+    isCancelling ? "Cancelling test" : "Testing monitor",
+    message,
+    {
+      eyebrow: isCancelling ? "Please wait" : "Test in progress",
+      iconMode: "spinner",
+      tone: "progress",
+      buttonLabel: isCancelling ? "Cancelling..." : "Testing...",
+      primaryDisabled: true,
+      hidePrimaryButton: !isCancelling,
+      secondaryButtonLabel: isCancelling ? "" : "Cancel test",
+      onSecondary: () => {
+        void requestMonitorManualRunCancellation();
+      },
+      closeOnSecondary: false,
+      dismissOnBackdrop: false,
+      dismissOnEscape: false,
+      focusTarget: isCancelling ? "primary" : "secondary",
+      returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+    },
+  );
+}
+
+async function requestMonitorManualRunCancellation() {
+  if (monitorManualRunCancelling || !monitorManualRunBusy || !monitorManualRunRequestId) {
+    return;
+  }
+
+  const feature = getSelectedFeature();
+  if (!feature || feature.id !== monitorManualRunTargetId) {
+    return;
+  }
+  const requestId = monitorManualRunRequestId;
+
+  monitorManualRunCancelling = true;
+  monitorManualRunCancellationError = "";
+  updateFeatureStudioHeader();
+  setStatus("Cancelling the monitor test...");
+  openMonitorManualRunAlert();
+
+  try {
+    await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
+      method: "DELETE",
+      headers: getSessionAuthHeaders(),
+      body: {
+        runRequestId: requestId,
+      },
+    });
+  } catch (error) {
+    if (!monitorManualRunBusy || monitorManualRunRequestId !== requestId) {
+      return;
+    }
+    monitorManualRunCancelling = false;
+    monitorManualRunCancellationError = formatApiErrorMessage(
+      error,
+      "We couldn’t cancel it just yet. You can try again in a moment.",
+    );
+    updateFeatureStudioHeader();
+    setStatus("Couldn’t cancel the monitor test yet.");
+    openMonitorManualRunAlert();
+  }
 }
 
 async function runSelectedMonitorNow() {
@@ -6495,13 +6650,19 @@ async function runSelectedMonitorNow() {
 
   monitorManualRunBusy = true;
   monitorManualRunTargetId = feature.id;
+  monitorManualRunRequestId = createManualMonitorRunRequestId();
+  monitorManualRunCancelling = false;
+  monitorManualRunCancellationError = "";
   try {
     updateFeatureStudioHeader();
-    setStatus("Running the manual monitor check...");
+    setStatus("Testing the monitor...");
+    openMonitorManualRunAlert();
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),
-      body: {},
+      body: {
+        runRequestId: monitorManualRunRequestId,
+      },
       timeoutMs: 90000,
     });
 
@@ -6511,7 +6672,7 @@ async function runSelectedMonitorNow() {
       getManualMonitorRunAlertTitle(response.run),
       getManualMonitorRunAlertMessage(response.run, completionMessage),
       {
-        eyebrow: "Run finished",
+        eyebrow: String(response.run?.status || "").trim().toLowerCase() === "cancelled" ? "Test cancelled" : "Test finished",
         buttonLabel: "OK",
         icon: getManualMonitorRunAlertIcon(response.run),
         tone: getManualMonitorRunAlertTone(response.run),
@@ -6557,6 +6718,9 @@ async function runSelectedMonitorNow() {
   } finally {
     monitorManualRunBusy = false;
     monitorManualRunTargetId = "";
+    monitorManualRunRequestId = "";
+    monitorManualRunCancelling = false;
+    monitorManualRunCancellationError = "";
     updateFeatureStudioHeader();
   }
 }
@@ -6943,7 +7107,11 @@ function updateFeatureStudioHeader() {
     const showManualRun = isMonitorFeature(feature) && isActivated;
     const manualRunReady = showManualRun && feature.setupStatus?.ready !== false;
     elements.featureStudioMonitorRunButton.hidden = !showManualRun;
-    elements.featureStudioMonitorRunButton.textContent = manualRunBusy ? "Running..." : "Run now";
+    elements.featureStudioMonitorRunButton.textContent = manualRunBusy
+      ? monitorManualRunCancelling
+        ? "Cancelling..."
+        : "Testing..."
+      : "Test now";
     elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || manualRunBusy;
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
     elements.featureStudioMonitorRunButton.title = manualRunReady ? "" : String(feature.setupStatus?.message || "");
@@ -6995,6 +7163,34 @@ function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
   setMonitorDeliveryPanelState(elements.monitorWhatsAppField, settings.deliveryChannel === "whatsapp");
 }
 
+function getMonitorNextRunLabel(feature) {
+  if (!feature || !isMonitorFeature(feature)) {
+    return "";
+  }
+  if (!isFeatureActivated(feature)) {
+    return "Activate to schedule";
+  }
+  if (feature.setupStatus?.ready === false) {
+    return "Finish setup first";
+  }
+
+  const nextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
+  if (!nextRunAt) {
+    return "Calculating after save";
+  }
+
+  const formatted = formatMonitorNextRunDate(nextRunAt);
+  if (!formatted) {
+    return "Calculating after save";
+  }
+
+  const parsed = new Date(nextRunAt);
+  if (!Number.isNaN(parsed.getTime()) && parsed.getTime() <= Date.now()) {
+    return `Due now · ${formatted}`;
+  }
+  return formatted;
+}
+
 function updateMonitorFields() {
   const feature = getSelectedFeature();
   const isMonitor = isMonitorFeature(feature);
@@ -7006,6 +7202,9 @@ function updateMonitorFields() {
   }
   if (elements.monitorScheduleCard) {
     elements.monitorScheduleCard.classList.toggle("is-hidden", !isMonitor);
+  }
+  if (elements.monitorNextRun) {
+    elements.monitorNextRun.hidden = !isMonitor;
   }
   if (elements.monitorDeliveryCard) {
     elements.monitorDeliveryCard.classList.toggle("is-hidden", !isMonitor);
@@ -7023,6 +7222,10 @@ function updateMonitorFields() {
   }
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.value = String(monitorSettings.intervalDays);
+  }
+  if (elements.monitorNextRunValue) {
+    elements.monitorNextRunValue.textContent = getMonitorNextRunLabel(feature);
+    elements.monitorNextRunValue.title = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
   }
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.value = monitorSettings.deliveryChannel;
@@ -8160,7 +8363,7 @@ function bindEvents() {
   elements.authAlertDismissButton.addEventListener("click", handleAuthAlertPrimaryAction);
   elements.authAlertSecondaryButton.addEventListener("click", handleAuthAlertSecondaryAction);
   elements.authAlertOverlay.addEventListener("click", (event) => {
-    if (event.target === elements.authAlertOverlay) {
+    if (event.target === elements.authAlertOverlay && authAlertBackdropDismiss) {
       handleAuthAlertSecondaryAction();
     }
   });
@@ -8577,7 +8780,9 @@ function bindEvents() {
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (state.authAlertOpen) {
-        handleAuthAlertSecondaryAction();
+        if (authAlertEscapeDismiss) {
+          handleAuthAlertSecondaryAction();
+        }
         return;
       }
 

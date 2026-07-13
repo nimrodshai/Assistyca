@@ -139,8 +139,10 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertEqual(result["feature"]["settings"]["model"], "gpt-5.4")
         self.assertEqual(result["feature"]["settings"]["intervalDays"], 7)
         self.assertEqual(result["feature"]["prompt"]["scenario"], "monitor")
+        self.assertTrue(result["feature"]["setupStatus"]["settingsSavedAt"])
 
         assignment = self.database.get_feature_assignment("owner@example.com", MONITOR_FEATURE_ID)
+        self.assertTrue(assignment["metadata"]["settingsSavedAt"])
         self.assertEqual(assignment["metadata"]["settings"]["model"], "gpt-5.4")
         self.assertEqual(
             assignment["metadata"]["settings"]["watchItems"],

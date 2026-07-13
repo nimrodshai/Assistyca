@@ -14,6 +14,7 @@ from packages.infrastructure.portal_db import PortalDatabase
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorConfig
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
+from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
 
 
 class ScheduledMonitorTests(unittest.TestCase):
@@ -270,6 +271,35 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(scheduled_run["status"], "duplicate_matches")
         self.assertTrue(scheduled_run["metadata"]["noResultsNotificationSent"])
 
+    def test_saved_settings_timestamp_resets_next_scheduled_run(self) -> None:
+        next_slot = resolve_next_monitor_slot(
+            now=datetime(2026, 7, 6, 9, 30, tzinfo=timezone.utc),
+            settings={"intervalDays": 3},
+            activated_at="2026-07-01T09:00:00+00:00",
+            settings_saved_at="2026-07-03T10:00:00+00:00",
+            last_scheduled_for="",
+        )
+
+        self.assertEqual(next_slot.isoformat(), "2026-07-06T10:00:00+00:00")
+
+    def test_monitor_run_claim_prevents_duplicate_scheduled_slots(self) -> None:
+        first_claim = self.database.claim_feature_monitor_run(
+            user_id=1,
+            feature_id=MONITOR_FEATURE_ID,
+            scheduled_for="2026-07-10T09:00:00+00:00",
+            metadata={"claimedBy": "first"},
+        )
+        second_claim = self.database.claim_feature_monitor_run(
+            user_id=1,
+            feature_id=MONITOR_FEATURE_ID,
+            scheduled_for="2026-07-10T09:00:00+00:00",
+            metadata={"claimedBy": "second"},
+        )
+
+        self.assertIsNotNone(first_claim)
+        self.assertEqual(first_claim["status"], "running")
+        self.assertIsNone(second_claim)
+
     def test_scheduler_sends_no_results_update_when_nothing_new_is_found(self) -> None:
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
@@ -341,6 +371,87 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "no_matches")
         self.assertTrue(run["metadata"]["noResultsNotificationSent"])
+
+    def test_manual_run_cancellation_skips_delivery(self) -> None:
+        self._configure_monitor()
+        delivered_messages: list[dict[str, str]] = []
+        cancellation_requested = False
+
+        def fake_send_email_notification(**kwargs) -> None:
+            delivered_messages.append(
+                {
+                    "to": str(kwargs.get("to_email") or ""),
+                    "subject": str(kwargs.get("subject") or ""),
+                    "text": str(kwargs.get("text_body") or ""),
+                }
+            )
+
+        def fake_openai_response(**kwargs) -> SimpleNamespace:
+            nonlocal cancellation_requested
+            cancellation_requested = True
+            return SimpleNamespace(
+                output_text=json.dumps(
+                    {
+                        "summary": "Found one relevant update.",
+                        "items": [
+                            {
+                                "id": "event-123",
+                                "title": "Criminal Defense Summit 2026 registration opened",
+                                "summary": "Registration is now open for the annual summit.",
+                                "why_it_matters": "The client asked for relevant conference opportunities.",
+                                "event_date": "2026-09-18",
+                                "source_name": "Bar Association",
+                                "source_url": "https://example.com/events/summit",
+                                "urgency": "medium",
+                            }
+                        ],
+                    }
+                ),
+                request_id="req_cancelled",
+                response_id="resp_cancelled",
+                model="gpt-5.5",
+            )
+
+        scheduler = ScheduledMonitorScheduler(
+            self.database,
+            config=ScheduledMonitorConfig(
+                enabled=True,
+                poll_seconds=60,
+                model="gpt-5.5",
+                search_context_size="medium",
+                max_output_tokens=1200,
+                max_items_per_run=5,
+            ),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.call_openai_response",
+            side_effect=fake_openai_response,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            side_effect=fake_send_email_notification,
+        ):
+            result = scheduler.run_for_email(
+                "owner@example.com",
+                now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),
+                cancel_check=lambda: cancellation_requested,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["status"], "cancelled")
+        self.assertEqual(result["run"]["notificationsSent"], 0)
+        self.assertEqual(result["run"]["findingsCount"], 1)
+        self.assertEqual(delivered_messages, [])
+        self.assertTrue(result["run"]["run"]["metadata"]["cancelled"])
+        self.assertIsNone(self.database.get_latest_feature_monitor_run(user_id=1, feature_id=MONITOR_FEATURE_ID))
 
 
 if __name__ == "__main__":

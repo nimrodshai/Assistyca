@@ -77,6 +77,7 @@ DEFAULT_BILLING_MINIMUM = 50.0
 RESEND_API_URL = "https://api.resend.com/emails"
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 SESSION_TOKEN_VERSION = 1
+MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
 }
@@ -323,6 +324,11 @@ def normalize_email(email: str) -> str:
 
 def normalize_code(code: str) -> str:
     return "".join(ch for ch in str(code or "") if ch.isdigit())
+
+
+def normalize_manual_run_request_id(value: Any) -> str:
+    candidate = normalize_text(value)
+    return candidate if MANUAL_RUN_REQUEST_ID_RE.match(candidate) else ""
 
 
 def compare_code(challenge: OtpChallenge, code: str) -> bool:
@@ -898,6 +904,8 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
         if no_results_notification_sent:
             return "Manual run finished. Everything relevant had already been sent before, and a no-results update was sent."
         return "Manual run finished. Everything relevant had already been sent before."
+    if status == "cancelled":
+        return "Manual test cancelled before any new update was sent."
     if notifications_sent > 0:
         label = "alert" if notifications_sent == 1 else "alerts"
         return f"Manual run finished. Sent {notifications_sent} {label}."
@@ -935,6 +943,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     @property
     def root(self) -> Path:
         return self.server.root  # type: ignore[attr-defined]
+
+    @property
+    def manual_monitor_run_events(self) -> dict[tuple[str, str, str], threading.Event]:
+        return self.server.manual_monitor_run_events  # type: ignore[attr-defined]
+
+    @property
+    def manual_monitor_run_lock(self) -> threading.RLock:
+        return self.server.manual_monitor_run_lock  # type: ignore[attr-defined]
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         return
@@ -1018,7 +1034,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib_parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-        if path.startswith("/api/admin/"):
+        if path.startswith("/api/admin/") or path.startswith("/api/features/"):
             self._handle_api_delete(parsed)
             return
 
@@ -1207,8 +1223,75 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/admin/users/"):
             self._handle_admin_users_delete(parsed)
             return
+        if path.startswith("/api/features/"):
+            self._handle_feature_run_delete(parsed)
+            return
 
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _manual_monitor_run_key(
+        self,
+        *,
+        email: str,
+        feature_id: str,
+        request_id: str,
+    ) -> tuple[str, str, str]:
+        return (
+            normalize_email(email),
+            normalize_text(feature_id),
+            normalize_manual_run_request_id(request_id),
+        )
+
+    def _register_manual_monitor_run(
+        self,
+        *,
+        email: str,
+        feature_id: str,
+        request_id: str,
+    ) -> threading.Event | None:
+        normalized_request_id = normalize_manual_run_request_id(request_id)
+        if not normalized_request_id:
+            return None
+
+        key = self._manual_monitor_run_key(
+            email=email,
+            feature_id=feature_id,
+            request_id=normalized_request_id,
+        )
+        event = threading.Event()
+        with self.manual_monitor_run_lock:
+            self.manual_monitor_run_events[key] = event
+        return event
+
+    def _get_manual_monitor_run(
+        self,
+        *,
+        email: str,
+        feature_id: str,
+        request_id: str,
+    ) -> threading.Event | None:
+        key = self._manual_monitor_run_key(
+            email=email,
+            feature_id=feature_id,
+            request_id=request_id,
+        )
+        with self.manual_monitor_run_lock:
+            return self.manual_monitor_run_events.get(key)
+
+    def _clear_manual_monitor_run(
+        self,
+        *,
+        email: str,
+        feature_id: str,
+        request_id: str,
+    ) -> None:
+        key = self._manual_monitor_run_key(
+            email=email,
+            feature_id=feature_id,
+            request_id=request_id,
+        )
+        with self.manual_monitor_run_lock:
+            self.manual_monitor_run_events.pop(key, None)
 
     def _handle_otp_request(self) -> None:
         try:
@@ -2148,12 +2231,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
+            run_request_id = normalize_manual_run_request_id(payload.get("runRequestId"))
+            if not run_request_id:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_run_request_id",
+                    "message": "A valid manual run request id is required.",
+                })
+                return
+
             scheduler = ScheduledMonitorScheduler(
                 self.database,
                 config=load_scheduled_monitor_config(),
             )
+            cancel_event = self._register_manual_monitor_run(
+                email=session.email,
+                feature_id=feature_id,
+                request_id=run_request_id,
+            )
+            if cancel_event is None:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_run_request_id",
+                    "message": "A valid manual run request id is required.",
+                })
+                return
             try:
-                result = scheduler.run_for_email(session.email)
+                result = scheduler.run_for_email(
+                    session.email,
+                    cancel_check=cancel_event.is_set,
+                )
             except Exception as exc:  # noqa: BLE001 - surface to the UI
                 json_response(self, HTTPStatus.BAD_GATEWAY, {
                     "ok": False,
@@ -2161,6 +2268,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "message": f"Manual run failed: {exc}",
                 })
                 return
+            finally:
+                self._clear_manual_monitor_run(
+                    email=session.email,
+                    feature_id=feature_id,
+                    request_id=run_request_id,
+                )
 
             if not result.get("ok"):
                 error_name = normalize_text(result.get("error"))
@@ -2430,7 +2543,62 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        self._redirect(f"/approval/{urllib_parse.quote(approval_id)}?sent=1")
+    def _handle_feature_run_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "features" or parts[3] != "run":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        feature_id = urllib_parse.unquote(parts[2])
+        if feature_id != MONITOR_FEATURE_ID:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "feature_not_available",
+                "message": "This tool does not support manual runs.",
+            })
+            return
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        run_request_id = normalize_manual_run_request_id(payload.get("runRequestId"))
+        if not run_request_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_run_request_id",
+                "message": "A valid manual run request id is required.",
+            })
+            return
+
+        cancel_event = self._get_manual_monitor_run(
+            email=session.email,
+            feature_id=feature_id,
+            request_id=run_request_id,
+        )
+        if cancel_event is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "manual_run_not_found",
+                "message": "There is no active manual run to cancel.",
+            })
+            return
+
+        cancel_event.set()
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Cancellation requested. The test will stop after the current search step.",
+        })
 
     def _handle_whatsapp_webhook_verification(self, parsed: urllib_parse.ParseResult) -> None:
         query = urllib_parse.parse_qs(parsed.query)
@@ -2607,6 +2775,8 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     )  # type: ignore[attr-defined]
     server.whatsapp_stores = {}  # type: ignore[attr-defined]
     server.whatsapp_store_lock = threading.RLock()  # type: ignore[attr-defined]
+    server.manual_monitor_run_events = {}  # type: ignore[attr-defined]
+    server.manual_monitor_run_lock = threading.RLock()  # type: ignore[attr-defined]
     return server
 
 

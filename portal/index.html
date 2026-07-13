@@ -385,6 +385,10 @@
                 />
                 <span class="monitor-schedule-inline-copy">days</span>
               </label>
+              <div id="monitorNextRun" class="monitor-next-run" hidden>
+                <span>Next run date</span>
+                <strong id="monitorNextRunValue">Activate to schedule</strong>
+              </div>
             </div>
           </article>
 
@@ -534,7 +538,7 @@ Bad: 'Sure, anything is possible.'"
                 Activate tool
               </button>
               <button id="featureStudioMonitorRunButton" class="ghost-button" type="button" hidden>
-                Run now
+                Test now
               </button>
             </div>
           </div>
@@ -1057,7 +1061,7 @@ Owner said afternoons are easier."
       aria-labelledby="authAlertTitle"
       aria-describedby="authAlertMessage"
     >
-      <div class="auth-alert-dialog glass-card">
+      <div id="authAlertDialog" class="auth-alert-dialog glass-card" tabindex="-1">
         <div class="auth-alert-head">
           <div id="authAlertIcon" class="auth-alert-icon" aria-hidden="true">!</div>
           <div class="auth-alert-copy">
@@ -1080,6 +1084,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=68"></script>
+    <script src="./app.js?v=69"></script>
   </body>
 </html>

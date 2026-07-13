@@ -14,6 +14,7 @@ from packages.infrastructure.lemon_squeezy_api import LemonSqueezyRequestError
 from packages.infrastructure.lemon_squeezy_api import load_lemon_squeezy_config
 from packages.tools.scheduled_monitor.monitor import build_monitor_setup_status
 from packages.tools.scheduled_monitor.monitor import normalize_monitor_settings
+from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
 from packages.infrastructure.portal_db import PortalDatabase
 
 
@@ -37,6 +38,10 @@ class FeatureActivationConfig:
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def parse_bool(value: Any, default: bool = False) -> bool:
@@ -217,14 +222,18 @@ class FeatureActivationService:
         if normalized_feature_id == "scheduled-web-monitor-notifier":
             settings_payload = normalize_monitor_settings(settings_payload)
 
+        metadata_payload = {
+            **existing_metadata,
+            "prompt": prompt_payload,
+            "settings": settings_payload,
+        }
+        if normalized_feature_id == "scheduled-web-monitor-notifier":
+            metadata_payload["settingsSavedAt"] = now_iso()
+
         self.database.save_feature_assignment_metadata(
             email,
             normalized_feature_id,
-            metadata={
-                **existing_metadata,
-                "prompt": prompt_payload,
-                "settings": settings_payload,
-            },
+            metadata=metadata_payload,
         )
         updated_feature = self._require_assigned_feature(email, normalized_feature_id) or feature
         feature_state = self._build_feature_state(email, updated_feature, refresh_payment=False)
@@ -462,6 +471,30 @@ class FeatureActivationService:
         )
 
         is_active = bool(activation.get("isActive"))
+        monitor_schedule = {}
+        if feature_id == "scheduled-web-monitor-notifier":
+            settings_saved_at = normalize_text(assignment_metadata.get("settingsSavedAt"))
+            last_run = self.database.get_latest_feature_monitor_run(
+                user_id=int(assignment.get("userId") or activation.get("userId") or 0),
+                feature_id=feature_id,
+            )
+            next_run = resolve_next_monitor_slot(
+                now=datetime.now(timezone.utc),
+                settings=resolved_settings,
+                activated_at=normalize_text(activation.get("activatedAt")),
+                settings_saved_at=settings_saved_at,
+                last_scheduled_for=normalize_text(last_run.get("scheduledFor")) if last_run else "",
+            )
+            monitor_schedule = {
+                "settingsSavedAt": settings_saved_at,
+                "lastRunAt": normalize_text(last_run.get("scheduledFor")) if last_run else "",
+                "lastRunStatus": normalize_text(last_run.get("status")) if last_run else "",
+                "nextRunAt": next_run.isoformat() if is_active and next_run else "",
+            }
+            resolved_setup_status = {
+                **resolved_setup_status,
+                **monitor_schedule,
+            }
         setup_complete = bool(
             is_active
             or not resolved_setup_status.get("required")
@@ -482,6 +515,10 @@ class FeatureActivationService:
             "activated": is_active,
             "activatedAt": activation.get("activatedAt"),
             "deactivatedAt": activation.get("deactivatedAt"),
+            "settingsSavedAt": monitor_schedule.get("settingsSavedAt", ""),
+            "lastRunAt": monitor_schedule.get("lastRunAt", ""),
+            "lastRunStatus": monitor_schedule.get("lastRunStatus", ""),
+            "nextRunAt": monitor_schedule.get("nextRunAt", ""),
             "setupComplete": setup_complete,
             "setupStatus": resolved_setup_status,
             "paymentStatus": resolved_payment_status,
