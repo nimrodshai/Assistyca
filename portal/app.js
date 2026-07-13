@@ -6467,7 +6467,7 @@ function getManualMonitorRunAlertTitle(run = {}) {
     return "Nothing new to send";
   }
   if (notificationsSent > 0) {
-    return notificationsSent === 1 ? "Alert sent" : "Alerts sent";
+    return "Results sent";
   }
   return "Test finished";
 }
@@ -6508,11 +6508,10 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
   }
 
   if (notificationsSent > 0) {
-    const alertLabel = notificationsSent === 1 ? "alert" : "alerts";
     if (deliveryChannel === "email" && deliveryTarget) {
-      return `The monitor completed successfully and sent ${notificationsSent} ${alertLabel} to ${deliveryTarget}.`;
+      return `The monitor completed successfully and sent the results to ${deliveryTarget}.`;
     }
-    return `The monitor completed successfully and sent ${notificationsSent} ${alertLabel}.`;
+    return "The monitor completed successfully and sent the results.";
   }
 
   if (findingsCount > 0) {
@@ -6531,37 +6530,6 @@ function createManualMonitorRunRequestId() {
   return `monitor-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
-function openMonitorManualRunAlert() {
-  const isCancelling = monitorManualRunCancelling;
-  const message = isCancelling
-    ? "Stopping the test after the current search step so nothing new gets sent."
-    : monitorManualRunCancellationError
-      ? `The test is still running. ${monitorManualRunCancellationError}`
-      : "We’re checking your saved topics now. The rest of the tool is temporarily locked until the test finishes.";
-
-  openAuthAlert(
-    isCancelling ? "Cancelling test" : "Testing monitor",
-    message,
-    {
-      eyebrow: isCancelling ? "Please wait" : "Test in progress",
-      iconMode: "spinner",
-      tone: "progress",
-      buttonLabel: isCancelling ? "Cancelling..." : "Testing...",
-      primaryDisabled: true,
-      hidePrimaryButton: !isCancelling,
-      secondaryButtonLabel: isCancelling ? "" : "Cancel test",
-      onSecondary: () => {
-        void requestMonitorManualRunCancellation();
-      },
-      closeOnSecondary: false,
-      dismissOnBackdrop: false,
-      dismissOnEscape: false,
-      focusTarget: isCancelling ? "primary" : "secondary",
-      returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
-    },
-  );
-}
-
 async function requestMonitorManualRunCancellation() {
   if (monitorManualRunCancelling || !monitorManualRunBusy || !monitorManualRunRequestId) {
     return;
@@ -6576,8 +6544,7 @@ async function requestMonitorManualRunCancellation() {
   monitorManualRunCancelling = true;
   monitorManualRunCancellationError = "";
   updateFeatureStudioHeader();
-  setStatus("Cancelling the monitor test...");
-  openMonitorManualRunAlert();
+  setStatus("Cancelling the monitor test. We’ll stop before sending anything new.");
 
   try {
     await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
@@ -6597,8 +6564,15 @@ async function requestMonitorManualRunCancellation() {
       "We couldn’t cancel it just yet. You can try again in a moment.",
     );
     updateFeatureStudioHeader();
-    setStatus("Couldn’t cancel the monitor test yet.");
-    openMonitorManualRunAlert();
+    setStatus(monitorManualRunCancellationError);
+    openFeatureActivationAlert(
+      "Couldn’t cancel yet",
+      monitorManualRunCancellationError,
+      {
+        eyebrow: "Still running",
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+      },
+    );
   }
 }
 
@@ -6656,8 +6630,7 @@ async function runSelectedMonitorNow() {
   monitorManualRunCancellationError = "";
   try {
     updateFeatureStudioHeader();
-    setStatus("Testing the monitor...");
-    openMonitorManualRunAlert();
+    setStatus("Testing the monitor in the background. You can keep editing; we’ll show the result when it’s ready.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),
@@ -7111,11 +7084,17 @@ function updateFeatureStudioHeader() {
     elements.featureStudioMonitorRunButton.textContent = manualRunBusy
       ? monitorManualRunCancelling
         ? "Cancelling..."
-        : "Testing..."
+        : "Cancel test"
       : "Test now";
-    elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || manualRunBusy;
+    elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || (manualRunBusy && monitorManualRunCancelling);
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
-    elements.featureStudioMonitorRunButton.title = manualRunReady ? "" : String(feature.setupStatus?.message || "");
+    elements.featureStudioMonitorRunButton.title = manualRunBusy
+      ? monitorManualRunCancelling
+        ? "Cancelling the current monitor test"
+        : "Cancel the current monitor test"
+      : manualRunReady
+        ? "Run a test without changing the schedule"
+        : String(feature.setupStatus?.message || "");
   }
 
   buildFeatureStudioMenu(feature);
@@ -8447,6 +8426,10 @@ function bindEvents() {
   }
   if (elements.featureStudioMonitorRunButton) {
     elements.featureStudioMonitorRunButton.addEventListener("click", () => {
+      if (monitorManualRunBusy && getSelectedFeature()?.id === monitorManualRunTargetId) {
+        void requestMonitorManualRunCancellation();
+        return;
+      }
       void runSelectedMonitorNow();
     });
   }
