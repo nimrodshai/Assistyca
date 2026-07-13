@@ -421,14 +421,12 @@ def build_monitor_prompt(
 
 
 def build_notification_subject(target: dict[str, Any], item_count: int) -> str:
-    name = normalize_text(target.get("displayName")) or normalize_text(target.get("email")) or "your workspace"
-    count_label = "1 new alert" if item_count == 1 else f"{item_count} new alerts"
-    return f"{MONITOR_FEATURE_NAME}: {count_label} for {name}"
+    count_label = "1 new match" if item_count == 1 else f"{item_count} new matches"
+    return f"Quick monitor update: {count_label}"
 
 
 def build_no_results_subject(target: dict[str, Any]) -> str:
-    name = normalize_text(target.get("displayName")) or normalize_text(target.get("email")) or "your workspace"
-    return f"{MONITOR_FEATURE_NAME}: no new results for {name}"
+    return "Quick monitor update: nothing new yet"
 
 
 def build_notification_text(
@@ -439,10 +437,10 @@ def build_notification_text(
     scheduled_for: datetime,
 ) -> str:
     lines = [
-        MONITOR_FEATURE_NAME,
+        "Quick monitor update",
         "",
-        f"Run: {scheduled_for.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-        f"Summary: {summary or 'New matches were found.'}",
+        f"Checked on {scheduled_for.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.",
+        summary or "I found a few new things you may want to look at.",
     ]
     for index, item in enumerate(items, start=1):
         lines.extend(
@@ -474,10 +472,10 @@ def build_no_results_text(
 ) -> str:
     watch_items = normalize_watch_items(settings.get("watchItems"))
     lines = [
-        MONITOR_FEATURE_NAME,
+        "Quick monitor update",
         "",
-        f"Run: {scheduled_for.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-        "I searched the public web for the following topics:",
+        f"Checked on {scheduled_for.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.",
+        "Here's what I checked:",
     ]
     if watch_items:
         lines.extend(f"- {item}" for item in watch_items)
@@ -489,9 +487,9 @@ def build_no_results_text(
         [
             "",
             (
-                "There are no new results to report right now."
+                "Nothing new worth sending right now."
                 if normalize_text(status) == "no_matches"
-                else "There are no new results to report right now. Any relevant matches were already covered in earlier alerts."
+                else "Nothing new to send right now. I already shared the useful matches earlier."
             ),
         ]
     )

@@ -124,6 +124,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_summary["runs"][0]["notificationsSent"], 1)
         self.assertEqual(len(delivered_messages), 2)
         self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
+        self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: 1 new match")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
 
         self.assertFalse(second_summary["ran"])
@@ -134,8 +135,9 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(third_summary["runs"][0]["status"], "duplicate_matches")
         self.assertEqual(third_summary["runs"][0]["notificationsSent"], 0)
         self.assertEqual(len(delivered_messages), 2)
-        self.assertIn("There are no new results to report right now.", delivered_messages[1]["text"])
-        self.assertIn("already covered in earlier alerts", delivered_messages[1]["text"])
+        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor update: nothing new yet")
+        self.assertIn("Nothing new to send right now.", delivered_messages[1]["text"])
+        self.assertIn("I already shared the useful matches earlier.", delivered_messages[1]["text"])
 
         first_run = self.database.get_feature_monitor_run(
             user_id=1,
@@ -252,6 +254,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(manual_result["run"]["status"], "completed")
         self.assertEqual(manual_result["run"]["notificationsSent"], 1)
         self.assertEqual(len(delivered_messages), 2)
+        self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: 1 new match")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4-nano")
 
@@ -259,7 +262,8 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_scheduled_summary["runs"][0]["status"], "duplicate_matches")
         self.assertEqual(first_scheduled_summary["runs"][0]["scheduledFor"], "2026-07-08T09:00:00+00:00")
         self.assertEqual(len(delivered_messages), 2)
-        self.assertIn("There are no new results to report right now.", delivered_messages[1]["text"])
+        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor update: nothing new yet")
+        self.assertIn("Nothing new to send right now.", delivered_messages[1]["text"])
 
         scheduled_run = self.database.get_feature_monitor_run(
             user_id=1,
@@ -359,9 +363,10 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(summary["runs"][0]["notificationsSent"], 0)
         self.assertEqual(len(delivered_messages), 1)
         self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
-        self.assertIn("I searched the public web for the following topics:", delivered_messages[0]["text"])
+        self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: nothing new yet")
+        self.assertIn("Here's what I checked:", delivered_messages[0]["text"])
         self.assertIn("Criminal defense law conferences", delivered_messages[0]["text"])
-        self.assertIn("There are no new results to report right now.", delivered_messages[0]["text"])
+        self.assertIn("Nothing new worth sending right now.", delivered_messages[0]["text"])
 
         run = self.database.get_feature_monitor_run(
             user_id=1,
