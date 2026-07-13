@@ -6771,7 +6771,7 @@ function syncMonitorManualRunOverlay() {
   const returnFocus = elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton;
   let eyebrow = "Test in progress";
   let title = "Testing your monitor";
-  let message = "This screen stays locked until the test finishes or you cancel it.";
+  let message = "We’re running a quick test now. You can cancel it anytime if needed.";
   let buttonLabel = "Cancel test";
   let buttonDisabled = false;
 
