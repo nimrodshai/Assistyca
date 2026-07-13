@@ -681,9 +681,6 @@ const elements = {
   billingModelList: document.querySelector("#billingModelList"),
   billingHistoryCount: document.querySelector("#billingHistoryCount"),
   billingHistoryList: document.querySelector("#billingHistoryList"),
-  pricingSourceBadge: document.querySelector("#pricingSourceBadge"),
-  pricingSourceLabel: document.querySelector("#pricingSourceLabel"),
-  pricingSourceMeta: document.querySelector("#pricingSourceMeta"),
   pricingMultiplierValue: document.querySelector("#pricingMultiplierValue"),
   pricingCardCount: document.querySelector("#pricingCardCount"),
   pricingSourceType: document.querySelector("#pricingSourceType"),
@@ -5560,19 +5557,6 @@ function formatUsdPerMillion(value) {
   }).format(amount);
 }
 
-function formatPricingTimestamp(value) {
-  const date = value ? new Date(value) : null;
-  if (!date || Number.isNaN(date.getTime())) {
-    return "Date unavailable";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(date);
-}
-
 function createPricingMetric(label, value, detail) {
   const metric = document.createElement("div");
   metric.className = "pricing-metric";
@@ -5705,10 +5689,6 @@ function updatePricingPanel() {
 
   if (elements.pricingCardCount) {
     elements.pricingCardCount.textContent = String(cards.length || 0);
-  }
-
-  if (elements.pricingSourceMeta) {
-    elements.pricingSourceMeta.textContent = formatPricingTimestamp(snapshot?.fetchedAt);
   }
 
   if (elements.pricingCardGrid) {

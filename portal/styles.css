@@ -1324,35 +1324,6 @@ body[data-modal="billing"] .app-shell {
   max-width: 34rem;
 }
 
-.pricing-updated-badge {
-  justify-self: end;
-  display: grid;
-  gap: 0.2rem;
-  align-content: start;
-  min-width: 13rem;
-  padding: 1rem 1.1rem;
-  border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 252, 0.88)),
-    linear-gradient(135deg, rgba(15, 118, 110, 0.08), rgba(30, 136, 229, 0.04));
-  border: 1px solid rgba(20, 28, 38, 0.08);
-  box-shadow: 0 18px 48px rgba(16, 38, 40, 0.08);
-}
-
-.pricing-updated-label {
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.pricing-updated-badge strong {
-  color: var(--text);
-  font-size: 1rem;
-  line-height: 1.2;
-}
-
 .pricing-banner {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(19rem, 0.85fr);
