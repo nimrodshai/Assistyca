@@ -30,6 +30,7 @@ from email.utils import parseaddr
 from functools import partial
 from html import escape
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -78,6 +79,7 @@ DEFAULT_BILLING_MINIMUM = 50.0
 RESEND_API_URL = "https://api.resend.com/emails"
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 SESSION_TOKEN_VERSION = 1
+SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
@@ -880,10 +882,19 @@ def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
     return parsed
 
 
-def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
+def json_response(
+    handler: SimpleHTTPRequestHandler,
+    status: int,
+    payload: dict[str, Any],
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> None:
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
     handler.send_response(status)
     send_api_headers(handler, content_length=len(body))
+    for header_name, header_value in (extra_headers or {}).items():
+        if header_name and header_value:
+            handler.send_header(header_name, header_value)
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -982,6 +993,47 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         super().end_headers()
 
+    def _request_is_https(self) -> bool:
+        forwarded_proto = normalize_text(self.headers.get("X-Forwarded-Proto")).split(",", 1)[0].strip().lower()
+        if forwarded_proto:
+            return forwarded_proto == "https"
+
+        origin = normalize_text(self.headers.get("Origin")).lower()
+        if origin.startswith("https://"):
+            return True
+
+        referer = normalize_text(self.headers.get("Referer")).lower()
+        if referer.startswith("https://"):
+            return True
+
+        public_base_url = normalize_text(os.getenv("PUBLIC_BASE_URL")).lower()
+        return public_base_url.startswith("https://")
+
+    def _build_session_cookie(self, token: str) -> str:
+        cookie = SimpleCookie()
+        cookie[SESSION_COOKIE_NAME] = str(token or "").strip()
+        morsel = cookie[SESSION_COOKIE_NAME]
+        morsel["path"] = "/"
+        morsel["max-age"] = str(max(0, int(self.config.session_ttl_seconds)))
+        morsel["httponly"] = True
+        morsel["samesite"] = "Lax"
+        if self._request_is_https():
+            morsel["secure"] = True
+        return morsel.OutputString()
+
+    def _build_cleared_session_cookie(self) -> str:
+        cookie = SimpleCookie()
+        cookie[SESSION_COOKIE_NAME] = ""
+        morsel = cookie[SESSION_COOKIE_NAME]
+        morsel["path"] = "/"
+        morsel["max-age"] = "0"
+        morsel["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
+        morsel["httponly"] = True
+        morsel["samesite"] = "Lax"
+        if self._request_is_https():
+            morsel["secure"] = True
+        return morsel.OutputString()
+
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib_parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -1072,8 +1124,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _handle_api_get(self, parsed: urllib_parse.ParseResult) -> None:
         path = parsed.path.rstrip("/") or "/"
         if path == "/api/auth/session":
-            token = self._extract_session_token()
-            session = self.store.get_session(token) if token else None
+            session = self._get_authenticated_session()
             if session is None:
                 json_response(self, HTTPStatus.UNAUTHORIZED, {
                     "ok": False,
@@ -1102,8 +1153,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         if path.startswith("/api/billing"):
-            token = self._extract_session_token()
-            session = self.store.get_session(token) if token else None
+            session = self._get_authenticated_session()
             if session is None:
                 json_response(self, HTTPStatus.UNAUTHORIZED, {
                     "ok": False,
@@ -1130,8 +1180,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         if path.startswith("/api/pricing"):
-            token = self._extract_session_token()
-            session = self.store.get_session(token) if token else None
+            session = self._get_authenticated_session()
             if session is None:
                 json_response(self, HTTPStatus.UNAUTHORIZED, {
                     "ok": False,
@@ -1434,19 +1483,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "issuedAt": result["issuedAt"],
             "expiresAt": result["expiresAt"],
             "requestCountry": self._request_country(),
-        })
+        }, extra_headers={"Set-Cookie": self._build_session_cookie(result["token"])})
 
     def _handle_logout(self) -> None:
-        token = self._extract_session_token()
-        if not token:
+        tokens = self._extract_session_tokens()
+        if not tokens:
             try:
                 payload = parse_json_body(self)
             except ValueError:
                 payload = {}
-            token = str(payload.get("token", "")).strip()
+            fallback_token = str(payload.get("token", "")).strip()
+            tokens = [fallback_token] if fallback_token else []
 
-        self.store.revoke_session(token)
-        json_response(self, HTTPStatus.OK, {"ok": True})
+        for token in tokens:
+            self.store.revoke_session(token)
+        json_response(self, HTTPStatus.OK, {"ok": True}, extra_headers={"Set-Cookie": self._build_cleared_session_cookie()})
 
     def _handle_account_profile_get(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -1512,8 +1563,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_whatsapp_test(self) -> None:
-        token = self._extract_session_token()
-        session = self.store.get_session(token) if token else None
+        session = self._get_authenticated_session()
         if session is None:
             json_response(self, HTTPStatus.UNAUTHORIZED, {
                 "ok": False,
@@ -1643,8 +1693,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def _get_authenticated_session(self) -> PortalSession | None:
-        token = self._extract_session_token()
-        return self.store.get_session(token) if token else None
+        for token in self._extract_session_tokens():
+            session = self.store.get_session(token)
+            if session is not None:
+                return session
+        return None
 
     def _require_authenticated_session(self) -> PortalSession | None:
         session = self._get_authenticated_session()
@@ -2899,10 +2952,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "routedUserCount": len([user_id for user_id in routed_user_ids if user_id > 0]),
         })
 
-    def _extract_session_token(self) -> str:
+    def _extract_session_tokens(self) -> list[str]:
+        tokens: list[str] = []
+
         auth_header = str(self.headers.get("Authorization", "")).strip()
         if auth_header.lower().startswith("bearer "):
-            return auth_header[7:].strip()
+            bearer_token = auth_header[7:].strip()
+            if bearer_token:
+                tokens.append(bearer_token)
 
         query = self.path.split("?", 1)[1] if "?" in self.path else ""
         if query:
@@ -2911,9 +2968,32 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             params = parse_qs(query)
             token_values = params.get("token") or []
             if token_values:
-                return str(token_values[0]).strip()
+                query_token = str(token_values[0]).strip()
+                if query_token:
+                    tokens.append(query_token)
 
-        return ""
+        raw_cookie = str(self.headers.get("Cookie", "")).strip()
+        if raw_cookie:
+            parsed_cookie = SimpleCookie()
+            try:
+                parsed_cookie.load(raw_cookie)
+            except Exception:
+                parsed_cookie = SimpleCookie()
+            cookie_token = str(parsed_cookie.get(SESSION_COOKIE_NAME).value).strip() if parsed_cookie.get(SESSION_COOKIE_NAME) else ""
+            if cookie_token:
+                tokens.append(cookie_token)
+
+        deduped_tokens: list[str] = []
+        seen_tokens: set[str] = set()
+        for token in tokens:
+            if token and token not in seen_tokens:
+                deduped_tokens.append(token)
+                seen_tokens.add(token)
+        return deduped_tokens
+
+    def _extract_session_token(self) -> str:
+        tokens = self._extract_session_tokens()
+        return tokens[0] if tokens else ""
 
 
 def create_server(host: str, port: int, root: Path, config: PortalConfig) -> ThreadingHTTPServer:

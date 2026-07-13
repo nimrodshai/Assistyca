@@ -1742,6 +1742,7 @@ async function apiRequest(path, options = {}) {
       method: options.method || "GET",
       headers,
       cache: options.cache || "no-store",
+      credentials: options.credentials || "same-origin",
       signal: controller.signal,
     };
 
@@ -9363,52 +9364,73 @@ async function bootstrapAuthState() {
   clientState = loadClientState("");
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
 
+  const applyRestoredSession = (response, fallbackSession = null) => {
+    authSession = normalizeStoredSession({
+      email: response.email || fallbackSession?.email || "",
+      token: response.token || fallbackSession?.token || "",
+      signedInAt: response.issuedAt || fallbackSession?.signedInAt || Date.now(),
+      expiresAt: response.expiresAt || fallbackSession?.expiresAt || 0,
+      requestCountry: response.requestCountry || fallbackSession?.requestCountry || "",
+      isAdmin: response.isAdmin,
+    });
+    state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
+    activeEmail = normalizeEmail(authSession?.email || "");
+    clientState = loadClientState(activeEmail);
+    applyRemoteAccountProfile(response);
+    state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+    clearAuthChallenge();
+    persistJson(AUTH_SESSION_KEY, authSession);
+    state.billingReport = null;
+    state.billingLoading = true;
+    state.billingError = "";
+    state.pricingSnapshot = null;
+    state.pricingLoading = false;
+    state.pricingError = "";
+    state.paymentStatus = null;
+    resetAdminState();
+    refreshView();
+    void refreshBillingReport();
+    void refreshWhatsAppConnection();
+    void refreshFeatureActivationStates();
+    if (authSession?.isAdmin) {
+      void refreshAdminUsers({ render: false });
+    }
+  };
+
+  const tryRestoreSession = async (headers = {}, fallbackSession = null) => {
+    const response = await apiRequest("/api/auth/session", { headers });
+    applyRestoredSession(response, fallbackSession);
+  };
+
   if (storedSession?.token) {
     setView("auth");
     renderAuth(activeEmail);
 
     try {
-      const response = await apiRequest("/api/auth/session", {
-        headers: {
-          Authorization: `Bearer ${storedSession.token}`,
-        },
-      });
-
-      authSession = normalizeStoredSession({
-        email: response.email || storedSession.email,
-        token: response.token || storedSession.token,
-        signedInAt: response.issuedAt || storedSession.signedInAt || Date.now(),
-        expiresAt: response.expiresAt || storedSession.expiresAt || 0,
-        requestCountry: response.requestCountry || storedSession.requestCountry || "",
-        isAdmin: response.isAdmin,
-      });
-      state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
-      activeEmail = normalizeEmail(authSession?.email || "");
-      clientState = loadClientState(activeEmail);
-      applyRemoteAccountProfile(response);
-      state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
-      clearAuthChallenge();
-      persistJson(AUTH_SESSION_KEY, authSession);
-      state.billingReport = null;
-      state.billingLoading = true;
-      state.billingError = "";
-      state.pricingSnapshot = null;
-      state.pricingLoading = false;
-      state.pricingError = "";
-      state.paymentStatus = null;
-      resetAdminState();
-      refreshView();
-      void refreshBillingReport();
-      void refreshWhatsAppConnection();
-      void refreshFeatureActivationStates();
-      if (authSession?.isAdmin) {
-        void refreshAdminUsers({ render: false });
-      }
+      await tryRestoreSession({
+        Authorization: `Bearer ${storedSession.token}`,
+      }, storedSession);
       return;
     } catch (error) {
       const status = Number(error?.status || 0);
       if (status === 401 || status === 403) {
-        clearAuthSession();
+        try {
+          await tryRestoreSession({}, storedSession);
+          return;
+        } catch (cookieError) {
+          const cookieStatus = Number(cookieError?.status || 0);
+          if (cookieStatus !== 401 && cookieStatus !== 403) {
+            authSession = null;
+            openAuthAlert(
+              "Couldn’t verify session",
+              formatApiErrorMessage(cookieError, "We couldn’t verify your session. Please sign in again."),
+              { returnFocus: "email" },
+            );
+            renderAuth(activeEmail);
+            return;
+          }
+          clearAuthSession();
+        }
       } else {
         authSession = null;
         openAuthAlert(
@@ -9421,6 +9443,24 @@ async function bootstrapAuthState() {
       }
     }
   }
+
+  try {
+    await tryRestoreSession();
+    return;
+  } catch (error) {
+    const status = Number(error?.status || 0);
+    if (status !== 401 && status !== 403) {
+      authSession = null;
+      openAuthAlert(
+        "Couldn’t verify session",
+        formatApiErrorMessage(error, "We couldn’t verify your session. Please sign in again."),
+        { returnFocus: "email" },
+      );
+      renderAuth(activeEmail);
+      return;
+    }
+  }
+
   activeEmail = normalizeEmail(authChallenge?.email || storedSession?.email || "");
   state.requestCountryCode = normalizeCountryCode(storedSession?.requestCountry);
   clientState = loadClientState(activeEmail);
