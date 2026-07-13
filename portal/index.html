@@ -452,18 +452,30 @@
             </div>
 
             <div class="monitor-settings-grid">
-              <label class="field compact monitor-schedule-inline-field">
-                <span class="monitor-schedule-inline-copy">Check every</span>
-                <input
-                  id="monitorIntervalDays"
-                  type="number"
-                  min="1"
-                  max="365"
-                  inputmode="numeric"
-                  aria-label="Check every number of days"
-                />
-                <span class="monitor-schedule-inline-copy">days</span>
-              </label>
+              <div class="monitor-schedule-controls">
+                <label class="field compact monitor-schedule-inline-field">
+                  <span class="monitor-schedule-inline-copy">Check every</span>
+                  <input
+                    id="monitorIntervalDays"
+                    type="number"
+                    min="1"
+                    max="365"
+                    inputmode="numeric"
+                    aria-label="Check every number of days"
+                  />
+                  <span class="monitor-schedule-inline-copy">days</span>
+                </label>
+
+                <label class="field compact monitor-schedule-inline-field monitor-schedule-time-field">
+                  <span class="monitor-schedule-inline-copy">Send at</span>
+                  <input
+                    id="monitorScheduleTime"
+                    type="time"
+                    aria-label="Send notification at"
+                  />
+                  <span id="monitorScheduleTimezoneLabel" class="monitor-schedule-inline-meta">Workspace time</span>
+                </label>
+              </div>
               <div id="monitorNextRun" class="monitor-next-run" hidden>
                 <span>Next run date</span>
                 <strong id="monitorNextRunValue">Activate to schedule</strong>

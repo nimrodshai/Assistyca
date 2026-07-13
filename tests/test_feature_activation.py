@@ -125,6 +125,8 @@ class FeatureActivationTests(unittest.TestCase):
                         "Court holidays that affect legal work",
                     ],
                     "intervalDays": 7,
+                    "scheduleTimeLocal": "09:15",
+                    "scheduleTimezone": "Asia/Jerusalem",
                     "deliveryChannel": "email",
                 },
             )
@@ -138,6 +140,8 @@ class FeatureActivationTests(unittest.TestCase):
         )
         self.assertEqual(result["feature"]["settings"]["model"], "gpt-5.4")
         self.assertEqual(result["feature"]["settings"]["intervalDays"], 7)
+        self.assertEqual(result["feature"]["settings"]["scheduleTimeLocal"], "09:15")
+        self.assertEqual(result["feature"]["settings"]["scheduleTimezone"], "Asia/Jerusalem")
         self.assertEqual(result["feature"]["prompt"]["scenario"], "monitor")
         self.assertTrue(result["feature"]["setupStatus"]["settingsSavedAt"])
 
@@ -148,6 +152,8 @@ class FeatureActivationTests(unittest.TestCase):
             assignment["metadata"]["settings"]["watchItems"],
             ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
         )
+        self.assertEqual(assignment["metadata"]["settings"]["scheduleTimeLocal"], "09:15")
+        self.assertEqual(assignment["metadata"]["settings"]["scheduleTimezone"], "Asia/Jerusalem")
 
     def test_save_non_monitor_feature_config_persists_selected_model(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())

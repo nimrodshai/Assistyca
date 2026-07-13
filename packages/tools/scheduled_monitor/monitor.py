@@ -7,11 +7,14 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import time as dt_time
 from datetime import timedelta
 from datetime import timezone
 from hashlib import sha256
 from typing import Any
 from typing import Callable
+from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.notification_delivery import email_delivery_available
 from packages.infrastructure.notification_delivery import load_mail_delivery_config
@@ -42,6 +45,8 @@ DEFAULT_MONITOR_SETTINGS = {
     "model": DEFAULT_MONITOR_MODEL,
     "watchItems": [],
     "intervalDays": 7,
+    "scheduleTimeLocal": "",
+    "scheduleTimezone": "",
     "deliveryChannel": "email",
     "telegramChatId": "",
 }
@@ -148,6 +153,40 @@ def normalize_interval_days(value: Any, default: int = DEFAULT_MONITOR_SETTINGS[
     return max(1, min(365, candidate))
 
 
+def normalize_schedule_time_local(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    match = re.fullmatch(r"(?P<hour>\d{1,2})(?::(?P<minute>\d{1,2}))?", text)
+    if not match:
+        return ""
+
+    hour = safe_int(match.group("hour"), -1)
+    minute = safe_int(match.group("minute") or 0, -1)
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return ""
+    return f"{hour:02d}:{minute:02d}"
+
+
+def normalize_schedule_timezone(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    try:
+        ZoneInfo(text)
+    except ZoneInfoNotFoundError:
+        return ""
+    return text
+
+
+def parse_schedule_time_local(value: Any) -> tuple[int, int] | None:
+    normalized = normalize_schedule_time_local(value)
+    if not normalized:
+        return None
+    hour_text, minute_text = normalized.split(":", 1)
+    return int(hour_text), int(minute_text)
+
+
 def resolve_monitor_brief(settings: dict[str, Any]) -> str:
     watch_items = normalize_watch_items(settings.get("watchItems"))
     if watch_items:
@@ -173,6 +212,8 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
                 else DEFAULT_MONITOR_SETTINGS["intervalDays"]
             )
         ),
+        "scheduleTimeLocal": normalize_schedule_time_local(source.get("scheduleTimeLocal") or source.get("scheduleTime")),
+        "scheduleTimezone": normalize_schedule_timezone(source.get("scheduleTimezone") or source.get("scheduleTimeZone")),
         "deliveryChannel": delivery_channel,
         "telegramChatId": normalize_text(source.get("telegramChatId")),
     }
@@ -306,6 +347,8 @@ def resolve_next_monitor_slot(
     current_time = current_time.astimezone(timezone.utc)
     interval_days = normalize_interval_days(settings.get("intervalDays"))
     interval = timedelta(days=interval_days)
+    schedule_time_local = parse_schedule_time_local(settings.get("scheduleTimeLocal"))
+    schedule_timezone = normalize_schedule_timezone(settings.get("scheduleTimezone"))
 
     anchor_candidates = []
     if normalize_text(activated_at):
@@ -322,6 +365,27 @@ def resolve_next_monitor_slot(
 
     if base_slot is None:
         return None
+
+    if schedule_time_local is not None:
+        tz = ZoneInfo(schedule_timezone) if schedule_timezone else timezone.utc
+        base_local = base_slot.astimezone(tz)
+        next_local_date = base_local.date() + timedelta(days=interval_days)
+        next_local = datetime.combine(
+            next_local_date,
+            dt_time(schedule_time_local[0], schedule_time_local[1]),
+            tzinfo=tz,
+        )
+        next_slot = next_local.astimezone(timezone.utc)
+        if next_slot > current_time:
+            return next_slot
+
+        current_local = current_time.astimezone(tz)
+        elapsed_days = max(0, (current_local.date() - next_local.date()).days)
+        elapsed_cycles = elapsed_days // interval_days
+        candidate_local = next_local + timedelta(days=elapsed_cycles * interval_days)
+        if candidate_local <= current_local:
+            candidate_local += interval
+        return candidate_local.astimezone(timezone.utc)
 
     next_slot = base_slot + interval
     if next_slot > current_time:

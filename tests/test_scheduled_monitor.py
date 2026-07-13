@@ -287,6 +287,36 @@ class ScheduledMonitorTests(unittest.TestCase):
 
         self.assertEqual(next_slot.isoformat(), "2026-07-06T10:00:00+00:00")
 
+    def test_saved_schedule_time_uses_selected_local_time(self) -> None:
+        next_slot = resolve_next_monitor_slot(
+            now=datetime(2026, 7, 6, 5, 30, tzinfo=timezone.utc),
+            settings={
+                "intervalDays": 3,
+                "scheduleTimeLocal": "09:15",
+                "scheduleTimezone": "Asia/Jerusalem",
+            },
+            activated_at="2026-07-01T09:00:00+00:00",
+            settings_saved_at="2026-07-03T10:00:00+00:00",
+            last_scheduled_for="",
+        )
+
+        self.assertEqual(next_slot.isoformat(), "2026-07-06T06:15:00+00:00")
+
+    def test_selected_schedule_time_stays_on_same_local_hour_across_dst(self) -> None:
+        next_slot = resolve_next_monitor_slot(
+            now=datetime(2026, 3, 9, 13, 30, tzinfo=timezone.utc),
+            settings={
+                "intervalDays": 1,
+                "scheduleTimeLocal": "09:00",
+                "scheduleTimezone": "America/New_York",
+            },
+            activated_at="2026-03-07T14:00:00+00:00",
+            settings_saved_at="",
+            last_scheduled_for="2026-03-08T13:00:00+00:00",
+        )
+
+        self.assertEqual(next_slot.isoformat(), "2026-03-10T13:00:00+00:00")
+
     def test_monitor_run_claim_prevents_duplicate_scheduled_slots(self) -> None:
         first_claim = self.database.claim_feature_monitor_run(
             user_id=1,

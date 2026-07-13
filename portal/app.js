@@ -102,6 +102,8 @@ const DEFAULT_MONITOR_SETTINGS = {
   model: "gpt-5.5",
   watchItems: [],
   intervalDays: 7,
+  scheduleTimeLocal: "",
+  scheduleTimezone: "",
   deliveryChannel: "email",
   telegramChatId: "",
 };
@@ -167,6 +169,7 @@ const MANUAL_PRICING_SNAPSHOT = {
 };
 const MONITOR_INTERVAL_DAYS_MIN = 1;
 const MONITOR_INTERVAL_DAYS_MAX = 365;
+const DEFAULT_MONITOR_SCHEDULE_TIME = "09:00";
 const DEFAULT_TOOL_MODEL = DEFAULT_MONITOR_SETTINGS.model;
 const DEFAULT_FEATURE_SETTINGS = {
   model: DEFAULT_TOOL_MODEL,
@@ -592,6 +595,8 @@ const elements = {
   monitorWatchItemInput: document.querySelector("#monitorWatchItemInput"),
   monitorWatchItemAddButton: document.querySelector("#monitorWatchItemAddButton"),
   monitorIntervalDays: document.querySelector("#monitorIntervalDays"),
+  monitorScheduleTime: document.querySelector("#monitorScheduleTime"),
+  monitorScheduleTimezoneLabel: document.querySelector("#monitorScheduleTimezoneLabel"),
   monitorNextRun: document.querySelector("#monitorNextRun"),
   monitorNextRunValue: document.querySelector("#monitorNextRunValue"),
   monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
@@ -2056,6 +2061,108 @@ function normalizeMonitorIntervalDays(value, fallback = DEFAULT_MONITOR_SETTINGS
     : safeFallback;
 }
 
+function coerceMonitorScheduleTime(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2})(?::(\d{1,2}))?$/);
+  if (!match) {
+    return "";
+  }
+
+  const hour = Number.parseInt(match[1], 10);
+  const minute = Number.parseInt(match[2] || "0", 10);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return "";
+  }
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeMonitorScheduleTime(value, fallback = DEFAULT_MONITOR_SETTINGS.scheduleTimeLocal) {
+  return coerceMonitorScheduleTime(value) || coerceMonitorScheduleTime(fallback) || "";
+}
+
+function normalizeMonitorScheduleTimezone(value, fallback = "") {
+  const fallbackText = String(fallback || "").trim();
+  const text = String(value || "").trim();
+  if (!text) {
+    return fallbackText;
+  }
+
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: text }).format(new Date());
+    return text;
+  } catch {
+    return fallbackText;
+  }
+}
+
+function getWorkspaceTimeZone() {
+  return normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC";
+}
+
+function formatMonitorScheduleTimeFromMoment(value, timeZone = getWorkspaceTimeZone()) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: normalizeMonitorScheduleTimezone(timeZone, getWorkspaceTimeZone()) || undefined,
+  });
+  const parts = formatter.formatToParts(parsed);
+  const hour = parts.find((part) => part.type === "hour")?.value || "";
+  const minute = parts.find((part) => part.type === "minute")?.value || "";
+  return hour && minute ? `${hour}:${minute}` : "";
+}
+
+function getMonitorScheduleTimezone(feature = getSelectedFeature()) {
+  const settings = isMonitorFeature(feature) ? getSelectedFeatureSettings(feature) : DEFAULT_MONITOR_SETTINGS;
+  return normalizeMonitorScheduleTimezone(settings.scheduleTimezone, getWorkspaceTimeZone()) || getWorkspaceTimeZone();
+}
+
+function getMonitorScheduleTime(feature = getSelectedFeature()) {
+  if (!feature || !isMonitorFeature(feature)) {
+    return DEFAULT_MONITOR_SCHEDULE_TIME;
+  }
+
+  const settings = getSelectedFeatureSettings(feature);
+  const explicitTime = normalizeMonitorScheduleTime(settings.scheduleTimeLocal);
+  if (explicitTime) {
+    return explicitTime;
+  }
+
+  const derivedTime = formatMonitorScheduleTimeFromMoment(
+    feature.nextRunAt || feature.settingsSavedAt || feature.setupStatus?.nextRunAt || "",
+    getMonitorScheduleTimezone(feature),
+  );
+  return derivedTime || DEFAULT_MONITOR_SCHEDULE_TIME;
+}
+
+function buildMonitorSettingsForSave(feature = getSelectedFeature(), settings = getSelectedFeatureSettings(feature)) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const scheduleTimeLocal = normalizeMonitorScheduleTime(
+    source.scheduleTimeLocal,
+    getMonitorScheduleTime(feature),
+  );
+  const scheduleTimezone = scheduleTimeLocal
+    ? normalizeMonitorScheduleTimezone(source.scheduleTimezone, getMonitorScheduleTimezone(feature))
+    : "";
+
+  return normalizeFeatureMonitorSettings({
+    ...source,
+    scheduleTimeLocal,
+    scheduleTimezone,
+  });
+}
+
 function normalizeFeatureModel(value, fallback = DEFAULT_TOOL_MODEL) {
   const normalizedValue = String(value || "").trim();
   const normalizedFallback = String(fallback || DEFAULT_TOOL_MODEL).trim() || DEFAULT_TOOL_MODEL;
@@ -2082,6 +2189,10 @@ function normalizeFeatureMonitorSettings(settings = {}) {
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
   const intervalDays = Number.parseInt(source.intervalDays, 10);
   const legacyCadence = String(source.cadence || "").trim().toLowerCase();
+  const scheduleTimeLocal = normalizeMonitorScheduleTime(source.scheduleTimeLocal || source.scheduleTime || "");
+  const scheduleTimezone = scheduleTimeLocal
+    ? normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", defaultTimeZone())
+    : normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", "");
 
   return {
     ...normalizeFeatureSettings(source),
@@ -2095,6 +2206,8 @@ function normalizeFeatureMonitorSettings(settings = {}) {
           : legacyCadence === "monthly"
             ? 30
             : DEFAULT_MONITOR_SETTINGS.intervalDays,
+    scheduleTimeLocal,
+    scheduleTimezone,
     deliveryChannel: ["email", "telegram", "whatsapp"].includes(deliveryChannel) ? deliveryChannel : DEFAULT_MONITOR_SETTINGS.deliveryChannel,
     telegramChatId: String(source.telegramChatId || "").trim(),
   };
@@ -2452,7 +2565,9 @@ function sendFeatureConfigKeepalive(feature = getSelectedFeature()) {
       keepalive: true,
       body: JSON.stringify({
         prompt: { ...feature.prompt },
-        settings: { ...feature.settings },
+        settings: isMonitorFeature(feature)
+          ? buildMonitorSettingsForSave(feature, feature.settings)
+          : { ...feature.settings },
       }),
     });
   } catch {
@@ -2537,7 +2652,9 @@ async function saveSelectedFeatureConfig(options = {}) {
         headers: getSessionAuthHeaders(),
         body: {
           prompt: { ...feature.prompt },
-          settings: { ...feature.settings },
+          settings: isMonitorFeature(feature)
+            ? buildMonitorSettingsForSave(feature, feature.settings)
+            : { ...feature.settings },
         },
       });
 
@@ -3133,7 +3250,7 @@ function formatAdminDateTime(value) {
   }).format(parsed);
 }
 
-function formatMonitorNextRunDate(value) {
+function formatMonitorNextRunDate(value, timeZone = getWorkspaceTimeZone()) {
   const text = String(value || "").trim();
   if (!text) {
     return "";
@@ -3150,6 +3267,7 @@ function formatMonitorNextRunDate(value) {
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: normalizeMonitorScheduleTimezone(timeZone, getWorkspaceTimeZone()) || undefined,
   }).format(parsed);
 }
 
@@ -7470,7 +7588,7 @@ function getMonitorNextRunLabel(feature) {
     return "Calculating after save";
   }
 
-  const formatted = formatMonitorNextRunDate(nextRunAt);
+  const formatted = formatMonitorNextRunDate(nextRunAt, getMonitorScheduleTimezone(feature));
   if (!formatted) {
     return "Calculating after save";
   }
@@ -7513,6 +7631,16 @@ function updateMonitorFields() {
   }
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.value = String(monitorSettings.intervalDays);
+  }
+  if (elements.monitorScheduleTime) {
+    elements.monitorScheduleTime.value = getMonitorScheduleTime(feature);
+  }
+  if (elements.monitorScheduleTimezoneLabel) {
+    const scheduleTimezone = getMonitorScheduleTimezone(feature);
+    elements.monitorScheduleTimezoneLabel.textContent = scheduleTimezone === getWorkspaceTimeZone()
+      ? "Workspace time"
+      : "Saved time zone";
+    elements.monitorScheduleTimezoneLabel.title = scheduleTimezone;
   }
   if (elements.monitorNextRunValue) {
     elements.monitorNextRunValue.textContent = getMonitorNextRunLabel(feature);
@@ -7577,7 +7705,11 @@ function updateFeatureModelFields() {
 }
 
 function populateMonitorTimezoneOptions() {
-  // The scheduled monitor now uses a simple day interval instead of exposed time/timezone controls.
+  if (!elements.monitorScheduleTimezoneLabel) {
+    return;
+  }
+
+  elements.monitorScheduleTimezoneLabel.title = getMonitorScheduleTimezone();
 }
 
 function updateTabButtons() {
@@ -8317,7 +8449,7 @@ function syncMonitorSettingsField(key) {
       return;
     }
 
-    const nextSettings = normalizeFeatureMonitorSettings({
+    const nextSettings = buildMonitorSettingsForSave(feature, {
       ...getSelectedFeatureSettings(feature),
       [key]: event.target.value,
     });
@@ -8356,13 +8488,57 @@ function syncMonitorIntervalDaysField(event) {
     return;
   }
 
-  feature.settings = normalizeFeatureMonitorSettings({
+  feature.settings = buildMonitorSettingsForSave(feature, {
     ...currentSettings,
     intervalDays: normalizedIntervalDays,
   });
   persistClientState();
   updateFeatureStudioHeader();
   scheduleSelectedFeatureConfigAutosave(feature);
+}
+
+function syncMonitorScheduleTimeField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature)) {
+    return;
+  }
+
+  const normalizedTime = normalizeMonitorScheduleTime(event.target.value, getMonitorScheduleTime(feature));
+  if (!normalizedTime) {
+    event.target.value = getMonitorScheduleTime(feature);
+    return;
+  }
+  if (event.target.value !== normalizedTime) {
+    event.target.value = normalizedTime;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const currentScheduleTime = normalizeMonitorScheduleTime(currentSettings.scheduleTimeLocal);
+  const nextTimezone = getWorkspaceTimeZone();
+  if (currentScheduleTime === normalizedTime && normalizeMonitorScheduleTimezone(currentSettings.scheduleTimezone) === nextTimezone) {
+    updateMonitorFields();
+    return;
+  }
+
+  feature.settings = buildMonitorSettingsForSave(feature, {
+    ...currentSettings,
+    scheduleTimeLocal: normalizedTime,
+    scheduleTimezone: nextTimezone,
+  });
+  persistClientState();
+  updateMonitorFields();
+  updateFeatureStudioHeader();
+  scheduleSelectedFeatureConfigAutosave(feature);
+}
+
+function finalizeMonitorScheduleTimeField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature)) {
+    return;
+  }
+
+  const normalizedTime = normalizeMonitorScheduleTime(event.target.value, getMonitorScheduleTime(feature));
+  event.target.value = normalizedTime || getMonitorScheduleTime(feature);
 }
 
 function finalizeMonitorIntervalDaysField(event) {
@@ -8448,7 +8624,7 @@ function setMonitorWatchItems(items, options = {}) {
   }
 
   const currentSettings = getSelectedFeatureSettings(feature);
-  const nextSettings = normalizeFeatureMonitorSettings({
+  const nextSettings = buildMonitorSettingsForSave(feature, {
     ...currentSettings,
     watchItems: items,
   });
@@ -8549,6 +8725,8 @@ function getMonitorFieldElement(field) {
   const fieldMap = {
     watchItems: elements.monitorWatchItemInput,
     intervalDays: elements.monitorIntervalDays,
+    scheduleTimeLocal: elements.monitorScheduleTime,
+    scheduleTimezone: elements.monitorScheduleTime,
     deliveryChannel: elements.monitorDeliveryChannel,
     telegramChatId: elements.monitorTelegramChatId,
   };
@@ -9277,6 +9455,10 @@ function bindEvents() {
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.addEventListener("input", syncMonitorIntervalDaysField);
     elements.monitorIntervalDays.addEventListener("blur", finalizeMonitorIntervalDaysField);
+  }
+  if (elements.monitorScheduleTime) {
+    elements.monitorScheduleTime.addEventListener("change", syncMonitorScheduleTimeField);
+    elements.monitorScheduleTime.addEventListener("blur", finalizeMonitorScheduleTimeField);
   }
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.addEventListener("change", syncMonitorSettingsField("deliveryChannel"));
