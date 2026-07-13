@@ -896,6 +896,7 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     metadata = run_record.get("metadata") if isinstance(run_record.get("metadata"), dict) else {}
     no_results_notification_sent = bool(metadata.get("noResultsNotificationSent"))
     recent_results_already_sent = bool(metadata.get("recentResultsAlreadySent"))
+    replayed_recent_results = bool(metadata.get("replayedRecentResults"))
 
     if status == "no_matches":
         if recent_results_already_sent:
@@ -912,8 +913,9 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     if status == "cancelled":
         return "Manual test cancelled before any new update was sent."
     if notifications_sent > 0:
-        label = "alert" if notifications_sent == 1 else "alerts"
-        return f"Manual run finished. Sent {notifications_sent} {label}."
+        if replayed_recent_results:
+            return "Manual run finished. Sent the latest results again."
+        return "Manual run finished. Sent the results."
     if findings_count > 0:
         label = "match" if findings_count == 1 else "matches"
         return f"Manual run finished. Found {findings_count} {label}."

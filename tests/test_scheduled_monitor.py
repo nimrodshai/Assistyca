@@ -257,6 +257,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: 1 new match")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4-nano")
+        self.assertEqual(mock_openai_response.call_args.kwargs["temperature"], 0)
 
         self.assertTrue(first_scheduled_summary["ran"])
         self.assertEqual(first_scheduled_summary["runs"][0]["status"], "duplicate_matches")
@@ -377,7 +378,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(run["status"], "no_matches")
         self.assertTrue(run["metadata"]["noResultsNotificationSent"])
 
-    def test_manual_no_results_mentions_recent_results_sent_earlier(self) -> None:
+    def test_manual_rerun_replays_recent_results_when_live_search_goes_empty(self) -> None:
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
@@ -457,12 +458,91 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(first_run["ok"])
         self.assertEqual(first_run["run"]["status"], "completed")
         self.assertTrue(second_run["ok"])
-        self.assertEqual(second_run["run"]["status"], "no_matches")
+        self.assertEqual(second_run["run"]["status"], "completed")
+        self.assertEqual(second_run["run"]["notificationsSent"], 1)
         self.assertEqual(len(delivered_messages), 2)
-        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor update: nothing new yet")
-        self.assertIn("Nothing new worth sending right now.", delivered_messages[1]["text"])
-        self.assertIn("I already sent the latest results earlier.", delivered_messages[1]["text"])
-        self.assertTrue(second_run["run"]["run"]["metadata"]["recentResultsAlreadySent"])
+        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor test: latest results")
+        self.assertIn("latest results again from your recent monitor test", delivered_messages[1]["text"])
+        self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[1]["text"])
+        self.assertTrue(second_run["run"]["run"]["metadata"]["replayedRecentResults"])
+        self.assertEqual(second_run["run"]["run"]["metadata"]["liveSearchStatus"], "no_matches")
+
+    def test_manual_rerun_replays_recent_results_when_live_search_returns_duplicates(self) -> None:
+        self._configure_monitor()
+        delivered_messages: list[dict[str, str]] = []
+
+        def fake_send_email_notification(**kwargs) -> None:
+            delivered_messages.append(
+                {
+                    "to": str(kwargs.get("to_email") or ""),
+                    "subject": str(kwargs.get("subject") or ""),
+                    "text": str(kwargs.get("text_body") or ""),
+                }
+            )
+
+        repeated_response = SimpleNamespace(
+            output_text=json.dumps(
+                {
+                    "summary": "Found relevant updates.",
+                    "items": [
+                        {
+                            "id": "event-123",
+                            "title": "Criminal Defense Summit 2026 registration opened",
+                            "summary": "Registration is now open for the annual summit.",
+                            "why_it_matters": "The client asked for relevant conference opportunities.",
+                            "event_date": "2026-09-18",
+                            "source_name": "Bar Association",
+                            "source_url": "https://example.com/events/summit",
+                            "urgency": "medium",
+                        }
+                    ],
+                }
+            ),
+            request_id="req_repeat",
+            response_id="resp_repeat",
+            model="gpt-5.5",
+        )
+
+        scheduler = ScheduledMonitorScheduler(
+            self.database,
+            config=ScheduledMonitorConfig(
+                enabled=True,
+                poll_seconds=60,
+                model="gpt-5.5",
+                search_context_size="medium",
+                max_output_tokens=1200,
+                max_items_per_run=5,
+            ),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.call_openai_response",
+            side_effect=[repeated_response, repeated_response],
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            side_effect=fake_send_email_notification,
+        ):
+            first_run = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
+            second_run = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 10, 12, 30, tzinfo=timezone.utc))
+
+        self.assertTrue(first_run["ok"])
+        self.assertEqual(first_run["run"]["status"], "completed")
+        self.assertTrue(second_run["ok"])
+        self.assertEqual(second_run["run"]["status"], "completed")
+        self.assertEqual(second_run["run"]["notificationsSent"], 1)
+        self.assertEqual(len(delivered_messages), 2)
+        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor test: latest results")
+        self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[1]["text"])
+        self.assertTrue(second_run["run"]["run"]["metadata"]["replayedRecentResults"])
+        self.assertEqual(second_run["run"]["run"]["metadata"]["liveSearchStatus"], "duplicate_matches")
 
     def test_manual_run_cancellation_skips_delivery(self) -> None:
         self._configure_monitor()

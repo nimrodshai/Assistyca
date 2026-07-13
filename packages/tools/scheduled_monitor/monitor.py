@@ -362,6 +362,21 @@ def normalize_alert_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def notification_to_alert_item(notification: dict[str, Any]) -> dict[str, Any]:
+    payload = notification if isinstance(notification, dict) else {}
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    return {
+        "id": normalize_text(payload.get("itemKey")) or normalize_text(payload.get("id")),
+        "title": normalize_text(payload.get("title")) or "Untitled alert",
+        "summary": normalize_text(metadata.get("summary")),
+        "whyItMatters": normalize_text(metadata.get("whyItMatters")),
+        "eventDate": normalize_text(payload.get("eventDate")),
+        "sourceName": normalize_text(payload.get("sourceName")),
+        "sourceUrl": normalize_text(payload.get("sourceUrl")),
+        "urgency": normalize_text(metadata.get("urgency")).lower() or "medium",
+    }
+
+
 def build_monitor_prompt(
     *,
     target: dict[str, Any],
@@ -424,6 +439,10 @@ def build_monitor_prompt(
 def build_notification_subject(target: dict[str, Any], item_count: int) -> str:
     count_label = "1 new match" if item_count == 1 else f"{item_count} new matches"
     return f"Quick monitor update: {count_label}"
+
+
+def build_manual_replay_subject() -> str:
+    return "Quick monitor test: latest results"
 
 
 def build_no_results_subject(target: dict[str, Any]) -> str:
@@ -602,6 +621,7 @@ class ScheduledMonitorScheduler:
             prompt=prompt,
             model=selected_model,
             max_output_tokens=self.config.max_output_tokens,
+            temperature=0,
             usage_recorder=self.database,
             price_resolver=self.database.get_model_price,
             config=load_openai_config(strict_tracking=False),
@@ -675,6 +695,7 @@ class ScheduledMonitorScheduler:
         items: list[dict[str, Any]],
         summary: str,
         scheduled_for: datetime,
+        subject: str = "",
     ) -> tuple[int, str, str]:
         if not items:
             return 0, "", ""
@@ -690,7 +711,7 @@ class ScheduledMonitorScheduler:
                 **target,
                 "telegramChatId": settings.get("telegramChatId"),
             },
-            subject=build_notification_subject(target, len(items)),
+            subject=subject or build_notification_subject(target, len(items)),
             message_text=message_text,
             channel=normalize_text(settings.get("deliveryChannel")),
         )
@@ -761,6 +782,11 @@ class ScheduledMonitorScheduler:
                 ]
             recent_results_already_sent = bool(recent_notifications)
             recent_results_sent_at = normalize_text(recent_notifications[0].get("scheduledFor")) if recent_notifications else ""
+            recent_items: list[dict[str, Any]] = []
+            for notification in recent_notifications:
+                recent_item = notification_to_alert_item(notification)
+                if recent_item.get("id"):
+                    recent_items.append(recent_item)
 
             new_items: list[dict[str, Any]] = []
             for item in items:
@@ -777,10 +803,13 @@ class ScheduledMonitorScheduler:
             delivery_message_id = ""
             no_results_notification_sent = False
             status = "completed"
+            replayed_recent_results = False
             if not items:
                 status = "no_matches"
             elif items and not new_items:
                 status = "duplicate_matches"
+
+            live_search_status = status
 
             if new_items:
                 self._raise_if_cancelled(cancel_check)
@@ -791,6 +820,20 @@ class ScheduledMonitorScheduler:
                     summary=summary,
                     scheduled_for=scheduled_for,
                 )
+            elif not persist_run and recent_items and status in {"no_matches", "duplicate_matches"}:
+                self._raise_if_cancelled(cancel_check)
+                replayed_recent_results = True
+                summary = "Here are the latest results again from your recent monitor test."
+                items = recent_items
+                notifications_sent, delivery_target, delivery_message_id = self._deliver_items(
+                    target=target,
+                    settings=settings,
+                    items=recent_items,
+                    summary=summary,
+                    scheduled_for=scheduled_for,
+                    subject=build_manual_replay_subject(),
+                )
+                status = "completed"
             elif status in {"no_matches", "duplicate_matches"}:
                 self._raise_if_cancelled(cancel_check)
                 no_results_notification_sent, delivery_target, delivery_message_id = self._deliver_no_results_notification(
@@ -838,9 +881,11 @@ class ScheduledMonitorScheduler:
                 "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
                 "deliveryTarget": delivery_target,
                 "noResultsNotificationSent": no_results_notification_sent,
-                "noResultsReason": status if status in {"no_matches", "duplicate_matches"} else "",
-                "recentResultsAlreadySent": recent_results_already_sent if status == "no_matches" else False,
-                "recentResultsSentAt": recent_results_sent_at if status == "no_matches" else "",
+                "noResultsReason": live_search_status if live_search_status in {"no_matches", "duplicate_matches"} else "",
+                "recentResultsAlreadySent": recent_results_already_sent if live_search_status == "no_matches" else False,
+                "recentResultsSentAt": recent_results_sent_at if live_search_status == "no_matches" else "",
+                "replayedRecentResults": replayed_recent_results,
+                "liveSearchStatus": live_search_status,
                 "deliveryMessageId": delivery_message_id,
                 **search_metadata,
             }
