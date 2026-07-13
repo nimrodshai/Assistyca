@@ -513,7 +513,6 @@ const state = {
   billingLoading: false,
   billingError: "",
   billingHelpOpen: false,
-  personalDetailsTipsOpen: false,
   pricingSnapshot: null,
   pricingLoading: false,
   pricingError: "",
@@ -536,9 +535,6 @@ let authAlertEscapeDismiss = true;
 let billingHelpOpenFrame = null;
 let billingHelpCloseTimer = null;
 let billingHelpReturnFocus = null;
-let personalDetailsTipsOpenFrame = null;
-let personalDetailsTipsCloseTimer = null;
-let personalDetailsTipsReturnFocus = null;
 let billingRefreshPromise = null;
 let billingLastRefreshCompletedAt = 0;
 let featureActivationBusy = false;
@@ -644,10 +640,6 @@ const elements = {
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   featuresPanel: document.querySelector("#featuresPanel"),
   personalDetailsPanel: document.querySelector("#personalDetailsPanel"),
-  personalDetailsTipsButton: document.querySelector("#personalDetailsTipsButton"),
-  personalDetailsTipsOverlay: document.querySelector("#personalDetailsTipsOverlay"),
-  personalDetailsTipsCloseButton: document.querySelector("#personalDetailsTipsCloseButton"),
-  personalDetailsTipsDismissButton: document.querySelector("#personalDetailsTipsDismissButton"),
   personalDetailsPreviewCard: document.querySelector("#personalDetailsPreviewCard"),
   profileBusinessSummaryInput: document.querySelector("#profileBusinessSummaryInput"),
   profileCustomerNotesInput: document.querySelector("#profileCustomerNotesInput"),
@@ -4096,90 +4088,6 @@ function closeBillingHelp() {
   }
 
   setBillingHelpOpen(false);
-}
-
-function syncPersonalDetailsTipsState() {
-  const isOpen = Boolean(state.personalDetailsTipsOpen);
-
-  if (elements.personalDetailsTipsButton) {
-    elements.personalDetailsTipsButton.setAttribute("aria-expanded", String(isOpen));
-  }
-
-  if (!elements.personalDetailsTipsOverlay) {
-    return;
-  }
-
-  if (personalDetailsTipsOpenFrame !== null) {
-    window.cancelAnimationFrame(personalDetailsTipsOpenFrame);
-    personalDetailsTipsOpenFrame = null;
-  }
-
-  if (personalDetailsTipsCloseTimer !== null) {
-    window.clearTimeout(personalDetailsTipsCloseTimer);
-    personalDetailsTipsCloseTimer = null;
-  }
-
-  if (isOpen) {
-    elements.personalDetailsTipsOverlay.classList.remove("is-hidden");
-    document.body.dataset.modal = "personal-details-tips";
-
-    if (!elements.personalDetailsTipsOverlay.classList.contains("is-open")) {
-      personalDetailsTipsOpenFrame = window.requestAnimationFrame(() => {
-        elements.personalDetailsTipsOverlay.classList.add("is-open");
-        personalDetailsTipsOpenFrame = null;
-        (
-          elements.personalDetailsTipsCloseButton
-          || elements.personalDetailsTipsDismissButton
-          || elements.personalDetailsTipsOverlay
-        )?.focus();
-      });
-    }
-
-    return;
-  }
-
-  elements.personalDetailsTipsOverlay.classList.remove("is-open");
-
-  if (elements.personalDetailsTipsOverlay.classList.contains("is-hidden")) {
-    if (document.body.dataset.modal === "personal-details-tips") {
-      delete document.body.dataset.modal;
-    }
-    return;
-  }
-
-  personalDetailsTipsCloseTimer = window.setTimeout(() => {
-    elements.personalDetailsTipsOverlay.classList.add("is-hidden");
-    if (document.body.dataset.modal === "personal-details-tips") {
-      delete document.body.dataset.modal;
-    }
-    personalDetailsTipsCloseTimer = null;
-    personalDetailsTipsReturnFocus?.focus?.();
-    personalDetailsTipsReturnFocus = null;
-  }, 220);
-}
-
-function setPersonalDetailsTipsOpen(open) {
-  if (open) {
-    personalDetailsTipsReturnFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : elements.personalDetailsTipsButton;
-    closeBillingHelp();
-    closeMenu();
-  }
-  state.personalDetailsTipsOpen = Boolean(open);
-  syncPersonalDetailsTipsState();
-}
-
-function togglePersonalDetailsTips() {
-  setPersonalDetailsTipsOpen(!state.personalDetailsTipsOpen);
-}
-
-function closePersonalDetailsTips() {
-  if (!state.personalDetailsTipsOpen) {
-    return;
-  }
-
-  setPersonalDetailsTipsOpen(false);
 }
 
 function ensureBillingMenuItem() {
@@ -9257,12 +9165,6 @@ function bindEvents() {
       toggleBillingHelp();
     });
   }
-  if (elements.personalDetailsTipsButton) {
-    elements.personalDetailsTipsButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      togglePersonalDetailsTips();
-    });
-  }
   if (elements.featureStudioLaunchButton) {
     elements.featureStudioLaunchButton.addEventListener("click", () => {
       const feature = getSelectedFeature();
@@ -9359,23 +9261,6 @@ function bindEvents() {
     elements.billingHelpPopover.addEventListener("click", (event) => {
       if (event.target === elements.billingHelpPopover) {
         closeBillingHelp();
-      }
-    });
-  }
-  if (elements.personalDetailsTipsCloseButton) {
-    elements.personalDetailsTipsCloseButton.addEventListener("click", () => {
-      closePersonalDetailsTips();
-    });
-  }
-  if (elements.personalDetailsTipsDismissButton) {
-    elements.personalDetailsTipsDismissButton.addEventListener("click", () => {
-      closePersonalDetailsTips();
-    });
-  }
-  if (elements.personalDetailsTipsOverlay) {
-    elements.personalDetailsTipsOverlay.addEventListener("click", (event) => {
-      if (event.target === elements.personalDetailsTipsOverlay) {
-        closePersonalDetailsTips();
       }
     });
   }
@@ -9675,11 +9560,6 @@ function bindEvents() {
 
       if (state.billingHelpOpen) {
         closeBillingHelp();
-        return;
-      }
-
-      if (state.personalDetailsTipsOpen) {
-        closePersonalDetailsTips();
         return;
       }
 
