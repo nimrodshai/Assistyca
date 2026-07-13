@@ -3106,7 +3106,8 @@ function formatModelName(value) {
     return "Unknown model";
   }
 
-  return model.replace(/^gpt-/i, "GPT-").replace(/^gpt/i, "GPT");
+  const withoutSnapshotDate = model.replace(/-\d{4}-\d{2}-\d{2}$/u, "");
+  return withoutSnapshotDate.replace(/^gpt-/i, "GPT-").replace(/^gpt/i, "GPT");
 }
 
 function normalizeBillingModel(model = {}) {
