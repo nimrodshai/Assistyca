@@ -30,7 +30,7 @@ const TAB_ALIASES = new Map([
 ]);
 const TAB_LABELS = {
   features: "Tools",
-  "personal-details": "Personal details",
+  "personal-details": "About your business",
   preview: "Preview",
   simulator: "Simulator",
   billing: "Billing",
@@ -618,6 +618,7 @@ const elements = {
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   featuresPanel: document.querySelector("#featuresPanel"),
   personalDetailsPanel: document.querySelector("#personalDetailsPanel"),
+  personalDetailsPreviewCard: document.querySelector("#personalDetailsPreviewCard"),
   profileBusinessSummaryInput: document.querySelector("#profileBusinessSummaryInput"),
   profileCustomerNotesInput: document.querySelector("#profileCustomerNotesInput"),
   profileAssistantGuidanceInput: document.querySelector("#profileAssistantGuidanceInput"),
@@ -4008,20 +4009,29 @@ function normalizeText(value) {
 function buildAccountProfilePromptLines(profile = clientState.profile) {
   const normalized = normalizeAccountProfile(profile);
   const lines = [];
-  appendProfilePromptLines(lines, "About the client or business", normalized.businessSummary);
-  appendProfilePromptLines(lines, "Typical customers and requests", normalized.customerNotes);
-  appendProfilePromptLines(lines, "Always keep in mind", normalized.assistantGuidance);
+  appendProfilePromptLines(lines, "Business basics", normalized.businessSummary);
+  appendProfilePromptLines(lines, "Typical customers", normalized.customerNotes);
+  appendProfilePromptLines(lines, "Important notes", normalized.assistantGuidance);
   return lines;
+}
+
+function hasAccountProfileContent(profile = clientState.profile) {
+  const normalized = normalizeAccountProfile(profile);
+  return Boolean(
+    normalized.businessSummary
+    || normalized.customerNotes
+    || normalized.assistantGuidance
+  );
 }
 
 function buildAccountProfilePreviewText(profile = clientState.profile) {
   const lines = buildAccountProfilePromptLines(profile);
   if (!lines.length) {
-    return "Add a few details here and we’ll reuse them across your tools as shared context.";
+    return "";
   }
 
   return [
-    "Shared client context",
+    "Your assistant should remember:",
     ...bulletList(lines),
   ].join("\n");
 }
@@ -7681,6 +7691,7 @@ function updateSettingsFields() {
 }
 
 function updatePersonalDetailsFields() {
+  const hasContent = hasAccountProfileContent();
   if (elements.profileBusinessSummaryInput) {
     elements.profileBusinessSummaryInput.value = clientState.profile.businessSummary;
   }
@@ -7689,6 +7700,9 @@ function updatePersonalDetailsFields() {
   }
   if (elements.profileAssistantGuidanceInput) {
     elements.profileAssistantGuidanceInput.value = clientState.profile.assistantGuidance;
+  }
+  if (elements.personalDetailsPreviewCard) {
+    elements.personalDetailsPreviewCard.classList.toggle("is-hidden", !hasContent);
   }
   if (elements.personalDetailsPreview) {
     elements.personalDetailsPreview.textContent = buildAccountProfilePreviewText();
@@ -8539,14 +8553,17 @@ function syncAccountProfileField(key) {
   return (event) => {
     clientState.profile[key] = event.target.value;
     persistClientState();
-    if (elements.personalDetailsPreview) {
-      elements.personalDetailsPreview.textContent = buildAccountProfilePreviewText();
-    }
+    updatePersonalDetailsFields();
     scheduleAccountProfileAutosave();
   };
 }
 
 function handleMenuAction(action) {
+  if (action === "personal-details") {
+    setActiveTab("personal-details");
+    return;
+  }
+
   if (action === "billing") {
     setActiveTab("billing");
     return;

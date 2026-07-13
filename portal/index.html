@@ -125,7 +125,6 @@
 
         <nav class="tab-strip" aria-label="Assistyca tabs">
           <button class="tab-button is-active" data-tab="features" type="button">Tools</button>
-          <button class="tab-button" data-tab="personal-details" type="button">Personal details</button>
           <button class="tab-button" data-tab="preview" type="button" hidden>Preview</button>
           <button class="tab-button" data-tab="simulator" type="button" hidden>Simulator</button>
         </nav>
@@ -152,6 +151,7 @@
             <div id="accountMenu" class="menu-popover is-hidden" role="menu">
               <button class="menu-item" type="button" data-menu-action="billing">Billing</button>
               <button class="menu-item" type="button" data-menu-action="pricing">Pricing</button>
+              <button class="menu-item" type="button" data-menu-action="personal-details">About your business</button>
               <button class="menu-item" type="button" data-menu-action="settings">Settings</button>
               <button
                 id="adminUsersMenuItem"
@@ -186,77 +186,76 @@
       <section id="personalDetailsPanel" class="tab-panel is-hidden">
         <div class="panel-intro">
           <div>
-            <p class="eyebrow">Shared context</p>
-            <h1>Personal details</h1>
+            <p class="eyebrow">Better replies</p>
+            <h1>About your business</h1>
             <p class="lede compact">
-              Tell us a bit about yourself or your business once, and we’ll use it as shared context across your tools.
+              Share a few simple details so your assistant can answer customers more like you would.
             </p>
           </div>
-          <div class="personal-details-save-note">Saved automatically</div>
         </div>
 
         <div class="personal-details-layout">
           <div class="personal-details-stack">
             <article class="glass-card settings-card personal-details-story-card">
               <div class="card-head">
-                <h3>What helps most</h3>
-                <p>Short, concrete details usually outperform long generic descriptions.</p>
+                <h3>A few tips</h3>
+                <p>Keep it simple. Write this the way you'd explain your business to a new team member.</p>
               </div>
 
               <div class="personal-details-story-list" role="list">
                 <div class="personal-details-story-item" role="listitem">
-                  <strong>What you do</strong>
-                  <p>Services, products, region, hours, price style, or anything central to your work.</p>
+                  <strong>Start with the basics</strong>
+                  <p>Say what you do, where you work, and the kinds of jobs or customers you usually take on.</p>
                 </div>
                 <div class="personal-details-story-item" role="listitem">
-                  <strong>Who you help</strong>
-                  <p>Your typical customers, the kinds of requests they send, and what usually matters most to them.</p>
+                  <strong>Describe your customers</strong>
+                  <p>Who usually contacts you? What do they ask about most? What matters most to them?</p>
                 </div>
                 <div class="personal-details-story-item" role="listitem">
-                  <strong>What to keep in mind</strong>
-                  <p>Policies, tone preferences, red lines, or facts the tools should avoid guessing.</p>
+                  <strong>Mention the important stuff</strong>
+                  <p>Add anything your assistant should be careful about, like tone, pricing, availability, or promises it should never make.</p>
                 </div>
               </div>
             </article>
 
-            <article class="glass-card settings-card personal-details-preview-card">
+            <article id="personalDetailsPreviewCard" class="glass-card settings-card personal-details-preview-card is-hidden">
               <div class="card-head">
-                <h3>Shared context preview</h3>
-                <p>This is the kind of reusable context your tools will receive.</p>
+                <h3>What your assistant will remember</h3>
+                <p>As you write, we'll turn it into a short summary your assistant can use.</p>
               </div>
-              <pre id="personalDetailsPreview" class="personal-details-preview">Add a few details here and we’ll reuse them across your tools as shared context.</pre>
+              <pre id="personalDetailsPreview" class="personal-details-preview"></pre>
             </article>
           </div>
 
           <article class="glass-card settings-card personal-details-form-card">
             <label class="field">
-              <span>About you or your business</span>
+              <span>What do you do?</span>
               <textarea
                 id="profileBusinessSummaryInput"
                 rows="6"
-                placeholder="What you do, where you operate, what you sell or offer, and the most important facts someone should know first."
+                placeholder="What kind of work do you do? Where do you work? What do customers usually come to you for?"
               ></textarea>
-              <small class="field-help">Example: “We install and repair air conditioners across central Israel. Most jobs are residential, and we usually answer quickly but never promise a same-day slot until a human confirms it.”</small>
+              <small class="field-help">Example: “We install and repair air conditioners for homes in central Israel.”</small>
             </label>
 
             <label class="field">
-              <span>Your typical customers and requests</span>
+              <span>Who are your customers?</span>
               <textarea
                 id="profileCustomerNotesInput"
                 rows="5"
-                placeholder="Who you usually help, how they describe their needs, and what they care about most."
+                placeholder="Who usually contacts you, and what do they usually care about?"
               ></textarea>
-              <small class="field-help">Example: “Most people contact us after hours with urgent issues, price checks, or appointment questions. They care about speed, clarity, and whether we service their area.”</small>
+              <small class="field-help">Example: “Most people contact us after hours about urgent repairs, prices, or appointment times.”</small>
             </label>
 
             <label class="field">
-              <span>Anything the tools should always keep in mind</span>
+              <span>Anything important we should know?</span>
               <textarea
                 id="profileAssistantGuidanceInput"
                 rows="5"
-                placeholder="Policies, boundaries, preferred tone, words to avoid, or facts the tools should never invent."
+                placeholder="Anything you'd like your assistant to be careful about, say more often, or avoid saying?"
               ></textarea>
-              <small class="field-help">This shared guidance is added on top of each tool’s own configuration.</small>
+              <small class="field-help">Example: “Be warm and clear. Don't promise same-day service until a person confirms it.”</small>
             </label>
           </article>
         </div>
@@ -599,7 +598,7 @@
                 rows="3"
                 placeholder="Service area, hours, pricing hints, and any details the agent should know before replying."
               ></textarea>
-              <small class="field-help">Shared personal details from the top menu are added automatically alongside these tool-specific notes.</small>
+              <small class="field-help">We’ll also use the details from your business page automatically.</small>
             </label>
 
             <label class="field">

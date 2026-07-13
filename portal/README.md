@@ -14,7 +14,7 @@ It is intentionally separate from the reusable spec and client config layers.
 ## Portal layout
 
 - `Features` for the client account and its assigned capabilities. Click one to open the tool preview or editor.
-- `Personal details` for shared business or personal context that should follow the user across tools.
+- `About your business` in the account menu for shared business or personal context that should follow the user across tools.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself
 - The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes inbound webhooks by phone number ID
@@ -22,7 +22,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - WhatsApp approval pages and webhook handling now live inside the portal backend at `/approval/<approval_id>` and `/webhooks/whatsapp`
 - `Settings` opens as a modal overlay for account details and portal preferences
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
-- The top-right menu opens account, settings, and log out actions
+- The top-right menu opens business details, billing, settings, and log out actions
 - The simulator's Edit button opens [`../approval.html`](../approval.html), a reusable local approval page that is now only a debug fallback.
 
 ## Sign-in flow
