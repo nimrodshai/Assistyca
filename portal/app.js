@@ -3271,6 +3271,210 @@ function formatMonitorNextRunDate(value, timeZone = getWorkspaceTimeZone()) {
   }).format(parsed);
 }
 
+function parseMonitorDate(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getMonitorZonedDateTimeParts(value, timeZone = getWorkspaceTimeZone()) {
+  const parsed = value instanceof Date ? new Date(value.getTime()) : parseMonitorDate(value);
+  if (!parsed) {
+    return null;
+  }
+
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: normalizeMonitorScheduleTimezone(timeZone, getWorkspaceTimeZone()) || undefined,
+  });
+  const parts = formatter.formatToParts(parsed);
+  const readPart = (type) => Number.parseInt(parts.find((part) => part.type === type)?.value || "", 10);
+  const year = readPart("year");
+  const month = readPart("month");
+  const day = readPart("day");
+  const hour = readPart("hour");
+  const minute = readPart("minute");
+  const second = readPart("second");
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) {
+    return null;
+  }
+
+  return { year, month, day, hour, minute, second };
+}
+
+function addMonitorUtcDays(parts, days) {
+  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+}
+
+function buildMonitorDateInTimeZone(parts, timeZone = getWorkspaceTimeZone()) {
+  const safeTimeZone = normalizeMonitorScheduleTimezone(timeZone, getWorkspaceTimeZone()) || getWorkspaceTimeZone();
+  let candidate = new Date(Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour || 0,
+    parts.minute || 0,
+    parts.second || 0,
+  ));
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const zonedParts = getMonitorZonedDateTimeParts(candidate, safeTimeZone);
+    if (!zonedParts) {
+      return null;
+    }
+
+    const desiredUtc = Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour || 0,
+      parts.minute || 0,
+      parts.second || 0,
+    );
+    const actualUtc = Date.UTC(
+      zonedParts.year,
+      zonedParts.month - 1,
+      zonedParts.day,
+      zonedParts.hour || 0,
+      zonedParts.minute || 0,
+      zonedParts.second || 0,
+    );
+    const diffMs = desiredUtc - actualUtc;
+    if (!diffMs) {
+      return candidate;
+    }
+
+    candidate = new Date(candidate.getTime() + diffMs);
+  }
+
+  return candidate;
+}
+
+function resolveMonitorAnchorDate(feature, now = new Date()) {
+  const currentTime = now instanceof Date ? new Date(now.getTime()) : new Date();
+  if (Number.isNaN(currentTime.getTime())) {
+    return null;
+  }
+
+  const activatedAt = parseMonitorDate(feature?.activatedAt);
+  const settingsSavedAt = parseMonitorDate(feature?.settingsSavedAt || feature?.setupStatus?.settingsSavedAt || "");
+  const lastRunAt = parseMonitorDate(feature?.lastRunAt || feature?.setupStatus?.lastRunAt || "");
+  const resetAnchor = [activatedAt, settingsSavedAt]
+    .filter(Boolean)
+    .sort((left, right) => right.getTime() - left.getTime())[0] || null;
+
+  if (lastRunAt && (!resetAnchor || lastRunAt.getTime() >= resetAnchor.getTime())) {
+    return lastRunAt;
+  }
+  if (resetAnchor) {
+    return resetAnchor;
+  }
+  return currentTime;
+}
+
+function resolveMonitorNextRunAt(feature, now = new Date()) {
+  if (!feature || !isMonitorFeature(feature)) {
+    return "";
+  }
+
+  const explicitNextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
+  if (explicitNextRunAt) {
+    return explicitNextRunAt;
+  }
+
+  const currentTime = now instanceof Date ? new Date(now.getTime()) : new Date();
+  if (Number.isNaN(currentTime.getTime())) {
+    return "";
+  }
+
+  const settings = getSelectedFeatureSettings(feature);
+  const intervalDays = normalizeMonitorIntervalDays(settings.intervalDays);
+  const scheduleTimeLocal = normalizeMonitorScheduleTime(settings.scheduleTimeLocal, getMonitorScheduleTime(feature));
+  const scheduleTimezone = normalizeMonitorScheduleTimezone(
+    settings.scheduleTimezone,
+    getMonitorScheduleTimezone(feature),
+  ) || getMonitorScheduleTimezone(feature);
+  const anchorDate = resolveMonitorAnchorDate(feature, currentTime);
+  if (!anchorDate) {
+    return "";
+  }
+
+  if (!scheduleTimeLocal) {
+    const intervalMs = intervalDays * 24 * 60 * 60 * 1000;
+    const firstSlot = new Date(anchorDate.getTime() + intervalMs);
+    if (firstSlot.getTime() > currentTime.getTime()) {
+      return firstSlot.toISOString();
+    }
+
+    const elapsedCycles = Math.floor((currentTime.getTime() - firstSlot.getTime()) / intervalMs);
+    return new Date(firstSlot.getTime() + elapsedCycles * intervalMs).toISOString();
+  }
+
+  const [hour, minute] = scheduleTimeLocal.split(":").map((value) => Number.parseInt(value, 10));
+  const baseLocal = getMonitorZonedDateTimeParts(anchorDate, scheduleTimezone);
+  if (!baseLocal) {
+    return "";
+  }
+
+  const nextLocalDate = addMonitorUtcDays(baseLocal, intervalDays);
+  const buildSlot = (localDate) => buildMonitorDateInTimeZone({
+    ...localDate,
+    hour,
+    minute,
+    second: 0,
+  }, scheduleTimezone);
+
+  const nextSlot = buildSlot(nextLocalDate);
+  if (!nextSlot) {
+    return "";
+  }
+  if (nextSlot.getTime() > currentTime.getTime()) {
+    return nextSlot.toISOString();
+  }
+
+  const currentLocal = getMonitorZonedDateTimeParts(currentTime, scheduleTimezone);
+  if (!currentLocal) {
+    return nextSlot.toISOString();
+  }
+
+  const elapsedDays = Math.max(
+    0,
+    Math.floor(
+      (
+        Date.UTC(currentLocal.year, currentLocal.month - 1, currentLocal.day)
+        - Date.UTC(nextLocalDate.year, nextLocalDate.month - 1, nextLocalDate.day)
+      ) / (24 * 60 * 60 * 1000),
+    ),
+  );
+  const elapsedCycles = Math.floor(elapsedDays / intervalDays);
+  let candidateLocalDate = addMonitorUtcDays(nextLocalDate, elapsedCycles * intervalDays);
+  let candidateSlot = buildSlot(candidateLocalDate);
+  if (!candidateSlot) {
+    return nextSlot.toISOString();
+  }
+  if (candidateSlot.getTime() <= currentTime.getTime()) {
+    candidateLocalDate = addMonitorUtcDays(candidateLocalDate, intervalDays);
+    candidateSlot = buildSlot(candidateLocalDate);
+  }
+
+  return candidateSlot ? candidateSlot.toISOString() : nextSlot.toISOString();
+}
+
 function getUtcDateParts(value) {
   const parsed = new Date(String(value || "").trim());
   if (Number.isNaN(parsed.getTime())) {
@@ -7576,21 +7780,20 @@ function getMonitorNextRunLabel(feature) {
   if (!feature || !isMonitorFeature(feature)) {
     return "";
   }
-  if (!isFeatureActivated(feature)) {
-    return "Activate to schedule";
-  }
-  if (feature.setupStatus?.ready === false) {
-    return "Finish setup first";
-  }
-
-  const nextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
+  const nextRunAt = resolveMonitorNextRunAt(feature);
   if (!nextRunAt) {
-    return "Calculating after save";
+    if (!isFeatureActivated(feature)) {
+      return "Activate to schedule";
+    }
+    if (feature.setupStatus?.ready === false) {
+      return "Finish setup first";
+    }
+    return "Next run will appear soon";
   }
 
   const formatted = formatMonitorNextRunDate(nextRunAt, getMonitorScheduleTimezone(feature));
   if (!formatted) {
-    return "Calculating after save";
+    return "Next run will appear soon";
   }
 
   const parsed = new Date(nextRunAt);
@@ -7644,7 +7847,7 @@ function updateMonitorFields() {
   }
   if (elements.monitorNextRunValue) {
     elements.monitorNextRunValue.textContent = getMonitorNextRunLabel(feature);
-    elements.monitorNextRunValue.title = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
+    elements.monitorNextRunValue.title = resolveMonitorNextRunAt(feature);
   }
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.value = monitorSettings.deliveryChannel;
@@ -8493,6 +8696,7 @@ function syncMonitorIntervalDaysField(event) {
     intervalDays: normalizedIntervalDays,
   });
   persistClientState();
+  updateMonitorFields();
   updateFeatureStudioHeader();
   scheduleSelectedFeatureConfigAutosave(feature);
 }
