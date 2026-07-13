@@ -686,6 +686,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                             "title": "SEDE 2026 paper submission deadline is July 15, 2026",
                             "summary": "The CFP lists July 15, 2026 as the paper submission deadline.",
                             "why_it_matters": "Your team submits papers and needs lead time for review and travel coordination.",
+                            "matched_watch_item": "paper deadlines",
                             "event_date": "2026-07-15",
                             "source_name": "ISCA",
                             "source_url": "https://www.isca-hq.org/SEDE/CFP.html",
@@ -734,6 +735,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertIn("About the client or business: Boutique AI lab that submits papers and sends speakers to industry events.", prompt)
         self.assertIn("Typical customers and requests: Research leads and developer advocates.", prompt)
         self.assertIn("Always keep in mind: Prioritize paper deadlines, CFPs, and travel planning dates.", prompt)
+        self.assertIn('"matched_watch_item": "the exact saved watch-list entry this result best matches"', prompt)
         self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
         self.assertIn("Open tool editor", delivered_messages[0]["html"])
         self.assertIn(
@@ -766,6 +768,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                             "title": "OpenAI DevDay 2026 announced for September 29, 2026",
                             "summary": "The event date is listed for September 29, 2026 in San Francisco.",
                             "why_it_matters": "This affects travel and staffing plans for conference attendance.",
+                            "matched_watch_item": "conferences about ai and development",
                             "event_date": "2026-09-29",
                             "source_name": "OpenAI DevDay",
                             "source_url": "https://devday.openai.com/",
@@ -776,6 +779,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                             "title": "SEDE 2026 paper submission deadline is July 15, 2026",
                             "summary": "The CFP lists July 15, 2026 as the paper submission deadline.",
                             "why_it_matters": "Your team needs immediate writing and review time before the deadline.",
+                            "matched_watch_item": "conference paper deadlines",
                             "event_date": "2026-07-15",
                             "source_name": "ISCA",
                             "source_url": "https://www.isca-hq.org/SEDE/CFP.html",
@@ -826,8 +830,10 @@ class ScheduledMonitorTests(unittest.TestCase):
             text_body.find("SEDE 2026 paper submission deadline is July 15, 2026"),
             text_body.find("OpenAI DevDay 2026 announced for September 29, 2026"),
         )
+        self.assertIn("Search: conference paper deadlines", text_body)
         self.assertIn("When: July 15, 2026 (in 2 days)", text_body)
-        self.assertIn("High priority", html_body)
+        self.assertIn("Search: conference paper deadlines", html_body)
+        self.assertNotIn("High priority", html_body)
         self.assertIn("July 15, 2026 (in 2 days)", html_body)
         self.assertLess(
             html_body.find("SEDE 2026 paper submission deadline is July 15, 2026"),

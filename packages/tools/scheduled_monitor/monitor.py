@@ -440,6 +440,7 @@ def normalize_alert_item(item: dict[str, Any]) -> dict[str, Any]:
         "eventDate": event_date,
         "sourceName": normalize_text(payload.get("source_name") or payload.get("sourceName")),
         "sourceUrl": source_url,
+        "matchedWatchItem": normalize_text(payload.get("matched_watch_item") or payload.get("matchedWatchItem")),
         "urgency": normalize_text(payload.get("urgency")).lower() or "medium",
     }
 
@@ -468,6 +469,7 @@ def build_monitor_prompt(
         '      "title": "item title",',
         '      "summary": "what to know about the upcoming event or deadline",',
         '      "why_it_matters": "why the client should care",',
+        '      "matched_watch_item": "the exact saved watch-list entry this result best matches",',
         '      "event_date": "YYYY-MM-DD or empty",',
         '      "source_name": "publisher name",',
         '      "source_url": "https://...",',
@@ -482,6 +484,7 @@ def build_monitor_prompt(
         "Prefer concrete events, deadlines, conference announcements, holiday dates, or changes with a source URL.",
         "Prefer future or upcoming events and deadlines. Avoid past dates unless the update still creates a current decision or action for this client.",
         "Never invent a source, URL, event date, or organization.",
+        "When you set matched_watch_item, copy the exact saved watch-list entry that best matches the result instead of inventing a new label.",
         "Only include matches that are genuinely useful enough to float up to the client.",
         "Use the shared client context and business context to make why_it_matters specific to the client's real goals, customers, region, timing, or workflow.",
         "Avoid generic why_it_matters lines like 'this helps planning' unless you also explain what planning decision it affects for this client.",
@@ -675,6 +678,27 @@ def build_source_text(item: dict[str, Any]) -> str:
     return source_name or source_url
 
 
+def build_matched_watch_item_text(item: dict[str, Any]) -> str:
+    return normalize_text(item.get("matchedWatchItem"))
+
+
+def resolve_matched_watch_item(item: dict[str, Any], watch_items: list[str] | None = None) -> str:
+    normalized_watch_items = normalize_watch_items(watch_items or [])
+    raw_match = normalize_text(item.get("matchedWatchItem") or item.get("matched_watch_item"))
+    if not normalized_watch_items:
+        return raw_match
+
+    for watch_item in normalized_watch_items:
+        if raw_match and raw_match.casefold() == watch_item.casefold():
+            return watch_item
+
+    if raw_match:
+        return raw_match
+    if len(normalized_watch_items) == 1:
+        return normalized_watch_items[0]
+    return ""
+
+
 def build_tool_editor_url(target: dict[str, Any]) -> str:
     base_url = normalize_text(os.getenv("PUBLIC_BASE_URL")).rstrip("/")
     feature_id = normalize_text(target.get("featureId")) or MONITOR_FEATURE_ID
@@ -744,6 +768,7 @@ def build_email_shell(
         ".alert-pill.high{background:#fee7e6;color:#a53b32;}"
         ".alert-pill.medium{background:#fff1d9;color:#9b6513;}"
         ".alert-pill.low{background:#e6f4ea;color:#2d7a43;}"
+        ".alert-pill.search{background:#e7f5ef;color:#166b57;max-width:100%;white-space:normal;}"
         ".alert-pill.relative{background:#e4efff;color:#1f5cb7;}"
         ".alert-title{margin:4px 0 0;font-size:24px;line-height:1.35;color:#16304a;font-weight:700;}"
         ".alert-label{margin:16px 0 0;font-size:11px;line-height:1.4;letter-spacing:0.12em;text-transform:uppercase;color:#70869a;font-weight:700;}"
@@ -817,7 +842,9 @@ def build_notification_text(
         source = build_source_text(item)
         if source:
             lines.append(f"Source: {source}")
-        lines.append(f"Priority: {humanize_urgency(item.get('urgency'))}")
+        matched_watch_item = build_matched_watch_item_text(item)
+        if matched_watch_item:
+            lines.append(f"Search: {matched_watch_item}")
     return "\n".join(lines)
 
 
@@ -865,9 +892,9 @@ def build_notification_html(
     sorted_items = sort_alert_items(items, scheduled_for=scheduled_for)
     sections: list[str] = []
     for item in sorted_items:
-        urgency = normalize_urgency(item.get("urgency"))
         relative_date = format_relative_event_date(item.get("eventDate"), scheduled_for=scheduled_for)
         event_timing = format_event_timing(item.get("eventDate"), scheduled_for=scheduled_for)
+        matched_watch_item = build_matched_watch_item_text(item)
         source_name = normalize_text(item.get("sourceName"))
         source_url = normalize_text(item.get("sourceUrl"))
         source_html = ""
@@ -882,7 +909,11 @@ def build_notification_html(
         elif source_name:
             source_html = escape_html_text(source_name)
 
-        pill_html = [f"<span class=\"alert-pill {escape_html_text(urgency)}\">{escape_html_text(humanize_urgency(urgency))} priority</span>"]
+        pill_html: list[str] = []
+        if matched_watch_item:
+            pill_html.append(
+                f"<span class=\"alert-pill search\">Search: {escape_html_text(matched_watch_item)}</span>"
+            )
         if relative_date:
             pill_html.append(f"<span class=\"alert-pill relative\">{escape_html_text(relative_date)}</span>")
 
@@ -1085,11 +1116,14 @@ class ScheduledMonitorScheduler:
         )
         payload = extract_json_payload(result.output_text)
         raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
-        items = [
-            normalize_alert_item(item)
-            for item in raw_items
-            if isinstance(item, dict)
-        ]
+        watch_items = normalize_watch_items(settings.get("watchItems"))
+        items: list[dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            normalized_item = normalize_alert_item(item)
+            normalized_item["matchedWatchItem"] = resolve_matched_watch_item(normalized_item, watch_items)
+            items.append(normalized_item)
         return (
             normalize_text(payload.get("summary")),
             items[: self.config.max_items_per_run],
@@ -1335,6 +1369,7 @@ class ScheduledMonitorScheduler:
                     metadata={
                         "summary": normalize_text(item.get("summary")),
                         "whyItMatters": normalize_text(item.get("whyItMatters")),
+                        "matchedWatchItem": normalize_text(item.get("matchedWatchItem")),
                         "urgency": normalize_text(item.get("urgency")),
                         "deliveryMessageId": delivery_message_id,
                         **search_metadata,
