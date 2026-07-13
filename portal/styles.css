@@ -3284,9 +3284,9 @@ body[data-modal="billing"] .app-shell {
 
 .studio-fields {
   display: grid;
-  gap: 0.85rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: min(100%, 76rem);
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  width: min(100%, 56rem);
   justify-self: center;
   align-items: start;
 }
@@ -3344,7 +3344,7 @@ body[data-modal="billing"] .app-shell {
 .feature-model-layout {
   display: grid;
   gap: 0.9rem;
-  grid-template-columns: minmax(0, 1.1fr) minmax(16rem, 0.9fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
 
