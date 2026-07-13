@@ -63,6 +63,10 @@ services:
         sync: false
       - key: WHATSAPP_ACCESS_TOKEN
         sync: false
+      - key: WHATSAPP_SAMPLE_TEMPLATE_NAME
+        sync: false
+      - key: WHATSAPP_SAMPLE_TEMPLATE_LANGUAGE
+        value: en_US
       - key: WHATSAPP_VERIFY_TOKEN
         sync: false
       - key: WHATSAPP_APP_SECRET

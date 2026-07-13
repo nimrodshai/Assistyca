@@ -571,6 +571,7 @@ class RuntimeConfig:
     owner_wa_id: str
     data_path: Path
     assistant: dict[str, Any] = field(default_factory=dict)
+    templates: dict[str, Any] = field(default_factory=dict)
 
     @property
     def live_send_enabled(self) -> bool:
@@ -1006,6 +1007,7 @@ def send_whatsapp_message(
     recipient_wa_id: str,
     message_text: str | None = None,
     interactive: dict[str, Any] | None = None,
+    template: dict[str, Any] | None = None,
 ) -> str:
     url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
     payload: dict[str, Any] = {
@@ -1013,7 +1015,10 @@ def send_whatsapp_message(
         "recipient_type": "individual",
         "to": recipient_wa_id,
     }
-    if interactive is not None:
+    if template is not None:
+        payload["type"] = "template"
+        payload["template"] = template
+    elif interactive is not None:
         payload["type"] = "interactive"
         payload["interactive"] = interactive
     else:

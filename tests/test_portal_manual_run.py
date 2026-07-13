@@ -13,7 +13,10 @@ from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
+from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
+from packages.tools.whatsapp_reply_approval.server import BackendStore
 
 
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
@@ -143,6 +146,99 @@ class PortalManualRunTests(unittest.TestCase):
         self.assertEqual(post_result["status"], 200)
         self.assertEqual(post_result["body"]["run"]["status"], "cancelled")
         self.assertIn("cancelled", str(post_result["body"]["message"]).lower())
+
+
+class PortalWhatsAppTemplateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.data_path = Path(self.temp_dir.name) / "whatsapp-store.json"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _build_service(self, *, templates: dict[str, object] | None = None) -> PortalWhatsAppService:
+        config = build_portal_runtime_config(
+            client_id="portal-user-1",
+            client_name="Portal User",
+            base_url="https://example.com",
+            phone_number_id="12345",
+            owner_wa_id="15551234567",
+            data_path=self.data_path,
+            templates=templates,
+        )
+        config.access_token = "test-token"
+        return PortalWhatsAppService(config, BackendStore(self.data_path))
+
+    def test_build_portal_runtime_config_reads_sample_template_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WHATSAPP_SAMPLE_TEMPLATE_NAME": "assistyca_sample_alert",
+                "WHATSAPP_SAMPLE_TEMPLATE_LANGUAGE": "he",
+            },
+            clear=False,
+        ):
+            config = build_portal_runtime_config(
+                client_id="portal-user-1",
+                client_name="Portal User",
+                base_url="https://example.com",
+                phone_number_id="12345",
+                owner_wa_id="15551234567",
+                data_path=self.data_path,
+            )
+
+        self.assertEqual(
+            config.templates["sample_owner"],
+            {
+                "name": "assistyca_sample_alert",
+                "language": "he",
+            },
+        )
+
+    def test_sample_owner_message_uses_template_when_configured(self) -> None:
+        service = self._build_service(
+            templates={
+                "sample_owner": {
+                    "name": "assistyca_sample_alert",
+                    "language": "en_US",
+                },
+            },
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.template-1",
+        ) as mocked_send:
+            message_id, message_text = service.send_sample_owner_message()
+
+        self.assertEqual(message_id, "wamid.template-1")
+        self.assertIn("Sample reply alert from Assistyca", message_text)
+        mocked_send.assert_called_once()
+        self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
+        self.assertEqual(
+            mocked_send.call_args.kwargs["template"],
+            {
+                "name": "assistyca_sample_alert",
+                "language": {
+                    "code": "en_US",
+                },
+            },
+        )
+
+    def test_sample_owner_message_falls_back_to_text_without_template(self) -> None:
+        service = self._build_service()
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.text-1",
+        ) as mocked_send:
+            message_id, message_text = service.send_sample_owner_message()
+
+        self.assertEqual(message_id, "wamid.text-1")
+        self.assertIn("Sample reply alert from Assistyca", message_text)
+        mocked_send.assert_called_once()
+        self.assertIsNone(mocked_send.call_args.kwargs["template"])
+        self.assertIn("Maya Cohen", mocked_send.call_args.kwargs["message_text"])
 
 
 class PortalWhatsAppSampleTests(unittest.TestCase):

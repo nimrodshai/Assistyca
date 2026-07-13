@@ -27,6 +27,30 @@ from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 from packages.tools.whatsapp_reply_approval.server import short_ref
 from packages.tools.whatsapp_reply_approval.server import verify_whatsapp_signature
 
+DEFAULT_SAMPLE_TEMPLATE_LANGUAGE = "en_US"
+
+
+def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = templates if isinstance(templates, dict) else {}
+    sample_source = source.get("sample_owner") if isinstance(source.get("sample_owner"), dict) else {}
+    sample_name = normalize_text(
+        os.getenv("WHATSAPP_SAMPLE_TEMPLATE_NAME")
+        or sample_source.get("name")
+        or source.get("sample_owner_name")
+    )
+    sample_language = normalize_text(
+        os.getenv("WHATSAPP_SAMPLE_TEMPLATE_LANGUAGE")
+        or sample_source.get("language")
+        or source.get("sample_owner_language")
+        or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE
+    ) or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE
+    return {
+        "sample_owner": {
+            "name": sample_name,
+            "language": sample_language,
+        },
+    }
+
 
 def build_portal_runtime_config(
     *,
@@ -37,6 +61,7 @@ def build_portal_runtime_config(
     owner_wa_id: str,
     data_path: Path,
     assistant: dict[str, Any] | None = None,
+    templates: dict[str, Any] | None = None,
 ) -> RuntimeConfig:
     assistant_config = {**DEFAULT_ASSISTANT_CONFIG, **(assistant or {})}
     return RuntimeConfig(
@@ -52,6 +77,7 @@ def build_portal_runtime_config(
         owner_wa_id=normalize_text(owner_wa_id),
         data_path=data_path,
         assistant=assistant_config,
+        templates=resolve_portal_whatsapp_templates(templates),
     )
 
 
@@ -103,6 +129,7 @@ def build_portal_service_from_connection(
 ) -> "PortalWhatsAppService":
     metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
     assistant = metadata.get("assistant") if isinstance(metadata.get("assistant"), dict) else None
+    templates = metadata.get("templates") if isinstance(metadata.get("templates"), dict) else None
     data_path = portal_whatsapp_store_path_for_connection(root, connection)
     config = build_portal_runtime_config(
         client_id=f"portal-user-{int(connection.get('userId') or 0) or 'unknown'}",
@@ -115,6 +142,7 @@ def build_portal_service_from_connection(
         owner_wa_id=normalize_text(connection.get("ownerWaId")),
         data_path=data_path,
         assistant=assistant,
+        templates=templates,
     )
 
     if store_cache is None:
@@ -171,6 +199,7 @@ class PortalWhatsAppService:
         *,
         message_text: str | None = None,
         interactive: dict[str, Any] | None = None,
+        template: dict[str, Any] | None = None,
     ) -> str:
         owner_wa_id = normalize_whatsapp_id(self.config.owner_wa_id)
         if not owner_wa_id:
@@ -184,6 +213,7 @@ class PortalWhatsAppService:
                 recipient_wa_id=owner_wa_id,
                 message_text=message_text,
                 interactive=interactive,
+                template=template,
             )
         elif self.config.allow_mock_send:
             message_id = f"mock-{uuid.uuid4().hex}"
@@ -193,6 +223,21 @@ class PortalWhatsAppService:
         if approval is not None and approval.get("approval_id"):
             self.store.append_approval_message_id(str(approval["approval_id"]), message_id)
         return message_id
+
+    def get_sample_owner_template(self) -> dict[str, Any] | None:
+        templates = self.config.templates if isinstance(self.config.templates, dict) else {}
+        sample_template = templates.get("sample_owner") if isinstance(templates.get("sample_owner"), dict) else {}
+        template_name = normalize_text(sample_template.get("name"))
+        if not template_name:
+            return None
+
+        template_language = normalize_text(sample_template.get("language") or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE) or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE
+        return {
+            "name": template_name,
+            "language": {
+                "code": template_language,
+            },
+        }
 
     def notify_owner_about_approval(self, approval: dict[str, Any]) -> str:
         notification_text = build_owner_notification_text(approval)
@@ -254,7 +299,12 @@ class PortalWhatsAppService:
             )
 
         message_text = build_sample_owner_notification_text(self.config.client_name)
-        message_id = self.send_owner_message(None, message_text=message_text)
+        sample_template = self.get_sample_owner_template()
+        message_id = self.send_owner_message(
+            None,
+            message_text=None if sample_template is not None else message_text,
+            template=sample_template,
+        )
         return message_id, message_text
 
     def resolve_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
