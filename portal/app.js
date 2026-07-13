@@ -20,6 +20,8 @@ const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
 const ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS = 500;
 const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
+const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
+const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
 const VALID_TABS = new Set(["features", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
 const TAB_ALIASES = new Map([
@@ -3066,6 +3068,14 @@ function getFeatureWhatsAppConnectedLabel(feature = getSelectedFeature()) {
   return String(whatsapp.verified_name || whatsapp.display_phone_number || whatsapp.business_account_id || "your WhatsApp number").trim() || "your WhatsApp number";
 }
 
+function getWhatsAppOwnerNotificationFailureCopy(feature = getSelectedFeature(), options = {}) {
+  const ownerLabel = String(options.ownerLabel || getFeatureWhatsAppOwnerLabel(feature) || "your phone").trim() || "your phone";
+  const health = getFeatureWhatsAppHealth(feature);
+  const errorText = sanitizeErrorText(health.lastOwnerNotificationError || "");
+  const issueDetails = errorText ? ` WhatsApp reported: ${errorText}.` : "";
+  return `We kept the incoming message, but the alert did not reach ${ownerLabel}.${issueDetails} Check the connected number and your WhatsApp delivery status before trying again.`;
+}
+
 function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   const health = getFeatureWhatsAppHealth(feature);
@@ -3119,10 +3129,10 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
 
   if (lastOwnerStatus === "failed") {
     content.owner = {
-      title: "Latest approval alert hit a temporary issue",
+      title: "Latest approval alert hit a delivery issue",
       copy: lastOwnerNotificationAt
-        ? `We kept the incoming message, but the alert did not reach ${ownerLabel} on ${lastOwnerNotificationAt}.`
-        : `We kept the incoming message, but the alert did not reach ${ownerLabel}.`,
+        ? `${getWhatsAppOwnerNotificationFailureCopy(feature, { ownerLabel })} The latest failed attempt was on ${lastOwnerNotificationAt}.`
+        : getWhatsAppOwnerNotificationFailureCopy(feature, { ownerLabel }),
     };
   } else if (lastOwnerStatus === "requested") {
     content.owner = {
@@ -3187,8 +3197,8 @@ function buildFeatureEditorWhatsAppHealthNotice(feature = getSelectedFeature()) 
   if (lastOwnerStatus === "failed") {
     return {
       tone: "warning",
-      title: "The latest approval alert hit a temporary issue",
-      copy: "We kept the incoming message, but the alert did not reach your phone. Open WhatsApp setup and save again after the issue clears.",
+      title: "The latest approval alert hit a delivery issue",
+      copy: getWhatsAppOwnerNotificationFailureCopy(feature, { ownerLabel: "your phone" }),
     };
   }
 
@@ -7697,6 +7707,89 @@ async function runSelectedMonitorNow() {
   }
 }
 
+function waitForDelay(delayMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(delayMs) || 0));
+  });
+}
+
+function getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId) {
+  const feature = getFeatureById(featureId);
+  const health = getFeatureWhatsAppHealth(feature);
+  const status = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
+  const messageId = String(health.lastOwnerNotificationMessageId || "").trim();
+
+  return {
+    feature,
+    health,
+    status,
+    messageId,
+    matchesMessageId: Boolean(ownerMessageId) && messageId === ownerMessageId,
+  };
+}
+
+function getWhatsAppReplySampleSuccessMessage(feature, confirmationState) {
+  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
+  return confirmationState.status === "read"
+    ? `WhatsApp confirmed the sample reached ${ownerLabel} and was opened.`
+    : `WhatsApp confirmed the sample reached ${ownerLabel}.`;
+}
+
+function getWhatsAppReplySampleFailureMessage(feature) {
+  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
+  const health = getFeatureWhatsAppHealth(feature);
+  const errorText = sanitizeErrorText(health.lastOwnerNotificationError || "");
+  const issueDetails = errorText ? ` WhatsApp reported: ${errorText}.` : "";
+  return `The sample alert did not reach ${ownerLabel}.${issueDetails} Check the connected number and your WhatsApp delivery status before trying again.`;
+}
+
+function getWhatsAppReplySampleTimeoutMessage(feature, confirmationState) {
+  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
+  const deliverySummary = confirmationState.matchesMessageId && confirmationState.status === "sent"
+    ? "WhatsApp accepted the sample, but no delivery confirmation arrived within 30 seconds."
+    : "We did not receive a delivery confirmation within 30 seconds.";
+  return `${deliverySummary} We’re treating this test as failed for ${ownerLabel}. Check the connected number and your WhatsApp delivery status before trying again.`;
+}
+
+async function waitForWhatsAppReplySampleConfirmation(featureId, ownerMessageId) {
+  let confirmationState = getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
+  if (
+    confirmationState.matchesMessageId
+    && ["delivered", "read", "failed"].includes(confirmationState.status)
+  ) {
+    return confirmationState;
+  }
+
+  const deadline = Date.now() + WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const delayMs = Math.min(
+      WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS,
+      Math.max(0, deadline - Date.now()),
+    );
+    await waitForDelay(delayMs);
+
+    try {
+      await refreshWhatsAppConnection({ render: false, timeoutMs: 10000 });
+    } catch {
+      // Keep waiting until timeout in case the next refresh succeeds.
+    }
+
+    if (view === "app") {
+      renderApp({ preserveStatus: true });
+    }
+
+    confirmationState = getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
+    if (
+      confirmationState.matchesMessageId
+      && ["delivered", "read", "failed"].includes(confirmationState.status)
+    ) {
+      return confirmationState;
+    }
+  }
+
+  return getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
+}
+
 async function sendSelectedWhatsAppReplySample() {
   if (whatsappSampleMessageBusy) {
     return;
@@ -7734,18 +7827,66 @@ async function sendSelectedWhatsAppReplySample() {
 
     applyWhatsAppConnectionToFeatures(response.connection || null, { persist: true });
     renderApp({ preserveStatus: true });
+    const ownerMessageId = String(
+      response.ownerMessageId
+      || getFeatureWhatsAppHealth(getFeatureById(feature.id) || feature).lastOwnerNotificationMessageId
+      || "",
+    ).trim();
     openAuthAlert(
-      "Sample requested",
-      response.message || "We asked WhatsApp to send a sample alert to your phone. We’ll update the status here when delivery is confirmed.",
+      "Testing WhatsApp delivery",
+      "We’re sending a sample alert now and waiting for WhatsApp to confirm it reached your phone.",
       {
-        eyebrow: "Waiting for confirmation",
+        eyebrow: "Testing now",
+        dismissOnBackdrop: false,
+        dismissOnEscape: false,
+        hidePrimaryButton: true,
+        iconMode: "spinner",
+        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
+        tone: "progress",
+      },
+    );
+    setStatus("Waiting for WhatsApp to confirm the sample delivery...");
+
+    const confirmationState = await waitForWhatsAppReplySampleConfirmation(feature.id, ownerMessageId);
+    const latestFeature = getFeatureById(feature.id) || feature;
+    if (
+      confirmationState.matchesMessageId
+      && ["delivered", "read"].includes(confirmationState.status)
+    ) {
+      openAuthAlert(
+        "Sample delivered",
+        getWhatsAppReplySampleSuccessMessage(latestFeature, confirmationState),
+        {
+          eyebrow: "Check WhatsApp",
+          buttonLabel: "OK",
+          icon: "✓",
+          tone: "success",
+          returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
+        },
+      );
+      setStatus("WhatsApp confirmed the sample delivery.");
+      return;
+    }
+
+    const failedByWhatsApp = confirmationState.matchesMessageId && confirmationState.status === "failed";
+    openAuthAlert(
+      failedByWhatsApp ? "Sample failed" : "Couldn’t confirm delivery",
+      failedByWhatsApp
+        ? getWhatsAppReplySampleFailureMessage(latestFeature)
+        : getWhatsAppReplySampleTimeoutMessage(latestFeature, confirmationState),
+      {
+        eyebrow: "Test failed",
         buttonLabel: "OK",
         icon: "!",
         tone: "warning",
         returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
       },
     );
-    setStatus("Sample WhatsApp alert requested.");
+    setStatus(
+      failedByWhatsApp
+        ? "The sample alert did not reach your phone."
+        : "The sample alert timed out before delivery was confirmed.",
+    );
   } catch (error) {
     try {
       await refreshWhatsAppConnection({ render: false });
@@ -8205,12 +8346,12 @@ function updateFeatureStudioHeader() {
     const showSampleButton = canSendWhatsAppReplySample(feature);
     const sampleReady = showSampleButton && !hasFeatureActivationChanges(feature);
     elements.featureStudioWhatsAppSampleButton.hidden = !showSampleButton;
-    elements.featureStudioWhatsAppSampleButton.textContent = sampleMessageBusy ? "Sending sample..." : "Send sample";
+    elements.featureStudioWhatsAppSampleButton.textContent = sampleMessageBusy ? "Testing WhatsApp..." : "Send sample";
     elements.featureStudioWhatsAppSampleButton.disabled = activationBusy || transitionBusy || sampleMessageBusy || !sampleReady;
     elements.featureStudioWhatsAppSampleButton.classList.toggle("is-loading", sampleMessageBusy);
     elements.featureStudioWhatsAppSampleButton.setAttribute("aria-busy", String(sampleMessageBusy));
     elements.featureStudioWhatsAppSampleButton.title = sampleMessageBusy
-      ? "Sending a sample WhatsApp alert now"
+      ? "Testing WhatsApp delivery now"
       : sampleReady
         ? "Send a sample approval alert to your WhatsApp"
         : "Save the latest WhatsApp details before sending a sample";
