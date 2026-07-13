@@ -3331,6 +3331,30 @@ body[data-modal="billing"] .app-shell {
   min-width: 12rem;
 }
 
+.editor-activation-actions #featureStudioMonitorRunButton.is-loading {
+  position: relative;
+  padding-left: 2.55rem;
+}
+
+.editor-activation-actions #featureStudioMonitorRunButton.is-loading::before {
+  content: "";
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin-top: -0.48rem;
+  border-radius: 999px;
+  border: 2px solid rgba(15, 118, 110, 0.2);
+  border-top-color: rgba(15, 118, 110, 0.88);
+  animation: spin 760ms linear infinite;
+}
+
+.editor-activation-actions #featureStudioMonitorRunButton.is-loading:disabled::before {
+  border-color: rgba(95, 107, 122, 0.22);
+  border-top-color: rgba(95, 107, 122, 0.82);
+}
+
 .feature-model-layout {
   display: grid;
   gap: 0.9rem;

@@ -7067,6 +7067,8 @@ function updateFeatureStudioHeader() {
         : "Cancel test"
       : "Test now";
     elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || (manualRunBusy && monitorManualRunCancelling);
+    elements.featureStudioMonitorRunButton.classList.toggle("is-loading", manualRunBusy);
+    elements.featureStudioMonitorRunButton.classList.toggle("is-cancelling", monitorManualRunCancelling);
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
     elements.featureStudioMonitorRunButton.title = manualRunBusy
       ? monitorManualRunCancelling
