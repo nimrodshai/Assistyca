@@ -3081,25 +3081,6 @@ function getNextBillingPaymentDate(report) {
   return new Date(candidate);
 }
 
-function formatUsageDateSummary(dates = []) {
-  const uniqueDates = Array.from(
-    new Set(
-      (Array.isArray(dates) ? dates : [])
-        .map((value) => String(value || "").trim())
-        .filter(Boolean),
-    ),
-  );
-
-  if (!uniqueDates.length) {
-    return "";
-  }
-
-  const visibleDates = uniqueDates.slice(0, 3).map(formatUsageDate).filter(Boolean);
-  const extraCount = Math.max(0, uniqueDates.length - visibleDates.length);
-  const suffix = extraCount > 0 ? ` +${extraCount} more` : "";
-  return `Used on ${visibleDates.join(", ")}${suffix}`;
-}
-
 function formatModelName(value) {
   const model = String(value || "").trim();
   if (!model) {
@@ -4488,8 +4469,7 @@ function createBillingModelRow(model, index = 0, currency = "USD") {
   title.textContent = formatModelName(model.model);
 
   const meta = document.createElement("p");
-  const usageSummary = formatUsageDateSummary(model.usageDates);
-  meta.textContent = [`${formatTokenCount(model.tokensUsed)} tokens`, usageSummary].filter(Boolean).join(" · ");
+  meta.textContent = `${formatTokenCount(model.tokensUsed)} tokens`;
 
   copy.append(title, meta);
 
