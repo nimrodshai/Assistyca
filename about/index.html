@@ -500,11 +500,13 @@
 
       .services-copy h2 {
         margin: 1.1rem auto 0;
-        max-width: 18.4ch;
-        font-size: clamp(2.45rem, 4.15vw, 3.55rem);
-        line-height: 1.18;
+        width: fit-content;
+        max-width: 100%;
+        font-size: clamp(2.35rem, 3.75vw, 3.3rem);
+        line-height: 1.14;
         letter-spacing: -0.055em;
         font-weight: 500;
+        white-space: nowrap;
       }
 
       .services-divider {
@@ -897,8 +899,9 @@
         }
 
         .services-copy h2 {
-          max-width: 18.8ch;
-          font-size: clamp(2.25rem, 4.2vw, 3rem);
+          width: fit-content;
+          max-width: 100%;
+          font-size: clamp(2.05rem, 3.85vw, 2.7rem);
           line-height: 1.16;
         }
 
@@ -1037,9 +1040,11 @@
         }
 
         .services-copy h2 {
+          width: auto;
           max-width: 12ch;
           font-size: clamp(2.05rem, 10vw, 2.7rem);
           line-height: 1.2;
+          white-space: normal;
         }
 
         .services-copy p {
