@@ -214,8 +214,7 @@ const DEFAULT_PROMPT = {
     "Service area, hours, pricing hints, and any details the agent should know before replying.",
   escalationGuidance:
     "Hand off when the customer is upset, the answer needs a human decision, or the request is urgent.",
-  exampleReplies:
-    "Good: \"Yes, I can help. What is the address?\"\nBad: \"Sure, anything is possible.\"",
+  exampleReplies: "",
   responseStyle: "balanced",
   scenario: "approval",
 };
@@ -714,7 +713,6 @@ const elements = {
   replyRules: document.querySelector("#replyRules"),
   businessNotes: document.querySelector("#businessNotes"),
   escalationGuidance: document.querySelector("#escalationGuidance"),
-  exampleReplies: document.querySelector("#exampleReplies"),
   scenarioSelect: document.querySelector("#scenarioSelect"),
   scenarioMessage: document.querySelector("#scenarioMessage"),
   responseMessage: document.querySelector("#responseMessage"),
@@ -2895,13 +2893,16 @@ function normalizePrompt(prompt = {}, fallback = DEFAULT_PROMPT) {
   const base = { ...DEFAULT_PROMPT, ...(fallback || {}), ...(prompt || {}) };
   const responseStyle = String(base.responseStyle || DEFAULT_PROMPT.responseStyle).toLowerCase();
   const scenario = SCENARIOS[base.scenario] ? base.scenario : DEFAULT_PROMPT.scenario;
+  const exampleReplies = scenario === "monitor"
+    ? String(base.exampleReplies || "")
+    : "";
 
   return {
     toneGuidance: String(base.toneGuidance || DEFAULT_PROMPT.toneGuidance),
     replyRules: String(base.replyRules || DEFAULT_PROMPT.replyRules),
     businessNotes: String(base.businessNotes || DEFAULT_PROMPT.businessNotes),
     escalationGuidance: String(base.escalationGuidance || DEFAULT_PROMPT.escalationGuidance),
-    exampleReplies: String(base.exampleReplies || DEFAULT_PROMPT.exampleReplies),
+    exampleReplies,
     responseStyle: ["short", "balanced", "detailed"].includes(responseStyle)
       ? responseStyle
       : DEFAULT_PROMPT.responseStyle,
@@ -4789,6 +4790,7 @@ function buildResponseText(prompt = getSelectedPrompt()) {
 function buildCompiledPrompt(feature = getSelectedFeature()) {
   const prompt = feature?.prompt || getSelectedPrompt();
   const sharedProfileLines = buildAccountProfilePromptLines();
+  const exampleReplies = splitLines(prompt.exampleReplies);
   const lines = [
     "Client tool draft",
     "",
@@ -4821,10 +4823,15 @@ function buildCompiledPrompt(feature = getSelectedFeature()) {
     "",
     "Escalation rules",
     ...bulletList(splitLines(prompt.escalationGuidance)),
-    "",
-    "Example replies",
-    ...bulletList(splitLines(prompt.exampleReplies)),
   );
+
+  if (exampleReplies.length) {
+    lines.push(
+      "",
+      "Example replies",
+      ...bulletList(exampleReplies),
+    );
+  }
 
   return lines.join("\n").trim();
 }
@@ -8389,7 +8396,6 @@ function updatePromptFields() {
   elements.replyRules.value = prompt.replyRules;
   elements.businessNotes.value = prompt.businessNotes;
   elements.escalationGuidance.value = prompt.escalationGuidance;
-  elements.exampleReplies.value = prompt.exampleReplies;
   updateFeatureModelFields();
 }
 
@@ -10320,7 +10326,6 @@ function bindEvents() {
   elements.replyRules.addEventListener("input", syncPromptField("replyRules"));
   elements.businessNotes.addEventListener("input", syncPromptField("businessNotes"));
   elements.escalationGuidance.addEventListener("input", syncPromptField("escalationGuidance"));
-  elements.exampleReplies.addEventListener("input", syncPromptField("exampleReplies"));
   elements.scenarioSelect.addEventListener("change", syncPromptField("scenario"));
   if (elements.featureModelSelect) {
     elements.featureModelSelect.addEventListener("change", syncFeatureModelField);

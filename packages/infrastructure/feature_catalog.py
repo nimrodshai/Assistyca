@@ -15,7 +15,7 @@ DEFAULT_PROMPT = {
     "replyRules": "Acknowledge the request first. Ask one clarifying question only when needed. Never guess prices or availability.",
     "businessNotes": "Service area, hours, pricing hints, and any details the agent should know before replying.",
     "escalationGuidance": "Hand off when the customer is upset, the answer needs a human decision, or the request is urgent.",
-    "exampleReplies": 'Good: "Yes, I can help. What is the address?"\nBad: "Sure, anything is possible."',
+    "exampleReplies": "",
     "responseStyle": "balanced",
     "scenario": "approval",
 }
