@@ -2186,6 +2186,8 @@ body[data-modal="billing"] .app-shell {
 
 .auth-alert-copy .lede {
   margin-top: 0.45rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .auth-alert-actions {

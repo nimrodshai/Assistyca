@@ -999,6 +999,39 @@ def verify_whatsapp_signature(secret: str, body: bytes, header: str | None) -> b
     return hmac.compare_digest(digest, provided.strip())
 
 
+def format_whatsapp_send_error(status_code: int, raw_body: str) -> str:
+    payload: dict[str, Any] | None = None
+    try:
+        loaded = json.loads(raw_body) if raw_body else {}
+        payload = loaded if isinstance(loaded, dict) else None
+    except json.JSONDecodeError:
+        payload = None
+
+    error_payload = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else {}
+    error_message = normalize_text(error_payload.get("message"))
+    error_code = normalize_text(error_payload.get("code"))
+
+    if error_code == "131058" or "hello world templates" in error_message.lower():
+        return (
+            "WhatsApp rejected the sample template because the built-in hello_world template only works "
+            "with Meta Public Test Numbers. Set WHATSAPP_SAMPLE_TEMPLATE_NAME to your own approved template."
+        )
+
+    if error_code == "131047" or "re-engagement message" in error_message.lower():
+        return (
+            "WhatsApp rejected the message because the 24-hour reply window is closed. "
+            "Use an approved template or wait for the customer to reply again."
+        )
+
+    if error_message:
+        return f"WhatsApp rejected the message: {error_message}"
+
+    if raw_body.strip():
+        return f"WhatsApp send failed with status {status_code}."
+
+    return "WhatsApp send failed."
+
+
 def send_whatsapp_message(
     *,
     access_token: str,
@@ -1039,7 +1072,7 @@ def send_whatsapp_message(
             response_payload = json.loads(response.read().decode("utf-8"))
     except urllib_error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"WhatsApp send failed: {exc.code} {error_body}") from exc
+        raise RuntimeError(format_whatsapp_send_error(exc.code, error_body)) from exc
     except urllib_error.URLError as exc:
         raise RuntimeError(f"WhatsApp send failed: {exc.reason}") from exc
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
@@ -17,6 +18,7 @@ from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppServic
 from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.whatsapp_reply_approval.server import BackendStore
+from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 
 
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
@@ -239,6 +241,47 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         mocked_send.assert_called_once()
         self.assertIsNone(mocked_send.call_args.kwargs["template"])
         self.assertIn("Maya Cohen", mocked_send.call_args.kwargs["message_text"])
+
+
+class WhatsAppSendFormattingTests(unittest.TestCase):
+    def test_send_whatsapp_message_formats_hello_world_template_error(self) -> None:
+        error_body = json.dumps(
+            {
+                "error": {
+                    "message": "(#131058) Hello World templates can only be sent from the Public Test Numbers",
+                    "code": 131058,
+                    "type": "OAuthException",
+                }
+            }
+        ).encode("utf-8")
+        http_error = urllib_error.HTTPError(
+            url="https://graph.facebook.com/v20.0/12345/messages",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(error_body),
+        )
+
+        with mock.patch(
+            "packages.tools.whatsapp_reply_approval.server.urllib_request.urlopen",
+            side_effect=http_error,
+        ):
+            with self.assertRaises(RuntimeError) as context:
+                send_whatsapp_message(
+                    access_token="test-token",
+                    phone_number_id="12345",
+                    api_version="v20.0",
+                    recipient_wa_id="15551234567",
+                    template={
+                        "name": "hello_world",
+                        "language": {
+                            "code": "en_US",
+                        },
+                    },
+                )
+
+        self.assertIn("hello_world template", str(context.exception))
+        self.assertIn("Public Test Numbers", str(context.exception))
 
 
 class PortalWhatsAppSampleTests(unittest.TestCase):
