@@ -7750,12 +7750,12 @@ function getWhatsAppReplySampleFailureMessage(feature) {
   return `The sample alert did not reach ${ownerLabel}.${issueDetails} Check the connected number and your WhatsApp delivery status before trying again.`;
 }
 
-function getWhatsAppReplySampleTimeoutMessage(feature, confirmationState) {
+function getWhatsAppReplySamplePendingMessage(feature, confirmationState) {
   const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
-  const deliverySummary = confirmationState.matchesMessageId && confirmationState.status === "sent"
-    ? "WhatsApp accepted the sample, but no delivery confirmation arrived within 30 seconds."
-    : "We did not receive a delivery confirmation within 30 seconds.";
-  return `${deliverySummary} We’re treating this test as failed for ${ownerLabel}. Check the connected number and your WhatsApp delivery status before trying again.`;
+  const receiptSummary = confirmationState.matchesMessageId && confirmationState.status === "sent"
+    ? "WhatsApp accepted the sample, but no delivery receipt arrived within 30 seconds."
+    : "The sample was sent, but no delivery receipt arrived within 30 seconds.";
+  return `${receiptSummary} It may already be on ${ownerLabel}; we’ll keep updating this status when Meta sends the receipt.`;
 }
 
 async function waitForWhatsAppReplySampleConfirmation(featureId, ownerMessageId) {
@@ -7877,22 +7877,22 @@ async function sendSelectedWhatsAppReplySample() {
 
     const failedByWhatsApp = confirmationState.matchesMessageId && confirmationState.status === "failed";
     openAuthAlert(
-      failedByWhatsApp ? "Sample failed" : "Couldn’t confirm delivery",
+      failedByWhatsApp ? "Sample failed" : "Sample sent",
       failedByWhatsApp
         ? getWhatsAppReplySampleFailureMessage(latestFeature)
-        : getWhatsAppReplySampleTimeoutMessage(latestFeature, confirmationState),
+        : getWhatsAppReplySamplePendingMessage(latestFeature, confirmationState),
       {
-        eyebrow: "Test failed",
+        eyebrow: failedByWhatsApp ? "Test failed" : "Delivery receipt pending",
         buttonLabel: "OK",
-        icon: "!",
-        tone: "warning",
+        icon: failedByWhatsApp ? "!" : "✓",
+        tone: failedByWhatsApp ? "warning" : "progress",
         returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
       },
     );
     setStatus(
       failedByWhatsApp
         ? "The sample alert did not reach your phone."
-        : "The sample alert timed out before delivery was confirmed.",
+        : "The sample alert was sent; delivery receipt is still pending.",
     );
   } catch (error) {
     try {
