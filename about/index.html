@@ -109,7 +109,7 @@
       .hero,
       .about-spotlight,
       .services-showcase,
-      .section,
+      .how-works,
       .final-cta {
         width: min(100%, 88rem);
         margin: 0 auto;
@@ -648,13 +648,139 @@
         line-height: 1.18;
       }
 
-      .section {
-        display: grid;
-        grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-        gap: clamp(2rem, 4vw, 5rem);
+      .how-works {
+        position: relative;
+        min-height: max(42rem, calc(100svh - var(--header-space)));
         border-top: 1px solid var(--line);
-        padding-top: clamp(4rem, 9vw, 7rem);
-        padding-bottom: clamp(3rem, 8vw, 5.4rem);
+        padding-top: clamp(3.5rem, 6vw, 5.2rem);
+        padding-bottom: clamp(4.5rem, 7vw, 6rem);
+        overflow: hidden;
+      }
+
+      .how-works::before {
+        content: "";
+        position: absolute;
+        inset: 5% 7% auto;
+        height: 26rem;
+        background: radial-gradient(circle at 50% 24%, rgba(255, 255, 255, 0.54), transparent 72%);
+        pointer-events: none;
+      }
+
+      .how-works-intro,
+      .how-works-process {
+        position: relative;
+        z-index: 1;
+      }
+
+      .how-works-intro {
+        max-width: 47rem;
+        margin: 0 auto;
+        text-align: center;
+      }
+
+      .how-works-kicker {
+        margin: 0;
+        color: #5f9276;
+        text-transform: uppercase;
+        letter-spacing: 0.34em;
+        font-size: 0.86rem;
+        font-weight: 700;
+      }
+
+      .how-works h2 {
+        margin: 0.68rem 0 0;
+        font-size: clamp(2.8rem, 4.75vw, 4.2rem);
+        line-height: 1.02;
+        letter-spacing: -0.055em;
+        font-weight: 700;
+      }
+
+      .how-works-intro p:not(.how-works-kicker) {
+        max-width: 41rem;
+        margin: 1.28rem auto 0;
+        color: rgba(19, 32, 56, 0.78);
+        font-size: clamp(1rem, 1.45vw, 1.16rem);
+        line-height: 1.7;
+      }
+
+      .how-works-process {
+        --how-visual-size: clamp(17.5rem, 25vw, 24rem);
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: clamp(2rem, 5vw, 5rem);
+        align-items: start;
+        max-width: 79rem;
+        margin: clamp(3.2rem, 5vw, 4.55rem) auto 0;
+      }
+
+      .how-step {
+        position: relative;
+        min-width: 0;
+      }
+
+      .how-step-copy {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        column-gap: 1.22rem;
+        min-height: 9.25rem;
+      }
+
+      .how-step-number {
+        display: grid;
+        place-items: center;
+        width: 2.95rem;
+        height: 2.95rem;
+        border-radius: 999px;
+        color: #ffffff;
+        background: radial-gradient(circle at 32% 24%, #78af8f, #4f8f69 78%);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.18),
+          0 12px 28px rgba(79, 143, 105, 0.18);
+        font-size: 1.08rem;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .how-step h3 {
+        margin: 0.28rem 0 0;
+        font-size: clamp(1.16rem, 1.55vw, 1.34rem);
+        line-height: 1.2;
+        letter-spacing: -0.045em;
+        font-weight: 700;
+      }
+
+      .how-step p {
+        margin: 0.95rem 0 0;
+        max-width: 17rem;
+        color: rgba(19, 32, 56, 0.72);
+        font-size: clamp(0.96rem, 1.2vw, 1.05rem);
+        line-height: 1.85;
+      }
+
+      .how-step-visual {
+        position: relative;
+        width: min(100%, var(--how-visual-size));
+        aspect-ratio: 1;
+        margin: 0 auto;
+      }
+
+      .how-step-visual img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        filter: saturate(0.98) contrast(0.99);
+      }
+
+      .how-step:not(:last-child) .how-step-visual::after {
+        content: "\2192";
+        position: absolute;
+        top: 50%;
+        right: clamp(-3.4rem, -2.9vw, -1.85rem);
+        transform: translateY(-50%);
+        color: #5f9276;
+        font-size: clamp(1.75rem, 2.2vw, 2.18rem);
+        line-height: 1;
+        font-weight: 400;
       }
 
       .section-label {
@@ -664,47 +790,6 @@
         letter-spacing: 0.16em;
         font-size: 0.76rem;
         font-weight: 700;
-      }
-
-      .section h2 {
-        margin: 0;
-        max-width: 11ch;
-        font-size: clamp(2.3rem, 4.6vw, 3.5rem);
-        line-height: 1.02;
-        letter-spacing: -0.055em;
-        font-weight: 500;
-      }
-
-      .section-intro p {
-        max-width: 24rem;
-        margin: 1rem 0 0;
-        color: var(--muted);
-        line-height: 1.65;
-      }
-
-      .workflow-list {
-        display: grid;
-        gap: 0;
-        border-top: 1px solid var(--line);
-      }
-
-      .workflow-item {
-        padding: 1.35rem 0;
-        border-bottom: 1px solid var(--line);
-      }
-
-      .workflow-item h3 {
-        margin: 0;
-        font-size: 1.35rem;
-        font-weight: 600;
-        letter-spacing: -0.035em;
-      }
-
-      .workflow-item p {
-        margin: 0.45rem 0 0;
-        max-width: 34rem;
-        color: var(--muted);
-        line-height: 1.65;
       }
 
       .final-cta {
@@ -844,7 +929,6 @@
 
         .hero,
         .about-spotlight,
-        .section,
         .final-cta {
           grid-template-columns: 1fr;
         }
@@ -922,9 +1006,40 @@
           max-width: 38rem;
         }
 
-        .section h2,
         .final-cta h2 {
           max-width: none;
+        }
+
+        .how-works {
+          min-height: auto;
+        }
+
+        .how-works-process {
+          grid-template-columns: 1fr;
+          gap: 2.85rem;
+          max-width: 28rem;
+          margin-top: 2.8rem;
+        }
+
+        .how-step-copy {
+          min-height: 0;
+        }
+
+        .how-step p {
+          max-width: none;
+        }
+
+        .how-step-visual {
+          width: min(100%, 22.5rem);
+          margin-top: 1.25rem;
+        }
+
+        .how-step:not(:last-child) .how-step-visual::after {
+          content: "\2193";
+          top: auto;
+          right: 50%;
+          bottom: -2.25rem;
+          transform: translateX(50%);
         }
       }
 
@@ -933,7 +1048,7 @@
         .hero,
         .about-spotlight,
         .services-showcase,
-        .section,
+        .how-works,
         .final-cta {
           padding-left: 1.2rem;
           padding-right: 1.2rem;
@@ -1091,6 +1206,50 @@
 
         .services-note-subtitle {
           font-size: 1.26rem;
+        }
+
+        .how-works {
+          padding-top: 2.7rem;
+          padding-bottom: 3.6rem;
+        }
+
+        .how-works-kicker {
+          font-size: 0.76rem;
+          letter-spacing: 0.26em;
+        }
+
+        .how-works h2 {
+          font-size: clamp(2.25rem, 11vw, 3.15rem);
+          line-height: 1.06;
+        }
+
+        .how-works-intro p:not(.how-works-kicker) {
+          font-size: 0.98rem;
+          line-height: 1.62;
+        }
+
+        .how-works-process {
+          gap: 2.55rem;
+        }
+
+        .how-step-copy {
+          column-gap: 0.95rem;
+        }
+
+        .how-step-number {
+          width: 2.55rem;
+          height: 2.55rem;
+          font-size: 0.98rem;
+        }
+
+        .how-step h3 {
+          font-size: 1.14rem;
+        }
+
+        .how-step p {
+          margin-top: 0.7rem;
+          font-size: 0.94rem;
+          line-height: 1.65;
         }
 
         .final-cta {
@@ -1267,36 +1426,63 @@
           </div>
         </section>
 
-        <section class="section" id="how-it-works" aria-labelledby="workflow-title">
-          <div class="section-intro">
-            <p class="section-label">How It Works</p>
-            <h2 id="workflow-title">Simple process. Real systems. Clear outcomes.</h2>
+        <section class="how-works" id="how-it-works" aria-labelledby="workflow-title">
+          <div class="how-works-intro">
+            <p class="how-works-kicker">How It Works</p>
+            <h2 id="workflow-title">Simple steps. Clear results.</h2>
             <p>
-              I start with the bottleneck, design around the actual workflow, and
-              keep refining until it feels dependable in real use.
+              A straightforward process to understand your business<br class="desktop-break" />
+              and build the right solution.
             </p>
           </div>
-          <div class="workflow-list">
-            <article class="workflow-item">
-              <h3>1. Find the drag</h3>
-              <p>
-                We identify the repetitive conversations, tasks, or coordination work
-                that keeps stealing time from the business.
-              </p>
+
+          <div class="how-works-process">
+            <article class="how-step">
+              <div class="how-step-copy">
+                <span class="how-step-number" aria-hidden="true">1</span>
+                <div>
+                  <h3>Let&apos;s meet</h3>
+                  <p>
+                    We set up a meeting where I learn about your business,
+                    needs, challenges, and goals.
+                  </p>
+                </div>
+              </div>
+              <figure class="how-step-visual">
+                <img src="../assets/Coffee.png" alt="Robotic hand holding a coffee mug" />
+              </figure>
             </article>
-            <article class="workflow-item">
-              <h3>2. Build the right system</h3>
-              <p>
-                I turn that process into a cleaner structure with AI, automation, and
-                the right amount of control where it matters.
-              </p>
+
+            <article class="how-step">
+              <div class="how-step-copy">
+                <span class="how-step-number" aria-hidden="true">2</span>
+                <div>
+                  <h3>I analyze &amp; plan</h3>
+                  <p>
+                    I take time to understand everything and map out the best
+                    way I can help.
+                  </p>
+                </div>
+              </div>
+              <figure class="how-step-visual">
+                <img src="../assets/Diagram.png" alt="Robotic hand drawing a process diagram" />
+              </figure>
             </article>
-            <article class="workflow-item">
-              <h3>3. Make it useful in practice</h3>
-              <p>
-                The goal is not a demo. The goal is something you can actually use to
-                save time, reduce overhead, and keep work moving.
-              </p>
+
+            <article class="how-step">
+              <div class="how-step-copy">
+                <span class="how-step-number" aria-hidden="true">3</span>
+                <div>
+                  <h3>Clear proposal</h3>
+                  <p>
+                    You&apos;ll get a clear understanding of how I can help and
+                    how much it will cost.
+                  </p>
+                </div>
+              </div>
+              <figure class="how-step-visual">
+                <img src="../assets/Shake.png" alt="Two robotic hands shaking hands" />
+              </figure>
             </article>
           </div>
         </section>
