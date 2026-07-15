@@ -42,6 +42,7 @@ from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.openai_pricing import OpenAIPricingError
 from packages.infrastructure.openai_pricing import build_pricing_snapshot_json
+from packages.infrastructure.notification_delivery import send_telegram_notification
 from packages.infrastructure.portal_db import DEFAULT_CURRENCY
 from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
@@ -83,6 +84,11 @@ SESSION_TOKEN_VERSION = 1
 SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
+CONTACT_NAME_MAX_LENGTH = 120
+CONTACT_CHANNEL_MAX_LENGTH = 180
+CONTACT_BUSINESS_MAX_LENGTH = 140
+CONTACT_MESSAGE_MAX_LENGTH = 1600
+CONTACT_PAGE_MAX_LENGTH = 500
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
 }
@@ -334,6 +340,22 @@ def normalize_code(code: str) -> str:
 def normalize_manual_run_request_id(value: Any) -> str:
     candidate = normalize_text(value)
     return candidate if MANUAL_RUN_REQUEST_ID_RE.match(candidate) else ""
+
+
+def normalize_contact_single_line(value: Any, max_length: int) -> str:
+    normalized = re.sub(r"\s+", " ", normalize_text(value))
+    return normalized[:max_length].strip()
+
+
+def normalize_contact_message(value: Any, max_length: int) -> str:
+    normalized = normalize_text(value).replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in normalized.split("\n")]
+    normalized = "\n".join(line for line in lines if line)
+    return normalized[:max_length].strip()
+
+
+def resolve_contact_chat_id() -> str:
+    return normalize_text(os.getenv("TELEGRAM_CONTACT_CHAT_ID")) or normalize_text(os.getenv("TELEGRAM_CHAT_ID"))
 
 
 def compare_code(challenge: OtpChallenge, code: str) -> bool:
@@ -1046,6 +1068,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/account/profile"
             or path == "/api/pricing"
             or path.startswith("/api/pricing/")
+            or path == "/api/contact"
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -1070,6 +1093,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/account/profile"
             or path == "/api/pricing"
             or path.startswith("/api/pricing/")
+            or path == "/api/contact"
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -1094,6 +1118,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/account/profile"
             or path == "/api/pricing"
             or path.startswith("/api/pricing/")
+            or path == "/api/contact"
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -1268,6 +1293,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/account/profile":
             self._handle_account_profile_post()
+            return
+
+        if path == "/api/contact":
+            self._handle_contact_submit()
             return
 
         if path == "/api/whatsapp/test":
@@ -1563,6 +1592,116 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "displayName": normalize_text(user.get("displayName")),
             "profile": normalize_user_profile(user.get("profile")),
         })
+
+    def _handle_contact_submit(self) -> None:
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        if normalize_text(payload.get("companyWebsite")):
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "Thanks, I got your message.",
+            })
+            return
+
+        name = normalize_contact_single_line(payload.get("name"), CONTACT_NAME_MAX_LENGTH)
+        email = normalize_email(payload.get("email", ""))
+        phone = normalize_contact_single_line(payload.get("phone"), CONTACT_CHANNEL_MAX_LENGTH)
+        business = normalize_contact_single_line(payload.get("business"), CONTACT_BUSINESS_MAX_LENGTH)
+        message = normalize_contact_message(payload.get("message"), CONTACT_MESSAGE_MAX_LENGTH)
+        page = normalize_contact_single_line(payload.get("page"), CONTACT_PAGE_MAX_LENGTH)
+
+        field_errors: dict[str, str] = {}
+        if len(name) < 2:
+            field_errors["name"] = "Enter your name."
+        if email and not is_valid_email(email):
+            field_errors["email"] = "Enter a valid email address."
+        if not email and not phone:
+            field_errors["contact"] = "Enter an email address or phone number."
+        if len(message) < 8:
+            field_errors["message"] = "Tell me a little about what you need."
+
+        if field_errors:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_contact_request",
+                "message": "Check the highlighted fields and try again.",
+                "fieldErrors": field_errors,
+            })
+            return
+
+        chat_id = resolve_contact_chat_id()
+        if not chat_id:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "telegram_contact_not_configured",
+                "message": "Contact delivery is not configured yet.",
+            })
+            return
+
+        telegram_message = self._build_contact_telegram_message(
+            name=name,
+            email=email,
+            phone=phone,
+            business=business,
+            message=message,
+            page=page,
+        )
+
+        try:
+            send_telegram_notification(chat_id=chat_id, text=telegram_message)
+        except Exception as exc:  # pragma: no cover - surfaced to the UI
+            print(f"Contact notification failed: {exc}", flush=True)
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "telegram_contact_failed",
+                "message": "I could not send the message right now. Please try again in a moment.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Thanks, I got your message. I'll get back to you soon.",
+        })
+
+    def _build_contact_telegram_message(
+        self,
+        *,
+        name: str,
+        email: str,
+        phone: str,
+        business: str,
+        message: str,
+        page: str,
+    ) -> str:
+        lines = [
+            "New Assistyca contact request",
+            f"Received: {now_iso()}",
+            "",
+            f"Name: {name}",
+        ]
+        if email:
+            lines.append(f"Email: {email}")
+        if phone:
+            lines.append(f"Phone: {phone}")
+        if business:
+            lines.append(f"Business: {business}")
+
+        country = self._request_country()
+        if country:
+            lines.append(f"Country: {country}")
+        if page:
+            lines.append(f"Page: {page}")
+
+        lines.extend(["", "Message:", message])
+        return "\n".join(lines).strip()
 
     def _handle_whatsapp_test(self) -> None:
         session = self._get_authenticated_session()

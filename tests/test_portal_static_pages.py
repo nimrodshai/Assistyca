@@ -48,6 +48,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("AI Agents &amp; Automations", body)
         self.assertIn("I build smart systems", body)
         self.assertIn("With a background in technology and a passion for", body)
+        self.assertIn("data-contact-modal", body)
+        self.assertIn("/api/contact", body)
+        self.assertNotIn("mailto:nimrod.shai@gmail.com", body)
 
 
 if __name__ == "__main__":
