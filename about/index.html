@@ -41,8 +41,11 @@
       :root {
         color-scheme: light;
         --header-space: 6.5rem;
+        --page-max: 100rem;
         --bg: #fbf8f1;
         --bg-deep: #f3efe6;
+        --rail-left: #ddfbf1;
+        --rail-right: #fff0bc;
         --surface: rgba(255, 255, 255, 0.72);
         --surface-soft: rgba(244, 241, 235, 0.9);
         --ink: #132038;
@@ -75,19 +78,20 @@
         color: var(--ink);
         overflow-x: clip;
         background:
-          radial-gradient(circle at top left, rgba(106, 167, 163, 0.1), transparent 28%),
-          radial-gradient(circle at top right, rgba(223, 215, 199, 0.55), transparent 34%),
-          linear-gradient(180deg, var(--bg), var(--bg-deep));
+          linear-gradient(90deg, var(--rail-left) 0%, #ecfff8 18%, #fff8db 82%, var(--rail-right) 100%);
       }
 
-      body::before {
+      .page::before {
         content: "";
-        position: fixed;
+        position: absolute;
         inset: 0;
         pointer-events: none;
         background:
+          radial-gradient(circle at top left, rgba(106, 167, 163, 0.1), transparent 28%),
+          radial-gradient(circle at top right, rgba(223, 215, 199, 0.55), transparent 34%),
           radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.72), transparent 26%),
-          radial-gradient(circle at 85% 16%, rgba(255, 255, 255, 0.46), transparent 30%);
+          radial-gradient(circle at 85% 16%, rgba(255, 255, 255, 0.46), transparent 30%),
+          linear-gradient(180deg, var(--bg), var(--bg-deep));
       }
 
       a {
@@ -112,7 +116,23 @@
 
       .page {
         position: relative;
+        isolation: isolate;
+        width: min(100%, var(--page-max));
+        min-height: 100svh;
+        margin: 0 auto;
         padding-top: var(--header-space);
+        overflow: clip;
+        background:
+          radial-gradient(circle at 9% 18%, rgba(255, 255, 255, 0.64), transparent 24%),
+          linear-gradient(180deg, var(--bg), var(--bg-deep));
+        box-shadow:
+          -22px 0 54px rgba(19, 32, 56, 0.08),
+          22px 0 54px rgba(19, 32, 56, 0.08);
+      }
+
+      .page > * {
+        position: relative;
+        z-index: 1;
       }
 
       .site-header,
@@ -130,8 +150,9 @@
       .site-header-shell {
         position: fixed;
         top: 0;
-        left: 0;
-        right: 0;
+        left: 50%;
+        width: min(100%, var(--page-max));
+        transform: translateX(-50%);
         z-index: 40;
         background: linear-gradient(
           180deg,
