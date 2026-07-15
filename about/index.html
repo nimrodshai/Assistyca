@@ -847,7 +847,7 @@
         z-index: 80;
         display: grid;
         place-items: center;
-        padding: clamp(1rem, 4vw, 2.5rem);
+        padding: clamp(0.75rem, 3vw, 1.6rem);
       }
 
       .contact-modal::before {
@@ -861,10 +861,10 @@
 
       .contact-panel {
         position: relative;
-        width: min(100%, 38rem);
-        max-height: min(90svh, 48rem);
-        overflow: auto;
-        padding: clamp(1.35rem, 3vw, 2rem);
+        width: min(100%, 34rem);
+        max-height: calc(100svh - clamp(1.5rem, 6vw, 3.2rem));
+        overflow: hidden;
+        padding: clamp(1.1rem, 2.6vw, 1.55rem);
         border: 1px solid rgba(19, 32, 56, 0.1);
         border-radius: 0.5rem;
         background:
@@ -876,35 +876,35 @@
       .contact-panel-header {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
-        gap: 1rem;
+        gap: 0.85rem;
         align-items: start;
+      }
+
+      .contact-panel .section-label {
+        margin-bottom: 0.55rem;
       }
 
       .contact-panel h2 {
         margin: 0;
-        font-size: clamp(2rem, 4vw, 3rem);
-        line-height: 1.02;
+        font-size: clamp(1.8rem, 3vw, 2.35rem);
+        line-height: 1.04;
         letter-spacing: -0.055em;
         font-weight: 700;
-      }
-
-      .contact-panel-copy {
-        max-width: 30rem;
-        margin: 0.85rem 0 0;
-        color: rgba(19, 32, 56, 0.72);
-        line-height: 1.62;
       }
 
       .contact-close {
         display: grid;
         place-items: center;
-        width: 2.45rem;
-        height: 2.45rem;
+        width: 3rem;
+        height: 3rem;
         border-radius: 999px;
         color: var(--ink);
         background: rgba(255, 255, 255, 0.62);
         border: 1px solid rgba(19, 32, 56, 0.08);
         cursor: pointer;
+        font-size: 2rem;
+        font-weight: 700;
+        line-height: 1;
         transition:
           transform 160ms ease,
           background 160ms ease;
@@ -918,19 +918,19 @@
 
       .contact-form {
         display: grid;
-        gap: 1rem;
-        margin-top: 1.65rem;
+        gap: 0.72rem;
+        margin-top: 1rem;
       }
 
       .contact-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 1rem;
+        gap: 0.72rem 0.9rem;
       }
 
       .contact-field {
         display: grid;
-        gap: 0.42rem;
+        gap: 0.28rem;
       }
 
       .contact-field-full {
@@ -939,7 +939,7 @@
 
       .contact-field label {
         color: rgba(19, 32, 56, 0.82);
-        font-size: 0.86rem;
+        font-size: 0.78rem;
         font-weight: 700;
       }
 
@@ -950,7 +950,8 @@
         border-radius: 0.5rem;
         background: rgba(255, 255, 255, 0.72);
         color: var(--ink);
-        padding: 0.82rem 0.9rem;
+        min-height: 2.7rem;
+        padding: 0.62rem 0.75rem;
         outline: none;
         transition:
           border-color 160ms ease,
@@ -959,7 +960,7 @@
       }
 
       .contact-field textarea {
-        min-height: 8.4rem;
+        min-height: 6rem;
         resize: vertical;
       }
 
@@ -976,11 +977,11 @@
       }
 
       .contact-field-error {
-        min-height: 1rem;
+        min-height: 0.85rem;
         margin: 0;
         color: #a34646;
-        font-size: 0.78rem;
-        line-height: 1.35;
+        font-size: 0.72rem;
+        line-height: 1.25;
       }
 
       .contact-honeypot {
@@ -992,11 +993,11 @@
       }
 
       .contact-status {
-        min-height: 1.25rem;
-        margin: 0.1rem 0 0;
+        min-height: 1rem;
+        margin: 0;
         color: rgba(19, 32, 56, 0.7);
-        font-size: 0.92rem;
-        line-height: 1.45;
+        font-size: 0.82rem;
+        line-height: 1.32;
       }
 
       .contact-status[data-tone="success"] {
@@ -1012,20 +1013,20 @@
         justify-content: flex-end;
         align-items: center;
         flex-wrap: wrap;
-        gap: 0.8rem;
-        margin-top: 0.15rem;
+        gap: 0.7rem;
+        margin-top: 0;
       }
 
       .contact-cancel {
-        min-height: 3.2rem;
-        padding: 0.8rem 1rem;
+        min-height: 2.8rem;
+        padding: 0.7rem 0.9rem;
         color: var(--ink);
         background: transparent;
         cursor: pointer;
       }
 
       .contact-submit {
-        min-height: 3.2rem;
+        min-height: 2.8rem;
       }
 
       .contact-submit[disabled] {
@@ -1482,6 +1483,7 @@
         .contact-panel {
           width: 100%;
           max-height: 92svh;
+          overflow: auto;
         }
 
         .contact-grid {
@@ -1745,15 +1747,11 @@
           role="dialog"
           aria-modal="true"
           aria-labelledby="contact-title"
-          aria-describedby="contact-description"
         >
           <div class="contact-panel-header">
             <div>
               <p class="section-label">Contact</p>
               <h2 id="contact-title">Let&apos;s talk about your workflow.</h2>
-              <p class="contact-panel-copy" id="contact-description">
-                Send the basics and I&apos;ll reply with the next step.
-              </p>
             </div>
             <button class="contact-close" type="button" data-contact-close aria-label="Close contact form">
               &times;
