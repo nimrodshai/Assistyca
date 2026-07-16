@@ -64,6 +64,23 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertIn("contact", payload["fieldErrors"])
         self.assertIn("message", payload["fieldErrors"])
 
+    def test_contact_explains_short_message_was_not_sent(self) -> None:
+        status, payload = self._post_contact({
+            "name": "The Dude",
+            "email": "theduderugs111@gmail.com",
+            "phone": "0501111111",
+            "business": "Rugs inc",
+            "message": "My rugs",
+        })
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "invalid_contact_request")
+        self.assertEqual(payload["message"], "I did not send this yet because the message is too short.")
+        self.assertEqual(payload["fieldErrors"], {
+            "message": "Add a few more words about what you want to improve.",
+        })
+
     def test_missing_contact_chat_id_returns_service_unavailable(self) -> None:
         with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "", "TELEGRAM_CHAT_ID": ""}):
             with patch("packages.infrastructure.portal_auth.server.send_telegram_notification") as send_telegram:

@@ -1985,6 +1985,38 @@
           });
         };
 
+        const getContactValidationMessage = (fieldErrors = {}) => {
+          const fields = Object.keys(fieldErrors);
+          if (fields.length === 1 && fields[0] === "message") {
+            return "I did not send this yet because the message is too short.";
+          }
+
+          return "I did not send this yet. Please fix the highlighted fields first.";
+        };
+
+        const validateContactPayload = (payload) => {
+          const fieldErrors = {};
+          const name = payload.name.replace(/\s+/g, " ").trim();
+          const email = payload.email.trim();
+          const phone = payload.phone.replace(/\s+/g, " ").trim();
+          const message = payload.message.replace(/\s+/g, " ").trim();
+
+          if (name.length < 2) {
+            fieldErrors.name = "Enter your name.";
+          }
+          if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            fieldErrors.email = "Enter a valid email address.";
+          }
+          if (!email && !phone) {
+            fieldErrors.contact = "Enter an email address or phone number.";
+          }
+          if (message.length < 8) {
+            fieldErrors.message = "Add a few more words about what you want to improve.";
+          }
+
+          return fieldErrors;
+        };
+
         const getContactFocusable = () => {
           if (!contactModal || contactModal.hidden) {
             return [];
@@ -2083,7 +2115,6 @@
         if (contactForm) {
           contactForm.addEventListener("submit", async (event) => {
             event.preventDefault();
-            setContactStatus("Sending your message...");
             setContactFieldErrors({});
 
             const formData = new FormData(contactForm);
@@ -2096,6 +2127,15 @@
               companyWebsite: String(formData.get("companyWebsite") || ""),
               page: window.location.href,
             };
+
+            const fieldErrors = validateContactPayload(payload);
+            if (Object.keys(fieldErrors).length) {
+              setContactFieldErrors(fieldErrors);
+              setContactStatus(getContactValidationMessage(fieldErrors), "error");
+              return;
+            }
+
+            setContactStatus("Sending your message...");
 
             if (contactSubmit) {
               contactSubmit.disabled = true;
