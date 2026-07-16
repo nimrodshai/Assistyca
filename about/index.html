@@ -1987,15 +1987,6 @@
           });
         };
 
-        const getContactValidationMessage = (fieldErrors = {}) => {
-          const fields = Object.keys(fieldErrors);
-          if (fields.length === 1 && fields[0] === "message") {
-            return "I did not send this yet because the message is too short.";
-          }
-
-          return "I did not send this yet. Please fix the highlighted fields first.";
-        };
-
         const validateContactPayload = (payload) => {
           const fieldErrors = {};
           const name = payload.name.replace(/\s+/g, " ").trim();
@@ -2013,7 +2004,7 @@
             fieldErrors.contact = "Enter an email address or phone number.";
           }
           if (message.length < 8) {
-            fieldErrors.message = "Add a few more words about what you want to improve.";
+            fieldErrors.message = "Message is too short. Add a few more words before sending.";
           }
 
           return fieldErrors;
@@ -2117,6 +2108,7 @@
         if (contactForm) {
           contactForm.addEventListener("submit", async (event) => {
             event.preventDefault();
+            setContactStatus("");
             setContactFieldErrors({});
 
             const formData = new FormData(contactForm);
@@ -2133,7 +2125,11 @@
             const fieldErrors = validateContactPayload(payload);
             if (Object.keys(fieldErrors).length) {
               setContactFieldErrors(fieldErrors);
-              setContactStatus(getContactValidationMessage(fieldErrors), "error");
+              return;
+            }
+
+            if (window.location.protocol === "file:") {
+              setContactStatus("This local preview cannot send messages. Open assistyca.com/about to send.", "error");
               return;
             }
 
@@ -2153,7 +2149,12 @@
               const data = await response.json().catch(() => ({}));
 
               if (!response.ok || !data.ok) {
-                setContactFieldErrors(data.fieldErrors || {});
+                const apiFieldErrors = data.fieldErrors || {};
+                setContactFieldErrors(apiFieldErrors);
+                if (Object.keys(apiFieldErrors).length) {
+                  return;
+                }
+
                 throw new Error(data.message || "Could not send the message right now.");
               }
 

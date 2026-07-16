@@ -1626,12 +1626,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not email and not phone:
             field_errors["contact"] = "Enter an email address or phone number."
         if len(message) < 8:
-            field_errors["message"] = "Add a few more words about what you want to improve."
+            field_errors["message"] = "Message is too short. Add a few more words before sending."
 
         if field_errors:
             validation_message = "I did not send this yet. Please fix the highlighted fields first."
             if set(field_errors) == {"message"}:
-                validation_message = "I did not send this yet because the message is too short."
+                validation_message = field_errors["message"]
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "invalid_contact_request",

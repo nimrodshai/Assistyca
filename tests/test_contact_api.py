@@ -76,9 +76,9 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"], "invalid_contact_request")
-        self.assertEqual(payload["message"], "I did not send this yet because the message is too short.")
+        self.assertEqual(payload["message"], "Message is too short. Add a few more words before sending.")
         self.assertEqual(payload["fieldErrors"], {
-            "message": "Add a few more words about what you want to improve.",
+            "message": "Message is too short. Add a few more words before sending.",
         })
 
     def test_missing_contact_chat_id_returns_service_unavailable(self) -> None:
