@@ -199,6 +199,10 @@
         height: auto;
       }
 
+      .menu-toggle {
+        display: none;
+      }
+
       .nav {
         display: flex;
         align-items: center;
@@ -1333,33 +1337,168 @@
           padding-right: 1.2rem;
         }
 
-        .site-header,
-        .hero,
-        .about-spotlight {
-          padding-right: 0;
+        .site-header {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 0.85rem;
+          padding-top: 0.82rem;
+          padding-bottom: 0.82rem;
+          padding-right: 1.2rem;
         }
 
         .brand {
-          width: min(16rem, 60vw);
+          width: min(12.9rem, 54vw);
         }
 
         .brand img {
           width: 100%;
         }
 
+        .menu-toggle {
+          position: relative;
+          display: grid;
+          place-items: center;
+          width: 2.9rem;
+          height: 2.9rem;
+          border: 1px solid rgba(19, 32, 56, 0.1);
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.62);
+          color: var(--ink);
+          cursor: pointer;
+          box-shadow: 0 12px 24px rgba(19, 32, 56, 0.06);
+          transition:
+            transform 160ms ease,
+            background 160ms ease,
+            border-color 160ms ease;
+        }
+
+        .menu-toggle:hover,
+        .menu-toggle:focus-visible {
+          transform: translateY(-1px);
+          background: rgba(255, 255, 255, 0.88);
+          border-color: rgba(79, 146, 144, 0.25);
+        }
+
+        .menu-toggle-lines,
+        .menu-toggle-lines::before,
+        .menu-toggle-lines::after {
+          display: block;
+          width: 1.12rem;
+          height: 0.12rem;
+          border-radius: 999px;
+          background: currentColor;
+          transition:
+            transform 180ms ease,
+            opacity 160ms ease;
+        }
+
+        .menu-toggle-lines {
+          position: relative;
+        }
+
+        .menu-toggle-lines::before,
+        .menu-toggle-lines::after {
+          content: "";
+          position: absolute;
+          left: 0;
+        }
+
+        .menu-toggle-lines::before {
+          transform: translateY(-0.38rem);
+        }
+
+        .menu-toggle-lines::after {
+          transform: translateY(0.38rem);
+        }
+
+        body.mobile-nav-open .menu-toggle {
+          background: rgba(255, 255, 255, 0.94);
+          border-color: rgba(79, 146, 144, 0.32);
+        }
+
+        body.mobile-nav-open .menu-toggle-lines {
+          transform: rotate(45deg);
+        }
+
+        body.mobile-nav-open .menu-toggle-lines::before {
+          opacity: 0;
+          transform: translateY(0);
+        }
+
+        body.mobile-nav-open .menu-toggle-lines::after {
+          transform: translateY(0) rotate(-90deg);
+        }
+
         .nav {
-          gap: 0.85rem;
+          position: absolute;
+          top: calc(100% + 0.38rem);
+          left: 1.2rem;
+          right: 1.2rem;
+          display: grid;
+          width: auto;
+          gap: 0.12rem;
+          padding: 0.46rem;
+          overflow: visible;
+          border: 1px solid rgba(19, 32, 56, 0.08);
+          border-radius: 0.75rem;
+          background:
+            linear-gradient(180deg, #fffcf5, #fbf8f1);
+          backdrop-filter: blur(18px) saturate(140%);
+          -webkit-backdrop-filter: blur(18px) saturate(140%);
+          box-shadow: 0 22px 54px rgba(19, 32, 56, 0.16);
+          opacity: 0;
+          pointer-events: none;
+          transform: translateY(-0.35rem);
+          z-index: 12;
+          transition:
+            opacity 170ms ease,
+            transform 170ms ease;
+        }
+
+        body.mobile-nav-open .nav {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0);
         }
 
         .nav a,
         .nav button {
-          font-size: 0.96rem;
+          width: 100%;
+          min-height: 2.8rem;
+          padding: 0.72rem 0.86rem;
+          border-radius: 0.5rem;
+          font-size: 0.98rem;
+          display: flex;
+          align-items: center;
+          text-align: left;
+        }
+
+        .nav a:hover,
+        .nav a:focus-visible,
+        .nav button:hover,
+        .nav button:focus-visible {
+          background: rgba(106, 167, 163, 0.12);
+          transform: none;
+        }
+
+        .nav .nav-cta {
+          justify-content: center;
+          margin-top: 0.22rem;
+          min-height: 2.9rem;
+          padding: 0.78rem 0.95rem;
+          text-align: center;
+        }
+
+        .nav-indicator {
+          display: none;
         }
 
         h1 {
-          max-width: none;
-          font-size: clamp(2.35rem, 13vw, 3.55rem);
-          line-height: 1.02;
+          max-width: 10.5ch;
+          font-size: clamp(2.5rem, 11.8vw, 3.2rem);
+          line-height: 1.01;
+          letter-spacing: -0.055em;
         }
 
         .hero-line {
@@ -1368,26 +1507,45 @@
         }
 
         .hero-copy p {
-          max-width: none;
-          font-size: 1.04rem;
+          max-width: 19rem;
+          margin-top: 1.25rem;
+          font-size: 1.02rem;
+          line-height: 1.52;
         }
 
         .hero-copy {
-          padding-right: 1.2rem;
+          padding-right: 0;
+        }
+
+        .hero {
+          padding-top: 1.55rem;
+          padding-bottom: 2.55rem;
         }
 
         .hero-actions {
           flex-direction: column;
-          align-items: flex-start;
-          gap: 0.95rem;
+          align-items: stretch;
+          gap: 0.82rem;
+          margin-top: 1.65rem;
+        }
+
+        .button-primary,
+        .button-secondary {
+          min-height: 3.16rem;
         }
 
         .button-primary {
-          width: min(100%, 20rem);
+          width: 100%;
+        }
+
+        .button-secondary {
+          align-self: center;
+          width: fit-content;
+          min-height: 2.8rem;
         }
 
         .hero-visual {
-          min-height: 22rem;
+          min-height: 17rem;
           overflow: hidden;
         }
 
@@ -1589,7 +1747,17 @@
           <a class="brand" href="#home" aria-label="Assistyca home">
             <img src="../assets/AssistycaLogoTitle.png" alt="Assistyca" />
           </a>
-          <nav class="nav" aria-label="Page navigation">
+          <button
+            class="menu-toggle"
+            type="button"
+            aria-label="Open navigation"
+            aria-controls="site-navigation"
+            aria-expanded="false"
+            data-nav-toggle
+          >
+            <span class="menu-toggle-lines" aria-hidden="true"></span>
+          </button>
+          <nav class="nav" id="site-navigation" aria-label="Page navigation">
             <a data-section="home" href="#home">Home</a>
             <a data-section="about-me" href="#about-me">About Me</a>
             <a data-section="services" href="#services">Services</a>
@@ -1928,6 +2096,53 @@
 
         updateHeaderSpace();
         window.addEventListener("resize", updateHeaderSpace);
+        window.addEventListener("load", updateHeaderSpace);
+
+        const menuToggle = document.querySelector("[data-nav-toggle]");
+        const mobileNav = document.querySelector("#site-navigation");
+        const closeMobileNav = () => {
+          document.body.classList.remove("mobile-nav-open");
+          if (menuToggle) {
+            menuToggle.setAttribute("aria-expanded", "false");
+            menuToggle.setAttribute("aria-label", "Open navigation");
+          }
+        };
+
+        if (menuToggle && mobileNav) {
+          menuToggle.addEventListener("click", () => {
+            const nextOpen = !document.body.classList.contains("mobile-nav-open");
+            document.body.classList.toggle("mobile-nav-open", nextOpen);
+            menuToggle.setAttribute("aria-expanded", String(nextOpen));
+            menuToggle.setAttribute("aria-label", nextOpen ? "Close navigation" : "Open navigation");
+          });
+
+          mobileNav.querySelectorAll("a, button").forEach((item) => {
+            item.addEventListener("click", closeMobileNav);
+          });
+
+          document.addEventListener("click", (event) => {
+            if (
+              !document.body.classList.contains("mobile-nav-open") ||
+              event.target.closest(".site-header")
+            ) {
+              return;
+            }
+
+            closeMobileNav();
+          });
+
+          document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+              closeMobileNav();
+            }
+          });
+
+          window.addEventListener("resize", () => {
+            if (window.innerWidth > 720) {
+              closeMobileNav();
+            }
+          });
+        }
 
         const contactModal = document.querySelector("[data-contact-modal]");
         const contactForm = document.querySelector("[data-contact-form]");
