@@ -47,7 +47,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Assistyca | Nimrod Shai", body)
         self.assertIn("AI Agents &amp; Automations", body)
         self.assertIn("I build smart systems", body)
-        self.assertIn("With a background in technology and a passion for", body)
+        self.assertIn("With a background in technology since 2009 and a passion for", body)
         self.assertIn("data-contact-modal", body)
         self.assertIn("/api/contact", body)
         self.assertNotIn("mailto:nimrod.shai@gmail.com", body)
