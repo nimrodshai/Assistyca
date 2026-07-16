@@ -44,8 +44,8 @@
         --page-max: 100rem;
         --bg: #fbf8f1;
         --bg-deep: #f3efe6;
-        --rail-left: #ddfbf1;
-        --rail-right: #fff0bc;
+        --rail: #eee9df;
+        --rail-edge: #e4ded2;
         --surface: rgba(255, 255, 255, 0.72);
         --surface-soft: rgba(244, 241, 235, 0.9);
         --ink: #132038;
@@ -78,7 +78,7 @@
         color: var(--ink);
         overflow-x: clip;
         background:
-          linear-gradient(90deg, var(--rail-left) 0%, #ecfff8 18%, #fff8db 82%, var(--rail-right) 100%);
+          linear-gradient(90deg, var(--rail-edge), var(--rail) 18%, var(--rail) 82%, var(--rail-edge));
       }
 
       .page::before {
@@ -838,19 +838,19 @@
         border-top: 1px solid var(--line);
         padding-top: clamp(2.85rem, 5vw, 4.2rem);
         padding-bottom: clamp(3.1rem, 5.8vw, 5rem);
-        background:
-          radial-gradient(circle at 78% 42%, rgba(255, 255, 255, 0.75), transparent 28%),
-          linear-gradient(100deg, rgba(224, 247, 241, 0.95), rgba(251, 248, 241, 0.78) 54%, rgba(255, 247, 213, 0.9));
+        background: rgba(255, 255, 255, 0.28);
         overflow: hidden;
       }
 
       .final-cta::before {
         content: "";
         position: absolute;
-        inset: 0;
-        background:
-          linear-gradient(90deg, rgba(106, 167, 163, 0.2), transparent 33%),
-          linear-gradient(180deg, rgba(255, 255, 255, 0.52), transparent 45%);
+        top: 0;
+        left: clamp(1.3rem, 4vw, 5rem);
+        width: min(9rem, 24vw);
+        height: 2px;
+        background: var(--accent);
+        opacity: 0.78;
         pointer-events: none;
       }
 
