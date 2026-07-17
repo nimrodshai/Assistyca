@@ -5,6 +5,7 @@ import re
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib import parse as urllib_parse
 
 from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp_store_root
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
@@ -28,11 +29,15 @@ from packages.tools.whatsapp_reply_approval.server import short_ref
 from packages.tools.whatsapp_reply_approval.server import verify_whatsapp_signature
 
 DEFAULT_SAMPLE_TEMPLATE_LANGUAGE = "en_US"
+DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX = "0"
+DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE = "en"
+DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE = "path"
 
 
 def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -> dict[str, Any]:
     source = templates if isinstance(templates, dict) else {}
     sample_source = source.get("sample_owner") if isinstance(source.get("sample_owner"), dict) else {}
+    owner_source = source.get("owner_notification") if isinstance(source.get("owner_notification"), dict) else {}
     sample_name = normalize_text(
         os.getenv("WHATSAPP_SAMPLE_TEMPLATE_NAME")
         or sample_source.get("name")
@@ -44,10 +49,39 @@ def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -
         or source.get("sample_owner_language")
         or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE
     ) or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE
+    owner_name = normalize_text(
+        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME")
+        or owner_source.get("name")
+        or source.get("owner_notification_name")
+    )
+    owner_language = normalize_text(
+        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE")
+        or owner_source.get("language")
+        or source.get("owner_notification_language")
+        or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE
+    ) or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE
+    owner_button_index = normalize_text(
+        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX")
+        or owner_source.get("button_index")
+        or source.get("owner_notification_button_index")
+        or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
+    ) or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
+    owner_url_mode = normalize_text(
+        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE")
+        or owner_source.get("url_mode")
+        or source.get("owner_notification_url_mode")
+        or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE
+    ).lower() or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE
     return {
         "sample_owner": {
             "name": sample_name,
             "language": sample_language,
+        },
+        "owner_notification": {
+            "name": owner_name,
+            "language": owner_language,
+            "button_index": owner_button_index,
+            "url_mode": owner_url_mode,
         },
     }
 
@@ -239,15 +273,92 @@ class PortalWhatsAppService:
             },
         }
 
+    def build_approval_review_url(self, approval: dict[str, Any]) -> str:
+        approval_id = normalize_text(approval.get("approval_id"))
+        return f"{self.config.base_url.rstrip()}/approval/{urllib_parse.quote(approval_id)}"
+
+    def build_template_url_parameter(self, review_url: str, url_mode: str) -> str:
+        if normalize_text(url_mode).lower() not in {"full", "full_url", "absolute"}:
+            parsed = urllib_parse.urlparse(review_url)
+            url_parameter = parsed.path.lstrip("/")
+            if parsed.query:
+                url_parameter = f"{url_parameter}?{parsed.query}" if url_parameter else f"?{parsed.query}"
+            return url_parameter or review_url
+        return review_url
+
+    def get_owner_notification_template(self, approval: dict[str, Any]) -> dict[str, Any] | None:
+        templates = self.config.templates if isinstance(self.config.templates, dict) else {}
+        owner_template = (
+            templates.get("owner_notification")
+            if isinstance(templates.get("owner_notification"), dict)
+            else {}
+        )
+        template_name = normalize_text(owner_template.get("name"))
+        if not template_name:
+            return None
+
+        template_language = (
+            normalize_text(owner_template.get("language") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE)
+            or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE
+        )
+        button_index = (
+            normalize_text(owner_template.get("button_index") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX)
+            or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
+        )
+        sender_name = normalize_text(
+            approval.get("sender_name") or approval.get("sender_wa_id") or "Customer"
+        )
+        review_url = self.build_approval_review_url(approval)
+        url_parameter = self.build_template_url_parameter(
+            review_url,
+            normalize_text(owner_template.get("url_mode") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE),
+        )
+        return {
+            "name": template_name,
+            "language": {
+                "code": template_language,
+            },
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": sender_name,
+                        }
+                    ],
+                },
+                {
+                    "type": "button",
+                    "sub_type": "url",
+                    "index": button_index,
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": url_parameter,
+                        }
+                    ],
+                },
+            ],
+        }
+
     def notify_owner_about_approval(self, approval: dict[str, Any]) -> str:
         notification_text = build_owner_notification_text(approval)
-        interactive = build_owner_interactive_payload(approval)
-        message_id = self.send_owner_message(approval, message_text=notification_text, interactive=interactive)
+        notification_template = self.get_owner_notification_template(approval)
+        interactive = None if notification_template is not None else build_owner_interactive_payload(approval)
+        message_id = self.send_owner_message(
+            approval,
+            message_text=None if notification_template is not None else notification_text,
+            interactive=interactive,
+            template=notification_template,
+        )
         self.store.update_approval(
             str(approval["approval_id"]),
             {
                 "owner_notification_message_id": message_id,
                 "owner_notification_text": notification_text,
+                "owner_notification_template": notification_template,
+                "owner_notification_review_url": self.build_approval_review_url(approval),
                 "owner_state": "pending",
             },
         )

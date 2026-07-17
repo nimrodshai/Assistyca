@@ -197,6 +197,100 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             },
         )
 
+    def test_build_portal_runtime_config_reads_owner_notification_template_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME": "new_reply_for_review",
+                "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE": "en",
+                "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX": "0",
+                "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE": "path",
+            },
+            clear=False,
+        ):
+            config = build_portal_runtime_config(
+                client_id="portal-user-1",
+                client_name="Portal User",
+                base_url="https://example.com",
+                phone_number_id="12345",
+                owner_wa_id="15551234567",
+                data_path=self.data_path,
+            )
+
+        self.assertEqual(
+            config.templates["owner_notification"],
+            {
+                "name": "new_reply_for_review",
+                "language": "en",
+                "button_index": "0",
+                "url_mode": "path",
+            },
+        )
+
+    def test_owner_notification_uses_template_when_configured(self) -> None:
+        service = self._build_service(
+            templates={
+                "owner_notification": {
+                    "name": "new_reply_for_review",
+                    "language": "en",
+                    "button_index": "0",
+                    "url_mode": "path",
+                },
+            },
+        )
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-1",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.template-2",
+        ) as mocked_send:
+            message_id = service.notify_owner_about_approval(approval)
+
+        self.assertEqual(message_id, "wamid.template-2")
+        mocked_send.assert_called_once()
+        self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
+        self.assertIsNone(mocked_send.call_args.kwargs["interactive"])
+        self.assertEqual(
+            mocked_send.call_args.kwargs["template"],
+            {
+                "name": "new_reply_for_review",
+                "language": {
+                    "code": "en",
+                },
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {
+                                "type": "text",
+                                "text": "John Doe",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "button",
+                        "sub_type": "url",
+                        "index": "0",
+                        "parameters": [
+                            {
+                                "type": "text",
+                                "text": f"approval/{approval['approval_id']}",
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+
     def test_sample_owner_message_uses_template_when_configured(self) -> None:
         service = self._build_service(
             templates={

@@ -69,6 +69,14 @@ services:
         sync: false
       - key: WHATSAPP_SAMPLE_TEMPLATE_LANGUAGE
         value: en_US
+      - key: WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME
+        sync: false
+      - key: WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE
+        value: en
+      - key: WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
+        value: "0"
+      - key: WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE
+        value: path
       - key: WHATSAPP_VERIFY_TOKEN
         sync: false
       - key: WHATSAPP_APP_SECRET
