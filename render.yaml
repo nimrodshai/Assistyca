@@ -75,6 +75,10 @@ services:
         value: en
       - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX
         value: "0"
+      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_TYPE
+        value: quick_reply
+      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_ACTION
+        value: generate
       - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE
         value: path
       - key: WHATSAPP_VERIFY_TOKEN

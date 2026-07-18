@@ -30,6 +30,8 @@ from packages.tools.whatsapp_reply_approval.server import verify_whatsapp_signat
 
 DEFAULT_SAMPLE_TEMPLATE_LANGUAGE = "en_US"
 DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX = "0"
+DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_ACTION = "generate"
+DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_TYPE = "url"
 DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE = "en"
 DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE = "path"
 
@@ -69,6 +71,18 @@ def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -
         or source.get("owner_notification_button_index")
         or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
     ) or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
+    owner_button_type = normalize_text(
+        os.getenv("WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_TYPE")
+        or owner_source.get("button_type")
+        or source.get("owner_notification_button_type")
+        or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_TYPE
+    ).lower() or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_TYPE
+    owner_button_action = normalize_text(
+        os.getenv("WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_ACTION")
+        or owner_source.get("button_action")
+        or source.get("owner_notification_button_action")
+        or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_ACTION
+    ).lower() or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_ACTION
     owner_url_mode = normalize_text(
         os.getenv("WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE")
         or os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE")
@@ -85,6 +99,8 @@ def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -
             "name": owner_name,
             "language": owner_language,
             "button_index": owner_button_index,
+            "button_type": owner_button_type,
+            "button_action": owner_button_action,
             "url_mode": owner_url_mode,
         },
     }
@@ -309,14 +325,47 @@ class PortalWhatsAppService:
             normalize_text(owner_template.get("button_index") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX)
             or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
         )
+        button_type = (
+            normalize_text(owner_template.get("button_type") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_TYPE)
+            or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_TYPE
+        ).lower().replace("-", "_")
         sender_name = normalize_text(
             approval.get("sender_name") or approval.get("sender_wa_id") or "Customer"
         )
-        review_url = self.build_approval_review_url(approval)
-        url_parameter = self.build_template_url_parameter(
-            review_url,
-            normalize_text(owner_template.get("url_mode") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE),
-        )
+        button_component: dict[str, Any]
+        if button_type in {"quick_reply", "quickreply", "reply"}:
+            button_action = (
+                normalize_text(owner_template.get("button_action") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_ACTION)
+                or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_ACTION
+            ).lower()
+            button_component = {
+                "type": "button",
+                "sub_type": "quick_reply",
+                "index": button_index,
+                "parameters": [
+                    {
+                        "type": "payload",
+                        "payload": f"approval:{normalize_text(approval.get('approval_id'))}:{button_action}",
+                    }
+                ],
+            }
+        else:
+            review_url = self.build_approval_review_url(approval)
+            url_parameter = self.build_template_url_parameter(
+                review_url,
+                normalize_text(owner_template.get("url_mode") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE),
+            )
+            button_component = {
+                "type": "button",
+                "sub_type": "url",
+                "index": button_index,
+                "parameters": [
+                    {
+                        "type": "text",
+                        "text": url_parameter,
+                    }
+                ],
+            }
         return {
             "name": template_name,
             "language": {
@@ -332,17 +381,7 @@ class PortalWhatsAppService:
                         }
                     ],
                 },
-                {
-                    "type": "button",
-                    "sub_type": "url",
-                    "index": button_index,
-                    "parameters": [
-                        {
-                            "type": "text",
-                            "text": url_parameter,
-                        }
-                    ],
-                },
+                button_component,
             ],
         }
 
@@ -433,7 +472,7 @@ class PortalWhatsAppService:
         if isinstance(interactive_reply, dict):
             interactive_id = normalize_text(interactive_reply.get("id"))
             if interactive_id:
-                match = re.match(r"^approval:([0-9a-f]+):(send|edit|skip)$", interactive_id)
+                match = re.match(r"^approval:([0-9a-f]+):(send|edit|skip|generate|preview|review)$", interactive_id)
                 if match:
                     approval = self.store.find_approval_by_reference(match.group(1))
                     if approval is not None:
@@ -458,7 +497,18 @@ class PortalWhatsAppService:
             return awaiting_edit[0]
 
         pending = self.store.list_approvals(status="pending")
-        if len(pending) == 1 and text.lower() in {"send", "approve", "skip", "cancel", "later"}:
+        if len(pending) == 1 and text.lower().rstrip("!.") in {
+            "send",
+            "approve",
+            "skip",
+            "cancel",
+            "later",
+            "sure",
+            "yes",
+            "generate",
+            "preview",
+            "review",
+        }:
             return pending[0]
 
         return None
@@ -518,6 +568,9 @@ class PortalWhatsAppService:
             if interactive_id.endswith(":send"):
                 command = "send_suggested"
                 argument = ""
+            elif interactive_id.endswith((":generate", ":preview", ":review")):
+                command = "show_suggestion"
+                argument = ""
             elif interactive_id.endswith(":edit"):
                 command = "edit_request"
                 argument = ""
@@ -563,6 +616,28 @@ class PortalWhatsAppService:
             }
 
         try:
+            if command == "show_suggestion":
+                review_text = build_owner_notification_text(approval)
+                message_id = self.send_owner_message(
+                    approval,
+                    message_text=None,
+                    interactive=build_owner_interactive_payload(approval),
+                )
+                updated = self.store.update_approval(
+                    approval_id,
+                    {
+                        "owner_review_message_id": message_id,
+                        "owner_review_text": review_text,
+                        "owner_state": "reviewing",
+                    },
+                )
+                return {
+                    "type": "owner",
+                    "action": "show_suggestion",
+                    "approval": updated,
+                    "message_id": message_id,
+                }
+
             if command == "send_suggested":
                 reply_text = normalize_text(approval.get("suggested_reply"))
                 if not reply_text:

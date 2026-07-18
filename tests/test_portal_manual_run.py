@@ -18,6 +18,7 @@ from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppServic
 from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.whatsapp_reply_approval.server import BackendStore
+from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 
 
@@ -204,6 +205,8 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
                 "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME": "new_reply_for_review",
                 "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_LANGUAGE": "en",
                 "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX": "0",
+                "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_TYPE": "quick_reply",
+                "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_ACTION": "generate",
                 "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE": "path",
             },
             clear=False,
@@ -223,6 +226,8 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
                 "name": "new_reply_for_review",
                 "language": "en",
                 "button_index": "0",
+                "button_type": "quick_reply",
+                "button_action": "generate",
                 "url_mode": "path",
             },
         )
@@ -253,6 +258,8 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
                 "name": "legacy_reply_alert",
                 "language": "en",
                 "button_index": "0",
+                "button_type": "url",
+                "button_action": "generate",
                 "url_mode": "path",
             },
         )
@@ -264,6 +271,7 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
                     "name": "new_reply_for_review",
                     "language": "en",
                     "button_index": "0",
+                    "button_type": "url",
                     "url_mode": "path",
                 },
             },
@@ -318,6 +326,149 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
                         ],
                     },
                 ],
+            },
+        )
+
+    def test_owner_notification_uses_quick_reply_template_when_configured(self) -> None:
+        service = self._build_service(
+            templates={
+                "owner_notification": {
+                    "name": "whatsapp_reply_assistant",
+                    "language": "en",
+                    "button_index": "0",
+                    "button_type": "quick_reply",
+                    "button_action": "generate",
+                },
+            },
+        )
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-1",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.template-quick-reply",
+        ) as mocked_send:
+            message_id = service.notify_owner_about_approval(approval)
+
+        self.assertEqual(message_id, "wamid.template-quick-reply")
+        self.assertEqual(
+            mocked_send.call_args.kwargs["template"]["components"][1],
+            {
+                "type": "button",
+                "sub_type": "quick_reply",
+                "index": "0",
+                "parameters": [
+                    {
+                        "type": "payload",
+                        "payload": f"approval:{approval['approval_id']}:generate",
+                    }
+                ],
+            },
+        )
+
+    def test_owner_quick_reply_generate_sends_hot_review_prompt(self) -> None:
+        service = self._build_service()
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-1",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+        service.store.append_approval_message_id(approval["approval_id"], "wamid.template-quick-reply")
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.hot-review",
+        ) as mocked_send:
+            result = service.handle_owner_event(
+                {
+                    "thread_id": "15551234567",
+                    "sender_name": "Owner",
+                    "sender_wa_id": "15551234567",
+                    "message_text": "Sure!",
+                    "message_type": "interactive",
+                    "source_message_id": "wamid.owner-sure",
+                    "reply_to_message_id": "wamid.template-quick-reply",
+                    "interactive_reply": {
+                        "id": f"approval:{approval['approval_id']}:generate",
+                        "title": "Sure!",
+                        "type": "button_reply",
+                    },
+                    "raw_payload": {"object": "whatsapp_business_account"},
+                }
+            )
+
+        self.assertEqual(result["action"], "show_suggestion")
+        self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
+        self.assertIsNone(mocked_send.call_args.kwargs["template"])
+        self.assertEqual(mocked_send.call_args.kwargs["interactive"]["type"], "button")
+        button_ids = [
+            button["reply"]["id"]
+            for button in mocked_send.call_args.kwargs["interactive"]["action"]["buttons"]
+        ]
+        self.assertIn(f"approval:{approval['approval_id']}:send", button_ids)
+        updated = service.store.get_approval(approval["approval_id"])
+        self.assertEqual(updated["owner_state"], "reviewing")
+        self.assertEqual(updated["owner_review_message_id"], "wamid.hot-review")
+
+    def test_extract_inbound_events_handles_template_button_reply(self) -> None:
+        events = extract_inbound_events(
+            {
+                "entry": [
+                    {
+                        "changes": [
+                            {
+                                "value": {
+                                    "metadata": {"phone_number_id": "12345"},
+                                    "contacts": [
+                                        {
+                                            "wa_id": "15551234567",
+                                            "profile": {"name": "Owner"},
+                                        }
+                                    ],
+                                    "messages": [
+                                        {
+                                            "from": "15551234567",
+                                            "id": "wamid.owner-sure",
+                                            "timestamp": "1720000000",
+                                            "type": "button",
+                                            "context": {"id": "wamid.template-quick-reply"},
+                                            "button": {
+                                                "text": "Sure!",
+                                                "payload": "approval:abcdef123456:generate",
+                                            },
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message_type"], "button")
+        self.assertEqual(events[0]["message_text"], "Sure!")
+        self.assertEqual(events[0]["reply_to_message_id"], "wamid.template-quick-reply")
+        self.assertEqual(
+            events[0]["interactive_reply"],
+            {
+                "id": "approval:abcdef123456:generate",
+                "title": "Sure!",
+                "type": "button",
             },
         )
 

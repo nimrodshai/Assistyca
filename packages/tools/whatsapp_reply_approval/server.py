@@ -1373,7 +1373,7 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         if not isinstance(message, dict):
                             continue
                         message_type = normalize_text(message.get("type")) or "text"
-                        if message_type not in {"text", "image", "audio", "video", "document", "interactive", "location"}:
+                        if message_type not in {"text", "image", "audio", "video", "document", "interactive", "button", "location"}:
                             continue
                         message_text = extract_message_text(message)
                         reply_to_message_id = extract_message_context_id(message)
@@ -1492,6 +1492,12 @@ def extract_message_text(message: dict[str, Any]) -> str:
         if title:
             return title
 
+    button = message.get("button")
+    if isinstance(button, dict):
+        text = normalize_text(button.get("text") or button.get("title"))
+        if text:
+            return text
+
     list_reply = get_nested(message, "interactive", "list_reply", default={})
     if isinstance(list_reply, dict):
         title = normalize_text(list_reply.get("title"))
@@ -1521,23 +1527,29 @@ def extract_message_context_id(message: dict[str, Any]) -> str:
 
 def extract_interactive_reply(message: dict[str, Any]) -> dict[str, str]:
     interactive = message.get("interactive", {})
-    if not isinstance(interactive, dict):
-        return {"id": "", "title": "", "type": ""}
+    if isinstance(interactive, dict):
+        button_reply = interactive.get("button_reply")
+        if isinstance(button_reply, dict):
+            return {
+                "id": normalize_text(button_reply.get("id")),
+                "title": normalize_text(button_reply.get("title")),
+                "type": "button_reply",
+            }
 
-    button_reply = interactive.get("button_reply")
-    if isinstance(button_reply, dict):
-        return {
-            "id": normalize_text(button_reply.get("id")),
-            "title": normalize_text(button_reply.get("title")),
-            "type": "button_reply",
-        }
+        list_reply = interactive.get("list_reply")
+        if isinstance(list_reply, dict):
+            return {
+                "id": normalize_text(list_reply.get("id")),
+                "title": normalize_text(list_reply.get("title")),
+                "type": "list_reply",
+            }
 
-    list_reply = interactive.get("list_reply")
-    if isinstance(list_reply, dict):
+    button = message.get("button")
+    if isinstance(button, dict):
         return {
-            "id": normalize_text(list_reply.get("id")),
-            "title": normalize_text(list_reply.get("title")),
-            "type": "list_reply",
+            "id": normalize_text(button.get("payload") or button.get("id")),
+            "title": normalize_text(button.get("text") or button.get("title")),
+            "type": "button",
         }
 
     return {"id": "", "title": "", "type": ""}
@@ -1626,6 +1638,8 @@ def parse_owner_command_text(text: str) -> tuple[str, str]:
         return "help", ""
     if lower in {"send", "approve"}:
         return "send_suggested", ""
+    if lower.rstrip("!.") in {"sure", "yes", "generate", "preview", "review"}:
+        return "show_suggestion", ""
     if lower == "edit":
         return "edit_request", ""
     if lower.startswith("send:"):
@@ -1757,7 +1771,7 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
         if isinstance(interactive_reply, dict):
             interactive_id = normalize_text(interactive_reply.get("id"))
             if interactive_id:
-                match = re.match(r"^approval:([0-9a-f]+):(send|edit|skip)$", interactive_id)
+                match = re.match(r"^approval:([0-9a-f]+):(send|edit|skip|generate|preview|review)$", interactive_id)
                 if match:
                     approval = store.find_approval_by_reference(match.group(1))
                     if approval is not None:
@@ -1782,7 +1796,18 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
             return awaiting_edit[0]
 
         pending = store.list_approvals(status="pending")
-        if len(pending) == 1 and text.lower() in {"send", "approve", "skip", "cancel", "later"}:
+        if len(pending) == 1 and text.lower().rstrip("!.") in {
+            "send",
+            "approve",
+            "skip",
+            "cancel",
+            "later",
+            "sure",
+            "yes",
+            "generate",
+            "preview",
+            "review",
+        }:
             return pending[0]
 
         return None
@@ -1829,6 +1854,9 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
             interactive_id = normalize_text(interactive_reply.get("id"))
             if interactive_id.endswith(":send"):
                 command = "send_suggested"
+                argument = ""
+            elif interactive_id.endswith((":generate", ":preview", ":review")):
+                command = "show_suggestion"
                 argument = ""
             elif interactive_id.endswith(":edit"):
                 command = "edit_request"
@@ -1878,6 +1906,28 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
             }
 
         try:
+            if command == "show_suggestion":
+                review_text = build_owner_notification_text(approval)
+                message_id = self.send_owner_message(
+                    approval,
+                    message_text=None,
+                    interactive=build_owner_interactive_payload(approval),
+                )
+                updated = self._store().update_approval(
+                    approval_id,
+                    {
+                        "owner_review_message_id": message_id,
+                        "owner_review_text": review_text,
+                        "owner_state": "reviewing",
+                    },
+                )
+                return {
+                    "type": "owner",
+                    "action": "show_suggestion",
+                    "approval": updated,
+                    "message_id": message_id,
+                }
+
             if command == "send_suggested":
                 reply_text = normalize_text(approval.get("suggested_reply"))
                 if not reply_text:

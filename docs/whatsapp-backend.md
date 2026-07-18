@@ -80,10 +80,14 @@ When a customer sends a new WhatsApp message, the backend records an approval an
 
 - `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME`: approved Meta template name, such as `new_reply_for_review`.
 - `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_LANGUAGE`: template language code. For Meta's generic English translation, use `en`.
-- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX`: URL button index, usually `0`.
-- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE`: use `path` when the Meta template URL is like `https://www.assistyca.com/{{1}}`; use `full` when the template expects the full review URL as `{{1}}`.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX`: template button index, usually `0`.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_TYPE`: use `quick_reply` for the "Sure!" flow, or `url` for a dynamic review link.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_ACTION`: quick-reply payload action. Use `generate` for the "Sure!" flow.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE`: only used for URL buttons. Use `path` when the Meta template URL is like `https://www.assistyca.com/{{1}}`; use `full` when the template expects the full review URL as `{{1}}`.
 
-The template must have one body variable for the sender name and one dynamic URL button variable for the approval link.
+For the "Sure!" flow, the template must have one body variable for the sender name and one quick reply button. When the owner taps the quick reply button, the inbound webhook opens the WhatsApp service window and the backend sends the generated reply review controls as a regular interactive message.
+
+For the URL flow, the template must have one body variable for the sender name and one dynamic URL button variable for the approval link.
 
 ### Send Mode
 
