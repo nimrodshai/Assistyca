@@ -197,11 +197,41 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             },
         )
 
-    def test_build_portal_runtime_config_reads_owner_notification_template_env(self) -> None:
+    def test_build_portal_runtime_config_reads_reply_assistant_template_env(self) -> None:
         with mock.patch.dict(
             os.environ,
             {
-                "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME": "new_reply_for_review",
+                "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME": "new_reply_for_review",
+                "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_LANGUAGE": "en",
+                "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX": "0",
+                "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE": "path",
+            },
+            clear=False,
+        ):
+            config = build_portal_runtime_config(
+                client_id="portal-user-1",
+                client_name="Portal User",
+                base_url="https://example.com",
+                phone_number_id="12345",
+                owner_wa_id="15551234567",
+                data_path=self.data_path,
+            )
+
+        self.assertEqual(
+            config.templates["owner_notification"],
+            {
+                "name": "new_reply_for_review",
+                "language": "en",
+                "button_index": "0",
+                "url_mode": "path",
+            },
+        )
+
+    def test_build_portal_runtime_config_accepts_legacy_owner_notification_template_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME": "legacy_reply_alert",
                 "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE": "en",
                 "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX": "0",
                 "WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE": "path",
@@ -220,7 +250,7 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(
             config.templates["owner_notification"],
             {
-                "name": "new_reply_for_review",
+                "name": "legacy_reply_alert",
                 "language": "en",
                 "button_index": "0",
                 "url_mode": "path",

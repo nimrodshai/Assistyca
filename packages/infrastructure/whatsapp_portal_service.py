@@ -50,24 +50,28 @@ def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -
         or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE
     ) or DEFAULT_SAMPLE_TEMPLATE_LANGUAGE
     owner_name = normalize_text(
-        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME")
+        os.getenv("WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME")
+        or os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME")
         or owner_source.get("name")
         or source.get("owner_notification_name")
     )
     owner_language = normalize_text(
-        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE")
+        os.getenv("WHATSAPP_REPLY_ASSISTANT_TEMPLATE_LANGUAGE")
+        or os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE")
         or owner_source.get("language")
         or source.get("owner_notification_language")
         or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE
     ) or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE
     owner_button_index = normalize_text(
-        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX")
+        os.getenv("WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX")
+        or os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX")
         or owner_source.get("button_index")
         or source.get("owner_notification_button_index")
         or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
     ) or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
     owner_url_mode = normalize_text(
-        os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE")
+        os.getenv("WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE")
+        or os.getenv("WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE")
         or owner_source.get("url_mode")
         or source.get("owner_notification_url_mode")
         or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE

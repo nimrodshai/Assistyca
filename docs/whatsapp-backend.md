@@ -74,14 +74,14 @@ The JSON config is intentionally small and reusable.
 
 For shared SaaS deployments, the backend should prefer the `WHATSAPP_*` environment variables so the browser never sees the Meta app secrets.
 
-### Owner Notification Template
+### WhatsApp Reply Assistant Template
 
 When a customer sends a new WhatsApp message, the backend records an approval and notifies the owner. By default, that owner alert uses WhatsApp interactive reply buttons. To send an approved template instead, configure:
 
-- `WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME`: approved Meta template name, such as `new_reply_for_review`.
-- `WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE`: template language code. For Meta's generic English translation, use `en`.
-- `WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX`: URL button index, usually `0`.
-- `WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_URL_MODE`: use `path` when the Meta template URL is like `https://www.assistyca.com/{{1}}`; use `full` when the template expects the full review URL as `{{1}}`.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME`: approved Meta template name, such as `new_reply_for_review`.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_LANGUAGE`: template language code. For Meta's generic English translation, use `en`.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX`: URL button index, usually `0`.
+- `WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE`: use `path` when the Meta template URL is like `https://www.assistyca.com/{{1}}`; use `full` when the template expects the full review URL as `{{1}}`.
 
 The template must have one body variable for the sender name and one dynamic URL button variable for the approval link.
 
