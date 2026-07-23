@@ -1870,9 +1870,11 @@
           grid-column: 1 / -1;
           grid-row: 3;
           align-self: center;
-          justify-self: stretch;
+          justify-self: start;
+          width: calc(100% + 2rem);
+          max-width: none;
           height: 13.6rem;
-          margin: calc(0.2rem + var(--mobile-hero-feature-gap)) -1rem -1.15rem -0.55rem;
+          margin: calc(0.2rem + var(--mobile-hero-feature-gap)) 0 -1.15rem -1rem;
           clip-path: polygon(0 20%, 100% 0, 100% 88%, 0 100%);
           background:
             linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(106, 167, 163, 0.11) 44%, rgba(238, 232, 220, 0.54)),
@@ -1979,7 +1981,7 @@
           z-index: 1;
           height: 10.45rem;
           min-height: 0;
-          margin: calc(0.2rem + var(--mobile-hero-feature-gap)) -1rem -0.42rem -2.6rem;
+          margin: calc(0.2rem + var(--mobile-hero-feature-gap)) -1rem -0.42rem -0.85rem;
           justify-self: end;
           align-self: center;
           align-items: flex-end;
@@ -2001,9 +2003,9 @@
           position: relative;
           right: auto;
           bottom: auto;
-          width: min(20.25rem, 73vw);
+          width: min(18.8rem, 67vw);
           max-width: none;
-          transform: translate(0, -0.2rem);
+          transform: translate(0.25rem, -0.18rem);
           filter: saturate(0.98) contrast(1.02) drop-shadow(0 18px 28px rgba(19, 32, 56, 0.13));
           -webkit-mask-image: none;
           mask-image: none;
@@ -2330,13 +2332,13 @@
 
         .hero-visual {
           height: 9.95rem;
-          margin-left: -2.35rem;
+          margin-left: -0.75rem;
           margin-right: -1rem;
         }
 
         .hero-visual img {
-          width: min(18rem, 73vw);
-          transform: translate(0, -0.16rem);
+          width: min(16.8rem, 67vw);
+          transform: translate(0.18rem, -0.14rem);
         }
 
         .hero-copy p,
