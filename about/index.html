@@ -1847,6 +1847,7 @@
         .hero {
           display: grid;
           --mobile-hero-text-lift: -15px;
+          --mobile-hero-actions-shift: 0.65rem;
           grid-template-columns: minmax(0, 0.84fr) minmax(8.6rem, 0.78fr);
           grid-template-areas:
             "title title"
@@ -1891,7 +1892,7 @@
           align-self: center;
           gap: 0.46rem;
           margin-top: 0.72rem;
-          transform: translateY(var(--mobile-hero-text-lift));
+          transform: translateY(var(--mobile-hero-actions-shift));
         }
 
         .button-primary,
