@@ -1846,16 +1846,16 @@
 
         .hero {
           display: grid;
-          grid-template-columns: minmax(0, 0.92fr) minmax(8.4rem, 0.72fr);
+          grid-template-columns: minmax(0, 0.84fr) minmax(8.6rem, 0.78fr);
           grid-template-areas:
             "title title"
             "subtitle subtitle"
             "actions visual";
-          gap: 0 0.72rem;
-          min-height: calc(100svh - var(--header-space));
+          gap: 0 0.45rem;
+          min-height: min(38.5rem, calc(88svh - var(--header-space)));
           align-content: start;
           padding-top: 1rem;
-          padding-bottom: clamp(2.5rem, 7svh, 4.35rem);
+          padding-bottom: clamp(1.75rem, 4.5svh, 2.75rem);
           border-bottom: 1px solid var(--line);
         }
 
@@ -1868,8 +1868,8 @@
         h1 {
           grid-area: title;
           max-width: 100%;
-          font-size: clamp(2.08rem, 9.4vw, 2.46rem);
-          line-height: 1.08;
+          font-size: clamp(2rem, 8.9vw, 2.34rem);
+          line-height: 1.09;
           font-weight: 500;
         }
 
@@ -1885,43 +1885,45 @@
           grid-area: actions;
           display: grid;
           grid-template-columns: 1fr;
-          align-self: end;
+          align-self: center;
           gap: 0.58rem;
-          margin-top: 1rem;
+          margin-top: 0.9rem;
         }
 
         .button-primary,
         .button-secondary {
-          min-height: 2.74rem;
-          font-size: 0.98rem;
+          min-height: 2.62rem;
+          font-size: 0.93rem;
         }
 
         .button-primary {
-          width: min(100%, 10.4rem);
+          width: min(100%, 9.85rem);
           border-radius: 999px;
         }
 
         .button-secondary {
           justify-self: start;
           width: auto;
-          min-height: 2.5rem;
+          min-height: 2.25rem;
+          color: rgba(19, 32, 56, 0.92);
+          font-size: 0.9rem;
         }
 
         .hero-visual {
           grid-area: visual;
           order: 0;
-          height: 10.35rem;
+          height: 9.85rem;
           min-height: 0;
-          margin: 0.45rem -1rem -0.4rem -1.1rem;
-          align-self: end;
+          margin: 0.2rem -0.45rem -0.18rem -1.35rem;
+          align-self: center;
           align-items: flex-end;
           justify-content: flex-end;
           overflow: visible;
         }
 
         .hero-visual::before {
-          inset: auto -18% 0 2%;
-          height: 8.3rem;
+          inset: auto -14% 0 0;
+          height: 7.85rem;
           border-radius: 999px;
           background:
             radial-gradient(circle at 68% 58%, rgba(255, 255, 255, 0.92), transparent 42%),
@@ -1932,11 +1934,11 @@
           position: relative;
           right: auto;
           bottom: auto;
-          width: min(17.2rem, 63vw);
+          width: min(16.4rem, 59vw);
           max-width: none;
-          transform: translate(13%, 0.42rem);
-          -webkit-mask-image: none;
-          mask-image: none;
+          transform: translate(3%, 0.22rem);
+          -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 86%, rgba(0, 0, 0, 0.68) 94%, transparent 100%);
+          mask-image: linear-gradient(90deg, #000 0%, #000 86%, rgba(0, 0, 0, 0.68) 94%, transparent 100%);
         }
 
         .about-spotlight {
@@ -2251,7 +2253,7 @@
 
       @media (max-width: 380px) {
         h1 {
-          font-size: 1.98rem;
+          font-size: 1.9rem;
         }
 
         .about-copy h2 {
@@ -2259,13 +2261,13 @@
         }
 
         .hero-visual {
-          height: 9.3rem;
-          margin-left: -1.35rem;
+          height: 8.75rem;
+          margin-left: -1.45rem;
         }
 
         .hero-visual img {
-          width: min(15.7rem, 63vw);
-          transform: translate(13%, 0.35rem);
+          width: min(14.8rem, 59vw);
+          transform: translate(2%, 0.24rem);
         }
 
         .hero-copy p,
