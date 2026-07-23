@@ -1848,6 +1848,7 @@
           display: grid;
           --mobile-hero-text-lift: -15px;
           --mobile-hero-actions-shift: 0.65rem;
+          --mobile-hero-feature-gap: 10px;
           grid-template-columns: minmax(0, 0.84fr) minmax(8.6rem, 0.78fr);
           grid-template-areas:
             "title title"
@@ -1891,7 +1892,7 @@
           grid-template-columns: 1fr;
           align-self: center;
           gap: 0.46rem;
-          margin-top: 0.72rem;
+          margin-top: calc(0.72rem + var(--mobile-hero-feature-gap));
           transform: translateY(var(--mobile-hero-actions-shift));
         }
 
@@ -1928,7 +1929,7 @@
           order: 0;
           height: 9.85rem;
           min-height: 0;
-          margin: 0.2rem -1rem -0.18rem -1.3rem;
+          margin: calc(0.2rem + var(--mobile-hero-feature-gap)) -1rem -0.18rem -1.3rem;
           justify-self: end;
           align-self: center;
           align-items: flex-end;
