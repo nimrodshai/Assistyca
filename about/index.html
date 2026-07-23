@@ -1746,6 +1746,510 @@
         }
       }
 
+      @media (max-width: 640px) {
+        *,
+        *::before,
+        *::after {
+          max-width: 100%;
+        }
+
+        body {
+          background: var(--bg);
+        }
+
+        .page {
+          width: 100%;
+          min-height: 100svh;
+          box-shadow: none;
+          background:
+            radial-gradient(circle at 80% 0%, rgba(106, 167, 163, 0.12), transparent 14rem),
+            linear-gradient(180deg, #fbf8f1, #f4efe6 62%, #fbf8f1);
+        }
+
+        .page::before {
+          background:
+            radial-gradient(circle at 100% 3%, rgba(255, 255, 255, 0.82), transparent 12rem),
+            radial-gradient(circle at 0% 16%, rgba(106, 167, 163, 0.09), transparent 11rem);
+        }
+
+        .page,
+        .page * {
+          letter-spacing: 0;
+        }
+
+        .site-header,
+        .hero,
+        .about-spotlight,
+        .services-showcase,
+        .how-works,
+        .final-cta {
+          padding-left: 1rem;
+          padding-right: 1rem;
+        }
+
+        .site-header-shell {
+          background: rgba(251, 248, 241, 0.94);
+          box-shadow: 0 14px 34px rgba(19, 32, 56, 0.08);
+        }
+
+        .site-header {
+          min-height: 4.45rem;
+          padding-top: 0.68rem;
+          padding-bottom: 0.68rem;
+        }
+
+        .brand {
+          width: min(10.8rem, 62vw);
+        }
+
+        .menu-toggle {
+          width: 2.72rem;
+          height: 2.72rem;
+          border-radius: 0.5rem;
+          background: rgba(255, 255, 255, 0.78);
+        }
+
+        .nav {
+          position: fixed;
+          top: calc(var(--header-space) + 0.35rem);
+          left: 0.75rem;
+          right: 0.75rem;
+          gap: 0.2rem;
+          max-height: calc(100svh - var(--header-space) - 1.1rem);
+          padding: 0.52rem;
+          overflow-y: auto;
+          border-radius: 0.5rem;
+          background: rgba(255, 252, 246, 0.98);
+          box-shadow: 0 24px 58px rgba(19, 32, 56, 0.18);
+        }
+
+        .nav a,
+        .nav button {
+          min-height: 3rem;
+          border-radius: 0.38rem;
+          font-size: 0.98rem;
+        }
+
+        .nav .nav-cta {
+          min-height: 3.05rem;
+          margin-top: 0.3rem;
+        }
+
+        h1,
+        .about-copy h2,
+        .services-copy h2,
+        .how-works h2,
+        .final-cta h2 {
+          letter-spacing: 0;
+          text-wrap: balance;
+        }
+
+        .hero {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 0.9rem;
+          min-height: auto;
+          padding-top: 0.95rem;
+          padding-bottom: 2.45rem;
+        }
+
+        .hero-copy {
+          max-width: 100%;
+          padding-right: 0;
+        }
+
+        h1 {
+          max-width: 11.2ch;
+          font-size: 2.48rem;
+          line-height: 1.06;
+          font-weight: 500;
+        }
+
+        .hero-copy p {
+          max-width: 18rem;
+          margin-top: 1rem;
+          font-size: 1rem;
+          line-height: 1.54;
+        }
+
+        .hero-actions {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 0.65rem;
+          margin-top: 1.25rem;
+        }
+
+        .button-primary,
+        .button-secondary {
+          min-height: 3.05rem;
+          font-size: 0.98rem;
+        }
+
+        .button-primary {
+          width: 100%;
+          border-radius: 999px;
+        }
+
+        .button-secondary {
+          justify-self: start;
+          width: auto;
+          min-height: 2.5rem;
+        }
+
+        .hero-visual {
+          order: -1;
+          min-height: 13.8rem;
+          margin: -0.55rem -1rem 0.05rem;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+
+        .hero-visual::before {
+          inset: 10% 4% 8%;
+          border-radius: 999px;
+          background:
+            radial-gradient(circle at 60% 60%, rgba(255, 255, 255, 0.94), transparent 35%),
+            radial-gradient(circle at 44% 64%, rgba(106, 167, 163, 0.11), transparent 56%);
+        }
+
+        .hero-visual img {
+          position: relative;
+          right: auto;
+          bottom: auto;
+          width: min(26rem, 118%);
+          transform: translate(8%, 0.35rem);
+          -webkit-mask-image: none;
+          mask-image: none;
+        }
+
+        .about-spotlight {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 1.05rem;
+          min-height: auto;
+          padding-top: 2.15rem;
+          padding-bottom: 2.5rem;
+          border-top: 1px solid var(--line);
+        }
+
+        .about-spotlight::before {
+          right: -4rem;
+          top: 3rem;
+          width: 15rem;
+          height: 15rem;
+        }
+
+        .about-copy {
+          max-width: none;
+          padding-right: 0;
+        }
+
+        .about-copy h2 {
+          font-size: 2.55rem;
+          line-height: 1.05;
+        }
+
+        .about-divider {
+          width: 3.1rem;
+          margin: 0.8rem 0 1.15rem;
+        }
+
+        .about-lead {
+          max-width: 100%;
+          font-size: 1.24rem;
+          line-height: 1.45;
+        }
+
+        .about-body {
+          gap: 0.95rem;
+          margin-top: 1.35rem;
+        }
+
+        .about-body p {
+          font-size: 0.97rem;
+          line-height: 1.68;
+        }
+
+        .about-signature {
+          width: 12.25rem;
+          margin-top: 1.25rem;
+        }
+
+        .about-visual {
+          min-height: 15.5rem;
+          margin: 0.15rem -1rem 0;
+          justify-content: center;
+          overflow: hidden;
+        }
+
+        .about-art {
+          width: min(24rem, 96%);
+          margin: 0 auto -1.1rem;
+          transform: none;
+        }
+
+        .services-showcase {
+          padding-top: 2.35rem;
+          padding-bottom: 2.55rem;
+        }
+
+        .services-showcase::before {
+          inset: 0 -20% auto;
+          height: 14rem;
+        }
+
+        .services-copy {
+          max-width: none;
+          margin: 0;
+          text-align: left;
+        }
+
+        .services-kicker,
+        .how-works-kicker,
+        .section-label {
+          letter-spacing: 0;
+          font-size: 0.78rem;
+        }
+
+        .services-copy h2 {
+          width: auto;
+          max-width: 13ch;
+          margin: 0.6rem 0 0;
+          font-size: 2rem;
+          line-height: 1.14;
+          white-space: normal;
+        }
+
+        .services-divider {
+          margin: 0.9rem 0 1rem;
+        }
+
+        .services-copy p {
+          max-width: none;
+          margin: 0;
+          font-size: 0.96rem;
+          line-height: 1.62;
+        }
+
+        .services-cards {
+          grid-template-columns: 1fr;
+          gap: 0.8rem;
+          margin-top: 1.45rem;
+        }
+
+        .service-card,
+        .service-card:last-child {
+          display: grid;
+          grid-template-columns: 3.35rem minmax(0, 1fr);
+          justify-items: start;
+          align-items: start;
+          gap: 0.28rem 0.85rem;
+          min-height: 0;
+          max-width: none;
+          padding: 1rem;
+          text-align: left;
+          border-radius: 0.5rem;
+          box-shadow: 0 16px 34px rgba(19, 32, 56, 0.055);
+        }
+
+        .service-card-icon {
+          grid-row: 1 / 5;
+          width: 3.15rem;
+          height: 3.15rem;
+        }
+
+        .service-card-number {
+          margin-top: 0;
+          font-size: 0.78rem;
+        }
+
+        .service-card h3 {
+          margin-top: 0;
+          font-size: 1.2rem;
+          line-height: 1.18;
+        }
+
+        .service-card-divider {
+          display: none;
+        }
+
+        .service-card p {
+          grid-column: 2;
+          width: auto;
+          max-width: none;
+          font-size: 0.92rem;
+          line-height: 1.52;
+          white-space: normal;
+        }
+
+        .services-note {
+          margin-top: 1.6rem;
+        }
+
+        .services-note-top {
+          gap: 0.65rem;
+        }
+
+        .services-note-mark {
+          width: 3rem;
+        }
+
+        .services-note-title {
+          margin-top: 0.5rem;
+          font-size: 1.35rem;
+        }
+
+        .services-note-subtitle {
+          font-size: 1.1rem;
+        }
+
+        .how-works {
+          padding-top: 2.35rem;
+          padding-bottom: 2.75rem;
+          overflow: hidden;
+        }
+
+        .how-works::before {
+          inset: 0 -14% auto;
+          height: 16rem;
+        }
+
+        .how-works-intro {
+          max-width: none;
+          margin: 0;
+          text-align: left;
+        }
+
+        .how-works h2 {
+          margin-top: 0.55rem;
+          font-size: 2.1rem;
+          line-height: 1.1;
+        }
+
+        .how-works-intro p:not(.how-works-kicker) {
+          max-width: none;
+          margin-top: 0.9rem;
+          font-size: 0.96rem;
+          line-height: 1.62;
+        }
+
+        .how-works-process {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 0;
+          max-width: none;
+          margin-top: 1.25rem;
+        }
+
+        .how-step {
+          padding: 1.05rem 0 1.25rem;
+          border-top: 1px solid rgba(19, 32, 56, 0.09);
+        }
+
+        .how-step-copy {
+          grid-template-columns: 2.45rem minmax(0, 1fr);
+          column-gap: 0.85rem;
+        }
+
+        .how-step-number {
+          width: 2.35rem;
+          height: 2.35rem;
+          font-size: 0.94rem;
+        }
+
+        .how-step h3 {
+          margin-top: 0.1rem;
+          font-size: 1.12rem;
+          line-height: 1.2;
+        }
+
+        .how-step p {
+          margin-top: 0.55rem;
+          font-size: 0.92rem;
+          line-height: 1.58;
+        }
+
+        .how-step-visual {
+          width: min(100%, 15.6rem);
+          margin: 0.85rem auto 0;
+        }
+
+        .how-step-visual::before {
+          inset: 12% 11% 4%;
+          filter: blur(18px);
+          opacity: 0.24;
+        }
+
+        .how-step:not(:last-child) .how-step-visual::after {
+          display: none;
+        }
+
+        .final-cta {
+          grid-template-columns: 1fr;
+          gap: 1.2rem;
+          padding-top: 2.15rem;
+          padding-bottom: 2.45rem;
+        }
+
+        .final-cta::before {
+          left: 1rem;
+          width: 5.5rem;
+        }
+
+        .final-cta h2 {
+          max-width: 13ch;
+          font-size: 2rem;
+          line-height: 1.12;
+        }
+
+        .final-cta-actions {
+          width: 100%;
+          justify-items: stretch;
+        }
+
+        .contact-modal {
+          padding: 0.65rem;
+        }
+
+        .contact-panel {
+          border-radius: 0.5rem;
+          padding: 1rem;
+        }
+
+        .contact-panel h2 {
+          font-size: 1.65rem;
+          line-height: 1.1;
+          letter-spacing: 0;
+        }
+
+        .contact-close {
+          width: 2.65rem;
+          height: 2.65rem;
+          border-radius: 0.5rem;
+        }
+      }
+
+      @media (max-width: 380px) {
+        h1 {
+          font-size: 2.22rem;
+        }
+
+        .about-copy h2 {
+          font-size: 2.3rem;
+        }
+
+        .hero-visual {
+          min-height: 12.4rem;
+        }
+
+        .hero-copy p,
+        .services-copy p,
+        .how-works-intro p:not(.how-works-kicker) {
+          font-size: 0.93rem;
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -1947,7 +2451,7 @@
                 </div>
               </div>
               <figure class="how-step-visual">
-                <img src="../assets/Coffee.png?v=20260717" alt="Robotic hand holding a coffee mug" />
+                <img src="../assets/coffee.png?v=20260717" alt="Robotic hand holding a coffee mug" />
               </figure>
             </article>
 
@@ -1963,7 +2467,7 @@
                 </div>
               </div>
               <figure class="how-step-visual">
-                <img src="../assets/Diagram.png?v=20260717" alt="Robotic hand drawing a process diagram" />
+                <img src="../assets/diagram.png?v=20260717" alt="Robotic hand drawing a process diagram" />
               </figure>
             </article>
 
