@@ -1852,9 +1852,10 @@
             "subtitle subtitle"
             "actions visual";
           gap: 0 0.72rem;
-          min-height: auto;
+          min-height: calc(100svh - var(--header-space));
+          align-content: start;
           padding-top: 1rem;
-          padding-bottom: 1.35rem;
+          padding-bottom: clamp(2.5rem, 7svh, 4.35rem);
           border-bottom: 1px solid var(--line);
         }
 
@@ -1943,7 +1944,7 @@
           grid-template-columns: 1fr;
           gap: 0;
           min-height: auto;
-          padding-top: 1.85rem;
+          padding-top: 2.65rem;
           padding-bottom: 0;
           border-top: 1px solid var(--line);
         }
