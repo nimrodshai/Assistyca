@@ -1846,6 +1846,7 @@
 
         .hero {
           display: grid;
+          --mobile-hero-text-lift: -15px;
           grid-template-columns: minmax(0, 0.84fr) minmax(8.6rem, 0.78fr);
           grid-template-areas:
             "title title"
@@ -1871,6 +1872,7 @@
           font-size: clamp(2rem, 8.9vw, 2.34rem);
           line-height: 1.09;
           font-weight: 500;
+          transform: translateY(var(--mobile-hero-text-lift));
         }
 
         .hero-copy p {
@@ -1879,6 +1881,7 @@
           margin-top: 0.82rem;
           font-size: 0.98rem;
           line-height: 1.52;
+          transform: translateY(var(--mobile-hero-text-lift));
         }
 
         .hero-actions {
@@ -1886,8 +1889,9 @@
           display: grid;
           grid-template-columns: 1fr;
           align-self: center;
-          gap: 0.58rem;
-          margin-top: 0.9rem;
+          gap: 0.46rem;
+          margin-top: 0.72rem;
+          transform: translateY(var(--mobile-hero-text-lift));
         }
 
         .button-primary,
@@ -1896,17 +1900,26 @@
           font-size: 0.93rem;
         }
 
-        .button-primary {
-          width: min(100%, 9.85rem);
+        .hero-actions .button-primary {
+          min-height: 2.36rem;
+          width: min(100%, 9.1rem);
+          padding: 0.62rem 1rem;
           border-radius: 999px;
+          font-size: 0.88rem;
+          box-shadow: 0 12px 26px rgba(106, 167, 163, 0.18);
         }
 
-        .button-secondary {
+        .hero-actions .button-secondary {
           justify-self: start;
           width: auto;
-          min-height: 2.25rem;
+          min-height: 2rem;
           color: rgba(19, 32, 56, 0.92);
-          font-size: 0.9rem;
+          font-size: 0.84rem;
+        }
+
+        .hero-actions .button-secondary::after {
+          bottom: 0.38rem;
+          height: 0.09rem;
         }
 
         .hero-visual {
@@ -1914,7 +1927,7 @@
           order: 0;
           height: 9.85rem;
           min-height: 0;
-          margin: 0.2rem 0 -0.18rem -1.55rem;
+          margin: 0.2rem -1rem -0.18rem -1.3rem;
           align-self: center;
           align-items: flex-end;
           justify-content: flex-end;
@@ -1934,9 +1947,9 @@
           position: relative;
           right: auto;
           bottom: auto;
-          width: min(15.85rem, 57vw);
+          width: min(16.2rem, 59vw);
           max-width: none;
-          transform: translate(0, 0.22rem);
+          transform: translate(3%, 0.22rem);
           -webkit-mask-image: none;
           mask-image: none;
         }
@@ -2262,12 +2275,13 @@
 
         .hero-visual {
           height: 8.75rem;
-          margin-left: -1.45rem;
+          margin-left: -1.25rem;
+          margin-right: -1rem;
         }
 
         .hero-visual img {
-          width: min(14.45rem, 57vw);
-          transform: translate(0, 0.24rem);
+          width: min(14.8rem, 59vw);
+          transform: translate(3%, 0.24rem);
         }
 
         .hero-copy p,
