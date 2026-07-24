@@ -3195,14 +3195,6 @@ function buildFeatureEditorWhatsAppHealthNotice(feature = getSelectedFeature()) 
   const health = getFeatureWhatsAppHealth(feature);
   const lastOwnerStatus = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
 
-  if (lastOwnerStatus === "failed") {
-    return {
-      tone: "warning",
-      title: "The latest approval alert hit a delivery issue",
-      copy: getWhatsAppOwnerNotificationFailureCopy(feature, { ownerLabel: "your phone" }),
-    };
-  }
-
   if (["requested", "sent"].includes(lastOwnerStatus)) {
     return {
       tone: "neutral",
