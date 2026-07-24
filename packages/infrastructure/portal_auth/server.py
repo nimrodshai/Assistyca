@@ -2535,11 +2535,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         issues: list[dict[str, str]] = []
 
         if payload.get("business_account_id") and not business_account_id:
-            issues.append({"field": "business_account_id", "message": "Enter the client's Platform Phone Number ID from Meta."})
+            issues.append({"field": "business_account_id", "message": "Enter the Phone Number ID Meta gave you."})
         if not phone_number_id:
-            issues.append({"field": "business_account_id", "message": "Enter the client's Platform Phone Number ID from Meta."})
+            issues.append({"field": "business_account_id", "message": "Enter the Phone Number ID Meta gave you."})
         if not owner_wa_id:
-            issues.append({"field": "owner_wa_id", "message": "Enter the owner alert phone number."})
+            issues.append({"field": "owner_wa_id", "message": "Enter the phone number that should receive approvals."})
 
         if issues:
             json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -2954,7 +2954,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 {
                     "tone": "warning",
                     "title": "WhatsApp setup is not saved",
-                    "message": "Save the client's Platform Phone Number ID and owner alert phone before expecting customer conversations here.",
+                    "message": "Save the Phone Number ID and owner phone before expecting customer conversations here.",
                 }
             ]
 
@@ -2973,7 +2973,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 {
                     "tone": "warning",
                     "title": "WhatsApp number is not fully verified",
-                    "message": "The setup is saved, but the backend has not confirmed the Platform Phone Number ID with Meta yet.",
+                    "message": "The setup is saved, but the backend has not confirmed the Phone Number ID with Meta yet.",
                 }
             )
 

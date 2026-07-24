@@ -344,7 +344,7 @@
               <p class="eyebrow">WhatsApp setup</p>
               <h2>Connect your WhatsApp number</h2>
               <p class="feature-page-description">
-                We listen to the client's WhatsApp Business Platform number and send approval alerts to the owner's phone.
+                We use this to watch for new customer messages and send approval alerts to your phone.
               </p>
 
               <div class="feature-activation-status-grid" aria-live="polite">
@@ -352,7 +352,7 @@
                   <p class="feature-activation-status-label">Number check</p>
                   <h3 id="featureActivationNumberStatusTitle">Add your details</h3>
                   <p id="featureActivationNumberStatusCopy" class="feature-activation-status-copy">
-                    Save the client's Platform Phone Number ID and the owner alert phone.
+                    Save the Phone Number ID and the phone that should receive approval alerts.
                   </p>
                 </article>
 
@@ -380,12 +380,12 @@
               <div class="activation-form-grid">
                 <label class="field">
                   <div class="field-label">
-                    <span>Client's Platform Phone Number ID</span>
+                    <span>Phone number ID</span>
                     <button
                       id="featureActivationPhoneNumberIdHelpButton"
                       class="field-help-button"
                       type="button"
-                      aria-label="Where to find the client's Platform Phone Number ID"
+                      aria-label="Where to find your Phone number ID"
                     >
                       ?
                     </button>
@@ -397,12 +397,12 @@
                     autocomplete="off"
                     placeholder="123456789012345"
                   />
-                  <small class="field-help">Use the ID Meta shows for the client's WhatsApp Business Platform phone number, not Assistyca's number.</small>
+                  <small class="field-help">Copy the Phone Number ID Meta shows for this WhatsApp number.</small>
                   <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
                 </label>
 
                 <label class="field">
-                  <span>Owner alert phone number</span>
+                  <span>Your phone number</span>
                   <input
                     id="featureActivationOwnerWaId"
                     type="text"
@@ -410,14 +410,10 @@
                     autocomplete="off"
                     placeholder="15551234567"
                   />
-                  <small class="field-help">We’ll notify this phone when a reply is ready. Messages from this phone are treated as owner commands.</small>
+                  <small class="field-help">We’ll notify this number when a reply is ready.</small>
                   <span id="featureActivationOwnerWaIdError" class="field-error" hidden></span>
                 </label>
               </div>
-
-              <p class="feature-activation-note">
-                Already using the WhatsApp Business app? The number still needs to be connected to Meta's WhatsApp Business Platform before a Phone Number ID appears.
-              </p>
 
               <div class="feature-page-actions feature-activation-actions">
                 <button id="featureStudioActivationButton" class="primary-button" type="button">

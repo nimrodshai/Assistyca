@@ -89,8 +89,8 @@ const FEATURE_ACTIVATION_REQUIRED_KEYS = [
   "owner_wa_id",
 ];
 const FEATURE_ACTIVATION_STEPS = [
-  "Client's Platform Phone Number ID",
-  "Owner alert phone number",
+  "Phone number ID",
+  "Your phone number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
   business_account_id: "",
@@ -1684,8 +1684,8 @@ function openFeatureActivationAlert(title, message, options = {}) {
 
 function openPhoneNumberIdHelp() {
   openAuthAlert(
-    "Where to find the Platform Phone Number ID",
-    "Open WhatsApp Manager, go to Phone numbers, then choose the client's WhatsApp Business Platform number and copy the Phone Number ID Meta shows there. A number used only in the WhatsApp Business app will not appear until it is connected to the Platform.",
+    "Where to find your Phone number ID",
+    "Open WhatsApp Manager, go to Account tools, then Phone numbers. Open the WhatsApp number you connected to Meta and copy the Phone Number ID shown there.",
     {
       eyebrow: "WhatsApp setup",
       icon: "?",
@@ -2330,7 +2330,7 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Connect the client's WhatsApp Business Platform number in Meta, then save its Phone Number ID and the owner alert phone.";
+  return "Connect your WhatsApp account in Meta, then save the Phone Number ID and your phone number.";
 }
 
 function applyWhatsAppConnectionToFeatures(connection, options = {}) {
@@ -3113,7 +3113,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   const content = {
     number: {
       title: "Add your details",
-      copy: "Save the client's Platform Phone Number ID and the owner alert phone.",
+      copy: "Save the Phone Number ID and the phone that should receive approval alerts.",
     },
     inbound: {
       title: "Waiting for the first live message",
@@ -3134,7 +3134,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
         }
       : {
           title: "Still need to verify the number",
-          copy: "The details are saved, but Assistyca still needs to confirm this Platform Phone Number ID with Meta.",
+          copy: "The details are saved, but Assistyca still needs to confirm this Phone Number ID with Meta.",
         };
   }
 
@@ -3701,9 +3701,9 @@ function isMonitorManualRunBusy(feature = getSelectedFeature()) {
 
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
-    business_account_id: "Client's Platform Phone Number ID",
-    phone_number_id: "Client's Platform Phone Number ID",
-    owner_wa_id: "Owner alert phone number",
+    business_account_id: "Phone number ID",
+    phone_number_id: "Phone number ID",
+    owner_wa_id: "Your phone number",
   };
 
   return labels[key] || key;
@@ -3784,10 +3784,10 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const issues = [];
 
   if (!/^\d+$/.test(accountId)) {
-    issues.push({ field: "business_account_id", message: "Enter the client's Platform Phone Number ID from Meta.", inline: true });
+    issues.push({ field: "business_account_id", message: "Enter the Phone Number ID Meta gave you.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
-    issues.push({ field: "owner_wa_id", message: "Enter the owner alert phone number.", inline: true });
+    issues.push({ field: "owner_wa_id", message: "Enter your phone number.", inline: true });
   }
 
   return issues;
