@@ -553,10 +553,16 @@ class FeatureActivationService:
             }
 
         connection = self.database.get_whatsapp_connection(email) or {}
+        access_token_ready = bool(
+            normalize_text(connection.get("accessToken"))
+            or normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+        )
         ready = bool(
-            normalize_text(connection.get("phoneNumberId"))
+            normalize_text(connection.get("businessAccountId"))
+            and normalize_text(connection.get("phoneNumberId"))
             and normalize_text(connection.get("ownerWaId"))
             and normalize_text(connection.get("connectionStatus")) == "connected"
+            and access_token_ready
         )
         if feature_id == "scheduled-web-monitor-notifier" or requires_monitor_config:
             return build_monitor_setup_status(

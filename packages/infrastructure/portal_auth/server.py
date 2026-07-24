@@ -52,6 +52,8 @@ from packages.infrastructure.portal_db import normalize_user_profile
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
+from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_numbers
+from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
@@ -2285,12 +2287,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
 
         serialized = dict(connection)
+        saved_access_token = normalize_text(serialized.pop("accessToken", ""))
+        backend_access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+        access_token_configured = bool(saved_access_token or backend_access_token)
+        serialized["accessTokenConfigured"] = access_token_configured
+        serialized["workspaceAccessTokenConfigured"] = bool(saved_access_token)
+        serialized["backendAccessTokenConfigured"] = bool(backend_access_token)
         serialized["configured"] = bool(
-            normalize_text(connection.get("phoneNumberId"))
+            normalize_text(connection.get("businessAccountId"))
+            and normalize_text(connection.get("phoneNumberId"))
             and normalize_text(connection.get("ownerWaId"))
+            and access_token_configured
         )
         serialized["liveSendEnabled"] = bool(
-            normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+            access_token_configured
             and normalize_text(connection.get("phoneNumberId"))
         )
         serialized["webhookUrl"] = f"{self._public_base_url()}/webhooks/whatsapp"
@@ -2507,11 +2517,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         connection = self.database.get_whatsapp_connection(session.email)
+        saved_access_token = normalize_text(connection.get("accessToken")) if connection else ""
+        backend_access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "connection": self._serialize_whatsapp_connection(connection),
-            "configured": bool(connection and normalize_text(connection.get("phoneNumberId")) and normalize_text(connection.get("ownerWaId"))),
-            "hasAccessToken": bool(normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))),
+            "configured": bool(
+                connection
+                and normalize_text(connection.get("businessAccountId"))
+                and normalize_text(connection.get("phoneNumberId"))
+                and normalize_text(connection.get("ownerWaId"))
+                and (saved_access_token or backend_access_token)
+            ),
+            "hasAccessToken": bool(saved_access_token or backend_access_token),
+            "workspaceAccessTokenConfigured": bool(saved_access_token),
+            "backendAccessTokenConfigured": bool(backend_access_token),
         })
 
     def _handle_whatsapp_connection_post(self) -> None:
@@ -2530,16 +2550,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         business_account_id = self._normalize_digits(payload.get("business_account_id"))
-        phone_number_id = self._normalize_digits(payload.get("phone_number_id")) or business_account_id
+        phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
+        access_token_input = normalize_text(payload.get("access_token"))
         owner_wa_id = self._normalize_digits(payload.get("owner_wa_id"))
         issues: list[dict[str, str]] = []
 
         if payload.get("business_account_id") and not business_account_id:
-            issues.append({"field": "business_account_id", "message": "Enter the Phone Number ID Meta gave you."})
+            issues.append({"field": "business_account_id", "message": "Enter the WhatsApp Business Account ID Meta gave you."})
+        if not business_account_id:
+            issues.append({"field": "business_account_id", "message": "Enter the WhatsApp Business Account ID for this client."})
         if not phone_number_id:
-            issues.append({"field": "business_account_id", "message": "Enter the Phone Number ID Meta gave you."})
+            issues.append({"field": "phone_number_id", "message": "Enter the Phone Number ID Meta gave you."})
         if not owner_wa_id:
             issues.append({"field": "owner_wa_id", "message": "Enter the phone number that should receive approvals."})
+
+        existing = self.database.get_whatsapp_connection(session.email) or {}
+        metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+        existing_access_token = normalize_text(existing.get("accessToken"))
+        backend_access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+        access_token = access_token_input or existing_access_token or backend_access_token
+
+        if not access_token:
+            issues.append({"field": "access_token", "message": "Paste a WhatsApp access token for this Business Account."})
 
         if issues:
             json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -2547,30 +2579,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "error": "invalid_fields",
                 "issues": issues,
                 "message": "Finish the missing WhatsApp details.",
-            })
-            return
-
-        existing = self.database.get_whatsapp_connection(session.email) or {}
-        metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
-        access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
-
-        if not access_token:
-            connection = self.database.save_whatsapp_connection(
-                session.email,
-                business_account_id=business_account_id,
-                phone_number_id=phone_number_id,
-                owner_wa_id=owner_wa_id,
-                display_phone_number=normalize_text(existing.get("displayPhoneNumber")),
-                verified_name=normalize_text(existing.get("verifiedName")),
-                connection_status="pending_access_token",
-                metadata=metadata,
-            )
-            json_response(self, HTTPStatus.OK, {
-                "ok": True,
-                "message": "WhatsApp details were saved. Add WHATSAPP_ACCESS_TOKEN on the backend to complete the live connection test.",
-                "connection": self._serialize_whatsapp_connection(connection),
-                "liveTested": False,
-                "requiresAccessToken": True,
             })
             return
 
@@ -2604,22 +2612,114 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        try:
+            waba_phone_numbers = list_whatsapp_business_phone_numbers(
+                access_token=access_token,
+                business_account_id=business_account_id,
+            )
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_fields",
+                "message": str(exc),
+            })
+            return
+        except WhatsAppConnectionError as exc:
+            response = {
+                "ok": False,
+                "error": "whatsapp_phone_numbers_failed",
+                "message": str(exc),
+            }
+            if exc.details:
+                response["details"] = exc.details
+            json_response(self, HTTPStatus.BAD_GATEWAY, response)
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to UI
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "whatsapp_phone_numbers_failed",
+                "message": f"WhatsApp could not list phone numbers for that Business Account: {exc}",
+            })
+            return
+
+        verified_phone_number_id = normalize_text(result.get("phone_number_id")) or phone_number_id
+        matching_phone_number = next(
+            (
+                item for item in waba_phone_numbers
+                if normalize_text(item.get("id")) == verified_phone_number_id
+            ),
+            None,
+        )
+        if matching_phone_number is None:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "phone_number_not_in_waba",
+                "issues": [
+                    {
+                        "field": "phone_number_id",
+                        "message": "This Phone Number ID is not listed under the WhatsApp Business Account ID.",
+                    }
+                ],
+                "message": "Check that the WABA ID and Phone Number ID belong to the same Meta account.",
+            })
+            return
+
+        try:
+            subscription_result = subscribe_whatsapp_business_account(
+                access_token=access_token,
+                business_account_id=business_account_id,
+            )
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_fields",
+                "message": str(exc),
+            })
+            return
+        except WhatsAppConnectionError as exc:
+            response = {
+                "ok": False,
+                "error": "whatsapp_subscription_failed",
+                "message": str(exc),
+            }
+            if exc.details:
+                response["details"] = exc.details
+            json_response(self, HTTPStatus.BAD_GATEWAY, response)
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to UI
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "whatsapp_subscription_failed",
+                "message": f"WhatsApp could not subscribe the webhook: {exc}",
+            })
+            return
+
+        next_metadata = {
+            **metadata,
+            "wabaId": business_account_id,
+            "webhookSubscriptionStatus": "subscribed",
+            "webhookSubscribedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "webhookSubscriptionResult": subscription_result if isinstance(subscription_result, dict) else {},
+        }
+
         connection = self.database.save_whatsapp_connection(
             session.email,
             business_account_id=business_account_id,
-            phone_number_id=result.get("phone_number_id") or phone_number_id,
+            phone_number_id=verified_phone_number_id,
+            access_token=access_token_input if access_token_input else None,
             owner_wa_id=owner_wa_id,
-            display_phone_number=result.get("display_phone_number", ""),
-            verified_name=result.get("verified_name", ""),
+            display_phone_number=result.get("display_phone_number", "") or matching_phone_number.get("display_phone_number", ""),
+            verified_name=result.get("verified_name", "") or matching_phone_number.get("verified_name", ""),
             connection_status="connected",
-            metadata=metadata,
+            metadata=next_metadata,
         )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "message": "Setup saved. The phone number ID was verified. Send a real WhatsApp message next to confirm Assistyca receives it.",
+            "message": "Setup saved. The Phone Number ID was verified and the WABA webhook subscription is active. Send a real WhatsApp message next to confirm Assistyca receives it.",
             "connection": self._serialize_whatsapp_connection(connection),
             "liveTested": True,
             "requiresAccessToken": False,
+            "webhookSubscribed": True,
         })
 
     def _handle_feature_activation_post(self, parsed: urllib_parse.ParseResult) -> None:
@@ -2954,7 +3054,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 {
                     "tone": "warning",
                     "title": "WhatsApp setup is not saved",
-                    "message": "Save the Phone Number ID and owner phone before expecting customer conversations here.",
+                    "message": "Save the WABA ID, Phone Number ID, access token, and owner phone before expecting customer conversations here.",
                 }
             ]
 

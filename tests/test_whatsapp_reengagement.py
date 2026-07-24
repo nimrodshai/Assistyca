@@ -29,6 +29,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
             "owner@example.com",
             business_account_id="12345",
             phone_number_id="12345",
+            access_token="test-token",
             owner_wa_id="15551234567",
             connection_status="connected",
             metadata={

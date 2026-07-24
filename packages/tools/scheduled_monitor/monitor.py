@@ -266,7 +266,8 @@ def validate_monitor_settings(
         if not telegram_enabled:
             issues.append({"field": "deliveryChannel", "message": "Telegram delivery is not configured on the backend yet."})
     elif delivery_channel == "whatsapp":
-        if not whatsapp_enabled:
+        connection_access_token = normalize_text(connection.get("accessToken"))
+        if not whatsapp_enabled and not connection_access_token:
             issues.append({"field": "deliveryChannel", "message": "WhatsApp delivery is not configured on the backend yet."})
         if (
             normalize_text(connection.get("connectionStatus")) != "connected"
@@ -1065,9 +1066,12 @@ class ScheduledMonitorScheduler:
             "activationUpdatedAt": activation.get("updatedAt"),
             "activationMetadata": activation.get("metadata") if isinstance(activation.get("metadata"), dict) else {},
             "phoneNumberId": normalize_text(whatsapp_connection.get("phoneNumberId")),
+            "accessToken": normalize_text(whatsapp_connection.get("accessToken")),
             "ownerWaId": normalize_text(whatsapp_connection.get("ownerWaId")),
             "whatsappConnection": {
                 "phoneNumberId": normalize_text(whatsapp_connection.get("phoneNumberId")),
+                "accessToken": normalize_text(whatsapp_connection.get("accessToken")),
+                "accessTokenConfigured": bool(normalize_text(whatsapp_connection.get("accessToken"))),
                 "ownerWaId": normalize_text(whatsapp_connection.get("ownerWaId")),
                 "connectionStatus": normalize_text(whatsapp_connection.get("connectionStatus")),
             },
@@ -1168,6 +1172,7 @@ class ScheduledMonitorScheduler:
                 phone_number_id=normalize_text(target.get("phoneNumberId")),
                 recipient_wa_id=delivery_target,
                 message_text=message_text,
+                access_token=normalize_text(target.get("accessToken")),
             )
         else:
             raise RuntimeError(f"Unsupported delivery channel: {resolved_channel}")

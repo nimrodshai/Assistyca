@@ -86,15 +86,23 @@ const PHONE_PLACEHOLDER_BY_COUNTRY = {
 };
 const FEATURE_ACTIVATION_REQUIRED_KEYS = [
   "business_account_id",
+  "phone_number_id",
+  "access_token",
   "owner_wa_id",
 ];
 const FEATURE_ACTIVATION_STEPS = [
+  "WABA ID",
   "Phone number ID",
+  "Access token",
   "Your phone number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
   business_account_id: "",
   phone_number_id: "",
+  access_token: "",
+  access_token_configured: false,
+  workspace_access_token_configured: false,
+  backend_access_token_configured: false,
   owner_wa_id: "",
   connection_status: "not_connected",
   display_phone_number: "",
@@ -622,8 +630,13 @@ const elements = {
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
+  featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
   featureActivationPhoneNumberIdHelpButton: document.querySelector("#featureActivationPhoneNumberIdHelpButton"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
+  featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
+  featureActivationAccessTokenInput: document.querySelector("#featureActivationAccessToken"),
+  featureActivationAccessTokenHelp: document.querySelector("#featureActivationAccessTokenHelp"),
+  featureActivationAccessTokenError: document.querySelector("#featureActivationAccessTokenError"),
   featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
   featureActivationNumberStatusTitle: document.querySelector("#featureActivationNumberStatusTitle"),
@@ -1684,8 +1697,8 @@ function openFeatureActivationAlert(title, message, options = {}) {
 
 function openPhoneNumberIdHelp() {
   openAuthAlert(
-    "Where to find your Phone number ID",
-    "Open WhatsApp Manager, go to Account tools, then Phone numbers. Open the WhatsApp number you connected to Meta and copy the Phone Number ID shown there.",
+    "Where to find the WhatsApp IDs",
+    "In WhatsApp Manager, choose the client's WhatsApp Business Account for the WABA ID. Then open Phone numbers and copy the Phone Number ID for the exact number that should receive customer messages.",
     {
       eyebrow: "WhatsApp setup",
       icon: "?",
@@ -2088,11 +2101,15 @@ function normalizeFeatureWhatsApp(config = {}) {
   const source = config && typeof config === "object" ? config : {};
   const businessAccountId = String(source.business_account_id || source.businessAccountId || "").trim();
   const phoneNumberId = String(source.phone_number_id || source.phoneNumberId || "").trim();
-  const accountId = phoneNumberId || businessAccountId;
+  const accessToken = String(source.access_token || source.accessToken || "").trim();
 
   return {
-    business_account_id: accountId,
-    phone_number_id: accountId,
+    business_account_id: businessAccountId,
+    phone_number_id: phoneNumberId,
+    access_token: accessToken,
+    access_token_configured: Boolean(source.access_token_configured ?? source.accessTokenConfigured ?? accessToken),
+    workspace_access_token_configured: Boolean(source.workspace_access_token_configured ?? source.workspaceAccessTokenConfigured ?? accessToken),
+    backend_access_token_configured: Boolean(source.backend_access_token_configured ?? source.backendAccessTokenConfigured ?? false),
     owner_wa_id: String(source.owner_wa_id || source.ownerWaId || "").trim(),
     connection_status: String(source.connection_status || source.connectionStatus || "not_connected").trim() || "not_connected",
     display_phone_number: String(source.display_phone_number || source.displayPhoneNumber || "").trim(),
@@ -2330,13 +2347,15 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
 }
 
 function buildWhatsAppConfigHint() {
-  return "Connect your WhatsApp account in Meta, then save the Phone Number ID and your phone number.";
+  return "Connect the client's WhatsApp Business Platform account, then save the WABA ID, Phone Number ID, access token, and approval phone.";
 }
 
 function applyWhatsAppConnectionToFeatures(connection, options = {}) {
   const normalizedConnection = normalizeFeatureWhatsApp(connection || {});
   const setupComplete = Boolean(
-    normalizedConnection.phone_number_id
+    normalizedConnection.business_account_id
+    && normalizedConnection.phone_number_id
+    && normalizedConnection.access_token_configured
     && normalizedConnection.owner_wa_id
     && normalizedConnection.connection_status === "connected",
   );
@@ -2965,6 +2984,8 @@ function hasFeatureWhatsAppDetails(feature = getSelectedFeature()) {
   const detailKeys = [
     "business_account_id",
     "phone_number_id",
+    "access_token",
+    "access_token_configured",
     "owner_wa_id",
     "display_phone_number",
     "verified_name",
@@ -3088,7 +3109,7 @@ function getFeatureWhatsAppOwnerLabel(feature = getSelectedFeature()) {
 
 function getFeatureWhatsAppConnectedLabel(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return String(whatsapp.verified_name || whatsapp.display_phone_number || whatsapp.business_account_id || "your WhatsApp number").trim() || "your WhatsApp number";
+  return String(whatsapp.verified_name || whatsapp.display_phone_number || whatsapp.phone_number_id || "your WhatsApp number").trim() || "your WhatsApp number";
 }
 
 function getWhatsAppOwnerNotificationFailureCopy(feature = getSelectedFeature(), options = {}) {
@@ -3113,7 +3134,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   const content = {
     number: {
       title: "Add your details",
-      copy: "Save the Phone Number ID and the phone that should receive approval alerts.",
+      copy: "Save the WABA ID, Phone Number ID, access token, and approval phone.",
     },
     inbound: {
       title: "Waiting for the first live message",
@@ -3134,7 +3155,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
         }
       : {
           title: "Still need to verify the number",
-          copy: "The details are saved, but Assistyca still needs to confirm this Phone Number ID with Meta.",
+          copy: "The details are saved, but Assistyca still needs to verify the phone number and subscribe the WABA webhook with Meta.",
         };
   }
 
@@ -3239,7 +3260,10 @@ function buildFeatureEditorWhatsAppHealthNotice(feature = getSelectedFeature()) 
 function hasFeatureActivationChanges(feature = getSelectedFeature()) {
   const current = getSelectedFeatureWhatsApp(feature);
   const saved = getSavedFeatureWhatsApp(feature);
-  const editableKeys = ["business_account_id", "owner_wa_id"];
+  const editableKeys = ["business_account_id", "phone_number_id", "owner_wa_id"];
+  if (String(current.access_token || "").trim()) {
+    return true;
+  }
 
   return editableKeys.some((key) => String(current[key] || "").trim() !== String(saved[key] || "").trim());
 }
@@ -3701,8 +3725,9 @@ function isMonitorManualRunBusy(feature = getSelectedFeature()) {
 
 function formatFeatureActivationFieldLabel(key) {
   const labels = {
-    business_account_id: "Phone number ID",
+    business_account_id: "WhatsApp Business Account ID",
     phone_number_id: "Phone number ID",
+    access_token: "Access token",
     owner_wa_id: "Your phone number",
   };
 
@@ -3765,7 +3790,8 @@ function getFeatureActivationFieldError(key) {
 function getFeatureActivationFieldElement(key) {
   const elementsByKey = {
     business_account_id: elements.featureActivationBusinessAccountIdInput,
-    phone_number_id: elements.featureActivationBusinessAccountIdInput,
+    phone_number_id: elements.featureActivationPhoneNumberIdInput,
+    access_token: elements.featureActivationAccessTokenInput,
     owner_wa_id: elements.featureActivationOwnerWaIdInput,
   };
 
@@ -3774,17 +3800,30 @@ function getFeatureActivationFieldElement(key) {
 
 function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return FEATURE_ACTIVATION_REQUIRED_KEYS.filter((key) => !String(whatsapp[key] || "").trim());
+  return FEATURE_ACTIVATION_REQUIRED_KEYS.filter((key) => {
+    if (key === "access_token") {
+      return !String(whatsapp.access_token || "").trim() && !whatsapp.access_token_configured;
+    }
+    return !String(whatsapp[key] || "").trim();
+  });
 }
 
 function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const accountId = String(whatsapp.business_account_id || whatsapp.phone_number_id || "").trim();
+  const businessAccountId = String(whatsapp.business_account_id || "").trim();
+  const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
+  const accessToken = String(whatsapp.access_token || "").trim();
   const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
   const issues = [];
 
-  if (!/^\d+$/.test(accountId)) {
-    issues.push({ field: "business_account_id", message: "Enter the Phone Number ID Meta gave you.", inline: true });
+  if (!/^\d+$/.test(businessAccountId)) {
+    issues.push({ field: "business_account_id", message: "Enter the WhatsApp Business Account ID Meta gave you.", inline: true });
+  }
+  if (!/^\d+$/.test(phoneNumberId)) {
+    issues.push({ field: "phone_number_id", message: "Enter the Phone Number ID Meta gave you.", inline: true });
+  }
+  if (!accessToken && !whatsapp.access_token_configured) {
+    issues.push({ field: "access_token", message: "Paste an access token for this WhatsApp Business Account.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
     issues.push({ field: "owner_wa_id", message: "Enter your phone number.", inline: true });
@@ -3799,7 +3838,12 @@ function getFeatureActivationProgress(feature = getSelectedFeature()) {
   const missingKeys = getMissingFeatureActivationFields(feature);
   const ready = isFeatureSetupComplete(feature)
     ? total
-    : FEATURE_ACTIVATION_REQUIRED_KEYS.reduce((count, key) => count + (String(whatsapp[key] || "").trim() ? 1 : 0), 0);
+    : FEATURE_ACTIVATION_REQUIRED_KEYS.reduce((count, key) => {
+        if (key === "access_token") {
+          return count + ((String(whatsapp.access_token || "").trim() || whatsapp.access_token_configured) ? 1 : 0);
+        }
+        return count + (String(whatsapp[key] || "").trim() ? 1 : 0);
+      }, 0);
   return {
     total,
     ready,
@@ -7570,18 +7614,22 @@ async function activateSelectedFeature() {
     updateFeatureStudioHeader();
     setStatus(editingActiveFeature ? "Saving details..." : "Saving setup...");
     const whatsapp = getSelectedFeatureWhatsApp(feature);
-    const accountId = String(whatsapp.business_account_id || whatsapp.phone_number_id || "").trim();
+    const accessToken = String(whatsapp.access_token || "").trim();
     const response = await apiRequest("/api/whatsapp/connection", {
       method: "POST",
       headers: getSessionAuthHeaders(),
       body: {
-        business_account_id: accountId,
-        phone_number_id: accountId,
+        business_account_id: whatsapp.business_account_id,
+        phone_number_id: whatsapp.phone_number_id,
+        ...(accessToken ? { access_token: accessToken } : {}),
         owner_wa_id: whatsapp.owner_wa_id,
       },
     });
 
     applyWhatsAppConnectionToFeatures(response.connection || whatsapp, { persist: false });
+    if (elements.featureActivationAccessTokenInput) {
+      elements.featureActivationAccessTokenInput.value = "";
+    }
     if (usesEditorSetup(feature)) {
       await refreshFeatureActivationStates({ render: false });
     }
@@ -8505,6 +8553,21 @@ function updateFeatureActivationFields() {
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.value = whatsapp.business_account_id;
   }
+  if (elements.featureActivationPhoneNumberIdInput) {
+    elements.featureActivationPhoneNumberIdInput.value = whatsapp.phone_number_id;
+  }
+  if (elements.featureActivationAccessTokenInput && !elements.featureActivationAccessTokenInput.matches(":focus")) {
+    elements.featureActivationAccessTokenInput.value = whatsapp.access_token || "";
+  }
+  if (elements.featureActivationAccessTokenHelp) {
+    let tokenHelpText = "Paste a token with access to this WABA and phone number.";
+    if (whatsapp.workspace_access_token_configured) {
+      tokenHelpText = "A token is saved. Leave blank to keep it, or paste a replacement token.";
+    } else if (whatsapp.backend_access_token_configured) {
+      tokenHelpText = "A backend token is configured. Paste a token here only to use a client-owned token.";
+    }
+    elements.featureActivationAccessTokenHelp.textContent = tokenHelpText;
+  }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.value = whatsapp.owner_wa_id;
   }
@@ -8566,6 +8629,16 @@ function renderFeatureActivationFieldErrors() {
       error: elements.featureActivationBusinessAccountIdError,
     },
     {
+      key: "phone_number_id",
+      input: elements.featureActivationPhoneNumberIdInput,
+      error: elements.featureActivationPhoneNumberIdError,
+    },
+    {
+      key: "access_token",
+      input: elements.featureActivationAccessTokenInput,
+      error: elements.featureActivationAccessTokenError,
+    },
+    {
       key: "owner_wa_id",
       input: elements.featureActivationOwnerWaIdInput,
       error: elements.featureActivationOwnerWaIdError,
@@ -8601,9 +8674,6 @@ function syncFeatureActivationField(key) {
     }
 
     feature.whatsapp[key] = event.target.value;
-    if (key === "business_account_id") {
-      feature.whatsapp.phone_number_id = event.target.value;
-    }
 
     if (!featureActivationBusy) {
       clearFeatureActivationNotice();
@@ -8761,6 +8831,12 @@ function updateFeatureStudioHeader() {
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.disabled = activationBusy;
+  }
+  if (elements.featureActivationPhoneNumberIdInput) {
+    elements.featureActivationPhoneNumberIdInput.disabled = activationBusy;
+  }
+  if (elements.featureActivationAccessTokenInput) {
+    elements.featureActivationAccessTokenInput.disabled = activationBusy;
   }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.disabled = activationBusy;
@@ -10380,6 +10456,12 @@ function bindEvents() {
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.addEventListener("input", syncFeatureActivationField("business_account_id"));
+  }
+  if (elements.featureActivationPhoneNumberIdInput) {
+    elements.featureActivationPhoneNumberIdInput.addEventListener("input", syncFeatureActivationField("phone_number_id"));
+  }
+  if (elements.featureActivationAccessTokenInput) {
+    elements.featureActivationAccessTokenInput.addEventListener("input", syncFeatureActivationField("access_token"));
   }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.addEventListener("input", syncFeatureActivationField("owner_wa_id"));

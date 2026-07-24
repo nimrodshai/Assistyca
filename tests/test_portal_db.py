@@ -113,6 +113,30 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertEqual(conversations[0]["messageCount"], 2)
         self.assertEqual(len(messages), 2)
 
+    def test_whatsapp_connection_preserves_access_token_when_omitted(self) -> None:
+        database = PortalDatabase(self.db_path)
+        database.register_user("owner@example.com")
+
+        first = database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="waba-1",
+            phone_number_id="phone-1",
+            access_token="secret-token",
+            owner_wa_id="15551234567",
+            connection_status="connected",
+        )
+        second = database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="waba-1",
+            phone_number_id="phone-2",
+            owner_wa_id="15551234567",
+            connection_status="connected",
+        )
+
+        self.assertTrue(first["accessTokenConfigured"])
+        self.assertEqual(second["accessToken"], "secret-token")
+        self.assertTrue(second["accessTokenConfigured"])
+
 
 if __name__ == "__main__":
     unittest.main()

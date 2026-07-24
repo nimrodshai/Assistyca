@@ -352,7 +352,7 @@
                   <p class="feature-activation-status-label">Number check</p>
                   <h3 id="featureActivationNumberStatusTitle">Add your details</h3>
                   <p id="featureActivationNumberStatusCopy" class="feature-activation-status-copy">
-                    Save the Phone Number ID and the phone that should receive approval alerts.
+                    Save the WABA ID, Phone Number ID, access token, and approval phone.
                   </p>
                 </article>
 
@@ -379,6 +379,19 @@
             <div class="feature-activation-hero-form">
               <div class="activation-form-grid">
                 <label class="field">
+                  <span>WhatsApp Business Account ID</span>
+                  <input
+                    id="featureActivationBusinessAccountId"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="off"
+                    placeholder="123456789012345"
+                  />
+                  <small class="field-help">Use the WABA ID for the client's WhatsApp Business Platform account.</small>
+                  <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
+                </label>
+
+                <label class="field">
                   <div class="field-label">
                     <span>Phone number ID</span>
                     <button
@@ -391,14 +404,26 @@
                     </button>
                   </div>
                   <input
-                    id="featureActivationBusinessAccountId"
+                    id="featureActivationPhoneNumberId"
                     type="text"
                     inputmode="numeric"
                     autocomplete="off"
                     placeholder="123456789012345"
                   />
                   <small class="field-help">Copy the Phone Number ID Meta shows for this WhatsApp number.</small>
-                  <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
+                  <span id="featureActivationPhoneNumberIdError" class="field-error" hidden></span>
+                </label>
+
+                <label class="field">
+                  <span>Access token</span>
+                  <input
+                    id="featureActivationAccessToken"
+                    type="password"
+                    autocomplete="off"
+                    placeholder="Paste a WhatsApp access token"
+                  />
+                  <small id="featureActivationAccessTokenHelp" class="field-help">Paste a token with access to this WABA and phone number.</small>
+                  <span id="featureActivationAccessTokenError" class="field-error" hidden></span>
                 </label>
 
                 <label class="field">

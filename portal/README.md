@@ -17,7 +17,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - `About your business` in the account menu for shared business or personal context that should follow the user across tools.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself
-- The WhatsApp screen no longer asks for raw access tokens; the backend keeps the Meta app secrets (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`) and routes inbound webhooks by phone number ID
+- The WhatsApp screen stores the client-owned Business Platform connection: WABA ID, Phone Number ID, access token, and owner approval phone. The backend uses those details to verify the phone number, subscribe the WABA to the shared webhook, and route inbound webhooks by phone number ID.
 - The Scheduled Web Monitor runs in the backend on a recurring day interval, uses the shared OpenAI gateway plus the web search tool, and sends alerts by email, Telegram, or WhatsApp
 - WhatsApp approval pages and webhook handling now live inside the portal backend at `/approval/<approval_id>` and `/webhooks/whatsapp`
 - `Settings` opens as a modal overlay for account details and portal preferences
@@ -69,7 +69,7 @@ Required environment variables on Render:
 - `PORTAL_DB_SEED_PAID_EMAILS` for the comma-separated list of portal users that should be treated as paid and entitled for billing-required tools during debugging or controlled internal testing
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
-- `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the backend
+- `WHATSAPP_ACCESS_TOKEN` optional fallback for live WhatsApp Cloud API sends from Assistyca-owned numbers. Client-owned numbers should save their own access token in the WhatsApp setup page.
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
 - `OPENAI_API_KEY` for Scheduled Web Monitor searches and any other backend OpenAI-powered tool execution
@@ -125,13 +125,14 @@ For local WhatsApp testing, edit `scripts/run_portal_server.local.sh`, replace t
 
 Then visit `http://localhost:8000/portal/`.
 
-The portal setup form now saves only the WhatsApp tenant fields needed per workspace:
+The portal setup form saves the WhatsApp Business Platform fields needed per workspace:
 
+- `business_account_id` required WABA ID
 - `phone_number_id` required
+- `access_token` required unless `WHATSAPP_ACCESS_TOKEN` is intentionally used as a backend fallback for this number
 - `owner_wa_id` required
-- `business_account_id` optional
 
-The shared Meta app secrets stay server-side in environment variables and should never be stored in portal client state.
+`WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` stay server-side in environment variables for webhook verification and signature checks. Client access tokens are never returned to the browser after save.
 The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.
 
 For Scheduled Web Monitor delivery:
@@ -139,7 +140,7 @@ For Scheduled Web Monitor delivery:
 - Clients add a simple watch list in the tool editor, one item per line, then choose how many days should pass between checks.
 - Email uses the workspace account email plus the same SMTP or Resend configuration as OTP delivery.
 - Telegram requires `TELEGRAM_BOT_TOKEN` plus a saved chat id in the tool editor.
-- WhatsApp requires the workspace's saved WhatsApp connection plus `WHATSAPP_ACCESS_TOKEN`.
+- WhatsApp requires the workspace's saved WhatsApp connection plus either that workspace's access token or the fallback `WHATSAPP_ACCESS_TOKEN`.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.
 

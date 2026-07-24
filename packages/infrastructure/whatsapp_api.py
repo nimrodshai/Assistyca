@@ -141,3 +141,147 @@ def test_whatsapp_connection(
         "display_phone_number": normalize_text(payload.get("display_phone_number")),
         "verified_name": normalize_text(payload.get("verified_name")),
     }
+
+
+def list_whatsapp_business_phone_numbers(
+    *,
+    access_token: str,
+    business_account_id: str,
+    api_version: str = DEFAULT_WHATSAPP_API_VERSION,
+    timeout: float = 30.0,
+) -> list[dict[str, str]]:
+    access_token_value = normalize_text(access_token)
+    business_account_id_value = normalize_text(business_account_id)
+    api_version_value = normalize_text(api_version) or DEFAULT_WHATSAPP_API_VERSION
+
+    if not access_token_value:
+        raise ValueError("WhatsApp connection credentials are required.")
+
+    if not business_account_id_value:
+        raise ValueError("WhatsApp Business Account ID is required.")
+
+    url = f"https://graph.facebook.com/{api_version_value}/{business_account_id_value}/phone_numbers"
+    query = urllib_parse.urlencode(
+        {
+            "fields": "id,display_phone_number,verified_name",
+            "access_token": access_token_value,
+        }
+    )
+    request = urllib_request.Request(
+        f"{url}?{query}",
+        method="GET",
+        headers={
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            raw_body = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        raise WhatsAppConnectionError(format_connection_error(exc.code, raw_body), details=raw_body) from exc
+    except urllib_error.URLError as exc:
+        reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
+        raise WhatsAppConnectionError(
+            "WhatsApp did not respond. Check the connection and try again.",
+            details=reason,
+        ) from exc
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body) from exc
+
+    if not isinstance(payload, dict):
+        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body)
+
+    if isinstance(payload.get("error"), dict):
+        details = json.dumps(payload.get("error"), ensure_ascii=True, separators=(",", ":"))
+        raise WhatsAppConnectionError(
+            extract_graph_error_message(payload) or "WhatsApp could not list phone numbers for that Business Account.",
+            details=details,
+        )
+
+    items = payload.get("data")
+    if not isinstance(items, list):
+        raise WhatsAppConnectionError("WhatsApp returned an unexpected phone number list.", details=raw_body)
+
+    phone_numbers: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        phone_number_id = normalize_text(item.get("id"))
+        if not phone_number_id:
+            continue
+        phone_numbers.append(
+            {
+                "id": phone_number_id,
+                "display_phone_number": normalize_text(item.get("display_phone_number")),
+                "verified_name": normalize_text(item.get("verified_name")),
+            }
+        )
+    return phone_numbers
+
+
+def subscribe_whatsapp_business_account(
+    *,
+    access_token: str,
+    business_account_id: str,
+    api_version: str = DEFAULT_WHATSAPP_API_VERSION,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    access_token_value = normalize_text(access_token)
+    business_account_id_value = normalize_text(business_account_id)
+    api_version_value = normalize_text(api_version) or DEFAULT_WHATSAPP_API_VERSION
+
+    if not access_token_value:
+        raise ValueError("WhatsApp connection credentials are required.")
+
+    if not business_account_id_value:
+        raise ValueError("WhatsApp Business Account ID is required.")
+
+    url = f"https://graph.facebook.com/{api_version_value}/{business_account_id_value}/subscribed_apps"
+    body = urllib_parse.urlencode({"access_token": access_token_value}).encode("utf-8")
+    request = urllib_request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            raw_body = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        raise WhatsAppConnectionError(format_connection_error(exc.code, raw_body), details=raw_body) from exc
+    except urllib_error.URLError as exc:
+        reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
+        raise WhatsAppConnectionError(
+            "WhatsApp did not respond. Check the connection and try again.",
+            details=reason,
+        ) from exc
+
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError as exc:
+        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body) from exc
+
+    if not isinstance(payload, dict):
+        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body)
+
+    if isinstance(payload.get("error"), dict):
+        details = json.dumps(payload.get("error"), ensure_ascii=True, separators=(",", ":"))
+        raise WhatsAppConnectionError(
+            extract_graph_error_message(payload) or "WhatsApp could not subscribe the webhook.",
+            details=details,
+        )
+
+    if payload and payload.get("success") is False:
+        raise WhatsAppConnectionError("WhatsApp did not confirm the webhook subscription.", details=raw_body)
+
+    return payload

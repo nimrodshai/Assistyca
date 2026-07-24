@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS whatsapp_connections (
     user_id INTEGER PRIMARY KEY,
     business_account_id TEXT NOT NULL DEFAULT '',
     phone_number_id TEXT NOT NULL DEFAULT '',
+    access_token TEXT NOT NULL DEFAULT '',
     owner_wa_id TEXT NOT NULL DEFAULT '',
     display_phone_number TEXT NOT NULL DEFAULT '',
     verified_name TEXT NOT NULL DEFAULT '',
@@ -616,6 +617,7 @@ class PortalDatabase:
                 self._migrate_users_table(conn)
                 self._migrate_user_billing_table(conn)
                 self._migrate_usage_events_table(conn)
+                self._migrate_whatsapp_connections_table(conn)
                 self._ensure_usage_events_tool_indexes(conn)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
@@ -725,6 +727,14 @@ class PortalDatabase:
         }
         if "tool_id" not in columns:
             conn.execute("ALTER TABLE usage_events ADD COLUMN tool_id TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_whatsapp_connections_table(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(whatsapp_connections)").fetchall()
+        }
+        if "access_token" not in columns:
+            conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token TEXT NOT NULL DEFAULT ''")
 
     def _ensure_usage_events_tool_indexes(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -1257,6 +1267,7 @@ class PortalDatabase:
                 u.display_name,
                 w.business_account_id,
                 w.phone_number_id,
+                w.access_token,
                 w.owner_wa_id,
                 w.display_phone_number,
                 w.verified_name,
@@ -1290,6 +1301,8 @@ class PortalDatabase:
             "displayName": normalize_text(payload.get("display_name")),
             "businessAccountId": normalize_text(payload.get("business_account_id")),
             "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+            "accessToken": normalize_text(payload.get("access_token")),
+            "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
             "ownerWaId": normalize_text(payload.get("owner_wa_id")),
             "displayPhoneNumber": normalize_text(payload.get("display_phone_number")),
             "verifiedName": normalize_text(payload.get("verified_name")),
@@ -3097,6 +3110,7 @@ class PortalDatabase:
                     act.updated_at AS activation_updated_at,
                     act.metadata_json AS activation_metadata_json,
                     w.phone_number_id,
+                    w.access_token,
                     w.owner_wa_id,
                     w.connection_status
                 FROM feature_activations AS act
@@ -3142,9 +3156,13 @@ class PortalDatabase:
                         "activationUpdatedAt": payload.get("activation_updated_at"),
                         "activationMetadata": activation_metadata if isinstance(activation_metadata, dict) else {},
                         "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+                        "accessToken": normalize_text(payload.get("access_token")),
+                        "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
                         "ownerWaId": normalize_text(payload.get("owner_wa_id")),
                         "whatsappConnection": {
                             "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+                            "accessToken": normalize_text(payload.get("access_token")),
+                            "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
                             "ownerWaId": normalize_text(payload.get("owner_wa_id")),
                             "connectionStatus": normalize_text(payload.get("connection_status")),
                         },
@@ -3167,6 +3185,7 @@ class PortalDatabase:
                     u.profile_json,
                     w.business_account_id,
                     w.phone_number_id,
+                    w.access_token,
                     w.owner_wa_id,
                     w.display_phone_number,
                     w.verified_name,
@@ -3212,6 +3231,8 @@ class PortalDatabase:
                         "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
                         "businessAccountId": normalize_text(payload.get("business_account_id")),
                         "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+                        "accessToken": normalize_text(payload.get("access_token")),
+                        "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
                         "ownerWaId": normalize_text(payload.get("owner_wa_id")),
                         "displayPhoneNumber": normalize_text(payload.get("display_phone_number")),
                         "verifiedName": normalize_text(payload.get("verified_name")),
@@ -4120,6 +4141,7 @@ class PortalDatabase:
         *,
         business_account_id: str = "",
         phone_number_id: str = "",
+        access_token: str | None = None,
         owner_wa_id: str = "",
         display_phone_number: str = "",
         verified_name: str = "",
@@ -4147,7 +4169,7 @@ class PortalDatabase:
 
             user_id = int(user_row["id"])
             existing = conn.execute(
-                "SELECT created_at, connected_at FROM whatsapp_connections WHERE user_id = ?",
+                "SELECT created_at, connected_at, access_token FROM whatsapp_connections WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
 
@@ -4157,6 +4179,11 @@ class PortalDatabase:
                 or (existing["connected_at"] if existing and existing["connected_at"] else None)
                 or now
             )
+            resolved_access_token = (
+                normalize_text(existing["access_token"])
+                if access_token is None and existing is not None
+                else normalize_text(access_token)
+            )
 
             conn.execute(
                 """
@@ -4164,6 +4191,7 @@ class PortalDatabase:
                     user_id,
                     business_account_id,
                     phone_number_id,
+                    access_token,
                     owner_wa_id,
                     display_phone_number,
                     verified_name,
@@ -4173,10 +4201,11 @@ class PortalDatabase:
                     last_tested_at,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     business_account_id = excluded.business_account_id,
                     phone_number_id = excluded.phone_number_id,
+                    access_token = excluded.access_token,
                     owner_wa_id = excluded.owner_wa_id,
                     display_phone_number = excluded.display_phone_number,
                     verified_name = excluded.verified_name,
@@ -4190,6 +4219,7 @@ class PortalDatabase:
                     user_id,
                     normalize_text(business_account_id),
                     normalize_text(phone_number_id),
+                    resolved_access_token,
                     normalize_text(owner_wa_id),
                     normalize_text(display_phone_number),
                     normalize_text(verified_name),
