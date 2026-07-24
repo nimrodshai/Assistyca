@@ -1326,6 +1326,14 @@ class PortalDatabase:
 
         payload = _row_to_dict(row) or {}
         metadata_payload = _load_json_dict(payload.get("metadata_json"))
+        message_count_row = conn.execute(
+            """
+            SELECT COUNT(*) AS message_count
+            FROM whatsapp_conversation_messages
+            WHERE user_id = ? AND conversation_id = ?
+            """,
+            (int(user_id), normalized_conversation_id),
+        ).fetchone()
         return {
             "userId": int(payload.get("user_id") or 0),
             "conversationId": normalize_text(payload.get("conversation_id")),
@@ -1339,6 +1347,7 @@ class PortalDatabase:
             "lastOutboundAt": payload.get("last_outbound_at"),
             "lastReengagementNotifiedAt": payload.get("last_reengagement_notified_at"),
             "lastReengagementNotifiedForMessageAt": payload.get("last_reengagement_notified_for_message_at"),
+            "messageCount": int(message_count_row["message_count"] or 0) if message_count_row is not None else 0,
             "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
             "createdAt": payload.get("created_at"),
             "updatedAt": payload.get("updated_at"),

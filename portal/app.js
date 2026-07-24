@@ -23,7 +23,7 @@ const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
 const VALID_TABS = new Set(["features", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
-const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor"]);
+const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor", "history"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
@@ -514,6 +514,12 @@ const state = {
   featureStudioMenuOpen: false,
   featureActivationNotice: "",
   featureActivationFieldErrors: {},
+  whatsappHistory: null,
+  whatsappHistoryLoading: false,
+  whatsappHistoryError: "",
+  whatsappHistorySelectedConversationId: "",
+  whatsappHistoryLoadedAt: 0,
+  whatsappHistoryEmail: "",
   paymentStatus: null,
   selectedSimulatorId: null,
   billingReport: null,
@@ -556,6 +562,7 @@ let monitorManualRunCancellationError = "";
 let monitorManualRunOverlayVisible = false;
 let whatsappSampleMessageBusy = false;
 let whatsappSampleMessageTargetId = "";
+let whatsappHistoryRefreshPromise = null;
 let featureConfigBusy = false;
 let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
@@ -603,6 +610,7 @@ const elements = {
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
   featureStudioWhatsAppSampleButton: document.querySelector("#featureStudioWhatsAppSampleButton"),
+  featureStudioWhatsAppHistoryButton: document.querySelector("#featureStudioWhatsAppHistoryButton"),
   featureStudioMonitorRunButton: document.querySelector("#featureStudioMonitorRunButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
@@ -657,6 +665,15 @@ const elements = {
   featureStudioWhatsAppHealthNotice: document.querySelector("#featureStudioWhatsAppHealthNotice"),
   featureStudioWhatsAppHealthNoticeTitle: document.querySelector("#featureStudioWhatsAppHealthNoticeTitle"),
   featureStudioWhatsAppHealthNoticeCopy: document.querySelector("#featureStudioWhatsAppHealthNoticeCopy"),
+  whatsappHistorySection: document.querySelector("#whatsappHistorySection"),
+  whatsappHistorySummary: document.querySelector("#whatsappHistorySummary"),
+  whatsappHistoryRefreshButton: document.querySelector("#whatsappHistoryRefreshButton"),
+  whatsappHistoryConversationList: document.querySelector("#whatsappHistoryConversationList"),
+  whatsappHistorySelectedAvatar: document.querySelector("#whatsappHistorySelectedAvatar"),
+  whatsappHistorySelectedTitle: document.querySelector("#whatsappHistorySelectedTitle"),
+  whatsappHistorySelectedMeta: document.querySelector("#whatsappHistorySelectedMeta"),
+  whatsappHistorySelectedCount: document.querySelector("#whatsappHistorySelectedCount"),
+  whatsappHistoryMessages: document.querySelector("#whatsappHistoryMessages"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
   accountAvatar: document.querySelector("#accountAvatar"),
@@ -3017,7 +3034,11 @@ function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
 }
 
 function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
-  return normalizeFeatureStudioView(state.featureStudioView) || getDefaultFeatureStudioView(feature);
+  const nextView = normalizeFeatureStudioView(state.featureStudioView);
+  if (nextView === "history" && !isWhatsAppFeature(feature)) {
+    return getDefaultFeatureStudioView(feature);
+  }
+  return nextView || getDefaultFeatureStudioView(feature);
 }
 
 function getActivationBackView(feature = getSelectedFeature()) {
@@ -3238,6 +3259,368 @@ function isWhatsAppReplySampleBusy(feature = getSelectedFeature()) {
     && feature.id
     && feature.id === whatsappSampleMessageTargetId
   );
+}
+
+function formatWhatsAppMessageCount(count) {
+  const value = Math.max(0, Number.parseInt(count, 10) || 0);
+  return `${value} message${value === 1 ? "" : "s"}`;
+}
+
+function normalizeWhatsAppHistoryMessage(source = {}) {
+  const direction = String(source.direction || "").trim().toLowerCase();
+  return {
+    messageId: String(source.messageId || source.message_id || "").trim(),
+    direction: ["inbound", "outbound"].includes(direction) ? direction : "inbound",
+    messageType: String(source.messageType || source.message_type || "text").trim() || "text",
+    text: normalizeText(source.text || ""),
+    messageAt: String(source.messageAt || source.message_at || "").trim(),
+    metadata: source.metadata && typeof source.metadata === "object" ? source.metadata : {},
+    createdAt: String(source.createdAt || source.created_at || "").trim(),
+    updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
+  };
+}
+
+function normalizeWhatsAppHistoryConversation(source = {}) {
+  const messages = Array.isArray(source.messages)
+    ? source.messages.map(normalizeWhatsAppHistoryMessage).filter((message) => message.text)
+    : [];
+  const messageCount = Math.max(
+    Number.parseInt(source.messageCount ?? source.message_count ?? 0, 10) || 0,
+    messages.length,
+  );
+
+  return {
+    conversationId: String(source.conversationId || source.conversation_id || "").trim(),
+    senderName: normalizeText(source.senderName || source.sender_name || ""),
+    senderWaId: normalizeText(source.senderWaId || source.sender_wa_id || ""),
+    lastMessageText: normalizeText(source.lastMessageText || source.last_message_text || ""),
+    lastMessageDirection: String(source.lastMessageDirection || source.last_message_direction || "").trim().toLowerCase(),
+    lastMessageAt: String(source.lastMessageAt || source.last_message_at || "").trim(),
+    lastInboundAt: String(source.lastInboundAt || source.last_inbound_at || "").trim(),
+    lastOutboundAt: String(source.lastOutboundAt || source.last_outbound_at || "").trim(),
+    messageCount,
+    messages,
+    metadata: source.metadata && typeof source.metadata === "object" ? source.metadata : {},
+    createdAt: String(source.createdAt || source.created_at || "").trim(),
+    updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
+  };
+}
+
+function normalizeWhatsAppHistoryPayload(payload = {}) {
+  const conversations = Array.isArray(payload.conversations)
+    ? payload.conversations.map(normalizeWhatsAppHistoryConversation).filter((conversation) => conversation.conversationId)
+    : [];
+  const messageCount = conversations.reduce((total, conversation) => total + conversation.messageCount, 0);
+
+  return {
+    conversationCount: conversations.length,
+    messageCount,
+    conversations,
+  };
+}
+
+function getCurrentWhatsAppHistory() {
+  if (state.whatsappHistoryEmail !== normalizeEmail(activeEmail)) {
+    return null;
+  }
+  return state.whatsappHistory && Array.isArray(state.whatsappHistory.conversations)
+    ? state.whatsappHistory
+    : null;
+}
+
+function getWhatsAppHistoryConversations() {
+  return getCurrentWhatsAppHistory()?.conversations || [];
+}
+
+function getSelectedWhatsAppHistoryConversation() {
+  const conversations = getWhatsAppHistoryConversations();
+  if (!conversations.length) {
+    state.whatsappHistorySelectedConversationId = "";
+    return null;
+  }
+
+  const selected = conversations.find((conversation) => (
+    conversation.conversationId === state.whatsappHistorySelectedConversationId
+  ));
+  if (selected) {
+    return selected;
+  }
+
+  state.whatsappHistorySelectedConversationId = conversations[0].conversationId;
+  return conversations[0];
+}
+
+function buildWhatsAppHistoryConversationTitle(conversation) {
+  return String(
+    conversation?.senderName
+    || conversation?.senderWaId
+    || conversation?.conversationId
+    || "WhatsApp conversation",
+  ).trim() || "WhatsApp conversation";
+}
+
+function buildWhatsAppHistoryConversationMeta(conversation) {
+  const parts = [];
+  const senderWaId = String(conversation?.senderWaId || "").trim();
+  const lastMessageAt = formatAdminDateTime(conversation?.lastMessageAt || "");
+
+  if (senderWaId) {
+    parts.push(senderWaId);
+  }
+  if (lastMessageAt) {
+    parts.push(lastMessageAt);
+  }
+
+  return parts.join(" · ");
+}
+
+function createWhatsAppHistoryEmptyState(titleText, copyText = "") {
+  const emptyState = document.createElement("div");
+  emptyState.className = "whatsapp-history-empty";
+
+  const title = document.createElement("h3");
+  title.textContent = titleText;
+  emptyState.append(title);
+
+  if (copyText) {
+    const copy = document.createElement("p");
+    copy.textContent = copyText;
+    emptyState.append(copy);
+  }
+
+  return emptyState;
+}
+
+function createWhatsAppHistoryConversationButton(conversation, isSelected) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "whatsapp-history-conversation";
+  button.dataset.conversationId = conversation.conversationId;
+  button.setAttribute("role", "listitem");
+  button.setAttribute("aria-pressed", String(isSelected));
+
+  const avatar = document.createElement("span");
+  avatar.className = "whatsapp-history-avatar";
+  avatar.textContent = deriveInitialsLabel(buildWhatsAppHistoryConversationTitle(conversation), "WA");
+
+  const copy = document.createElement("span");
+  copy.className = "whatsapp-history-conversation-copy";
+
+  const titleRow = document.createElement("span");
+  titleRow.className = "whatsapp-history-conversation-title-row";
+
+  const title = document.createElement("strong");
+  title.textContent = buildWhatsAppHistoryConversationTitle(conversation);
+
+  const count = document.createElement("span");
+  count.className = "whatsapp-history-count";
+  count.textContent = String(conversation.messageCount || 0);
+  count.setAttribute("aria-label", formatWhatsAppMessageCount(conversation.messageCount));
+
+  titleRow.append(title, count);
+
+  const preview = document.createElement("span");
+  preview.className = "whatsapp-history-preview";
+  preview.textContent = conversation.lastMessageText || "No message preview";
+
+  const meta = document.createElement("span");
+  meta.className = "whatsapp-history-meta";
+  meta.textContent = buildWhatsAppHistoryConversationMeta(conversation);
+
+  copy.append(titleRow, preview, meta);
+  button.append(avatar, copy);
+  return button;
+}
+
+function createWhatsAppHistoryMessage(message) {
+  const item = document.createElement("div");
+  item.className = `whatsapp-history-message is-${message.direction}`;
+
+  const bubble = document.createElement("div");
+  bubble.className = "whatsapp-history-bubble";
+
+  const text = document.createElement("p");
+  text.textContent = message.text;
+
+  const meta = document.createElement("span");
+  meta.className = "whatsapp-history-message-meta";
+  const timestamp = formatAdminDateTime(message.messageAt);
+  const directionLabel = message.direction === "outbound" ? "Business" : "Customer";
+  meta.textContent = timestamp ? `${directionLabel} · ${timestamp}` : directionLabel;
+
+  bubble.append(text, meta);
+  item.append(bubble);
+  return item;
+}
+
+function renderWhatsAppHistory(feature = getSelectedFeature()) {
+  if (!elements.whatsappHistorySection) {
+    return;
+  }
+
+  const conversations = getWhatsAppHistoryConversations();
+  const selectedConversation = getSelectedWhatsAppHistoryConversation();
+  const totalMessages = getCurrentWhatsAppHistory()?.messageCount || 0;
+  const isLoading = Boolean(state.whatsappHistoryLoading);
+  const errorText = String(state.whatsappHistoryError || "").trim();
+
+  if (elements.whatsappHistorySummary) {
+    elements.whatsappHistorySummary.textContent = isLoading
+      ? "Loading..."
+      : errorText
+        ? "History unavailable"
+        : `${conversations.length} conversation${conversations.length === 1 ? "" : "s"} · ${formatWhatsAppMessageCount(totalMessages)}`;
+  }
+
+  if (elements.whatsappHistoryRefreshButton) {
+    elements.whatsappHistoryRefreshButton.disabled = isLoading || !isSignedIn() || !isWhatsAppFeature(feature);
+    elements.whatsappHistoryRefreshButton.classList.toggle("is-loading", isLoading);
+    elements.whatsappHistoryRefreshButton.setAttribute("aria-busy", String(isLoading));
+    elements.whatsappHistoryRefreshButton.textContent = isLoading ? "Refreshing..." : "Refresh";
+  }
+
+  if (elements.whatsappHistoryConversationList) {
+    if (isLoading && !conversations.length) {
+      elements.whatsappHistoryConversationList.replaceChildren(
+        createWhatsAppHistoryEmptyState("Loading history", "Fetching saved WhatsApp conversations."),
+      );
+    } else if (errorText) {
+      elements.whatsappHistoryConversationList.replaceChildren(
+        createWhatsAppHistoryEmptyState("Couldn’t load history", errorText),
+      );
+    } else if (!conversations.length) {
+      elements.whatsappHistoryConversationList.replaceChildren(
+        createWhatsAppHistoryEmptyState("No saved conversations yet", "New customer messages will appear here after WhatsApp sends them to Assistyca."),
+      );
+    } else {
+      elements.whatsappHistoryConversationList.replaceChildren(
+        ...conversations.map((conversation) => createWhatsAppHistoryConversationButton(
+          conversation,
+          selectedConversation?.conversationId === conversation.conversationId,
+        )),
+      );
+    }
+  }
+
+  if (elements.whatsappHistorySelectedTitle) {
+    elements.whatsappHistorySelectedTitle.textContent = selectedConversation
+      ? buildWhatsAppHistoryConversationTitle(selectedConversation)
+      : "Select a conversation";
+  }
+  if (elements.whatsappHistorySelectedMeta) {
+    elements.whatsappHistorySelectedMeta.textContent = selectedConversation
+      ? buildWhatsAppHistoryConversationMeta(selectedConversation)
+      : "";
+  }
+  if (elements.whatsappHistorySelectedAvatar) {
+    elements.whatsappHistorySelectedAvatar.textContent = selectedConversation
+      ? deriveInitialsLabel(buildWhatsAppHistoryConversationTitle(selectedConversation), "WA")
+      : "WA";
+  }
+  if (elements.whatsappHistorySelectedCount) {
+    elements.whatsappHistorySelectedCount.textContent = selectedConversation
+      ? formatWhatsAppMessageCount(selectedConversation.messageCount)
+      : "0 messages";
+  }
+
+  if (elements.whatsappHistoryMessages) {
+    const messages = selectedConversation?.messages || [];
+    if (isLoading && !selectedConversation) {
+      elements.whatsappHistoryMessages.replaceChildren(
+        createWhatsAppHistoryEmptyState("Loading messages"),
+      );
+    } else if (errorText && !selectedConversation) {
+      elements.whatsappHistoryMessages.replaceChildren(
+        createWhatsAppHistoryEmptyState("No messages to show"),
+      );
+    } else if (!selectedConversation) {
+      elements.whatsappHistoryMessages.replaceChildren(
+        createWhatsAppHistoryEmptyState("No conversation selected"),
+      );
+    } else if (!messages.length) {
+      elements.whatsappHistoryMessages.replaceChildren(
+        createWhatsAppHistoryEmptyState("No saved messages in this conversation"),
+      );
+    } else {
+      elements.whatsappHistoryMessages.replaceChildren(...messages.map(createWhatsAppHistoryMessage));
+    }
+  }
+}
+
+function selectWhatsAppHistoryConversation(conversationId) {
+  const normalizedId = String(conversationId || "").trim();
+  if (!normalizedId) {
+    return;
+  }
+
+  state.whatsappHistorySelectedConversationId = normalizedId;
+  renderWhatsAppHistory();
+}
+
+async function refreshWhatsAppHistory(options = {}) {
+  if (!isSignedIn()) {
+    return null;
+  }
+
+  const feature = getSelectedFeature();
+  if (!isWhatsAppFeature(feature)) {
+    return null;
+  }
+
+  if (whatsappHistoryRefreshPromise && !options.force) {
+    return whatsappHistoryRefreshPromise;
+  }
+
+  state.whatsappHistoryLoading = true;
+  state.whatsappHistoryError = "";
+  state.whatsappHistoryEmail = normalizeEmail(activeEmail);
+  renderWhatsAppHistory(feature);
+
+  whatsappHistoryRefreshPromise = (async () => {
+    try {
+      const response = await apiRequest("/api/whatsapp/history", {
+        headers: getSessionAuthHeaders(),
+        timeoutMs: 20000,
+      });
+      const history = normalizeWhatsAppHistoryPayload(response);
+      state.whatsappHistory = history;
+      state.whatsappHistoryLoadedAt = Date.now();
+      state.whatsappHistoryEmail = normalizeEmail(activeEmail);
+      if (!history.conversations.some((conversation) => (
+        conversation.conversationId === state.whatsappHistorySelectedConversationId
+      ))) {
+        state.whatsappHistorySelectedConversationId = history.conversations[0]?.conversationId || "";
+      }
+      setStatus(`Loaded ${formatWhatsAppMessageCount(history.messageCount)}.`);
+      return history;
+    } catch (error) {
+      state.whatsappHistoryError = formatApiErrorMessage(error, "We couldn’t load the saved WhatsApp history.");
+      setStatus("WhatsApp history could not be loaded.");
+      return null;
+    } finally {
+      state.whatsappHistoryLoading = false;
+      whatsappHistoryRefreshPromise = null;
+      renderWhatsAppHistory(getSelectedFeature());
+      updateFeatureStudioHeader();
+    }
+  })();
+
+  return whatsappHistoryRefreshPromise;
+}
+
+function openWhatsAppHistory() {
+  const feature = getSelectedFeature();
+  if (!feature || !isWhatsAppFeature(feature)) {
+    return;
+  }
+
+  state.featureStudioView = "history";
+  closeMenu();
+  closeFeatureStudioMenu();
+  setHashForTab("features", feature.id, "history");
+  renderApp();
+  window.scrollTo(0, 0);
+  void refreshWhatsAppHistory({ force: !getCurrentWhatsAppHistory() });
 }
 
 function hasFeatureConfigChanges(feature = getSelectedFeature()) {
@@ -8214,9 +8597,11 @@ function updateFeatureStudioHeader() {
   state.featureStudioView = studioView;
 
   if (elements.featureStudioHeaderLabel) {
-    elements.featureStudioHeaderLabel.textContent = studioView === "editor"
-      ? "Tool editor"
-      : studioView === "activation"
+    elements.featureStudioHeaderLabel.textContent = studioView === "history"
+      ? "Conversation history"
+      : studioView === "editor"
+        ? "Tool editor"
+        : studioView === "activation"
         ? isActivated
           ? "WhatsApp details"
           : "WhatsApp setup"
@@ -8244,11 +8629,16 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioEditorSection) {
     elements.featureStudioEditorSection.classList.toggle("is-hidden", studioView !== "editor");
   }
+  if (elements.whatsappHistorySection) {
+    elements.whatsappHistorySection.classList.toggle("is-hidden", studioView !== "history");
+  }
   if (elements.featureStudioMenuWrap) {
     elements.featureStudioMenuWrap.classList.toggle("is-hidden", !canOpenFeatureWhatsAppDetails(feature));
   }
   if (elements.backToFeaturesButton) {
-    elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "activation"
+    elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "history"
+      ? "Back to editor"
+      : studioView === "activation"
       ? getActivationBackView(feature) === "editor"
         ? "Back to editor"
         : "Back to overview"
@@ -8259,6 +8649,14 @@ function updateFeatureStudioHeader() {
     if (studioView === "activation") {
       clearFeatureActivationBadgeStyle(elements.featureStudioStatus);
       elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
+    } else if (studioView === "history") {
+      clearFeatureActivationBadgeStyle(elements.featureStudioStatus);
+      const history = getCurrentWhatsAppHistory();
+      elements.featureStudioStatus.textContent = state.whatsappHistoryLoading
+        ? "Loading history"
+        : history
+          ? formatWhatsAppMessageCount(history.messageCount)
+          : "History";
     } else {
       applyFeatureActivationBadgeStyle(elements.featureStudioStatus, feature);
       elements.featureStudioStatus.textContent = getFeatureActivationLabel(feature);
@@ -8364,6 +8762,11 @@ function updateFeatureStudioHeader() {
         ? "Send a sample approval alert to your WhatsApp"
         : "Save the latest WhatsApp details before sending a sample";
   }
+  if (elements.featureStudioWhatsAppHistoryButton) {
+    const showHistoryButton = isWhatsAppFeature(feature);
+    elements.featureStudioWhatsAppHistoryButton.hidden = !showHistoryButton;
+    elements.featureStudioWhatsAppHistoryButton.disabled = transitionBusy || manualRunBusy || sampleMessageBusy;
+  }
   if (elements.featureStudioMonitorRunButton) {
     const showManualRun = isMonitorFeature(feature) && isActivated;
     const manualRunReady = showManualRun;
@@ -8388,6 +8791,12 @@ function updateFeatureStudioHeader() {
   }
 
   buildFeatureStudioMenu(feature);
+  if (studioView === "history") {
+    renderWhatsAppHistory(feature);
+    if (!getCurrentWhatsAppHistory() && !state.whatsappHistoryLoading && !state.whatsappHistoryError) {
+      void refreshWhatsAppHistory();
+    }
+  }
 }
 
 function updatePromptFields() {
@@ -9798,6 +10207,11 @@ function bindEvents() {
   });
   elements.closeSettingsButton.addEventListener("click", closeSettings);
   elements.backToFeaturesButton.addEventListener("click", () => {
+    if (state.featureStudioView === "history") {
+      setFeatureStudioView("editor");
+      return;
+    }
+
     if (state.featureStudioView === "activation") {
       setFeatureStudioView(getActivationBackView());
       return;
@@ -9866,6 +10280,27 @@ function bindEvents() {
   if (elements.featureStudioWhatsAppSampleButton) {
     elements.featureStudioWhatsAppSampleButton.addEventListener("click", () => {
       void sendSelectedWhatsAppReplySample();
+    });
+  }
+  if (elements.featureStudioWhatsAppHistoryButton) {
+    elements.featureStudioWhatsAppHistoryButton.addEventListener("click", () => {
+      openWhatsAppHistory();
+    });
+  }
+  if (elements.whatsappHistoryRefreshButton) {
+    elements.whatsappHistoryRefreshButton.addEventListener("click", () => {
+      void refreshWhatsAppHistory({ force: true });
+    });
+  }
+  if (elements.whatsappHistoryConversationList) {
+    elements.whatsappHistoryConversationList.addEventListener("click", (event) => {
+      const target = getEventTargetElement(event);
+      const item = target?.closest("[data-conversation-id]");
+      if (!item) {
+        return;
+      }
+
+      selectWhatsAppHistoryConversation(item.dataset.conversationId);
     });
   }
   if (elements.featureStudioMonitorRunButton) {

@@ -631,12 +631,51 @@
               <button id="featureStudioWhatsAppSampleButton" class="ghost-button" type="button" hidden>
                 Send sample
               </button>
+              <button id="featureStudioWhatsAppHistoryButton" class="ghost-button" type="button" hidden>
+                View history
+              </button>
               <button id="featureStudioMonitorRunButton" class="ghost-button" type="button" hidden>
                 Test now
               </button>
             </div>
           </div>
         </div>
+
+        <section id="whatsappHistorySection" class="whatsapp-history-page is-hidden" aria-live="polite">
+          <header class="whatsapp-history-header">
+            <div>
+              <p class="eyebrow">Saved WhatsApp history</p>
+              <h2>Conversations</h2>
+            </div>
+            <div class="whatsapp-history-header-actions">
+              <span id="whatsappHistorySummary" class="feature-status">0 messages</span>
+              <button id="whatsappHistoryRefreshButton" class="ghost-button small" type="button">
+                Refresh
+              </button>
+            </div>
+          </header>
+
+          <div class="whatsapp-history-layout">
+            <aside class="whatsapp-history-conversation-panel">
+              <div id="whatsappHistoryConversationList" class="whatsapp-history-conversation-list" role="list"></div>
+            </aside>
+
+            <article class="whatsapp-history-thread-panel">
+              <div class="whatsapp-history-thread-head">
+                <div class="whatsapp-history-contact">
+                  <span id="whatsappHistorySelectedAvatar" class="whatsapp-avatar">WA</span>
+                  <div>
+                    <h3 id="whatsappHistorySelectedTitle">Select a conversation</h3>
+                    <p id="whatsappHistorySelectedMeta" class="whatsapp-history-selected-meta"></p>
+                  </div>
+                </div>
+                <span id="whatsappHistorySelectedCount" class="feature-status">0 messages</span>
+              </div>
+
+              <div id="whatsappHistoryMessages" class="whatsapp-history-messages"></div>
+            </article>
+          </div>
+        </section>
       </section>
 
       <section id="previewPanel" class="tab-panel is-hidden">

@@ -1263,6 +1263,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_connection_get()
             return
 
+        if path == "/api/whatsapp/history":
+            self._handle_whatsapp_history_get(parsed)
+            return
+
         if path.startswith("/api/approvals"):
             self._handle_whatsapp_approvals_get(parsed)
             return
@@ -2829,6 +2833,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "threads": service.list_threads(),
+        })
+
+    def _handle_whatsapp_history_get(self, _parsed: urllib_parse.ParseResult) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        conversations = self.database.list_whatsapp_conversations(email=session.email)
+        payload_conversations: list[dict[str, Any]] = []
+        total_messages = 0
+
+        for conversation in conversations:
+            conversation_id = normalize_text(conversation.get("conversationId"))
+            if not conversation_id:
+                continue
+
+            messages = self.database.list_whatsapp_conversation_messages(
+                conversation_id,
+                email=session.email,
+            )
+            message_count = int(conversation.get("messageCount") or len(messages))
+            total_messages += message_count
+            payload_conversations.append({
+                **conversation,
+                "messageCount": message_count,
+                "messages": messages,
+            })
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "conversationCount": len(payload_conversations),
+            "messageCount": total_messages,
+            "conversations": payload_conversations,
         })
 
     def _handle_whatsapp_approval_api_submit(self, parsed: urllib_parse.ParseResult) -> None:
