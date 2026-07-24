@@ -922,6 +922,7 @@
         display: grid;
         place-items: center;
         padding: clamp(0.75rem, 3vw, 1.6rem);
+        pointer-events: none;
       }
 
       .contact-modal::before {
@@ -931,6 +932,19 @@
         background: rgba(19, 32, 56, 0.38);
         backdrop-filter: blur(14px);
         -webkit-backdrop-filter: blur(14px);
+        opacity: 0;
+        transition:
+          opacity 260ms ease,
+          backdrop-filter 260ms ease,
+          -webkit-backdrop-filter 260ms ease;
+      }
+
+      .contact-modal[data-state="open"] {
+        pointer-events: auto;
+      }
+
+      .contact-modal[data-state="open"]::before {
+        opacity: 1;
       }
 
       .contact-panel {
@@ -945,6 +959,25 @@
           radial-gradient(circle at top right, rgba(255, 255, 255, 0.78), transparent 42%),
           rgba(251, 248, 241, 0.96);
         box-shadow: 0 30px 70px rgba(19, 32, 56, 0.22);
+        opacity: 0;
+        transform: translateY(1.15rem) scale(0.975);
+        transform-origin: center bottom;
+        transition:
+          opacity 220ms ease,
+          transform 340ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .contact-modal[data-state="open"] .contact-panel {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+
+      .contact-modal[data-state="closing"] .contact-panel {
+        opacity: 0;
+        transform: translateY(0.85rem) scale(0.985);
+        transition:
+          opacity 180ms ease,
+          transform 220ms ease;
       }
 
       .contact-panel-header {
@@ -2771,6 +2804,9 @@
         const contactSubmit = document.querySelector("[data-contact-submit]");
         let contactLastFocus = null;
         let contactCloseTimer = 0;
+        let contactAnimationTimer = 0;
+        const contactAnimationMs = 340;
+        const contactMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
         const setContactStatus = (message, tone = "") => {
           if (!contactStatus) {
@@ -2844,7 +2880,7 @@
         };
 
         const getContactFocusable = () => {
-          if (!contactModal || contactModal.hidden) {
+          if (!contactModal || contactModal.hidden || contactModal.dataset.state === "closing") {
             return [];
           }
 
@@ -2861,30 +2897,56 @@
           }
 
           window.clearTimeout(contactCloseTimer);
+          window.clearTimeout(contactAnimationTimer);
           contactLastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
           contactModal.hidden = false;
+          contactModal.dataset.state = "opening";
           document.body.classList.add("contact-modal-open");
           setContactStatus("");
           setContactFieldErrors({});
-          window.requestAnimationFrame(() => {
+
+          const completeOpen = () => {
+            contactModal.dataset.state = "open";
             const firstInput = contactForm.elements.name;
             if (firstInput) {
               firstInput.focus({ preventScroll: true });
             }
+          };
+
+          if (contactMotionQuery.matches) {
+            completeOpen();
+            return;
+          }
+
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(completeOpen);
           });
         };
 
         const closeContactModal = () => {
-          if (!contactModal) {
+          if (!contactModal || contactModal.hidden || contactModal.dataset.state === "closing") {
             return;
           }
 
           window.clearTimeout(contactCloseTimer);
-          contactModal.hidden = true;
-          document.body.classList.remove("contact-modal-open");
-          if (contactLastFocus && typeof contactLastFocus.focus === "function") {
-            contactLastFocus.focus({ preventScroll: true });
+          window.clearTimeout(contactAnimationTimer);
+          contactModal.dataset.state = "closing";
+
+          const finishClose = () => {
+            contactModal.hidden = true;
+            delete contactModal.dataset.state;
+            document.body.classList.remove("contact-modal-open");
+            if (contactLastFocus && typeof contactLastFocus.focus === "function") {
+              contactLastFocus.focus({ preventScroll: true });
+            }
+          };
+
+          if (contactMotionQuery.matches) {
+            finishClose();
+            return;
           }
+
+          contactAnimationTimer = window.setTimeout(finishClose, contactAnimationMs);
         };
 
         contactOpeners.forEach((opener) => {
