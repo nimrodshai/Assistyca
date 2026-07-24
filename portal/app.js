@@ -8300,6 +8300,12 @@ function updateFeatureStudioHeader() {
   updateFeatureStudioWhatsAppHealthNotice(feature);
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
+    const showActivationSaveButton = activationBusy || hasActivationChanges;
+    const activationActions = elements.featureStudioActivationButton.closest(".feature-activation-actions");
+    if (activationActions) {
+      activationActions.classList.toggle("is-hidden", !showActivationSaveButton);
+    }
+    elements.featureStudioActivationButton.hidden = !showActivationSaveButton;
     elements.featureStudioActivationButton.textContent = activationBusy
       ? isActivated
         ? "Saving details..."
