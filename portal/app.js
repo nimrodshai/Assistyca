@@ -8670,7 +8670,11 @@ function updateFeatureStudioHeader() {
     elements.whatsappHistorySection.classList.toggle("is-hidden", studioView !== "history");
   }
   if (elements.featureStudioMenuWrap) {
-    elements.featureStudioMenuWrap.classList.toggle("is-hidden", !canOpenFeatureWhatsAppDetails(feature));
+    const showFeatureStudioMenu = studioView !== "activation" && canOpenFeatureWhatsAppDetails(feature);
+    if (!showFeatureStudioMenu) {
+      closeFeatureStudioMenu();
+    }
+    elements.featureStudioMenuWrap.classList.toggle("is-hidden", !showFeatureStudioMenu);
   }
   if (elements.backToFeaturesButton) {
     elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "history"
