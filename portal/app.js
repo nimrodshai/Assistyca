@@ -668,6 +668,7 @@ const elements = {
   whatsappHistorySection: document.querySelector("#whatsappHistorySection"),
   whatsappHistorySummary: document.querySelector("#whatsappHistorySummary"),
   whatsappHistoryRefreshButton: document.querySelector("#whatsappHistoryRefreshButton"),
+  whatsappHistoryDiagnostics: document.querySelector("#whatsappHistoryDiagnostics"),
   whatsappHistoryConversationList: document.querySelector("#whatsappHistoryConversationList"),
   whatsappHistorySelectedAvatar: document.querySelector("#whatsappHistorySelectedAvatar"),
   whatsappHistorySelectedTitle: document.querySelector("#whatsappHistorySelectedTitle"),
@@ -3306,14 +3307,28 @@ function normalizeWhatsAppHistoryConversation(source = {}) {
   };
 }
 
+function normalizeWhatsAppHistoryDiagnostic(source = {}) {
+  const tone = String(source.tone || "").trim().toLowerCase();
+  return {
+    tone: ["warning", "neutral", "success"].includes(tone) ? tone : "neutral",
+    title: normalizeText(source.title || ""),
+    message: normalizeText(source.message || ""),
+  };
+}
+
 function normalizeWhatsAppHistoryPayload(payload = {}) {
   const conversations = Array.isArray(payload.conversations)
     ? payload.conversations.map(normalizeWhatsAppHistoryConversation).filter((conversation) => conversation.conversationId)
     : [];
+  const diagnostics = Array.isArray(payload.diagnostics)
+    ? payload.diagnostics.map(normalizeWhatsAppHistoryDiagnostic).filter((item) => item.title || item.message)
+    : [];
   const messageCount = conversations.reduce((total, conversation) => total + conversation.messageCount, 0);
 
   return {
+    connection: normalizeFeatureWhatsApp(payload.connection || {}),
     conversationCount: conversations.length,
+    diagnostics,
     messageCount,
     conversations,
   };
@@ -3389,6 +3404,20 @@ function createWhatsAppHistoryEmptyState(titleText, copyText = "") {
   }
 
   return emptyState;
+}
+
+function createWhatsAppHistoryDiagnosticNotice(diagnostic) {
+  const notice = document.createElement("article");
+  notice.className = `whatsapp-history-diagnostic is-${diagnostic.tone}`;
+
+  const title = document.createElement("h3");
+  title.textContent = diagnostic.title || "WhatsApp history notice";
+
+  const message = document.createElement("p");
+  message.textContent = diagnostic.message || "";
+
+  notice.append(title, message);
+  return notice;
 }
 
 function createWhatsAppHistoryConversationButton(conversation, isSelected) {
@@ -3477,6 +3506,14 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
     elements.whatsappHistoryRefreshButton.classList.toggle("is-loading", isLoading);
     elements.whatsappHistoryRefreshButton.setAttribute("aria-busy", String(isLoading));
     elements.whatsappHistoryRefreshButton.textContent = isLoading ? "Refreshing..." : "Refresh";
+  }
+
+  if (elements.whatsappHistoryDiagnostics) {
+    const diagnostics = getCurrentWhatsAppHistory()?.diagnostics || [];
+    elements.whatsappHistoryDiagnostics.classList.toggle("is-hidden", !diagnostics.length);
+    elements.whatsappHistoryDiagnostics.replaceChildren(
+      ...diagnostics.map(createWhatsAppHistoryDiagnosticNotice),
+    );
   }
 
   if (elements.whatsappHistoryConversationList) {

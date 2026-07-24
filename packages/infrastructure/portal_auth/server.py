@@ -2380,6 +2380,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "lastInboundPreview": normalize_text(event.get("message_text"))[:240],
                 "lastInboundMessageId": normalize_text(event.get("source_message_id")),
                 "lastInboundPhoneNumberId": normalize_text(phone_number_id),
+                "lastWebhookAt": received_at,
+                "lastWebhookEventType": "customer_message",
+                "lastWebhookPhoneNumberId": normalize_text(phone_number_id),
+            },
+        )
+
+    def _record_whatsapp_owner_command_activity(
+        self,
+        connection: dict[str, Any],
+        event: dict[str, Any],
+        *,
+        phone_number_id: str,
+    ) -> None:
+        received_at = (
+            self._parse_whatsapp_message_timestamp(event.get("timestamp"))
+            or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        )
+        self.database.update_whatsapp_connection_metadata(
+            user_id=int(connection.get("userId") or 0),
+            metadata_updates={
+                "lastOwnerCommandAt": received_at,
+                "lastOwnerCommandSenderName": normalize_text(event.get("sender_name")),
+                "lastOwnerCommandSenderWaId": normalize_text(event.get("sender_wa_id")),
+                "lastOwnerCommandPreview": normalize_text(event.get("message_text"))[:240],
+                "lastOwnerCommandMessageId": normalize_text(event.get("source_message_id")),
+                "lastWebhookAt": received_at,
+                "lastWebhookEventType": "owner_command",
+                "lastWebhookPhoneNumberId": normalize_text(phone_number_id),
             },
         )
 
@@ -2426,6 +2454,51 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 self._parse_whatsapp_message_timestamp(event.get("timestamp"))
                 or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             ),
+        )
+
+    def _mask_whatsapp_log_identifier(self, value: Any) -> str:
+        text = re.sub(r"\D+", "", normalize_text(value))
+        if len(text) <= 4:
+            return text
+        return f"...{text[-4:]}"
+
+    def _log_whatsapp_webhook_summary(
+        self,
+        *,
+        status_events: list[dict[str, Any]],
+        events: list[dict[str, Any]],
+        results: list[dict[str, Any]],
+        routed_user_ids: set[int],
+    ) -> None:
+        result_counts: dict[str, int] = {}
+        phone_number_ids: set[str] = set()
+        for result in results:
+            result_type = normalize_text(result.get("type")) or "unknown"
+            result_counts[result_type] = result_counts.get(result_type, 0) + 1
+            phone_number_id = normalize_text(result.get("phone_number_id"))
+            if phone_number_id:
+                phone_number_ids.add(self._mask_whatsapp_log_identifier(phone_number_id))
+
+        for event in events:
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            phone_number_id = normalize_text(metadata.get("phone_number_id"))
+            if phone_number_id:
+                phone_number_ids.add(self._mask_whatsapp_log_identifier(phone_number_id))
+
+        print(
+            json.dumps(
+                {
+                    "event": "whatsapp_webhook_ingest",
+                    "messageEvents": len(events),
+                    "phoneNumberIds": sorted(phone_number_ids),
+                    "resultCounts": result_counts,
+                    "routedUserCount": len([user_id for user_id in routed_user_ids if user_id > 0]),
+                    "statusEvents": len(status_events),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
         )
 
     def _handle_whatsapp_connection_get(self) -> None:
@@ -2840,6 +2913,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if session is None:
             return
 
+        connection = self.database.get_whatsapp_connection(session.email)
         conversations = self.database.list_whatsapp_conversations(email=session.email)
         payload_conversations: list[dict[str, Any]] = []
         total_messages = 0
@@ -2865,8 +2939,82 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "conversationCount": len(payload_conversations),
             "messageCount": total_messages,
+            "connection": self._serialize_whatsapp_connection(connection),
+            "diagnostics": self._build_whatsapp_history_diagnostics(connection, payload_conversations),
             "conversations": payload_conversations,
         })
+
+    def _build_whatsapp_history_diagnostics(
+        self,
+        connection: dict[str, Any] | None,
+        conversations: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        if not connection:
+            return [
+                {
+                    "tone": "warning",
+                    "title": "WhatsApp setup is not saved",
+                    "message": "Save the Phone Number ID and owner phone before expecting customer conversations here.",
+                }
+            ]
+
+        diagnostics: list[dict[str, str]] = []
+        metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
+        webhook_url = f"{self._public_base_url()}/webhooks/whatsapp"
+        connection_status = normalize_text(connection.get("connectionStatus"))
+        last_inbound_at = normalize_text(metadata.get("lastInboundAt"))
+        last_owner_command_at = normalize_text(metadata.get("lastOwnerCommandAt"))
+        last_webhook_event_type = normalize_text(metadata.get("lastWebhookEventType"))
+        last_owner_status = normalize_text(metadata.get("lastOwnerNotificationStatus")).lower()
+        last_owner_error = normalize_text(metadata.get("lastOwnerNotificationError"))
+
+        if connection_status and connection_status != "connected":
+            diagnostics.append(
+                {
+                    "tone": "warning",
+                    "title": "WhatsApp number is not fully verified",
+                    "message": "The setup is saved, but the backend has not confirmed the Phone Number ID with Meta yet.",
+                }
+            )
+
+        if not conversations:
+            if last_owner_command_at:
+                diagnostics.append(
+                    {
+                        "tone": "neutral",
+                        "title": "Latest webhook came from the owner phone",
+                        "message": "Messages from the approval phone are treated as owner commands, so they do not create customer history or generated replies. Send a test from a different WhatsApp number.",
+                    }
+                )
+            elif not last_inbound_at:
+                diagnostics.append(
+                    {
+                        "tone": "warning",
+                        "title": "No customer webhook has reached this workspace yet",
+                        "message": f"Meta should send messages to {webhook_url}. If the callback points at another Assistyca URL, this database will stay empty.",
+                    }
+                )
+
+        if conversations and last_webhook_event_type == "owner_command":
+            diagnostics.append(
+                {
+                    "tone": "neutral",
+                    "title": "Owner-phone messages are excluded from customer history",
+                    "message": "Use another phone to test customer replies, or reply to approval alerts from the owner phone.",
+                }
+            )
+
+        if last_owner_status == "failed":
+            diagnostics.append(
+                {
+                    "tone": "warning",
+                    "title": "Latest approval alert failed",
+                    "message": last_owner_error
+                    or "The incoming message was saved, but WhatsApp did not accept the owner notification.",
+                }
+            )
+
+        return diagnostics
 
     def _handle_whatsapp_approval_api_submit(self, parsed: urllib_parse.ParseResult) -> None:
         parts = [part for part in parsed.path.rstrip("/").split("/") if part]
@@ -3099,6 +3247,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             body,
             self.headers.get("X-Hub-Signature-256"),
         ):
+            print(
+                json.dumps(
+                    {
+                        "event": "whatsapp_webhook_rejected",
+                        "reason": "invalid_signature",
+                        "hasSignatureHeader": bool(self.headers.get("X-Hub-Signature-256")),
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
             self.send_error(HTTPStatus.FORBIDDEN, "Invalid WhatsApp signature")
             return
 
@@ -3188,6 +3348,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             routed_user_ids.add(int(connection.get("userId") or 0))
             try:
                 if service.is_owner_sender(str(event.get("sender_wa_id", ""))):
+                    self._record_whatsapp_owner_command_activity(
+                        connection,
+                        event,
+                        phone_number_id=phone_number_id,
+                    )
                     owner_result = service.handle_owner_event(event)
                     approval = owner_result.get("approval") if isinstance(owner_result.get("approval"), dict) else None
                     action = normalize_text(owner_result.get("action"))
@@ -3268,6 +3433,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "phone_number_id": phone_number_id,
                     "error": str(exc),
                 })
+
+        self._log_whatsapp_webhook_summary(
+            status_events=status_events,
+            events=events,
+            results=results,
+            routed_user_ids=routed_user_ids,
+        )
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
