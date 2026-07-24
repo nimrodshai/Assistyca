@@ -8303,9 +8303,12 @@ function updateFeatureStudioHeader() {
     const showActivationSaveButton = activationBusy || hasActivationChanges;
     const activationActions = elements.featureStudioActivationButton.closest(".feature-activation-actions");
     if (activationActions) {
-      activationActions.classList.toggle("is-hidden", !showActivationSaveButton);
+      activationActions.classList.remove("is-hidden");
+      activationActions.classList.toggle("is-save-visible", showActivationSaveButton);
+      activationActions.setAttribute("aria-hidden", String(!showActivationSaveButton));
     }
-    elements.featureStudioActivationButton.hidden = !showActivationSaveButton;
+    elements.featureStudioActivationButton.hidden = false;
+    elements.featureStudioActivationButton.tabIndex = showActivationSaveButton ? 0 : -1;
     elements.featureStudioActivationButton.textContent = activationBusy
       ? isActivated
         ? "Saving details..."
