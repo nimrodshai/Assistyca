@@ -80,9 +80,10 @@ Runtime settings for the reusable WhatsApp approval backend.
 - `whatsapp.allow_mock_send`
 - `assistant.*` guidance fields for reply generation
 
-These backend values are not meant to be typed into the customer-facing portal. Put the Meta app secrets only in the backend deployment environment:
+Client-owned WhatsApp credentials are saved server-side by the portal connection flow. Put shared webhook secrets and Assistyca-owned sender credentials only in the backend deployment environment:
 
-- `WHATSAPP_ACCESS_TOKEN`
+- `ASSISTYCA_WHATSAPP_ACCESS_TOKEN` or legacy `WHATSAPP_ACCESS_TOKEN`
+- `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional; defaults to `1186653017865246`
 - `WHATSAPP_VERIFY_TOKEN`
 - `WHATSAPP_APP_SECRET`
 

@@ -18,8 +18,9 @@ For a multi-tenant product, the usual setup is:
 
 - Create one Meta app for the whole product.
 - Let each customer connect their own WhatsApp Business Account through Embedded Signup.
-- Store the WABA ID and phone number ID in backend config, not in the customer-facing portal.
-- Keep the Meta app secrets only in the backend deployment environment as `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, and `WHATSAPP_APP_SECRET`.
+- Store each connected WABA ID, phone number ID, and customer access token server-side through the portal connection flow.
+- Keep shared app secrets only in the backend deployment environment as `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET`.
+- Keep Assistyca-owned sender credentials in the backend deployment environment as `ASSISTYCA_WHATSAPP_ACCESS_TOKEN` and, if overriding the built-in default, `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID`.
 - Use one webhook endpoint for all tenants, then route each event by WABA ID or phone number ID.
 
 ## What The Backend Does
@@ -72,7 +73,7 @@ The JSON config is intentionally small and reusable.
 - `assistant.example_replies`
 - `assistant.response_style`
 
-For shared SaaS deployments, the backend should prefer the `WHATSAPP_*` environment variables so the browser never sees the Meta app secrets.
+For shared SaaS deployments, client access tokens are saved server-side and never returned to the browser after save. The Assistyca sender token stays in deployment environment variables and is only used for owner alerts.
 
 ### WhatsApp Reply Assistant Template
 
@@ -91,10 +92,9 @@ For the URL flow, the template must have one body variable for the sender name a
 
 ### Send Mode
 
-- If `WHATSAPP_ACCESS_TOKEN` and `whatsapp.phone_number_id` are set, `Send` calls the real WhatsApp Cloud API.
+- Approved replies to customers use the client connection's saved access token and phone number ID.
+- Owner alerts use the Assistyca sender token and the Assistyca phone number ID. The default sender ID is `1186653017865246`, overrideable with `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID`.
 - If they are missing and `whatsapp.allow_mock_send` is true, the backend simulates the send so local development still works.
-
-The token and phone number ID are backend-owned outputs of the customer connection flow; the portal should not ask the customer to type them in.
 
 ## Webhook Setup
 

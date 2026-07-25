@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from urllib import parse as urllib_parse
 
+from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
+from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp_store_root
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
 from packages.tools.whatsapp_reply_approval.server import BackendStore
@@ -124,7 +126,7 @@ def build_portal_runtime_config(
         client_name=normalize_text(client_name) or "Portal User",
         base_url=normalize_text(base_url).rstrip("/"),
         verify_token=normalize_text(os.getenv("WHATSAPP_VERIFY_TOKEN")),
-        access_token=normalize_text(access_token) or normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN")),
+        access_token=normalize_text(access_token),
         phone_number_id=normalize_text(phone_number_id),
         app_secret=normalize_text(os.getenv("WHATSAPP_APP_SECRET")),
         api_version=normalize_text(os.getenv("WHATSAPP_API_VERSION") or "v20.0"),
@@ -246,6 +248,9 @@ class PortalWhatsAppService:
         owner_wa_id = normalize_whatsapp_id(self.config.owner_wa_id)
         return bool(owner_wa_id and normalize_whatsapp_id(sender_wa_id) == owner_wa_id)
 
+    def owner_send_enabled(self) -> bool:
+        return bool(resolve_whatsapp_sender_access_token() and resolve_whatsapp_sender_phone_number_id())
+
     def verify_signature(self, body: bytes, signature_header: str | None) -> bool:
         return verify_whatsapp_signature(self.config.app_secret, body, signature_header)
 
@@ -261,10 +266,13 @@ class PortalWhatsAppService:
         if not owner_wa_id:
             raise RuntimeError("Owner WhatsApp ID is not configured.")
 
-        if self.config.live_send_enabled:
+        sender_access_token = resolve_whatsapp_sender_access_token()
+        sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
+
+        if sender_access_token and sender_phone_number_id:
             message_id = send_whatsapp_message(
-                access_token=self.config.access_token,
-                phone_number_id=self.config.phone_number_id,
+                access_token=sender_access_token,
+                phone_number_id=sender_phone_number_id,
                 api_version=self.config.api_version,
                 recipient_wa_id=owner_wa_id,
                 message_text=message_text,
@@ -449,9 +457,9 @@ class PortalWhatsAppService:
         return message_id
 
     def send_sample_owner_message(self) -> tuple[str, str]:
-        if not self.config.live_send_enabled:
+        if not self.owner_send_enabled():
             raise RuntimeError(
-                "Finish WhatsApp setup with a working backend access token before sending a sample."
+                "Finish WhatsApp setup with the Assistyca sender access token before sending a sample."
             )
 
         message_text = build_sample_owner_notification_text(self.config.client_name)

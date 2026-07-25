@@ -23,6 +23,7 @@ DEFAULT_SMTP_PORT = 587
 DEFAULT_SMTP_TIMEOUT = 10.0
 DEFAULT_MAIL_PROVIDER = "smtp"
 DEFAULT_WHATSAPP_API_VERSION = "v20.0"
+DEFAULT_ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID = "1186653017865246"
 RESEND_API_URL = "https://api.resend.com/emails"
 
 
@@ -180,8 +181,25 @@ def telegram_delivery_available() -> bool:
     return bool(normalize_text(os.getenv("TELEGRAM_BOT_TOKEN")))
 
 
+def resolve_whatsapp_sender_access_token(fallback: str = "") -> str:
+    return (
+        normalize_text(os.getenv("ASSISTYCA_WHATSAPP_ACCESS_TOKEN"))
+        or normalize_text(os.getenv("WHATSAPP_SENDER_ACCESS_TOKEN"))
+        or normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+        or normalize_text(fallback)
+    )
+
+
+def resolve_whatsapp_sender_phone_number_id() -> str:
+    return (
+        normalize_text(os.getenv("ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID"))
+        or normalize_text(os.getenv("WHATSAPP_SENDER_PHONE_NUMBER_ID"))
+        or DEFAULT_ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID
+    )
+
+
 def whatsapp_delivery_available() -> bool:
-    return bool(normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN")))
+    return bool(resolve_whatsapp_sender_access_token() and resolve_whatsapp_sender_phone_number_id())
 
 
 def build_email_message(
@@ -413,19 +431,21 @@ def send_telegram_notification(*, chat_id: str, text: str, bot_token: str | None
 
 def send_whatsapp_notification(
     *,
-    phone_number_id: str,
+    phone_number_id: str = "",
     recipient_wa_id: str,
     message_text: str,
     access_token: str | None = None,
     api_version: str | None = None,
 ) -> str:
-    resolved_phone_number_id = normalize_text(phone_number_id)
+    resolved_phone_number_id = normalize_text(phone_number_id) or resolve_whatsapp_sender_phone_number_id()
     resolved_recipient = normalize_text(recipient_wa_id)
-    resolved_access_token = normalize_text(access_token) or normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+    resolved_access_token = normalize_text(access_token) or resolve_whatsapp_sender_access_token()
     resolved_api_version = normalize_text(api_version) or normalize_text(os.getenv("WHATSAPP_API_VERSION")) or DEFAULT_WHATSAPP_API_VERSION
 
     if not resolved_access_token:
-        raise RuntimeError("WhatsApp delivery is not configured. Set WHATSAPP_ACCESS_TOKEN.")
+        raise RuntimeError(
+            "WhatsApp delivery is not configured. Set ASSISTYCA_WHATSAPP_ACCESS_TOKEN or WHATSAPP_ACCESS_TOKEN."
+        )
     if not resolved_phone_number_id:
         raise RuntimeError("WhatsApp delivery requires a phone number id.")
     if not resolved_recipient:
@@ -443,6 +463,7 @@ def send_whatsapp_notification(
 __all__ = [
     "DEFAULT_MAIL_PROVIDER",
     "DEFAULT_PRODUCT_NAME",
+    "DEFAULT_ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID",
     "DEFAULT_WHATSAPP_API_VERSION",
     "MailDeliveryConfig",
     "ResendDeliveryConfig",
@@ -456,6 +477,8 @@ __all__ = [
     "send_email_notification",
     "send_telegram_notification",
     "send_whatsapp_notification",
+    "resolve_whatsapp_sender_access_token",
+    "resolve_whatsapp_sender_phone_number_id",
     "telegram_delivery_available",
     "whatsapp_delivery_available",
 ]

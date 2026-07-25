@@ -155,8 +155,15 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.data_path = Path(self.temp_dir.name) / "whatsapp-store.json"
+        self.env_patcher = mock.patch.dict(
+            os.environ,
+            {"WHATSAPP_ACCESS_TOKEN": "test-token"},
+            clear=False,
+        )
+        self.env_patcher.start()
 
     def tearDown(self) -> None:
+        self.env_patcher.stop()
         self.temp_dir.cleanup()
 
     def _build_service(self, *, templates: dict[str, object] | None = None) -> PortalWhatsAppService:
@@ -295,6 +302,7 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
 
         self.assertEqual(message_id, "wamid.template-2")
         mocked_send.assert_called_once()
+        self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "1186653017865246")
         self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
         self.assertIsNone(mocked_send.call_args.kwargs["interactive"])
         self.assertEqual(
@@ -491,6 +499,7 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(message_id, "wamid.template-1")
         self.assertIn("Sample reply alert from Assistyca", message_text)
         mocked_send.assert_called_once()
+        self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "1186653017865246")
         self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
         self.assertEqual(
             mocked_send.call_args.kwargs["template"],
@@ -514,6 +523,7 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(message_id, "wamid.text-1")
         self.assertIn("Sample reply alert from Assistyca", message_text)
         mocked_send.assert_called_once()
+        self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "1186653017865246")
         self.assertIsNone(mocked_send.call_args.kwargs["template"])
         self.assertIn("Maya Cohen", mocked_send.call_args.kwargs["message_text"])
 
@@ -638,7 +648,24 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "setup_required")
-        self.assertIn("working backend access token", str(body["message"]).lower())
+        self.assertIn("assistyca sender access token", str(body["message"]).lower())
+
+    def test_whatsapp_connection_endpoint_requires_client_token_even_with_sender_token(self) -> None:
+        with mock.patch.dict(os.environ, {"WHATSAPP_ACCESS_TOKEN": "sender-token"}, clear=False):
+            status, body = self._request(
+                "POST",
+                "/api/whatsapp/connection",
+                {
+                    "business_account_id": "11111",
+                    "phone_number_id": "22222",
+                    "owner_wa_id": "15551234567",
+                },
+            )
+
+        self.assertEqual(status, 400)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "invalid_fields")
+        self.assertIn("access_token", {issue["field"] for issue in body["issues"]})
 
     def test_whatsapp_connection_endpoint_stores_client_token_and_subscribes_waba(self) -> None:
         with mock.patch.dict(os.environ, {"WHATSAPP_ACCESS_TOKEN": ""}, clear=False):

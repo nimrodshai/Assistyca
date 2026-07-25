@@ -69,7 +69,8 @@ Required environment variables on Render:
 - `PORTAL_DB_SEED_PAID_EMAILS` for the comma-separated list of portal users that should be treated as paid and entitled for billing-required tools during debugging or controlled internal testing
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
-- `WHATSAPP_ACCESS_TOKEN` optional fallback for live WhatsApp Cloud API sends from Assistyca-owned numbers. Client-owned numbers should save their own access token in the WhatsApp setup page.
+- `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number.
+- `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional override for the Assistyca-owned sender number. If unset, the backend uses `1186653017865246`.
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
 - `OPENAI_API_KEY` for Scheduled Web Monitor searches and any other backend OpenAI-powered tool execution
@@ -129,12 +130,13 @@ The portal setup form saves the WhatsApp Business Platform fields needed per wor
 
 - `business_account_id` required WABA ID
 - `phone_number_id` required
-- `access_token` required unless `WHATSAPP_ACCESS_TOKEN` is intentionally used as a backend fallback for this number
+- `access_token` required for that client-owned WhatsApp Business Account
 - `owner_wa_id` required
 
 Clients can find the WABA ID in Meta Business Settings at Accounts > WhatsApp Accounts, or by opening `https://business.facebook.com/latest/settings/whatsapp_account` and selecting the correct WhatsApp Business Account.
 
 `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` stay server-side in environment variables for webhook verification and signature checks. Client access tokens are never returned to the browser after save.
+The saved client `phone_number_id` is used to route inbound webhooks and to send approved replies from the client's number. Owner alerts, sample alerts, and Scheduled Web Monitor WhatsApp notifications are sent from the Assistyca sender number instead.
 The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.
 
 For Scheduled Web Monitor delivery:
@@ -142,7 +144,7 @@ For Scheduled Web Monitor delivery:
 - Clients add a simple watch list in the tool editor, one item per line, then choose how many days should pass between checks.
 - Email uses the workspace account email plus the same SMTP or Resend configuration as OTP delivery.
 - Telegram requires `TELEGRAM_BOT_TOKEN` plus a saved chat id in the tool editor.
-- WhatsApp requires the workspace's saved WhatsApp connection plus either that workspace's access token or the fallback `WHATSAPP_ACCESS_TOKEN`.
+- WhatsApp requires the workspace's saved WhatsApp connection for the owner phone plus the Assistyca sender access token in the backend environment.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.
 

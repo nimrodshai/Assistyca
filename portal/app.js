@@ -7663,13 +7663,13 @@ async function activateSelectedFeature() {
       window.scrollTo(0, 0);
       openFeatureActivationAlert(
         "One thing left",
-        response.message || "WhatsApp details were saved, but the backend still needs a working access token before this tool can go live.",
+        response.message || "WhatsApp details were saved, but this client number still needs its own access token before this tool can go live.",
         {
           eyebrow: "Almost there",
           returnFocus: elements.featureStudioActivationButton,
         },
       );
-      setStatus("Setup saved, but the live WhatsApp connection still needs the backend access token.");
+      setStatus("Setup saved, but the live WhatsApp connection still needs this client's access token.");
       return;
     }
 
@@ -8573,7 +8573,7 @@ function updateFeatureActivationFields() {
     if (whatsapp.workspace_access_token_configured) {
       tokenHelpText = "A token is saved. Leave blank to keep it, or paste a replacement token.";
     } else if (whatsapp.backend_access_token_configured) {
-      tokenHelpText = "A backend token is configured. Paste a token here only to use a client-owned token.";
+      tokenHelpText = "The Assistyca sender token is configured for owner alerts. Paste this client's token to connect their number.";
     }
     elements.featureActivationAccessTokenHelp.textContent = tokenHelpText;
   }

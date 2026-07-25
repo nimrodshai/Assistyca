@@ -553,10 +553,7 @@ class FeatureActivationService:
             }
 
         connection = self.database.get_whatsapp_connection(email) or {}
-        access_token_ready = bool(
-            normalize_text(connection.get("accessToken"))
-            or normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
-        )
+        access_token_ready = bool(normalize_text(connection.get("accessToken")))
         ready = bool(
             normalize_text(connection.get("businessAccountId"))
             and normalize_text(connection.get("phoneNumberId"))

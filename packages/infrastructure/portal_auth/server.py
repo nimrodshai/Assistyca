@@ -42,6 +42,8 @@ from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.openai_pricing import OpenAIPricingError
 from packages.infrastructure.openai_pricing import build_pricing_snapshot_json
+from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
+from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.notification_delivery import send_telegram_notification
 from packages.infrastructure.portal_db import DEFAULT_CURRENCY
 from packages.infrastructure.portal_db import DEFAULT_DB_PATH
@@ -1732,14 +1734,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip() or str(payload.get("access_token", "")).strip()
+        access_token = str(payload.get("access_token", "")).strip()
         phone_number_id = str(payload.get("phone_number_id", "")).strip()
 
         if not access_token or not phone_number_id:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "missing_fields",
-                "message": "Set WHATSAPP_ACCESS_TOKEN on the backend and provide the phone number ID.",
+                "message": "Provide the access token and Phone Number ID for this WhatsApp Business Account.",
             })
             return
 
@@ -2288,11 +2290,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         serialized = dict(connection)
         saved_access_token = normalize_text(serialized.pop("accessToken", ""))
-        backend_access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
-        access_token_configured = bool(saved_access_token or backend_access_token)
+        sender_access_token = resolve_whatsapp_sender_access_token()
+        sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
+        access_token_configured = bool(saved_access_token)
         serialized["accessTokenConfigured"] = access_token_configured
         serialized["workspaceAccessTokenConfigured"] = bool(saved_access_token)
-        serialized["backendAccessTokenConfigured"] = bool(backend_access_token)
+        serialized["backendAccessTokenConfigured"] = bool(sender_access_token)
         serialized["configured"] = bool(
             normalize_text(connection.get("businessAccountId"))
             and normalize_text(connection.get("phoneNumberId"))
@@ -2303,6 +2306,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             access_token_configured
             and normalize_text(connection.get("phoneNumberId"))
         )
+        serialized["ownerAlertSendEnabled"] = bool(sender_access_token and sender_phone_number_id)
         serialized["webhookUrl"] = f"{self._public_base_url()}/webhooks/whatsapp"
         return serialized
 
@@ -2518,7 +2522,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         connection = self.database.get_whatsapp_connection(session.email)
         saved_access_token = normalize_text(connection.get("accessToken")) if connection else ""
-        backend_access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
+        sender_access_token = resolve_whatsapp_sender_access_token()
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "connection": self._serialize_whatsapp_connection(connection),
@@ -2527,11 +2531,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 and normalize_text(connection.get("businessAccountId"))
                 and normalize_text(connection.get("phoneNumberId"))
                 and normalize_text(connection.get("ownerWaId"))
-                and (saved_access_token or backend_access_token)
+                and saved_access_token
             ),
-            "hasAccessToken": bool(saved_access_token or backend_access_token),
+            "hasAccessToken": bool(saved_access_token),
             "workspaceAccessTokenConfigured": bool(saved_access_token),
-            "backendAccessTokenConfigured": bool(backend_access_token),
+            "backendAccessTokenConfigured": bool(sender_access_token),
         })
 
     def _handle_whatsapp_connection_post(self) -> None:
@@ -2567,8 +2571,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         existing = self.database.get_whatsapp_connection(session.email) or {}
         metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
         existing_access_token = normalize_text(existing.get("accessToken"))
-        backend_access_token = normalize_text(os.getenv("WHATSAPP_ACCESS_TOKEN"))
-        access_token = access_token_input or existing_access_token or backend_access_token
+        access_token = access_token_input or existing_access_token
 
         if not access_token:
             issues.append({"field": "access_token", "message": "Paste a WhatsApp access token for this Business Account."})
@@ -2786,11 +2789,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            if not whatsapp_service.config.live_send_enabled:
+            if not whatsapp_service.owner_send_enabled():
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
                     "error": "setup_required",
-                    "message": "Finish WhatsApp setup with a working backend access token before sending a sample.",
+                    "message": "Finish WhatsApp setup with the Assistyca sender access token before sending a sample.",
                 })
                 return
 
