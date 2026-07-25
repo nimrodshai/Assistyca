@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=63" />
+    <link rel="stylesheet" href="./styles.css?v=64" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -379,7 +379,17 @@
             <div class="feature-activation-hero-form">
               <div class="activation-form-grid">
                 <label class="field">
-                  <span>WhatsApp Business Account ID</span>
+                  <div class="field-label">
+                    <span>WhatsApp Business Account ID</span>
+                    <button
+                      id="featureActivationBusinessAccountIdHelpButton"
+                      class="field-help-button"
+                      type="button"
+                      aria-label="Where to find your WhatsApp Business Account ID"
+                    >
+                      ?
+                    </button>
+                  </div>
                   <input
                     id="featureActivationBusinessAccountId"
                     type="text"
@@ -387,7 +397,17 @@
                     autocomplete="off"
                     placeholder="123456789012345"
                   />
-                  <small class="field-help">Use the WABA ID for the client's WhatsApp Business Platform account.</small>
+                  <small class="field-help">
+                    Meta path: Business Settings &gt; Accounts &gt; WhatsApp Accounts.
+                    <a
+                      class="field-help-link"
+                      href="https://business.facebook.com/latest/settings/whatsapp_account"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open Meta
+                    </a>
+                  </small>
                   <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
                 </label>
 
@@ -1239,6 +1259,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=79"></script>
+    <script src="./app.js?v=80"></script>
   </body>
 </html>

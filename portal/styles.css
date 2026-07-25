@@ -3231,6 +3231,20 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.45;
 }
 
+.field-help-link {
+  color: var(--accent);
+  font-weight: 750;
+  text-decoration: underline;
+  text-decoration-color: rgba(15, 118, 110, 0.32);
+  text-underline-offset: 0.16em;
+}
+
+.field-help-link:hover,
+.field-help-link:focus-visible {
+  color: #0b5e57;
+  text-decoration-color: currentColor;
+}
+
 .field-error {
   display: block;
   margin-top: 0.34rem;

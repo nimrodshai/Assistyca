@@ -57,6 +57,7 @@ const SETTINGS_MODE_CONTENT = {
 };
 const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
+const META_WHATSAPP_ACCOUNTS_URL = "https://business.facebook.com/latest/settings/whatsapp_account";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
@@ -630,6 +631,7 @@ const elements = {
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
   featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
+  featureActivationBusinessAccountIdHelpButton: document.querySelector("#featureActivationBusinessAccountIdHelpButton"),
   featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
   featureActivationPhoneNumberIdHelpButton: document.querySelector("#featureActivationPhoneNumberIdHelpButton"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
@@ -1695,14 +1697,21 @@ function openFeatureActivationAlert(title, message, options = {}) {
   });
 }
 
-function openPhoneNumberIdHelp() {
+function openMetaWhatsAppAccounts() {
+  window.open(META_WHATSAPP_ACCOUNTS_URL, "_blank", "noopener,noreferrer");
+}
+
+function openWhatsAppIdsHelp(returnFocus = elements.featureActivationPhoneNumberIdHelpButton) {
   openAuthAlert(
     "Where to find the WhatsApp IDs",
-    "In WhatsApp Manager, choose the client's WhatsApp Business Account for the WABA ID. Then open Phone numbers and copy the Phone Number ID for the exact number that should receive customer messages.",
+    "Open Meta Business Settings, choose the correct business portfolio, then go to Accounts > WhatsApp Accounts. Select the client's WhatsApp Business Account; the WABA ID is shown on that account. Open Phone numbers to copy the Phone Number ID for the exact number that receives customer messages.",
     {
       eyebrow: "WhatsApp setup",
       icon: "?",
-      returnFocus: elements.featureActivationPhoneNumberIdHelpButton,
+      buttonLabel: "Open Meta",
+      secondaryButtonLabel: "Done",
+      onPrimary: openMetaWhatsAppAccounts,
+      returnFocus,
     },
   );
 }
@@ -10449,9 +10458,14 @@ function bindEvents() {
       handleFeatureStudioMenuAction(action);
     });
   }
+  if (elements.featureActivationBusinessAccountIdHelpButton) {
+    elements.featureActivationBusinessAccountIdHelpButton.addEventListener("click", () => {
+      openWhatsAppIdsHelp(elements.featureActivationBusinessAccountIdHelpButton);
+    });
+  }
   if (elements.featureActivationPhoneNumberIdHelpButton) {
     elements.featureActivationPhoneNumberIdHelpButton.addEventListener("click", () => {
-      openPhoneNumberIdHelp();
+      openWhatsAppIdsHelp(elements.featureActivationPhoneNumberIdHelpButton);
     });
   }
   if (elements.featureActivationBusinessAccountIdInput) {

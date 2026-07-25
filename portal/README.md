@@ -132,6 +132,8 @@ The portal setup form saves the WhatsApp Business Platform fields needed per wor
 - `access_token` required unless `WHATSAPP_ACCESS_TOKEN` is intentionally used as a backend fallback for this number
 - `owner_wa_id` required
 
+Clients can find the WABA ID in Meta Business Settings at Accounts > WhatsApp Accounts, or by opening `https://business.facebook.com/latest/settings/whatsapp_account` and selecting the correct WhatsApp Business Account.
+
 `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` stay server-side in environment variables for webhook verification and signature checks. Client access tokens are never returned to the browser after save.
 The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.
 
