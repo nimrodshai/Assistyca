@@ -2866,45 +2866,6 @@ body[data-modal="billing"] .app-shell {
   background: rgba(255, 255, 255, 0.98);
 }
 
-.feature-menu-wrap {
-  position: relative;
-}
-
-.feature-menu-wrap.is-hidden {
-  display: none !important;
-}
-
-.feature-menu-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.68rem 0.9rem;
-  border: 1px solid rgba(20, 28, 38, 0.08);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--text);
-  font-size: 0.88rem;
-  font-weight: 700;
-  box-shadow: 0 8px 18px rgba(25, 38, 54, 0.05);
-}
-
-.feature-menu-button:hover,
-.feature-menu-button:focus-visible {
-  transform: translateY(-1px);
-  border-color: rgba(15, 118, 110, 0.22);
-  box-shadow: 0 12px 24px rgba(25, 38, 54, 0.08);
-}
-
-.feature-menu-button-label {
-  white-space: nowrap;
-}
-
-.feature-menu-popover {
-  min-width: 14rem;
-  right: 0;
-  top: calc(100% + 0.55rem);
-}
-
 .feature-page-intro {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(18rem, 0.92fr);
@@ -3455,10 +3416,15 @@ body[data-modal="billing"] .app-shell {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.9rem;
-  margin: -0.05rem 0 0.1rem;
-  padding: 0.2rem 0.1rem 0.75rem;
-  border-bottom: 1px solid rgba(20, 28, 38, 0.08);
+  gap: 1rem;
+  margin: 0.05rem 0 0.15rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, rgba(240, 253, 250, 0.96), rgba(255, 255, 255, 0.9)),
+    rgba(255, 255, 255, 0.9);
+  box-shadow: 0 18px 42px rgba(16, 38, 40, 0.08);
 }
 
 .editor-activation-row::before {
@@ -5457,8 +5423,7 @@ body[data-modal="billing"] .app-shell {
     height: 2.02rem;
   }
 
-  .menu-popover,
-  .feature-menu-popover {
+  .menu-popover {
     position: fixed;
     top: 3.85rem;
     right: 0.72rem;
@@ -5590,8 +5555,7 @@ body[data-modal="billing"] .app-shell {
     box-shadow: 0 12px 28px rgba(25, 38, 54, 0.08);
   }
 
-  .feature-back-button,
-  .feature-menu-button {
+  .feature-back-button {
     width: auto;
     min-height: 2.42rem;
     padding: 0.58rem 0.72rem;
@@ -5615,10 +5579,6 @@ body[data-modal="billing"] .app-shell {
   }
 
   .feature-page-header-actions .feature-status {
-    display: none;
-  }
-
-  .feature-menu-button-label {
     display: none;
   }
 
@@ -5667,7 +5627,8 @@ body[data-modal="billing"] .app-shell {
   .editor-activation-row {
     display: grid;
     gap: 0.52rem;
-    padding: 0.05rem 0 0.72rem;
+    padding: 0.86rem;
+    border-radius: 20px;
   }
 
   .editor-activation-row::before {

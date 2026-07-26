@@ -522,7 +522,6 @@ const state = {
   menuOpen: false,
   selectedFeatureId: null,
   featureStudioView: "overview",
-  featureStudioMenuOpen: false,
   featureActivationNotice: "",
   featureActivationFieldErrors: {},
   whatsappHistory: null,
@@ -620,6 +619,7 @@ const elements = {
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
+  featureStudioWhatsAppDetailsButton: document.querySelector("#featureStudioWhatsAppDetailsButton"),
   featureStudioWhatsAppSampleButton: document.querySelector("#featureStudioWhatsAppSampleButton"),
   featureStudioWhatsAppHistoryButton: document.querySelector("#featureStudioWhatsAppHistoryButton"),
   featureStudioMonitorRunButton: document.querySelector("#featureStudioMonitorRunButton"),
@@ -676,9 +676,6 @@ const elements = {
   featureToneCard: document.querySelector("#featureToneCard"),
   featureRulesCard: document.querySelector("#featureRulesCard"),
   featureContextCard: document.querySelector("#featureContextCard"),
-  featureStudioMenuWrap: document.querySelector("#featureStudioMenuWrap"),
-  featureStudioMenuButton: document.querySelector("#featureStudioMenuButton"),
-  featureStudioMenu: document.querySelector("#featureStudioMenu"),
   featureStudioWhatsAppHealthNotice: document.querySelector("#featureStudioWhatsAppHealthNotice"),
   featureStudioWhatsAppHealthNoticeTitle: document.querySelector("#featureStudioWhatsAppHealthNoticeTitle"),
   featureStudioWhatsAppHealthNoticeCopy: document.querySelector("#featureStudioWhatsAppHealthNoticeCopy"),
@@ -7645,52 +7642,7 @@ function closeFeatureStudio() {
 }
 
 function closeFeatureStudioMenu() {
-  state.featureStudioMenuOpen = false;
-  if (elements.featureStudioMenu) {
-    elements.featureStudioMenu.classList.add("is-hidden");
-  }
-  if (elements.featureStudioMenuButton) {
-    elements.featureStudioMenuButton.setAttribute("aria-expanded", "false");
-  }
-}
-
-function toggleFeatureStudioMenu(force) {
-  if (!elements.featureStudioMenuButton || !elements.featureStudioMenu) {
-    return;
-  }
-
-  const nextOpen = typeof force === "boolean" ? force : !state.featureStudioMenuOpen;
-  state.featureStudioMenuOpen = nextOpen;
-  elements.featureStudioMenu.classList.toggle("is-hidden", !nextOpen);
-  elements.featureStudioMenuButton.setAttribute("aria-expanded", String(nextOpen));
-}
-
-function buildFeatureStudioMenu(feature) {
-  if (!elements.featureStudioMenu) {
-    return;
-  }
-
-  const items = [];
-
-  if (canOpenFeatureWhatsAppDetails(feature)) {
-    const detailsButton = document.createElement("button");
-    detailsButton.type = "button";
-    detailsButton.className = "menu-item";
-    detailsButton.dataset.featureAction = "details";
-    detailsButton.textContent = "WhatsApp details";
-    items.push(detailsButton);
-  }
-
-  if (isFeatureActivated(feature)) {
-    const deactivateButton = document.createElement("button");
-    deactivateButton.type = "button";
-    deactivateButton.className = "menu-item danger";
-    deactivateButton.dataset.featureAction = "deactivate";
-    deactivateButton.textContent = "Deactivate tool";
-    items.push(deactivateButton);
-  }
-
-  elements.featureStudioMenu.replaceChildren(...items);
+  // No-op: the former feature options menu now lives in the action strip.
 }
 
 async function activateSelectedFeature() {
@@ -8647,17 +8599,6 @@ async function toggleSelectedFeatureEditorActivation() {
   }
 }
 
-function handleFeatureStudioMenuAction(action) {
-  if (action === "details") {
-    startFeatureActivation({ statusMessage: "WhatsApp details opened." });
-    return;
-  }
-
-  if (action === "deactivate") {
-    void deactivateSelectedFeature();
-  }
-}
-
 function updateFeatureActivationFields() {
   const feature = getSelectedFeature();
   if (!feature) {
@@ -8867,13 +8808,6 @@ function updateFeatureStudioHeader() {
   if (elements.whatsappHistorySection) {
     elements.whatsappHistorySection.classList.toggle("is-hidden", studioView !== "history");
   }
-  if (elements.featureStudioMenuWrap) {
-    const showFeatureStudioMenu = studioView !== "activation" && canOpenFeatureWhatsAppDetails(feature);
-    if (!showFeatureStudioMenu) {
-      closeFeatureStudioMenu();
-    }
-    elements.featureStudioMenuWrap.classList.toggle("is-hidden", !showFeatureStudioMenu);
-  }
   if (elements.backToFeaturesButton) {
     elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "history"
       ? "Back to editor"
@@ -8993,6 +8927,12 @@ function updateFeatureStudioHeader() {
     elements.featureStudioEditorToggleButton.disabled = transitionBusy || manualRunBusy || sampleMessageBusy;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
   }
+  if (elements.featureStudioWhatsAppDetailsButton) {
+    const showDetailsButton = studioView === "editor" && canOpenFeatureWhatsAppDetails(feature);
+    elements.featureStudioWhatsAppDetailsButton.hidden = !showDetailsButton;
+    elements.featureStudioWhatsAppDetailsButton.disabled = activationBusy || transitionBusy || manualRunBusy || sampleMessageBusy;
+    elements.featureStudioWhatsAppDetailsButton.title = "Open the saved WhatsApp IDs, token, and approval phone";
+  }
   if (elements.featureStudioWhatsAppSampleButton) {
     const showSampleButton = canSendWhatsAppReplySample(feature);
     const sampleReady = showSampleButton && !hasFeatureActivationChanges(feature);
@@ -9035,7 +8975,6 @@ function updateFeatureStudioHeader() {
         : String(feature.setupStatus?.message || "");
   }
 
-  buildFeatureStudioMenu(feature);
   if (studioView === "history") {
     renderWhatsAppHistory(feature);
     if (!getCurrentWhatsAppHistory() && !state.whatsappHistoryLoading && !state.whatsappHistoryError) {
@@ -10522,6 +10461,11 @@ function bindEvents() {
       void toggleSelectedFeatureEditorActivation();
     });
   }
+  if (elements.featureStudioWhatsAppDetailsButton) {
+    elements.featureStudioWhatsAppDetailsButton.addEventListener("click", () => {
+      startFeatureActivation({ statusMessage: "WhatsApp details opened." });
+    });
+  }
   if (elements.featureStudioWhatsAppSampleButton) {
     elements.featureStudioWhatsAppSampleButton.addEventListener("click", () => {
       void sendSelectedWhatsAppReplySample();
@@ -10555,26 +10499,6 @@ function bindEvents() {
         return;
       }
       void runSelectedMonitorNow();
-    });
-  }
-  if (elements.featureStudioMenuButton) {
-    elements.featureStudioMenuButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closeMenu();
-      toggleFeatureStudioMenu();
-    });
-  }
-  if (elements.featureStudioMenu) {
-    elements.featureStudioMenu.addEventListener("click", (event) => {
-      const target = getEventTargetElement(event);
-      const item = target?.closest("[data-feature-action]");
-      if (!item) {
-        return;
-      }
-
-      const action = item.dataset.featureAction || "";
-      closeFeatureStudioMenu();
-      handleFeatureStudioMenuAction(action);
     });
   }
   if (elements.featureActivationBusinessAccountIdHelpButton) {
@@ -10865,7 +10789,6 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const billingHelpButton = elements.billingHelpButton;
     const billingHelpPopover = elements.billingHelpPopover;
-    const featureMenuWrap = elements.featureStudioMenuWrap;
     const target = getEventTargetElement(event);
     const pickerTarget = target?.closest("[data-admin-feature-picker=\"true\"]") || null;
     if (
@@ -10876,16 +10799,6 @@ function bindEvents() {
       && !billingHelpButton.contains(event.target)
     ) {
       closeBillingHelp();
-    }
-
-    if (
-      state.featureStudioMenuOpen
-      && featureMenuWrap
-      && elements.featureStudioMenuButton
-      && !featureMenuWrap.contains(event.target)
-      && !elements.featureStudioMenuButton.contains(event.target)
-    ) {
-      closeFeatureStudioMenu();
     }
 
     if (state.adminFeaturePickerOpen && !pickerTarget) {
@@ -10909,11 +10822,6 @@ function bindEvents() {
 
       if (state.billingHelpOpen) {
         closeBillingHelp();
-        return;
-      }
-
-      if (state.featureStudioMenuOpen) {
-        closeFeatureStudioMenu();
         return;
       }
 
