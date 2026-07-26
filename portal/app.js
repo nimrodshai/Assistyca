@@ -19,7 +19,7 @@ const SETTINGS_PANEL_ANIMATION_MS = 320;
 const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
 const ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS = 500;
 const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
-const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "Sent from another inbox. We saw it go out, but not the words.";
+const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "you replied here - but whatsapp api doesn't let us read the content";
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
@@ -3330,14 +3330,6 @@ function isWhatsAppExternalOutboundPlaceholder(payload = {}) {
 }
 
 function getWhatsAppExternalOutboundText(payload = {}) {
-  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
-  const status = normalizeText(metadata.status).toLowerCase();
-  if (status === "failed") {
-    return "Sent from another inbox, but it failed. We saw the status, not the words.";
-  }
-  if (status === "deleted") {
-    return "Sent from another inbox, then deleted. We saw the status, not the words.";
-  }
   return WHATSAPP_EXTERNAL_OUTBOUND_TEXT;
 }
 

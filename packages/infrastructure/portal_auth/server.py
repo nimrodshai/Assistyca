@@ -2385,12 +2385,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
 
         status = normalize_text(event.get("status")).lower()
-        if status == "failed":
-            text = "Sent from another inbox, but it failed. We saw the status, not the words."
-        elif status == "deleted":
-            text = "Sent from another inbox, then deleted. We saw the status, not the words."
-        else:
-            text = "Sent from another inbox. We saw it go out, but not the words."
+        text = "you replied here - but whatsapp api doesn't let us read the content"
 
         return self.database.save_whatsapp_message(
             user_id=int(connection.get("userId") or 0),
