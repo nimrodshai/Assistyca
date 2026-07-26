@@ -205,6 +205,18 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             },
         )
 
+    def test_build_portal_runtime_config_normalizes_local_israeli_owner_phone(self) -> None:
+        config = build_portal_runtime_config(
+            client_id="portal-user-1",
+            client_name="Portal User",
+            base_url="https://example.com",
+            phone_number_id="12345",
+            owner_wa_id="0507322341",
+            data_path=self.data_path,
+        )
+
+        self.assertEqual(config.owner_wa_id, "972507322341")
+
     def test_build_portal_runtime_config_reads_reply_assistant_template_env(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -758,7 +770,7 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
                         {
                             "business_account_id": "11111",
                             "phone_number_id": "22222",
-                            "owner_wa_id": "972507322341",
+                            "owner_wa_id": "0507322341",
                         },
                     )
 
@@ -776,6 +788,31 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertIsNotNone(stored)
         self.assertEqual(stored["ownerWaId"], "972507322341")
         self.assertEqual(stored["accessToken"], "client-token")
+
+    def test_whatsapp_connection_endpoint_keeps_international_approval_phone(self) -> None:
+        self.server.database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="11111",
+            phone_number_id="22222",
+            access_token="client-token",
+            owner_wa_id="15551234567",
+            connection_status="connected",
+            metadata={"webhookSubscriptionStatus": "subscribed"},
+        )
+
+        status, body = self._request(
+            "POST",
+            "/api/whatsapp/connection",
+            {
+                "business_account_id": "11111",
+                "phone_number_id": "22222",
+                "owner_wa_id": "+972 50-732-2341",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["connection"]["ownerWaId"], "972507322341")
 
     def test_whatsapp_history_includes_suggested_reply_for_inbound_message(self) -> None:
         webhook_request = urllib_request.Request(

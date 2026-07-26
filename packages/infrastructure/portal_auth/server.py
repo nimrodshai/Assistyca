@@ -60,6 +60,7 @@ from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
 from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
+from packages.infrastructure.whatsapp_portal_service import normalize_portal_owner_wa_id
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
 from packages.infrastructure.whatsapp_reengagement import load_whatsapp_reengagement_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
@@ -2588,7 +2589,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         business_account_id = self._normalize_digits(payload.get("business_account_id"))
         phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
         access_token_input = normalize_text(payload.get("access_token"))
-        owner_wa_id = self._normalize_digits(payload.get("owner_wa_id"))
+        owner_wa_id = normalize_portal_owner_wa_id(payload.get("owner_wa_id"))
         issues: list[dict[str, str]] = []
 
         if payload.get("business_account_id") and not business_account_id:

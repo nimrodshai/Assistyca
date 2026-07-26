@@ -108,6 +108,13 @@ def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -
     }
 
 
+def normalize_portal_owner_wa_id(value: Any) -> str:
+    digits = normalize_whatsapp_id(value)
+    if len(digits) == 10 and digits.startswith("05"):
+        return f"972{digits[1:]}"
+    return digits
+
+
 def build_portal_runtime_config(
     *,
     client_id: str,
@@ -131,7 +138,7 @@ def build_portal_runtime_config(
         app_secret=normalize_text(os.getenv("WHATSAPP_APP_SECRET")),
         api_version=normalize_text(os.getenv("WHATSAPP_API_VERSION") or "v20.0"),
         allow_mock_send=normalize_bool(os.getenv("WHATSAPP_ALLOW_MOCK_SEND"), default=True),
-        owner_wa_id=normalize_text(owner_wa_id),
+        owner_wa_id=normalize_portal_owner_wa_id(owner_wa_id),
         data_path=data_path,
         assistant=assistant_config,
         templates=resolve_portal_whatsapp_templates(templates),
