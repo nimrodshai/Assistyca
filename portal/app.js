@@ -683,7 +683,6 @@ const elements = {
   featureStudioWhatsAppHealthNoticeTitle: document.querySelector("#featureStudioWhatsAppHealthNoticeTitle"),
   featureStudioWhatsAppHealthNoticeCopy: document.querySelector("#featureStudioWhatsAppHealthNoticeCopy"),
   whatsappHistorySection: document.querySelector("#whatsappHistorySection"),
-  whatsappHistorySummary: document.querySelector("#whatsappHistorySummary"),
   whatsappHistoryRefreshButton: document.querySelector("#whatsappHistoryRefreshButton"),
   whatsappHistoryDiagnostics: document.querySelector("#whatsappHistoryDiagnostics"),
   whatsappHistoryConversationList: document.querySelector("#whatsappHistoryConversationList"),
@@ -3566,17 +3565,8 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
 
   const conversations = getWhatsAppHistoryConversations();
   const selectedConversation = getSelectedWhatsAppHistoryConversation();
-  const totalMessages = getCurrentWhatsAppHistory()?.messageCount || 0;
   const isLoading = Boolean(state.whatsappHistoryLoading);
   const errorText = String(state.whatsappHistoryError || "").trim();
-
-  if (elements.whatsappHistorySummary) {
-    elements.whatsappHistorySummary.textContent = isLoading
-      ? "Loading..."
-      : errorText
-        ? "History unavailable"
-        : `${conversations.length} conversation${conversations.length === 1 ? "" : "s"} · ${formatWhatsAppMessageCount(totalMessages)}`;
-  }
 
   if (elements.whatsappHistoryRefreshButton) {
     elements.whatsappHistoryRefreshButton.disabled = isLoading || !isSignedIn() || !isWhatsAppFeature(feature);
