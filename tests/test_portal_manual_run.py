@@ -773,6 +773,61 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(metadata["lastOwnerNotificationStatus"], "delivered")
         self.assertEqual(metadata["lastOwnerNotificationMessageId"], "wamid.sample-1")
 
+    def test_whatsapp_status_webhook_records_external_business_send_placeholder(self) -> None:
+        request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "12345",
+                                        },
+                                        "statuses": [
+                                            {
+                                                "id": "wamid.external-1",
+                                                "status": "sent",
+                                                "recipient_id": "972507322341",
+                                                "timestamp": "1720861200",
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            status = response.status
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["receivedStatuses"], 1)
+        self.assertEqual(body["results"][0]["type"], "status_outbound")
+        self.assertTrue(body["results"][0]["saved"])
+
+        messages = self.server.database.list_whatsapp_conversation_messages(
+            "972507322341",
+            email="owner@example.com",
+        )
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["direction"], "outbound")
+        self.assertEqual(messages[0]["messageId"], "wamid.external-1")
+        self.assertIn("outside Assistyca", messages[0]["text"])
+        self.assertTrue(messages[0]["metadata"]["contentUnavailable"])
+        self.assertTrue(messages[0]["metadata"]["outsideAssistyca"])
+        self.assertEqual(messages[0]["metadata"]["status"], "sent")
+
 
 if __name__ == "__main__":
     unittest.main()

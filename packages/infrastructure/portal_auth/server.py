@@ -2374,6 +2374,43 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             },
         )
 
+    def _record_whatsapp_external_outbound_status(
+        self,
+        connection: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        recipient_wa_id = normalize_text(event.get("recipient_wa_id"))
+        message_id = normalize_text(event.get("message_id"))
+        if not recipient_wa_id or not message_id:
+            return None
+
+        status = normalize_text(event.get("status")).lower()
+        if status == "failed":
+            text = "Business message sent outside Assistyca failed. Content unavailable."
+        elif status == "deleted":
+            text = "Business message sent outside Assistyca was deleted. Content unavailable."
+        else:
+            text = "Business message sent outside Assistyca. Content unavailable."
+
+        return self.database.save_whatsapp_message(
+            user_id=int(connection.get("userId") or 0),
+            conversation_id=recipient_wa_id,
+            direction="outbound",
+            text=text,
+            sender_wa_id=recipient_wa_id,
+            message_id=message_id,
+            message_type="status",
+            message_at=self._parse_whatsapp_message_timestamp(event.get("timestamp")),
+            metadata={
+                "source": "whatsapp_status_webhook",
+                "phoneNumberId": normalize_text(connection.get("phoneNumberId")),
+                "status": status,
+                "contentUnavailable": True,
+                "outsideAssistyca": True,
+                "errorMessage": normalize_text(event.get("error_message")),
+            },
+        )
+
     def _record_whatsapp_inbound_activity(
         self,
         connection: dict[str, Any],
@@ -3407,11 +3444,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             latest_owner_message_id = normalize_text(connection_metadata.get("lastOwnerNotificationMessageId"))
             event_message_id = normalize_text(status_event.get("message_id"))
             if not latest_owner_message_id or latest_owner_message_id != event_message_id:
+                message_record = self._record_whatsapp_external_outbound_status(connection, status_event)
                 results.append({
-                    "type": "status_ignored",
+                    "type": "status_outbound",
                     "message_id": event_message_id,
                     "phone_number_id": phone_number_id,
                     "status": normalize_text(status_event.get("status")).lower(),
+                    "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+                    "saved": bool(message_record and not message_record.get("isDuplicate")),
+                    "is_duplicate": bool(message_record and message_record.get("isDuplicate")),
                 })
                 continue
 
