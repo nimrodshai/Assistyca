@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=81" />
+    <link rel="stylesheet" href="./styles.css?v=82" />
   </head>
   <body data-view="auth">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -475,6 +475,23 @@
             <p id="featureStudioWhatsAppHealthNoticeCopy" class="feature-inline-notice-copy"></p>
           </section>
 
+          <div class="editor-activation-row">
+            <div class="feature-page-actions editor-activation-actions" aria-label="Tool actions">
+              <button id="featureStudioEditorToggleButton" class="primary-button" type="button">
+                Activate tool
+              </button>
+              <button id="featureStudioWhatsAppSampleButton" class="ghost-button" type="button" hidden>
+                Send sample
+              </button>
+              <button id="featureStudioWhatsAppHistoryButton" class="ghost-button" type="button" hidden>
+                View history
+              </button>
+              <button id="featureStudioMonitorRunButton" class="ghost-button" type="button" hidden>
+                Test now
+              </button>
+            </div>
+          </div>
+
           <article id="monitorTargetCard" class="glass-card config-card is-hidden">
             <div class="card-head monitor-target-head">
               <div class="monitor-target-copy">
@@ -667,23 +684,6 @@
               <small class="field-help">We’ll also use the details from your business page automatically.</small>
             </label>
           </article>
-
-          <div class="editor-activation-row">
-            <div class="feature-page-actions editor-activation-actions">
-              <button id="featureStudioEditorToggleButton" class="primary-button" type="button">
-                Activate tool
-              </button>
-              <button id="featureStudioWhatsAppSampleButton" class="ghost-button" type="button" hidden>
-                Send sample
-              </button>
-              <button id="featureStudioWhatsAppHistoryButton" class="ghost-button" type="button" hidden>
-                View history
-              </button>
-              <button id="featureStudioMonitorRunButton" class="ghost-button" type="button" hidden>
-                Test now
-              </button>
-            </div>
-          </div>
         </div>
 
         <section id="whatsappHistorySection" class="whatsapp-history-page is-hidden" aria-live="polite">

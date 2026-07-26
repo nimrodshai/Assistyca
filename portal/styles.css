@@ -3453,19 +3453,41 @@ body[data-modal="billing"] .app-shell {
 .editor-activation-row {
   grid-column: 1 / -1;
   display: flex;
-  justify-content: flex-start;
-  margin-bottom: 50px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  margin: -0.05rem 0 0.1rem;
+  padding: 0.2rem 0.1rem 0.75rem;
+  border-bottom: 1px solid rgba(20, 28, 38, 0.08);
+}
+
+.editor-activation-row::before {
+  content: "Tool actions";
+  color: var(--muted-strong);
+  font-size: 0.74rem;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .editor-activation-actions {
-  justify-content: flex-start;
-  gap: 0.85rem;
+  justify-content: flex-end;
+  gap: 0.65rem;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .editor-activation-actions .primary-button,
 .editor-activation-actions .ghost-button {
-  min-width: 12rem;
+  min-width: 0;
+  min-height: 2.78rem;
+  padding-inline: 1.12rem;
+  border-radius: 999px;
+}
+
+.editor-activation-actions #featureStudioEditorToggleButton {
+  min-width: 10.5rem;
 }
 
 .whatsapp-history-page {
@@ -5580,6 +5602,16 @@ body[data-modal="billing"] .app-shell {
     max-width: none;
     font-size: 0.94rem;
     line-height: 1.55;
+  }
+
+  .editor-activation-row {
+    display: grid;
+    gap: 0.52rem;
+    padding: 0.05rem 0 0.72rem;
+  }
+
+  .editor-activation-row::before {
+    font-size: 0.68rem;
   }
 
   .feature-page-meta {
