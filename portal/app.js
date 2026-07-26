@@ -58,6 +58,7 @@ const SETTINGS_MODE_CONTENT = {
 const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const META_WHATSAPP_ACCOUNTS_URL = "https://business.facebook.com/latest/settings/whatsapp_account";
+const SAVED_ACCESS_TOKEN_FIELD_VALUE = "................";
 const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
@@ -2106,11 +2107,25 @@ function normalizeFeatureWhatsAppMetadata(metadata = null) {
   };
 }
 
+function normalizePendingAccessToken(value) {
+  const token = String(value || "").trim();
+  return token === SAVED_ACCESS_TOKEN_FIELD_VALUE ? "" : token;
+}
+
+function getAccessTokenDisplayValue(whatsapp = {}) {
+  const accessToken = normalizePendingAccessToken(whatsapp.access_token);
+  if (accessToken) {
+    return accessToken;
+  }
+
+  return whatsapp.workspace_access_token_configured ? SAVED_ACCESS_TOKEN_FIELD_VALUE : "";
+}
+
 function normalizeFeatureWhatsApp(config = {}) {
   const source = config && typeof config === "object" ? config : {};
   const businessAccountId = String(source.business_account_id || source.businessAccountId || "").trim();
   const phoneNumberId = String(source.phone_number_id || source.phoneNumberId || "").trim();
-  const accessToken = String(source.access_token || source.accessToken || "").trim();
+  const accessToken = normalizePendingAccessToken(source.access_token || source.accessToken || "");
 
   return {
     business_account_id: businessAccountId,
@@ -3270,7 +3285,7 @@ function hasFeatureActivationChanges(feature = getSelectedFeature()) {
   const current = getSelectedFeatureWhatsApp(feature);
   const saved = getSavedFeatureWhatsApp(feature);
   const editableKeys = ["business_account_id", "phone_number_id", "owner_wa_id"];
-  if (String(current.access_token || "").trim()) {
+  if (normalizePendingAccessToken(current.access_token)) {
     return true;
   }
 
@@ -3811,7 +3826,7 @@ function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   return FEATURE_ACTIVATION_REQUIRED_KEYS.filter((key) => {
     if (key === "access_token") {
-      return !String(whatsapp.access_token || "").trim() && !whatsapp.access_token_configured;
+      return !normalizePendingAccessToken(whatsapp.access_token) && !whatsapp.access_token_configured;
     }
     return !String(whatsapp[key] || "").trim();
   });
@@ -3821,7 +3836,7 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   const businessAccountId = String(whatsapp.business_account_id || "").trim();
   const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
-  const accessToken = String(whatsapp.access_token || "").trim();
+  const accessToken = normalizePendingAccessToken(whatsapp.access_token);
   const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
   const issues = [];
 
@@ -3849,7 +3864,7 @@ function getFeatureActivationProgress(feature = getSelectedFeature()) {
     ? total
     : FEATURE_ACTIVATION_REQUIRED_KEYS.reduce((count, key) => {
         if (key === "access_token") {
-          return count + ((String(whatsapp.access_token || "").trim() || whatsapp.access_token_configured) ? 1 : 0);
+          return count + ((normalizePendingAccessToken(whatsapp.access_token) || whatsapp.access_token_configured) ? 1 : 0);
         }
         return count + (String(whatsapp[key] || "").trim() ? 1 : 0);
       }, 0);
@@ -7623,7 +7638,7 @@ async function activateSelectedFeature() {
     updateFeatureStudioHeader();
     setStatus(editingActiveFeature ? "Saving details..." : "Saving setup...");
     const whatsapp = getSelectedFeatureWhatsApp(feature);
-    const accessToken = String(whatsapp.access_token || "").trim();
+    const accessToken = normalizePendingAccessToken(whatsapp.access_token);
     const response = await apiRequest("/api/whatsapp/connection", {
       method: "POST",
       headers: getSessionAuthHeaders(),
@@ -7637,7 +7652,9 @@ async function activateSelectedFeature() {
 
     applyWhatsAppConnectionToFeatures(response.connection || whatsapp, { persist: false });
     if (elements.featureActivationAccessTokenInput) {
-      elements.featureActivationAccessTokenInput.value = "";
+      elements.featureActivationAccessTokenInput.value = getAccessTokenDisplayValue(
+        normalizeFeatureWhatsApp(response.connection || whatsapp),
+      );
     }
     if (usesEditorSetup(feature)) {
       await refreshFeatureActivationStates({ render: false });
@@ -8566,12 +8583,12 @@ function updateFeatureActivationFields() {
     elements.featureActivationPhoneNumberIdInput.value = whatsapp.phone_number_id;
   }
   if (elements.featureActivationAccessTokenInput && !elements.featureActivationAccessTokenInput.matches(":focus")) {
-    elements.featureActivationAccessTokenInput.value = whatsapp.access_token || "";
+    elements.featureActivationAccessTokenInput.value = getAccessTokenDisplayValue(whatsapp);
   }
   if (elements.featureActivationAccessTokenHelp) {
     let tokenHelpText = "Paste a token with access to this WABA and phone number.";
     if (whatsapp.workspace_access_token_configured) {
-      tokenHelpText = "A token is saved. Leave blank to keep it, or paste a replacement token.";
+      tokenHelpText = "A token is saved and hidden. Paste over the dots to replace it.";
     } else if (whatsapp.backend_access_token_configured) {
       tokenHelpText = "The Assistyca sender token is configured for owner alerts. Paste this client's token to connect their number.";
     }
@@ -8682,7 +8699,9 @@ function syncFeatureActivationField(key) {
       feature.whatsapp = { ...DEFAULT_FEATURE_WHATSAPP };
     }
 
-    feature.whatsapp[key] = event.target.value;
+    feature.whatsapp[key] = key === "access_token"
+      ? normalizePendingAccessToken(event.target.value)
+      : event.target.value;
 
     if (!featureActivationBusy) {
       clearFeatureActivationNotice();
@@ -8692,6 +8711,16 @@ function syncFeatureActivationField(key) {
     updateFeatureStudioHeader();
     setStatus(hasFeatureActivationChanges(feature) ? "Changes ready to save." : "No changes to save.");
   };
+}
+
+function handleFeatureActivationAccessTokenFocus(event) {
+  if (normalizeText(event.target.value) === SAVED_ACCESS_TOKEN_FIELD_VALUE) {
+    event.target.value = "";
+  }
+}
+
+function handleFeatureActivationAccessTokenBlur() {
+  updateFeatureActivationFields();
 }
 
 function updateFeatureStudioHeader() {
@@ -10476,6 +10505,8 @@ function bindEvents() {
   }
   if (elements.featureActivationAccessTokenInput) {
     elements.featureActivationAccessTokenInput.addEventListener("input", syncFeatureActivationField("access_token"));
+    elements.featureActivationAccessTokenInput.addEventListener("focus", handleFeatureActivationAccessTokenFocus);
+    elements.featureActivationAccessTokenInput.addEventListener("blur", handleFeatureActivationAccessTokenBlur);
   }
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.addEventListener("input", syncFeatureActivationField("owner_wa_id"));
