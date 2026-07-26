@@ -2385,7 +2385,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
 
         status = normalize_text(event.get("status")).lower()
-        text = "you replied here - but whatsapp api doesn't let us read the content"
+        text = "You replied here - but the WhatsApp API doesn't let us read the content"
 
         return self.database.save_whatsapp_message(
             user_id=int(connection.get("userId") or 0),

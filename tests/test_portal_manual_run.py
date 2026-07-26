@@ -823,7 +823,7 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["direction"], "outbound")
         self.assertEqual(messages[0]["messageId"], "wamid.external-1")
-        self.assertEqual(messages[0]["text"], "you replied here - but whatsapp api doesn't let us read the content")
+        self.assertEqual(messages[0]["text"], "You replied here - but the WhatsApp API doesn't let us read the content")
         self.assertTrue(messages[0]["metadata"]["contentUnavailable"])
         self.assertTrue(messages[0]["metadata"]["outsideAssistyca"])
         self.assertEqual(messages[0]["metadata"]["status"], "sent")
