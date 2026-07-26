@@ -2602,7 +2602,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         existing = self.database.get_whatsapp_connection(session.email) or {}
         metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+        existing_business_account_id = normalize_text(existing.get("businessAccountId"))
+        existing_phone_number_id = normalize_text(existing.get("phoneNumberId"))
         existing_access_token = normalize_text(existing.get("accessToken"))
+        existing_connection_status = normalize_text(existing.get("connectionStatus")) or "not_connected"
         access_token = access_token_input or existing_access_token
 
         if not access_token:
@@ -2614,6 +2617,37 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "error": "invalid_fields",
                 "issues": issues,
                 "message": "Finish the missing WhatsApp details.",
+            })
+            return
+
+        credentials_unchanged = bool(
+            existing_access_token
+            and not access_token_input
+            and business_account_id == existing_business_account_id
+            and phone_number_id == existing_phone_number_id
+            and existing_connection_status == "connected"
+        )
+        if credentials_unchanged:
+            connection = self.database.save_whatsapp_connection(
+                session.email,
+                business_account_id=business_account_id,
+                phone_number_id=phone_number_id,
+                access_token=None,
+                owner_wa_id=owner_wa_id,
+                display_phone_number=normalize_text(existing.get("displayPhoneNumber")),
+                verified_name=normalize_text(existing.get("verifiedName")),
+                connection_status=existing_connection_status,
+                metadata=metadata,
+                connected_at=existing.get("connectedAt"),
+                tested_at=existing.get("lastTestedAt"),
+            )
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "Approval phone saved. Suggested replies will be sent there for review. The existing WhatsApp Business connection was kept.",
+                "connection": self._serialize_whatsapp_connection(connection),
+                "liveTested": False,
+                "requiresAccessToken": False,
+                "webhookSubscribed": normalize_text(metadata.get("webhookSubscriptionStatus")) == "subscribed",
             })
             return
 

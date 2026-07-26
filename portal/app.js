@@ -97,7 +97,7 @@ const FEATURE_ACTIVATION_STEPS = [
   "WABA ID",
   "Phone number ID",
   "Access token",
-  "Your phone number",
+  "Approval phone number",
 ];
 const DEFAULT_FEATURE_WHATSAPP = {
   business_account_id: "",
@@ -3842,7 +3842,7 @@ function formatFeatureActivationFieldLabel(key) {
     business_account_id: "WhatsApp Business Account ID",
     phone_number_id: "Phone number ID",
     access_token: "Access token",
-    owner_wa_id: "Your phone number",
+    owner_wa_id: "Approval phone number",
   };
 
   return labels[key] || key;
@@ -3940,7 +3940,7 @@ function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
     issues.push({ field: "access_token", message: "Paste an access token for this WhatsApp Business Account.", inline: true });
   }
   if (!/^\d+$/.test(ownerWaId)) {
-    issues.push({ field: "owner_wa_id", message: "Enter your phone number.", inline: true });
+    issues.push({ field: "owner_wa_id", message: "Enter the phone number that should receive suggested replies.", inline: true });
   }
 
   return issues;

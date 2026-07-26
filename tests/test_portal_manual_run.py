@@ -725,6 +725,58 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(stored["accessToken"], "client-token")
         self.assertEqual(stored["metadata"]["webhookSubscriptionStatus"], "subscribed")
 
+    def test_whatsapp_connection_endpoint_saves_approval_phone_without_retesting_existing_connection(self) -> None:
+        self.server.database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="11111",
+            phone_number_id="22222",
+            access_token="client-token",
+            owner_wa_id="15551234567",
+            display_phone_number="+1 555 123 4567",
+            verified_name="Client Co",
+            connection_status="connected",
+            metadata={
+                "webhookSubscriptionStatus": "subscribed",
+            },
+        )
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.test_whatsapp_connection",
+            side_effect=AssertionError("Meta connection should not be retested"),
+        ) as mocked_test:
+            with mock.patch(
+                "packages.infrastructure.portal_auth.server.list_whatsapp_business_phone_numbers",
+                side_effect=AssertionError("WABA phone numbers should not be listed"),
+            ) as mocked_list_numbers:
+                with mock.patch(
+                    "packages.infrastructure.portal_auth.server.subscribe_whatsapp_business_account",
+                    side_effect=AssertionError("Webhook subscription should not be retried"),
+                ) as mocked_subscribe:
+                    status, body = self._request(
+                        "POST",
+                        "/api/whatsapp/connection",
+                        {
+                            "business_account_id": "11111",
+                            "phone_number_id": "22222",
+                            "owner_wa_id": "972507322341",
+                        },
+                    )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["liveTested"])
+        self.assertIn("Approval phone saved", body["message"])
+        self.assertEqual(body["connection"]["ownerWaId"], "972507322341")
+        self.assertEqual(body["connection"]["displayPhoneNumber"], "+1 555 123 4567")
+        mocked_test.assert_not_called()
+        mocked_list_numbers.assert_not_called()
+        mocked_subscribe.assert_not_called()
+
+        stored = self.server.database.get_whatsapp_connection("owner@example.com")
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["ownerWaId"], "972507322341")
+        self.assertEqual(stored["accessToken"], "client-token")
+
     def test_whatsapp_history_includes_suggested_reply_for_inbound_message(self) -> None:
         webhook_request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",
