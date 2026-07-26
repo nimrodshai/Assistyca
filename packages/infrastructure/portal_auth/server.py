@@ -2386,11 +2386,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         status = normalize_text(event.get("status")).lower()
         if status == "failed":
-            text = "Business message sent outside Assistyca failed. Content unavailable."
+            text = "Sent from another inbox, but it failed. We saw the status, not the words."
         elif status == "deleted":
-            text = "Business message sent outside Assistyca was deleted. Content unavailable."
+            text = "Sent from another inbox, then deleted. We saw the status, not the words."
         else:
-            text = "Business message sent outside Assistyca. Content unavailable."
+            text = "Sent from another inbox. We saw it go out, but not the words."
 
         return self.database.save_whatsapp_message(
             user_id=int(connection.get("userId") or 0),

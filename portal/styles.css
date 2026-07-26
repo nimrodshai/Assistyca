@@ -3638,20 +3638,6 @@ body[data-modal="billing"] .app-shell {
   white-space: nowrap;
 }
 
-.whatsapp-history-count {
-  min-width: 1.7rem;
-  height: 1.35rem;
-  padding: 0 0.42rem;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  background: #128c7e;
-  color: #fff;
-  font-size: 0.72rem;
-  font-weight: 800;
-  line-height: 1;
-}
-
 .whatsapp-history-preview,
 .whatsapp-history-meta,
 .whatsapp-history-selected-meta,

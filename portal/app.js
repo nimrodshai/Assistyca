@@ -19,6 +19,7 @@ const SETTINGS_PANEL_ANIMATION_MS = 320;
 const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
 const ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS = 500;
 const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
+const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "Sent from another inbox. We saw it go out, but not the words.";
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
@@ -3315,15 +3316,49 @@ function formatWhatsAppMessageCount(count) {
   return `${value} message${value === 1 ? "" : "s"}`;
 }
 
+function isWhatsAppExternalOutboundPlaceholder(payload = {}) {
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+  const direction = String(payload.direction || "").trim().toLowerCase();
+  const text = normalizeText(payload.text || "").toLowerCase();
+  return Boolean(
+    direction === "outbound"
+    && (
+      metadata.contentUnavailable
+      || (text.includes("content unavailable") && text.includes("outside assistyca"))
+    )
+  );
+}
+
+function getWhatsAppExternalOutboundText(payload = {}) {
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+  const status = normalizeText(metadata.status).toLowerCase();
+  if (status === "failed") {
+    return "Sent from another inbox, but it failed. We saw the status, not the words.";
+  }
+  if (status === "deleted") {
+    return "Sent from another inbox, then deleted. We saw the status, not the words.";
+  }
+  return WHATSAPP_EXTERNAL_OUTBOUND_TEXT;
+}
+
+function getWhatsAppHistoryDisplayText(payload = {}) {
+  if (isWhatsAppExternalOutboundPlaceholder(payload)) {
+    return getWhatsAppExternalOutboundText(payload);
+  }
+
+  return normalizeText(payload.text || "");
+}
+
 function normalizeWhatsAppHistoryMessage(source = {}) {
   const direction = String(source.direction || "").trim().toLowerCase();
+  const metadata = source.metadata && typeof source.metadata === "object" ? source.metadata : {};
   return {
     messageId: String(source.messageId || source.message_id || "").trim(),
     direction: ["inbound", "outbound"].includes(direction) ? direction : "inbound",
     messageType: String(source.messageType || source.message_type || "text").trim() || "text",
-    text: normalizeText(source.text || ""),
+    text: getWhatsAppHistoryDisplayText({ direction, text: source.text || "", metadata }),
     messageAt: String(source.messageAt || source.message_at || "").trim(),
-    metadata: source.metadata && typeof source.metadata === "object" ? source.metadata : {},
+    metadata,
     createdAt: String(source.createdAt || source.created_at || "").trim(),
     updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
   };
@@ -3337,19 +3372,26 @@ function normalizeWhatsAppHistoryConversation(source = {}) {
     Number.parseInt(source.messageCount ?? source.message_count ?? 0, 10) || 0,
     messages.length,
   );
+  const metadata = source.metadata && typeof source.metadata === "object" ? source.metadata : {};
+  const lastMessageDirection = String(source.lastMessageDirection || source.last_message_direction || "").trim().toLowerCase();
+  const lastMessageText = getWhatsAppHistoryDisplayText({
+    direction: lastMessageDirection,
+    text: source.lastMessageText || source.last_message_text || "",
+    metadata,
+  });
 
   return {
     conversationId: String(source.conversationId || source.conversation_id || "").trim(),
     senderName: normalizeText(source.senderName || source.sender_name || ""),
     senderWaId: normalizeText(source.senderWaId || source.sender_wa_id || ""),
-    lastMessageText: normalizeText(source.lastMessageText || source.last_message_text || ""),
-    lastMessageDirection: String(source.lastMessageDirection || source.last_message_direction || "").trim().toLowerCase(),
+    lastMessageText,
+    lastMessageDirection,
     lastMessageAt: String(source.lastMessageAt || source.last_message_at || "").trim(),
     lastInboundAt: String(source.lastInboundAt || source.last_inbound_at || "").trim(),
     lastOutboundAt: String(source.lastOutboundAt || source.last_outbound_at || "").trim(),
     messageCount,
     messages,
-    metadata: source.metadata && typeof source.metadata === "object" ? source.metadata : {},
+    metadata,
     createdAt: String(source.createdAt || source.created_at || "").trim(),
     updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
   };
@@ -3489,12 +3531,7 @@ function createWhatsAppHistoryConversationButton(conversation, isSelected) {
   const title = document.createElement("strong");
   title.textContent = buildWhatsAppHistoryConversationTitle(conversation);
 
-  const count = document.createElement("span");
-  count.className = "whatsapp-history-count";
-  count.textContent = String(conversation.messageCount || 0);
-  count.setAttribute("aria-label", formatWhatsAppMessageCount(conversation.messageCount));
-
-  titleRow.append(title, count);
+  titleRow.append(title);
 
   const preview = document.createElement("span");
   preview.className = "whatsapp-history-preview";
