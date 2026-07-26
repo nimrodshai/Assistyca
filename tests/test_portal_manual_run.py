@@ -572,6 +572,12 @@ class WhatsAppSendFormattingTests(unittest.TestCase):
 class PortalWhatsAppSampleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
+        self.env_patcher = mock.patch.dict(
+            os.environ,
+            {"PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp")},
+            clear=False,
+        )
+        self.env_patcher.start()
         self.root = Path(__file__).resolve().parents[1]
         self.server = create_server(
             "127.0.0.1",
@@ -599,6 +605,7 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+        self.env_patcher.stop()
         self.temp_dir.cleanup()
 
     def _request(self, method: str, path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
@@ -717,6 +724,78 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertIsNotNone(stored)
         self.assertEqual(stored["accessToken"], "client-token")
         self.assertEqual(stored["metadata"]["webhookSubscriptionStatus"], "subscribed")
+
+    def test_whatsapp_history_includes_suggested_reply_for_inbound_message(self) -> None:
+        webhook_request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "12345",
+                                        },
+                                        "contacts": [
+                                            {
+                                                "wa_id": "15559876543",
+                                                "profile": {
+                                                    "name": "Maya Cohen",
+                                                },
+                                            }
+                                        ],
+                                        "messages": [
+                                            {
+                                                "id": "wamid.inbound-price-1",
+                                                "from": "15559876543",
+                                                "timestamp": "1720861200",
+                                                "type": "text",
+                                                "text": {
+                                                    "body": "How much does it cost?",
+                                                },
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(webhook_request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            status = response.status
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["received"], 1)
+        self.assertEqual(body["results"][0]["type"], "customer")
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(history["ok"])
+        messages = history["conversations"][0]["messages"]
+        self.assertEqual(messages[0]["messageId"], "wamid.inbound-price-1")
+        self.assertIn("couple of details", messages[0]["suggestedReply"])
+        self.assertEqual(messages[0]["metadata"]["approvalStatus"], "pending")
+        self.assertTrue(messages[0]["metadata"]["approvalReviewUrl"].endswith(
+            f"/approval/{messages[0]['approvalId']}"
+        ))
 
     def test_whatsapp_status_webhook_marks_latest_owner_alert_delivered(self) -> None:
         self.server.database.update_whatsapp_connection_metadata(

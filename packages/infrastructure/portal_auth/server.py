@@ -3049,6 +3049,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         connection = self.database.get_whatsapp_connection(session.email)
+        service = self._build_whatsapp_service(connection) if connection else None
         conversations = self.database.list_whatsapp_conversations(email=session.email)
         payload_conversations: list[dict[str, Any]] = []
         total_messages = 0
@@ -3062,6 +3063,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 conversation_id,
                 email=session.email,
             )
+            if service is not None:
+                messages = self._attach_whatsapp_history_suggestions(service, messages)
             message_count = int(conversation.get("messageCount") or len(messages))
             total_messages += message_count
             payload_conversations.append({
@@ -3078,6 +3081,42 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "diagnostics": self._build_whatsapp_history_diagnostics(connection, payload_conversations),
             "conversations": payload_conversations,
         })
+
+    def _attach_whatsapp_history_suggestions(
+        self,
+        service: PortalWhatsAppService,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        enriched_messages: list[dict[str, Any]] = []
+        for message in messages:
+            payload = dict(message)
+            if normalize_text(payload.get("direction")).lower() != "inbound":
+                enriched_messages.append(payload)
+                continue
+
+            message_id = normalize_text(payload.get("messageId"))
+            approval = service.store.find_approval_by_message_id(message_id)
+            suggested_reply = normalize_text(approval.get("suggested_reply")) if isinstance(approval, dict) else ""
+            approval_id = normalize_text(approval.get("approval_id")) if isinstance(approval, dict) else ""
+            if not suggested_reply or not approval_id:
+                enriched_messages.append(payload)
+                continue
+
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            payload["metadata"] = {
+                **metadata,
+                "approvalId": approval_id,
+                "approvalStatus": normalize_text(approval.get("status")) or "pending",
+                "approvalOwnerState": normalize_text(approval.get("owner_state")),
+                "approvalReviewUrl": service.build_approval_review_url(approval),
+                "suggestedReply": suggested_reply,
+            }
+            payload["approvalId"] = approval_id
+            payload["approvalStatus"] = normalize_text(approval.get("status")) or "pending"
+            payload["approvalReviewUrl"] = service.build_approval_review_url(approval)
+            payload["suggestedReply"] = suggested_reply
+            enriched_messages.append(payload)
+        return enriched_messages
 
     def _build_whatsapp_history_diagnostics(
         self,

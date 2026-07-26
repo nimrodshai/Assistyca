@@ -3734,16 +3734,17 @@ body[data-modal="billing"] .app-shell {
 }
 
 .whatsapp-history-message {
-  display: flex;
+  display: grid;
+  gap: 0.5rem;
   width: 100%;
 }
 
 .whatsapp-history-message.is-inbound {
-  justify-content: flex-start;
+  justify-items: flex-start;
 }
 
 .whatsapp-history-message.is-outbound {
-  justify-content: flex-end;
+  justify-items: flex-end;
 }
 
 .whatsapp-history-bubble {
@@ -3775,6 +3776,65 @@ body[data-modal="billing"] .app-shell {
   display: block;
   margin-top: 0.38rem;
   text-align: right;
+}
+
+.whatsapp-history-suggestion {
+  width: min(31rem, 82%);
+  display: grid;
+  gap: 0.5rem;
+  margin-left: 0.8rem;
+  padding: 0.72rem 0.82rem;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-left: 4px solid rgba(15, 118, 110, 0.72);
+  border-radius: 14px 18px 18px 14px;
+  background: rgba(240, 253, 250, 0.92);
+  box-shadow: 0 10px 22px rgba(16, 38, 40, 0.06);
+}
+
+.whatsapp-history-suggestion-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.whatsapp-history-suggestion-status {
+  flex: 0 0 auto;
+  padding: 0.16rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.whatsapp-history-suggestion p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.whatsapp-history-suggestion-link {
+  width: fit-content;
+  color: #0f766e;
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-color: rgba(15, 118, 110, 0.3);
+  text-underline-offset: 0.18em;
+}
+
+.whatsapp-history-suggestion-link:hover,
+.whatsapp-history-suggestion-link:focus-visible {
+  color: #0b5e57;
+  text-decoration-color: currentColor;
 }
 
 .whatsapp-history-empty {
@@ -5864,6 +5924,11 @@ body[data-modal="billing"] .app-shell {
 
   .whatsapp-history-bubble {
     max-width: 92%;
+  }
+
+  .whatsapp-history-suggestion {
+    width: min(92%, 31rem);
+    margin-left: 0.35rem;
   }
 
   .settings-overlay,

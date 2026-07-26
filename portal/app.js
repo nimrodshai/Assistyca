@@ -3343,11 +3343,43 @@ function getWhatsAppHistoryDisplayText(payload = {}) {
 function normalizeWhatsAppHistoryMessage(source = {}) {
   const direction = String(source.direction || "").trim().toLowerCase();
   const metadata = source.metadata && typeof source.metadata === "object" ? source.metadata : {};
+  const suggestedReply = normalizeText(
+    source.suggestedReply
+    || source.suggested_reply
+    || metadata.suggestedReply
+    || metadata.suggested_reply
+    || "",
+  );
+  const approvalId = normalizeText(
+    source.approvalId
+    || source.approval_id
+    || metadata.approvalId
+    || metadata.approval_id
+    || "",
+  );
+  const approvalReviewUrl = normalizeText(
+    source.approvalReviewUrl
+    || source.approval_review_url
+    || metadata.approvalReviewUrl
+    || metadata.approval_review_url
+    || "",
+  );
+  const approvalStatus = normalizeText(
+    source.approvalStatus
+    || source.approval_status
+    || metadata.approvalStatus
+    || metadata.approval_status
+    || "",
+  ).toLowerCase();
   return {
     messageId: String(source.messageId || source.message_id || "").trim(),
     direction: ["inbound", "outbound"].includes(direction) ? direction : "inbound",
     messageType: String(source.messageType || source.message_type || "text").trim() || "text",
     text: getWhatsAppHistoryDisplayText({ direction, text: source.text || "", metadata }),
+    suggestedReply,
+    approvalId,
+    approvalReviewUrl,
+    approvalStatus,
     messageAt: String(source.messageAt || source.message_at || "").trim(),
     metadata,
     createdAt: String(source.createdAt || source.created_at || "").trim(),
@@ -3555,6 +3587,45 @@ function createWhatsAppHistoryMessage(message) {
 
   bubble.append(text, meta);
   item.append(bubble);
+
+  if (message.direction === "inbound" && message.suggestedReply) {
+    const suggestion = document.createElement("div");
+    suggestion.className = "whatsapp-history-suggestion";
+
+    const suggestionHead = document.createElement("div");
+    suggestionHead.className = "whatsapp-history-suggestion-head";
+
+    const label = document.createElement("span");
+    label.textContent = "Suggested reply";
+    suggestionHead.append(label);
+
+    if (message.approvalStatus) {
+      const status = document.createElement("span");
+      status.className = "whatsapp-history-suggestion-status";
+      status.textContent = message.approvalStatus === "sent"
+        ? "Sent"
+        : message.approvalStatus === "skipped"
+          ? "Skipped"
+          : "Draft";
+      suggestionHead.append(status);
+    }
+
+    const suggestionText = document.createElement("p");
+    suggestionText.textContent = message.suggestedReply;
+
+    suggestion.append(suggestionHead, suggestionText);
+
+    if (message.approvalReviewUrl && message.approvalStatus !== "sent") {
+      const reviewLink = document.createElement("a");
+      reviewLink.className = "whatsapp-history-suggestion-link";
+      reviewLink.href = message.approvalReviewUrl;
+      reviewLink.textContent = "Review reply";
+      suggestion.append(reviewLink);
+    }
+
+    item.append(suggestion);
+  }
+
   return item;
 }
 
