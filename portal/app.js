@@ -8248,6 +8248,27 @@ function waitForDelay(delayMs) {
   });
 }
 
+function createWhatsAppSampleWaitControl() {
+  const control = {
+    action: "",
+    promise: null,
+    resolve: null,
+  };
+
+  control.promise = new Promise((resolve) => {
+    control.resolve = (action) => {
+      if (control.action) {
+        return;
+      }
+
+      control.action = normalizeText(action);
+      resolve(control.action);
+    };
+  });
+
+  return control;
+}
+
 function getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId) {
   const feature = getFeatureById(featureId);
   const health = getFeatureWhatsAppHealth(feature);
@@ -8286,22 +8307,52 @@ function getWhatsAppReplySamplePendingMessage(feature, confirmationState) {
   return `${receiptSummary} It may already be on ${ownerLabel}; we’ll keep updating this status when Meta sends the receipt.`;
 }
 
-async function waitForWhatsAppReplySampleConfirmation(featureId, ownerMessageId) {
+function withWhatsAppSampleUserAction(confirmationState, userAction = "") {
+  return {
+    ...confirmationState,
+    userAction: normalizeText(userAction),
+  };
+}
+
+async function waitForWhatsAppReplySampleConfirmation(featureId, ownerMessageId, options = {}) {
+  const userControl = options.userControl || null;
   let confirmationState = getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
   if (
     confirmationState.matchesMessageId
     && ["delivered", "read", "failed"].includes(confirmationState.status)
   ) {
-    return confirmationState;
+    return withWhatsAppSampleUserAction(confirmationState);
   }
 
   const deadline = Date.now() + WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (userControl?.action) {
+      return withWhatsAppSampleUserAction(
+        getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId),
+        userControl.action,
+      );
+    }
+
     const delayMs = Math.min(
       WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS,
       Math.max(0, deadline - Date.now()),
     );
-    await waitForDelay(delayMs);
+    let userAction = "";
+    if (userControl) {
+      userAction = await Promise.race([
+        waitForDelay(delayMs).then(() => ""),
+        userControl.promise,
+      ]);
+    } else {
+      await waitForDelay(delayMs);
+    }
+
+    if (userAction) {
+      return withWhatsAppSampleUserAction(
+        getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId),
+        userAction,
+      );
+    }
 
     try {
       await refreshWhatsAppConnection({ render: false, timeoutMs: 10000 });
@@ -8314,15 +8365,19 @@ async function waitForWhatsAppReplySampleConfirmation(featureId, ownerMessageId)
     }
 
     confirmationState = getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
+    if (userControl?.action) {
+      return withWhatsAppSampleUserAction(confirmationState, userControl.action);
+    }
+
     if (
       confirmationState.matchesMessageId
       && ["delivered", "read", "failed"].includes(confirmationState.status)
     ) {
-      return confirmationState;
+      return withWhatsAppSampleUserAction(confirmationState);
     }
   }
 
-  return getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
+  return withWhatsAppSampleUserAction(getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId));
 }
 
 async function sendSelectedWhatsAppReplySample() {
@@ -8367,23 +8422,48 @@ async function sendSelectedWhatsAppReplySample() {
       || getFeatureWhatsAppHealth(getFeatureById(feature.id) || feature).lastOwnerNotificationMessageId
       || "",
     ).trim();
+    const waitControl = createWhatsAppSampleWaitControl();
     openAuthAlert(
       "Testing WhatsApp delivery",
       "We’re sending a sample alert now and waiting for WhatsApp to confirm it reached your phone.",
       {
         eyebrow: "Testing now",
+        buttonLabel: "Received the msg",
         dismissOnBackdrop: false,
         dismissOnEscape: false,
-        hidePrimaryButton: true,
         iconMode: "spinner",
+        onPrimary: () => waitControl.resolve("received"),
+        onSecondary: () => waitControl.resolve("cancelled"),
         returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
+        secondaryButtonLabel: "Cancel",
         tone: "progress",
       },
     );
     setStatus("Waiting for WhatsApp to confirm the sample delivery...");
 
-    const confirmationState = await waitForWhatsAppReplySampleConfirmation(feature.id, ownerMessageId);
+    const confirmationState = await waitForWhatsAppReplySampleConfirmation(feature.id, ownerMessageId, { userControl: waitControl });
     const latestFeature = getFeatureById(feature.id) || feature;
+    if (confirmationState.userAction === "cancelled") {
+      setStatus("Sample delivery check cancelled.");
+      return;
+    }
+
+    if (confirmationState.userAction === "received") {
+      openAuthAlert(
+        "Marked as received",
+        "Nice. We’ll stop waiting here and keep updating the setup if WhatsApp sends the official receipt later.",
+        {
+          eyebrow: "Got it",
+          buttonLabel: "OK",
+          icon: "✓",
+          tone: "success",
+          returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
+        },
+      );
+      setStatus("Sample marked as received.");
+      return;
+    }
+
     if (
       confirmationState.matchesMessageId
       && ["delivered", "read"].includes(confirmationState.status)
