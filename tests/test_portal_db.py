@@ -137,6 +137,33 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertEqual(second["accessToken"], "secret-token")
         self.assertTrue(second["accessTokenConfigured"])
 
+    def test_whatsapp_connection_owner_lookup_requires_unique_match(self) -> None:
+        database = PortalDatabase(self.db_path)
+        database.register_user("owner@example.com")
+
+        database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="waba-1",
+            phone_number_id="phone-1",
+            owner_wa_id="+972 50-732-2341",
+            connection_status="connected",
+        )
+
+        matched = database.get_whatsapp_connection_by_owner_wa_id("0507322341")
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["email"], "owner@example.com")
+
+        database.register_user("second@example.com")
+        database.save_whatsapp_connection(
+            "second@example.com",
+            business_account_id="waba-2",
+            phone_number_id="phone-2",
+            owner_wa_id="972507322341",
+            connection_status="connected",
+        )
+
+        self.assertIsNone(database.get_whatsapp_connection_by_owner_wa_id("972507322341"))
+
 
 if __name__ == "__main__":
     unittest.main()

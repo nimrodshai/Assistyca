@@ -3066,7 +3066,22 @@ class PortalDatabase:
             return None
 
         with self._connection() as conn:
-            return self._load_whatsapp_connection_row(conn, owner_wa_id=normalized_owner_wa_id)
+            rows = conn.execute(
+                """
+                SELECT u.id AS user_id
+                FROM whatsapp_connections AS w
+                INNER JOIN users AS u
+                    ON u.id = w.user_id
+                WHERE u.is_active = 1
+                  AND w.owner_wa_id = ?
+                ORDER BY w.updated_at DESC, u.id ASC
+                LIMIT 2
+                """,
+                (normalized_owner_wa_id,),
+            ).fetchall()
+            if len(rows) != 1:
+                return None
+            return self._load_whatsapp_connection_row(conn, user_id=int(rows[0]["user_id"]))
 
     def get_whatsapp_connection_by_user_id(self, user_id: int) -> dict[str, Any] | None:
         if user_id <= 0:
@@ -4245,7 +4260,7 @@ class PortalDatabase:
                     normalize_text(business_account_id),
                     normalize_text(phone_number_id),
                     resolved_access_token,
-                    normalize_text(owner_wa_id),
+                    normalize_whatsapp_lookup_id(owner_wa_id),
                     normalize_text(display_phone_number),
                     normalize_text(verified_name),
                     normalize_text(connection_status) or "configured",
