@@ -478,7 +478,7 @@ class PortalWhatsAppService:
         )
         return message_id, message_text
 
-    def resolve_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
+    def resolve_explicit_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
         context_id = normalize_text(event.get("reply_to_message_id"))
         if context_id:
             approval = self.store.find_approval_by_message_id(context_id)
@@ -509,6 +509,14 @@ class PortalWhatsAppService:
             if approval is not None:
                 return approval
 
+        return None
+
+    def resolve_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        explicit_approval = self.resolve_explicit_owner_target_approval(event)
+        if explicit_approval is not None:
+            return explicit_approval
+
+        text = normalize_text(event.get("message_text"))
         awaiting_edit = self.store.list_approvals(status="awaiting_edit")
         if len(awaiting_edit) == 1:
             return awaiting_edit[0]

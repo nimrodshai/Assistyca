@@ -886,6 +886,77 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             f"/approval/{messages[0]['approvalId']}"
         ))
 
+    def test_approval_phone_message_to_connected_number_is_customer_history(self) -> None:
+        webhook_request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "12345",
+                                        },
+                                        "contacts": [
+                                            {
+                                                "wa_id": "15551234567",
+                                                "profile": {
+                                                    "name": "Owner as tester",
+                                                },
+                                            }
+                                        ],
+                                        "messages": [
+                                            {
+                                                "id": "wamid.owner-as-customer-1",
+                                                "from": "15551234567",
+                                                "timestamp": "1720861200",
+                                                "type": "text",
+                                                "text": {
+                                                    "body": "Can I book a test appointment?",
+                                                },
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(webhook_request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            status = response.status
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["received"], 1)
+        self.assertEqual(body["results"][0]["type"], "customer")
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(history["ok"])
+        self.assertEqual(history["conversationCount"], 1)
+        messages = history["conversations"][0]["messages"]
+        self.assertEqual(messages[0]["messageId"], "wamid.owner-as-customer-1")
+        self.assertEqual(messages[0]["direction"], "inbound")
+        self.assertEqual(messages[0]["text"], "Can I book a test appointment?")
+        self.assertIn("suggestedReply", messages[0])
+
     def test_whatsapp_status_webhook_marks_latest_owner_alert_delivered(self) -> None:
         self.server.database.update_whatsapp_connection_metadata(
             email="owner@example.com",

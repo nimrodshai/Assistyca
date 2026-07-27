@@ -3216,7 +3216,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     {
                         "tone": "neutral",
                         "title": "Latest webhook came from the owner phone",
-                        "message": "Messages from the approval phone are treated as owner commands, so they do not create customer history or generated replies. Send a test from a different WhatsApp number.",
+                        "message": "Replies to Assistyca approval alerts are owner commands, so they do not create customer history. Messages sent directly to the connected WhatsApp number are saved as customer history.",
                     }
                 )
             elif not last_inbound_at:
@@ -3232,8 +3232,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             diagnostics.append(
                 {
                     "tone": "neutral",
-                    "title": "Owner-phone messages are excluded from customer history",
-                    "message": "Use another phone to test customer replies, or reply to approval alerts from the owner phone.",
+                    "title": "Latest webhook was an owner command",
+                    "message": "Replies to Assistyca approval alerts stay out of customer history. Direct messages to the connected WhatsApp number are still saved as customer conversations.",
                 }
             )
 
@@ -3600,7 +3600,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             service = self._build_whatsapp_service(connection)
             routed_user_ids.add(int(connection.get("userId") or 0))
             try:
-                if service.is_owner_sender(str(event.get("sender_wa_id", ""))):
+                is_owner_sender = service.is_owner_sender(str(event.get("sender_wa_id", "")))
+                is_owner_command = is_owner_sender and (
+                    route_source == "platform_owner_alert"
+                    or service.resolve_explicit_owner_target_approval(event) is not None
+                )
+                if is_owner_command:
                     self._record_whatsapp_owner_command_activity(
                         connection,
                         event,
