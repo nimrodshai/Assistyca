@@ -941,6 +941,139 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(metadata["lastOwnerNotificationStatus"], "delivered")
         self.assertEqual(metadata["lastOwnerNotificationMessageId"], "wamid.sample-1")
 
+    def test_whatsapp_status_webhook_routes_platform_sender_status_by_approval_phone(self) -> None:
+        self.server.database.update_whatsapp_connection_metadata(
+            email="owner@example.com",
+            metadata_updates={
+                "lastOwnerNotificationStatus": "requested",
+                "lastOwnerNotificationMessageId": "wamid.sample-platform-1",
+            },
+        )
+
+        request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "1186653017865246",
+                                        },
+                                        "statuses": [
+                                            {
+                                                "id": "wamid.sample-platform-1",
+                                                "status": "delivered",
+                                                "recipient_id": "15551234567",
+                                                "timestamp": "1720861200",
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            status = response.status
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["receivedStatuses"], 1)
+        self.assertEqual(body["results"][0]["type"], "status")
+        self.assertEqual(body["results"][0]["route"], "platform_owner_alert")
+
+        connection = self.server.database.get_whatsapp_connection("owner@example.com")
+        self.assertIsNotNone(connection)
+        metadata = connection["metadata"]
+        self.assertEqual(metadata["lastOwnerNotificationStatus"], "delivered")
+        self.assertEqual(metadata["lastOwnerNotificationMessageId"], "wamid.sample-platform-1")
+
+    def test_owner_reply_to_platform_sender_routes_to_workspace_diagnostics(self) -> None:
+        request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "1186653017865246",
+                                        },
+                                        "contacts": [
+                                            {
+                                                "wa_id": "15551234567",
+                                                "profile": {
+                                                    "name": "Owner",
+                                                },
+                                            }
+                                        ],
+                                        "messages": [
+                                            {
+                                                "id": "wamid.owner-reply-platform-1",
+                                                "from": "15551234567",
+                                                "timestamp": "1720861200",
+                                                "type": "text",
+                                                "text": {
+                                                    "body": "I got the sample",
+                                                },
+                                                "context": {
+                                                    "id": "wamid.sample-platform-1",
+                                                },
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            status = response.status
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["received"], 1)
+        self.assertEqual(body["results"][0]["type"], "owner")
+        self.assertEqual(body["results"][0]["route"], "platform_owner_alert")
+
+        connection = self.server.database.get_whatsapp_connection("owner@example.com")
+        self.assertIsNotNone(connection)
+        self.assertEqual(connection["metadata"]["lastWebhookEventType"], "owner_command")
+        self.assertEqual(connection["metadata"]["lastWebhookPhoneNumberId"], "1186653017865246")
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(history["ok"])
+        self.assertEqual(history["conversationCount"], 0)
+        self.assertEqual(history["diagnostics"][0]["title"], "Latest webhook came from the owner phone")
+
     def test_whatsapp_status_webhook_records_external_business_send_placeholder(self) -> None:
         request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",

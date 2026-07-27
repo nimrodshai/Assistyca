@@ -371,6 +371,9 @@ CREATE INDEX IF NOT EXISTS idx_model_prices_is_active ON model_prices(is_active)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_connections_phone_number_id
 ON whatsapp_connections(phone_number_id)
 WHERE phone_number_id <> '';
+CREATE INDEX IF NOT EXISTS idx_whatsapp_connections_owner_wa_id
+ON whatsapp_connections(owner_wa_id)
+WHERE owner_wa_id <> '';
 CREATE INDEX IF NOT EXISTS idx_whatsapp_approval_index_user_id
 ON whatsapp_approval_index(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_user_updated
@@ -413,6 +416,13 @@ def normalize_email(value: Any) -> str:
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def normalize_whatsapp_lookup_id(value: Any) -> str:
+    digits = re.sub(r"\D+", "", normalize_text(value))
+    if len(digits) == 10 and digits.startswith("05"):
+        return f"972{digits[1:]}"
+    return digits
 
 
 def normalize_user_profile(value: Any) -> dict[str, str]:
@@ -1237,6 +1247,7 @@ class PortalDatabase:
         user_id: int | None = None,
         email: str | None = None,
         phone_number_id: str | None = None,
+        owner_wa_id: str | None = None,
     ) -> dict[str, Any] | None:
         where_clauses: list[str] = ["u.is_active = 1"]
         params: list[Any] = []
@@ -1256,6 +1267,12 @@ class PortalDatabase:
                 return None
             where_clauses.append("w.phone_number_id = ?")
             params.append(normalized_phone_number_id)
+        elif owner_wa_id is not None:
+            normalized_owner_wa_id = normalize_whatsapp_lookup_id(owner_wa_id)
+            if not normalized_owner_wa_id:
+                return None
+            where_clauses.append("w.owner_wa_id = ?")
+            params.append(normalized_owner_wa_id)
         else:
             return None
 
@@ -3042,6 +3059,14 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, phone_number_id=normalized_phone_number_id)
+
+    def get_whatsapp_connection_by_owner_wa_id(self, owner_wa_id: str) -> dict[str, Any] | None:
+        normalized_owner_wa_id = normalize_whatsapp_lookup_id(owner_wa_id)
+        if not normalized_owner_wa_id:
+            return None
+
+        with self._connection() as conn:
+            return self._load_whatsapp_connection_row(conn, owner_wa_id=normalized_owner_wa_id)
 
     def get_whatsapp_connection_by_user_id(self, user_id: int) -> dict[str, Any] | None:
         if user_id <= 0:

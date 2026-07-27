@@ -2285,6 +2285,30 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
         )
 
+    def _resolve_whatsapp_connection_for_webhook(
+        self,
+        phone_number_id: str,
+        *,
+        owner_wa_id: str = "",
+    ) -> tuple[dict[str, Any] | None, str]:
+        normalized_phone_number_id = normalize_text(phone_number_id)
+        if not normalized_phone_number_id:
+            return None, ""
+
+        connection = self.database.get_whatsapp_connection_by_phone_number_id(normalized_phone_number_id)
+        if connection:
+            return connection, "connected_number"
+
+        platform_sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
+        if normalized_phone_number_id != platform_sender_phone_number_id:
+            return None, ""
+
+        owner_connection = self.database.get_whatsapp_connection_by_owner_wa_id(owner_wa_id)
+        if owner_connection:
+            return owner_connection, "platform_owner_alert"
+
+        return None, ""
+
     def _serialize_whatsapp_connection(self, connection: dict[str, Any] | None) -> dict[str, Any] | None:
         if not connection:
             return None
@@ -3498,7 +3522,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 continue
 
-            connection = self.database.get_whatsapp_connection_by_phone_number_id(phone_number_id)
+            connection, route_source = self._resolve_whatsapp_connection_for_webhook(
+                phone_number_id,
+                owner_wa_id=normalize_text(status_event.get("recipient_wa_id")),
+            )
             if not connection:
                 results.append({
                     "type": "status_error",
@@ -3513,6 +3540,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             latest_owner_message_id = normalize_text(connection_metadata.get("lastOwnerNotificationMessageId"))
             event_message_id = normalize_text(status_event.get("message_id"))
             if not latest_owner_message_id or latest_owner_message_id != event_message_id:
+                if route_source == "platform_owner_alert":
+                    results.append({
+                        "type": "status_owner_alert_ignored",
+                        "message_id": event_message_id,
+                        "phone_number_id": phone_number_id,
+                        "status": normalize_text(status_event.get("status")).lower(),
+                        "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+                    })
+                    continue
                 message_record = self._record_whatsapp_external_outbound_status(connection, status_event)
                 results.append({
                     "type": "status_outbound",
@@ -3532,6 +3568,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "phone_number_id": phone_number_id,
                 "status": normalize_text(status_event.get("status")).lower(),
                 "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+                "route": route_source,
             })
 
         for event in events:
@@ -3546,7 +3583,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 continue
 
-            connection = self.database.get_whatsapp_connection_by_phone_number_id(phone_number_id)
+            connection, route_source = self._resolve_whatsapp_connection_for_webhook(
+                phone_number_id,
+                owner_wa_id=normalize_text(event.get("sender_wa_id")),
+            )
             if not connection:
                 results.append({
                     "type": "error",
@@ -3567,6 +3607,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         phone_number_id=phone_number_id,
                     )
                     owner_result = service.handle_owner_event(event)
+                    owner_result["route"] = route_source
+                    owner_result["phone_number_id"] = phone_number_id
                     approval = owner_result.get("approval") if isinstance(owner_result.get("approval"), dict) else None
                     action = normalize_text(owner_result.get("action"))
                     if approval is not None and action in {"send_suggested", "send_custom"}:
