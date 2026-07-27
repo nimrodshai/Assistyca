@@ -13,11 +13,13 @@ from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
 from packages.tools.whatsapp_reply_approval.server import BackendStore
 from packages.tools.whatsapp_reply_approval.server import RuntimeConfig
+from packages.tools.whatsapp_reply_approval.server import OWNER_REVIEW_INTRO_TEXT
 from packages.tools.whatsapp_reply_approval.server import build_owner_confirmation_text
 from packages.tools.whatsapp_reply_approval.server import build_owner_edit_prompt_text
 from packages.tools.whatsapp_reply_approval.server import build_owner_help_text
 from packages.tools.whatsapp_reply_approval.server import build_owner_interactive_payload
 from packages.tools.whatsapp_reply_approval.server import build_owner_notification_text
+from packages.tools.whatsapp_reply_approval.server import build_owner_review_actions_payload
 from packages.tools.whatsapp_reply_approval.server import build_owner_skip_text
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import normalize_bool
@@ -642,17 +644,29 @@ class PortalWhatsAppService:
 
         try:
             if command == "show_suggestion":
-                review_text = build_owner_notification_text(approval)
-                message_id = self.send_owner_message(
+                review_reply_text = normalize_text(approval.get("suggested_reply"))
+                if not review_reply_text:
+                    raise RuntimeError("Suggested reply is empty.")
+                review_intro_message_id = self.send_owner_message(
+                    approval,
+                    message_text=OWNER_REVIEW_INTRO_TEXT,
+                )
+                review_reply_message_id = self.send_owner_message(
+                    approval,
+                    message_text=review_reply_text,
+                )
+                review_actions_message_id = self.send_owner_message(
                     approval,
                     message_text=None,
-                    interactive=build_owner_interactive_payload(approval),
+                    interactive=build_owner_review_actions_payload(approval),
                 )
                 updated = self.store.update_approval(
                     approval_id,
                     {
-                        "owner_review_message_id": message_id,
-                        "owner_review_text": review_text,
+                        "owner_review_intro_message_id": review_intro_message_id,
+                        "owner_review_reply_message_id": review_reply_message_id,
+                        "owner_review_message_id": review_actions_message_id,
+                        "owner_review_text": review_reply_text,
                         "owner_state": "reviewing",
                     },
                 )
@@ -660,7 +674,12 @@ class PortalWhatsAppService:
                     "type": "owner",
                     "action": "show_suggestion",
                     "approval": updated,
-                    "message_id": message_id,
+                    "message_id": review_actions_message_id,
+                    "message_ids": [
+                        review_intro_message_id,
+                        review_reply_message_id,
+                        review_actions_message_id,
+                    ],
                 }
 
             if command == "send_suggested":

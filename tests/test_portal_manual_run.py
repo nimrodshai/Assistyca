@@ -18,6 +18,8 @@ from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppServic
 from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.whatsapp_reply_approval.server import BackendStore
+from packages.tools.whatsapp_reply_approval.server import OWNER_REVIEW_ACTION_TEXT
+from packages.tools.whatsapp_reply_approval.server import OWNER_REVIEW_INTRO_TEXT
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 
@@ -410,7 +412,11 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
 
         with mock.patch(
             "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.hot-review",
+            side_effect=[
+                "wamid.hot-review-intro",
+                "wamid.hot-review-reply",
+                "wamid.hot-review-actions",
+            ],
         ) as mocked_send:
             result = service.handle_owner_event(
                 {
@@ -431,17 +437,41 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             )
 
         self.assertEqual(result["action"], "show_suggestion")
-        self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
-        self.assertIsNone(mocked_send.call_args.kwargs["template"])
-        self.assertEqual(mocked_send.call_args.kwargs["interactive"]["type"], "button")
+        self.assertEqual(
+            result["message_ids"],
+            [
+                "wamid.hot-review-intro",
+                "wamid.hot-review-reply",
+                "wamid.hot-review-actions",
+            ],
+        )
+        self.assertEqual(mocked_send.call_count, 3)
+        self.assertEqual(mocked_send.call_args_list[0].kwargs["message_text"], OWNER_REVIEW_INTRO_TEXT)
+        self.assertIsNone(mocked_send.call_args_list[0].kwargs["interactive"])
+        self.assertEqual(
+            mocked_send.call_args_list[1].kwargs["message_text"],
+            approval["suggested_reply"],
+        )
+        self.assertNotIn("Suggested reply:", mocked_send.call_args_list[1].kwargs["message_text"])
+        self.assertIsNone(mocked_send.call_args_list[1].kwargs["interactive"])
+        self.assertIsNone(mocked_send.call_args_list[2].kwargs["message_text"])
+        self.assertIsNone(mocked_send.call_args_list[2].kwargs["template"])
+        self.assertEqual(mocked_send.call_args_list[2].kwargs["interactive"]["type"], "button")
+        self.assertEqual(
+            mocked_send.call_args_list[2].kwargs["interactive"]["body"]["text"],
+            OWNER_REVIEW_ACTION_TEXT,
+        )
         button_ids = [
             button["reply"]["id"]
-            for button in mocked_send.call_args.kwargs["interactive"]["action"]["buttons"]
+            for button in mocked_send.call_args_list[2].kwargs["interactive"]["action"]["buttons"]
         ]
         self.assertIn(f"approval:{approval['approval_id']}:send", button_ids)
         updated = service.store.get_approval(approval["approval_id"])
         self.assertEqual(updated["owner_state"], "reviewing")
-        self.assertEqual(updated["owner_review_message_id"], "wamid.hot-review")
+        self.assertEqual(updated["owner_review_intro_message_id"], "wamid.hot-review-intro")
+        self.assertEqual(updated["owner_review_reply_message_id"], "wamid.hot-review-reply")
+        self.assertEqual(updated["owner_review_message_id"], "wamid.hot-review-actions")
+        self.assertEqual(updated["owner_review_text"], approval["suggested_reply"])
 
     def test_extract_inbound_events_handles_template_button_reply(self) -> None:
         events = extract_inbound_events(

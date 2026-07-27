@@ -1584,11 +1584,30 @@ def build_owner_notification_text(approval: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+OWNER_REVIEW_INTRO_TEXT = "Here's the generated smart reply:"
+OWNER_REVIEW_ACTION_TEXT = "You can copy and edit it or send it as is ☺️"
+
+
 def build_owner_interactive_payload(approval: dict[str, Any]) -> dict[str, Any]:
     approval_id = normalize_text(approval.get("approval_id"))
     return {
         "type": "button",
         "body": {"text": build_owner_notification_text(approval)},
+        "action": {
+            "buttons": [
+                {"type": "reply", "reply": {"id": f"approval:{approval_id}:send", "title": "Send"}},
+                {"type": "reply", "reply": {"id": f"approval:{approval_id}:edit", "title": "Edit"}},
+                {"type": "reply", "reply": {"id": f"approval:{approval_id}:skip", "title": "Skip"}},
+            ]
+        },
+    }
+
+
+def build_owner_review_actions_payload(approval: dict[str, Any]) -> dict[str, Any]:
+    approval_id = normalize_text(approval.get("approval_id"))
+    return {
+        "type": "button",
+        "body": {"text": OWNER_REVIEW_ACTION_TEXT},
         "action": {
             "buttons": [
                 {"type": "reply", "reply": {"id": f"approval:{approval_id}:send", "title": "Send"}},
@@ -1907,17 +1926,29 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
 
         try:
             if command == "show_suggestion":
-                review_text = build_owner_notification_text(approval)
-                message_id = self.send_owner_message(
+                review_reply_text = normalize_text(approval.get("suggested_reply"))
+                if not review_reply_text:
+                    raise RuntimeError("Suggested reply is empty.")
+                review_intro_message_id = self.send_owner_message(
+                    approval,
+                    message_text=OWNER_REVIEW_INTRO_TEXT,
+                )
+                review_reply_message_id = self.send_owner_message(
+                    approval,
+                    message_text=review_reply_text,
+                )
+                review_actions_message_id = self.send_owner_message(
                     approval,
                     message_text=None,
-                    interactive=build_owner_interactive_payload(approval),
+                    interactive=build_owner_review_actions_payload(approval),
                 )
                 updated = self._store().update_approval(
                     approval_id,
                     {
-                        "owner_review_message_id": message_id,
-                        "owner_review_text": review_text,
+                        "owner_review_intro_message_id": review_intro_message_id,
+                        "owner_review_reply_message_id": review_reply_message_id,
+                        "owner_review_message_id": review_actions_message_id,
+                        "owner_review_text": review_reply_text,
                         "owner_state": "reviewing",
                     },
                 )
@@ -1925,7 +1956,12 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
                     "type": "owner",
                     "action": "show_suggestion",
                     "approval": updated,
-                    "message_id": message_id,
+                    "message_id": review_actions_message_id,
+                    "message_ids": [
+                        review_intro_message_id,
+                        review_reply_message_id,
+                        review_actions_message_id,
+                    ],
                 }
 
             if command == "send_suggested":
