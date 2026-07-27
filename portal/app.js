@@ -584,6 +584,7 @@ let whatsappConnectionPollActive = false;
 let whatsappConnectionPollFeatureId = "";
 
 const elements = {
+  loadingView: document.querySelector("#loadingView"),
   authView: document.querySelector("#authView"),
   authCard: document.querySelector("#authCard"),
   authAlertOverlay: document.querySelector("#authAlertOverlay"),
@@ -5058,13 +5059,15 @@ function getAvatarLabel() {
 }
 
 function setView(view) {
-  document.body.dataset.view = view;
-  if (view !== "app") {
+  const nextView = view === "auth" || view === "app" ? view : "loading";
+  document.body.dataset.view = nextView;
+  if (nextView !== "app") {
     closePersonalDetailsTips();
     delete document.body.dataset.modal;
   }
-  elements.authView.classList.toggle("is-hidden", view !== "auth");
-  elements.appView.classList.toggle("is-hidden", view !== "app");
+  elements.loadingView?.classList.toggle("is-hidden", nextView !== "loading");
+  elements.authView.classList.toggle("is-hidden", nextView !== "auth");
+  elements.appView.classList.toggle("is-hidden", nextView !== "app");
   syncWhatsAppConnectionPolling();
 }
 
@@ -9434,6 +9437,11 @@ function renderAuth(preferredEmail = "", messageOverride = "") {
   syncAuthControls();
 }
 
+function showAuthView(preferredEmail = activeEmail, messageOverride = "") {
+  setView("auth");
+  renderAuth(preferredEmail, messageOverride);
+}
+
 function refreshView() {
   if (isSignedIn()) {
     state.settingsMode = normalizeSettingsMode(state.settingsMode);
@@ -9498,8 +9506,7 @@ function refreshView() {
     return;
   }
 
-  setView("auth");
-  renderAuth(activeEmail);
+  showAuthView(activeEmail);
 }
 
 function validateEmail(email) {
@@ -10329,6 +10336,8 @@ function handleMenuAction(action) {
 }
 
 async function bootstrapAuthState() {
+  setView("loading");
+
   const storedSession = normalizeStoredSession(loadJson(AUTH_SESSION_KEY, null));
   authChallenge = normalizeStoredChallenge(loadJson(AUTH_CHALLENGE_KEY, null));
   activeEmail = normalizeEmail(storedSession?.email || authChallenge?.email || "");
@@ -10374,9 +10383,6 @@ async function bootstrapAuthState() {
   };
 
   if (storedSession?.token) {
-    setView("auth");
-    renderAuth(activeEmail);
-
     try {
       await tryRestoreSession({
         Authorization: `Bearer ${storedSession.token}`,
@@ -10392,24 +10398,24 @@ async function bootstrapAuthState() {
           const cookieStatus = Number(cookieError?.status || 0);
           if (cookieStatus !== 401 && cookieStatus !== 403) {
             authSession = null;
+            showAuthView(activeEmail);
             openAuthAlert(
               "Couldn’t verify session",
               formatApiErrorMessage(cookieError, "We couldn’t verify your session. Please sign in again."),
               { returnFocus: "email" },
             );
-            renderAuth(activeEmail);
             return;
           }
           clearAuthSession();
         }
       } else {
         authSession = null;
+        showAuthView(activeEmail);
         openAuthAlert(
           "Couldn’t verify session",
           formatApiErrorMessage(error, "We couldn’t verify your session. Please sign in again."),
           { returnFocus: "email" },
         );
-        renderAuth(activeEmail);
         return;
       }
     }
@@ -10422,12 +10428,12 @@ async function bootstrapAuthState() {
     const status = Number(error?.status || 0);
     if (status !== 401 && status !== 403) {
       authSession = null;
+      showAuthView(activeEmail);
       openAuthAlert(
         "Couldn’t verify session",
         formatApiErrorMessage(error, "We couldn’t verify your session. Please sign in again."),
         { returnFocus: "email" },
       );
-      renderAuth(activeEmail);
       return;
     }
   }

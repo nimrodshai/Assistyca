@@ -8,14 +8,19 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=83" />
+    <link rel="stylesheet" href="./styles.css?v=84" />
   </head>
-  <body data-view="auth">
+  <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
     <div class="orb orb-right" aria-hidden="true"></div>
     <div class="mesh" aria-hidden="true"></div>
 
-    <main id="authView" class="auth-shell">
+    <main id="loadingView" class="loading-shell" aria-live="polite" aria-busy="true">
+      <div class="page-spinner" aria-hidden="true"></div>
+      <span class="sr-only">Loading portal</span>
+    </main>
+
+    <main id="authView" class="auth-shell is-hidden">
       <section class="auth-story">
         <div class="auth-story-head">
           <h1>Lets build your own personal assistant</h1>
