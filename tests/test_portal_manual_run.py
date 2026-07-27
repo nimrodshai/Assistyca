@@ -285,6 +285,56 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             },
         )
 
+    def test_build_portal_runtime_config_defaults_to_reply_assistant_template_sequence(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = build_portal_runtime_config(
+                client_id="portal-user-1",
+                client_name="Portal User",
+                base_url="https://example.com",
+                phone_number_id="12345",
+                owner_wa_id="15551234567",
+                data_path=self.data_path,
+            )
+
+        self.assertEqual(
+            config.templates["owner_notification"],
+            {
+                "name": "",
+                "first_name": "whatsapp_reply_assistant_1",
+                "repeat_name": "whatsapp_reply_assistant_2",
+                "language": "en",
+                "button_index": "0",
+                "button_type": "quick_reply",
+                "button_action": "generate",
+                "disable_button_index": "1",
+                "disable_button_action": "disable_contact",
+                "url_mode": "path",
+            },
+        )
+
+    def test_build_portal_runtime_config_prefers_quick_reply_when_variant_templates_are_set(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME": "legacy_reply_alert",
+                "WHATSAPP_REPLY_ASSISTANT_FIRST_TEMPLATE_NAME": "whatsapp_reply_assistant_1",
+                "WHATSAPP_REPLY_ASSISTANT_REPEAT_TEMPLATE_NAME": "whatsapp_reply_assistant_2",
+            },
+            clear=True,
+        ):
+            config = build_portal_runtime_config(
+                client_id="portal-user-1",
+                client_name="Portal User",
+                base_url="https://example.com",
+                phone_number_id="12345",
+                owner_wa_id="15551234567",
+                data_path=self.data_path,
+            )
+
+        self.assertEqual(config.templates["owner_notification"]["button_type"], "quick_reply")
+        self.assertEqual(config.templates["owner_notification"]["first_name"], "whatsapp_reply_assistant_1")
+        self.assertEqual(config.templates["owner_notification"]["repeat_name"], "whatsapp_reply_assistant_2")
+
     def test_owner_notification_uses_template_when_configured(self) -> None:
         service = self._build_service(
             templates={
@@ -396,6 +446,75 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             },
         )
 
+    def test_owner_notification_uses_first_then_repeat_reply_assistant_templates(self) -> None:
+        service = self._build_service(
+            templates={
+                "owner_notification": {
+                    "first_name": "whatsapp_reply_assistant_1",
+                    "repeat_name": "whatsapp_reply_assistant_2",
+                    "language": "en",
+                    "button_type": "quick_reply",
+                    "button_action": "generate",
+                    "disable_button_index": "1",
+                    "disable_button_action": "disable_contact",
+                },
+            },
+        )
+        first_approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-1",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.template-first",
+        ) as mocked_first_send:
+            service.notify_owner_about_approval(first_approval)
+
+        first_template = mocked_first_send.call_args.kwargs["template"]
+        self.assertEqual(first_template["name"], "whatsapp_reply_assistant_1")
+        self.assertEqual(len(first_template["components"]), 3)
+        self.assertEqual(
+            first_template["components"][1]["parameters"][0]["payload"],
+            f"approval:{first_approval['approval_id']}:generate",
+        )
+        self.assertEqual(first_template["components"][2]["index"], "1")
+        self.assertEqual(
+            first_template["components"][2]["parameters"][0]["payload"],
+            f"approval:{first_approval['approval_id']}:disable_contact",
+        )
+
+        repeat_approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="What about Friday?",
+            source_message_id="wamid.inbound-2",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.template-repeat",
+        ) as mocked_repeat_send:
+            service.notify_owner_about_approval(repeat_approval)
+
+        repeat_template = mocked_repeat_send.call_args.kwargs["template"]
+        self.assertEqual(repeat_template["name"], "whatsapp_reply_assistant_2")
+        self.assertEqual(len(repeat_template["components"]), 2)
+        self.assertEqual(
+            repeat_template["components"][1]["parameters"][0]["payload"],
+            f"approval:{repeat_approval['approval_id']}:generate",
+        )
+
     def test_owner_quick_reply_generate_sends_hot_review_prompt(self) -> None:
         service = self._build_service()
         approval = service.store.record_inbound_message(
@@ -473,6 +592,68 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(updated["owner_review_message_id"], "wamid.hot-review-actions")
         self.assertEqual(updated["owner_review_text"], approval["suggested_reply"])
 
+    def test_owner_disable_contact_button_suppresses_future_suggestions(self) -> None:
+        service = self._build_service()
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-1",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+        service.store.append_approval_message_id(approval["approval_id"], "wamid.template-first")
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.contact-disabled",
+        ):
+            result = service.handle_owner_event(
+                {
+                    "thread_id": "15551234567",
+                    "sender_name": "Owner",
+                    "sender_wa_id": "15551234567",
+                    "message_text": "Never ask for this contact again",
+                    "message_type": "button",
+                    "source_message_id": "wamid.owner-disable",
+                    "reply_to_message_id": "wamid.template-first",
+                    "interactive_reply": {
+                        "id": f"approval:{approval['approval_id']}:disable_contact",
+                        "title": "Never ask for this contact again",
+                        "type": "button",
+                    },
+                    "raw_payload": {"object": "whatsapp_business_account"},
+                }
+            )
+
+        self.assertEqual(result["action"], "disable_contact")
+        updated = service.store.get_approval(approval["approval_id"])
+        self.assertEqual(updated["status"], "skipped")
+        self.assertEqual(updated["owner_state"], "contact_disabled")
+        thread = service.store.get_thread("15551230000")
+        self.assertTrue(thread["reply_assistant_disabled"])
+
+        suppressed = service.handle_customer_event(
+            {
+                "thread_id": "15551230000",
+                "sender_name": "John Doe",
+                "sender_wa_id": "15551230000",
+                "message_text": "Are you there?",
+                "source_message_id": "wamid.inbound-2",
+                "message_type": "text",
+                "raw_payload": {"object": "whatsapp_business_account"},
+            }
+        )
+
+        self.assertEqual(suppressed["action"], "reply_assistant_suppressed")
+        self.assertIsNone(suppressed["approval"])
+        self.assertEqual(len(service.store.data["approvals"]), 1)
+        thread = service.store.get_thread("15551230000")
+        self.assertEqual(thread["latest_message"], "Are you there?")
+        self.assertEqual(thread["pending_approval_id"], "")
+
     def test_extract_inbound_events_handles_template_button_reply(self) -> None:
         events = extract_inbound_events(
             {
@@ -518,6 +699,55 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             {
                 "id": "approval:abcdef123456:generate",
                 "title": "Sure!",
+                "type": "button",
+            },
+        )
+
+    def test_extract_inbound_events_handles_template_disable_contact_button_reply(self) -> None:
+        events = extract_inbound_events(
+            {
+                "entry": [
+                    {
+                        "changes": [
+                            {
+                                "value": {
+                                    "metadata": {"phone_number_id": "12345"},
+                                    "contacts": [
+                                        {
+                                            "wa_id": "15551234567",
+                                            "profile": {"name": "Owner"},
+                                        }
+                                    ],
+                                    "messages": [
+                                        {
+                                            "from": "15551234567",
+                                            "id": "wamid.owner-never",
+                                            "timestamp": "1720000001",
+                                            "type": "button",
+                                            "context": {"id": "wamid.template-first"},
+                                            "button": {
+                                                "text": "Never ask for this contact again",
+                                                "payload": "approval:abcdef123456:disable_contact",
+                                            },
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message_type"], "button")
+        self.assertEqual(events[0]["message_text"], "Never ask for this contact again")
+        self.assertEqual(events[0]["reply_to_message_id"], "wamid.template-first")
+        self.assertEqual(
+            events[0]["interactive_reply"],
+            {
+                "id": "approval:abcdef123456:disable_contact",
+                "title": "Never ask for this contact again",
                 "type": "button",
             },
         )

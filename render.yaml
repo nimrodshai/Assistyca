@@ -69,6 +69,10 @@ services:
         sync: false
       - key: WHATSAPP_SAMPLE_TEMPLATE_LANGUAGE
         value: en_US
+      - key: WHATSAPP_REPLY_ASSISTANT_FIRST_TEMPLATE_NAME
+        value: whatsapp_reply_assistant_1
+      - key: WHATSAPP_REPLY_ASSISTANT_REPEAT_TEMPLATE_NAME
+        value: whatsapp_reply_assistant_2
       - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME
         sync: false
       - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_LANGUAGE
@@ -79,6 +83,10 @@ services:
         value: quick_reply
       - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_ACTION
         value: generate
+      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_DISABLE_BUTTON_INDEX
+        value: "1"
+      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_DISABLE_BUTTON_ACTION
+        value: disable_contact
       - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE
         value: path
       - key: WHATSAPP_VERIFY_TOKEN

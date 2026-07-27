@@ -45,6 +45,19 @@ DEFAULT_ASSISTANT_CONFIG = {
     "response_style": "balanced",
 }
 
+OWNER_DISABLE_CONTACT_ACTION = "disable_contact"
+OWNER_DISABLE_CONTACT_BUTTON_TITLE = "Never ask for this contact again"
+OWNER_DISABLE_CONTACT_COMMANDS = {
+    "never ask for this contact again",
+    "never ask this contact again",
+    "never ask again",
+    "do not ask for this contact again",
+    "don't ask for this contact again",
+    "dont ask for this contact again",
+    "stop asking for this contact",
+    "stop suggestions for this contact",
+}
+
 PAGE_STYLE = """
 <style>
   :root {
@@ -815,6 +828,167 @@ class BackendStore:
                     return json.loads(json.dumps(approval))
             return None
 
+    def _find_thread_for_contact_locked(self, thread_id: str, sender_wa_id: str) -> dict[str, Any] | None:
+        threads = self.data.setdefault("threads", {})
+        normalized_thread_id = normalize_text(thread_id)
+        normalized_sender_wa_id = normalize_whatsapp_id(sender_wa_id)
+        if normalized_thread_id and normalized_thread_id in threads:
+            return threads[normalized_thread_id]
+        if normalized_sender_wa_id:
+            for thread in threads.values():
+                if normalize_whatsapp_id(thread.get("sender_wa_id")) == normalized_sender_wa_id:
+                    return thread
+        return None
+
+    def is_reply_assistant_disabled_for_contact(self, *, thread_id: str, sender_wa_id: str) -> bool:
+        with self.lock:
+            thread = self._find_thread_for_contact_locked(thread_id, sender_wa_id)
+            return bool(thread and thread.get("reply_assistant_disabled"))
+
+    def get_reply_assistant_notification_count(self, *, thread_id: str, sender_wa_id: str) -> int:
+        with self.lock:
+            thread = self._find_thread_for_contact_locked(thread_id, sender_wa_id)
+            count = 0
+            if thread is not None:
+                try:
+                    count = int(thread.get("reply_assistant_notification_count") or 0)
+                except (TypeError, ValueError):
+                    count = 0
+            if count > 0:
+                return count
+
+            normalized_thread_id = normalize_text(thread_id)
+            normalized_sender_wa_id = normalize_whatsapp_id(sender_wa_id)
+            approvals = self.data.setdefault("approvals", {})
+            for approval in approvals.values():
+                same_thread = normalized_thread_id and normalize_text(approval.get("thread_id")) == normalized_thread_id
+                same_sender = normalized_sender_wa_id and normalize_whatsapp_id(approval.get("sender_wa_id")) == normalized_sender_wa_id
+                if (same_thread or same_sender) and normalize_text(approval.get("owner_notification_message_id")):
+                    count += 1
+            return count
+
+    def _append_inbound_message_locked(
+        self,
+        *,
+        thread_id: str,
+        sender_name: str,
+        sender_wa_id: str,
+        message_text: str,
+        source_message_id: str,
+        message_type: str,
+        raw_payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        threads = self.data.setdefault("threads", {})
+        thread = self._find_thread_for_contact_locked(thread_id, sender_wa_id)
+
+        if thread is None:
+            thread = {
+                "thread_id": thread_id,
+                "sender_name": sender_name or sender_wa_id,
+                "sender_wa_id": sender_wa_id,
+                "messages": [],
+                "latest_message": "",
+                "latest_message_id": "",
+                "pending_approval_id": "",
+                "reply_assistant_notification_count": 0,
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+            threads[thread_id] = thread
+
+        thread["sender_name"] = sender_name or thread.get("sender_name") or sender_wa_id
+        thread["sender_wa_id"] = sender_wa_id
+
+        inbound_record = {
+            "message_id": source_message_id or f"inbound-{uuid.uuid4().hex}",
+            "direction": "inbound",
+            "message_type": message_type or "text",
+            "text": message_text,
+            "timestamp": now_iso(),
+            "raw_payload": raw_payload,
+        }
+        thread.setdefault("messages", []).append(inbound_record)
+        thread["latest_message"] = message_text
+        thread["latest_message_id"] = inbound_record["message_id"]
+        thread["updated_at"] = now_iso()
+        return thread, inbound_record
+
+    def record_inbound_message_without_approval(
+        self,
+        *,
+        thread_id: str,
+        sender_name: str,
+        sender_wa_id: str,
+        message_text: str,
+        source_message_id: str,
+        message_type: str,
+        raw_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self.lock:
+            thread, inbound_record = self._append_inbound_message_locked(
+                thread_id=thread_id,
+                sender_name=sender_name,
+                sender_wa_id=sender_wa_id,
+                message_text=message_text,
+                source_message_id=source_message_id,
+                message_type=message_type,
+                raw_payload=raw_payload,
+            )
+            thread.setdefault("suppressed_inbound_message_ids", []).append(inbound_record["message_id"])
+            self.save()
+            return json.loads(json.dumps(thread))
+
+    def mark_owner_notification_sent(self, approval_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            approvals = self.data.setdefault("approvals", {})
+            approval = approvals.get(approval_id)
+            if approval is None:
+                raise KeyError(f"Unknown approval id: {approval_id}")
+
+            had_notification = bool(normalize_text(approval.get("owner_notification_message_id")))
+            approval.update(updates)
+            approval["updated_at"] = now_iso()
+
+            if not had_notification and normalize_text(updates.get("owner_notification_message_id")):
+                thread = self.data.setdefault("threads", {}).get(approval.get("thread_id"))
+                if thread is not None:
+                    try:
+                        count = int(thread.get("reply_assistant_notification_count") or 0)
+                    except (TypeError, ValueError):
+                        count = 0
+                    thread["reply_assistant_notification_count"] = count + 1
+                    thread["reply_assistant_last_notified_at"] = now_iso()
+                    thread["updated_at"] = now_iso()
+
+            self.save()
+            return json.loads(json.dumps(approval))
+
+    def disable_reply_assistant_for_approval(self, approval_id: str) -> dict[str, Any]:
+        with self.lock:
+            approvals = self.data.setdefault("approvals", {})
+            approval = approvals.get(approval_id)
+            if approval is None:
+                raise KeyError(f"Unknown approval id: {approval_id}")
+
+            disabled_at = now_iso()
+            approval["status"] = "skipped"
+            approval["owner_state"] = "contact_disabled"
+            approval["reply_assistant_disabled_at"] = disabled_at
+            approval["updated_at"] = disabled_at
+
+            thread = self.data.setdefault("threads", {}).get(approval.get("thread_id"))
+            if thread is not None:
+                thread["reply_assistant_disabled"] = True
+                thread["reply_assistant_disabled_at"] = disabled_at
+                thread["reply_assistant_disabled_by"] = "owner"
+                thread["reply_assistant_disabled_approval_id"] = approval_id
+                if thread.get("pending_approval_id") == approval_id:
+                    thread["pending_approval_id"] = ""
+                thread["updated_at"] = disabled_at
+
+            self.save()
+            return json.loads(json.dumps(approval))
+
     def record_inbound_message(
         self,
         *,
@@ -828,38 +1002,16 @@ class BackendStore:
         config: RuntimeConfig,
     ) -> dict[str, Any]:
         with self.lock:
-            threads = self.data.setdefault("threads", {})
             approvals = self.data.setdefault("approvals", {})
-            thread = threads.get(thread_id)
-
-            if thread is None:
-                thread = {
-                    "thread_id": thread_id,
-                    "sender_name": sender_name or sender_wa_id,
-                    "sender_wa_id": sender_wa_id,
-                    "messages": [],
-                    "latest_message": "",
-                    "latest_message_id": "",
-                    "pending_approval_id": "",
-                    "created_at": now_iso(),
-                    "updated_at": now_iso(),
-                }
-                threads[thread_id] = thread
-
-            thread["sender_name"] = sender_name or thread.get("sender_name") or sender_wa_id
-            thread["sender_wa_id"] = sender_wa_id
-
-            inbound_record = {
-                "message_id": source_message_id or f"inbound-{uuid.uuid4().hex}",
-                "direction": "inbound",
-                "message_type": message_type or "text",
-                "text": message_text,
-                "timestamp": now_iso(),
-                "raw_payload": raw_payload,
-            }
-            thread.setdefault("messages", []).append(inbound_record)
-            thread["latest_message"] = message_text
-            thread["latest_message_id"] = inbound_record["message_id"]
+            thread, inbound_record = self._append_inbound_message_locked(
+                thread_id=thread_id,
+                sender_name=sender_name,
+                sender_wa_id=sender_wa_id,
+                message_text=message_text,
+                source_message_id=source_message_id,
+                message_type=message_type,
+                raw_payload=raw_payload,
+            )
 
             approval_id = uuid.uuid4().hex
             context = build_context(thread, limit=6)
@@ -1639,6 +1791,11 @@ def build_owner_skip_text(approval: dict[str, Any]) -> str:
     return f"Skipped {sender_name} (ref {ref})."
 
 
+def build_owner_contact_disabled_text(approval: dict[str, Any]) -> str:
+    sender_name = normalize_text(approval.get("sender_name") or approval.get("sender_wa_id") or "Customer")
+    return f"OK, I will stop suggesting generated replies for {sender_name}."
+
+
 def build_owner_help_text(approval: dict[str, Any] | None = None) -> str:
     if approval is None:
         return (
@@ -1653,11 +1810,14 @@ def build_owner_help_text(approval: dict[str, Any] | None = None) -> str:
 def parse_owner_command_text(text: str) -> tuple[str, str]:
     normalized = normalize_text(text)
     lower = normalized.lower()
+    compact_lower = lower.rstrip("!.")
     if not normalized:
         return "help", ""
+    if compact_lower in OWNER_DISABLE_CONTACT_COMMANDS:
+        return OWNER_DISABLE_CONTACT_ACTION, ""
     if lower in {"send", "approve"}:
         return "send_suggested", ""
-    if lower.rstrip("!.") in {"sure", "yes", "generate", "preview", "review"}:
+    if compact_lower in {"sure", "yes", "generate", "preview", "review"}:
         return "show_suggestion", ""
     if lower == "edit":
         return "edit_request", ""
@@ -1729,7 +1889,7 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
         notification_text = build_owner_notification_text(approval)
         interactive = build_owner_interactive_payload(approval)
         message_id = self.send_owner_message(approval, message_text=notification_text, interactive=interactive)
-        self._store().update_approval(
+        self._store().mark_owner_notification_sent(
             approval["approval_id"],
             {
                 "owner_notification_message_id": message_id,
@@ -1790,7 +1950,10 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
         if isinstance(interactive_reply, dict):
             interactive_id = normalize_text(interactive_reply.get("id"))
             if interactive_id:
-                match = re.match(r"^approval:([0-9a-f]+):(send|edit|skip|generate|preview|review)$", interactive_id)
+                match = re.match(
+                    r"^approval:([0-9a-f]+):(send|edit|skip|generate|preview|review|disable_contact|disable|never)$",
+                    interactive_id,
+                )
                 if match:
                     approval = store.find_approval_by_reference(match.group(1))
                     if approval is not None:
@@ -1826,6 +1989,7 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
             "generate",
             "preview",
             "review",
+            *OWNER_DISABLE_CONTACT_COMMANDS,
         }:
             return pending[0]
 
@@ -1833,6 +1997,28 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
 
     def handle_customer_event(self, event: dict[str, Any]) -> dict[str, Any]:
         config = self._config()
+        if self._store().is_reply_assistant_disabled_for_contact(
+            thread_id=event["thread_id"],
+            sender_wa_id=event["sender_wa_id"],
+        ):
+            thread = self._store().record_inbound_message_without_approval(
+                thread_id=event["thread_id"],
+                sender_name=event["sender_name"],
+                sender_wa_id=event["sender_wa_id"],
+                message_text=event["message_text"],
+                source_message_id=event["source_message_id"],
+                message_type=event["message_type"],
+                raw_payload=event["raw_payload"],
+            )
+            return {
+                "type": "customer",
+                "action": "reply_assistant_suppressed",
+                "thread": thread,
+                "approval": None,
+                "owner_notification_message_id": "",
+                "owner_notification_error": "",
+            }
+
         approval = self._store().record_inbound_message(
             thread_id=event["thread_id"],
             sender_name=event["sender_name"],
@@ -1883,6 +2069,9 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
             elif interactive_id.endswith(":skip"):
                 command = "skip"
                 argument = ""
+            elif interactive_id.endswith((":disable_contact", ":disable", ":never")):
+                command = OWNER_DISABLE_CONTACT_ACTION
+                argument = ""
 
         if approval is None and command == "send_reference_or_custom":
             approval = self._store().find_approval_by_reference(argument)
@@ -1910,7 +2099,7 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
 
         approval_id = approval["approval_id"]
         current_status = normalize_text(approval.get("status"))
-        if current_status in {"sent", "skipped"}:
+        if current_status in {"sent", "skipped"} and command != OWNER_DISABLE_CONTACT_ACTION:
             status_text = (
                 f"Approval {short_ref(approval_id)} was already sent."
                 if current_status == "sent"
@@ -2016,6 +2205,24 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
                 return {
                     "type": "owner",
                     "action": "skip",
+                    "approval": updated,
+                    "confirmation_message_id": confirmation_id,
+                }
+
+            if command == OWNER_DISABLE_CONTACT_ACTION:
+                updated = self._store().disable_reply_assistant_for_approval(approval_id)
+                confirmation_text = build_owner_contact_disabled_text(updated)
+                confirmation_id = self.send_owner_message(updated, message_text=confirmation_text)
+                self._store().update_approval(
+                    approval_id,
+                    {
+                        "owner_contact_disabled_message_id": confirmation_id,
+                        "owner_contact_disabled_text": confirmation_text,
+                    },
+                )
+                return {
+                    "type": "owner",
+                    "action": OWNER_DISABLE_CONTACT_ACTION,
                     "approval": updated,
                     "confirmation_message_id": confirmation_id,
                 }
