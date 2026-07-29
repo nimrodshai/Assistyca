@@ -895,7 +895,7 @@
         z-index: 80;
         display: grid;
         place-items: center;
-        padding: clamp(0.75rem, 3vw, 1.6rem);
+        padding: clamp(0.8rem, 3vw, 2.1rem);
         pointer-events: none;
       }
 
@@ -903,9 +903,12 @@
         content: "";
         position: absolute;
         inset: 0;
-        background: rgba(19, 32, 56, 0.38);
-        backdrop-filter: blur(14px);
-        -webkit-backdrop-filter: blur(14px);
+        background:
+          radial-gradient(circle at 16% 9%, rgba(255, 255, 255, 0.68), transparent 28%),
+          radial-gradient(circle at 86% 14%, rgba(106, 167, 163, 0.14), transparent 30%),
+          rgba(19, 32, 56, 0.28);
+        backdrop-filter: blur(18px) saturate(120%);
+        -webkit-backdrop-filter: blur(18px) saturate(120%);
         opacity: 0;
         transition:
           opacity 260ms ease,
@@ -923,14 +926,19 @@
 
       .contact-panel {
         position: relative;
-        width: min(100%, 31.5rem);
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        width: min(100%, 56rem);
+        height: min(46rem, calc(100svh - clamp(1.5rem, 6vw, 3.2rem)));
         max-height: calc(100svh - clamp(1.5rem, 6vw, 3.2rem));
         overflow: hidden;
-        border: 1px solid rgba(19, 32, 56, 0.1);
-        border-radius: 0.5rem;
+        border: 1px solid rgba(19, 32, 56, 0.08);
+        border-radius: 1.35rem;
         background:
-          linear-gradient(180deg, rgba(239, 235, 226, 0.98), rgba(246, 242, 234, 0.98));
-        box-shadow: 0 30px 70px rgba(19, 32, 56, 0.22);
+          linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 251, 250, 0.98));
+        box-shadow:
+          0 2.2rem 5.8rem rgba(19, 32, 56, 0.18),
+          0 0.9rem 1.8rem rgba(19, 32, 56, 0.08);
         opacity: 0;
         transform: translateY(1.15rem) scale(0.975);
         transform-origin: center bottom;
@@ -953,36 +961,78 @@
       }
 
       .contact-panel-header {
+        position: relative;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 0.9rem;
-        padding: 0.85rem 0.95rem;
-        color: #ffffff;
-        background: linear-gradient(135deg, #4f9290, #6aa7a3);
+        gap: 1rem;
+        min-height: 6.1rem;
+        padding: 1.25rem 1.45rem;
+        color: var(--ink);
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 8% 4%, rgba(255, 255, 255, 0.95), transparent 34%),
+          linear-gradient(135deg, rgba(238, 248, 246, 0.96), rgba(248, 251, 249, 0.92));
+        border-bottom: 1px solid rgba(19, 32, 56, 0.06);
+      }
+
+      .contact-panel-header::after {
+        content: "";
+        position: absolute;
+        top: -2.5rem;
+        right: -1.2rem;
+        width: min(58%, 27rem);
+        height: 9rem;
+        pointer-events: none;
+        background:
+          repeating-radial-gradient(
+            ellipse at center,
+            rgba(106, 167, 163, 0.18) 0 1px,
+            transparent 1px 0.48rem
+          );
+        mask-image: linear-gradient(90deg, transparent, #000 24%, transparent 86%);
+        opacity: 0.28;
+        transform: rotate(-8deg);
       }
 
       .contact-agent {
+        position: relative;
+        z-index: 1;
         display: flex;
         align-items: center;
-        gap: 0.72rem;
+        gap: 1rem;
         min-width: 0;
       }
 
       .contact-agent-avatar {
+        position: relative;
         display: grid;
         place-items: center;
         flex: 0 0 auto;
-        width: 2.7rem;
-        height: 2.7rem;
+        width: 3.6rem;
+        height: 3.6rem;
         border-radius: 999px;
         background:
-          radial-gradient(circle at 32% 26%, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.18) 64%),
-          rgba(19, 32, 56, 0.16);
+          radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.18) 42%, transparent 56%),
+          linear-gradient(145deg, #7bc6bd, #3a9e96 58%, #2c827d);
         color: #ffffff;
-        font-size: 1rem;
+        font-size: 1.35rem;
         font-weight: 700;
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 255, 255, 0.32),
+          0 0.7rem 1.4rem rgba(61, 150, 144, 0.22);
+      }
+
+      .contact-agent-avatar::after {
+        content: "";
+        position: absolute;
+        right: 0.05rem;
+        bottom: 0.05rem;
+        width: 0.78rem;
+        height: 0.78rem;
+        border-radius: 999px;
+        background: #24bf84;
+        border: 0.16rem solid rgba(248, 251, 249, 0.98);
       }
 
       .contact-agent-copy {
@@ -991,48 +1041,66 @@
 
       .contact-panel h2 {
         margin: 0;
-        font-size: 1rem;
+        color: var(--ink);
+        font-size: clamp(1.05rem, 2vw, 1.35rem);
         line-height: 1.2;
         letter-spacing: 0;
         font-weight: 700;
       }
 
       .contact-agent-status {
-        margin: 0.18rem 0 0;
-        color: rgba(255, 255, 255, 0.82);
-        font-size: 0.77rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.42rem;
+        margin: 0.32rem 0 0;
+        color: var(--accent-deep);
+        font-size: 0.84rem;
         line-height: 1.25;
+        font-weight: 700;
+      }
+
+      .contact-agent-status::before {
+        content: "";
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 999px;
+        background: #24bf84;
+        box-shadow: 0 0 0 0.28rem rgba(36, 191, 132, 0.12);
       }
 
       .contact-close {
+        position: relative;
+        z-index: 1;
         display: grid;
         place-items: center;
         flex: 0 0 auto;
-        width: 2.75rem;
-        height: 2.75rem;
+        width: 2.35rem;
+        height: 2.35rem;
         border-radius: 999px;
-        color: #ffffff;
-        background: rgba(255, 255, 255, 0.13);
-        border: 1px solid rgba(255, 255, 255, 0.18);
+        color: rgba(19, 32, 56, 0.68);
+        background: rgba(255, 255, 255, 0.58);
+        border: 1px solid rgba(19, 32, 56, 0.08);
         cursor: pointer;
-        font-size: 2rem;
+        font-size: 1.65rem;
         font-weight: 700;
         line-height: 1;
         transition:
           transform 160ms ease,
-          background 160ms ease;
+          background 160ms ease,
+          color 160ms ease;
       }
 
       .contact-close:hover,
       .contact-close:focus-visible {
         transform: translateY(-1px);
-        background: rgba(255, 255, 255, 0.22);
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.86);
       }
 
       .contact-form {
         display: grid;
         grid-template-rows: minmax(16rem, 1fr) auto auto;
-        height: min(37rem, calc(100svh - 7rem));
+        height: auto;
         min-height: 0;
       }
 
@@ -1110,7 +1178,7 @@
         max-height: 3rem;
         min-height: 1rem;
         margin: 0;
-        padding: 0 0.95rem;
+        padding: 0 1.55rem;
         overflow: hidden;
         color: rgba(19, 32, 56, 0.7);
         font-size: 0.82rem;
@@ -1140,7 +1208,7 @@
       }
 
       .contact-submit {
-        min-height: 2.8rem;
+        min-height: 3.1rem;
       }
 
       .contact-submit[disabled] {
@@ -1152,65 +1220,121 @@
         position: relative;
         display: flex;
         flex-direction: column;
-        gap: 0.55rem;
+        gap: 1.05rem;
         min-height: 0;
-        padding: 1rem 0.95rem;
+        padding: 1.45rem 1.55rem 1.2rem;
         overflow-y: auto;
         overscroll-behavior: contain;
         background:
-          linear-gradient(135deg, rgba(255, 255, 255, 0.4) 25%, transparent 25%) 0 0 / 1.05rem 1.05rem,
-          linear-gradient(315deg, rgba(255, 255, 255, 0.36) 25%, transparent 25%) 0 0 / 1.05rem 1.05rem,
-          #ece5d8;
+          radial-gradient(circle at 12% 0%, rgba(106, 167, 163, 0.08), transparent 26%),
+          radial-gradient(circle at 88% 12%, rgba(216, 208, 194, 0.22), transparent 26%),
+          linear-gradient(180deg, #fbfcfb, #f7f9f8);
+        scrollbar-color: rgba(106, 167, 163, 0.34) transparent;
       }
 
       .contact-message {
-        width: fit-content;
-        max-width: min(84%, 22rem);
-        padding: 0.62rem 0.78rem 0.48rem;
-        border-radius: 0.72rem;
+        display: grid;
+        width: 100%;
+        max-width: 100%;
+        padding: 0;
         color: var(--ink);
-        box-shadow: 0 0.4rem 1.2rem rgba(19, 32, 56, 0.07);
+        background: transparent;
+        box-shadow: none;
         animation: contactMessageIn 220ms ease both;
       }
 
       .contact-message[data-author="agent"] {
         align-self: flex-start;
-        border-top-left-radius: 0.24rem;
-        background: rgba(255, 255, 255, 0.92);
+        grid-template-columns: 2.35rem minmax(0, min(74%, 31rem));
+        gap: 0.72rem;
+        justify-content: start;
       }
 
       .contact-message[data-author="user"] {
         align-self: flex-end;
-        border-top-right-radius: 0.24rem;
-        background: #d7f0df;
+        grid-template-columns: minmax(0, min(68%, 29rem));
+        justify-content: end;
+      }
+
+      .contact-message-avatar {
+        display: grid;
+        place-items: center;
+        align-self: start;
+        width: 2.25rem;
+        height: 2.25rem;
+        margin-top: 0.18rem;
+        border-radius: 999px;
+        color: #ffffff;
+        background:
+          radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.08) 48%, transparent 62%),
+          linear-gradient(145deg, #73c2b9, #329a93);
+        font-size: 0.92rem;
+        font-weight: 700;
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 255, 255, 0.24),
+          0 0.45rem 1rem rgba(61, 150, 144, 0.18);
+      }
+
+      .contact-message-bubble {
+        min-width: 0;
+        padding: 0.9rem 1.02rem 0.65rem;
+        border-radius: 1.08rem;
+        color: var(--ink);
+        box-shadow:
+          0 0.8rem 1.8rem rgba(19, 32, 56, 0.065),
+          0 0.16rem 0.5rem rgba(19, 32, 56, 0.04);
+      }
+
+      .contact-message[data-author="agent"] .contact-message-bubble {
+        border-top-left-radius: 0.42rem;
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid rgba(19, 32, 56, 0.035);
+      }
+
+      .contact-message[data-author="user"] .contact-message-bubble {
+        border-top-right-radius: 0.42rem;
+        background:
+          linear-gradient(135deg, rgba(231, 249, 238, 0.98), rgba(212, 241, 227, 0.98));
+        box-shadow:
+          0 0.65rem 1.4rem rgba(61, 150, 144, 0.14),
+          0 0.16rem 0.45rem rgba(19, 32, 56, 0.035);
       }
 
       .contact-message p {
         margin: 0;
-        font-size: 0.92rem;
-        line-height: 1.48;
+        font-size: 0.96rem;
+        line-height: 1.52;
         white-space: pre-wrap;
+        unicode-bidi: plaintext;
       }
 
       .contact-message-time {
         display: block;
-        margin-top: 0.22rem;
-        color: rgba(19, 32, 56, 0.45);
-        font-size: 0.66rem;
+        margin-top: 0.36rem;
+        color: rgba(19, 32, 56, 0.42);
+        font-size: 0.72rem;
         line-height: 1;
         text-align: right;
+      }
+
+      .contact-message[data-author="user"] .contact-message-time::after {
+        content: "✓✓";
+        margin-left: 0.28rem;
+        color: var(--accent-deep);
+        font-size: 0.7rem;
+        letter-spacing: 0;
       }
 
       .contact-composer {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
-        gap: 0.55rem;
-        align-items: end;
-        max-height: 13.25rem;
+        gap: 0.78rem;
+        align-items: center;
+        max-height: 13.8rem;
         overflow: hidden;
-        padding: 0.8rem 0.95rem 0.65rem;
-        background: rgba(243, 239, 230, 0.94);
-        border-top: 1px solid rgba(19, 32, 56, 0.07);
+        padding: 0.85rem 1.55rem 1.05rem;
+        background: rgba(255, 255, 255, 0.92);
+        border-top: 1px solid rgba(19, 32, 56, 0.055);
         opacity: 1;
         transform: translateY(0);
         visibility: visible;
@@ -1243,32 +1367,35 @@
 
       .contact-message-input {
         width: 100%;
-        min-height: 4.45rem;
-        max-height: 9.8rem;
+        min-height: 3.15rem;
+        max-height: 8.6rem;
         overflow-y: auto;
         resize: none;
-        border: 1px solid transparent;
-        border-radius: 1rem;
-        padding: 0.76rem 0.95rem;
+        border: 1px solid rgba(79, 146, 144, 0.38);
+        border-radius: 999px;
+        padding: 0.84rem 1.15rem 0.82rem;
         color: var(--ink);
-        background: linear-gradient(180deg, #ffffff 0%, rgba(255, 255, 255, 0.92) 100%);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 255, 255, 0.94));
         box-shadow:
-          inset 0 -2px 0 rgba(89, 154, 151, 0.16),
-          0 0.4rem 1rem rgba(19, 32, 56, 0.045);
+          inset 0 0 0 0.18rem rgba(106, 167, 163, 0.08),
+          0 0.5rem 1.3rem rgba(19, 32, 56, 0.055);
         outline: none;
-        line-height: 1.38;
+        line-height: 1.42;
         scrollbar-gutter: stable;
         transition:
+          border-color 160ms ease,
           background 160ms ease,
           box-shadow 160ms ease,
           transform 160ms ease;
       }
 
       .contact-message-input:focus {
+        border-color: rgba(79, 146, 144, 0.68);
         background: #ffffff;
         box-shadow:
-          inset 0 -2px 0 rgba(89, 154, 151, 0.78),
-          0 0.55rem 1.3rem rgba(71, 137, 134, 0.12);
+          inset 0 0 0 0.18rem rgba(106, 167, 163, 0.16),
+          0 0.65rem 1.5rem rgba(71, 137, 134, 0.14);
         transform: translateY(-1px);
       }
 
@@ -1277,13 +1404,87 @@
       }
 
       .contact-send {
+        position: relative;
         display: grid;
         place-items: center;
-        min-width: 4.65rem;
-        min-height: 2.9rem;
+        width: 3.55rem;
+        min-width: 3.55rem;
+        height: 3.55rem;
+        min-height: 3.55rem;
         border-radius: 999px;
-        padding: 0.7rem 1.05rem;
+        padding: 0;
         cursor: pointer;
+        color: #ffffff;
+        background:
+          radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.52), transparent 42%),
+          linear-gradient(145deg, #72beb7, #3da39b);
+        box-shadow:
+          0 0.75rem 1.5rem rgba(61, 150, 144, 0.24),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+        transition:
+          transform 160ms ease,
+          box-shadow 160ms ease,
+          filter 160ms ease;
+      }
+
+      .contact-send:hover,
+      .contact-send:focus-visible {
+        transform: translateY(-1px);
+        filter: saturate(108%);
+        box-shadow:
+          0 0.95rem 1.7rem rgba(61, 150, 144, 0.28),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+      }
+
+      .contact-send-icon {
+        width: 1.35rem;
+        height: 1.35rem;
+        transform: translateX(-0.04rem);
+      }
+
+      .contact-send-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      .contact-privacy {
+        grid-column: 1 / -1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.38rem;
+        min-height: 1rem;
+        margin: -0.15rem 0 0;
+        color: rgba(19, 32, 56, 0.52);
+        font-size: 0.72rem;
+        line-height: 1.25;
+      }
+
+      .contact-privacy-lock {
+        position: relative;
+        display: inline-block;
+        width: 0.58rem;
+        height: 0.46rem;
+        border: 1.5px solid rgba(79, 146, 144, 0.72);
+        border-radius: 0.12rem;
+      }
+
+      .contact-privacy-lock::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: 0.32rem;
+        width: 0.36rem;
+        height: 0.36rem;
+        border: 1.5px solid rgba(79, 146, 144, 0.72);
+        border-bottom: 0;
+        border-radius: 999px 999px 0 0;
+        transform: translateX(-50%);
       }
 
       @keyframes contactMessageIn {
@@ -2464,8 +2665,24 @@
         }
 
         .contact-panel {
-          border-radius: 0.5rem;
+          height: min(39rem, calc(100svh - 1.3rem));
+          border-radius: 1rem;
           padding: 0;
+        }
+
+        .contact-panel-header {
+          min-height: 5.3rem;
+          padding: 0.95rem 1rem;
+        }
+
+        .contact-agent {
+          gap: 0.78rem;
+        }
+
+        .contact-agent-avatar {
+          width: 2.9rem;
+          height: 2.9rem;
+          font-size: 1.1rem;
         }
 
         .contact-panel h2 {
@@ -2474,31 +2691,78 @@
           letter-spacing: 0;
         }
 
+        .contact-agent-status {
+          font-size: 0.76rem;
+        }
+
         .contact-close {
-          width: 2.65rem;
-          height: 2.65rem;
+          width: 2.25rem;
+          height: 2.25rem;
           border-radius: 999px;
+          font-size: 1.45rem;
         }
 
         .contact-form {
-          height: min(34rem, calc(100svh - 5.5rem));
+          height: auto;
         }
 
         .contact-chat-thread {
-          padding: 0.85rem 0.72rem;
+          gap: 0.86rem;
+          padding: 1rem 0.82rem;
         }
 
-        .contact-message {
-          max-width: 88%;
+        .contact-message[data-author="agent"] {
+          grid-template-columns: 2rem minmax(0, 1fr);
+          gap: 0.54rem;
+        }
+
+        .contact-message[data-author="user"] {
+          grid-template-columns: minmax(0, 82%);
+        }
+
+        .contact-message-avatar {
+          width: 1.9rem;
+          height: 1.9rem;
+          font-size: 0.8rem;
+        }
+
+        .contact-message-bubble {
+          padding: 0.74rem 0.82rem 0.58rem;
+          border-radius: 0.9rem;
+        }
+
+        .contact-message p {
+          font-size: 0.9rem;
+          line-height: 1.48;
         }
 
         .contact-composer {
-          grid-template-columns: minmax(0, 1fr);
-          padding: 0.72rem;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 0.56rem;
+          padding: 0.74rem 0.82rem 0.86rem;
+        }
+
+        .contact-message-input {
+          min-height: 3rem;
+          max-height: 7rem;
+          border-radius: 1.4rem;
+          padding: 0.78rem 0.92rem;
         }
 
         .contact-send {
-          width: 100%;
+          width: 3rem;
+          min-width: 3rem;
+          height: 3rem;
+          min-height: 3rem;
+        }
+
+        .contact-send-icon {
+          width: 1.16rem;
+          height: 1.16rem;
+        }
+
+        .contact-privacy {
+          font-size: 0.68rem;
         }
       }
 
@@ -2790,7 +3054,7 @@
               <span class="contact-agent-avatar" aria-hidden="true">A</span>
               <div class="contact-agent-copy">
                 <h2 id="contact-title">Assistyca intake agent</h2>
-                <p class="contact-agent-status">online now</p>
+                <p class="contact-agent-status">Online now</p>
               </div>
             </div>
             <button class="contact-close" type="button" data-contact-close aria-label="Close conversation">
@@ -2823,11 +3087,27 @@
                 class="contact-message-input"
                 data-contact-input
                 rows="1"
+                placeholder="כתבו תשובה..."
                 aria-label="כתוב/י תשובה"
               ></textarea>
-              <button class="button-primary contact-submit contact-send" type="submit" data-contact-submit>
-                שליחה
+              <button
+                class="button-primary contact-submit contact-send"
+                type="submit"
+                data-contact-submit
+                aria-label="שליחה"
+              >
+                <svg class="contact-send-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M4.5 11.4 19.2 4.7c.54-.25 1.08.29.83.83l-6.7 14.7c-.28.61-1.16.55-1.36-.09l-1.68-5.3a1.1 1.1 0 0 0-.72-.72l-5.3-1.68c-.64-.2-.7-1.08-.09-1.36Z"
+                    fill="currentColor"
+                  />
+                </svg>
+                <span class="contact-send-label">שליחה</span>
               </button>
+              <p class="contact-privacy">
+                <span class="contact-privacy-lock" aria-hidden="true"></span>
+                המידע שלך מאובטח ופרטי
+              </p>
             </div>
           </form>
         </div>
@@ -2903,6 +3183,10 @@
         const contactInput = document.querySelector("[data-contact-input]");
         const contactStatus = document.querySelector("[data-contact-status]");
         const contactSubmit = document.querySelector("[data-contact-submit]");
+        if (contactModal && contactModal.parentElement !== document.body) {
+          document.body.appendChild(contactModal);
+        }
+
         let contactLastFocus = null;
         let contactCloseTimer = 0;
         let contactAnimationTimer = 0;
@@ -2984,12 +3268,25 @@
           }
 
           const shouldFollowLatest = contactChatState.followLatest || contactChatIsNearBottom();
+          const row = document.createElement("div");
+          row.className = "contact-message";
+          row.dataset.author = author;
+
+          if (author === "agent") {
+            const avatar = document.createElement("span");
+            avatar.className = "contact-message-avatar";
+            avatar.textContent = "A";
+            avatar.setAttribute("aria-hidden", "true");
+            row.appendChild(avatar);
+          }
+
           const bubble = document.createElement("div");
-          bubble.className = "contact-message";
-          bubble.dataset.author = author;
+          bubble.className = "contact-message-bubble";
+          bubble.dir = "auto";
 
           const text = document.createElement("p");
           text.textContent = message;
+          text.dir = "auto";
           bubble.appendChild(text);
 
           const time = document.createElement("span");
@@ -2997,7 +3294,8 @@
           time.textContent = getContactTime();
           bubble.appendChild(time);
 
-          contactChatLog.appendChild(bubble);
+          row.appendChild(bubble);
+          contactChatLog.appendChild(row);
           if (shouldFollowLatest) {
             scrollContactChat({ force: true });
           }
@@ -3027,6 +3325,19 @@
 
           if (contactSubmit) {
             contactSubmit.disabled = !enabled;
+          }
+        };
+
+        const setContactSubmitLabel = (label) => {
+          if (!contactSubmit) {
+            return;
+          }
+
+          const normalizedLabel = String(label || "שליחה");
+          contactSubmit.setAttribute("aria-label", normalizedLabel);
+          const labelElement = contactSubmit.querySelector(".contact-send-label");
+          if (labelElement) {
+            labelElement.textContent = normalizedLabel;
           }
         };
 
@@ -3078,13 +3389,11 @@
           setContactComposerEnabled(true);
           if (contactInput) {
             contactInput.value = "";
-            contactInput.placeholder = "כתוב/י תשובה";
+            contactInput.placeholder = "כתבו תשובה...";
             resizeContactInput();
           }
 
-          if (contactSubmit) {
-            contactSubmit.textContent = "שליחה";
-          }
+          setContactSubmitLabel("שליחה");
 
           if (options.focus && contactInput) {
             window.setTimeout(() => contactInput.focus({ preventScroll: true }), 0);
@@ -3183,9 +3492,7 @@
           setContactComposerEnabled(false);
           setContactStatus("שולח לבדיקה אנושית...");
 
-          if (contactSubmit) {
-            contactSubmit.textContent = "שולח";
-          }
+          setContactSubmitLabel("שולח");
 
           if (window.location.protocol === "file:") {
             finishContactChat();
@@ -3216,9 +3523,7 @@
               "אני מבין/ה את המקרה, אבל לא הצלחתי להעביר אותו לבדיקה אנושית כרגע. אפשר ללחוץ שוב בעוד רגע.",
             );
 
-            if (contactSubmit) {
-              contactSubmit.textContent = "ניסיון חוזר";
-            }
+            setContactSubmitLabel("ניסיון חוזר");
           }
         };
 
@@ -3231,9 +3536,7 @@
           setContactComposerEnabled(false);
           setContactStatus("הסוכן חושב...");
 
-          if (contactSubmit) {
-            contactSubmit.textContent = "חושב";
-          }
+          setContactSubmitLabel("חושב");
 
           try {
             const response = await fetch("/api/contact/agent", {
@@ -3268,7 +3571,7 @@
             setContactStatus("");
             if (contactInput) {
               const missing = Array.isArray(data.missing) ? data.missing.filter(Boolean) : [];
-              contactInput.placeholder = missing.length ? `ענה/י על: ${missing[0]}` : "כתוב/י תשובה";
+              contactInput.placeholder = missing.length ? `אפשר לפרט על: ${missing[0]}` : "כתבו תשובה...";
             }
           } catch (error) {
             const fallback = contactChatState.started
@@ -3280,9 +3583,7 @@
             if (!contactChatState.completed && !contactChatState.readyToSubmit) {
               contactChatState.submitting = false;
               setContactComposerEnabled(true);
-              if (contactSubmit) {
-                contactSubmit.textContent = "שליחה";
-              }
+              setContactSubmitLabel("שליחה");
               if (contactInput) {
                 contactInput.focus({ preventScroll: true });
               }
