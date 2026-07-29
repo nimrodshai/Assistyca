@@ -1261,6 +1261,38 @@
         border: 1px solid rgba(19, 32, 56, 0.035);
       }
 
+      .contact-message[data-typing="true"] .contact-message-bubble {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        min-width: 4.6rem;
+        min-height: 2.8rem;
+        padding: 0.82rem 1.08rem;
+      }
+
+      .contact-typing {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.34rem;
+      }
+
+      .contact-typing-dot {
+        width: 0.43rem;
+        height: 0.43rem;
+        border-radius: 999px;
+        background: #4fa8a1;
+        opacity: 0.42;
+        animation: contactTypingBounce 880ms cubic-bezier(0.32, 0, 0.18, 1) infinite;
+      }
+
+      .contact-typing-dot:nth-child(2) {
+        animation-delay: 120ms;
+      }
+
+      .contact-typing-dot:nth-child(3) {
+        animation-delay: 240ms;
+      }
+
       .contact-message[data-author="user"] .contact-message-bubble {
         border-top-right-radius: 0.42rem;
         background:
@@ -1465,6 +1497,26 @@
         to {
           opacity: 1;
           transform: translateY(0) scale(1);
+        }
+      }
+
+      @keyframes contactTypingBounce {
+        0%,
+        72%,
+        100% {
+          opacity: 0.38;
+          transform: translateY(0);
+        }
+
+        34% {
+          opacity: 0.92;
+          transform: translateY(-0.32rem);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .contact-typing-dot {
+          animation: none;
         }
       }
 
@@ -3165,6 +3217,7 @@
         let contactScrollFrame = 0;
         let contactInputResizeFrame = 0;
         let contactInputResizeTimer = 0;
+        let contactTypingIndicator = null;
         const contactChatState = {
           messages: [],
           intake: {},
@@ -3185,6 +3238,58 @@
             contactStatus.dataset.tone = tone;
           } else {
             delete contactStatus.dataset.tone;
+          }
+        };
+
+        const removeContactTypingIndicator = () => {
+          if (!contactTypingIndicator) {
+            return;
+          }
+
+          contactTypingIndicator.remove();
+          contactTypingIndicator = null;
+        };
+
+        const showContactTypingIndicator = () => {
+          if (!contactChatLog) {
+            return;
+          }
+
+          removeContactTypingIndicator();
+          const shouldFollowLatest = contactChatState.followLatest || contactChatIsNearBottom();
+          const row = document.createElement("div");
+          row.className = "contact-message";
+          row.dataset.author = "agent";
+          row.dataset.typing = "true";
+          row.setAttribute("role", "status");
+          row.setAttribute("aria-label", "הסוכן מקליד");
+
+          const avatar = document.createElement("span");
+          avatar.className = "contact-message-avatar";
+          avatar.textContent = "A";
+          avatar.setAttribute("aria-hidden", "true");
+          row.appendChild(avatar);
+
+          const bubble = document.createElement("div");
+          bubble.className = "contact-message-bubble";
+          bubble.dir = "ltr";
+          bubble.setAttribute("aria-hidden", "true");
+
+          const dots = document.createElement("span");
+          dots.className = "contact-typing";
+          for (let index = 0; index < 3; index += 1) {
+            const dot = document.createElement("span");
+            dot.className = "contact-typing-dot";
+            dots.appendChild(dot);
+          }
+
+          bubble.appendChild(dots);
+          row.appendChild(bubble);
+          contactTypingIndicator = row;
+          contactChatLog.appendChild(row);
+
+          if (shouldFollowLatest) {
+            scrollContactChat({ force: true });
           }
         };
 
@@ -3342,6 +3447,7 @@
           contactChatState.started = false;
           contactChatState.submitting = false;
           contactChatState.followLatest = true;
+          contactTypingIndicator = null;
 
           if (contactChatLog) {
             contactChatLog.innerHTML = "";
@@ -3501,9 +3607,10 @@
 
           contactChatState.submitting = true;
           setContactComposerEnabled(false);
-          setContactStatus("הסוכן חושב...");
+          setContactStatus("");
+          showContactTypingIndicator();
 
-          setContactSubmitLabel("חושב");
+          setContactSubmitLabel("שליחה");
 
           try {
             const response = await fetch("/api/contact/agent", {
@@ -3520,6 +3627,7 @@
               throw new Error(data.message || "סוכן הקליטה לא יכול לענות כרגע.");
             }
 
+            removeContactTypingIndicator();
             const reply = normalizeContactAnswer(data.reply);
             if (reply) {
               addContactMessage("agent", reply);
@@ -3540,6 +3648,7 @@
               contactInput.placeholder = "הקלידו הודעה";
             }
           } catch (error) {
+            removeContactTypingIndicator();
             const fallback = contactChatState.started
               ? "יש לי כרגע בעיה להתחבר לחשיבה של הסוכן. אפשר לנסות שוב בעוד רגע."
               : "יש לי כרגע בעיה להתחיל את שיחת הקליטה. אפשר לנסות שוב בעוד רגע.";
