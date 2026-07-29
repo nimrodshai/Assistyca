@@ -2246,6 +2246,8 @@
           --mobile-hero-text-lift: -15px;
           --mobile-hero-actions-shift: 0.92rem;
           --mobile-hero-feature-gap: 1rem;
+          --mobile-hero-panel-overhang: clamp(2.25rem, 11vw, 4rem);
+          --mobile-hero-panel-bleed: clamp(-4rem, -11vw, -2.25rem);
           --mobile-hero-visual-lift: 0.05rem;
           grid-template-columns: minmax(0, 0.84fr) minmax(8.6rem, 0.78fr);
           grid-template-areas:
@@ -2267,11 +2269,11 @@
           grid-column: 1 / -1;
           grid-row: 3;
           align-self: center;
-          justify-self: stretch;
-          width: auto;
+          justify-self: start;
+          width: calc(100% + var(--mobile-hero-panel-overhang));
           max-width: none;
           height: 13.6rem;
-          margin: calc(0.2rem + var(--mobile-hero-feature-gap)) 0 -1.15rem;
+          margin: calc(0.2rem + var(--mobile-hero-feature-gap)) var(--mobile-hero-panel-bleed) -1.15rem 0;
           clip-path: polygon(0 20%, 100% 0, 100% 88%, 0 100%);
           background:
             linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(106, 167, 163, 0.11) 44%, rgba(238, 232, 220, 0.54)),
