@@ -2888,78 +2888,13 @@
         const contactEmailPattern = /[^\s@<>]+@[^\s@<>]+\.[^\s@<>.,;:]+/;
         const contactPhonePattern = /\+?\d[\d\s().-]{6,}\d/;
         const contactChatState = {
-          answers: {},
+          messages: [],
+          intake: {},
           completed: false,
-          stepIndex: 0,
+          readyToSubmit: false,
+          started: false,
           submitting: false,
         };
-        const contactChatSteps = [
-          {
-            key: "name",
-            placeholder: "Type your name",
-            prompt: () => [
-              "Hi, I am Assistyca's intake agent.",
-              "I will ask a few short questions so we can understand your business, your pains, and where AI agents or automations may help. What is your name?",
-            ],
-            validate: (answer) => (
-              answer.length >= 2 ? "" : "Please share at least your first name."
-            ),
-          },
-          {
-            key: "business",
-            placeholder: "Business name or field",
-            prompt: (answers) => [
-              `Nice to meet you, ${answers.name}. What business or organization are we talking about?`,
-            ],
-            validate: (answer) => (
-              answer.length >= 2 ? "" : "A business name or short description helps me route this."
-            ),
-          },
-          {
-            key: "work",
-            placeholder: "What does the business do?",
-            prompt: () => [
-              "In one or two lines, what does the business do day to day?",
-            ],
-            validate: (answer) => (
-              answer.length >= 8 ? "" : "Give me a little more context about what the business does."
-            ),
-          },
-          {
-            key: "pain",
-            placeholder: "Where does work feel painful?",
-            prompt: () => [
-              "Where does work feel slow, repetitive, expensive, or easy to miss?",
-            ],
-            validate: (answer) => (
-              answer.length >= 8 ? "" : "Share one concrete pain so we can understand the opportunity."
-            ),
-          },
-          {
-            key: "automation",
-            placeholder: "What would you like to automate?",
-            prompt: () => [
-              "Which tasks would you most like to hand off to an AI agent or automation?",
-            ],
-            validate: (answer) => (
-              answer.length >= 5 ? "" : "Name at least one task you would like to automate."
-            ),
-          },
-          {
-            key: "contact",
-            placeholder: "Email or phone",
-            prompt: () => [
-              "Last thing: what is the best email or phone number for a human to reach you?",
-            ],
-            validate: (answer) => {
-              if (contactEmailPattern.test(answer) || contactPhonePattern.test(answer)) {
-                return "";
-              }
-
-              return "Please share an email address or phone number so a human can get back to you.";
-            },
-          },
-        ];
 
         const setContactStatus = (message, tone = "") => {
           if (!contactStatus) {
@@ -3010,6 +2945,23 @@
           scrollContactChat();
         };
 
+        const rememberContactMessage = (author, message) => {
+          const text = normalizeContactAnswer(message);
+          if (!text) {
+            return;
+          }
+
+          contactChatState.messages.push({ author, text });
+          if (contactChatState.messages.length > 18) {
+            contactChatState.messages = contactChatState.messages.slice(-18);
+          }
+        };
+
+        const addContactMessage = (author, message) => {
+          appendContactMessage(author, message);
+          rememberContactMessage(author, message);
+        };
+
         const setContactComposerEnabled = (enabled) => {
           if (contactInput) {
             contactInput.disabled = !enabled;
@@ -3029,31 +2981,12 @@
           contactInput.style.height = `${Math.min(contactInput.scrollHeight, 132)}px`;
         };
 
-        const askContactStep = () => {
-          const step = contactChatSteps[contactChatState.stepIndex];
-          if (!step) {
-            return;
-          }
-
-          step.prompt(contactChatState.answers).forEach((message) => {
-            appendContactMessage("agent", message);
-          });
-
-          if (contactInput) {
-            contactInput.placeholder = step.placeholder;
-            contactInput.value = "";
-            resizeContactInput();
-          }
-
-          if (contactSubmit) {
-            contactSubmit.textContent = "Send";
-          }
-        };
-
         const resetContactChat = (options = {}) => {
-          contactChatState.answers = {};
+          contactChatState.messages = [];
+          contactChatState.intake = {};
           contactChatState.completed = false;
-          contactChatState.stepIndex = 0;
+          contactChatState.readyToSubmit = false;
+          contactChatState.started = false;
           contactChatState.submitting = false;
 
           if (contactChatLog) {
@@ -3066,11 +2999,29 @@
 
           setContactStatus("");
           setContactComposerEnabled(true);
-          askContactStep();
+          if (contactInput) {
+            contactInput.value = "";
+            contactInput.placeholder = "Type your reply";
+            resizeContactInput();
+          }
+
+          if (contactSubmit) {
+            contactSubmit.textContent = "Send";
+          }
 
           if (options.focus && contactInput) {
             window.setTimeout(() => contactInput.focus({ preventScroll: true }), 0);
           }
+
+          if (window.location.protocol === "file:") {
+            addContactMessage(
+              "agent",
+              "Hi, I am Assistyca's intake agent. On the live site I use AI to understand your answers and ask better follow-up questions. This local preview cannot reach that agent.",
+            );
+            return;
+          }
+
+          void requestContactAgentReply();
         };
 
         const extractContactChannels = (answer) => {
@@ -3085,42 +3036,47 @@
           };
         };
 
-        const buildContactPayload = () => {
-          const answers = contactChatState.answers;
-          const channels = extractContactChannels(answers.contact || "");
+        const buildContactPayload = (intake = {}) => {
+          const channels = extractContactChannels(intake.contact || "");
+          const transcript = contactChatState.messages
+            .map((message) => `${message.author === "agent" ? "Agent" : "User"}: ${message.text}`)
+            .join("\n");
           const message = [
-            "Guided intake conversation from the about page.",
+            "LLM-guided intake conversation from the about page.",
             "",
-            `Business: ${answers.business || ""}`,
+            `Business: ${intake.business || ""}`,
             "",
             "What the business does:",
-            answers.work || "",
+            intake.businessContext || "",
             "",
             "Pain points:",
-            answers.pain || "",
+            intake.painPoints || "",
             "",
             "Potential AI agents or automations:",
-            answers.automation || "",
+            intake.automationOpportunities || "",
             "",
-            `Preferred contact: ${answers.contact || ""}`,
+            `Preferred contact: ${intake.contact || ""}`,
+            "",
+            "Transcript:",
+            transcript,
           ].join("\n");
           const formData = contactForm ? new FormData(contactForm) : new FormData();
 
           return {
-            name: answers.name || "",
-            business: answers.business || "",
-            email: channels.email,
-            phone: channels.phone,
+            name: intake.name || "Website visitor",
+            business: intake.business || "",
+            email: intake.email || channels.email,
+            phone: intake.phone || channels.phone,
             message,
             companyWebsite: String(formData.get("companyWebsite") || ""),
             page: window.location.href,
           };
         };
 
-        const finishContactChat = (message) => {
+        const finishContactChat = () => {
           contactChatState.completed = true;
+          contactChatState.readyToSubmit = false;
           contactChatState.submitting = false;
-          appendContactMessage("agent", message);
           setContactComposerEnabled(false);
           setContactStatus("Conversation sent.", "success");
 
@@ -3135,27 +3091,21 @@
           }
         };
 
-        const submitContactIntake = async () => {
-          if (contactChatState.submitting || contactChatState.completed) {
+        const submitContactIntake = async (intake = contactChatState.intake) => {
+          if (contactChatState.submitting || contactChatState.completed || !contactChatState.readyToSubmit) {
             return;
           }
 
           contactChatState.submitting = true;
           setContactComposerEnabled(false);
-          setContactStatus("Sending your intake...");
+          setContactStatus("Sending to human review...");
 
           if (contactSubmit) {
             contactSubmit.textContent = "Sending";
           }
 
-          const name = contactChatState.answers.name || "there";
-          appendContactMessage(
-            "agent",
-            `Thanks, ${name}. I have enough context now. I am sending this over for review.`,
-          );
-
           if (window.location.protocol === "file:") {
-            finishContactChat("Done. We are reviewing your case, and a human will get back to you.");
+            finishContactChat();
             setContactStatus("Local preview only. Open assistyca.com/about to send the real intake.", "error");
             return;
           }
@@ -3164,7 +3114,7 @@
             const response = await fetch("/api/contact", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(buildContactPayload()),
+              body: JSON.stringify(buildContactPayload(intake)),
             });
             const data = await response.json().catch(() => ({}));
 
@@ -3172,18 +3122,87 @@
               throw new Error(data.message || "Could not send the conversation right now.");
             }
 
-            finishContactChat("Done. We are reviewing your case, and a human will get back to you.");
+            finishContactChat();
           } catch (error) {
             contactChatState.submitting = false;
+            contactChatState.readyToSubmit = true;
             setContactComposerEnabled(true);
             setContactStatus(error.message || "Could not send the conversation right now.", "error");
-            appendContactMessage(
+            addContactMessage(
               "agent",
-              "I could not send this right now. Please try Send again in a moment.",
+              "I understand the case, but I could not send it for human review right now. Please press Retry in a moment.",
             );
 
             if (contactSubmit) {
               contactSubmit.textContent = "Retry";
+            }
+          }
+        };
+
+        const requestContactAgentReply = async () => {
+          if (contactChatState.submitting || contactChatState.completed) {
+            return;
+          }
+
+          contactChatState.submitting = true;
+          setContactComposerEnabled(false);
+          setContactStatus("Agent is thinking...");
+
+          if (contactSubmit) {
+            contactSubmit.textContent = "Thinking";
+          }
+
+          try {
+            const response = await fetch("/api/contact/agent", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                messages: contactChatState.messages,
+                page: window.location.href,
+              }),
+            });
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok || !data.ok) {
+              throw new Error(data.message || "The intake agent could not answer right now.");
+            }
+
+            const reply = normalizeContactAnswer(data.reply);
+            if (reply) {
+              addContactMessage("agent", reply);
+            }
+
+            contactChatState.intake = data.intake && typeof data.intake === "object" ? data.intake : {};
+            contactChatState.readyToSubmit = Boolean(data.done);
+            contactChatState.started = true;
+
+            if (contactChatState.readyToSubmit) {
+              contactChatState.submitting = false;
+              await submitContactIntake(contactChatState.intake);
+              return;
+            }
+
+            setContactStatus("");
+            if (contactInput) {
+              const missing = Array.isArray(data.missing) ? data.missing.filter(Boolean) : [];
+              contactInput.placeholder = missing.length ? `Reply about ${missing[0]}` : "Type your reply";
+            }
+          } catch (error) {
+            const fallback = contactChatState.started
+              ? "I am having trouble connecting to my AI reasoning right now. Please try again in a moment."
+              : "I am having trouble starting the AI intake right now. Please try again in a moment.";
+            appendContactMessage("agent", fallback);
+            setContactStatus(error.message || "The intake agent could not answer right now.", "error");
+          } finally {
+            if (!contactChatState.completed && !contactChatState.readyToSubmit) {
+              contactChatState.submitting = false;
+              setContactComposerEnabled(true);
+              if (contactSubmit) {
+                contactSubmit.textContent = "Send";
+              }
+              if (contactInput) {
+                contactInput.focus({ preventScroll: true });
+              }
             }
           }
         };
@@ -3193,23 +3212,18 @@
             return;
           }
 
-          if (contactChatState.stepIndex >= contactChatSteps.length) {
-            await submitContactIntake();
+          if (contactChatState.readyToSubmit) {
+            await submitContactIntake(contactChatState.intake);
             return;
           }
 
-          const step = contactChatSteps[contactChatState.stepIndex];
           const answer = normalizeContactAnswer(contactInput ? contactInput.value : "");
-          const error = step.validate(answer, contactChatState.answers);
-
-          if (error) {
-            setContactStatus(error, "error");
+          if (!answer) {
+            setContactStatus("Type a reply before sending.", "error");
             return;
           }
 
-          appendContactMessage("user", answer);
-          contactChatState.answers[step.key] = answer;
-          contactChatState.stepIndex += 1;
+          addContactMessage("user", answer);
           setContactStatus("");
 
           if (contactInput) {
@@ -3217,12 +3231,7 @@
             resizeContactInput();
           }
 
-          if (contactChatState.stepIndex < contactChatSteps.length) {
-            askContactStep();
-            return;
-          }
-
-          await submitContactIntake();
+          await requestContactAgentReply();
         };
 
         const getContactFocusable = () => {

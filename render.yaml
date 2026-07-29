@@ -55,6 +55,10 @@ services:
         value: "1800"
       - key: PORTAL_SCHEDULED_MONITOR_MAX_ITEMS_PER_RUN
         value: "5"
+      - key: PORTAL_CONTACT_AGENT_MODEL
+        value: gpt-5.5
+      - key: OPENAI_API_KEY
+        sync: false
       - key: PORTAL_RESEND_API_KEY
         sync: false
       - key: PORTAL_RESEND_FROM_EMAIL
