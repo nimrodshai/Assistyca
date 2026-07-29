@@ -2442,6 +2442,171 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.55;
 }
 
+.opportunities-panel {
+  gap: 1rem;
+}
+
+.opportunities-intro {
+  width: min(100%, 70rem);
+}
+
+.opportunities-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding-top: 0.42rem;
+}
+
+.opportunities-summary {
+  width: min(100%, 70rem);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.opportunity-metric {
+  display: grid;
+  gap: 0.24rem;
+  min-height: 6.4rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(20, 28, 38, 0.07);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 252, 0.9));
+  box-shadow: 0 14px 30px rgba(25, 38, 54, 0.05);
+}
+
+.opportunity-metric span,
+.opportunity-field span {
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.opportunity-metric strong {
+  color: var(--text);
+  font-size: 1.9rem;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.opportunity-metric small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.opportunities-list {
+  width: min(100%, 70rem);
+  display: grid;
+  gap: 0.78rem;
+}
+
+.opportunity-card {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid rgba(20, 28, 38, 0.075);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  box-shadow: 0 18px 44px rgba(25, 38, 54, 0.055);
+}
+
+.opportunity-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.opportunity-card h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 1.06rem;
+  line-height: 1.22;
+  letter-spacing: 0;
+}
+
+.opportunity-card-head p {
+  margin: 0.34rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.opportunity-urgency {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 6.5rem;
+  padding: 0.42rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  background: rgba(95, 107, 122, 0.08);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.opportunity-urgency.is-critical {
+  border-color: rgba(204, 92, 49, 0.24);
+  background: rgba(204, 92, 49, 0.12);
+  color: #a94324;
+}
+
+.opportunity-urgency.is-high {
+  border-color: rgba(212, 154, 58, 0.28);
+  background: rgba(212, 154, 58, 0.13);
+  color: #9a6818;
+}
+
+.opportunity-urgency.is-medium {
+  border-color: rgba(30, 136, 229, 0.2);
+  background: rgba(30, 136, 229, 0.09);
+  color: #236fae;
+}
+
+.opportunity-urgency.is-low {
+  border-color: rgba(15, 118, 110, 0.16);
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--accent);
+}
+
+.opportunity-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.opportunity-field {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.opportunity-field p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.opportunity-source {
+  width: fit-content;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.opportunity-empty {
+  width: min(100%, 70rem);
+}
+
 .feature-meta {
   display: flex;
   gap: 0.55rem;
@@ -5035,6 +5200,10 @@ body[data-modal="billing"] .app-shell {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .opportunities-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .billing-grid {
     grid-template-columns: 1fr;
   }
@@ -5060,6 +5229,15 @@ body[data-modal="billing"] .app-shell {
 
   .panel-intro {
     flex-direction: column;
+  }
+
+  .opportunity-card-head,
+  .opportunity-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .opportunity-urgency {
+    width: fit-content;
   }
 
   .feature-page-header {
@@ -5091,6 +5269,8 @@ body[data-modal="billing"] .app-shell {
   .feature-page-intro,
   .feature-page-header,
   .feature-list-grid,
+  .opportunities-summary,
+  .opportunities-list,
   .personal-details-layout,
   .studio-hero,
   .studio-fields,
@@ -5415,6 +5595,15 @@ body[data-modal="billing"] .app-shell {
     max-width: none;
     padding: 0 0.72rem calc(5.35rem + env(safe-area-inset-bottom, 0px));
     gap: 0.72rem;
+  }
+
+  .opportunities-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .opportunity-card,
+  .opportunity-metric {
+    border-radius: var(--radius-md);
   }
 
   .app-bar {

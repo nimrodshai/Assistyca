@@ -141,6 +141,29 @@ CREATE TABLE IF NOT EXISTS usage_events (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS contact_opportunities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    business TEXT NOT NULL DEFAULT '',
+    business_summary TEXT NOT NULL DEFAULT '',
+    pain_summary TEXT NOT NULL DEFAULT '',
+    suggested_tool TEXT NOT NULL DEFAULT '',
+    difficulty TEXT NOT NULL DEFAULT '',
+    urgency TEXT NOT NULL DEFAULT 'medium',
+    urgency_score INTEGER NOT NULL DEFAULT 50,
+    source_page TEXT NOT NULL DEFAULT '',
+    request_country TEXT NOT NULL DEFAULT '',
+    contact_message TEXT NOT NULL DEFAULT '',
+    transcript_json TEXT NOT NULL DEFAULT '[]',
+    intake_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS whatsapp_connections (
     user_id INTEGER PRIMARY KEY,
     business_account_id TEXT NOT NULL DEFAULT '',
@@ -575,6 +598,16 @@ def _load_json_dict(raw_value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _load_json_list(raw_value: Any) -> list[Any]:
+    if isinstance(raw_value, list):
+        return list(raw_value)
+    try:
+        payload = json.loads(raw_value) if raw_value else []
+    except (TypeError, json.JSONDecodeError):
+        payload = []
+    return payload if isinstance(payload, list) else []
+
+
 class PortalDatabase:
     def __init__(
         self,
@@ -629,6 +662,7 @@ class PortalDatabase:
                 self._migrate_usage_events_table(conn)
                 self._migrate_whatsapp_connections_table(conn)
                 self._ensure_usage_events_tool_indexes(conn)
+                self._ensure_contact_opportunities_indexes(conn)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -764,6 +798,20 @@ class PortalDatabase:
             """
             CREATE INDEX IF NOT EXISTS idx_usage_events_user_tool_model
             ON usage_events(user_id, tool_id, model_name, used_at DESC)
+            """
+        )
+
+    def _ensure_contact_opportunities_indexes(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_contact_opportunities_urgency_created
+            ON contact_opportunities(urgency_score DESC, created_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_contact_opportunities_created
+            ON contact_opportunities(created_at DESC)
             """
         )
 
@@ -1239,6 +1287,34 @@ class PortalDatabase:
         payload.pop("input_token_price_multiplier", None)
         payload.pop("output_token_price_multiplier", None)
         return payload
+
+    def _load_contact_opportunity_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        payload = _row_to_dict(row)
+        if not payload:
+            return None
+
+        return {
+            "id": int(payload.get("id") or 0),
+            "createdAt": normalize_text(payload.get("created_at")),
+            "updatedAt": normalize_text(payload.get("updated_at")),
+            "status": normalize_text(payload.get("status")) or "new",
+            "name": normalize_text(payload.get("name")),
+            "email": normalize_email(payload.get("email")),
+            "phone": normalize_text(payload.get("phone")),
+            "business": normalize_text(payload.get("business")),
+            "businessSummary": normalize_text(payload.get("business_summary")),
+            "painSummary": normalize_text(payload.get("pain_summary")),
+            "suggestedTool": normalize_text(payload.get("suggested_tool")),
+            "difficulty": normalize_text(payload.get("difficulty")),
+            "urgency": normalize_text(payload.get("urgency")) or "medium",
+            "urgencyScore": int(payload.get("urgency_score") or 0),
+            "sourcePage": normalize_text(payload.get("source_page")),
+            "requestCountry": normalize_text(payload.get("request_country")),
+            "contactMessage": normalize_text(payload.get("contact_message")),
+            "transcript": _load_json_list(payload.get("transcript_json")),
+            "intake": _load_json_dict(payload.get("intake_json")),
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+        }
 
     def _load_whatsapp_connection_row(
         self,
@@ -2038,6 +2114,114 @@ class PortalDatabase:
             )
             self._ensure_default_feature_assignments_for_user(conn, user_id)
             return self._load_user_row(conn, normalized_email) or {}
+
+    def create_contact_opportunity(
+        self,
+        *,
+        name: str = "",
+        email: str = "",
+        phone: str = "",
+        business: str = "",
+        business_summary: str = "",
+        pain_summary: str = "",
+        suggested_tool: str = "",
+        difficulty: str = "",
+        urgency: str = "medium",
+        urgency_score: int = 50,
+        source_page: str = "",
+        request_country: str = "",
+        contact_message: str = "",
+        transcript: list[dict[str, Any]] | None = None,
+        intake: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            normalized_urgency_score = int(urgency_score)
+        except (TypeError, ValueError):
+            normalized_urgency_score = 50
+        normalized_urgency_score = max(0, min(100, normalized_urgency_score))
+
+        transcript_payload = transcript if isinstance(transcript, list) else []
+        intake_payload = intake if isinstance(intake, dict) else {}
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
+        moment = now_iso()
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO contact_opportunities (
+                    created_at,
+                    updated_at,
+                    status,
+                    name,
+                    email,
+                    phone,
+                    business,
+                    business_summary,
+                    pain_summary,
+                    suggested_tool,
+                    difficulty,
+                    urgency,
+                    urgency_score,
+                    source_page,
+                    request_country,
+                    contact_message,
+                    transcript_json,
+                    intake_json,
+                    metadata_json
+                ) VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    moment,
+                    moment,
+                    normalize_text(name),
+                    normalize_email(email),
+                    normalize_text(phone),
+                    normalize_text(business),
+                    normalize_text(business_summary),
+                    normalize_text(pain_summary),
+                    normalize_text(suggested_tool),
+                    normalize_text(difficulty),
+                    normalize_text(urgency) or "medium",
+                    normalized_urgency_score,
+                    normalize_text(source_page),
+                    normalize_text(request_country),
+                    normalize_text(contact_message),
+                    json.dumps(transcript_payload, ensure_ascii=True, sort_keys=True),
+                    json.dumps(intake_payload, ensure_ascii=True, sort_keys=True),
+                    json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True),
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM contact_opportunities WHERE id = ?",
+                (int(cursor.lastrowid),),
+            ).fetchone()
+
+        return self._load_contact_opportunity_row(row) or {}
+
+    def list_contact_opportunities(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        try:
+            normalized_limit = int(limit)
+        except (TypeError, ValueError):
+            normalized_limit = 200
+        normalized_limit = max(1, min(500, normalized_limit))
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM contact_opportunities
+                ORDER BY urgency_score DESC, created_at DESC
+                LIMIT ?
+                """,
+                (normalized_limit,),
+            ).fetchall()
+
+        return [
+            opportunity
+            for opportunity in (self._load_contact_opportunity_row(row) for row in rows)
+            if opportunity is not None
+        ]
 
     def update_user_identity(
         self,

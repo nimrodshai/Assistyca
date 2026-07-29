@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=84" />
+    <link rel="stylesheet" href="./styles.css?v=85" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -130,6 +130,7 @@
 
         <nav class="tab-strip" aria-label="Assistyca tabs">
           <button class="tab-button is-active" data-tab="features" type="button">Tools</button>
+          <button class="tab-button" data-tab="opportunities" type="button" hidden>Opportunities</button>
           <button class="tab-button" data-tab="preview" type="button" hidden>Preview</button>
           <button class="tab-button" data-tab="simulator" type="button" hidden>Simulator</button>
         </nav>
@@ -186,6 +187,27 @@
         </div>
 
         <div id="featureList" class="feature-list-grid"></div>
+      </section>
+
+      <section id="opportunitiesPanel" class="tab-panel opportunities-panel is-hidden">
+        <div class="panel-intro opportunities-intro">
+          <div>
+            <p class="eyebrow">Pipeline</p>
+            <h1>Opportunities</h1>
+            <p class="lede compact">
+              Finished website intake conversations, ordered by urgency.
+            </p>
+          </div>
+
+          <div class="opportunities-actions">
+            <button id="opportunitiesRefreshButton" class="ghost-button small" type="button">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div id="opportunitiesSummary" class="opportunities-summary" aria-live="polite"></div>
+        <div id="opportunitiesList" class="opportunities-list"></div>
       </section>
 
       <section id="personalDetailsPanel" class="tab-panel is-hidden">
@@ -1247,6 +1269,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=89"></script>
+    <script src="./app.js?v=90"></script>
   </body>
 </html>

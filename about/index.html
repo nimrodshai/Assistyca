@@ -2823,10 +2823,10 @@
                 class="contact-message-input"
                 data-contact-input
                 rows="1"
-                aria-label="Type your reply"
+                aria-label="כתוב/י תשובה"
               ></textarea>
               <button class="button-primary contact-submit contact-send" type="submit" data-contact-submit>
-                Send
+                שליחה
               </button>
             </div>
           </form>
@@ -3078,12 +3078,12 @@
           setContactComposerEnabled(true);
           if (contactInput) {
             contactInput.value = "";
-            contactInput.placeholder = "Type your reply";
+            contactInput.placeholder = "כתוב/י תשובה";
             resizeContactInput();
           }
 
           if (contactSubmit) {
-            contactSubmit.textContent = "Send";
+            contactSubmit.textContent = "שליחה";
           }
 
           if (options.focus && contactInput) {
@@ -3093,7 +3093,7 @@
           if (window.location.protocol === "file:") {
             addContactMessage(
               "agent",
-              "Hi, I am Assistyca's intake agent. On the live site I use AI to understand your answers and ask better follow-up questions. This local preview cannot reach that agent.",
+              "היי, אני סוכן הקליטה של Assistyca. באתר החי אני משתמש בבינה מלאכותית כדי להבין את העסק שלך ולשאול שאלות המשך טובות יותר. התצוגה המקומית לא יכולה להגיע לסוכן הזה.",
             );
             return;
           }
@@ -3119,22 +3119,25 @@
             .map((message) => `${message.author === "agent" ? "Agent" : "User"}: ${message.text}`)
             .join("\n");
           const message = [
-            "LLM-guided intake conversation from the about page.",
+            "שיחת קליטה מונחית AI מעמוד האודות.",
             "",
-            `Business: ${intake.business || ""}`,
+            `עסק: ${intake.business || ""}`,
             "",
-            "What the business does:",
-            intake.businessContext || "",
+            "סיכום העסק:",
+            intake.businessSummary || intake.businessContext || "",
             "",
-            "Pain points:",
-            intake.painPoints || "",
+            "סיכום הכאבים:",
+            intake.painSummary || intake.painPoints || "",
             "",
-            "Potential AI agents or automations:",
-            intake.automationOpportunities || "",
+            "כלי או אוטומציה מוצעים:",
+            intake.suggestedTool || intake.automationOpportunities || "",
             "",
-            `Preferred contact: ${intake.contact || ""}`,
+            `קושי עבודה: ${intake.difficulty || ""}`,
+            `דחיפות: ${intake.urgency || ""}`,
             "",
-            "Transcript:",
+            `פרטי קשר מועדפים: ${intake.contact || ""}`,
+            "",
+            "תמלול:",
             transcript,
           ].join("\n");
           const formData = contactForm ? new FormData(contactForm) : new FormData();
@@ -3147,6 +3150,8 @@
             message,
             companyWebsite: String(formData.get("companyWebsite") || ""),
             page: window.location.href,
+            intake,
+            messages: contactChatState.messages,
           };
         };
 
@@ -3176,15 +3181,15 @@
 
           contactChatState.submitting = true;
           setContactComposerEnabled(false);
-          setContactStatus("Sending to human review...");
+          setContactStatus("שולח לבדיקה אנושית...");
 
           if (contactSubmit) {
-            contactSubmit.textContent = "Sending";
+            contactSubmit.textContent = "שולח";
           }
 
           if (window.location.protocol === "file:") {
             finishContactChat();
-            setContactStatus("Local preview only. Open assistyca.com/about to send the real intake.", "error");
+            setContactStatus("תצוגה מקומית בלבד. פתח/י את assistyca.com/about כדי לשלוח את השיחה באמת.", "error");
             return;
           }
 
@@ -3197,7 +3202,7 @@
             const data = await response.json().catch(() => ({}));
 
             if (!response.ok || !data.ok) {
-              throw new Error(data.message || "Could not send the conversation right now.");
+              throw new Error(data.message || "לא הצלחתי לשלוח את השיחה כרגע.");
             }
 
             finishContactChat();
@@ -3205,14 +3210,14 @@
             contactChatState.submitting = false;
             contactChatState.readyToSubmit = true;
             setContactComposerEnabled(true);
-            setContactStatus(error.message || "Could not send the conversation right now.", "error");
+            setContactStatus(error.message || "לא הצלחתי לשלוח את השיחה כרגע.", "error");
             addContactMessage(
               "agent",
-              "I understand the case, but I could not send it for human review right now. Please press Retry in a moment.",
+              "אני מבין/ה את המקרה, אבל לא הצלחתי להעביר אותו לבדיקה אנושית כרגע. אפשר ללחוץ שוב בעוד רגע.",
             );
 
             if (contactSubmit) {
-              contactSubmit.textContent = "Retry";
+              contactSubmit.textContent = "ניסיון חוזר";
             }
           }
         };
@@ -3224,10 +3229,10 @@
 
           contactChatState.submitting = true;
           setContactComposerEnabled(false);
-          setContactStatus("Agent is thinking...");
+          setContactStatus("הסוכן חושב...");
 
           if (contactSubmit) {
-            contactSubmit.textContent = "Thinking";
+            contactSubmit.textContent = "חושב";
           }
 
           try {
@@ -3242,7 +3247,7 @@
             const data = await response.json().catch(() => ({}));
 
             if (!response.ok || !data.ok) {
-              throw new Error(data.message || "The intake agent could not answer right now.");
+              throw new Error(data.message || "סוכן הקליטה לא יכול לענות כרגע.");
             }
 
             const reply = normalizeContactAnswer(data.reply);
@@ -3263,20 +3268,20 @@
             setContactStatus("");
             if (contactInput) {
               const missing = Array.isArray(data.missing) ? data.missing.filter(Boolean) : [];
-              contactInput.placeholder = missing.length ? `Reply about ${missing[0]}` : "Type your reply";
+              contactInput.placeholder = missing.length ? `ענה/י על: ${missing[0]}` : "כתוב/י תשובה";
             }
           } catch (error) {
             const fallback = contactChatState.started
-              ? "I am having trouble connecting to my AI reasoning right now. Please try again in a moment."
-              : "I am having trouble starting the AI intake right now. Please try again in a moment.";
+              ? "יש לי כרגע בעיה להתחבר לחשיבה של הסוכן. אפשר לנסות שוב בעוד רגע."
+              : "יש לי כרגע בעיה להתחיל את שיחת הקליטה. אפשר לנסות שוב בעוד רגע.";
             appendContactMessage("agent", fallback);
-            setContactStatus(error.message || "The intake agent could not answer right now.", "error");
+            setContactStatus(error.message || "סוכן הקליטה לא יכול לענות כרגע.", "error");
           } finally {
             if (!contactChatState.completed && !contactChatState.readyToSubmit) {
               contactChatState.submitting = false;
               setContactComposerEnabled(true);
               if (contactSubmit) {
-                contactSubmit.textContent = "Send";
+                contactSubmit.textContent = "שליחה";
               }
               if (contactInput) {
                 contactInput.focus({ preventScroll: true });
@@ -3297,7 +3302,7 @@
 
           const answer = normalizeContactAnswer(contactInput ? contactInput.value : "");
           if (!answer) {
-            setContactStatus("Type a reply before sending.", "error");
+            setContactStatus("כתוב/י תשובה לפני השליחה.", "error");
             return;
           }
 

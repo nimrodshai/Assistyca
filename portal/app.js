@@ -23,17 +23,21 @@ const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "You replied here - but the WhatsApp API
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
-const VALID_TABS = new Set(["features", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
+const OPPORTUNITIES_OWNER_EMAIL = "nimrod.shai@gmail.com";
+const VALID_TABS = new Set(["features", "opportunities", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor", "history"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
+  ["leads", "opportunities"],
+  ["pipeline", "opportunities"],
   ["personal", "personal-details"],
   ["profile", "personal-details"],
   ["details", "personal-details"],
 ]);
 const TAB_LABELS = {
   features: "Tools",
+  opportunities: "Opportunities",
   "personal-details": "About your business",
   preview: "Preview",
   simulator: "Simulator",
@@ -517,6 +521,10 @@ const state = {
   adminNewUserDisplayName: "",
   adminEditUserEmail: "",
   adminEditUserDisplayName: "",
+  opportunities: [],
+  opportunitiesLoading: false,
+  opportunitiesError: "",
+  opportunitiesLoadedAt: 0,
   requestCountryCode: "",
   authAlertOpen: false,
   menuOpen: false,
@@ -695,6 +703,10 @@ const elements = {
   accountLabel: document.querySelector("#accountLabel"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   featuresPanel: document.querySelector("#featuresPanel"),
+  opportunitiesPanel: document.querySelector("#opportunitiesPanel"),
+  opportunitiesSummary: document.querySelector("#opportunitiesSummary"),
+  opportunitiesList: document.querySelector("#opportunitiesList"),
+  opportunitiesRefreshButton: document.querySelector("#opportunitiesRefreshButton"),
   personalDetailsPanel: document.querySelector("#personalDetailsPanel"),
   personalDetailsPreviewCard: document.querySelector("#personalDetailsPreviewCard"),
   profileBusinessSummaryInput: document.querySelector("#profileBusinessSummaryInput"),
@@ -977,6 +989,10 @@ function isAdminUser() {
   return Boolean(isSignedIn() && authSession?.isAdmin);
 }
 
+function canReviewOpportunities() {
+  return Boolean(isSignedIn() && normalizeEmail(activeEmail) === OPPORTUNITIES_OWNER_EMAIL);
+}
+
 function clearAuthSession() {
   authSession = null;
   persistJson(AUTH_SESSION_KEY, null);
@@ -1037,6 +1053,62 @@ function sortAdminUsers(users = []) {
     const rightLabel = (right.displayName || right.email).toLowerCase();
     return leftLabel.localeCompare(rightLabel);
   });
+}
+
+function normalizeOpportunityRecord(opportunity = {}) {
+  const urgencyScore = Number(opportunity.urgencyScore ?? opportunity.urgency_score ?? 0);
+  return {
+    id: Number(opportunity.id || 0),
+    createdAt: String(opportunity.createdAt || opportunity.created_at || "").trim(),
+    status: String(opportunity.status || "new").trim() || "new",
+    name: normalizeText(opportunity.name || ""),
+    email: normalizeEmail(opportunity.email || ""),
+    phone: normalizeText(opportunity.phone || ""),
+    business: normalizeText(opportunity.business || ""),
+    businessSummary: normalizeText(opportunity.businessSummary || opportunity.business_summary || ""),
+    painSummary: normalizeText(opportunity.painSummary || opportunity.pain_summary || ""),
+    suggestedTool: normalizeText(opportunity.suggestedTool || opportunity.suggested_tool || ""),
+    difficulty: normalizeText(opportunity.difficulty || ""),
+    urgency: normalizeText(opportunity.urgency || ""),
+    urgencyScore: Number.isFinite(urgencyScore) ? Math.max(0, Math.min(100, Math.round(urgencyScore))) : 0,
+    sourcePage: String(opportunity.sourcePage || opportunity.source_page || "").trim(),
+    requestCountry: String(opportunity.requestCountry || opportunity.request_country || "").trim().toUpperCase(),
+  };
+}
+
+function sortOpportunitiesByUrgency(opportunities = []) {
+  return [...opportunities].sort((left, right) => {
+    if (right.urgencyScore !== left.urgencyScore) {
+      return right.urgencyScore - left.urgencyScore;
+    }
+    return String(right.createdAt || "").localeCompare(String(left.createdAt || ""));
+  });
+}
+
+function getOpportunityUrgencyTone(opportunity) {
+  const score = Number(opportunity?.urgencyScore || 0);
+  if (score >= 80) {
+    return "critical";
+  }
+  if (score >= 60) {
+    return "high";
+  }
+  if (score >= 35) {
+    return "medium";
+  }
+  return "low";
+}
+
+function getOpportunityStats(opportunities = state.opportunities) {
+  const total = opportunities.length;
+  const highUrgency = opportunities.filter((opportunity) => Number(opportunity.urgencyScore || 0) >= 60).length;
+  const averageUrgency = total
+    ? Math.round(opportunities.reduce((sum, opportunity) => sum + Number(opportunity.urgencyScore || 0), 0) / total)
+    : 0;
+  const hardestCount = opportunities.filter((opportunity) => (
+    /high|גבוה|מורכב|קשה/i.test(opportunity.difficulty || "")
+  )).length;
+  return { total, highUrgency, averageUrgency, hardestCount };
 }
 
 function upsertAdminUserState(user) {
@@ -5221,6 +5293,9 @@ function setActiveTab(tab, options = {}) {
   if (nextTab === "pricing") {
     void refreshPricingSnapshot();
   }
+  if (nextTab === "opportunities") {
+    void refreshOpportunities();
+  }
 }
 
 function setSettingsMode(mode, options = {}) {
@@ -7267,6 +7342,54 @@ async function refreshAdminUsers(options = {}) {
   }
 }
 
+async function refreshOpportunities(options = {}) {
+  const shouldRender = options.render !== false;
+  if (!canReviewOpportunities()) {
+    state.opportunities = [];
+    state.opportunitiesError = "";
+    state.opportunitiesLoading = false;
+    return null;
+  }
+
+  if (state.opportunitiesLoading) {
+    return null;
+  }
+
+  state.opportunitiesLoading = true;
+  state.opportunitiesError = "";
+  if (shouldRender && document.body.dataset.view === "app") {
+    renderApp({ preserveStatus: true });
+  }
+
+  try {
+    const response = await apiRequest("/api/admin/opportunities?limit=200", {
+      headers: getSessionAuthHeaders(),
+      timeoutMs: options.timeoutMs || 15000,
+    });
+    state.opportunities = sortOpportunitiesByUrgency(
+      (Array.isArray(response.opportunities) ? response.opportunities : [])
+        .map((opportunity) => normalizeOpportunityRecord(opportunity))
+        .filter((opportunity) => opportunity.id > 0),
+    );
+    state.opportunitiesLoadedAt = Date.now();
+    return response;
+  } catch (error) {
+    state.opportunitiesError = formatApiErrorMessage(error, "We couldn’t load opportunities right now.");
+    if (Number(error?.status || 0) === 403 && state.activeTab === "opportunities") {
+      state.activeTab = "features";
+      state.lastPrimaryTab = "features";
+      persistLastPrimaryTab();
+      setHashForTab("features");
+    }
+    return null;
+  } finally {
+    state.opportunitiesLoading = false;
+    if (shouldRender && document.body.dataset.view === "app") {
+      renderApp({ preserveStatus: true });
+    }
+  }
+}
+
 async function addAdminUser() {
   if (!isAdminUser() || state.adminAddUserBusy) {
     return;
@@ -7592,6 +7715,174 @@ function updateFeatureList() {
   }
 
   elements.featureList.replaceChildren(...features.map((feature) => createFeatureCard(feature)));
+}
+
+function createOpportunityMetric(label, value, detail = "") {
+  const metric = document.createElement("article");
+  metric.className = "opportunity-metric";
+
+  const labelElement = document.createElement("span");
+  labelElement.textContent = label;
+
+  const valueElement = document.createElement("strong");
+  valueElement.textContent = value;
+
+  metric.append(labelElement, valueElement);
+  if (detail) {
+    const detailElement = document.createElement("small");
+    detailElement.textContent = detail;
+    metric.append(detailElement);
+  }
+
+  return metric;
+}
+
+function createOpportunityField(label, value) {
+  const field = document.createElement("div");
+  field.className = "opportunity-field";
+
+  const labelElement = document.createElement("span");
+  labelElement.textContent = label;
+
+  const valueElement = document.createElement("p");
+  valueElement.textContent = value || "Not captured";
+
+  field.append(labelElement, valueElement);
+  return field;
+}
+
+function createOpportunityCard(opportunity) {
+  const card = document.createElement("article");
+  card.className = "opportunity-card";
+
+  const tone = getOpportunityUrgencyTone(opportunity);
+  const header = document.createElement("div");
+  header.className = "opportunity-card-head";
+
+  const titleBlock = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = opportunity.business || opportunity.name || "Website opportunity";
+
+  const meta = document.createElement("p");
+  const contact = [opportunity.email, opportunity.phone].filter(Boolean).join(" · ");
+  const metaParts = [
+    formatAdminDateTime(opportunity.createdAt) || "Unknown date",
+    opportunity.name,
+    contact,
+    opportunity.requestCountry,
+  ].filter(Boolean);
+  meta.textContent = metaParts.join(" · ");
+  titleBlock.append(title, meta);
+
+  const badge = document.createElement("span");
+  badge.className = `opportunity-urgency is-${tone}`;
+  badge.textContent = `${opportunity.urgency || "Urgency"} · ${opportunity.urgencyScore}`;
+
+  header.append(titleBlock, badge);
+
+  const details = document.createElement("div");
+  details.className = "opportunity-fields";
+  details.append(
+    createOpportunityField("Business summary", opportunity.businessSummary),
+    createOpportunityField("Pain summary", opportunity.painSummary),
+    createOpportunityField("Suggested tool", opportunity.suggestedTool),
+    createOpportunityField("Difficulty", opportunity.difficulty),
+  );
+
+  card.append(header, details);
+  if (opportunity.sourcePage) {
+    const source = document.createElement("a");
+    source.className = "opportunity-source";
+    source.href = opportunity.sourcePage;
+    source.target = "_blank";
+    source.rel = "noopener noreferrer";
+    source.textContent = "Source page";
+    card.append(source);
+  }
+
+  return card;
+}
+
+function updateOpportunityNavigation() {
+  const allowed = canReviewOpportunities();
+  for (const button of elements.tabButtons) {
+    if (button.dataset.tab === "opportunities") {
+      button.hidden = !allowed;
+    }
+  }
+
+  if (!allowed && state.activeTab === "opportunities") {
+    state.activeTab = "features";
+    state.lastPrimaryTab = "features";
+    persistLastPrimaryTab();
+    setHashForTab("features");
+  }
+}
+
+function updateOpportunitiesPanel() {
+  if (!elements.opportunitiesPanel || !elements.opportunitiesSummary || !elements.opportunitiesList) {
+    return;
+  }
+
+  if (elements.opportunitiesRefreshButton) {
+    elements.opportunitiesRefreshButton.disabled = state.opportunitiesLoading || !canReviewOpportunities();
+    elements.opportunitiesRefreshButton.textContent = state.opportunitiesLoading ? "Refreshing" : "Refresh";
+  }
+
+  if (!canReviewOpportunities()) {
+    elements.opportunitiesSummary.replaceChildren();
+    elements.opportunitiesList.replaceChildren();
+    return;
+  }
+
+  const stats = getOpportunityStats();
+  const loadedLabel = state.opportunitiesLoadedAt
+    ? `Updated ${formatAdminDateTime(new Date(state.opportunitiesLoadedAt).toISOString())}`
+    : "Not loaded yet";
+  elements.opportunitiesSummary.replaceChildren(
+    createOpportunityMetric("Open leads", String(stats.total), loadedLabel),
+    createOpportunityMetric("High urgency", String(stats.highUrgency), "Score 60+"),
+    createOpportunityMetric("Average urgency", String(stats.averageUrgency), "0 to 100"),
+    createOpportunityMetric("Hard work", String(stats.hardestCount), "High difficulty"),
+  );
+
+  if (state.opportunitiesLoading && !state.opportunities.length) {
+    const loading = document.createElement("article");
+    loading.className = "glass-card empty-state opportunity-empty";
+    const title = document.createElement("h3");
+    title.textContent = "Loading opportunities";
+    const copy = document.createElement("p");
+    copy.textContent = "Fetching the latest completed intake conversations.";
+    loading.append(title, copy);
+    elements.opportunitiesList.replaceChildren(loading);
+    return;
+  }
+
+  if (state.opportunitiesError) {
+    const error = document.createElement("article");
+    error.className = "glass-card empty-state opportunity-empty is-warn";
+    const title = document.createElement("h3");
+    title.textContent = "Couldn’t load opportunities";
+    const copy = document.createElement("p");
+    copy.textContent = state.opportunitiesError;
+    error.append(title, copy);
+    elements.opportunitiesList.replaceChildren(error);
+    return;
+  }
+
+  if (!state.opportunities.length) {
+    const empty = document.createElement("article");
+    empty.className = "glass-card empty-state opportunity-empty";
+    const title = document.createElement("h3");
+    title.textContent = "No opportunities yet";
+    const copy = document.createElement("p");
+    copy.textContent = "Completed website conversations will appear here after the visitor leaves contact details.";
+    empty.append(title, copy);
+    elements.opportunitiesList.replaceChildren(empty);
+    return;
+  }
+
+  elements.opportunitiesList.replaceChildren(...state.opportunities.map((opportunity) => createOpportunityCard(opportunity)));
 }
 
 function setFeatureStudioView(view, options = {}) {
@@ -9248,6 +9539,7 @@ function populateMonitorTimezoneOptions() {
 }
 
 function updateTabButtons() {
+  updateOpportunityNavigation();
   for (const button of elements.tabButtons) {
     const isSettingsButton = button.dataset.tab === "settings";
     const isActive = isSettingsButton
@@ -9299,6 +9591,7 @@ function updatePanelVisibility() {
   elements.appBar.classList.toggle("is-hidden", inStudio || inBilling || inPricing);
   elements.appView.classList.toggle("is-feature-page", inStudio);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
+  elements.opportunitiesPanel?.classList.toggle("is-hidden", state.activeTab !== "opportunities");
   elements.personalDetailsPanel.classList.toggle("is-hidden", state.activeTab !== "personal-details");
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
   elements.previewPanel.classList.toggle("is-hidden", state.activeTab !== "preview");
@@ -9394,11 +9687,13 @@ function updatePersonalDetailsFields() {
 }
 
 function renderApp(options = {}) {
+  updateOpportunityNavigation();
   updateHeader();
   updateTabButtons();
   updateFeatureStudioHeader();
   updatePanelVisibility();
   updateFeatureList();
+  updateOpportunitiesPanel();
   updateFeatureActivationFields();
   populateMonitorTimezoneOptions();
   updateMonitorFields();
@@ -9502,6 +9797,9 @@ function refreshView() {
     }
     if (state.activeTab === "pricing") {
       void refreshPricingSnapshot();
+    }
+    if (state.activeTab === "opportunities") {
+      void refreshOpportunities();
     }
     return;
   }
@@ -10859,6 +11157,12 @@ function bindEvents() {
     });
   }
 
+  if (elements.opportunitiesRefreshButton) {
+    elements.opportunitiesRefreshButton.addEventListener("click", () => {
+      void refreshOpportunities();
+    });
+  }
+
   for (const button of elements.settingsButtons) {
     button.addEventListener("click", () => {
       setSettingsMode(button.dataset.settingsMode || "account");
@@ -10973,6 +11277,9 @@ function bindEvents() {
       }
       if (route.tab === "pricing") {
         void refreshPricingSnapshot();
+      }
+      if (route.tab === "opportunities") {
+        void refreshOpportunities();
       }
       return;
     }

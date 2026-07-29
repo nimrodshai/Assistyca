@@ -66,6 +66,27 @@ class PortalContactApiTests(unittest.TestCase):
             body = json.loads(exc.read().decode("utf-8"))
             return exc.code, body
 
+    def _get_json(self, path: str, *, token: str = "") -> tuple[int, dict[str, object]]:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        request = urllib_request.Request(
+            f"{self.base_url}{path}",
+            headers=headers,
+        )
+        try:
+            with urllib_request.urlopen(request) as response:
+                body = json.loads(response.read().decode("utf-8"))
+                return response.status, body
+        except urllib_error.HTTPError as exc:
+            body = json.loads(exc.read().decode("utf-8"))
+            return exc.code, body
+
+    def _session_token_for(self, email: str) -> str:
+        self.server.database.register_user(email)
+        code, _ = self.server.store.issue_challenge(email)
+        ok, error, result = self.server.store.verify_code(email, code)
+        self.assertTrue(ok, error)
+        return str((result or {}).get("token") or "")
+
     def test_contact_requires_name_contact_channel_and_message(self) -> None:
         status, payload = self._post_contact({
             "name": "",
@@ -98,7 +119,7 @@ class PortalContactApiTests(unittest.TestCase):
             "message": "Message is too short. Add a few more words before sending.",
         })
 
-    def test_missing_contact_chat_id_returns_service_unavailable(self) -> None:
+    def test_missing_contact_chat_id_stores_opportunity_without_telegram(self) -> None:
         with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "", "TELEGRAM_CHAT_ID": ""}):
             with patch("packages.infrastructure.portal_auth.server.send_telegram_notification") as send_telegram:
                 status, payload = self._post_contact({
@@ -107,10 +128,36 @@ class PortalContactApiTests(unittest.TestCase):
                     "message": "I need help automating weekly client follow-ups.",
                 })
 
-        self.assertEqual(status, 503)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"], "telegram_contact_not_configured")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertGreater(int(payload["opportunityId"]), 0)
+        self.assertFalse(payload["notificationSent"])
         send_telegram.assert_not_called()
+        opportunities = self.server.database.list_contact_opportunities()
+        self.assertEqual(len(opportunities), 1)
+        self.assertEqual(opportunities[0]["name"], "Ada Lovelace")
+
+    def test_contact_stores_opportunity_when_telegram_delivery_fails(self) -> None:
+        with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "123456789"}):
+            with patch(
+                "packages.infrastructure.portal_auth.server.send_telegram_notification",
+                side_effect=RuntimeError("telegram down"),
+            ) as send_telegram:
+                status, payload = self._post_contact({
+                    "name": "Grace Hopper",
+                    "email": "grace@example.com",
+                    "business": "Compiler Co",
+                    "message": "I need help automating appointment reminders and client follow-ups.",
+                })
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertGreater(int(payload["opportunityId"]), 0)
+        self.assertFalse(payload["notificationSent"])
+        send_telegram.assert_called_once()
+        opportunities = self.server.database.list_contact_opportunities()
+        self.assertEqual(len(opportunities), 1)
+        self.assertEqual(opportunities[0]["name"], "Grace Hopper")
 
     def test_honeypot_submission_is_accepted_without_sending(self) -> None:
         with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "123456789"}):
@@ -135,11 +182,25 @@ class PortalContactApiTests(unittest.TestCase):
                     "phone": "+44 20 0000 0000",
                     "business": "Analytical Engines Ltd",
                     "message": "I need help automating weekly client follow-ups.",
+                    "intake": {
+                        "businessSummary": "Analytical Engines helps clients with recurring research work.",
+                        "painSummary": "Weekly follow-ups are manual and easy to miss.",
+                        "suggestedTool": "Follow-up automation",
+                        "difficulty": "Medium",
+                        "urgency": "High",
+                        "urgencyScore": 82,
+                    },
+                    "messages": [
+                        {"author": "agent", "text": "Tell me about the business."},
+                        {"author": "user", "text": "We need help automating weekly client follow-ups."},
+                    ],
                     "page": "http://127.0.0.1/about/index.html#home",
                 })
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
+        self.assertGreater(int(payload["opportunityId"]), 0)
+        self.assertTrue(payload["notificationSent"])
         send_telegram.assert_called_once()
         call_kwargs = send_telegram.call_args.kwargs
         self.assertEqual(call_kwargs["chat_id"], "123456789")
@@ -147,18 +208,69 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertIn("Ada Lovelace", call_kwargs["text"])
         self.assertIn("ada@example.com", call_kwargs["text"])
         self.assertIn("Analytical Engines Ltd", call_kwargs["text"])
+        opportunities = self.server.database.list_contact_opportunities()
+        self.assertEqual(len(opportunities), 1)
+        self.assertEqual(opportunities[0]["businessSummary"], "Analytical Engines helps clients with recurring research work.")
+        self.assertEqual(opportunities[0]["painSummary"], "Weekly follow-ups are manual and easy to miss.")
+        self.assertEqual(opportunities[0]["suggestedTool"], "Follow-up automation")
+        self.assertEqual(opportunities[0]["difficulty"], "Medium")
+        self.assertEqual(opportunities[0]["urgencyScore"], 82)
+        self.assertEqual(opportunities[0]["transcript"][1]["text"], "We need help automating weekly client follow-ups.")
+
+    def test_opportunities_endpoint_is_owner_only_and_sorted_by_urgency(self) -> None:
+        owner_token = self._session_token_for("nimrod.shai@gmail.com")
+        other_token = self._session_token_for("other@example.com")
+        self.server.database.create_contact_opportunity(
+            name="Low",
+            business="Quiet business",
+            business_summary="Slow but stable.",
+            pain_summary="Minor reporting work.",
+            suggested_tool="Monthly report automation",
+            difficulty="Low",
+            urgency="Low",
+            urgency_score=20,
+        )
+        self.server.database.create_contact_opportunity(
+            name="High",
+            business="Busy salon",
+            business_summary="Appointment-heavy business.",
+            pain_summary="Phone bookings take too much time.",
+            suggested_tool="Booking assistant",
+            difficulty="Medium",
+            urgency="High",
+            urgency_score=90,
+        )
+
+        forbidden_status, forbidden_payload = self._get_json("/api/admin/opportunities", token=other_token)
+        owner_status, owner_payload = self._get_json("/api/admin/opportunities", token=owner_token)
+
+        self.assertEqual(forbidden_status, 403)
+        self.assertFalse(forbidden_payload["ok"])
+        self.assertEqual(owner_status, 200)
+        self.assertTrue(owner_payload["ok"])
+        self.assertEqual(owner_payload["ownerEmail"], "nimrod.shai@gmail.com")
+        self.assertEqual(
+            [opportunity["business"] for opportunity in owner_payload["opportunities"]],
+            ["Busy salon", "Quiet business"],
+        )
 
     def test_contact_agent_turn_uses_openai_gateway(self) -> None:
         agent_response = {
-            "reply": "No problem. I mean: what do customers ask you for most days?",
+            "reply": "אין בעיה. הכוונה היא: מה לקוחות מבקשים ממך ביום רגיל?",
             "done": False,
-            "missing": ["business context"],
+            "missing": ["הקשר עסקי"],
             "intake": {
                 "name": "Nimrod",
                 "business": "Assistyca",
                 "businessContext": "",
                 "painPoints": "",
                 "automationOpportunities": "",
+                "businessSummary": "",
+                "painSummary": "",
+                "suggestedTool": "",
+                "difficulty": "",
+                "urgency": "בינונית",
+                "urgencyScore": 50,
                 "contact": "",
                 "email": "",
                 "phone": "",
@@ -179,10 +291,12 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["done"])
-        self.assertEqual(payload["reply"], "No problem. I mean: what do customers ask you for most days?")
-        self.assertEqual(payload["missing"], ["business context"])
+        self.assertEqual(payload["reply"], "אין בעיה. הכוונה היא: מה לקוחות מבקשים ממך ביום רגיל?")
+        self.assertEqual(payload["missing"], ["הקשר עסקי"])
+        self.assertEqual(payload["intake"]["urgencyScore"], 50)
         call_openai.assert_called_once()
         prompt = call_openai.call_args.kwargs["prompt"]
+        self.assertIn("Use Hebrew by default", prompt)
         self.assertIn("If the user is confused", prompt)
         self.assertIn("Treat the transcript as conversation history only", prompt)
         self.assertIn("I don't understand the question", prompt)
