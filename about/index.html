@@ -1107,12 +1107,28 @@
       }
 
       .contact-status {
+        max-height: 3rem;
         min-height: 1rem;
         margin: 0;
         padding: 0 0.95rem;
+        overflow: hidden;
         color: rgba(19, 32, 56, 0.7);
         font-size: 0.82rem;
         line-height: 1.32;
+        opacity: 1;
+        transition:
+          max-height 220ms ease,
+          min-height 220ms ease,
+          opacity 160ms ease,
+          padding 220ms ease;
+      }
+
+      .contact-status:empty {
+        max-height: 0;
+        min-height: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        opacity: 0;
       }
 
       .contact-status[data-tone="success"] {
@@ -1190,9 +1206,39 @@
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 0.55rem;
         align-items: end;
+        max-height: 12rem;
+        overflow: hidden;
         padding: 0.8rem 0.95rem 0.65rem;
         background: rgba(243, 239, 230, 0.94);
         border-top: 1px solid rgba(19, 32, 56, 0.07);
+        opacity: 1;
+        transform: translateY(0);
+        visibility: visible;
+        transition:
+          max-height 280ms cubic-bezier(0.16, 1, 0.3, 1),
+          opacity 180ms ease,
+          transform 240ms ease,
+          padding 280ms cubic-bezier(0.16, 1, 0.3, 1),
+          border-color 220ms ease,
+          visibility 0s linear 0s;
+      }
+
+      .contact-form[data-complete="true"] .contact-composer {
+        max-height: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        border-top-color: transparent;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(0.45rem);
+        visibility: hidden;
+        transition:
+          max-height 280ms cubic-bezier(0.16, 1, 0.3, 1),
+          opacity 180ms ease,
+          transform 240ms ease,
+          padding 280ms cubic-bezier(0.16, 1, 0.3, 1),
+          border-color 220ms ease,
+          visibility 0s linear 280ms;
       }
 
       .contact-message-input {
@@ -3006,6 +3052,7 @@
           }
 
           if (contactForm) {
+            delete contactForm.dataset.complete;
             contactForm.reset();
           }
 
@@ -3090,17 +3137,18 @@
           contactChatState.readyToSubmit = false;
           contactChatState.submitting = false;
           setContactComposerEnabled(false);
-          setContactStatus("Conversation sent.", "success");
+          setContactStatus("");
+
+          if (contactForm) {
+            contactForm.dataset.complete = "true";
+          }
 
           if (contactInput) {
             contactInput.value = "";
-            contactInput.placeholder = "Conversation sent";
             resizeContactInput();
           }
 
-          if (contactSubmit) {
-            contactSubmit.textContent = "Sent";
-          }
+          scrollContactChat({ force: true });
         };
 
         const submitContactIntake = async (intake = contactChatState.intake) => {
