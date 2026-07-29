@@ -1031,7 +1031,7 @@
 
       .contact-form {
         display: grid;
-        grid-template-rows: minmax(16rem, 1fr) auto auto auto;
+        grid-template-rows: minmax(16rem, 1fr) auto auto;
         height: min(37rem, calc(100svh - 7rem));
         min-height: 0;
       }
@@ -1121,24 +1121,6 @@
 
       .contact-status[data-tone="error"] {
         color: #a34646;
-      }
-
-      .contact-actions {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 0.7rem;
-        padding: 0 0.95rem 0.95rem;
-        margin-top: -0.15rem;
-      }
-
-      .contact-cancel {
-        min-height: 2.8rem;
-        padding: 0.7rem 0;
-        color: rgba(19, 32, 56, 0.68);
-        background: transparent;
-        cursor: pointer;
       }
 
       .contact-submit {
@@ -1882,14 +1864,6 @@
           grid-template-columns: 1fr;
         }
 
-        .contact-actions {
-          align-items: center;
-          flex-direction: row;
-        }
-
-        .contact-cancel {
-          width: auto;
-        }
       }
 
       @media (max-width: 640px) {
@@ -2803,10 +2777,6 @@
                 Send
               </button>
             </div>
-            <div class="contact-actions">
-              <button class="contact-cancel" type="button" data-contact-restart>Start over</button>
-              <button class="contact-cancel" type="button" data-contact-close>Close</button>
-            </div>
           </form>
         </div>
       </div>
@@ -2877,7 +2847,6 @@
         const contactForm = document.querySelector("[data-contact-form]");
         const contactOpeners = Array.from(document.querySelectorAll("[data-contact-open]"));
         const contactClosers = Array.from(document.querySelectorAll("[data-contact-close]"));
-        const contactRestart = document.querySelector("[data-contact-restart]");
         const contactChatLog = document.querySelector("[data-contact-chat-log]");
         const contactInput = document.querySelector("[data-contact-input]");
         const contactStatus = document.querySelector("[data-contact-status]");
@@ -3446,12 +3415,6 @@
         window.addEventListener("resize", keepContactLayoutPinned);
         if (window.visualViewport) {
           window.visualViewport.addEventListener("resize", keepContactLayoutPinned);
-        }
-
-        if (contactRestart) {
-          contactRestart.addEventListener("click", () => {
-            resetContactChat({ focus: true });
-          });
         }
 
         document.querySelectorAll("[data-keyed-image]").forEach((imageElement) => {
