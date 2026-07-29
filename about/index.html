@@ -1345,6 +1345,9 @@
         border-radius: 999px;
         padding: 0.84rem 1.15rem 0.82rem;
         color: var(--ink);
+        direction: rtl;
+        text-align: right;
+        unicode-bidi: plaintext;
         background:
           linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 255, 255, 0.94));
         box-shadow:
@@ -3049,8 +3052,10 @@
                 class="contact-message-input"
                 data-contact-input
                 rows="1"
-                placeholder="כתבו תשובה..."
-                aria-label="כתוב/י תשובה"
+                dir="rtl"
+                lang="he"
+                placeholder="הקלידו הודעה"
+                aria-label="הקלדת הודעה"
               ></textarea>
               <button
                 class="button-primary contact-submit contact-send"
@@ -3351,7 +3356,7 @@
           setContactComposerEnabled(true);
           if (contactInput) {
             contactInput.value = "";
-            contactInput.placeholder = "כתבו תשובה...";
+            contactInput.placeholder = "הקלידו הודעה";
             resizeContactInput();
           }
 
@@ -3532,8 +3537,7 @@
 
             setContactStatus("");
             if (contactInput) {
-              const missing = Array.isArray(data.missing) ? data.missing.filter(Boolean) : [];
-              contactInput.placeholder = missing.length ? `אפשר לפרט על: ${missing[0]}` : "כתבו תשובה...";
+              contactInput.placeholder = "הקלידו הודעה";
             }
           } catch (error) {
             const fallback = contactChatState.started
