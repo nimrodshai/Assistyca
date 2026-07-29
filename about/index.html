@@ -362,17 +362,6 @@
         justify-content: flex-end;
       }
 
-      .hero-visual::before {
-        content: "";
-        position: absolute;
-        inset: 8% -6% 6% 8%;
-        background:
-          radial-gradient(circle at 62% 72%, rgba(255, 255, 255, 0.92), transparent 20%),
-          radial-gradient(circle at 75% 28%, rgba(255, 255, 255, 0.7), transparent 18%),
-          radial-gradient(circle at 65% 88%, rgba(226, 217, 201, 0.34), transparent 28%);
-        pointer-events: none;
-      }
-
       .hero-visual img {
         position: absolute;
         right: -18%;
@@ -1253,10 +1242,6 @@
           order: 2;
         }
 
-        .hero-visual::before {
-          inset: 8% -8% 8% 0;
-        }
-
         .hero-visual img {
           right: -8%;
           bottom: -4%;
@@ -1582,10 +1567,6 @@
         .hero-visual {
           min-height: 17rem;
           overflow: hidden;
-        }
-
-        .hero-visual::before {
-          inset: 10% -10% 8% -6%;
         }
 
         .hero-visual img {
@@ -2006,15 +1987,6 @@
           justify-content: flex-end;
           overflow: visible;
           transform: translateY(calc(var(--mobile-hero-content-lift) + var(--mobile-hero-visual-lift)));
-        }
-
-        .hero-visual::before {
-          inset: auto -5% -0.15rem -22%;
-          height: 9.65rem;
-          border-radius: 999px;
-          background:
-            radial-gradient(circle at 70% 48%, rgba(255, 255, 255, 0.94), transparent 38%),
-            radial-gradient(circle at 44% 72%, rgba(106, 167, 163, 0.12), transparent 62%);
         }
 
         .hero-visual img {
