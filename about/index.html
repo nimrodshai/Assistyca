@@ -1012,15 +1012,11 @@
         width: 3.6rem;
         height: 3.6rem;
         border-radius: 999px;
-        background:
-          radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.18) 42%, transparent 56%),
-          linear-gradient(145deg, #7bc6bd, #3a9e96 58%, #2c827d);
+        background: #4fa8a1;
         color: #ffffff;
         font-size: 1.35rem;
         font-weight: 700;
-        box-shadow:
-          inset 0 0 0 1px rgba(255, 255, 255, 0.32),
-          0 0.7rem 1.4rem rgba(61, 150, 144, 0.22);
+        box-shadow: none;
       }
 
       .contact-agent-avatar::after {
@@ -1048,26 +1044,6 @@
         font-weight: 700;
       }
 
-      .contact-agent-status {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.42rem;
-        margin: 0.32rem 0 0;
-        color: var(--accent-deep);
-        font-size: 0.84rem;
-        line-height: 1.25;
-        font-weight: 700;
-      }
-
-      .contact-agent-status::before {
-        content: "";
-        width: 0.5rem;
-        height: 0.5rem;
-        border-radius: 999px;
-        background: #24bf84;
-        box-shadow: 0 0 0 0.28rem rgba(36, 191, 132, 0.12);
-      }
-
       .contact-close {
         position: relative;
         z-index: 1;
@@ -1078,23 +1054,21 @@
         height: 2.35rem;
         border-radius: 999px;
         color: rgba(19, 32, 56, 0.68);
-        background: rgba(255, 255, 255, 0.58);
+        background: rgba(255, 255, 255, 0.62);
         border: 1px solid rgba(19, 32, 56, 0.08);
         cursor: pointer;
         font-size: 1.65rem;
         font-weight: 700;
         line-height: 1;
         transition:
-          transform 160ms ease,
           background 160ms ease,
           color 160ms ease;
       }
 
       .contact-close:hover,
       .contact-close:focus-visible {
-        transform: translateY(-1px);
         color: var(--ink);
-        background: rgba(255, 255, 255, 0.86);
+        background: rgba(19, 32, 56, 0.055);
       }
 
       .contact-form {
@@ -1265,14 +1239,10 @@
         margin-top: 0.18rem;
         border-radius: 999px;
         color: #ffffff;
-        background:
-          radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.08) 48%, transparent 62%),
-          linear-gradient(145deg, #73c2b9, #329a93);
+        background: #4fa8a1;
         font-size: 0.92rem;
         font-weight: 700;
-        box-shadow:
-          inset 0 0 0 1px rgba(255, 255, 255, 0.24),
-          0 0.45rem 1rem rgba(61, 150, 144, 0.18);
+        box-shadow: none;
       }
 
       .contact-message-bubble {
@@ -1415,25 +1385,22 @@
         padding: 0;
         cursor: pointer;
         color: #ffffff;
-        background:
-          radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.52), transparent 42%),
-          linear-gradient(145deg, #72beb7, #3da39b);
-        box-shadow:
-          0 0.75rem 1.5rem rgba(61, 150, 144, 0.24),
-          inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+        background: #4fa8a1;
+        box-shadow: none;
         transition:
-          transform 160ms ease,
-          box-shadow 160ms ease,
-          filter 160ms ease;
+          background 160ms ease,
+          outline-color 160ms ease;
       }
 
       .contact-send:hover,
       .contact-send:focus-visible {
-        transform: translateY(-1px);
-        filter: saturate(108%);
-        box-shadow:
-          0 0.95rem 1.7rem rgba(61, 150, 144, 0.28),
-          inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+        background: #438f89;
+      }
+
+      .contact-send:focus-visible,
+      .contact-close:focus-visible {
+        outline: 2px solid rgba(79, 146, 144, 0.32);
+        outline-offset: 3px;
       }
 
       .contact-send-icon {
@@ -2691,10 +2658,6 @@
           letter-spacing: 0;
         }
 
-        .contact-agent-status {
-          font-size: 0.76rem;
-        }
-
         .contact-close {
           width: 2.25rem;
           height: 2.25rem;
@@ -3054,7 +3017,6 @@
               <span class="contact-agent-avatar" aria-hidden="true">A</span>
               <div class="contact-agent-copy">
                 <h2 id="contact-title">Assistyca intake agent</h2>
-                <p class="contact-agent-status">Online now</p>
               </div>
             </div>
             <button class="contact-close" type="button" data-contact-close aria-label="Close conversation">
