@@ -1206,7 +1206,7 @@
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 0.55rem;
         align-items: end;
-        max-height: 12rem;
+        max-height: 13.25rem;
         overflow: hidden;
         padding: 0.8rem 0.95rem 0.65rem;
         background: rgba(243, 239, 230, 0.94);
@@ -1243,8 +1243,8 @@
 
       .contact-message-input {
         width: 100%;
-        min-height: 2.9rem;
-        max-height: 8.2rem;
+        min-height: 4.45rem;
+        max-height: 9.8rem;
         overflow-y: auto;
         resize: none;
         border: 1px solid rgba(19, 32, 56, 0.11);
@@ -1253,7 +1253,8 @@
         color: var(--ink);
         background: rgba(255, 255, 255, 0.9);
         outline: none;
-        line-height: 1.35;
+        line-height: 1.38;
+        scrollbar-gutter: stable;
         transition:
           border-color 160ms ease,
           box-shadow 160ms ease,
@@ -2906,6 +2907,8 @@
         const contactPhonePattern = /\+?\d[\d\s().-]{6,}\d/;
         const contactChatBottomTolerance = 28;
         let contactScrollFrame = 0;
+        let contactInputResizeFrame = 0;
+        let contactInputResizeTimer = 0;
         const contactChatState = {
           messages: [],
           intake: {},
@@ -3022,7 +3025,7 @@
           }
         };
 
-        const resizeContactInput = () => {
+        const syncContactInputSize = () => {
           if (!contactInput) {
             return;
           }
@@ -3030,12 +3033,22 @@
           const shouldFollowLatest = contactChatState.followLatest || contactChatIsNearBottom();
           const maxHeight = Number.parseFloat(window.getComputedStyle(contactInput).maxHeight) || 132;
           contactInput.style.height = "auto";
-          contactInput.style.height = `${Math.min(contactInput.scrollHeight, maxHeight)}px`;
+          contactInput.style.height = `${Math.min(Math.ceil(contactInput.scrollHeight) + 2, maxHeight)}px`;
           contactInput.scrollTop = contactInput.scrollHeight;
 
           if (shouldFollowLatest) {
             scrollContactChat({ force: true });
           }
+        };
+
+        const resizeContactInput = () => {
+          syncContactInputSize();
+          window.cancelAnimationFrame(contactInputResizeFrame);
+          window.clearTimeout(contactInputResizeTimer);
+          contactInputResizeFrame = window.requestAnimationFrame(() => {
+            syncContactInputSize();
+            contactInputResizeTimer = window.setTimeout(syncContactInputSize, 80);
+          });
         };
 
         const resetContactChat = (options = {}) => {
@@ -3439,8 +3452,15 @@
         }
 
         if (contactInput) {
-          contactInput.addEventListener("input", resizeContactInput);
+          ["input", "change", "paste", "cut", "keyup", "compositionupdate", "compositionend"].forEach((eventName) => {
+            contactInput.addEventListener(eventName, resizeContactInput);
+          });
           contactInput.addEventListener("focus", resizeContactInput);
+          document.addEventListener("selectionchange", () => {
+            if (document.activeElement === contactInput) {
+              resizeContactInput();
+            }
+          });
           contactInput.addEventListener("keydown", (event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
