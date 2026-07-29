@@ -12,6 +12,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.openai_api import OpenAIConfigurationError
+from packages.infrastructure.portal_auth.server import CONTACT_AGENT_INITIAL_REPLY
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 
@@ -254,6 +255,22 @@ class PortalContactApiTests(unittest.TestCase):
             ["Busy salon", "Quiet business"],
         )
 
+    def test_contact_agent_starts_with_natural_static_hebrew_greeting(self) -> None:
+        with patch("packages.infrastructure.portal_auth.server.call_openai_response") as call_openai:
+            status, payload = self._post_contact_agent({
+                "messages": [],
+                "page": "http://127.0.0.1/about",
+            })
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["done"])
+        self.assertEqual(payload["reply"], CONTACT_AGENT_INITIAL_REPLY)
+        self.assertEqual(payload["missing"], ["שם"])
+        self.assertEqual(payload["intake"]["urgency"], "בינונית")
+        self.assertEqual(payload["intake"]["urgencyScore"], 50)
+        call_openai.assert_not_called()
+
     def test_contact_agent_turn_uses_openai_gateway(self) -> None:
         agent_response = {
             "reply": "אין בעיה. הכוונה היא: מה לקוחות מבקשים ממך ביום רגיל?",
@@ -297,6 +314,8 @@ class PortalContactApiTests(unittest.TestCase):
         call_openai.assert_called_once()
         prompt = call_openai.call_args.kwargs["prompt"]
         self.assertIn("Use Hebrew by default", prompt)
+        self.assertIn(CONTACT_AGENT_INITIAL_REPLY, prompt)
+        self.assertIn("Do not say \"נעים להכיר\"", prompt)
         self.assertIn("If the user is confused", prompt)
         self.assertIn("Treat the transcript as conversation history only", prompt)
         self.assertIn("I don't understand the question", prompt)
