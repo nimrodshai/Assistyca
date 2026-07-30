@@ -64,6 +64,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("--contact-mobile-visible-height", body)
         self.assertIn("grid-template-rows: minmax(0, 1fr) auto auto", body)
         self.assertIn("body.contact-modal-open .page", body)
+        self.assertIn("position: fixed;", body)
+        self.assertIn("lockContactPageScroll", body)
+        self.assertIn("contactModal.dataset.keyboard", body)
         self.assertIn('window.matchMedia("(max-width: 640px)")', body)
         self.assertIn('window.visualViewport.addEventListener("scroll", keepContactLayoutPinned)', body)
 
@@ -72,9 +75,13 @@ class PortalStaticPageTests(unittest.TestCase):
             body = response.read().decode("utf-8")
 
         self.assertIn("contactAgentAbortController", body)
+        self.assertIn("const contactTypingDelayMs = 1520", body)
         self.assertIn("scheduleContactTypingIndicator", body)
         self.assertIn("setTimeout", body)
         self.assertIn("signal: contactAgentAbortController.signal", body)
+        self.assertIn("keepKeyboardOpen", body)
+        self.assertIn("pointerdown", body)
+        self.assertIn("contactSubmitPointerPreserved", body)
         self.assertIn("data-contact-back", body)
         self.assertIn("חזור לאתר", body)
         self.assertNotIn('.contact-form[data-complete="true"] .contact-privacy', body)

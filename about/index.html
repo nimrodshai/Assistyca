@@ -2756,7 +2756,7 @@
         .contact-modal {
           align-items: stretch;
           justify-items: stretch;
-          top: var(--contact-mobile-viewport-top);
+          top: 0;
           bottom: auto;
           padding: 0;
           height: var(--contact-mobile-viewport-height);
@@ -2764,10 +2764,18 @@
           overflow: hidden;
           isolation: isolate;
           background: #ffffff;
+          transform: translate3d(0, var(--contact-mobile-viewport-top), 0);
+          will-change: transform, height;
         }
 
         body.contact-modal-open {
           background: #ffffff;
+          position: fixed;
+          left: 0;
+          right: 0;
+          width: 100%;
+          overflow: hidden;
+          overscroll-behavior: none;
         }
 
         body.contact-modal-open .page {
@@ -2806,6 +2814,9 @@
           border-radius: 0;
           padding: 0;
           transform-origin: center bottom;
+          backface-visibility: hidden;
+          contain: layout paint;
+          will-change: height;
         }
 
         .contact-panel-header {
@@ -3427,11 +3438,20 @@
         const contactEmailPattern = /[^\s@<>]+@[^\s@<>]+\.[^\s@<>.,;:]+/;
         const contactPhonePattern = /\+?\d[\d\s().-]{6,}\d/;
         const contactChatBottomTolerance = 28;
+        const contactTypingDelayMs = 1520;
         let contactScrollFrame = 0;
         let contactInputResizeFrame = 0;
         let contactInputResizeTimer = 0;
+        let contactLayoutFrame = 0;
         let contactLayoutPinTimer = 0;
         let contactLayoutViewportHeight = 0;
+        let contactPageScrollY = 0;
+        let contactPageScrollLocked = false;
+        let contactKeyboardFocusTimer = 0;
+        let contactKeyboardHoldTimer = 0;
+        let contactPreserveKeyboardOnSubmit = false;
+        let contactSubmitPointerPreserved = false;
+        let contactSubmitPointerSent = false;
         let contactAgentAbortController = null;
         let contactAgentRequestId = 0;
         let contactTypingIndicator = null;
@@ -3521,7 +3541,7 @@
             }
 
             showContactTypingIndicator();
-          }, 520);
+          }, contactTypingDelayMs);
         };
 
         const normalizeContactAnswer = (value) => (
@@ -3565,9 +3585,74 @@
           });
         };
 
+        const lockContactPageScroll = () => {
+          if (!contactMobileViewportQuery.matches || contactPageScrollLocked) {
+            return;
+          }
+
+          contactPageScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+          document.body.style.top = `-${Math.round(contactPageScrollY)}px`;
+          contactPageScrollLocked = true;
+        };
+
+        const unlockContactPageScroll = () => {
+          if (!contactPageScrollLocked) {
+            return;
+          }
+
+          const restoreScrollY = contactPageScrollY;
+          contactPageScrollLocked = false;
+          contactPageScrollY = 0;
+          document.body.style.removeProperty("top");
+          window.scrollTo(0, restoreScrollY);
+        };
+
+        const shouldKeepContactKeyboardOpen = () => (
+          contactMobileViewportQuery.matches &&
+          contactInput &&
+          !contactInput.disabled &&
+          !contactChatState.completed
+        );
+
+        const markContactKeyboardHold = () => {
+          if (!shouldKeepContactKeyboardOpen()) {
+            return false;
+          }
+
+          contactPreserveKeyboardOnSubmit = true;
+          window.clearTimeout(contactKeyboardHoldTimer);
+          contactKeyboardHoldTimer = window.setTimeout(() => {
+            contactPreserveKeyboardOnSubmit = false;
+          }, 900);
+          return true;
+        };
+
+        const refocusContactInputForKeyboard = () => {
+          if (!shouldKeepContactKeyboardOpen()) {
+            return;
+          }
+
+          contactInput.focus({ preventScroll: true });
+          window.clearTimeout(contactKeyboardFocusTimer);
+          contactKeyboardFocusTimer = window.setTimeout(() => {
+            if (!shouldKeepContactKeyboardOpen()) {
+              return;
+            }
+
+            contactInput.focus({ preventScroll: true });
+            keepContactLayoutPinned();
+          }, 48);
+        };
+
         const resetContactViewportMetrics = () => {
           contactLayoutViewportHeight = 0;
+          window.cancelAnimationFrame(contactLayoutFrame);
           window.clearTimeout(contactLayoutPinTimer);
+          window.clearTimeout(contactKeyboardFocusTimer);
+          window.clearTimeout(contactKeyboardHoldTimer);
+          contactPreserveKeyboardOnSubmit = false;
+          contactSubmitPointerPreserved = false;
+          contactSubmitPointerSent = false;
           document.documentElement.style.removeProperty("--contact-keyboard-offset");
           document.documentElement.style.removeProperty("--contact-mobile-viewport-top");
           document.documentElement.style.removeProperty("--contact-mobile-viewport-height");
@@ -3594,7 +3679,7 @@
           }
 
           const visualViewport = window.visualViewport;
-          const inputFocused = document.activeElement === contactInput;
+          const inputFocused = document.activeElement === contactInput || contactPreserveKeyboardOnSubmit;
           const nextLayoutHeight = getContactLayoutViewportHeight();
           if (options.reset || !contactLayoutViewportHeight || !inputFocused) {
             contactLayoutViewportHeight = nextLayoutHeight;
@@ -3608,18 +3693,30 @@
           const rawVisibleHeight = visualViewport
             ? visualViewport.height
             : contactLayoutViewportHeight;
-          const visibleHeight = inputFocused && visualViewport
+          const candidateVisibleHeight = inputFocused && visualViewport
             ? Math.max(320, Math.min(contactLayoutViewportHeight, rawVisibleHeight))
             : contactLayoutViewportHeight;
-          const viewportTop = inputFocused && visualViewport
-            ? Math.max(0, Math.min(contactLayoutViewportHeight - visibleHeight, visualViewport.offsetTop))
+          const candidateViewportTop = inputFocused && visualViewport
+            ? Math.max(0, Math.min(contactLayoutViewportHeight - candidateVisibleHeight, visualViewport.offsetTop))
             : 0;
-          const visibleBottom = inputFocused && visualViewport
-            ? viewportTop + visibleHeight
+          const candidateVisibleBottom = inputFocused && visualViewport
+            ? candidateViewportTop + candidateVisibleHeight
             : visualBottom;
-          const keyboardOffset = inputFocused && visualViewport
-            ? Math.max(0, contactLayoutViewportHeight - visibleBottom)
+          const candidateKeyboardOffset = inputFocused && visualViewport
+            ? Math.max(0, contactLayoutViewportHeight - candidateVisibleBottom)
             : 0;
+          const keyboardOpen = inputFocused && visualViewport && candidateKeyboardOffset > 72;
+          const visibleHeight = keyboardOpen ? candidateVisibleHeight : contactLayoutViewportHeight;
+          const viewportTop = keyboardOpen ? candidateViewportTop : 0;
+          const keyboardOffset = keyboardOpen ? candidateKeyboardOffset : 0;
+
+          if (contactModal) {
+            if (keyboardOpen) {
+              contactModal.dataset.keyboard = "open";
+            } else {
+              delete contactModal.dataset.keyboard;
+            }
+          }
 
           document.documentElement.style.setProperty(
             "--contact-mobile-viewport-height",
@@ -3917,11 +4014,12 @@
           }
         };
 
-        const requestContactAgentReply = async () => {
+        const requestContactAgentReply = async (options = {}) => {
           if (contactChatState.completed) {
             return;
           }
 
+          const keepKeyboardOpen = Boolean(options.keepKeyboardOpen) && shouldKeepContactKeyboardOpen();
           if (contactAgentAbortController) {
             contactAgentAbortController.abort();
           }
@@ -3936,6 +4034,9 @@
           scheduleContactTypingIndicator(requestId);
 
           setContactSubmitLabel("שליחה");
+          if (keepKeyboardOpen) {
+            refocusContactInputForKeyboard();
+          }
 
           try {
             const response = await fetch("/api/contact/agent", {
@@ -4001,16 +4102,23 @@
               contactChatState.submitting = false;
               setContactComposerEnabled(true);
               setContactSubmitLabel("שליחה");
-              if (contactInput && !contactMobileViewportQuery.matches) {
+              if (keepKeyboardOpen) {
+                refocusContactInputForKeyboard();
+              } else if (contactInput && !contactMobileViewportQuery.matches) {
                 contactInput.focus({ preventScroll: true });
               }
             }
           }
         };
 
-        const handleContactReply = async () => {
+        const handleContactReply = async (options = {}) => {
           if (contactChatState.completed) {
             return;
+          }
+
+          const keepKeyboardOpen = Boolean(options.keepKeyboardOpen) && shouldKeepContactKeyboardOpen();
+          if (keepKeyboardOpen) {
+            markContactKeyboardHold();
           }
 
           if (contactChatState.readyToSubmit && !contactChatState.submitting) {
@@ -4021,6 +4129,9 @@
           const answer = normalizeContactAnswer(contactInput ? contactInput.value : "");
           if (!answer) {
             setContactStatus("כתוב/י תשובה לפני השליחה.", "error");
+            if (keepKeyboardOpen) {
+              refocusContactInputForKeyboard();
+            }
             return;
           }
 
@@ -4032,9 +4143,12 @@
           if (contactInput) {
             contactInput.value = "";
             resizeContactInput();
+            if (keepKeyboardOpen) {
+              refocusContactInputForKeyboard();
+            }
           }
 
-          await requestContactAgentReply();
+          await requestContactAgentReply({ keepKeyboardOpen });
         };
 
         const getContactFocusable = () => {
@@ -4057,6 +4171,7 @@
           window.clearTimeout(contactCloseTimer);
           window.clearTimeout(contactAnimationTimer);
           contactLastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          lockContactPageScroll();
           contactModal.hidden = false;
           contactModal.dataset.state = "opening";
           document.body.classList.add("contact-modal-open");
@@ -4104,6 +4219,7 @@
             delete contactModal.dataset.state;
             document.body.classList.remove("contact-modal-open");
             resetContactViewportMetrics();
+            unlockContactPageScroll();
             if (contactLastFocus && typeof contactLastFocus.focus === "function") {
               contactLastFocus.focus({ preventScroll: true });
             }
@@ -4132,6 +4248,53 @@
         if (contactBack) {
           contactBack.addEventListener("click", () => {
             closeContactModal();
+          });
+        }
+
+        if (contactSubmit) {
+          contactSubmit.addEventListener("pointerdown", (event) => {
+            if (!shouldKeepContactKeyboardOpen() || contactChatState.readyToSubmit) {
+              return;
+            }
+
+            event.preventDefault();
+            contactSubmitPointerPreserved = true;
+            markContactKeyboardHold();
+            refocusContactInputForKeyboard();
+          });
+
+          contactSubmit.addEventListener("pointerup", (event) => {
+            if (!contactSubmitPointerPreserved) {
+              return;
+            }
+
+            event.preventDefault();
+            contactSubmitPointerPreserved = false;
+            contactSubmitPointerSent = true;
+            if (contactForm && typeof contactForm.requestSubmit === "function") {
+              contactForm.requestSubmit();
+            } else {
+              void handleContactReply({ keepKeyboardOpen: true });
+            }
+            window.setTimeout(() => {
+              contactSubmitPointerSent = false;
+            }, 350);
+          });
+
+          contactSubmit.addEventListener("pointercancel", () => {
+            contactSubmitPointerPreserved = false;
+          });
+
+          contactSubmit.addEventListener("click", (event) => {
+            if (contactSubmitPointerSent) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+
+            if (contactPreserveKeyboardOnSubmit) {
+              refocusContactInputForKeyboard();
+            }
           });
         }
 
@@ -4188,7 +4351,11 @@
         if (contactForm) {
           contactForm.addEventListener("submit", async (event) => {
             event.preventDefault();
-            await handleContactReply();
+            await handleContactReply({
+              keepKeyboardOpen:
+                shouldKeepContactKeyboardOpen() &&
+                (document.activeElement === contactInput || contactPreserveKeyboardOnSubmit),
+            });
           });
         }
 
@@ -4199,10 +4366,17 @@
           contactInput.addEventListener("focus", () => {
             contactChatState.followLatest = true;
             resizeContactInput();
-            window.setTimeout(keepContactLayoutPinned, 240);
+            keepContactLayoutPinned();
+            window.setTimeout(keepContactLayoutPinned, 140);
+            window.setTimeout(keepContactLayoutPinned, 360);
           });
           contactInput.addEventListener("blur", () => {
             window.setTimeout(() => {
+              if (contactPreserveKeyboardOnSubmit && shouldKeepContactKeyboardOpen()) {
+                refocusContactInputForKeyboard();
+                return;
+              }
+
               syncContactViewportMetrics();
               if (contactChatState.followLatest) {
                 scrollContactChat({ force: true });
@@ -4229,11 +4403,19 @@
             return;
           }
 
-          syncContactViewportMetrics();
-          resizeContactInput();
-          if (contactChatState.followLatest) {
-            scrollContactChat({ force: true });
-          }
+          window.cancelAnimationFrame(contactLayoutFrame);
+          contactLayoutFrame = window.requestAnimationFrame(() => {
+            if (!contactModal || contactModal.hidden) {
+              return;
+            }
+
+            syncContactViewportMetrics();
+            resizeContactInput();
+            if (contactChatState.followLatest) {
+              scrollContactChat({ force: true });
+            }
+          });
+
           window.clearTimeout(contactLayoutPinTimer);
           contactLayoutPinTimer = window.setTimeout(() => {
             if (!contactModal || contactModal.hidden) {
@@ -4241,10 +4423,11 @@
             }
 
             syncContactViewportMetrics();
+            resizeContactInput();
             if (contactChatState.followLatest) {
               scrollContactChat({ force: true });
             }
-          }, 220);
+          }, 360);
         };
 
         window.addEventListener("resize", keepContactLayoutPinned);
