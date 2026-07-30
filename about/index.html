@@ -3772,6 +3772,9 @@
             contactModal.dataset.inputFocused = "true";
           }
           contactInput.focus({ preventScroll: true });
+          syncContactViewportMetrics();
+          keepContactLayoutPinned();
+          window.requestAnimationFrame(keepContactLayoutPinned);
           window.clearTimeout(contactKeyboardFocusTimer);
           contactKeyboardFocusTimer = window.setTimeout(() => {
             if (!shouldKeepContactKeyboardOpen()) {
@@ -3866,22 +3869,27 @@
           const visualBottom = visualViewport
             ? visualViewport.height + visualViewport.offsetTop
             : contactLayoutViewportHeight;
+          const visualKeyboardOffset = visualViewport
+            ? Math.max(0, contactLayoutViewportHeight - visualBottom)
+            : 0;
+          const keyboardGeometryActive = Boolean(visualViewport) && visualKeyboardOffset > 72;
+          const shouldUseVisualViewport = inputFocused || keyboardGeometryActive;
           const rawVisibleHeight = visualViewport
             ? visualViewport.height
             : contactLayoutViewportHeight;
-          const candidateVisibleHeight = inputFocused && visualViewport
+          const candidateVisibleHeight = shouldUseVisualViewport && visualViewport
             ? Math.max(320, Math.min(contactLayoutViewportHeight, rawVisibleHeight))
             : contactLayoutViewportHeight;
-          const candidateViewportTop = inputFocused && visualViewport
+          const candidateViewportTop = shouldUseVisualViewport && visualViewport
             ? Math.max(0, Math.min(contactLayoutViewportHeight - candidateVisibleHeight, visualViewport.offsetTop))
             : 0;
-          const candidateVisibleBottom = inputFocused && visualViewport
+          const candidateVisibleBottom = shouldUseVisualViewport && visualViewport
             ? candidateViewportTop + candidateVisibleHeight
             : visualBottom;
-          const candidateKeyboardOffset = inputFocused && visualViewport
+          const candidateKeyboardOffset = shouldUseVisualViewport && visualViewport
             ? Math.max(0, contactLayoutViewportHeight - candidateVisibleBottom)
             : 0;
-          const keyboardOpen = inputFocused && visualViewport && candidateKeyboardOffset > 72;
+          const keyboardOpen = Boolean(visualViewport) && shouldUseVisualViewport && candidateKeyboardOffset > 72;
           const visibleHeight = keyboardOpen ? candidateVisibleHeight : contactLayoutViewportHeight;
           const viewportTop = keyboardOpen ? candidateViewportTop : 0;
           const keyboardOffset = keyboardOpen ? candidateKeyboardOffset : 0;
