@@ -1273,20 +1273,20 @@
         display: inline-flex;
         align-items: center;
         width: fit-content;
-        min-width: 5rem;
-        min-height: 3rem;
-        padding: 0.92rem 1.18rem;
+        min-width: 4.6rem;
+        min-height: 2.8rem;
+        padding: 0.82rem 1.08rem;
       }
 
       .contact-typing {
         display: inline-flex;
         align-items: center;
-        gap: 0.42rem;
+        gap: 0.34rem;
       }
 
       .contact-typing-dot {
-        width: 0.52rem;
-        height: 0.52rem;
+        width: 0.43rem;
+        height: 0.43rem;
         border-radius: 999px;
         background: #4fa8a1;
         opacity: 0.42;
@@ -1338,7 +1338,7 @@
 
       .contact-composer {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1fr);
         gap: 0.78rem;
         align-items: center;
         max-height: 13.8rem;
@@ -1358,11 +1358,28 @@
           visibility 0s linear 0s;
       }
 
-      .contact-form[data-complete="true"] .contact-composer {
+      .contact-input-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 0.78rem;
+        align-items: center;
+        min-width: 0;
+      }
+
+      .contact-complete-actions {
+        display: none;
+        justify-items: center;
+      }
+
+      .contact-back {
+        width: min(100%, 15rem);
+        min-height: 3.1rem;
+      }
+
+      .contact-form[data-complete="true"] .contact-input-row {
         max-height: 0;
-        padding-top: 0;
-        padding-bottom: 0;
-        border-top-color: transparent;
+        margin: 0;
+        overflow: hidden;
         opacity: 0;
         pointer-events: none;
         transform: translateY(0.45rem);
@@ -1374,6 +1391,10 @@
           padding 280ms cubic-bezier(0.16, 1, 0.3, 1),
           border-color 220ms ease,
           visibility 0s linear 280ms;
+      }
+
+      .contact-form[data-complete="true"] .contact-complete-actions {
+        display: grid;
       }
 
       .contact-message-input {
@@ -1519,7 +1540,7 @@
 
         34% {
           opacity: 0.92;
-          transform: translateY(-0.38rem);
+          transform: translateY(-0.32rem);
         }
       }
 
@@ -2855,10 +2876,15 @@
         .contact-composer {
           position: relative;
           z-index: 2;
-          grid-template-columns: minmax(0, 1fr) auto;
+          grid-template-columns: minmax(0, 1fr);
           gap: 0.56rem;
           padding: 0.74rem 0.82rem calc(0.86rem + env(safe-area-inset-bottom, 0px));
           background: #ffffff;
+        }
+
+        .contact-input-row {
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 0.56rem;
         }
 
         .contact-status {
@@ -3207,29 +3233,36 @@
 
             <p class="contact-status" data-contact-status role="status" aria-live="polite"></p>
             <div class="contact-composer">
-              <textarea
-                class="contact-message-input"
-                data-contact-input
-                rows="1"
-                dir="rtl"
-                lang="he"
-                placeholder="הקלידו הודעה"
-                aria-label="הקלדת הודעה"
-              ></textarea>
-              <button
-                class="button-primary contact-submit contact-send"
-                type="submit"
-                data-contact-submit
-                aria-label="שליחה"
-              >
-                <svg class="contact-send-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    d="M4.5 11.4 19.2 4.7c.54-.25 1.08.29.83.83l-6.7 14.7c-.28.61-1.16.55-1.36-.09l-1.68-5.3a1.1 1.1 0 0 0-.72-.72l-5.3-1.68c-.64-.2-.7-1.08-.09-1.36Z"
-                    fill="currentColor"
-                  />
-                </svg>
-                <span class="contact-send-label">שליחה</span>
-              </button>
+              <div class="contact-input-row">
+                <textarea
+                  class="contact-message-input"
+                  data-contact-input
+                  rows="1"
+                  dir="rtl"
+                  lang="he"
+                  placeholder="הקלידו הודעה"
+                  aria-label="הקלדת הודעה"
+                ></textarea>
+                <button
+                  class="button-primary contact-submit contact-send"
+                  type="submit"
+                  data-contact-submit
+                  aria-label="שליחה"
+                >
+                  <svg class="contact-send-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M4.5 11.4 19.2 4.7c.54-.25 1.08.29.83.83l-6.7 14.7c-.28.61-1.16.55-1.36-.09l-1.68-5.3a1.1 1.1 0 0 0-.72-.72l-5.3-1.68c-.64-.2-.7-1.08-.09-1.36Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                  <span class="contact-send-label">שליחה</span>
+                </button>
+              </div>
+              <div class="contact-complete-actions">
+                <button class="button-primary contact-back" type="button" data-contact-back>
+                  חזור לאתר
+                </button>
+              </div>
               <p class="contact-privacy">
                 <span class="contact-privacy-lock" aria-hidden="true"></span>
                 המידע שלך מאובטח ופרטי
@@ -3380,6 +3413,7 @@
         const contactInput = document.querySelector("[data-contact-input]");
         const contactStatus = document.querySelector("[data-contact-status]");
         const contactSubmit = document.querySelector("[data-contact-submit]");
+        const contactBack = document.querySelector("[data-contact-back]");
         if (contactModal && contactModal.parentElement !== document.body) {
           document.body.appendChild(contactModal);
         }
@@ -3398,7 +3432,10 @@
         let contactInputResizeTimer = 0;
         let contactLayoutPinTimer = 0;
         let contactLayoutViewportHeight = 0;
+        let contactAgentAbortController = null;
+        let contactAgentRequestId = 0;
         let contactTypingIndicator = null;
+        let contactTypingTimer = 0;
         const contactChatState = {
           messages: [],
           intake: {},
@@ -3423,6 +3460,8 @@
         };
 
         const removeContactTypingIndicator = () => {
+          window.clearTimeout(contactTypingTimer);
+          contactTypingTimer = 0;
           if (!contactTypingIndicator) {
             return;
           }
@@ -3472,6 +3511,17 @@
           if (shouldFollowLatest) {
             scrollContactChat({ force: true });
           }
+        };
+
+        const scheduleContactTypingIndicator = (requestId) => {
+          window.clearTimeout(contactTypingTimer);
+          contactTypingTimer = window.setTimeout(() => {
+            if (requestId !== contactAgentRequestId || !contactChatState.submitting) {
+              return;
+            }
+
+            showContactTypingIndicator();
+          }, 520);
         };
 
         const normalizeContactAnswer = (value) => (
@@ -3645,10 +3695,9 @@
           rememberContactMessage(author, message);
         };
 
-        const setContactComposerEnabled = (enabled, options = {}) => {
-          const keepInputEditable = Boolean(options.keepInputEditable);
+        const setContactComposerEnabled = (enabled) => {
           if (contactInput) {
-            contactInput.disabled = !enabled && !keepInputEditable;
+            contactInput.disabled = !enabled;
           }
 
           if (contactSubmit) {
@@ -3696,7 +3745,18 @@
           });
         };
 
+        const cancelContactAgentReply = () => {
+          contactAgentRequestId += 1;
+          if (contactAgentAbortController) {
+            contactAgentAbortController.abort();
+            contactAgentAbortController = null;
+          }
+          contactChatState.submitting = false;
+          removeContactTypingIndicator();
+        };
+
         const resetContactChat = (options = {}) => {
+          cancelContactAgentReply();
           contactChatState.messages = [];
           contactChatState.intake = {};
           contactChatState.completed = false;
@@ -3858,14 +3918,22 @@
         };
 
         const requestContactAgentReply = async () => {
-          if (contactChatState.submitting || contactChatState.completed) {
+          if (contactChatState.completed) {
             return;
           }
 
+          if (contactAgentAbortController) {
+            contactAgentAbortController.abort();
+          }
+
+          const requestId = contactAgentRequestId + 1;
+          contactAgentRequestId = requestId;
+          contactAgentAbortController = new AbortController();
           contactChatState.submitting = true;
-          setContactComposerEnabled(false, { keepInputEditable: true });
+          setContactComposerEnabled(true);
           setContactStatus("");
-          showContactTypingIndicator();
+          removeContactTypingIndicator();
+          scheduleContactTypingIndicator(requestId);
 
           setContactSubmitLabel("שליחה");
 
@@ -3873,6 +3941,7 @@
             const response = await fetch("/api/contact/agent", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
+              signal: contactAgentAbortController.signal,
               body: JSON.stringify({
                 messages: contactChatState.messages,
                 page: window.location.href,
@@ -3882,6 +3951,10 @@
 
             if (!response.ok || !data.ok) {
               throw new Error(data.message || "סוכן הקליטה לא יכול לענות כרגע.");
+            }
+
+            if (requestId !== contactAgentRequestId) {
+              return;
             }
 
             removeContactTypingIndicator();
@@ -3896,6 +3969,9 @@
 
             if (contactChatState.readyToSubmit) {
               contactChatState.submitting = false;
+              if (requestId === contactAgentRequestId) {
+                contactAgentAbortController = null;
+              }
               await submitContactIntake(contactChatState.intake);
               return;
             }
@@ -3905,6 +3981,10 @@
               contactInput.placeholder = "הקלידו הודעה";
             }
           } catch (error) {
+            if (requestId !== contactAgentRequestId || error?.name === "AbortError") {
+              return;
+            }
+
             removeContactTypingIndicator();
             const fallback = contactChatState.started
               ? "יש לי כרגע בעיה להתחבר לחשיבה של הסוכן. אפשר לנסות שוב בעוד רגע."
@@ -3912,6 +3992,11 @@
             appendContactMessage("agent", fallback);
             setContactStatus(error.message || "סוכן הקליטה לא יכול לענות כרגע.", "error");
           } finally {
+            if (requestId !== contactAgentRequestId) {
+              return;
+            }
+
+            contactAgentAbortController = null;
             if (!contactChatState.completed && !contactChatState.readyToSubmit) {
               contactChatState.submitting = false;
               setContactComposerEnabled(true);
@@ -3928,12 +4013,7 @@
             return;
           }
 
-          if (contactChatState.submitting) {
-            setContactStatus("אפשר להמשיך לכתוב. עוד רגע יהיה אפשר לשלוח.", "");
-            return;
-          }
-
-          if (contactChatState.readyToSubmit) {
+          if (contactChatState.readyToSubmit && !contactChatState.submitting) {
             await submitContactIntake(contactChatState.intake);
             return;
           }
@@ -3945,6 +4025,7 @@
           }
 
           contactChatState.followLatest = true;
+          contactChatState.readyToSubmit = false;
           addContactMessage("user", answer);
           setContactStatus("");
 
@@ -4018,6 +4099,7 @@
           contactModal.dataset.state = "closing";
 
           const finishClose = () => {
+            cancelContactAgentReply();
             contactModal.hidden = true;
             delete contactModal.dataset.state;
             document.body.classList.remove("contact-modal-open");
@@ -4046,6 +4128,12 @@
             closeContactModal();
           });
         });
+
+        if (contactBack) {
+          contactBack.addEventListener("click", () => {
+            closeContactModal();
+          });
+        }
 
         if (contactModal) {
           contactModal.addEventListener("mousedown", (event) => {

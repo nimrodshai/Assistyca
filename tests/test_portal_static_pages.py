@@ -67,13 +67,17 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('window.matchMedia("(max-width: 640px)")', body)
         self.assertIn('window.visualViewport.addEventListener("scroll", keepContactLayoutPinned)', body)
 
-    def test_about_contact_modal_keeps_input_editable_while_agent_thinks(self) -> None:
+    def test_about_contact_modal_supports_steering_while_agent_thinks(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")
 
-        self.assertIn("keepInputEditable", body)
-        self.assertIn("setContactComposerEnabled(false, { keepInputEditable: true })", body)
-        self.assertIn("width: 0.52rem", body)
+        self.assertIn("contactAgentAbortController", body)
+        self.assertIn("scheduleContactTypingIndicator", body)
+        self.assertIn("setTimeout", body)
+        self.assertIn("signal: contactAgentAbortController.signal", body)
+        self.assertIn("data-contact-back", body)
+        self.assertIn("חזור לאתר", body)
+        self.assertNotIn('.contact-form[data-complete="true"] .contact-privacy', body)
 
 
 if __name__ == "__main__":

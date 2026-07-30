@@ -108,7 +108,6 @@ CONTACT_AGENT_DONE_REPLY = (
     "והשליחה המסודרת, הוא דוגמה קטנה לאיך אוטומציה עסקית יכולה לחסוך זמן "
     "ולעשות סדר בעבודה 🙂"
 )
-CONTACT_AGENT_CONTACT_CONFIRMATION_MISSING = "אישור פרטי קשר"
 CONTACT_OPPORTUNITY_OWNER_EMAIL = "nimrod.shai@gmail.com"
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
@@ -487,104 +486,6 @@ def normalize_contact_agent_response(value: dict[str, Any]) -> dict[str, Any]:
         "missing": missing,
         "intake": intake,
     }
-
-
-def contact_agent_reply_asks_question(value: dict[str, Any]) -> bool:
-    reply = normalize_contact_agent_text(value.get("reply"), 700)
-    return bool(reply and ("?" in reply or "؟" in reply))
-
-
-def contact_agent_contact_channel(intake: dict[str, Any]) -> tuple[str, str]:
-    phone = normalize_contact_agent_text(intake.get("phone"), CONTACT_CHANNEL_MAX_LENGTH)
-    email = normalize_email(intake.get("email", ""))
-    contact = normalize_contact_agent_text(intake.get("contact"), CONTACT_CHANNEL_MAX_LENGTH)
-    if phone:
-        return "מספר הטלפון", phone
-    if email:
-        return "האימייל", email
-    if contact:
-        if EMAIL_RE.match(contact):
-            return "האימייל", contact
-        if re.search(r"\d", contact):
-            return "מספר הטלפון", contact
-        return "פרטי הקשר", contact
-    return "פרטי הקשר", ""
-
-
-def contact_agent_asked_contact_confirmation(text: str) -> bool:
-    normalized = normalize_contact_agent_text(text)
-    if not normalized:
-        return False
-    has_confirmation_language = any(
-        token in normalized
-        for token in ("זה", "האם", "לוודא", "לאשר", "נכון")
-    )
-    has_contact_language = any(
-        token in normalized
-        for token in ("טלפון", "מספר", "אימייל", "מייל", "פרטי קשר")
-    )
-    return has_confirmation_language and has_contact_language
-
-
-def contact_agent_user_confirmed_contact(messages: list[dict[str, str]]) -> bool:
-    confirmation_question_index = -1
-    for index, message in enumerate(messages):
-        if message.get("author") == "agent" and contact_agent_asked_contact_confirmation(message.get("text", "")):
-            confirmation_question_index = index
-
-    if confirmation_question_index < 0:
-        return False
-
-    for message in messages[confirmation_question_index + 1:]:
-        if message.get("author") != "user":
-            continue
-
-        text = normalize_contact_agent_text(message.get("text", ""))
-        if not text:
-            continue
-        if re.search(r"\b(לא|טעיתי|שגוי|לתקן|תיקון)\b", text):
-            return False
-        if re.search(r"\b(כן|נכון|מאשר|מאשרת|בדיוק|אכן|סגור)\b", text) or any(
-            marker in text for marker in ("👍", "👌", "✅")
-        ):
-            return True
-
-    return False
-
-
-def enforce_contact_agent_completion_rules(
-    agent_payload: dict[str, Any],
-    raw_payload: dict[str, Any],
-    messages: list[dict[str, str]],
-) -> dict[str, Any]:
-    if not agent_payload.get("done"):
-        return agent_payload
-
-    if contact_agent_reply_asks_question(raw_payload):
-        guarded_payload = dict(agent_payload)
-        guarded_payload["done"] = False
-        guarded_payload["reply"] = normalize_contact_agent_text(raw_payload.get("reply"), 700)
-        guarded_payload["missing"] = list(dict.fromkeys([
-            *guarded_payload.get("missing", []),
-            "תשובה לשאלה האחרונה",
-        ]))[:6]
-        return guarded_payload
-
-    if contact_agent_user_confirmed_contact(messages):
-        return agent_payload
-
-    channel_label, channel_value = contact_agent_contact_channel(agent_payload.get("intake", {}))
-    guarded_payload = dict(agent_payload)
-    guarded_payload["done"] = False
-    guarded_payload["missing"] = list(dict.fromkeys([
-        *guarded_payload.get("missing", []),
-        CONTACT_AGENT_CONTACT_CONFIRMATION_MISSING,
-    ]))[:6]
-    if channel_value:
-        guarded_payload["reply"] = f"רק לוודא לפני שאני מעביר לנמרוד: זה {channel_label} הנכון שלך? {channel_value}"
-    else:
-        guarded_payload["reply"] = "כמעט סיימנו. מה הדרך הכי נוחה לנמרוד לחזור אליך - טלפון או אימייל?"
-    return guarded_payload
 
 
 def build_initial_contact_agent_response() -> dict[str, Any]:
@@ -1971,12 +1872,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            raw_agent_payload = parse_contact_agent_json(result.output_text)
-            agent_payload = enforce_contact_agent_completion_rules(
-                normalize_contact_agent_response(raw_agent_payload),
-                raw_agent_payload,
-                messages,
-            )
+            agent_payload = normalize_contact_agent_response(parse_contact_agent_json(result.output_text))
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"Contact intake agent returned invalid JSON: {exc}", flush=True)
             json_response(self, HTTPStatus.BAD_GATEWAY, {

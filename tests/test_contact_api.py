@@ -12,7 +12,6 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.openai_api import OpenAIConfigurationError
-from packages.infrastructure.portal_auth.server import CONTACT_AGENT_CONTACT_CONFIRMATION_MISSING
 from packages.infrastructure.portal_auth.server import CONTACT_AGENT_DONE_REPLY
 from packages.infrastructure.portal_auth.server import CONTACT_AGENT_INITIAL_REPLY
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -316,91 +315,6 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertTrue(payload["done"])
         self.assertEqual(payload["reply"], CONTACT_AGENT_DONE_REPLY)
         self.assertEqual(payload["intake"]["urgencyScore"], 80)
-
-    def test_contact_agent_requires_contact_confirmation_before_done(self) -> None:
-        agent_response = {
-            "reply": "תודה, נחזור אליך.",
-            "done": True,
-            "missing": [],
-            "intake": {
-                "name": "Noam",
-                "business": "WhatsApp scheduling",
-                "businessContext": "Books appointments by WhatsApp",
-                "painPoints": "Manual scheduling takes too much time",
-                "automationOpportunities": "Suggest available times and summarize leads",
-                "businessSummary": "WhatsApp scheduling business",
-                "painSummary": "Manual scheduling is slow",
-                "suggestedTool": "Scheduling intake bot",
-                "difficulty": "בינונית",
-                "urgency": "גבוהה",
-                "urgencyScore": 80,
-                "contact": "0507322341",
-                "email": "",
-                "phone": "0507322341",
-            },
-        }
-        with patch(
-            "packages.infrastructure.portal_auth.server.call_openai_response",
-            return_value=SimpleNamespace(output_text=json.dumps(agent_response)),
-        ):
-            status, payload = self._post_contact_agent({
-                "messages": [
-                    {"author": "agent", "text": "איך קוראים לך?"},
-                    {"author": "user", "text": "נועם"},
-                    {"author": "agent", "text": "מה העסק עושה?"},
-                    {"author": "user", "text": "קביעת תורים בוואטסאפ, הטלפון שלי 0507322341"},
-                ],
-                "page": "http://127.0.0.1/about",
-            })
-
-        self.assertEqual(status, 200)
-        self.assertTrue(payload["ok"])
-        self.assertFalse(payload["done"])
-        self.assertEqual(payload["missing"], [CONTACT_AGENT_CONTACT_CONFIRMATION_MISSING])
-        self.assertEqual(
-            payload["reply"],
-            "רק לוודא לפני שאני מעביר לנמרוד: זה מספר הטלפון הנכון שלך? 0507322341",
-        )
-
-    def test_contact_agent_does_not_lock_when_model_marks_question_done(self) -> None:
-        agent_response = {
-            "reply": "רק כדי לדייק, האם זה המספר הנכון שלך?",
-            "done": True,
-            "missing": [],
-            "intake": {
-                "name": "Noam",
-                "business": "WhatsApp scheduling",
-                "businessContext": "Books appointments by WhatsApp",
-                "painPoints": "Manual scheduling takes too much time",
-                "automationOpportunities": "Suggest available times and summarize leads",
-                "businessSummary": "WhatsApp scheduling business",
-                "painSummary": "Manual scheduling is slow",
-                "suggestedTool": "Scheduling intake bot",
-                "difficulty": "בינונית",
-                "urgency": "גבוהה",
-                "urgencyScore": 80,
-                "contact": "0507322341",
-                "email": "",
-                "phone": "0507322341",
-            },
-        }
-        with patch(
-            "packages.infrastructure.portal_auth.server.call_openai_response",
-            return_value=SimpleNamespace(output_text=json.dumps(agent_response)),
-        ):
-            status, payload = self._post_contact_agent({
-                "messages": [
-                    {"author": "agent", "text": "איך קוראים לך?"},
-                    {"author": "user", "text": "נועם"},
-                ],
-                "page": "http://127.0.0.1/about",
-            })
-
-        self.assertEqual(status, 200)
-        self.assertTrue(payload["ok"])
-        self.assertFalse(payload["done"])
-        self.assertEqual(payload["reply"], "רק כדי לדייק, האם זה המספר הנכון שלך?")
-        self.assertIn("תשובה לשאלה האחרונה", payload["missing"])
 
     def test_contact_agent_turn_uses_openai_gateway(self) -> None:
         agent_response = {
