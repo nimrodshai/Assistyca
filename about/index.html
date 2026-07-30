@@ -3488,6 +3488,7 @@
         const contactPhonePattern = /\+?\d[\d\s().-]{6,}\d/;
         const contactChatBottomTolerance = 28;
         const contactTypingDelayMs = 1520;
+        const contactKeyboardOffsetThreshold = 72;
         let contactScrollFrame = 0;
         let contactScrollAnimationFrame = 0;
         let contactScrollAnimating = false;
@@ -3758,9 +3759,22 @@
           contactPreserveKeyboardOnSubmit = true;
           window.clearTimeout(contactKeyboardHoldTimer);
           contactKeyboardHoldTimer = window.setTimeout(() => {
+            if (contactChatState.submitting) {
+              return;
+            }
+
             contactPreserveKeyboardOnSubmit = false;
+            syncContactInputFocusState();
           }, 900);
           return true;
+        };
+
+        const releaseContactKeyboardHoldAfterRefocus = () => {
+          window.clearTimeout(contactKeyboardHoldTimer);
+          contactKeyboardHoldTimer = window.setTimeout(() => {
+            contactPreserveKeyboardOnSubmit = false;
+            syncContactInputFocusState();
+          }, 520);
         };
 
         const refocusContactInputForKeyboard = () => {
@@ -3850,6 +3864,22 @@
           );
         };
 
+        const getContactVisualKeyboardOffset = (layoutHeight = contactLayoutViewportHeight) => {
+          const visualViewport = window.visualViewport;
+          if (!visualViewport || !contactMobileViewportQuery.matches || !layoutHeight) {
+            return 0;
+          }
+
+          const visualViewportBottom = visualViewport.height + visualViewport.offsetTop;
+          return Math.max(0, layoutHeight - visualViewportBottom);
+        };
+
+        const contactKeyboardAppearsOpen = () => (
+          getContactVisualKeyboardOffset(contactLayoutViewportHeight || getContactLayoutViewportHeight()) >
+            contactKeyboardOffsetThreshold ||
+          contactModal?.dataset.keyboard === "open"
+        );
+
         const syncContactViewportMetrics = (options = {}) => {
           if (!contactModal || contactModal.hidden || !contactMobileViewportQuery.matches) {
             resetContactViewportMetrics();
@@ -3857,23 +3887,26 @@
           }
 
           const visualViewport = window.visualViewport;
-          const inputFocused = document.activeElement === contactInput || contactPreserveKeyboardOnSubmit;
+          const inputFocused =
+            document.activeElement === contactInput ||
+            contactPreserveKeyboardOnSubmit ||
+            contactSubmitPointerPreserved ||
+            contactSubmitPointerSent;
           syncContactInputFocusState();
           const nextLayoutHeight = getContactLayoutViewportHeight();
-          if (options.reset || !contactLayoutViewportHeight || !inputFocused) {
+          const previousLayoutHeight = contactLayoutViewportHeight;
+          const keyboardGeometryActive =
+            getContactVisualKeyboardOffset(previousLayoutHeight) > contactKeyboardOffsetThreshold;
+          const shouldUseVisualViewport = inputFocused || keyboardGeometryActive;
+
+          if (options.reset || !previousLayoutHeight) {
             contactLayoutViewportHeight = nextLayoutHeight;
+          } else if (shouldUseVisualViewport) {
+            contactLayoutViewportHeight = Math.max(previousLayoutHeight, nextLayoutHeight);
           } else {
-            contactLayoutViewportHeight = Math.max(contactLayoutViewportHeight, nextLayoutHeight);
+            contactLayoutViewportHeight = nextLayoutHeight;
           }
 
-          const visualBottom = visualViewport
-            ? visualViewport.height + visualViewport.offsetTop
-            : contactLayoutViewportHeight;
-          const visualKeyboardOffset = visualViewport
-            ? Math.max(0, contactLayoutViewportHeight - visualBottom)
-            : 0;
-          const keyboardGeometryActive = Boolean(visualViewport) && visualKeyboardOffset > 72;
-          const shouldUseVisualViewport = inputFocused || keyboardGeometryActive;
           const rawVisibleHeight = visualViewport
             ? visualViewport.height
             : contactLayoutViewportHeight;
@@ -3885,11 +3918,14 @@
             : 0;
           const candidateVisibleBottom = shouldUseVisualViewport && visualViewport
             ? candidateViewportTop + candidateVisibleHeight
-            : visualBottom;
+            : contactLayoutViewportHeight;
           const candidateKeyboardOffset = shouldUseVisualViewport && visualViewport
             ? Math.max(0, contactLayoutViewportHeight - candidateVisibleBottom)
             : 0;
-          const keyboardOpen = Boolean(visualViewport) && shouldUseVisualViewport && candidateKeyboardOffset > 72;
+          const keyboardOpen =
+            Boolean(visualViewport) &&
+            shouldUseVisualViewport &&
+            candidateKeyboardOffset > contactKeyboardOffsetThreshold;
           const visibleHeight = keyboardOpen ? candidateVisibleHeight : contactLayoutViewportHeight;
           const viewportTop = keyboardOpen ? candidateViewportTop : 0;
           const keyboardOffset = keyboardOpen ? candidateKeyboardOffset : 0;
@@ -4452,6 +4488,7 @@
               setContactSubmitLabel("שליחה");
               if (keepKeyboardOpen) {
                 refocusContactInputForKeyboard();
+                releaseContactKeyboardHoldAfterRefocus();
               } else if (contactInput && !contactMobileViewportQuery.matches) {
                 contactInput.focus({ preventScroll: true });
               }
@@ -4498,6 +4535,17 @@
 
           await requestContactAgentReply({ keepKeyboardOpen });
         };
+
+        const shouldKeepContactKeyboardForSubmit = () => (
+          shouldKeepContactKeyboardOpen() &&
+          (
+            document.activeElement === contactInput ||
+            contactPreserveKeyboardOnSubmit ||
+            contactSubmitPointerPreserved ||
+            contactSubmitPointerSent ||
+            contactKeyboardAppearsOpen()
+          )
+        );
 
         const getContactFocusable = () => {
           if (!contactModal || contactModal.hidden || contactModal.dataset.state === "closing") {
@@ -4733,9 +4781,7 @@
           contactForm.addEventListener("submit", async (event) => {
             event.preventDefault();
             await handleContactReply({
-              keepKeyboardOpen:
-                shouldKeepContactKeyboardOpen() &&
-                (document.activeElement === contactInput || contactPreserveKeyboardOnSubmit),
+              keepKeyboardOpen: shouldKeepContactKeyboardForSubmit(),
             });
           });
         }
