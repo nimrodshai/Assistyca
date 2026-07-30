@@ -84,6 +84,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("keepKeyboardOpen", body)
         self.assertIn("pointerdown", body)
         self.assertIn("contactSubmitPointerPreserved", body)
+        self.assertNotIn("scrollbar-gutter: stable", body)
         self.assertIn("data-contact-back", body)
         self.assertIn("חזור לאתר", body)
         self.assertNotIn('.contact-form[data-complete="true"] .contact-privacy', body)
