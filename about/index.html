@@ -1410,6 +1410,8 @@
         direction: rtl;
         text-align: right;
         unicode-bidi: plaintext;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
         background:
           linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 255, 255, 0.94));
         box-shadow:
@@ -1422,6 +1424,12 @@
           background 160ms ease,
           box-shadow 160ms ease,
           transform 160ms ease;
+      }
+
+      .contact-message-input::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+        display: none;
       }
 
       .contact-message-input:focus {
