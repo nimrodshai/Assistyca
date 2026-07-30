@@ -2424,7 +2424,17 @@
         }
 
         .hero[data-mobile-visual-hidden] .hero-actions {
-          margin-right: 1rem;
+          justify-self: center;
+          justify-items: center;
+          width: min(calc(100% - 2rem), 18rem);
+          margin-left: auto;
+          margin-right: auto;
+          text-align: center;
+        }
+
+        .hero[data-mobile-visual-hidden] .hero-actions .button-primary,
+        .hero[data-mobile-visual-hidden] .hero-actions .button-secondary {
+          justify-self: center;
         }
 
         .about-spotlight {
