@@ -56,7 +56,6 @@
         --accent-soft: rgba(106, 167, 163, 0.14);
         --sand: #d8d0c2;
         --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
-        --contact-keyboard-accessory-offset: 0px;
         --contact-keyboard-offset: 0px;
         --contact-mobile-viewport-top: 0px;
         --contact-mobile-viewport-height: 100svh;
@@ -3391,9 +3390,6 @@
         const contactAnimationMs = 340;
         const contactMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
         const contactMobileViewportQuery = window.matchMedia("(max-width: 640px)");
-        const contactIOSViewport = /iP(ad|hone|od)/.test(navigator.platform || "") ||
-          (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) ||
-          /iP(ad|hone|od)/.test(navigator.userAgent || "");
         const contactEmailPattern = /[^\s@<>]+@[^\s@<>]+\.[^\s@<>.,;:]+/;
         const contactPhonePattern = /\+?\d[\d\s().-]{6,}\d/;
         const contactChatBottomTolerance = 28;
@@ -3522,7 +3518,6 @@
         const resetContactViewportMetrics = () => {
           contactLayoutViewportHeight = 0;
           window.clearTimeout(contactLayoutPinTimer);
-          document.documentElement.style.removeProperty("--contact-keyboard-accessory-offset");
           document.documentElement.style.removeProperty("--contact-keyboard-offset");
           document.documentElement.style.removeProperty("--contact-mobile-viewport-top");
           document.documentElement.style.removeProperty("--contact-mobile-viewport-height");
@@ -3563,14 +3558,8 @@
           const rawVisibleHeight = visualViewport
             ? visualViewport.height
             : contactLayoutViewportHeight;
-          const keyboardLikelyOpen = contactIOSViewport && inputFocused && visualViewport
-            ? contactLayoutViewportHeight - rawVisibleHeight > 80
-            : false;
-          const keyboardAccessoryOffset = keyboardLikelyOpen
-            ? Math.min(80, Math.max(48, Math.round(contactLayoutViewportHeight * 0.075)))
-            : 0;
           const visibleHeight = inputFocused && visualViewport
-            ? Math.max(320, Math.min(contactLayoutViewportHeight, rawVisibleHeight - keyboardAccessoryOffset))
+            ? Math.max(320, Math.min(contactLayoutViewportHeight, rawVisibleHeight))
             : contactLayoutViewportHeight;
           const viewportTop = inputFocused && visualViewport
             ? Math.max(0, Math.min(contactLayoutViewportHeight - visibleHeight, visualViewport.offsetTop))
@@ -3593,10 +3582,6 @@
           document.documentElement.style.setProperty(
             "--contact-mobile-visible-height",
             `${Math.round(visibleHeight)}px`,
-          );
-          document.documentElement.style.setProperty(
-            "--contact-keyboard-accessory-offset",
-            `${Math.round(keyboardAccessoryOffset)}px`,
           );
           document.documentElement.style.setProperty(
             "--contact-keyboard-offset",
