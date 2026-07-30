@@ -1,0 +1,16 @@
+name: Refresh Token Prices
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warm standalone token pricing API
+        run: |
+          curl -fsS "$TOKEN_PRICES_URL"
+        env:
+          TOKEN_PRICES_URL: https://assistyca-token-prices.onrender.com/api/openai/prices?refresh=1
