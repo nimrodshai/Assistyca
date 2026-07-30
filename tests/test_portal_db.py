@@ -126,6 +126,11 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertAlmostEqual(current_month["chargeUsd"], 0.13)
         self.assertAlmostEqual(current_month["baseCostUsd"], 0.09)
         self.assertEqual(current_month["usageCount"], 2)
+        self.assertNotIn("markupMultiplier", report)
+        self.assertNotIn("inputTokenPriceMultiplier", report)
+        self.assertNotIn("outputTokenPriceMultiplier", report)
+        self.assertNotIn("inputTokenPriceMultiplier", report["billingPlan"])
+        self.assertNotIn("outputTokenPriceMultiplier", report["billingPlan"])
 
     def test_whatsapp_conversation_summary_includes_message_count(self) -> None:
         database = PortalDatabase(self.db_path)

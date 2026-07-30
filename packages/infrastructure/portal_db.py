@@ -5011,12 +5011,6 @@ class PortalDatabase:
         billing = user["billing"]
         currency = normalize_text(billing.get("currency")) or self.default_billing_plan.currency
         minimum_monthly_cents = int(billing.get("monthlyMinimumCents") or self.default_billing_plan.monthly_minimum_cents)
-        input_multiplier = float(
-            billing.get("inputTokenPriceMultiplier") or self.default_billing_plan.input_token_price_multiplier
-        )
-        output_multiplier = float(
-            billing.get("outputTokenPriceMultiplier") or self.default_billing_plan.output_token_price_multiplier
-        )
 
         month_rows: dict[str, dict[str, Any]] = {}
         for event in events:
@@ -5267,16 +5261,11 @@ class PortalDatabase:
             "currency": currency,
             "source": "database",
             "sourceLabel": "Latest billing data",
-            "markupMultiplier": input_multiplier,
-            "inputTokenPriceMultiplier": input_multiplier,
-            "outputTokenPriceMultiplier": output_multiplier,
             "minimumMonthlyCharge": round(minimum_monthly_cents / 100, 2),
             "registeredAt": user.get("registeredAt"),
             "billingPlan": {
                 "currency": currency,
                 "monthlyMinimumCents": minimum_monthly_cents,
-                "inputTokenPriceMultiplier": input_multiplier,
-                "outputTokenPriceMultiplier": output_multiplier,
             },
             "currentMonth": current_month,
             "history": history,

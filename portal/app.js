@@ -64,7 +64,6 @@ const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
 const META_WHATSAPP_ACCOUNTS_URL = "https://business.facebook.com/latest/settings/whatsapp_account";
 const SAVED_ACCESS_TOKEN_FIELD_VALUE = "................";
-const DEFAULT_BILLING_MULTIPLIER = 1.5;
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
 const MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier";
@@ -84,7 +83,6 @@ const LEGACY_DEFAULT_FEATURE_DESCRIPTION_PATTERNS = [
 ];
 const BILLING_MODEL_COLORS = ["#17958a", "#2f7de1", "#d49a3a", "#8c96a3"];
 const DEFAULT_FEATURE_PRICING = {
-  billingMultiplier: DEFAULT_BILLING_MULTIPLIER,
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
 };
 const PHONE_PLACEHOLDER_BY_COUNTRY = {
@@ -141,15 +139,10 @@ const MANUAL_PRICING_SNAPSHOT = {
       modelName: "GPT-5.4 Nano",
       description: "For lightweight automations and high-volume tasks where efficiency matters most.",
       useCases: ["Short prompts", "Extraction", "Classification"],
-      openai: {
-        inputUsdPer1MTokens: 0.2,
-        outputUsdPer1MTokens: 1.25,
-      },
       ours: {
         inputUsdPer1MTokens: 0.3,
         outputUsdPer1MTokens: 1.875,
       },
-      totalOpenAIUsdPer1MTokens: 1.45,
       totalOurUsdPer1MTokens: 2.175,
     },
     {
@@ -158,15 +151,10 @@ const MANUAL_PRICING_SNAPSHOT = {
       modelName: "GPT-5.4 Mini",
       description: "For everyday assistants that need stronger quality than nano without paying for the full flagship tier.",
       useCases: ["General replies", "Summaries", "Routine drafting"],
-      openai: {
-        inputUsdPer1MTokens: 0.75,
-        outputUsdPer1MTokens: 4.5,
-      },
       ours: {
         inputUsdPer1MTokens: 1.125,
         outputUsdPer1MTokens: 6.75,
       },
-      totalOpenAIUsdPer1MTokens: 5.25,
       totalOurUsdPer1MTokens: 7.875,
     },
     {
@@ -177,15 +165,10 @@ const MANUAL_PRICING_SNAPSHOT = {
       useCases: ["Client replies", "Workflow agents", "Daily operations"],
       featured: true,
       highlightLabel: "Most popular",
-      openai: {
-        inputUsdPer1MTokens: 2.5,
-        outputUsdPer1MTokens: 15,
-      },
       ours: {
         inputUsdPer1MTokens: 3.75,
         outputUsdPer1MTokens: 22.5,
       },
-      totalOpenAIUsdPer1MTokens: 17.5,
       totalOurUsdPer1MTokens: 26.25,
     },
     {
@@ -194,15 +177,10 @@ const MANUAL_PRICING_SNAPSHOT = {
       modelName: "GPT-5.5",
       description: "For the most demanding tasks, deeper reasoning, and higher-stakes outputs.",
       useCases: ["Deep reasoning", "Long context", "Critical drafting"],
-      openai: {
-        inputUsdPer1MTokens: 5,
-        outputUsdPer1MTokens: 30,
-      },
       ours: {
         inputUsdPer1MTokens: 7.5,
         outputUsdPer1MTokens: 45,
       },
-      totalOpenAIUsdPer1MTokens: 35,
       totalOurUsdPer1MTokens: 52.5,
     },
   ],
@@ -743,7 +721,6 @@ const elements = {
   billingModelList: document.querySelector("#billingModelList"),
   billingHistoryCount: document.querySelector("#billingHistoryCount"),
   billingHistoryList: document.querySelector("#billingHistoryList"),
-  pricingMultiplierValue: document.querySelector("#pricingMultiplierValue"),
   pricingCardCount: document.querySelector("#pricingCardCount"),
   pricingSourceType: document.querySelector("#pricingSourceType"),
   pricingStatusBanner: document.querySelector("#pricingStatusBanner"),
@@ -2066,15 +2043,6 @@ function normalizeAccountProfile(profile = {}) {
 function normalizeFeaturePricing(pricing = {}) {
   const source = pricing && typeof pricing === "object" ? pricing : {};
   return {
-    billingMultiplier: Math.max(
-      0,
-      Number(
-        source.billingMultiplier
-        ?? source.billing_multiplier
-        ?? source.multiplier
-        ?? DEFAULT_FEATURE_PRICING.billingMultiplier,
-      ),
-    ) || DEFAULT_FEATURE_PRICING.billingMultiplier,
     minimumMonthlyCharge: Math.max(
       0,
       Number(
@@ -2439,7 +2407,7 @@ function buildFeatureExample(feature = getSelectedFeature()) {
 function buildFeatureEditorHint(feature = getSelectedFeature()) {
   const pricing = getFeaturePricing(feature);
   const accountMinimum = Math.max(DEFAULT_BILLING_MINIMUM, Number(pricing.minimumMonthlyCharge || 0) || 0);
-  return `Open the editor before payment. This tool bills at ${pricing.billingMultiplier.toFixed(1)}x token cost, and your account has a ${formatCurrency(accountMinimum, "USD")} monthly minimum across all tools.`;
+  return `Open the editor before payment. This tool bills by usage, and your account has a ${formatCurrency(accountMinimum, "USD")} monthly minimum across all tools.`;
 }
 
 function buildWhatsAppConfigHint() {
@@ -4662,13 +4630,6 @@ function normalizeBillingReport(report = {}) {
   const currentMonth = normalizeBillingMonth(report.currentMonth || {});
   const history = Array.isArray(report.history) ? report.history.map(normalizeBillingMonth) : [];
   const billingPlan = report && typeof report.billingPlan === "object" ? report.billingPlan : {};
-  const markupMultiplier = Number(report.markupMultiplier ?? billingPlan.markupMultiplier ?? 1.5) || 1.5;
-  const inputTokenPriceMultiplier = Number(
-    report.inputTokenPriceMultiplier ?? billingPlan.inputTokenPriceMultiplier ?? markupMultiplier,
-  ) || markupMultiplier;
-  const outputTokenPriceMultiplier = Number(
-    report.outputTokenPriceMultiplier ?? billingPlan.outputTokenPriceMultiplier ?? markupMultiplier,
-  ) || markupMultiplier;
   const billingPlanMinimumCents = Number(billingPlan.monthlyMinimumCents ?? NaN);
   const minimumMonthlyCharge = Number(
     report.minimumMonthlyCharge ?? (Number.isFinite(billingPlanMinimumCents) ? billingPlanMinimumCents / 100 : DEFAULT_BILLING_MINIMUM),
@@ -4681,9 +4642,6 @@ function normalizeBillingReport(report = {}) {
     ok: Boolean(report.ok),
     email: normalizeEmail(report.email || activeEmail),
     currency,
-    markupMultiplier,
-    inputTokenPriceMultiplier,
-    outputTokenPriceMultiplier,
     minimumMonthlyCharge,
     source: String(report.source || "empty"),
     sourceLabel: String(report.sourceLabel || "").trim()
@@ -4701,32 +4659,14 @@ function normalizeBillingReport(report = {}) {
     billingPlan: {
       currency,
       monthlyMinimumCents: Number.isFinite(billingPlanMinimumCents) ? Math.max(0, Math.round(billingPlanMinimumCents)) : Math.round(minimumMonthlyCharge * 100),
-      inputTokenPriceMultiplier,
-      outputTokenPriceMultiplier,
     },
     asOf: String(report.asOf || "").trim(),
   };
 }
 
 function getBillingPolicyLabel(report) {
-  const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
-  const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
   const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, report?.currency || "USD");
-  if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `Billed at ${inputMultiplier.toFixed(1)}x the token cost · ${minimum} monthly minimum across all tools`;
-  }
-
-  return `Billed at ${inputMultiplier.toFixed(1)}x input token cost · ${outputMultiplier.toFixed(1)}x output token cost · ${minimum} monthly minimum across all tools`;
-}
-
-function getBillingPricingLabel(report) {
-  const inputMultiplier = Number(report?.inputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
-  const outputMultiplier = Number(report?.outputTokenPriceMultiplier || report?.markupMultiplier || 1.5) || 1.5;
-  if (Math.abs(inputMultiplier - outputMultiplier) < 0.0001) {
-    return `${inputMultiplier.toFixed(1)}x the token cost`;
-  }
-
-  return `${inputMultiplier.toFixed(1)}x input token cost and ${outputMultiplier.toFixed(1)}x output token cost`;
+  return `Usage-based billing · ${minimum} monthly minimum across all tools`;
 }
 
 function buildBillingToolCatalog() {
@@ -4931,12 +4871,11 @@ function buildBillingSummaryText(report) {
 }
 
 function buildBillingHelpBody(report) {
-  const pricingLabel = getBillingPricingLabel(report);
   const minimum = formatCurrency(report?.minimumMonthlyCharge || DEFAULT_BILLING_MINIMUM, report?.currency || "USD");
   const nextPaymentDate = formatBillingDate(getNextBillingPaymentDate(report));
   const helpLines = [
     "We add up usage across all of your tools each month.",
-    `The rate is ${pricingLabel}, so cheaper models cost less and more expensive models cost more. Your account has a ${minimum} monthly minimum across all tools combined.`,
+    `Each model has its own input and output usage rate. Your account has a ${minimum} monthly minimum across all tools combined.`,
     `If the month’s usage total stays below ${minimum}, we charge ${minimum}. Once usage goes above it, you pay the higher usage-based total.`,
   ];
 
@@ -6581,8 +6520,6 @@ function normalizePricingSnapshot(snapshot = {}) {
     ...MANUAL_PRICING_SNAPSHOT,
     ...source,
     cards,
-    inputMultiplier: Number(source.inputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER,
-    outputMultiplier: Number(source.outputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER,
   };
 }
 
@@ -6609,13 +6546,6 @@ function updatePricingPanel() {
 
   if (elements.pricingCardCount) {
     elements.pricingCardCount.textContent = String(cards.length || 0);
-  }
-  if (elements.pricingMultiplierValue) {
-    const inputMultiplier = Number(snapshot.inputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER;
-    const outputMultiplier = Number(snapshot.outputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER;
-    elements.pricingMultiplierValue.textContent = Math.abs(inputMultiplier - outputMultiplier) < 0.0001
-      ? `${inputMultiplier.toFixed(1)}x`
-      : `${inputMultiplier.toFixed(1)}x / ${outputMultiplier.toFixed(1)}x`;
   }
   if (elements.pricingSourceType) {
     elements.pricingSourceType.textContent = hasError ? "Fallback pricing" : getPricingSourceLabel(snapshot);

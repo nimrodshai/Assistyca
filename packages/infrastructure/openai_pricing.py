@@ -658,10 +658,6 @@ def serialize_pricing_snapshot(
                 "useCases": copy.get("useCases", []),
                 "featured": bool(copy.get("featured")),
                 "highlightLabel": normalize_text(copy.get("highlightLabel")),
-                "openai": {
-                    "inputUsdPer1MTokens": float(model.input_usd_per_1m_tokens),
-                    "outputUsdPer1MTokens": float(model.output_usd_per_1m_tokens),
-                },
                 "ours": {
                     "inputUsdPer1MTokens": float(
                         (model.input_usd_per_1m_tokens * Decimal(str(input_multiplier))).quantize(
@@ -676,7 +672,6 @@ def serialize_pricing_snapshot(
                         )
                     ),
                 },
-                "totalOpenAIUsdPer1MTokens": float(model.total_usd_per_1m_tokens),
                 "totalOurUsdPer1MTokens": float(
                     (
                         model.input_usd_per_1m_tokens * Decimal(str(input_multiplier))
@@ -692,8 +687,6 @@ def serialize_pricing_snapshot(
         "endpointUrl": normalize_text(snapshot.get("endpointUrl")) or None,
         "fetchedAt": snapshot.get("fetchedAt"),
         "refreshWindowDays": DEFAULT_PRICING_REFRESH_DAYS,
-        "inputMultiplier": float(input_multiplier),
-        "outputMultiplier": float(output_multiplier),
         "cards": cards,
     }
 

@@ -357,7 +357,6 @@ def build_billing_report(
         "ok": True,
         "email": normalized_email,
         "currency": currency,
-        "markupMultiplier": markup_multiplier,
         "minimumMonthlyCharge": round(minimum_monthly_charge, 2),
         "source": source,
         "registeredAt": registered_at,

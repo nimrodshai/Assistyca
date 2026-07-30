@@ -168,6 +168,10 @@ class OpenAIPricingTests(unittest.TestCase):
             "gpt-5.4-mini",
             "gpt-5.5",
         ])
+        self.assertNotIn("inputMultiplier", snapshot)
+        self.assertNotIn("outputMultiplier", snapshot)
+        self.assertTrue(all("openai" not in card for card in snapshot["cards"]))
+        self.assertTrue(all("totalOpenAIUsdPer1MTokens" not in card for card in snapshot["cards"]))
 
         synced_row = self.database.get_model_price("gpt-5.4-nano")
         self.assertIsNotNone(synced_row)
@@ -192,7 +196,7 @@ class OpenAIPricingTests(unittest.TestCase):
         self.assertAlmostEqual(price["input_price_cents_per_1k_tokens"], 0.02)
         self.assertAlmostEqual(price["output_price_cents_per_1k_tokens"], 0.125)
 
-    def test_build_pricing_snapshot_json_applies_markup_and_syncs_database(self) -> None:
+    def test_build_pricing_snapshot_json_applies_customer_rates_and_syncs_database(self) -> None:
         snapshot = build_pricing_snapshot_json(
             self.database,
             input_multiplier=1.5,
@@ -207,9 +211,10 @@ class OpenAIPricingTests(unittest.TestCase):
 
         lean_card = snapshot["cards"][0]
         self.assertEqual(lean_card["modelId"], "gpt-5.4-nano")
-        self.assertAlmostEqual(lean_card["openai"]["inputUsdPer1MTokens"], 0.2)
         self.assertAlmostEqual(lean_card["ours"]["inputUsdPer1MTokens"], 0.3)
         self.assertAlmostEqual(lean_card["ours"]["outputUsdPer1MTokens"], 1.875)
+        self.assertNotIn("openai", lean_card)
+        self.assertNotIn("totalOpenAIUsdPer1MTokens", lean_card)
 
         synced_row = self.database.get_model_price("gpt-5.5")
         self.assertIsNotNone(synced_row)
