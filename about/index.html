@@ -3477,6 +3477,8 @@
         const contactChatBottomTolerance = 28;
         const contactTypingDelayMs = 1520;
         let contactScrollFrame = 0;
+        let contactScrollAnimationFrame = 0;
+        let contactScrollAnimating = false;
         let contactInputResizeFrame = 0;
         let contactInputResizeTimer = 0;
         let contactLayoutFrame = 0;
@@ -3566,7 +3568,7 @@
           contactChatLog.appendChild(row);
 
           if (shouldFollowLatest) {
-            scrollContactChat({ force: true });
+            scrollContactChat({ force: true, animated: true });
           }
         };
 
@@ -3602,22 +3604,70 @@
           );
         };
 
+        const animateContactChatScroll = (targetTop) => {
+          if (!contactChatLog) {
+            return;
+          }
+
+          window.cancelAnimationFrame(contactScrollAnimationFrame);
+          const startTop = contactChatLog.scrollTop;
+          const distance = targetTop - startTop;
+          if (Math.abs(distance) < 2 || contactMotionQuery.matches) {
+            contactChatLog.scrollTop = targetTop;
+            contactScrollAnimating = false;
+            return;
+          }
+
+          const duration = Math.min(360, Math.max(180, Math.abs(distance) * 0.38));
+          const startTime = performance.now();
+          contactScrollAnimating = true;
+
+          const step = (now) => {
+            const progress = Math.min(1, (now - startTime) / duration);
+            const eased = 1 - Math.pow(1 - progress, 3);
+            contactChatLog.scrollTop = startTop + distance * eased;
+
+            if (progress < 1) {
+              contactScrollAnimationFrame = window.requestAnimationFrame(step);
+              return;
+            }
+
+            contactChatLog.scrollTop = targetTop;
+            contactScrollAnimationFrame = 0;
+            contactScrollAnimating = false;
+          };
+
+          contactScrollAnimationFrame = window.requestAnimationFrame(step);
+        };
+
         const scrollContactChat = (options = {}) => {
           if (!contactChatLog) {
             return;
           }
 
           const force = Boolean(options.force);
+          const animated = Boolean(options.animated);
           if (!force && !contactChatState.followLatest && !contactChatIsNearBottom()) {
             return;
           }
 
           contactChatState.followLatest = true;
-          contactChatLog.scrollTop = contactChatLog.scrollHeight;
+          const targetTop = Math.max(0, contactChatLog.scrollHeight - contactChatLog.clientHeight);
+          if (animated) {
+            animateContactChatScroll(targetTop);
+          } else {
+            window.cancelAnimationFrame(contactScrollAnimationFrame);
+            contactScrollAnimating = false;
+            contactChatLog.scrollTop = targetTop;
+          }
           window.cancelAnimationFrame(contactScrollFrame);
           contactScrollFrame = window.requestAnimationFrame(() => {
             if (contactChatState.followLatest || contactChatIsNearBottom()) {
-              contactChatLog.scrollTop = contactChatLog.scrollHeight;
+              if (animated) {
+                animateContactChatScroll(Math.max(0, contactChatLog.scrollHeight - contactChatLog.clientHeight));
+              } else {
+                contactChatLog.scrollTop = Math.max(0, contactChatLog.scrollHeight - contactChatLog.clientHeight);
+              }
             }
           });
         };
@@ -3683,10 +3733,13 @@
 
         const resetContactViewportMetrics = () => {
           contactLayoutViewportHeight = 0;
+          window.cancelAnimationFrame(contactScrollAnimationFrame);
           window.cancelAnimationFrame(contactLayoutFrame);
           window.clearTimeout(contactLayoutPinTimer);
           window.clearTimeout(contactKeyboardFocusTimer);
           window.clearTimeout(contactKeyboardHoldTimer);
+          contactScrollAnimationFrame = 0;
+          contactScrollAnimating = false;
           contactPreserveKeyboardOnSubmit = false;
           contactSubmitPointerPreserved = false;
           contactSubmitPointerSent = false;
@@ -4501,11 +4554,17 @@
 
         if (contactChatLog) {
           contactChatLog.addEventListener("scroll", () => {
+            if (contactScrollAnimating) {
+              return;
+            }
+
             const isNearBottom = contactChatIsNearBottom();
             contactChatState.followLatest = isNearBottom;
             if (!isNearBottom) {
               window.cancelAnimationFrame(contactScrollFrame);
+              window.cancelAnimationFrame(contactScrollAnimationFrame);
               contactScrollFrame = 0;
+              contactScrollAnimationFrame = 0;
             }
           });
         }
