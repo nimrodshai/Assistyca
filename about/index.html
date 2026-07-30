@@ -1215,6 +1215,10 @@
         scrollbar-color: rgba(106, 167, 163, 0.34) transparent;
       }
 
+      .contact-chat-thread > .contact-message:first-child {
+        margin-top: auto;
+      }
+
       .contact-message {
         display: grid;
         width: 100%;
@@ -2902,11 +2906,6 @@
             height var(--contact-mobile-keyboard-transition) cubic-bezier(0.2, 0, 0, 1),
             max-height var(--contact-mobile-keyboard-transition) cubic-bezier(0.2, 0, 0, 1);
           will-change: height, max-height;
-        }
-
-        .contact-modal[data-input-focused="true"] .contact-chat-thread > .contact-message:first-child,
-        .contact-modal[data-keyboard="open"] .contact-chat-thread > .contact-message:first-child {
-          margin-top: auto;
         }
 
         .contact-message[data-author="agent"] {
