@@ -2407,6 +2407,26 @@
           transform: translate(0.25rem, -0.18rem);
         }
 
+        .hero[data-mobile-visual-measuring] .hero-visual {
+          visibility: hidden;
+        }
+
+        .hero[data-mobile-visual-hidden] {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas:
+            "title"
+            "subtitle"
+            "actions";
+        }
+
+        .hero[data-mobile-visual-hidden] .hero-visual {
+          display: none;
+        }
+
+        .hero[data-mobile-visual-hidden] .hero-actions {
+          margin-right: 1rem;
+        }
+
         .about-spotlight {
           display: grid;
           grid-template-columns: 1fr;
@@ -3182,6 +3202,77 @@
         updateHeaderSpace();
         window.addEventListener("resize", updateHeaderSpace);
         window.addEventListener("load", updateHeaderSpace);
+
+        const hero = document.querySelector(".hero");
+        const heroActions = document.querySelector(".hero-actions");
+        const heroVisual = document.querySelector(".hero-visual");
+        const heroVisualImage = heroVisual ? heroVisual.querySelector("img") : null;
+        const heroMobileVisualQuery = window.matchMedia("(max-width: 380px)");
+        let heroVisualCollisionFrame = 0;
+
+        const rectanglesOverlap = (first, second, buffer = 0) => (
+          first.left < second.right + buffer
+          && first.right > second.left - buffer
+          && first.top < second.bottom + buffer
+          && first.bottom > second.top - buffer
+        );
+
+        const syncHeroVisualCollision = () => {
+          if (!hero || !heroActions || !heroVisualImage) {
+            return;
+          }
+
+          if (heroVisualCollisionFrame) {
+            window.cancelAnimationFrame(heroVisualCollisionFrame);
+          }
+
+          heroVisualCollisionFrame = window.requestAnimationFrame(() => {
+            heroVisualCollisionFrame = 0;
+
+            if (!heroMobileVisualQuery.matches) {
+              hero.removeAttribute("data-mobile-visual-hidden");
+              hero.removeAttribute("data-mobile-visual-measuring");
+              return;
+            }
+
+            const wasHidden = hero.hasAttribute("data-mobile-visual-hidden");
+            if (wasHidden) {
+              hero.setAttribute("data-mobile-visual-measuring", "true");
+            }
+            hero.removeAttribute("data-mobile-visual-hidden");
+
+            const imageRect = heroVisualImage.getBoundingClientRect();
+            const actionTargets = Array.from(heroActions.querySelectorAll("a, button"));
+            const hasVisibleImage = imageRect.width > 0 && imageRect.height > 0;
+            const collidesWithButton = hasVisibleImage && actionTargets.some((target) => {
+              const targetRect = target.getBoundingClientRect();
+              return targetRect.width > 0
+                && targetRect.height > 0
+                && rectanglesOverlap(imageRect, targetRect, 8);
+            });
+
+            hero.removeAttribute("data-mobile-visual-measuring");
+            if (collidesWithButton) {
+              hero.setAttribute("data-mobile-visual-hidden", "true");
+            }
+          });
+        };
+
+        syncHeroVisualCollision();
+        window.addEventListener("resize", syncHeroVisualCollision);
+        window.addEventListener("orientationchange", syncHeroVisualCollision);
+        window.addEventListener("load", syncHeroVisualCollision);
+        if (typeof heroMobileVisualQuery.addEventListener === "function") {
+          heroMobileVisualQuery.addEventListener("change", syncHeroVisualCollision);
+        } else if (typeof heroMobileVisualQuery.addListener === "function") {
+          heroMobileVisualQuery.addListener(syncHeroVisualCollision);
+        }
+        if (heroVisualImage && !heroVisualImage.complete) {
+          heroVisualImage.addEventListener("load", syncHeroVisualCollision, { once: true });
+        }
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(syncHeroVisualCollision).catch(() => {});
+        }
 
         const menuToggle = document.querySelector("[data-nav-toggle]");
         const mobileNav = document.querySelector("#site-navigation");
