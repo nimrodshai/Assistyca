@@ -1199,13 +1199,18 @@
         position: relative;
         min-height: 0;
         padding: 1.45rem 1.55rem 1.2rem;
-        overflow-y: auto;
+        overflow-y: hidden;
         overscroll-behavior: contain;
         background:
           radial-gradient(circle at 12% 0%, rgba(106, 167, 163, 0.08), transparent 26%),
           radial-gradient(circle at 88% 12%, rgba(216, 208, 194, 0.22), transparent 26%),
           linear-gradient(180deg, #fbfcfb, #f7f9f8);
         scrollbar-color: rgba(106, 167, 163, 0.34) transparent;
+      }
+
+      .contact-chat-thread[data-scrollable="true"] {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
       }
 
       .contact-chat-stack {
@@ -3498,6 +3503,7 @@
         let contactPreserveKeyboardOnSubmit = false;
         let contactSubmitPointerPreserved = false;
         let contactSubmitPointerSent = false;
+        let contactChatTouchStartY = 0;
         let contactAgentAbortController = null;
         let contactAgentRequestId = 0;
         let contactTypingIndicator = null;
@@ -3573,6 +3579,7 @@
           row.appendChild(bubble);
           contactTypingIndicator = row;
           contactChatStack.appendChild(row);
+          syncContactChatScrollable();
 
           if (shouldFollowLatest) {
             scrollContactChat({ force: true, animated: true });
@@ -3598,8 +3605,39 @@
           new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(new Date())
         );
 
+        const contactChatHasOverflow = () => (
+          Boolean(contactChatLog) &&
+          contactChatLog.scrollHeight - contactChatLog.clientHeight > 2
+        );
+
+        const syncContactChatScrollable = () => {
+          if (!contactChatLog) {
+            return false;
+          }
+
+          const isScrollable = contactChatHasOverflow();
+          if (isScrollable) {
+            contactChatLog.dataset.scrollable = "true";
+          } else {
+            delete contactChatLog.dataset.scrollable;
+            contactChatLog.scrollTop = 0;
+            contactChatState.followLatest = true;
+            window.cancelAnimationFrame(contactScrollFrame);
+            window.cancelAnimationFrame(contactScrollAnimationFrame);
+            contactScrollFrame = 0;
+            contactScrollAnimationFrame = 0;
+            contactScrollAnimating = false;
+          }
+
+          return isScrollable;
+        };
+
         const contactChatIsNearBottom = () => {
           if (!contactChatLog) {
+            return true;
+          }
+
+          if (!contactChatHasOverflow()) {
             return true;
           }
 
@@ -3659,6 +3697,10 @@
           }
 
           contactChatState.followLatest = true;
+          if (!syncContactChatScrollable()) {
+            return;
+          }
+
           const targetTop = Math.max(0, contactChatLog.scrollHeight - contactChatLog.clientHeight);
           if (animated) {
             animateContactChatScroll(targetTop);
@@ -3925,6 +3967,7 @@
           bubble.style.removeProperty("transform");
           bubble.style.removeProperty("transform-origin");
           bubble.style.removeProperty("transition");
+          syncContactChatScrollable();
           if (contactChatState.followLatest) {
             scrollContactChat({ force: true });
           }
@@ -4037,6 +4080,7 @@
 
           row.appendChild(bubble);
           contactChatStack.appendChild(row);
+          syncContactChatScrollable();
           if (shouldFollowLatest) {
             scrollContactChat({ force: true });
           }
@@ -4098,6 +4142,7 @@
           contactInput.style.height = "auto";
           contactInput.style.height = `${Math.min(Math.ceil(contactInput.scrollHeight) + 2, maxHeight)}px`;
           contactInput.scrollTop = contactInput.scrollHeight;
+          syncContactChatScrollable();
 
           if (shouldFollowLatest) {
             scrollContactChat({ force: true });
@@ -4138,6 +4183,7 @@
           if (contactChatStack) {
             contactChatStack.innerHTML = "";
           }
+          syncContactChatScrollable();
 
           if (contactForm) {
             delete contactForm.dataset.complete;
@@ -4580,6 +4626,33 @@
         }
 
         if (contactChatLog) {
+          contactChatLog.addEventListener("touchstart", (event) => {
+            contactChatTouchStartY = event.touches && event.touches.length > 0
+              ? event.touches[0].clientY
+              : 0;
+          }, { passive: true });
+
+          contactChatLog.addEventListener("touchmove", (event) => {
+            const isScrollable = syncContactChatScrollable();
+            if (!isScrollable) {
+              event.preventDefault();
+              return;
+            }
+
+            const nextTouchY = event.touches && event.touches.length > 0
+              ? event.touches[0].clientY
+              : contactChatTouchStartY;
+            const touchDeltaY = nextTouchY - contactChatTouchStartY;
+            const atTop = contactChatLog.scrollTop <= 0;
+            const atBottom =
+              contactChatLog.scrollTop + contactChatLog.clientHeight >=
+              contactChatLog.scrollHeight - 1;
+
+            if ((atTop && touchDeltaY > 0) || (atBottom && touchDeltaY < 0)) {
+              event.preventDefault();
+            }
+          }, { passive: false });
+
           contactChatLog.addEventListener("scroll", () => {
             if (contactScrollAnimating) {
               return;
@@ -4693,6 +4766,7 @@
 
             syncContactViewportMetrics();
             resizeContactInput();
+            syncContactChatScrollable();
             if (contactChatState.followLatest) {
               scrollContactChat({ force: true });
             }
@@ -4706,6 +4780,7 @@
 
             syncContactViewportMetrics();
             resizeContactInput();
+            syncContactChatScrollable();
             if (contactChatState.followLatest) {
               scrollContactChat({ force: true });
             }
