@@ -1282,6 +1282,10 @@
         display: inline-flex;
         align-items: center;
         gap: 0.34rem;
+        transform-origin: center;
+        transition:
+          opacity 160ms ease,
+          transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
       }
 
       .contact-typing-dot {
@@ -1299,6 +1303,28 @@
 
       .contact-typing-dot:nth-child(3) {
         animation-delay: 240ms;
+      }
+
+      .contact-message[data-morphing-reply="true"] .contact-message-bubble {
+        overflow: hidden;
+      }
+
+      .contact-message[data-morphing-reply="true"] .contact-typing {
+        opacity: 0;
+        transform: scale(0.72);
+      }
+
+      .contact-message-bubble p,
+      .contact-message-bubble .contact-message-time {
+        transition:
+          opacity 180ms ease,
+          transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .contact-message-bubble[data-reveal="pending"] p,
+      .contact-message-bubble[data-reveal="pending"] .contact-message-time {
+        opacity: 0;
+        transform: translateY(0.22rem);
       }
 
       .contact-message[data-author="user"] .contact-message-bubble {
@@ -3747,6 +3773,166 @@
           );
         };
 
+        const populateContactMessageBubble = (bubble, message, options = {}) => {
+          bubble.replaceChildren();
+          bubble.dir = "auto";
+          bubble.removeAttribute("aria-hidden");
+          if (options.reveal) {
+            bubble.dataset.reveal = "pending";
+          } else {
+            delete bubble.dataset.reveal;
+          }
+
+          const text = document.createElement("p");
+          text.textContent = message;
+          text.dir = "auto";
+          bubble.appendChild(text);
+
+          const time = document.createElement("span");
+          time.className = "contact-message-time";
+          time.textContent = getContactTime();
+          bubble.appendChild(time);
+        };
+
+        const measureContactBubbleSize = (row, bubble) => {
+          if (!contactChatLog) {
+            return { width: 0, height: 0 };
+          }
+
+          const rowRect = row.getBoundingClientRect();
+          const measureRow = document.createElement("div");
+          measureRow.className = row.className;
+          measureRow.dataset.author = "agent";
+          measureRow.style.position = "absolute";
+          measureRow.style.visibility = "hidden";
+          measureRow.style.pointerEvents = "none";
+          measureRow.style.left = "0";
+          measureRow.style.top = "0";
+          measureRow.style.width = `${Math.ceil(rowRect.width || contactChatLog.clientWidth)}px`;
+
+          const avatar = row.querySelector(".contact-message-avatar");
+          if (avatar) {
+            measureRow.appendChild(avatar.cloneNode(true));
+          }
+
+          const bubbleClone = bubble.cloneNode(true);
+          bubbleClone.removeAttribute("style");
+          delete bubbleClone.dataset.reveal;
+          measureRow.appendChild(bubbleClone);
+          contactChatLog.appendChild(measureRow);
+          const bubbleRect = bubbleClone.getBoundingClientRect();
+          measureRow.remove();
+
+          return {
+            width: Math.ceil(bubbleRect.width),
+            height: Math.ceil(bubbleRect.height),
+          };
+        };
+
+        const revealMorphedContactBubble = (bubble) => {
+          window.requestAnimationFrame(() => {
+            delete bubble.dataset.reveal;
+          });
+        };
+
+        const cleanupMorphedContactBubble = (row, bubble) => {
+          delete row.dataset.morphingReply;
+          bubble.style.removeProperty("width");
+          bubble.style.removeProperty("height");
+          bubble.style.removeProperty("min-width");
+          bubble.style.removeProperty("min-height");
+          bubble.style.removeProperty("overflow");
+          bubble.style.removeProperty("transform");
+          bubble.style.removeProperty("transform-origin");
+          bubble.style.removeProperty("transition");
+          if (contactChatState.followLatest) {
+            scrollContactChat({ force: true });
+          }
+        };
+
+        const morphContactTypingIndicatorToMessage = (message) => {
+          if (!contactTypingIndicator) {
+            appendContactMessage("agent", message);
+            return;
+          }
+
+          const row = contactTypingIndicator;
+          const bubble = row.querySelector(".contact-message-bubble");
+          if (!bubble) {
+            removeContactTypingIndicator();
+            appendContactMessage("agent", message);
+            return;
+          }
+
+          window.clearTimeout(contactTypingTimer);
+          contactTypingTimer = 0;
+          contactTypingIndicator = null;
+
+          const shouldFollowLatest = contactChatState.followLatest || contactChatIsNearBottom();
+          const startRect = bubble.getBoundingClientRect();
+          const startWidth = Math.max(1, Math.ceil(startRect.width));
+          const startHeight = Math.max(1, Math.ceil(startRect.height));
+
+          row.dataset.morphingReply = "true";
+          if (shouldFollowLatest) {
+            scrollContactChat({ force: true });
+          }
+
+          const finishImmediately = () => {
+            delete row.dataset.typing;
+            delete row.dataset.morphingReply;
+            row.removeAttribute("role");
+            row.removeAttribute("aria-label");
+            populateContactMessageBubble(bubble, message);
+            if (shouldFollowLatest) {
+              scrollContactChat({ force: true });
+            }
+          };
+
+          if (contactMotionQuery.matches) {
+            finishImmediately();
+            return;
+          }
+
+          window.setTimeout(() => {
+            delete row.dataset.typing;
+            row.removeAttribute("role");
+            row.removeAttribute("aria-label");
+            populateContactMessageBubble(bubble, message, { reveal: true });
+            const finalSize = measureContactBubbleSize(row, bubble);
+            const finalWidth = Math.max(1, finalSize.width || startWidth);
+            const finalHeight = Math.max(1, finalSize.height || startHeight);
+
+            bubble.style.width = `${startWidth}px`;
+            bubble.style.height = `${startHeight}px`;
+            bubble.style.minWidth = `${startWidth}px`;
+            bubble.style.minHeight = `${startHeight}px`;
+            bubble.style.overflow = "hidden";
+            bubble.style.transformOrigin = "top left";
+            bubble.style.transform = "scale(0.98)";
+            bubble.style.transition = [
+              "width 320ms cubic-bezier(0.16, 1, 0.3, 1)",
+              "height 320ms cubic-bezier(0.16, 1, 0.3, 1)",
+              "min-width 320ms cubic-bezier(0.16, 1, 0.3, 1)",
+              "min-height 320ms cubic-bezier(0.16, 1, 0.3, 1)",
+              "transform 320ms cubic-bezier(0.16, 1, 0.3, 1)",
+            ].join(", ");
+
+            window.requestAnimationFrame(() => {
+              bubble.style.width = `${finalWidth}px`;
+              bubble.style.height = `${finalHeight}px`;
+              bubble.style.minWidth = `${finalWidth}px`;
+              bubble.style.minHeight = `${finalHeight}px`;
+              bubble.style.transform = "scale(1)";
+              window.setTimeout(() => revealMorphedContactBubble(bubble), 120);
+              window.setTimeout(() => cleanupMorphedContactBubble(row, bubble), 380);
+              if (shouldFollowLatest) {
+                scrollContactChat({ force: true });
+              }
+            });
+          }, 160);
+        };
+
         const appendContactMessage = (author, message) => {
           if (!contactChatLog) {
             return;
@@ -3767,17 +3953,7 @@
 
           const bubble = document.createElement("div");
           bubble.className = "contact-message-bubble";
-          bubble.dir = "auto";
-
-          const text = document.createElement("p");
-          text.textContent = message;
-          text.dir = "auto";
-          bubble.appendChild(text);
-
-          const time = document.createElement("span");
-          time.className = "contact-message-time";
-          time.textContent = getContactTime();
-          bubble.appendChild(time);
+          populateContactMessageBubble(bubble, message);
 
           row.appendChild(bubble);
           contactChatLog.appendChild(row);
@@ -3801,6 +3977,11 @@
         const addContactMessage = (author, message) => {
           appendContactMessage(author, message);
           rememberContactMessage(author, message);
+        };
+
+        const addContactAgentMessage = (message) => {
+          morphContactTypingIndicatorToMessage(message);
+          rememberContactMessage("agent", message);
         };
 
         const setContactComposerEnabled = (enabled) => {
@@ -4069,10 +4250,11 @@
               return;
             }
 
-            removeContactTypingIndicator();
             const reply = normalizeContactAnswer(data.reply);
             if (reply) {
-              addContactMessage("agent", reply);
+              addContactAgentMessage(reply);
+            } else {
+              removeContactTypingIndicator();
             }
 
             contactChatState.intake = data.intake && typeof data.intake === "object" ? data.intake : {};
