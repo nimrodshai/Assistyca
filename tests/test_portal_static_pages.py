@@ -67,6 +67,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("position: fixed;", body)
         self.assertIn("lockContactPageScroll", body)
         self.assertIn("contactModal.dataset.keyboard", body)
+        self.assertIn('.contact-modal[data-keyboard="open"] .contact-chat-thread > .contact-message:first-child', body)
+        self.assertIn("margin-top: auto", body)
         self.assertIn('window.matchMedia("(max-width: 640px)")', body)
         self.assertIn('window.visualViewport.addEventListener("scroll", keepContactLayoutPinned)', body)
 
