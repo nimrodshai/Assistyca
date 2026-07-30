@@ -58,6 +58,7 @@
         --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
         --contact-keyboard-offset: 0px;
         --contact-mobile-viewport-height: 100svh;
+        --contact-mobile-visible-height: 100svh;
       }
 
       * {
@@ -2734,9 +2735,23 @@
           overflow: hidden;
         }
 
+        .contact-modal::after {
+          content: "";
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: var(--contact-keyboard-offset);
+          background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.97), #ffffff);
+          z-index: 0;
+          pointer-events: none;
+        }
+
         .contact-panel {
+          z-index: 1;
           width: 100%;
-          height: var(--contact-mobile-viewport-height);
+          height: var(--contact-mobile-visible-height);
           max-height: none;
           border: 0;
           border-radius: 0;
@@ -2779,8 +2794,8 @@
 
         .contact-chat-thread {
           gap: 0.86rem;
-          padding: 1rem 0.82rem calc(1rem + var(--contact-keyboard-offset));
-          scroll-padding-bottom: calc(1rem + var(--contact-keyboard-offset));
+          padding: 1rem 0.82rem 0.82rem;
+          scroll-padding-bottom: 0.82rem;
         }
 
         .contact-message[data-author="agent"] {
@@ -2814,14 +2829,11 @@
           grid-template-columns: minmax(0, 1fr) auto;
           gap: 0.56rem;
           padding: 0.74rem 0.82rem calc(0.86rem + env(safe-area-inset-bottom, 0px));
-          transform: translateY(calc(-1 * var(--contact-keyboard-offset)));
-          will-change: transform;
         }
 
         .contact-status {
           position: relative;
           z-index: 2;
-          transform: translateY(calc(-1 * var(--contact-keyboard-offset)));
           background: rgba(255, 255, 255, 0.92);
         }
 
@@ -3476,6 +3488,7 @@
           contactLayoutViewportHeight = 0;
           document.documentElement.style.removeProperty("--contact-keyboard-offset");
           document.documentElement.style.removeProperty("--contact-mobile-viewport-height");
+          document.documentElement.style.removeProperty("--contact-mobile-visible-height");
         };
 
         const getContactLayoutViewportHeight = () => {
@@ -3512,10 +3525,17 @@
           const keyboardOffset = inputFocused && visualViewport
             ? Math.max(0, contactLayoutViewportHeight - visualBottom)
             : 0;
+          const visibleHeight = inputFocused
+            ? Math.max(320, Math.min(contactLayoutViewportHeight, visualBottom))
+            : contactLayoutViewportHeight;
 
           document.documentElement.style.setProperty(
             "--contact-mobile-viewport-height",
             `${Math.round(contactLayoutViewportHeight)}px`,
+          );
+          document.documentElement.style.setProperty(
+            "--contact-mobile-visible-height",
+            `${Math.round(visibleHeight)}px`,
           );
           document.documentElement.style.setProperty(
             "--contact-keyboard-offset",
