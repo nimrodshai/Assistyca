@@ -3567,7 +3567,7 @@
             ? contactLayoutViewportHeight - rawVisibleHeight > 80
             : false;
           const keyboardAccessoryOffset = keyboardLikelyOpen
-            ? Math.min(150, Math.max(112, Math.round(contactLayoutViewportHeight * 0.16)))
+            ? Math.min(80, Math.max(48, Math.round(contactLayoutViewportHeight * 0.075)))
             : 0;
           const visibleHeight = inputFocused && visualViewport
             ? Math.max(320, Math.min(contactLayoutViewportHeight, rawVisibleHeight - keyboardAccessoryOffset))

@@ -60,6 +60,7 @@ class PortalStaticPageTests(unittest.TestCase):
 
         self.assertIn("--contact-keyboard-offset", body)
         self.assertIn("--contact-keyboard-accessory-offset", body)
+        self.assertIn("Math.min(80, Math.max(48", body)
         self.assertIn("--contact-mobile-viewport-top", body)
         self.assertIn("--contact-mobile-viewport-height", body)
         self.assertIn("--contact-mobile-visible-height", body)
