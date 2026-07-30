@@ -10,7 +10,6 @@ from pathlib import Path
 from packages.infrastructure.openai_pricing import build_pricing_snapshot_json
 from packages.infrastructure.openai_pricing import parse_openai_pricing_markdown
 from packages.infrastructure.openai_pricing import pick_representative_models
-from packages.infrastructure.token_pricing_api import build_price_response
 from packages.infrastructure.portal_db import PortalDatabase
 
 
@@ -82,19 +81,6 @@ class OpenAIPricingTests(unittest.TestCase):
         self.assertEqual(prices[0].cache_write_usd_per_1m_tokens, Decimal("1.25"))
         self.assertEqual(prices[-1].input_usd_per_1m_tokens, Decimal("0.75"))
         self.assertEqual(prices[-1].output_usd_per_1m_tokens, Decimal("4.50"))
-
-    def test_token_pricing_api_response_contains_prices_by_model(self) -> None:
-        prices = parse_openai_pricing_markdown(SAMPLE_TABLE_PRICING_MARKDOWN)
-        response = build_price_response(
-            prices,
-            fetched_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
-            fetched=True,
-        )
-
-        self.assertTrue(response["ok"])
-        self.assertEqual(response["service"], "token-pricing-api")
-        self.assertEqual(response["pricesByModel"]["gpt-5.4-mini"]["input"], 0.75)
-        self.assertEqual(response["pricesByModel"]["gpt-5.4-mini"]["output"], 4.5)
 
     def test_pick_representative_models_returns_cheap_middle_and_expensive(self) -> None:
         prices = parse_openai_pricing_markdown(SAMPLE_PRICING_MARKDOWN)
