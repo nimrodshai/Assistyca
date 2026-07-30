@@ -31,6 +31,8 @@ services:
         value: "1.5"
       - key: PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE
         value: "50"
+      - key: TOKEN_PRICES_API_OPENAI_PRICES_URL
+        value: https://token-prices-api.onrender.com/api/openai/prices
       - key: PORTAL_WHATSAPP_REENGAGEMENT_ENABLED
         value: "1"
       - key: PORTAL_WHATSAPP_REENGAGEMENT_TIMEZONE

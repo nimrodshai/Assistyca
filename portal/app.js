@@ -568,6 +568,8 @@ let billingHelpCloseTimer = null;
 let billingHelpReturnFocus = null;
 let billingRefreshPromise = null;
 let billingLastRefreshCompletedAt = 0;
+let pricingRefreshPromise = null;
+let pricingLastRefreshCompletedAt = 0;
 let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
@@ -6572,20 +6574,73 @@ function createPricingEmptyState(message, meta = "") {
   return empty;
 }
 
+function normalizePricingSnapshot(snapshot = {}) {
+  const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const cards = Array.isArray(source.cards) ? source.cards : [];
+  return {
+    ...MANUAL_PRICING_SNAPSHOT,
+    ...source,
+    cards,
+    inputMultiplier: Number(source.inputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER,
+    outputMultiplier: Number(source.outputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER,
+  };
+}
+
+function getPricingSourceLabel(snapshot) {
+  const source = String(snapshot?.source || "").trim();
+  if (source === "token-prices-api") {
+    return "Live pricing";
+  }
+  if (source === "database") {
+    return "Cached pricing";
+  }
+  if (source === "manual") {
+    return "Manual fallback";
+  }
+  return source ? formatDisplayNameFromId(source) : "Pricing";
+}
+
 function updatePricingPanel() {
   const snapshot = state.pricingSnapshot && typeof state.pricingSnapshot === "object"
-    ? state.pricingSnapshot
+    ? normalizePricingSnapshot(state.pricingSnapshot)
     : MANUAL_PRICING_SNAPSHOT;
   const cards = Array.isArray(snapshot?.cards) ? snapshot.cards : [];
+  const hasError = Boolean(state.pricingError);
 
   if (elements.pricingCardCount) {
     elements.pricingCardCount.textContent = String(cards.length || 0);
+  }
+  if (elements.pricingMultiplierValue) {
+    const inputMultiplier = Number(snapshot.inputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER;
+    const outputMultiplier = Number(snapshot.outputMultiplier || DEFAULT_BILLING_MULTIPLIER) || DEFAULT_BILLING_MULTIPLIER;
+    elements.pricingMultiplierValue.textContent = Math.abs(inputMultiplier - outputMultiplier) < 0.0001
+      ? `${inputMultiplier.toFixed(1)}x`
+      : `${inputMultiplier.toFixed(1)}x / ${outputMultiplier.toFixed(1)}x`;
+  }
+  if (elements.pricingSourceType) {
+    elements.pricingSourceType.textContent = hasError ? "Fallback pricing" : getPricingSourceLabel(snapshot);
+  }
+  if (elements.pricingStatusBanner) {
+    elements.pricingStatusBanner.classList.toggle("is-warn", hasError);
+    elements.pricingStatusBanner.classList.toggle("is-loading", state.pricingLoading);
+    elements.pricingStatusBanner.setAttribute("aria-busy", String(state.pricingLoading));
+  }
+  if (elements.pricingStatusMessage) {
+    elements.pricingStatusMessage.textContent = hasError
+      ? state.pricingError
+      : state.pricingLoading ? "Loading pricing..." : "Pricing is up to date.";
+  }
+  if (elements.pricingStatusMeta) {
+    const fetchedAt = formatBillingDate(snapshot.fetchedAt);
+    elements.pricingStatusMeta.textContent = fetchedAt
+      ? `${getPricingSourceLabel(snapshot)} refreshed ${fetchedAt}.`
+      : getPricingSourceLabel(snapshot);
   }
 
   if (elements.pricingCardGrid) {
     if (!cards.length) {
       const message = "Pricing cards are not available right now.";
-      const meta = "Add manual prices to MANUAL_PRICING_SNAPSHOT in portal/app.js.";
+      const meta = hasError ? state.pricingError : "Pricing will appear once token prices are available.";
       elements.pricingCardGrid.replaceChildren(createPricingEmptyState(message, meta));
     } else {
       elements.pricingCardGrid.replaceChildren(...cards.map((card) => buildPricingCard(card)));
@@ -6594,12 +6649,72 @@ function updatePricingPanel() {
 }
 
 async function refreshPricingSnapshot(options = {}) {
-  state.pricingSnapshot = MANUAL_PRICING_SNAPSHOT;
-  state.pricingLoading = false;
+  if (!authSession?.token) {
+    state.pricingSnapshot = MANUAL_PRICING_SNAPSHOT;
+    state.pricingLoading = false;
+    state.pricingError = "";
+    if (options.render !== false) {
+      renderApp();
+    }
+    return state.pricingSnapshot;
+  }
+
+  if (pricingRefreshPromise) {
+    return pricingRefreshPromise;
+  }
+
+  const force = Boolean(options.force);
+  if (
+    !force
+    && state.pricingSnapshot
+    && !state.pricingError
+    && Date.now() - pricingLastRefreshCompletedAt < BILLING_ENTRY_REFRESH_COOLDOWN_MS
+  ) {
+    return state.pricingSnapshot;
+  }
+
+  const requestToken = String(authSession.token);
+  state.pricingLoading = true;
   state.pricingError = "";
   if (options.render !== false) {
     renderApp();
   }
+
+  pricingRefreshPromise = (async () => {
+    try {
+      const response = await apiRequest("/api/pricing", {
+        headers: {
+          Authorization: `Bearer ${requestToken}`,
+        },
+      });
+
+      if (String(authSession?.token || "") !== requestToken) {
+        return null;
+      }
+
+      state.pricingSnapshot = normalizePricingSnapshot(response);
+      state.pricingError = "";
+      pricingLastRefreshCompletedAt = Date.now();
+      return state.pricingSnapshot;
+    } catch (error) {
+      if (String(authSession?.token || "") !== requestToken) {
+        return null;
+      }
+      state.pricingSnapshot = MANUAL_PRICING_SNAPSHOT;
+      state.pricingError = formatApiErrorMessage(error, "We couldn’t load live pricing right now.");
+      return state.pricingSnapshot;
+    } finally {
+      pricingRefreshPromise = null;
+      if (String(authSession?.token || "") === requestToken) {
+        state.pricingLoading = false;
+        if (options.render !== false) {
+          renderApp();
+        }
+      }
+    }
+  })();
+
+  return pricingRefreshPromise;
 }
 
 function buildAdminFeatureSummary(feature) {

@@ -18,6 +18,7 @@ from typing import Callable
 from typing import Optional
 from typing import Sequence
 from typing import Tuple
+from typing import Union
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -28,7 +29,10 @@ DEFAULT_OPENAI_TIMEOUT_SECONDS = 60.0
 DEFAULT_OPENAI_CURRENCY = "USD"
 
 OpenAIEventSink = Callable[[dict[str, Any]], None]
-OpenAIPriceResolver = Callable[[str], Optional[Tuple[Optional[float], Optional[float]]]]
+OpenAIPriceResolver = Callable[
+    [str],
+    Optional[Union[dict[str, Any], Tuple[Optional[float], Optional[float]]]],
+]
 
 
 class OpenAIError(RuntimeError):
@@ -490,12 +494,21 @@ class OpenAIGateway:
         price_row: Any = None
 
         if input_price is None or output_price is None:
+            synced_price_row = self._sync_usage_recorder_price(model)
+            if isinstance(synced_price_row, dict):
+                price_row = synced_price_row
+                source = "pricing_sync"
+
             if self.price_resolver is not None:
-                price_row = self.price_resolver(model)
-                source = "resolver"
+                resolved_row = self.price_resolver(model)
+                if resolved_row is not None:
+                    price_row = resolved_row
+                    source = "resolver"
             elif hasattr(self.usage_recorder, "get_model_price"):
-                price_row = self.usage_recorder.get_model_price(model)
-                source = "usage_recorder"
+                resolved_row = self.usage_recorder.get_model_price(model)
+                if resolved_row is not None:
+                    price_row = resolved_row
+                    source = "usage_recorder"
 
         if isinstance(price_row, dict):
             input_price = (
@@ -539,6 +552,22 @@ class OpenAIGateway:
             "currency": currency or self.config.default_currency,
             "source": source or "explicit",
         }
+
+    def _sync_usage_recorder_price(self, model: str) -> dict[str, Any] | None:
+        if self.usage_recorder is None:
+            return None
+        if (
+            not hasattr(self.usage_recorder, "get_model_price")
+            or not hasattr(self.usage_recorder, "upsert_model_price")
+        ):
+            return None
+
+        try:
+            from packages.infrastructure.openai_pricing import resolve_current_openai_model_price
+
+            return resolve_current_openai_model_price(self.usage_recorder, model)
+        except Exception:
+            return None
 
     def _should_count_input_tokens(self, request: OpenAIRequest) -> bool:
         if request.count_input_tokens is not None:

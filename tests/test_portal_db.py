@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 from packages.infrastructure.portal_db import PortalDatabase
@@ -77,6 +79,53 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertIsNotNone(gpt_54)
         self.assertAlmostEqual(gpt_54["input_price_cents_per_1k_tokens"], 0.25)
         self.assertAlmostEqual(gpt_54["output_price_cents_per_1k_tokens"], 1.5)
+
+    def test_billing_report_uses_usage_event_price_snapshots_after_price_change(self) -> None:
+        database = PortalDatabase(self.db_path, default_monthly_minimum_cents=0)
+        database.register_user("owner@example.com")
+
+        first_event = database.record_usage(
+            "owner@example.com",
+            "gpt-5.5",
+            tool_id="assistant",
+            used_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            input_tokens=1000,
+            output_tokens=1000,
+        )
+        database.upsert_model_price(
+            "gpt-5.5",
+            input_price_cents_per_1k_tokens=1.0,
+            output_price_cents_per_1k_tokens=4.0,
+            provider="openai",
+            notes="new provider price",
+        )
+        second_event = database.record_usage(
+            "owner@example.com",
+            "gpt-5.5",
+            tool_id="assistant",
+            used_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+            input_tokens=1000,
+            output_tokens=1000,
+        )
+
+        self.assertAlmostEqual(first_event["inputPriceCentsPer1kTokens"], 0.5)
+        self.assertAlmostEqual(first_event["outputPriceCentsPer1kTokens"], 3.0)
+        self.assertAlmostEqual(first_event["rawChargeCents"], 5.25)
+        self.assertAlmostEqual(second_event["inputPriceCentsPer1kTokens"], 1.0)
+        self.assertAlmostEqual(second_event["outputPriceCentsPer1kTokens"], 4.0)
+        self.assertAlmostEqual(second_event["rawChargeCents"], 7.5)
+
+        report = database.build_billing_report(
+            "owner@example.com",
+            reference_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+
+        self.assertIsNotNone(report)
+        current_month = report["currentMonth"]
+        self.assertAlmostEqual(current_month["usageChargeUsd"], 0.13)
+        self.assertAlmostEqual(current_month["chargeUsd"], 0.13)
+        self.assertAlmostEqual(current_month["baseCostUsd"], 0.09)
+        self.assertEqual(current_month["usageCount"], 2)
 
     def test_whatsapp_conversation_summary_includes_message_count(self) -> None:
         database = PortalDatabase(self.db_path)

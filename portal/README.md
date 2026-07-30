@@ -89,6 +89,7 @@ Required environment variables on Render:
 - `PORTAL_BILLING_DATA_PATH` optional path to a JSON billing ledger used only as a sample fallback. It defaults to `portal/billing.sample.json`.
 - `PORTAL_BILLING_MINIMUM_MONTHLY_CHARGE` sets the minimum monthly charge floor across the whole account. The default is `50`.
 - `PORTAL_BILLING_CURRENCY` controls the display currency. The default is `USD`.
+- `TOKEN_PRICES_API_OPENAI_PRICES_URL` points to the shared token pricing API used to refresh OpenAI model prices. The default is `https://token-prices-api.onrender.com/api/openai/prices`.
 - `LEMON_SQUEEZY_API_KEY` for subscription lookups and hosted checkout creation
 - `LEMON_SQUEEZY_STORE_ID` for the Lemon Squeezy store
 - `LEMON_SQUEEZY_ACTIVATION_VARIANT_ID` for the subscription or plan that should unlock feature activation

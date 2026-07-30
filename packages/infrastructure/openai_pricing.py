@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
@@ -17,7 +19,9 @@ from packages.infrastructure.portal_db import PortalDatabase
 
 
 OPENAI_PRICING_MARKDOWN_URL = "https://developers.openai.com/api/docs/pricing.md"
-DEFAULT_PRICING_REFRESH_DAYS = 30
+TOKEN_PRICES_API_OPENAI_PRICES_URL = "https://token-prices-api.onrender.com/api/openai/prices"
+TOKEN_PRICES_API_OPENAI_PRICES_URL_ENV = "TOKEN_PRICES_API_OPENAI_PRICES_URL"
+DEFAULT_PRICING_REFRESH_DAYS = 1
 USD_PER_1M_QUANT = Decimal("0.0001")
 REPRESENTATIVE_MODEL_FAMILY_PREFIX = "gpt-5"
 
@@ -269,6 +273,140 @@ def fetch_openai_pricing_markdown(
         raise OpenAIPricingError(f"Could not load OpenAI pricing markdown: {exc}") from exc
 
 
+def resolve_token_prices_api_url(url: str | None = None) -> str:
+    configured_url = normalize_text(
+        url if url is not None else os.getenv(TOKEN_PRICES_API_OPENAI_PRICES_URL_ENV)
+    )
+    return configured_url or TOKEN_PRICES_API_OPENAI_PRICES_URL
+
+
+def fetch_token_prices_api_payload(
+    *,
+    url: str | None = None,
+    timeout_seconds: float = 20.0,
+) -> dict[str, Any]:
+    endpoint_url = resolve_token_prices_api_url(url)
+    request = urllib_request.Request(
+        endpoint_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "AssistycaPricingSync/1.0",
+        },
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        raise OpenAIPricingError(f"Token pricing API returned HTTP {exc.code}.") from exc
+    except urllib_error.URLError as exc:
+        raise OpenAIPricingError(f"Could not load token pricing API: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise OpenAIPricingError("Token pricing API returned invalid JSON.") from exc
+
+    if not isinstance(payload, dict):
+        raise OpenAIPricingError("Token pricing API returned an unexpected response.")
+    return payload
+
+
+def first_present_value(source: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def iter_token_prices_api_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_prices = payload.get("prices")
+    if isinstance(raw_prices, list):
+        return [dict(row) for row in raw_prices if isinstance(row, dict)]
+
+    prices_by_model = payload.get("pricesByModel") or payload.get("prices_by_model")
+    if not isinstance(prices_by_model, dict):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for model_name, raw_price in prices_by_model.items():
+        if not isinstance(raw_price, dict):
+            continue
+        row = dict(raw_price)
+        row.setdefault("model", model_name)
+        rows.append(row)
+    return rows
+
+
+def parse_token_prices_api_response(payload: dict[str, Any]) -> list[OpenAIModelPrice]:
+    if not isinstance(payload, dict):
+        raise OpenAIPricingError("Token pricing API payload must be an object.")
+    if payload.get("ok") is False:
+        message = normalize_text(payload.get("error") or payload.get("message"))
+        raise OpenAIPricingError(message or "Token pricing API returned an error.")
+
+    prices: list[OpenAIModelPrice] = []
+    for row in iter_token_prices_api_rows(payload):
+        display_name = normalize_text(
+            first_present_value(row, "displayName", "display_name", "name", "model")
+        )
+        model_id = normalize_model_id(
+            first_present_value(row, "model", "modelId", "model_id") or display_name
+        )
+        if not model_id:
+            continue
+
+        input_price = parse_decimal(
+            first_present_value(
+                row,
+                "input",
+                "input_usd_per_1m",
+                "inputUsdPer1M",
+                "inputUsdPer1MTokens",
+            )
+        )
+        output_price = parse_decimal(
+            first_present_value(
+                row,
+                "output",
+                "output_usd_per_1m",
+                "outputUsdPer1M",
+                "outputUsdPer1MTokens",
+            )
+        )
+        if input_price is None or output_price is None:
+            continue
+
+        prices.append(
+            OpenAIModelPrice(
+                model_id=model_id,
+                display_name=display_name or model_id,
+                tier=normalize_text(row.get("tier")) or "standard",
+                input_usd_per_1m_tokens=input_price,
+                output_usd_per_1m_tokens=output_price,
+                cached_input_usd_per_1m_tokens=parse_decimal(
+                    first_present_value(
+                        row,
+                        "cached_input",
+                        "cached_input_usd_per_1m",
+                        "cachedInputUsdPer1M",
+                        "cachedInputUsdPer1MTokens",
+                    )
+                ),
+                cache_write_usd_per_1m_tokens=parse_decimal(
+                    first_present_value(
+                        row,
+                        "cache_write",
+                        "cache_write_usd_per_1m",
+                        "cacheWriteUsdPer1M",
+                        "cacheWriteUsdPer1MTokens",
+                    )
+                ),
+            )
+        )
+
+    if not prices:
+        raise OpenAIPricingError("Token pricing API response did not contain usable OpenAI price rows.")
+    return prices
+
+
 def list_openai_model_prices(database: PortalDatabase) -> list[dict[str, Any]]:
     if hasattr(database, "list_model_prices"):
         return database.list_model_prices(provider="openai")
@@ -340,6 +478,9 @@ def build_snapshot_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def sync_openai_model_prices(
     database: PortalDatabase,
     *,
+    api_payload: dict[str, Any] | None = None,
+    api_fetcher: Callable[[], dict[str, Any]] | None = None,
+    api_url: str | None = None,
     markdown_text: str | None = None,
     fetcher: Callable[[], str] | None = None,
     now: datetime | None = None,
@@ -348,46 +489,134 @@ def sync_openai_model_prices(
     current_time = now or now_utc()
     existing_rows = list_openai_model_prices(database)
 
-    should_fetch = markdown_text is not None or rows_need_refresh(
-        existing_rows,
-        now=current_time,
-        refresh_days=refresh_days,
-    ) or rows_are_seed_defaults(existing_rows)
+    should_fetch = (
+        api_payload is not None
+        or api_fetcher is not None
+        or markdown_text is not None
+        or rows_need_refresh(
+            existing_rows,
+            now=current_time,
+            refresh_days=refresh_days,
+        )
+        or rows_are_seed_defaults(existing_rows)
+    )
 
     if not should_fetch:
         return build_snapshot_from_rows(existing_rows)
 
-    try:
-        source_text = markdown_text if markdown_text is not None else (fetcher or fetch_openai_pricing_markdown)()
-    except OpenAIPricingError:
-        if existing_rows and markdown_text is None:
-            return build_snapshot_from_rows(existing_rows)
-        raise
+    prices: list[OpenAIModelPrice]
+    source = "token-prices-api"
+    source_url = OPENAI_PRICING_MARKDOWN_URL
+    endpoint_url = resolve_token_prices_api_url(api_url)
+    fetched_at = current_time.isoformat()
+    fetched = True
+    use_markdown_source = markdown_text is not None or (
+        fetcher is not None and api_payload is None and api_fetcher is None
+    )
 
-    prices = parse_openai_pricing_markdown(source_text)
+    if use_markdown_source:
+        try:
+            source_text = markdown_text if markdown_text is not None else (fetcher or fetch_openai_pricing_markdown)()
+            prices = parse_openai_pricing_markdown(source_text)
+        except OpenAIPricingError:
+            if existing_rows and markdown_text is None:
+                return build_snapshot_from_rows(existing_rows)
+            raise
+        source = "openai"
+        endpoint_url = ""
+    else:
+        try:
+            payload = (
+                api_payload
+                if api_payload is not None
+                else api_fetcher() if api_fetcher is not None
+                else fetch_token_prices_api_payload(url=endpoint_url)
+            )
+            prices = parse_token_prices_api_response(payload)
+            source = normalize_text(payload.get("service")) or "token-prices-api"
+            source_url = normalize_text(payload.get("sourceUrl")) or source_url
+            fetched_at = normalize_text(payload.get("fetchedAt")) or fetched_at
+            fetched = bool(payload.get("fetched", True))
+        except Exception as api_exc:
+            try:
+                source_text = (fetcher or fetch_openai_pricing_markdown)()
+                prices = parse_openai_pricing_markdown(source_text)
+            except OpenAIPricingError:
+                if existing_rows:
+                    return build_snapshot_from_rows(existing_rows)
+                if isinstance(api_exc, OpenAIPricingError):
+                    raise api_exc
+                raise OpenAIPricingError(f"Could not load token pricing API: {api_exc}") from api_exc
+            source = "openai"
+            endpoint_url = ""
+            fetched_at = current_time.isoformat()
+            fetched = True
+
     for price in prices:
         current_row = database.get_model_price(price.model_id) or {}
         current_provider = normalize_text(current_row.get("provider"))
         if current_row and current_provider and current_provider != "openai":
             continue
+        note_source = endpoint_url or source_url
         database.upsert_model_price(
             price.model_id,
             input_price_cents_per_1k_tokens=usd_per_1m_to_cents_per_1k(price.input_usd_per_1m_tokens),
             output_price_cents_per_1k_tokens=usd_per_1m_to_cents_per_1k(price.output_usd_per_1m_tokens),
             currency="USD",
             provider="openai",
-            notes=f"Synced from {OPENAI_PRICING_MARKDOWN_URL} at {current_time.isoformat()}",
+            notes=f"Synced from {note_source} at {current_time.isoformat()}",
             is_active=True,
         )
     representatives = pick_representative_models(prices)
     return {
-        "source": "openai",
-        "sourceUrl": OPENAI_PRICING_MARKDOWN_URL,
-        "fetched": True,
-        "fetchedAt": current_time.isoformat(),
+        "source": source,
+        "sourceUrl": source_url,
+        "endpointUrl": endpoint_url or None,
+        "fetched": fetched,
+        "fetchedAt": fetched_at,
         "models": prices,
         "representatives": representatives,
     }
+
+
+def resolve_current_openai_model_price(
+    database: PortalDatabase,
+    model_name: str,
+    *,
+    now: datetime | None = None,
+    refresh_days: int = DEFAULT_PRICING_REFRESH_DAYS,
+) -> dict[str, Any] | None:
+    if not hasattr(database, "get_model_price"):
+        return None
+
+    normalized_model_name = normalize_model_id(model_name)
+    if not normalized_model_name:
+        return None
+
+    current_time = now or now_utc()
+    existing_rows = list_openai_model_prices(database)
+    existing_row = database.get_model_price(normalized_model_name)
+    should_sync = (
+        existing_row is None
+        or rows_are_seed_defaults(existing_rows)
+        or rows_need_refresh(
+            existing_rows,
+            now=current_time,
+            refresh_days=refresh_days,
+        )
+    )
+
+    if should_sync:
+        try:
+            sync_openai_model_prices(
+                database,
+                now=current_time,
+                refresh_days=refresh_days,
+            )
+        except OpenAIPricingError:
+            return existing_row
+
+    return database.get_model_price(normalized_model_name) or existing_row
 
 
 def serialize_pricing_snapshot(
@@ -399,14 +628,36 @@ def serialize_pricing_snapshot(
     representatives = snapshot.get("representatives") if isinstance(snapshot.get("representatives"), list) else []
     cards = []
     labels = ["Lean", "Balanced", "Premium"]
+    card_copy = {
+        "Lean": {
+            "description": "For lightweight automations and high-volume tasks where efficiency matters most.",
+            "useCases": ["Short prompts", "Extraction", "Classification"],
+        },
+        "Balanced": {
+            "description": "For most day-to-day assistants and workflows that need a strong mix of cost and capability.",
+            "useCases": ["Client replies", "Workflow agents", "Daily operations"],
+            "featured": True,
+            "highlightLabel": "Most popular",
+        },
+        "Premium": {
+            "description": "For the most demanding tasks, deeper reasoning, and higher-stakes outputs.",
+            "useCases": ["Deep reasoning", "Long context", "Critical drafting"],
+        },
+    }
     for index, model in enumerate(representatives):
         if not isinstance(model, OpenAIModelPrice):
             continue
+        band = labels[index] if index < len(labels) else f"Tier {index + 1}"
+        copy = card_copy.get(band, {})
         cards.append(
             {
-                "band": labels[index] if index < len(labels) else f"Tier {index + 1}",
+                "band": band,
                 "modelId": model.model_id,
                 "modelName": model.display_name,
+                "description": copy.get("description", ""),
+                "useCases": copy.get("useCases", []),
+                "featured": bool(copy.get("featured")),
+                "highlightLabel": normalize_text(copy.get("highlightLabel")),
                 "openai": {
                     "inputUsdPer1MTokens": float(model.input_usd_per_1m_tokens),
                     "outputUsdPer1MTokens": float(model.output_usd_per_1m_tokens),
@@ -438,6 +689,7 @@ def serialize_pricing_snapshot(
         "ok": True,
         "source": normalize_text(snapshot.get("source")) or "database",
         "sourceUrl": normalize_text(snapshot.get("sourceUrl")) or OPENAI_PRICING_MARKDOWN_URL,
+        "endpointUrl": normalize_text(snapshot.get("endpointUrl")) or None,
         "fetchedAt": snapshot.get("fetchedAt"),
         "refreshWindowDays": DEFAULT_PRICING_REFRESH_DAYS,
         "inputMultiplier": float(input_multiplier),
@@ -451,6 +703,9 @@ def build_pricing_snapshot_json(
     *,
     input_multiplier: float,
     output_multiplier: float,
+    api_payload: dict[str, Any] | None = None,
+    api_fetcher: Callable[[], dict[str, Any]] | None = None,
+    api_url: str | None = None,
     markdown_text: str | None = None,
     fetcher: Callable[[], str] | None = None,
     now: datetime | None = None,
@@ -458,6 +713,9 @@ def build_pricing_snapshot_json(
 ) -> dict[str, Any]:
     snapshot = sync_openai_model_prices(
         database,
+        api_payload=api_payload,
+        api_fetcher=api_fetcher,
+        api_url=api_url,
         markdown_text=markdown_text,
         fetcher=fetcher,
         now=now,
@@ -475,10 +733,15 @@ __all__ = [
     "OPENAI_PRICING_MARKDOWN_URL",
     "OpenAIModelPrice",
     "OpenAIPricingError",
+    "TOKEN_PRICES_API_OPENAI_PRICES_URL",
     "build_pricing_snapshot_json",
     "fetch_openai_pricing_markdown",
+    "fetch_token_prices_api_payload",
     "parse_openai_pricing_markdown",
     "parse_standard_pricing_table",
+    "parse_token_prices_api_response",
     "pick_representative_models",
+    "resolve_current_openai_model_price",
+    "resolve_token_prices_api_url",
     "sync_openai_model_prices",
 ]

@@ -5084,12 +5084,22 @@ class PortalDatabase:
             output_tokens = max(0, int(event.get("outputTokens") or 0))
             input_charge = to_decimal(event.get("inputChargeCents"))
             output_charge = to_decimal(event.get("outputChargeCents"))
-            raw_charge = to_decimal(event.get("rawChargeCents"))
+            input_base_cost = calculate_charge_cents(
+                input_tokens,
+                event.get("inputPriceCentsPer1kTokens"),
+                1,
+            )
+            output_base_cost = calculate_charge_cents(
+                output_tokens,
+                event.get("outputPriceCentsPer1kTokens"),
+                1,
+            )
+            base_cost = input_base_cost + output_base_cost
 
             month_row["tokensUsed"] += input_tokens + output_tokens
             month_row["inputTokensUsed"] += input_tokens
             month_row["outputTokensUsed"] += output_tokens
-            month_row["baseCostCents"] += raw_charge
+            month_row["baseCostCents"] += base_cost
             month_row["inputChargeCents"] += input_charge
             month_row["outputChargeCents"] += output_charge
             month_row["usageCount"] += 1
@@ -5098,7 +5108,7 @@ class PortalDatabase:
             tool_row["tokensUsed"] += input_tokens + output_tokens
             tool_row["inputTokensUsed"] += input_tokens
             tool_row["outputTokensUsed"] += output_tokens
-            tool_row["baseCostCents"] += raw_charge
+            tool_row["baseCostCents"] += base_cost
             tool_row["inputChargeCents"] += input_charge
             tool_row["outputChargeCents"] += output_charge
             tool_row["usageCount"] += 1
@@ -5117,7 +5127,7 @@ class PortalDatabase:
             model_row["tokensUsed"] += input_tokens + output_tokens
             model_row["inputTokensUsed"] += input_tokens
             model_row["outputTokensUsed"] += output_tokens
-            model_row["baseCostCents"] += raw_charge
+            model_row["baseCostCents"] += base_cost
             model_row["inputChargeCents"] += input_charge
             model_row["outputChargeCents"] += output_charge
             model_row["usageCount"] += 1
@@ -5138,9 +5148,10 @@ class PortalDatabase:
         for month_key, month_row in month_rows.items():
             tool_rows: list[dict[str, Any]] = []
             for tool_row in month_row.pop("toolsById").values():
-                tool_raw_total = tool_row["baseCostCents"]
-                tool_row["baseCostUsd"] = cents_to_usd(tool_raw_total)
-                tool_row["chargeUsd"] = cents_to_usd(tool_raw_total)
+                tool_base_total = tool_row["baseCostCents"]
+                tool_charge_total = tool_row["inputChargeCents"] + tool_row["outputChargeCents"]
+                tool_row["baseCostUsd"] = cents_to_usd(tool_base_total)
+                tool_row["chargeUsd"] = cents_to_usd(tool_charge_total)
                 tool_row["minimumApplied"] = False
                 tool_row["usageDates"] = sorted(tool_row["usageDates"])
 
@@ -5192,7 +5203,7 @@ class PortalDatabase:
 
             tool_rows.sort(key=lambda row: (-row["tokensUsed"], str(row["toolName"]).lower()))
             month_raw_total = month_row["baseCostCents"]
-            month_usage_charge_cents = sum(Decimal(str(tool["chargeUsd"])) * Decimal("100") for tool in tool_rows)
+            month_usage_charge_cents = month_row["inputChargeCents"] + month_row["outputChargeCents"]
             month_charge_cents = month_usage_charge_cents if month_usage_charge_cents >= minimum_cents_decimal else minimum_cents_decimal
             month_row["baseCostUsd"] = cents_to_usd(month_raw_total)
             month_row["chargeUsd"] = cents_to_usd(month_charge_cents)
