@@ -4363,6 +4363,7 @@
               signal: contactAgentAbortController.signal,
               body: JSON.stringify({
                 messages: contactChatState.messages,
+                intake: contactChatState.intake,
                 page: window.location.href,
               }),
             });

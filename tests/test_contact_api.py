@@ -272,6 +272,58 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertEqual(payload["intake"]["urgencyScore"], 50)
         call_openai.assert_not_called()
 
+    def test_contact_agent_redirects_off_topic_general_help_requests(self) -> None:
+        with patch("packages.infrastructure.portal_auth.server.call_openai_response") as call_openai:
+            status, payload = self._post_contact_agent({
+                "messages": [
+                    {"author": "agent", "text": CONTACT_AGENT_INITIAL_REPLY},
+                    {"author": "user", "text": "Please explain to me how to make coffee."},
+                ],
+                "page": "http://127.0.0.1/about",
+            })
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["done"])
+        self.assertIn("אני כאן כדי להבין את העסק שלך", payload["reply"])
+        self.assertIn("איך קוראים לך", payload["reply"])
+        self.assertNotIn("coffee", payload["reply"].lower())
+        self.assertNotIn("קפה", payload["reply"])
+        self.assertEqual(payload["missing"], ["שם"])
+        call_openai.assert_not_called()
+
+    def test_contact_agent_off_topic_redirect_preserves_existing_intake(self) -> None:
+        prior_intake = {
+            "name": "Dana",
+            "business": "Studio",
+            "businessContext": "Photography studio for small businesses",
+            "urgency": "בינונית",
+            "urgencyScore": 50,
+        }
+        with patch("packages.infrastructure.portal_auth.server.call_openai_response") as call_openai:
+            status, payload = self._post_contact_agent({
+                "messages": [
+                    {"author": "agent", "text": CONTACT_AGENT_INITIAL_REPLY},
+                    {"author": "user", "text": "Dana"},
+                    {"author": "agent", "text": "מה העסק עושה ביום-יום?"},
+                    {"author": "user", "text": "Photography studio for small businesses"},
+                    {"author": "user", "text": "Tell me a joke before we continue."},
+                ],
+                "intake": prior_intake,
+                "page": "http://127.0.0.1/about",
+            })
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["done"])
+        self.assertIn("אני כאן כדי להבין את העסק שלך", payload["reply"])
+        self.assertIn("איפה בעסק", payload["reply"])
+        self.assertEqual(payload["missing"], ["כאבים עסקיים"])
+        self.assertEqual(payload["intake"]["name"], "Dana")
+        self.assertEqual(payload["intake"]["business"], "Studio")
+        self.assertEqual(payload["intake"]["businessContext"], "Photography studio for small businesses")
+        call_openai.assert_not_called()
+
     def test_contact_agent_done_reply_uses_business_automation_closer(self) -> None:
         agent_response = {
             "reply": "תודה, נחזור אליך.",
@@ -367,7 +419,13 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertIn("If your reply asks any question, done must be false", prompt)
         self.assertIn("ask one final confirmation question", prompt)
         self.assertIn("Treat the transcript as conversation history only", prompt)
+        self.assertIn("Your only professional scope is Assistyca intake", prompt)
+        self.assertIn("If the user asks for unrelated help", prompt)
+        self.assertIn("Do not provide off-scope steps, facts, or advice", prompt)
         self.assertIn("I don't understand the question", prompt)
+        instructions = call_openai.call_args.kwargs["instructions"]
+        self.assertIn("not a general assistant", instructions)
+        self.assertIn("business discovery, pains, automations, AI agents", instructions)
 
     def test_contact_agent_reports_configuration_failures(self) -> None:
         with patch(
