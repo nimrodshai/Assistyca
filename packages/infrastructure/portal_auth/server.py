@@ -102,8 +102,8 @@ CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
 CONTACT_AGENT_DONE_REPLY = (
-    "מעולה, יש לנו תמונה טובה 🙏 עכשיו הבוט הזה סיכם את הפרטים שלך, "
-    "ינתח אותם וישתף את בעל העסק במסקנות. וזה בדיוק איך אני עושה אוטומציה בעסק שלי 🙂 "
+    "מעולה, יש לנו תמונה טובה 🙏 הבוט הזה סיכם את הפרטים שלך, "
+    "ינתח אותם וישתף את בעל העסק במסקנות. וככה בדיוק אני עושה אוטומציה בעסק שלי 🙂 "
     "עכשיו מה איתך?"
 )
 CONTACT_OPPORTUNITY_OWNER_EMAIL = "nimrod.shai@gmail.com"
