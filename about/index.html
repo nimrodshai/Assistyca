@@ -3783,6 +3783,23 @@
           }, 48);
         };
 
+        const dismissContactKeyboard = () => {
+          window.clearTimeout(contactKeyboardFocusTimer);
+          window.clearTimeout(contactKeyboardHoldTimer);
+          contactPreserveKeyboardOnSubmit = false;
+          contactSubmitPointerPreserved = false;
+          contactSubmitPointerSent = false;
+
+          if (contactInput && document.activeElement === contactInput) {
+            contactInput.blur();
+          }
+
+          if (contactModal) {
+            delete contactModal.dataset.inputFocused;
+            delete contactModal.dataset.keyboard;
+          }
+        };
+
         const syncContactInputFocusState = () => {
           if (!contactModal) {
             return;
@@ -4273,6 +4290,7 @@
           contactChatState.completed = true;
           contactChatState.readyToSubmit = false;
           contactChatState.submitting = false;
+          dismissContactKeyboard();
           setContactComposerEnabled(false);
           setContactStatus("");
 
@@ -4286,6 +4304,8 @@
           }
 
           scrollContactChat({ force: true });
+          window.setTimeout(keepContactLayoutPinned, 120);
+          window.setTimeout(keepContactLayoutPinned, 320);
         };
 
         const submitContactIntake = async (intake = contactChatState.intake) => {
