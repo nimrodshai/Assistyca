@@ -56,6 +56,8 @@
         --accent-soft: rgba(106, 167, 163, 0.14);
         --sand: #d8d0c2;
         --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
+        --contact-keyboard-offset: 0px;
+        --contact-mobile-viewport-height: 100svh;
       }
 
       * {
@@ -2694,18 +2696,27 @@
         }
 
         .contact-modal {
-          padding: 0.65rem;
+          align-items: stretch;
+          justify-items: stretch;
+          padding: 0;
+          height: var(--contact-mobile-viewport-height);
+          min-height: var(--contact-mobile-viewport-height);
+          overflow: hidden;
         }
 
         .contact-panel {
-          height: min(39rem, calc(100svh - 1.3rem));
-          border-radius: 1rem;
+          width: 100%;
+          height: var(--contact-mobile-viewport-height);
+          max-height: none;
+          border: 0;
+          border-radius: 0;
           padding: 0;
+          transform-origin: center bottom;
         }
 
         .contact-panel-header {
-          min-height: 5.3rem;
-          padding: 0.95rem 1rem;
+          min-height: calc(5.05rem + env(safe-area-inset-top, 0px));
+          padding: calc(0.95rem + env(safe-area-inset-top, 0px)) 1rem 0.95rem;
         }
 
         .contact-agent {
@@ -2732,12 +2743,14 @@
         }
 
         .contact-form {
-          height: auto;
+          height: 100%;
+          overflow: hidden;
         }
 
         .contact-chat-thread {
           gap: 0.86rem;
-          padding: 1rem 0.82rem;
+          padding: 1rem 0.82rem calc(1rem + var(--contact-keyboard-offset));
+          scroll-padding-bottom: calc(1rem + var(--contact-keyboard-offset));
         }
 
         .contact-message[data-author="agent"] {
@@ -2766,9 +2779,20 @@
         }
 
         .contact-composer {
+          position: relative;
+          z-index: 2;
           grid-template-columns: minmax(0, 1fr) auto;
           gap: 0.56rem;
-          padding: 0.74rem 0.82rem 0.86rem;
+          padding: 0.74rem 0.82rem calc(0.86rem + env(safe-area-inset-bottom, 0px));
+          transform: translateY(calc(-1 * var(--contact-keyboard-offset)));
+          will-change: transform;
+        }
+
+        .contact-status {
+          position: relative;
+          z-index: 2;
+          transform: translateY(calc(-1 * var(--contact-keyboard-offset)));
+          background: rgba(255, 255, 255, 0.92);
         }
 
         .contact-message-input {
@@ -3222,12 +3246,14 @@
         let contactAnimationTimer = 0;
         const contactAnimationMs = 340;
         const contactMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+        const contactMobileViewportQuery = window.matchMedia("(max-width: 640px)");
         const contactEmailPattern = /[^\s@<>]+@[^\s@<>]+\.[^\s@<>.,;:]+/;
         const contactPhonePattern = /\+?\d[\d\s().-]{6,}\d/;
         const contactChatBottomTolerance = 28;
         let contactScrollFrame = 0;
         let contactInputResizeFrame = 0;
         let contactInputResizeTimer = 0;
+        let contactLayoutViewportHeight = 0;
         let contactTypingIndicator = null;
         const contactChatState = {
           messages: [],
@@ -3345,6 +3371,57 @@
           });
         };
 
+        const resetContactViewportMetrics = () => {
+          contactLayoutViewportHeight = 0;
+          document.documentElement.style.removeProperty("--contact-keyboard-offset");
+          document.documentElement.style.removeProperty("--contact-mobile-viewport-height");
+        };
+
+        const getContactLayoutViewportHeight = () => {
+          const visualViewport = window.visualViewport;
+          const visualViewportBottom = visualViewport
+            ? visualViewport.height + visualViewport.offsetTop
+            : 0;
+
+          return Math.max(
+            document.documentElement.clientHeight || 0,
+            window.innerHeight || 0,
+            visualViewportBottom,
+          );
+        };
+
+        const syncContactViewportMetrics = (options = {}) => {
+          if (!contactModal || contactModal.hidden || !contactMobileViewportQuery.matches) {
+            resetContactViewportMetrics();
+            return;
+          }
+
+          const visualViewport = window.visualViewport;
+          const inputFocused = document.activeElement === contactInput;
+          const nextLayoutHeight = getContactLayoutViewportHeight();
+          if (options.reset || !contactLayoutViewportHeight || !inputFocused) {
+            contactLayoutViewportHeight = nextLayoutHeight;
+          } else {
+            contactLayoutViewportHeight = Math.max(contactLayoutViewportHeight, nextLayoutHeight);
+          }
+
+          const visualBottom = visualViewport
+            ? visualViewport.height + visualViewport.offsetTop
+            : contactLayoutViewportHeight;
+          const keyboardOffset = inputFocused && visualViewport
+            ? Math.max(0, contactLayoutViewportHeight - visualBottom)
+            : 0;
+
+          document.documentElement.style.setProperty(
+            "--contact-mobile-viewport-height",
+            `${Math.round(contactLayoutViewportHeight)}px`,
+          );
+          document.documentElement.style.setProperty(
+            "--contact-keyboard-offset",
+            `${Math.round(keyboardOffset)}px`,
+          );
+        };
+
         const appendContactMessage = (author, message) => {
           if (!contactChatLog) {
             return;
@@ -3429,6 +3506,7 @@
             return;
           }
 
+          syncContactViewportMetrics();
           const shouldFollowLatest = contactChatState.followLatest || contactChatIsNearBottom();
           const maxHeight = Number.parseFloat(window.getComputedStyle(contactInput).maxHeight) || 132;
           contactInput.style.height = "auto";
@@ -3670,7 +3748,7 @@
               contactChatState.submitting = false;
               setContactComposerEnabled(true);
               setContactSubmitLabel("שליחה");
-              if (contactInput) {
+              if (contactInput && !contactMobileViewportQuery.matches) {
                 contactInput.focus({ preventScroll: true });
               }
             }
@@ -3728,15 +3806,19 @@
           contactModal.hidden = false;
           contactModal.dataset.state = "opening";
           document.body.classList.add("contact-modal-open");
+          syncContactViewportMetrics({ reset: true });
           if (!contactChatLog || contactChatLog.children.length === 0 || contactChatState.completed) {
             resetContactChat();
           }
 
           const completeOpen = () => {
             contactModal.dataset.state = "open";
+            syncContactViewportMetrics();
             if (contactInput) {
               resizeContactInput();
-              contactInput.focus({ preventScroll: true });
+              if (!contactMobileViewportQuery.matches) {
+                contactInput.focus({ preventScroll: true });
+              }
             }
             if (contactChatState.followLatest) {
               scrollContactChat({ force: true });
@@ -3766,6 +3848,7 @@
             contactModal.hidden = true;
             delete contactModal.dataset.state;
             document.body.classList.remove("contact-modal-open");
+            resetContactViewportMetrics();
             if (contactLastFocus && typeof contactLastFocus.focus === "function") {
               contactLastFocus.focus({ preventScroll: true });
             }
@@ -3852,7 +3935,18 @@
           ["input", "change", "paste", "cut", "keyup", "compositionupdate", "compositionend"].forEach((eventName) => {
             contactInput.addEventListener(eventName, resizeContactInput);
           });
-          contactInput.addEventListener("focus", resizeContactInput);
+          contactInput.addEventListener("focus", () => {
+            contactChatState.followLatest = true;
+            resizeContactInput();
+          });
+          contactInput.addEventListener("blur", () => {
+            window.setTimeout(() => {
+              syncContactViewportMetrics();
+              if (contactChatState.followLatest) {
+                scrollContactChat({ force: true });
+              }
+            }, 80);
+          });
           document.addEventListener("selectionchange", () => {
             if (document.activeElement === contactInput) {
               resizeContactInput();
@@ -3869,17 +3963,26 @@
         }
 
         const keepContactLayoutPinned = () => {
-          if (!contactModal || contactModal.hidden || !contactChatState.followLatest) {
+          if (!contactModal || contactModal.hidden) {
             return;
           }
 
+          syncContactViewportMetrics();
           resizeContactInput();
-          scrollContactChat({ force: true });
+          if (contactChatState.followLatest) {
+            scrollContactChat({ force: true });
+          }
         };
 
         window.addEventListener("resize", keepContactLayoutPinned);
+        if (typeof contactMobileViewportQuery.addEventListener === "function") {
+          contactMobileViewportQuery.addEventListener("change", keepContactLayoutPinned);
+        } else if (typeof contactMobileViewportQuery.addListener === "function") {
+          contactMobileViewportQuery.addListener(keepContactLayoutPinned);
+        }
         if (window.visualViewport) {
           window.visualViewport.addEventListener("resize", keepContactLayoutPinned);
+          window.visualViewport.addEventListener("scroll", keepContactLayoutPinned);
         }
 
         document.querySelectorAll("[data-keyed-image]").forEach((imageElement) => {

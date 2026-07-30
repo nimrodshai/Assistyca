@@ -54,6 +54,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Assistyca intake agent", body)
         self.assertNotIn("mailto:nimrod.shai@gmail.com", body)
 
+    def test_about_contact_modal_includes_mobile_keyboard_layout_hooks(self) -> None:
+        with urllib_request.urlopen(f"{self.base_url}/about") as response:
+            body = response.read().decode("utf-8")
+
+        self.assertIn("--contact-keyboard-offset", body)
+        self.assertIn("--contact-mobile-viewport-height", body)
+        self.assertIn('window.matchMedia("(max-width: 640px)")', body)
+        self.assertIn('window.visualViewport.addEventListener("scroll", keepContactLayoutPinned)', body)
+
 
 if __name__ == "__main__":
     unittest.main()
