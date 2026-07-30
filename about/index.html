@@ -57,6 +57,7 @@
         --sand: #d8d0c2;
         --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
         --contact-keyboard-offset: 0px;
+        --contact-mobile-viewport-top: 0px;
         --contact-mobile-viewport-height: 100svh;
         --contact-mobile-visible-height: 100svh;
       }
@@ -2731,6 +2732,8 @@
         .contact-modal {
           align-items: stretch;
           justify-items: stretch;
+          top: var(--contact-mobile-viewport-top);
+          bottom: auto;
           padding: 0;
           height: var(--contact-mobile-viewport-height);
           min-height: var(--contact-mobile-viewport-height);
@@ -2742,8 +2745,8 @@
           position: absolute;
           left: 0;
           right: 0;
+          top: var(--contact-mobile-visible-height);
           bottom: 0;
-          height: var(--contact-keyboard-offset);
           background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.97), #ffffff);
           z-index: 0;
@@ -3368,6 +3371,7 @@
         let contactScrollFrame = 0;
         let contactInputResizeFrame = 0;
         let contactInputResizeTimer = 0;
+        let contactLayoutPinTimer = 0;
         let contactLayoutViewportHeight = 0;
         let contactTypingIndicator = null;
         const contactChatState = {
@@ -3488,7 +3492,9 @@
 
         const resetContactViewportMetrics = () => {
           contactLayoutViewportHeight = 0;
+          window.clearTimeout(contactLayoutPinTimer);
           document.documentElement.style.removeProperty("--contact-keyboard-offset");
+          document.documentElement.style.removeProperty("--contact-mobile-viewport-top");
           document.documentElement.style.removeProperty("--contact-mobile-viewport-height");
           document.documentElement.style.removeProperty("--contact-mobile-visible-height");
         };
@@ -3524,16 +3530,29 @@
           const visualBottom = visualViewport
             ? visualViewport.height + visualViewport.offsetTop
             : contactLayoutViewportHeight;
-          const keyboardOffset = inputFocused && visualViewport
-            ? Math.max(0, contactLayoutViewportHeight - visualBottom)
-            : 0;
-          const visibleHeight = inputFocused
-            ? Math.max(320, Math.min(contactLayoutViewportHeight, visualBottom))
+          const rawVisibleHeight = visualViewport
+            ? visualViewport.height
             : contactLayoutViewportHeight;
+          const visibleHeight = inputFocused && visualViewport
+            ? Math.max(320, Math.min(contactLayoutViewportHeight, rawVisibleHeight))
+            : contactLayoutViewportHeight;
+          const viewportTop = inputFocused && visualViewport
+            ? Math.max(0, Math.min(contactLayoutViewportHeight - visibleHeight, visualViewport.offsetTop))
+            : 0;
+          const visibleBottom = inputFocused && visualViewport
+            ? viewportTop + visibleHeight
+            : visualBottom;
+          const keyboardOffset = inputFocused && visualViewport
+            ? Math.max(0, contactLayoutViewportHeight - visibleBottom)
+            : 0;
 
           document.documentElement.style.setProperty(
             "--contact-mobile-viewport-height",
             `${Math.round(contactLayoutViewportHeight)}px`,
+          );
+          document.documentElement.style.setProperty(
+            "--contact-mobile-viewport-top",
+            `${Math.round(viewportTop)}px`,
           );
           document.documentElement.style.setProperty(
             "--contact-mobile-visible-height",
@@ -4061,6 +4080,7 @@
           contactInput.addEventListener("focus", () => {
             contactChatState.followLatest = true;
             resizeContactInput();
+            window.setTimeout(keepContactLayoutPinned, 240);
           });
           contactInput.addEventListener("blur", () => {
             window.setTimeout(() => {
@@ -4095,6 +4115,17 @@
           if (contactChatState.followLatest) {
             scrollContactChat({ force: true });
           }
+          window.clearTimeout(contactLayoutPinTimer);
+          contactLayoutPinTimer = window.setTimeout(() => {
+            if (!contactModal || contactModal.hidden) {
+              return;
+            }
+
+            syncContactViewportMetrics();
+            if (contactChatState.followLatest) {
+              scrollContactChat({ force: true });
+            }
+          }, 220);
         };
 
         window.addEventListener("resize", keepContactLayoutPinned);
