@@ -62,6 +62,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("--contact-mobile-viewport-top", body)
         self.assertIn("--contact-mobile-viewport-height", body)
         self.assertIn("--contact-mobile-visible-height", body)
+        self.assertIn("body.contact-modal-open .page", body)
         self.assertIn('window.matchMedia("(max-width: 640px)")', body)
         self.assertIn('window.visualViewport.addEventListener("scroll", keepContactLayoutPinned)', body)
 

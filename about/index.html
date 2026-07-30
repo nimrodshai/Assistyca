@@ -2738,6 +2738,26 @@
           height: var(--contact-mobile-viewport-height);
           min-height: var(--contact-mobile-viewport-height);
           overflow: hidden;
+          isolation: isolate;
+          background: #ffffff;
+        }
+
+        body.contact-modal-open {
+          background: #ffffff;
+        }
+
+        body.contact-modal-open .page {
+          visibility: hidden;
+        }
+
+        body.contact-modal-open .contact-modal {
+          visibility: visible;
+        }
+
+        .contact-modal::before {
+          background: #ffffff;
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
         }
 
         .contact-modal::after {
@@ -2748,13 +2768,13 @@
           top: var(--contact-mobile-visible-height);
           bottom: 0;
           background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.97), #ffffff);
-          z-index: 0;
+            linear-gradient(180deg, #ffffff, #ffffff);
+          z-index: 1;
           pointer-events: none;
         }
 
         .contact-panel {
-          z-index: 1;
+          z-index: 2;
           width: 100%;
           height: var(--contact-mobile-visible-height);
           max-height: none;
@@ -2834,12 +2854,13 @@
           grid-template-columns: minmax(0, 1fr) auto;
           gap: 0.56rem;
           padding: 0.74rem 0.82rem calc(0.86rem + env(safe-area-inset-bottom, 0px));
+          background: #ffffff;
         }
 
         .contact-status {
           position: relative;
           z-index: 2;
-          background: rgba(255, 255, 255, 0.92);
+          background: #ffffff;
         }
 
         .contact-message-input {
