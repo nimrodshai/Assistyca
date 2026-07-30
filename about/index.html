@@ -1219,14 +1219,14 @@
 
       .contact-message[data-author="agent"] {
         align-self: flex-start;
-        grid-template-columns: 2.35rem minmax(0, min(74%, 31rem));
+        grid-template-columns: 2.35rem minmax(0, 1fr);
         gap: 0.72rem;
         justify-content: start;
       }
 
       .contact-message[data-author="user"] {
         align-self: flex-end;
-        grid-template-columns: minmax(0, min(68%, 29rem));
+        grid-template-columns: minmax(0, 1fr);
         justify-content: end;
       }
 
@@ -1246,16 +1246,20 @@
       }
 
       .contact-message-bubble {
+        width: fit-content;
+        max-width: min(70%, 31rem);
         min-width: 0;
         padding: 0.9rem 1.02rem 0.65rem;
         border-radius: 1.08rem;
         color: var(--ink);
+        overflow-wrap: anywhere;
         box-shadow:
           0 0.8rem 1.8rem rgba(19, 32, 56, 0.065),
           0 0.16rem 0.5rem rgba(19, 32, 56, 0.04);
       }
 
       .contact-message[data-author="agent"] .contact-message-bubble {
+        justify-self: start;
         border-top-left-radius: 0.42rem;
         background: rgba(255, 255, 255, 0.94);
         border: 1px solid rgba(19, 32, 56, 0.035);
@@ -1294,6 +1298,7 @@
       }
 
       .contact-message[data-author="user"] .contact-message-bubble {
+        justify-self: end;
         border-top-right-radius: 0.42rem;
         background:
           linear-gradient(135deg, rgba(231, 249, 238, 0.98), rgba(212, 241, 227, 0.98));
@@ -2741,7 +2746,7 @@
         }
 
         .contact-message[data-author="user"] {
-          grid-template-columns: minmax(0, 82%);
+          grid-template-columns: minmax(0, 1fr);
         }
 
         .contact-message-avatar {

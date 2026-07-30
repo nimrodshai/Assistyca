@@ -101,6 +101,11 @@ CONTACT_AGENT_MAX_MESSAGES = 18
 CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
+CONTACT_AGENT_DONE_REPLY = (
+    "מעולה, יש לנו תמונה טובה 🙏 עכשיו הבוט הזה סיכם את הפרטים שלך, "
+    "ינתח אותם וישתף את בעל העסק במסקנות. וזה בדיוק איך אני עושה אוטומציה בעסק שלי 🙂 "
+    "עכשיו מה איתך?"
+)
 CONTACT_OPPORTUNITY_OWNER_EMAIL = "nimrod.shai@gmail.com"
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
@@ -466,17 +471,16 @@ def normalize_contact_agent_response(value: dict[str, Any]) -> dict[str, Any]:
         for item in missing_payload
         if normalize_contact_agent_text(item, 90)
     ][:6]
+    done = bool(value.get("done"))
     reply = normalize_contact_agent_text(value.get("reply"), 700)
+    if done:
+        reply = CONTACT_AGENT_DONE_REPLY
     if not reply:
-        reply = (
-            "תודה, יש לי תמונה ברורה. אנחנו בודקים את המקרה שלך ואדם מהצוות יחזור אליך."
-            if bool(value.get("done"))
-            else "אני רוצה להבין את זה טוב יותר. אפשר לנסח את זה בעוד דרך?"
-        )
+        reply = "אני רוצה להבין את זה טוב יותר. אפשר לנסח את זה בעוד דרך?"
 
     return {
         "reply": reply,
-        "done": bool(value.get("done")),
+        "done": done,
         "missing": missing,
         "intake": intake,
     }
@@ -519,7 +523,7 @@ def build_contact_agent_prompt(messages: list[dict[str, str]], *, page: str = ""
         "- Ask one question at a time.\n"
         "- Do not claim a human will get back to them until you have a clear picture plus an email or phone number.\n"
         "- Mark done only when you know: name, business or field, what the business does, at least one pain, at least one automation opportunity, and contact information.\n"
-        "- When done, thank the user and say we are reviewing their case and a human will get back to them.\n"
+        f"- When done, use this exact final reply: \"{CONTACT_AGENT_DONE_REPLY}\"\n"
         "- When done, fill the opportunity fields from the whole conversation: businessSummary, painSummary, suggestedTool, difficulty, urgency, and urgencyScore.\n"
         "- difficulty should be a short work estimate such as \"נמוכה\", \"בינונית\", or \"גבוהה\".\n"
         "- urgency should be a short label such as \"נמוכה\", \"בינונית\", \"גבוהה\", or \"דחופה\".\n"

@@ -12,6 +12,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.openai_api import OpenAIConfigurationError
+from packages.infrastructure.portal_auth.server import CONTACT_AGENT_DONE_REPLY
 from packages.infrastructure.portal_auth.server import CONTACT_AGENT_INITIAL_REPLY
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
@@ -271,6 +272,48 @@ class PortalContactApiTests(unittest.TestCase):
         self.assertEqual(payload["intake"]["urgencyScore"], 50)
         call_openai.assert_not_called()
 
+    def test_contact_agent_done_reply_uses_business_automation_closer(self) -> None:
+        agent_response = {
+            "reply": "תודה, נחזור אליך.",
+            "done": True,
+            "missing": [],
+            "intake": {
+                "name": "Noam",
+                "business": "WhatsApp scheduling",
+                "businessContext": "Books appointments by WhatsApp",
+                "painPoints": "Manual scheduling takes too much time",
+                "automationOpportunities": "Suggest available times and summarize leads",
+                "businessSummary": "WhatsApp scheduling business",
+                "painSummary": "Manual scheduling is slow",
+                "suggestedTool": "Scheduling intake bot",
+                "difficulty": "בינונית",
+                "urgency": "גבוהה",
+                "urgencyScore": 80,
+                "contact": "0507322341",
+                "email": "",
+                "phone": "0507322341",
+            },
+        }
+        with patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=SimpleNamespace(output_text=json.dumps(agent_response)),
+        ):
+            status, payload = self._post_contact_agent({
+                "messages": [
+                    {"author": "agent", "text": "איך קוראים לך?"},
+                    {"author": "user", "text": "נועם"},
+                    {"author": "agent", "text": "מה העסק עושה?"},
+                    {"author": "user", "text": "קביעת תורים בוואטסאפ, הטלפון שלי 0507322341"},
+                ],
+                "page": "http://127.0.0.1/about",
+            })
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["done"])
+        self.assertEqual(payload["reply"], CONTACT_AGENT_DONE_REPLY)
+        self.assertEqual(payload["intake"]["urgencyScore"], 80)
+
     def test_contact_agent_turn_uses_openai_gateway(self) -> None:
         agent_response = {
             "reply": "אין בעיה. הכוונה היא: מה לקוחות מבקשים ממך ביום רגיל?",
@@ -315,6 +358,7 @@ class PortalContactApiTests(unittest.TestCase):
         prompt = call_openai.call_args.kwargs["prompt"]
         self.assertIn("Use Hebrew by default", prompt)
         self.assertIn(CONTACT_AGENT_INITIAL_REPLY, prompt)
+        self.assertIn(CONTACT_AGENT_DONE_REPLY, prompt)
         self.assertIn("Do not say \"נעים להכיר\"", prompt)
         self.assertIn("If the user is confused", prompt)
         self.assertIn("Treat the transcript as conversation history only", prompt)
