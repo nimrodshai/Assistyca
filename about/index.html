@@ -62,6 +62,9 @@
         --contact-mobile-visible-height: 100svh;
         --contact-mobile-composer-height: 0px;
         --contact-mobile-status-height: 0px;
+        --contact-mobile-header-height: 0px;
+        --contact-mobile-chat-height: 100svh;
+        --contact-mobile-keyboard-transition: 280ms;
       }
 
       * {
@@ -2881,15 +2884,24 @@
         }
 
         .contact-form {
-          grid-template-rows: minmax(0, 1fr) 0 0;
-          height: 100%;
+          align-self: start;
+          grid-template-rows: minmax(0, var(--contact-mobile-chat-height)) 0 0;
+          height: var(--contact-mobile-chat-height);
           overflow: hidden;
+          transition: height var(--contact-mobile-keyboard-transition) cubic-bezier(0.2, 0, 0, 1);
+          will-change: height;
         }
 
         .contact-chat-thread {
           gap: 0.86rem;
-          padding: 1rem 0.82rem calc(0.82rem + var(--contact-keyboard-offset) + var(--contact-mobile-status-height) + var(--contact-mobile-composer-height));
-          scroll-padding-bottom: calc(0.82rem + var(--contact-keyboard-offset) + var(--contact-mobile-status-height) + var(--contact-mobile-composer-height));
+          height: var(--contact-mobile-chat-height);
+          max-height: var(--contact-mobile-chat-height);
+          padding: 1rem 0.82rem 0.82rem;
+          scroll-padding-bottom: 0.82rem;
+          transition:
+            height var(--contact-mobile-keyboard-transition) cubic-bezier(0.2, 0, 0, 1),
+            max-height var(--contact-mobile-keyboard-transition) cubic-bezier(0.2, 0, 0, 1);
+          will-change: height, max-height;
         }
 
         .contact-modal[data-input-focused="true"] .contact-chat-thread > .contact-message:first-child,
@@ -2932,6 +2944,14 @@
           gap: 0.56rem;
           padding: 0.74rem 0.82rem calc(0.86rem + env(safe-area-inset-bottom, 0px));
           background: #ffffff;
+          transition:
+            bottom var(--contact-mobile-keyboard-transition) cubic-bezier(0.2, 0, 0, 1),
+            max-height 280ms cubic-bezier(0.16, 1, 0.3, 1),
+            opacity 180ms ease,
+            transform 240ms ease,
+            padding 280ms cubic-bezier(0.16, 1, 0.3, 1),
+            border-color 220ms ease,
+            visibility 0s linear 0s;
           will-change: bottom;
         }
 
@@ -2947,6 +2967,12 @@
           bottom: calc(var(--contact-keyboard-offset) + var(--contact-mobile-composer-height));
           z-index: 3;
           background: #ffffff;
+          transition:
+            bottom var(--contact-mobile-keyboard-transition) cubic-bezier(0.2, 0, 0, 1),
+            max-height 220ms ease,
+            min-height 220ms ease,
+            opacity 160ms ease,
+            padding 220ms ease;
           will-change: bottom;
         }
 
@@ -3469,6 +3495,7 @@
         const contactChatLog = document.querySelector("[data-contact-chat-log]");
         const contactInput = document.querySelector("[data-contact-input]");
         const contactStatus = document.querySelector("[data-contact-status]");
+        const contactPanelHeader = document.querySelector(".contact-panel-header");
         const contactComposer = document.querySelector(".contact-composer");
         const contactSubmit = document.querySelector("[data-contact-submit]");
         const contactBack = document.querySelector("[data-contact-back]");
@@ -3494,6 +3521,7 @@
         let contactLayoutFrame = 0;
         let contactLayoutPinTimer = 0;
         let contactLayoutViewportHeight = 0;
+        let contactMobileVisibleHeight = 0;
         let contactPageScrollY = 0;
         let contactPageScrollLocked = false;
         let contactKeyboardFocusTimer = 0;
@@ -3515,21 +3543,33 @@
           followLatest: true,
         };
 
-        const syncContactControlHeights = () => {
+        const syncContactControlHeights = (visibleHeight = 0) => {
           if (!contactMobileViewportQuery.matches || !contactModal || contactModal.hidden) {
             document.documentElement.style.removeProperty("--contact-mobile-composer-height");
             document.documentElement.style.removeProperty("--contact-mobile-status-height");
+            document.documentElement.style.removeProperty("--contact-mobile-header-height");
+            document.documentElement.style.removeProperty("--contact-mobile-chat-height");
             return;
           }
 
+          const headerHeight = contactPanelHeader
+            ? Math.ceil(contactPanelHeader.getBoundingClientRect().height)
+            : 0;
           const composerHeight = contactComposer
             ? Math.ceil(contactComposer.getBoundingClientRect().height)
             : 0;
           const statusHeight = contactStatus
             ? Math.ceil(contactStatus.getBoundingClientRect().height)
             : 0;
+          const measuredVisibleHeight = Number.isFinite(visibleHeight) && visibleHeight > 0
+            ? visibleHeight
+            : contactMobileVisibleHeight || contactLayoutViewportHeight || getContactLayoutViewportHeight();
+          const chatHeight = Math.max(120, Math.round(measuredVisibleHeight - headerHeight - composerHeight - statusHeight));
+
           document.documentElement.style.setProperty("--contact-mobile-composer-height", `${composerHeight}px`);
           document.documentElement.style.setProperty("--contact-mobile-status-height", `${statusHeight}px`);
+          document.documentElement.style.setProperty("--contact-mobile-header-height", `${headerHeight}px`);
+          document.documentElement.style.setProperty("--contact-mobile-chat-height", `${chatHeight}px`);
         };
 
         const setContactStatus = (message, tone = "") => {
@@ -3777,6 +3817,7 @@
 
         const resetContactViewportMetrics = () => {
           contactLayoutViewportHeight = 0;
+          contactMobileVisibleHeight = 0;
           window.cancelAnimationFrame(contactScrollAnimationFrame);
           window.cancelAnimationFrame(contactLayoutFrame);
           window.clearTimeout(contactLayoutPinTimer);
@@ -3797,6 +3838,8 @@
           document.documentElement.style.removeProperty("--contact-mobile-visible-height");
           document.documentElement.style.removeProperty("--contact-mobile-composer-height");
           document.documentElement.style.removeProperty("--contact-mobile-status-height");
+          document.documentElement.style.removeProperty("--contact-mobile-header-height");
+          document.documentElement.style.removeProperty("--contact-mobile-chat-height");
         };
 
         const getContactLayoutViewportHeight = () => {
@@ -3821,7 +3864,6 @@
           const visualViewport = window.visualViewport;
           const inputFocused = document.activeElement === contactInput || contactPreserveKeyboardOnSubmit;
           syncContactInputFocusState();
-          syncContactControlHeights();
           const nextLayoutHeight = getContactLayoutViewportHeight();
           if (options.reset || !contactLayoutViewportHeight || !inputFocused) {
             contactLayoutViewportHeight = nextLayoutHeight;
@@ -3851,6 +3893,8 @@
           const visibleHeight = keyboardOpen ? candidateVisibleHeight : contactLayoutViewportHeight;
           const viewportTop = keyboardOpen ? candidateViewportTop : 0;
           const keyboardOffset = keyboardOpen ? candidateKeyboardOffset : 0;
+          contactMobileVisibleHeight = visibleHeight;
+          syncContactControlHeights(visibleHeight);
 
           if (contactModal) {
             if (keyboardOpen) {
