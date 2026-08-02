@@ -1308,6 +1308,25 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual([message["direction"] for message in messages], ["inbound", "outbound"])
         self.assertNotIn("מאשר", [message["text"] for message in messages])
 
+    def test_whatsapp_history_import_rejects_non_txt_files(self) -> None:
+        status, body = self._request(
+            "POST",
+            "/api/whatsapp/history/import",
+            {
+                "files": [
+                    {
+                        "name": "WhatsApp Chat with Maya Cohen.pdf",
+                        "content": "13/01/2026, 09:00 - Maya Cohen: Hi",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], "unsupported_file_type")
+        self.assertIn(".txt file exported from WhatsApp", body["message"])
+
     def test_whatsapp_history_import_saves_exported_chat(self) -> None:
         status, body = self._request(
             "POST",

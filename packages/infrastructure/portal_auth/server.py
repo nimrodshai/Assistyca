@@ -4062,6 +4062,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         for file_index, file_payload in enumerate(files):
             source = file_payload if isinstance(file_payload, dict) else {}
             file_name = normalize_import_text(source.get("name") or f"whatsapp-chat-{file_index + 1}.txt")
+            if not file_name.lower().endswith(".txt"):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "unsupported_file_type",
+                    "message": f"{file_name} is not supported. Upload a .txt file exported from WhatsApp.",
+                })
+                return
             content = str(source.get("content") or "")
             if len(content) > WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS:
                 json_response(self, HTTPStatus.BAD_REQUEST, {

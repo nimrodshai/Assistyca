@@ -4030,6 +4030,11 @@ async function readWhatsAppHistoryImportFile(file) {
   };
 }
 
+function isWhatsAppHistoryTxtExport(file) {
+  const fileName = String(file?.name || "").trim().toLowerCase();
+  return fileName.endsWith(".txt");
+}
+
 async function importWhatsAppHistoryExports() {
   const feature = getSelectedFeature();
   if (!isSignedIn() || !isWhatsAppFeature(feature) || state.whatsappHistoryImportBusy) {
@@ -4038,8 +4043,19 @@ async function importWhatsAppHistoryExports() {
 
   const files = Array.from(elements.whatsappHistoryFileInput?.files || []);
   if (!files.length) {
-    state.whatsappHistoryImportError = "Choose a WhatsApp chat file first.";
+    state.whatsappHistoryImportError = "Choose a WhatsApp .txt export first.";
     state.whatsappHistoryImportStatus = "";
+    renderWhatsAppHistory(feature);
+    elements.whatsappHistoryFileInput?.focus();
+    return;
+  }
+  const unsupportedFiles = files.filter((file) => !isWhatsAppHistoryTxtExport(file));
+  if (unsupportedFiles.length) {
+    state.whatsappHistoryImportError = "Only .txt files exported from WhatsApp are supported.";
+    state.whatsappHistoryImportStatus = "";
+    if (elements.whatsappHistoryFileInput) {
+      elements.whatsappHistoryFileInput.value = "";
+    }
     renderWhatsAppHistory(feature);
     elements.whatsappHistoryFileInput?.focus();
     return;
@@ -4047,7 +4063,7 @@ async function importWhatsAppHistoryExports() {
 
   state.whatsappHistoryImportBusy = true;
   state.whatsappHistoryImportError = "";
-  state.whatsappHistoryImportStatus = `Reading ${files.length} chat file${files.length === 1 ? "" : "s"}...`;
+  state.whatsappHistoryImportStatus = `Reading ${files.length} WhatsApp .txt export${files.length === 1 ? "" : "s"}...`;
   renderWhatsAppHistory(feature);
 
   try {
