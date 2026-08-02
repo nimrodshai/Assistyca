@@ -39,6 +39,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from packages.infrastructure.billing_ledger import load_billing_report
+from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
 from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import call_openai_response
@@ -2830,20 +2831,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         }
 
     def _serialize_admin_user(self, user: dict[str, Any]) -> dict[str, Any]:
-        assignments = self.database.list_feature_assignments(normalize_text(user.get("email")))
+        email = normalize_email(user.get("email"))
+        assignments = self.database.list_feature_assignments(email, include_inactive=True)
         assigned_feature_ids = [
             normalize_text(assignment.get("featureId"))
             for assignment in assignments
             if bool(assignment.get("isAssigned")) and normalize_text(assignment.get("featureId"))
         ]
         assigned_feature_ids.sort()
+        billing_customer = self.database.get_billing_customer(email, include_inactive=True) or {}
+        subscription_status = normalize_text(billing_customer.get("subscriptionStatus"))
+        is_paying = subscription_status in ACTIVE_SUBSCRIPTION_STATUSES
         return {
-            "email": normalize_email(user.get("email")),
+            "email": email,
             "displayName": normalize_text(user.get("displayName")),
             "isActive": bool(user.get("isActive")),
             "isAdmin": bool(user.get("isAdmin")),
             "registeredAt": user.get("registeredAt"),
             "lastLoginAt": user.get("lastLoginAt"),
+            "usageCount": int(user.get("usageCount") or 0),
+            "lastUsageAt": user.get("lastUsageAt"),
+            "billing": user.get("billing") if isinstance(user.get("billing"), dict) else {},
+            "paymentStatus": {
+                "isPaying": is_paying,
+                "label": "Paying" if is_paying else "Not paying",
+                "provider": normalize_text(billing_customer.get("provider")),
+                "subscriptionStatus": subscription_status,
+                "customerPortalUrl": normalize_text(billing_customer.get("customerPortalUrl")),
+                "checkoutUrl": normalize_text(billing_customer.get("checkoutUrl")),
+                "lastCheckedAt": billing_customer.get("lastCheckedAt"),
+            },
             "assignedFeatureIds": assigned_feature_ids,
         }
 
@@ -2875,8 +2892,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         _, current_user = authenticated
         users = [
             self._serialize_admin_user(user)
-            for user in self.database.list_users(include_inactive=False)
-            if bool(user.get("isActive"))
+            for user in self.database.list_users(include_inactive=True)
         ]
         features = [self._serialize_admin_feature(feature) for feature in self.database.list_features(include_inactive=False)]
         json_response(self, HTTPStatus.OK, {
@@ -2935,7 +2951,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             try:
                 self.database.register_user(email, display_name=display_name)
                 if isinstance(assigned_feature_ids, list):
-                    self.database.set_user_feature_assignments(email, assigned_feature_ids)
+                    self.database.set_user_feature_assignments(email, assigned_feature_ids, include_inactive=True)
                 user = self.database.get_user(email) or {}
             except ValueError as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -3052,7 +3068,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return
 
             try:
-                self.database.set_user_feature_assignments(email, assigned_feature_ids)
+                self.database.set_user_feature_assignments(email, assigned_feature_ids, include_inactive=True)
                 user = self.database.get_user(email) or {}
             except ValueError as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -3080,6 +3096,74 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        if len(parts) == 5 and parts[:3] == ["api", "admin", "users"] and parts[4] == "status":
+            session, current_user = authenticated
+            email = normalize_email(urllib_parse.unquote(parts[3]))
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_json",
+                    "message": str(exc),
+                })
+                return
+
+            if not is_valid_email(email):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_email",
+                    "message": "Enter a valid email address.",
+                })
+                return
+
+            if not isinstance(payload.get("isActive"), bool):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_status",
+                    "message": "isActive must be true or false.",
+                })
+                return
+
+            next_is_active = bool(payload.get("isActive"))
+            if normalize_email(session.email) == email and not next_is_active:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "cannot_disable_self",
+                    "message": "You can't disable the admin account you're using right now.",
+                })
+                return
+
+            try:
+                user = self.database.update_user_status(email, is_active=next_is_active)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "last_admin",
+                    "message": str(exc),
+                })
+                return
+            except KeyError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {
+                    "ok": False,
+                    "error": "not_found",
+                    "message": str(exc),
+                })
+                return
+
+            response_current_user = user if normalize_email(session.email) == normalize_email(user.get("email")) else current_user
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "Client status updated.",
+                "user": self._serialize_admin_user(user),
+                "currentUser": {
+                    "email": normalize_email(response_current_user.get("email")),
+                    "displayName": normalize_text(response_current_user.get("displayName")),
+                    "isAdmin": bool(response_current_user.get("isAdmin")),
+                },
+            })
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def _handle_admin_users_delete(self, parsed: urllib_parse.ParseResult) -> None:
@@ -3104,7 +3188,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         target_user = self.database.get_user(email)
-        if target_user is None or not bool(target_user.get("isActive")):
+        if target_user is None:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
                 "error": "not_found",
@@ -3120,7 +3204,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        if bool(target_user.get("isAdmin")) and self.database.count_admin_users() <= 1:
+        if bool(target_user.get("isActive")) and bool(target_user.get("isAdmin")) and self.database.count_admin_users() <= 1:
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
                 "error": "last_admin",

@@ -2434,6 +2434,25 @@ body[data-modal="billing"] .app-shell {
   white-space: nowrap;
 }
 
+.feature-status.is-paid,
+.feature-status.is-active-client {
+  color: #0f766e;
+  background: rgba(15, 118, 110, 0.1);
+  border: 1px solid rgba(15, 118, 110, 0.12);
+}
+
+.feature-status.is-unpaid {
+  color: #8c5a10;
+  background: rgba(212, 154, 58, 0.12);
+  border: 1px solid rgba(212, 154, 58, 0.18);
+}
+
+.feature-status.is-inactive-client {
+  color: #6d7785;
+  background: rgba(140, 150, 163, 0.12);
+  border: 1px solid rgba(140, 150, 163, 0.16);
+}
+
 .feature-card-status {
   position: absolute;
   top: 1rem;
@@ -2451,11 +2470,17 @@ body[data-modal="billing"] .app-shell {
   gap: 1rem;
 }
 
+.clients-panel {
+  width: min(100%, 76rem);
+  gap: 1rem;
+}
+
 .opportunities-intro {
   width: min(100%, 70rem);
 }
 
-.opportunities-actions {
+.opportunities-actions,
+.clients-actions {
   display: flex;
   align-items: center;
   gap: 0.65rem;
@@ -2506,6 +2531,50 @@ body[data-modal="billing"] .app-shell {
   width: min(100%, 70rem);
   display: grid;
   gap: 0.78rem;
+}
+
+.clients-management-surface {
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+}
+
+.clients-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.client-metric {
+  display: grid;
+  gap: 0.24rem;
+  min-height: 5.7rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(20, 28, 38, 0.07);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 252, 0.9));
+  box-shadow: 0 14px 30px rgba(25, 38, 54, 0.05);
+}
+
+.client-metric span {
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.client-metric strong {
+  color: var(--text);
+  font-size: 1.72rem;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.client-metric small {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .opportunity-card {
@@ -4686,7 +4755,7 @@ body[data-modal="billing"] .app-shell {
 .admin-users-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 48rem;
+  min-width: 74rem;
 }
 
 .admin-users-table th,
@@ -4713,6 +4782,26 @@ body[data-modal="billing"] .app-shell {
 
 .admin-users-table tbody tr:hover {
   background: linear-gradient(90deg, rgba(15, 118, 110, 0.035), rgba(255, 255, 255, 0.92));
+}
+
+.admin-users-table tbody tr.is-inactive-client {
+  color: rgba(20, 32, 43, 0.72);
+  background: rgba(248, 250, 252, 0.54);
+}
+
+.admin-tools-cell {
+  max-width: 18rem;
+}
+
+.admin-tools-summary {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .admin-user-link {
@@ -4819,6 +4908,72 @@ body[data-modal="billing"] .app-shell {
 
 .admin-detail-panel-actions .ghost-button.small {
   min-width: 10rem;
+}
+
+.admin-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: max-content;
+  max-width: 100%;
+  min-height: 2.25rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.admin-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.admin-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 2.7rem;
+  height: 1.48rem;
+  border-radius: 999px;
+  background: rgba(140, 150, 163, 0.2);
+  border: 1px solid rgba(20, 28, 38, 0.1);
+  box-shadow: inset 0 1px 2px rgba(20, 28, 38, 0.08);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.admin-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 0.18rem;
+  left: 0.19rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 3px 8px rgba(25, 38, 54, 0.18);
+  transition: transform 160ms ease;
+}
+
+.admin-switch input:checked + .admin-switch-track {
+  background: rgba(15, 118, 110, 0.22);
+  border-color: rgba(15, 118, 110, 0.28);
+}
+
+.admin-switch input:checked + .admin-switch-track::after {
+  transform: translateX(1.18rem);
+}
+
+.admin-switch input:focus-visible + .admin-switch-track {
+  outline: 3px solid rgba(30, 136, 229, 0.22);
+  outline-offset: 3px;
+}
+
+.admin-switch input:disabled + .admin-switch-track,
+.admin-switch input:disabled ~ .admin-switch-label {
+  opacity: 0.58;
+  cursor: not-allowed;
 }
 
 .admin-panel-copy,
@@ -5165,6 +5320,10 @@ body[data-modal="billing"] .app-shell {
   .admin-user-access-actions,
   .admin-detail-strip {
     justify-content: flex-start;
+  }
+
+  .clients-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-users-toolbar {
@@ -5655,12 +5814,14 @@ body[data-modal="billing"] .app-shell {
     gap: 0.72rem;
   }
 
-  .opportunities-summary {
+  .opportunities-summary,
+  .clients-summary {
     grid-template-columns: 1fr;
   }
 
   .opportunity-card,
-  .opportunity-metric {
+  .opportunity-metric,
+  .client-metric {
     border-radius: var(--radius-md);
   }
 

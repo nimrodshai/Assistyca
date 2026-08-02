@@ -24,13 +24,16 @@ const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
 const OPPORTUNITIES_OWNER_EMAIL = "nimrod.shai@gmail.com";
-const VALID_TABS = new Set(["features", "opportunities", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
+const VALID_TABS = new Set(["features", "opportunities", "clients", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor", "history"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
   ["leads", "opportunities"],
   ["pipeline", "opportunities"],
+  ["users", "clients"],
+  ["accounts", "clients"],
+  ["customers", "clients"],
   ["personal", "personal-details"],
   ["profile", "personal-details"],
   ["details", "personal-details"],
@@ -38,6 +41,7 @@ const TAB_ALIASES = new Map([
 const TAB_LABELS = {
   features: "Tools",
   opportunities: "Opportunities",
+  clients: "Clients",
   "personal-details": "About your business",
   preview: "Preview",
   simulator: "Simulator",
@@ -56,7 +60,7 @@ const SETTINGS_MODE_CONTENT = {
     description: "Update login details and account preferences.",
   },
   users: {
-    title: "Registered users",
+    title: "Clients",
     description: "",
   },
 };
@@ -488,6 +492,7 @@ const state = {
   adminEditUserBusy: false,
   adminSaveBusyByEmail: {},
   adminSaveQueuedByEmail: {},
+  adminStatusBusyByEmail: {},
   adminDeleteBusyByEmail: {},
   adminUserDrafts: {},
   adminView: "list",
@@ -695,6 +700,7 @@ const elements = {
   opportunitiesSummary: document.querySelector("#opportunitiesSummary"),
   opportunitiesList: document.querySelector("#opportunitiesList"),
   opportunitiesRefreshButton: document.querySelector("#opportunitiesRefreshButton"),
+  clientsPanel: document.querySelector("#clientsPanel"),
   personalDetailsPanel: document.querySelector("#personalDetailsPanel"),
   personalDetailsPreviewCard: document.querySelector("#personalDetailsPreviewCard"),
   profileBusinessSummaryInput: document.querySelector("#profileBusinessSummaryInput"),
@@ -774,7 +780,7 @@ const elements = {
   settingsButtons: Array.from(document.querySelectorAll("#settingsPanel [data-settings-mode]")),
   accountSettingsPane: document.querySelector("#accountSettingsPane"),
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
-  userAccessSettingsPane: document.querySelector("#userAccessSettingsPane"),
+  adminUsersPane: document.querySelector("#clientsPanel"),
   adminUsersShell: document.querySelector("#adminUsersShell"),
   adminUsersMenuItem: document.querySelector("#adminUsersMenuItem"),
   adminOpenAddUserButton: document.querySelector("#adminOpenAddUserButton"),
@@ -980,6 +986,10 @@ function canReviewOpportunities() {
   return Boolean(isSignedIn() && normalizeEmail(activeEmail) === OPPORTUNITIES_OWNER_EMAIL);
 }
 
+function canManageClients() {
+  return isAdminUser();
+}
+
 function clearAuthSession() {
   authSession = null;
   persistJson(AUTH_SESSION_KEY, null);
@@ -1022,6 +1032,25 @@ function sortUniqueFeatureIds(featureIds = []) {
   )).sort();
 }
 
+function normalizeAdminPaymentStatus(paymentStatus = null) {
+  const source = paymentStatus && typeof paymentStatus === "object" ? paymentStatus : {};
+  const subscriptionStatus = String(source.subscriptionStatus || source.subscription_status || "").trim();
+  const isPaying = Boolean(
+    source.isPaying
+    ?? source.isPayingCustomer
+    ?? ["active", "on_trial"].includes(subscriptionStatus),
+  );
+  return {
+    isPaying,
+    label: String(source.label || "").trim() || (isPaying ? "Paying" : "Not paying"),
+    provider: String(source.provider || "").trim(),
+    subscriptionStatus,
+    customerPortalUrl: String(source.customerPortalUrl || source.customer_portal_url || "").trim(),
+    checkoutUrl: String(source.checkoutUrl || source.checkout_url || "").trim(),
+    lastCheckedAt: String(source.lastCheckedAt || source.last_checked_at || "").trim(),
+  };
+}
+
 function normalizeAdminUserRecord(user = {}) {
   return {
     email: normalizeEmail(user.email || ""),
@@ -1030,12 +1059,19 @@ function normalizeAdminUserRecord(user = {}) {
     isAdmin: Boolean(user.isAdmin),
     registeredAt: String(user.registeredAt || "").trim(),
     lastLoginAt: String(user.lastLoginAt || "").trim(),
+    usageCount: Number(user.usageCount || user.usage_count || 0),
+    lastUsageAt: String(user.lastUsageAt || user.last_usage_at || "").trim(),
+    billing: user.billing && typeof user.billing === "object" ? user.billing : {},
+    paymentStatus: normalizeAdminPaymentStatus(user.paymentStatus || user.payment_status || null),
     assignedFeatureIds: sortUniqueFeatureIds(user.assignedFeatureIds || user.featureIds || []),
   };
 }
 
 function sortAdminUsers(users = []) {
   return [...users].sort((left, right) => {
+    if (Boolean(left.isActive) !== Boolean(right.isActive)) {
+      return left.isActive ? -1 : 1;
+    }
     const leftLabel = (left.displayName || left.email).toLowerCase();
     const rightLabel = (right.displayName || right.email).toLowerCase();
     return leftLabel.localeCompare(rightLabel);
@@ -1137,6 +1173,9 @@ function replaceAdminUserState(previousEmail, user) {
   const { [normalizedPreviousEmail]: _saveQueued, ...nextSaveQueued } = state.adminSaveQueuedByEmail;
   state.adminSaveQueuedByEmail = nextSaveQueued;
 
+  const { [normalizedPreviousEmail]: _statusBusy, ...nextStatusBusy } = state.adminStatusBusyByEmail;
+  state.adminStatusBusyByEmail = nextStatusBusy;
+
   const { [normalizedPreviousEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
 
@@ -1164,6 +1203,9 @@ function removeAdminUserState(email) {
   const { [normalizedEmail]: _saveQueued, ...nextSaveQueued } = state.adminSaveQueuedByEmail;
   state.adminSaveQueuedByEmail = nextSaveQueued;
 
+  const { [normalizedEmail]: _statusBusy, ...nextStatusBusy } = state.adminStatusBusyByEmail;
+  state.adminStatusBusyByEmail = nextStatusBusy;
+
   const { [normalizedEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
 
@@ -1181,7 +1223,7 @@ function getSettingsModeContent(mode = state.settingsMode) {
 
   if (state.adminView === "add") {
     return {
-      title: "Register user",
+      title: "Add client",
       description: "",
     };
   }
@@ -1189,8 +1231,8 @@ function getSettingsModeContent(mode = state.settingsMode) {
   if (state.adminView === "edit") {
     const user = getAdminSelectedUser();
     return {
-      title: user ? `Edit ${user.displayName || deriveDisplayName(user.email)}` : "Edit user",
-      description: user?.email || "Fix a typo in this account’s name or email.",
+      title: user ? `Edit ${user.displayName || deriveDisplayName(user.email)}` : "Edit client",
+      description: user?.email || "Fix a typo in this client’s name or email.",
     };
   }
 
@@ -1200,7 +1242,7 @@ function getSettingsModeContent(mode = state.settingsMode) {
       title: user
         ? (user.displayName || deriveDisplayName(user.email))
         : SETTINGS_MODE_CONTENT.users.title,
-      description: user?.email || "Manage which tools this user can see in the portal.",
+      description: user?.email || "Manage which tools this client can see in the portal.",
     };
   }
 
@@ -1316,11 +1358,114 @@ function getAdminUserDeleteDisabledReason(user) {
   }
 
   const activeAdminCount = state.adminUsers.filter((entry) => entry.isActive && entry.isAdmin).length;
-  if (user?.isAdmin && activeAdminCount <= 1) {
+  if (user?.isActive && user?.isAdmin && activeAdminCount <= 1) {
     return "Add another admin before deleting the last admin account.";
   }
 
   return "";
+}
+
+function getAdminUserActiveDisabledReason(user, nextIsActive = !Boolean(user?.isActive)) {
+  const normalizedEmail = normalizeEmail(user?.email || "");
+  if (!normalizedEmail) {
+    return "Select a valid client first.";
+  }
+
+  if (normalizedEmail === normalizeEmail(authSession?.email || activeEmail || "") && !nextIsActive) {
+    return "You can't disable the admin account you're using right now.";
+  }
+
+  const activeAdminCount = state.adminUsers.filter((entry) => entry.isActive && entry.isAdmin).length;
+  if (user?.isActive && user?.isAdmin && !nextIsActive && activeAdminCount <= 1) {
+    return "Add another admin before disabling the last admin account.";
+  }
+
+  return "";
+}
+
+function getAdminFeatureName(featureId) {
+  const normalizedFeatureId = String(featureId || "").trim();
+  if (!normalizedFeatureId) {
+    return "";
+  }
+  const feature = state.adminFeatures.find((entry) => entry.featureId === normalizedFeatureId);
+  return feature?.name || normalizedFeatureId;
+}
+
+function getAdminUserToolNames(user) {
+  return sortUniqueFeatureIds(user?.assignedFeatureIds || []).map(getAdminFeatureName).filter(Boolean);
+}
+
+function formatAdminUserTools(user, maxVisible = 2) {
+  const names = getAdminUserToolNames(user);
+  if (!names.length) {
+    return "No tools";
+  }
+  if (names.length <= maxVisible) {
+    return names.join(", ");
+  }
+  return `${names.slice(0, maxVisible).join(", ")} +${names.length - maxVisible}`;
+}
+
+function getAdminPaymentLabel(paymentStatus = {}) {
+  const normalizedPayment = normalizeAdminPaymentStatus(paymentStatus);
+  if (normalizedPayment.isPaying) {
+    return "Paying";
+  }
+  return normalizedPayment.subscriptionStatus
+    ? `Not paying · ${normalizedPayment.subscriptionStatus.replace(/_/g, " ")}`
+    : "Not paying";
+}
+
+function createAdminStateBadge(label, className = "") {
+  const badge = document.createElement("span");
+  badge.className = `feature-status${className ? ` ${className}` : ""}`;
+  badge.textContent = label;
+  return badge;
+}
+
+function createAdminActiveSwitch(user, options = {}) {
+  const normalizedEmail = normalizeEmail(user?.email || "");
+  const nextIsActive = !Boolean(user?.isActive);
+  const disabledReason = getAdminUserActiveDisabledReason(user, nextIsActive);
+  const isBusy = Boolean(state.adminStatusBusyByEmail[normalizedEmail]);
+
+  const label = document.createElement("label");
+  label.className = "admin-switch";
+  if (disabledReason) {
+    label.title = disabledReason;
+  }
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = Boolean(user?.isActive);
+  input.disabled = Boolean(options.disabled) || isBusy || Boolean(disabledReason);
+  input.dataset.adminActiveUser = normalizedEmail;
+  input.setAttribute(
+    "aria-label",
+    `${user?.displayName || normalizedEmail || "Client"} portal access`,
+  );
+
+  const track = document.createElement("span");
+  track.className = "admin-switch-track";
+  track.setAttribute("aria-hidden", "true");
+
+  const text = document.createElement("span");
+  text.className = "admin-switch-label";
+  text.textContent = isBusy
+    ? "Saving"
+    : user?.isActive ? "Active" : "Inactive";
+
+  label.append(input, track, text);
+  return label;
+}
+
+function getAdminClientStats(users = state.adminUsers) {
+  const total = users.length;
+  const active = users.filter((user) => user.isActive).length;
+  const paying = users.filter((user) => user.paymentStatus?.isPaying).length;
+  const inactive = total - active;
+  return { total, active, paying, inactive };
 }
 
 function resetAdminState() {
@@ -1333,6 +1478,7 @@ function resetAdminState() {
   state.adminEditUserBusy = false;
   state.adminSaveBusyByEmail = {};
   state.adminSaveQueuedByEmail = {};
+  state.adminStatusBusyByEmail = {};
   state.adminDeleteBusyByEmail = {};
   state.adminUserDrafts = {};
   state.adminView = "list";
@@ -1357,12 +1503,17 @@ function getFilteredAdminUsers() {
     return state.adminUsers;
   }
 
+  const featureNameById = new Map(state.adminFeatures.map((feature) => [feature.featureId, feature.name]));
   return state.adminUsers.filter((user) => {
     const searchable = [
       user.displayName,
       user.email,
       user.isAdmin ? "admin" : "user",
+      user.isActive ? "active" : "inactive",
+      user.paymentStatus?.isPaying ? "paying" : "not paying",
+      user.paymentStatus?.subscriptionStatus,
       ...user.assignedFeatureIds,
+      ...user.assignedFeatureIds.map((featureId) => featureNameById.get(featureId) || ""),
     ].join(" ").toLowerCase();
     return searchable.includes(query);
   });
@@ -1386,9 +1537,32 @@ function getFilteredAdminFeatures(query = state.adminFeatureSearch) {
   });
 }
 
+function showClientsTab(options = {}) {
+  if (!canManageClients()) {
+    setActiveTab("features");
+    return;
+  }
+
+  state.activeTab = "clients";
+  state.lastPrimaryTab = "clients";
+  persistLastPrimaryTab();
+  state.settingsOpen = false;
+  state.selectedFeatureId = null;
+  state.selectedSimulatorId = null;
+  closeFeatureStudioMenu();
+  closeBillingHelp();
+  closePersonalDetailsTips();
+  closeMenu();
+  if (options.syncHash !== false) {
+    setHashForTab("clients");
+  }
+  renderApp();
+  if (options.refresh !== false) {
+    void refreshAdminUsers();
+  }
+}
+
 function openAdminUsersList(options = {}) {
-  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
-  state.settingsMode = "users";
   state.adminView = "list";
   state.adminSelectedUserEmail = "";
   state.adminFeatureSearch = "";
@@ -1399,21 +1573,12 @@ function openAdminUsersList(options = {}) {
     state.adminUserSearch = "";
   }
 
-  if (shouldOpenModal) {
-    openSettings("users");
-    return;
-  }
-
-  closeMenu();
-  renderApp();
-  if (options.refresh !== false && isAdminUser()) {
-    void refreshAdminUsers();
-  }
+  showClientsTab({ refresh: options.refresh !== false });
 }
 
 function focusAdminAddUserEmailInput() {
   window.requestAnimationFrame(() => {
-    const input = elements.userAccessSettingsPane?.querySelector('[data-admin-new-email="true"]');
+    const input = elements.adminUsersPane?.querySelector('[data-admin-new-email="true"]');
     if (input instanceof HTMLInputElement) {
       input.focus();
     }
@@ -1421,8 +1586,6 @@ function focusAdminAddUserEmailInput() {
 }
 
 function openAdminAddUser() {
-  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
-  state.settingsMode = "users";
   state.adminView = "add";
   state.adminSelectedUserEmail = "";
   state.adminUsersError = "";
@@ -1433,26 +1596,19 @@ function openAdminAddUser() {
   state.adminEditUserEmail = "";
   state.adminEditUserDisplayName = "";
 
-  if (shouldOpenModal) {
-    openSettings("users");
-    focusAdminAddUserEmailInput();
-    return;
-  }
-
-  closeMenu();
-  renderApp();
+  showClientsTab({ refresh: false });
   focusAdminAddUserEmailInput();
 }
 
 function focusAdminEditUserInput() {
   window.requestAnimationFrame(() => {
-    const emailInput = elements.userAccessSettingsPane?.querySelector('[data-admin-edit-email="true"]');
+    const emailInput = elements.adminUsersPane?.querySelector('[data-admin-edit-email="true"]');
     if (emailInput instanceof HTMLInputElement && !emailInput.disabled) {
       emailInput.focus();
       return;
     }
 
-    const nameInput = elements.userAccessSettingsPane?.querySelector('[data-admin-edit-display-name="true"]');
+    const nameInput = elements.adminUsersPane?.querySelector('[data-admin-edit-display-name="true"]');
     if (nameInput instanceof HTMLInputElement) {
       nameInput.focus();
     }
@@ -1465,8 +1621,6 @@ function openAdminUserDetail(email) {
     return;
   }
 
-  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
-  state.settingsMode = "users";
   state.adminView = "detail";
   state.adminSelectedUserEmail = normalizedEmail;
   state.adminUsersError = "";
@@ -1475,13 +1629,7 @@ function openAdminUserDetail(email) {
   state.adminEditUserEmail = "";
   state.adminEditUserDisplayName = "";
 
-  if (shouldOpenModal) {
-    openSettings("users");
-    return;
-  }
-
-  closeMenu();
-  renderApp();
+  showClientsTab({ refresh: false });
 }
 
 function openAdminEditUser(email) {
@@ -1490,8 +1638,6 @@ function openAdminEditUser(email) {
     return;
   }
 
-  const shouldOpenModal = !state.settingsOpen || normalizeSettingsMode(state.settingsMode) !== "users";
-  state.settingsMode = "users";
   state.adminView = "edit";
   state.adminSelectedUserEmail = user.email;
   state.adminUsersError = "";
@@ -1500,14 +1646,7 @@ function openAdminEditUser(email) {
   state.adminEditUserEmail = user.email;
   state.adminEditUserDisplayName = user.displayName || "";
 
-  if (shouldOpenModal) {
-    openSettings("users");
-    focusAdminEditUserInput();
-    return;
-  }
-
-  closeMenu();
-  renderApp();
+  showClientsTab({ refresh: false });
   focusAdminEditUserInput();
 }
 
@@ -5534,11 +5673,15 @@ function closeSettings() {
 }
 
 function setActiveTab(tab, options = {}) {
-  const nextTab = normalizeTab(tab);
+  let nextTab = normalizeTab(tab);
 
   if (nextTab === "settings") {
     openSettings(options.settingsMode || state.settingsMode);
     return;
+  }
+
+  if (nextTab === "clients" && !canManageClients()) {
+    nextTab = "features";
   }
 
   if (!VALID_TABS.has(nextTab)) {
@@ -5575,6 +5718,9 @@ function setActiveTab(tab, options = {}) {
   }
   if (nextTab === "opportunities") {
     void refreshOpportunities();
+  }
+  if (nextTab === "clients") {
+    void refreshAdminUsers();
   }
 }
 
@@ -7060,7 +7206,7 @@ function createAdminDetailRow(labelText, valueText) {
 
 function focusAdminFeatureSearchInput(selectionStart = null, selectionEnd = selectionStart) {
   window.requestAnimationFrame(() => {
-    const input = elements.userAccessSettingsPane?.querySelector('[data-admin-feature-search-input="true"]');
+    const input = elements.adminUsersPane?.querySelector('[data-admin-feature-search-input="true"]');
     if (!(input instanceof HTMLInputElement)) {
       return;
     }
@@ -7138,6 +7284,29 @@ function createAdminUsersListView() {
   const wrapper = document.createElement("div");
   wrapper.className = "admin-users-view admin-users-list-view";
 
+  const stats = getAdminClientStats();
+  const summary = document.createElement("div");
+  summary.className = "clients-summary";
+  const summaryItems = [
+    ["Clients", stats.total, "Registered accounts"],
+    ["Active", stats.active, "Can sign in"],
+    ["Paying", stats.paying, "Subscription active"],
+    ["Inactive", stats.inactive, "Login disabled"],
+  ];
+  for (const [labelText, valueText, metaText] of summaryItems) {
+    const item = document.createElement("div");
+    item.className = "client-metric";
+    const label = document.createElement("span");
+    label.textContent = labelText;
+    const value = document.createElement("strong");
+    value.textContent = String(valueText);
+    const meta = document.createElement("small");
+    meta.textContent = metaText;
+    item.append(label, value, meta);
+    summary.append(item);
+  }
+  wrapper.append(summary);
+
   const toolbar = document.createElement("div");
   toolbar.className = "admin-users-toolbar";
 
@@ -7158,15 +7327,15 @@ function createAdminUsersListView() {
   const countBadge = document.createElement("span");
   countBadge.className = "feature-status";
   countBadge.textContent = state.adminUserSearch
-    ? `${filteredUsers.length} of ${state.adminUsers.length} users`
-    : `${state.adminUsers.length} user${state.adminUsers.length === 1 ? "" : "s"}`;
+    ? `${filteredUsers.length} of ${state.adminUsers.length} clients`
+    : `${state.adminUsers.length} client${state.adminUsers.length === 1 ? "" : "s"}`;
 
   toolbar.append(searchField, countBadge);
   wrapper.append(toolbar);
 
   if (state.adminUsersLoading && !state.adminUsers.length) {
     wrapper.append(createAdminEmptyState(
-      "Loading users",
+      "Loading clients",
       "Fetching registered accounts so you can search and manage them.",
     ));
     return wrapper;
@@ -7174,15 +7343,15 @@ function createAdminUsersListView() {
 
   if (!state.adminUsers.length) {
     wrapper.append(createAdminEmptyState(
-      "No registered users yet",
-      "Register the first user here, then open them to manage which tools they can see.",
+      "No clients yet",
+      "Add the first client here, then open them to manage which tools they can see.",
     ));
     return wrapper;
   }
 
   if (!filteredUsers.length) {
     wrapper.append(createAdminEmptyState(
-      "No users match that search",
+      "No clients match that search",
       "Try a different name or email address.",
     ));
     return wrapper;
@@ -7196,7 +7365,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["User", "Email", "Tools", "Last login", "Role", ""]) {
+  for (const heading of ["Client", "Email", "Payment", "Active", "Visible tools", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -7218,29 +7387,40 @@ function createAdminUsersListView() {
     const emailCell = document.createElement("td");
     emailCell.textContent = user.email;
 
+    const paymentCell = document.createElement("td");
+    paymentCell.append(createAdminStateBadge(
+      getAdminPaymentLabel(user.paymentStatus),
+      user.paymentStatus?.isPaying ? "is-paid" : "is-unpaid",
+    ));
+
+    const activeCell = document.createElement("td");
+    activeCell.append(createAdminActiveSwitch(user, {
+      disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
+    }));
+
     const toolsCell = document.createElement("td");
-    toolsCell.textContent = String(user.assignedFeatureIds.length);
+    toolsCell.className = "admin-tools-cell";
+    const toolSummary = document.createElement("span");
+    toolSummary.className = "admin-tools-summary";
+    toolSummary.textContent = formatAdminUserTools(user, 2);
+    toolSummary.title = getAdminUserToolNames(user).join(", ");
+    toolsCell.append(toolSummary);
 
     const lastLoginCell = document.createElement("td");
     lastLoginCell.textContent = user.lastLoginAt
       ? formatAdminDateTime(user.lastLoginAt)
       : "No login yet";
 
-    const roleCell = document.createElement("td");
-    const roleBadge = document.createElement("span");
-    roleBadge.className = "feature-status";
-    roleBadge.textContent = user.isAdmin ? "Admin" : "Client";
-    roleCell.append(roleBadge);
-
     const actionCell = document.createElement("td");
     const manageButton = document.createElement("button");
     manageButton.type = "button";
     manageButton.className = "ghost-button small";
     manageButton.dataset.adminOpenUser = user.email;
-    manageButton.textContent = "Open";
+    manageButton.textContent = "Manage";
     actionCell.append(manageButton);
 
-    row.append(nameCell, emailCell, toolsCell, lastLoginCell, roleCell, actionCell);
+    row.classList.toggle("is-inactive-client", !user.isActive);
+    row.append(nameCell, emailCell, paymentCell, activeCell, toolsCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 
@@ -7299,7 +7479,7 @@ function createAdminAddUserView() {
   submitButton.className = `primary-button${state.adminAddUserBusy ? " is-loading" : ""}`;
   submitButton.dataset.adminCreateUser = "true";
   submitButton.disabled = state.adminAddUserBusy;
-  submitButton.textContent = state.adminAddUserBusy ? "Registering..." : "Register user";
+  submitButton.textContent = state.adminAddUserBusy ? "Adding..." : "Add client";
 
   actions.append(cancelButton, submitButton);
   wrapper.append(emailField, nameField, error, actions);
@@ -7309,8 +7489,8 @@ function createAdminAddUserView() {
 function createAdminEditUserView(user) {
   if (!user) {
     return createAdminEmptyState(
-      "User not found",
-      "Go back to the users table and open another account.",
+      "Client not found",
+      "Go back to the clients table and open another account.",
     );
   }
 
@@ -7351,7 +7531,7 @@ function createAdminEditUserView(user) {
   note.className = "admin-form-note";
   note.textContent = isEditingCurrentUser
     ? "You can change the display name here, but not the email on the admin account you're using right now."
-    : "Changing the email keeps this user's assigned tools and saved account history attached to the same account.";
+    : "Changing the email keeps this client's assigned tools and saved account history attached to the same account.";
 
   const error = document.createElement("div");
   error.className = `field-error${state.adminUsersError ? "" : " is-hidden"}`;
@@ -7384,8 +7564,8 @@ function createAdminEditUserView(user) {
 function createAdminUserDetailView(user) {
   if (!user) {
     return createAdminEmptyState(
-      "User not found",
-      "Go back to the users table and open another account.",
+      "Client not found",
+      "Go back to the clients table and open another account.",
     );
   }
 
@@ -7393,8 +7573,9 @@ function createAdminUserDetailView(user) {
   const hasChanges = !featureIdListsMatch(draftFeatureIds, user.assignedFeatureIds);
   const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
   const isDeleting = Boolean(state.adminDeleteBusyByEmail[user.email]);
+  const isStatusSaving = Boolean(state.adminStatusBusyByEmail[user.email]);
   const deleteDisabledReason = getAdminUserDeleteDisabledReason(user);
-  const toolInputsDisabled = isDeleting;
+  const toolInputsDisabled = isDeleting || isStatusSaving;
   const featureLookup = new Map(state.adminFeatures.map((feature) => [feature.featureId, feature]));
   const assignedFeatures = draftFeatureIds.map((featureId) => (
     featureLookup.get(featureId) || {
@@ -7413,15 +7594,23 @@ function createAdminUserDetailView(user) {
 
   const strip = document.createElement("div");
   strip.className = "admin-detail-strip";
-  const roleBadge = document.createElement("span");
-  roleBadge.className = "feature-status";
-  roleBadge.textContent = user.isAdmin ? "Admin" : "Client";
+  const roleBadge = createAdminStateBadge(user.isAdmin ? "Admin" : "Client");
+
+  const paymentBadge = createAdminStateBadge(
+    getAdminPaymentLabel(user.paymentStatus),
+    user.paymentStatus?.isPaying ? "is-paid" : "is-unpaid",
+  );
+
+  const activeBadge = createAdminStateBadge(
+    isStatusSaving ? "Saving status" : user.isActive ? "Active" : "Inactive",
+    user.isActive ? "is-active-client" : "is-inactive-client",
+  );
 
   const toolsBadge = document.createElement("span");
   toolsBadge.className = "feature-status";
   toolsBadge.textContent = `${draftFeatureIds.length} visible tool${draftFeatureIds.length === 1 ? "" : "s"}`;
 
-  strip.append(roleBadge, toolsBadge);
+  strip.append(roleBadge, paymentBadge, activeBadge, toolsBadge);
 
   const grid = document.createElement("div");
   grid.className = "admin-detail-grid";
@@ -7433,27 +7622,35 @@ function createAdminUserDetailView(user) {
   const infoRows = document.createElement("div");
   infoRows.className = "detail-stack";
   infoRows.append(
+    createAdminDetailRow("Payment", getAdminPaymentLabel(user.paymentStatus)),
+    createAdminDetailRow("Login", user.isActive ? "Active" : "Inactive"),
     createAdminDetailRow("Registered", formatAdminDateTime(user.registeredAt) || "Unknown"),
     createAdminDetailRow("Last login", user.lastLoginAt ? formatAdminDateTime(user.lastLoginAt) : "No login yet"),
+    createAdminDetailRow("Usage events", String(Number.isFinite(user.usageCount) ? user.usageCount : 0)),
   );
 
   const infoActions = document.createElement("div");
   infoActions.className = "admin-detail-panel-actions";
 
+  const statusControl = createAdminActiveSwitch(user, {
+    disabled: isSaving || isDeleting,
+  });
+  infoActions.append(statusControl);
+
   const editButton = document.createElement("button");
   editButton.type = "button";
   editButton.className = "ghost-button small";
   editButton.dataset.adminOpenEditUser = user.email;
-  editButton.disabled = isSaving || isDeleting;
-  editButton.textContent = "Edit user";
+  editButton.disabled = isSaving || isDeleting || isStatusSaving;
+  editButton.textContent = "Edit client";
   infoActions.append(editButton);
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
   deleteButton.className = "ghost-button danger small";
   deleteButton.dataset.adminDeleteUser = user.email;
-  deleteButton.disabled = isSaving || isDeleting || Boolean(deleteDisabledReason);
-  deleteButton.textContent = isDeleting ? "Deleting..." : "Delete user";
+  deleteButton.disabled = isSaving || isDeleting || isStatusSaving || Boolean(deleteDisabledReason);
+  deleteButton.textContent = isDeleting ? "Deleting..." : "Delete client";
   infoActions.append(deleteButton);
 
   infoPanel.append(infoTitle, infoRows, infoActions);
@@ -7585,7 +7782,7 @@ function renderAdminUsersPane() {
   }
 
   if (
-    !elements.userAccessSettingsPane
+    !elements.adminUsersPane
     || !elements.adminUsersShell
     || !elements.adminUsersContent
   ) {
@@ -7593,7 +7790,6 @@ function renderAdminUsersPane() {
   }
 
   if (!adminVisible) {
-    elements.userAccessSettingsPane.classList.add("is-hidden");
     elements.adminUsersShell.classList.remove("is-hidden");
     elements.adminUsersShell.classList.remove("is-add-view");
     elements.adminUsersShell.classList.remove("is-detail-view");
@@ -7707,7 +7903,7 @@ async function refreshAdminUsers(options = {}) {
     state.settingsMode = normalizeSettingsMode(state.settingsMode);
     return response;
   } catch (error) {
-    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t load user access right now.");
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t load clients right now.");
     if (Number(error?.status || 0) === 403 && authSession) {
       authSession = normalizeStoredSession({
         ...authSession,
@@ -7783,7 +7979,7 @@ async function addAdminUser() {
   const displayName = normalizeText(state.adminNewUserDisplayName);
 
   if (!validateEmail(email)) {
-    state.adminUsersError = "Enter a valid email address before adding the user.";
+    state.adminUsersError = "Enter a valid email address before adding the client.";
     renderApp();
     return;
   }
@@ -7821,7 +8017,7 @@ async function addAdminUser() {
     state.adminAddUserBusy = false;
     renderApp();
     if (didSucceed) {
-      setStatus("User added");
+      setStatus("Client added");
     }
   }
 }
@@ -7873,7 +8069,61 @@ async function saveAdminUserDetails() {
     state.adminEditUserBusy = false;
     renderApp();
     if (updatedUser) {
-      setStatus("User updated");
+      setStatus("Client updated");
+    }
+  }
+}
+
+async function saveAdminUserStatus(email, isActive) {
+  const normalizedEmail = normalizeEmail(email);
+  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
+  if (!isAdminUser() || !user || state.adminStatusBusyByEmail[normalizedEmail]) {
+    return;
+  }
+
+  const disabledReason = getAdminUserActiveDisabledReason(user, Boolean(isActive));
+  if (disabledReason) {
+    openAuthAlert("Client status unavailable", disabledReason, {
+      eyebrow: "Client status",
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    });
+    return;
+  }
+
+  state.adminStatusBusyByEmail = {
+    ...state.adminStatusBusyByEmail,
+    [normalizedEmail]: true,
+  };
+  state.adminUsersError = "";
+  renderApp();
+
+  let updatedUser = null;
+  try {
+    const response = await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/status`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        isActive: Boolean(isActive),
+      },
+    });
+
+    updatedUser = upsertAdminUserState(response.user || {
+      ...user,
+      isActive: Boolean(isActive),
+    });
+    void refreshAdminUsers({ render: false });
+  } catch (error) {
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t update that client right now.");
+    openAuthAlert("Couldn’t update client", state.adminUsersError, {
+      eyebrow: "Client status",
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    });
+  } finally {
+    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminStatusBusyByEmail;
+    state.adminStatusBusyByEmail = nextBusy;
+    renderApp();
+    if (updatedUser) {
+      setStatus(updatedUser.isActive ? "Client activated" : "Client disabled");
     }
   }
 }
@@ -7941,7 +8191,7 @@ async function saveAdminUserFeatures(email) {
     setAdminUserSaveQueued(normalizedEmail, false);
     renderApp();
     if (didSucceed) {
-      setStatus("User access saved");
+      setStatus("Client access saved");
     }
     if (shouldRetry && !state.adminDeleteBusyByEmail[normalizedEmail]) {
       void saveAdminUserFeatures(normalizedEmail);
@@ -7958,8 +8208,8 @@ function deleteAdminUser(email) {
 
   const disabledReason = getAdminUserDeleteDisabledReason(user);
   if (disabledReason) {
-    openAuthAlert("Delete user unavailable", disabledReason, {
-      eyebrow: "Delete user",
+    openAuthAlert("Delete client unavailable", disabledReason, {
+      eyebrow: "Delete client",
       returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
     });
     return;
@@ -7970,8 +8220,8 @@ function deleteAdminUser(email) {
     "Are you sure?",
     `Delete ${label} (${normalizedEmail})? This removes their portal access, assigned tools, billing history, WhatsApp setup, and saved messages.`,
     {
-      eyebrow: "Delete user",
-      buttonLabel: "Delete user",
+      eyebrow: "Delete client",
+      buttonLabel: "Delete client",
       secondaryButtonLabel: "Cancel",
       returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
       focusTarget: "secondary",
@@ -8011,10 +8261,10 @@ async function confirmAdminUserDelete(email) {
     void refreshAdminUsers({ render: false });
   } catch (error) {
     openAuthAlert(
-      "Couldn’t delete user",
-      formatApiErrorMessage(error, "We couldn’t delete that user right now."),
+      "Couldn’t delete client",
+      formatApiErrorMessage(error, "We couldn’t delete that client right now."),
       {
-        eyebrow: "Delete user",
+        eyebrow: "Delete client",
       },
     );
   } finally {
@@ -8022,7 +8272,7 @@ async function confirmAdminUserDelete(email) {
     state.adminDeleteBusyByEmail = nextBusy;
     renderApp();
     if (didSucceed) {
-      setStatus("User deleted");
+      setStatus("Client deleted");
     }
   }
 }
@@ -8198,6 +8448,24 @@ function updateOpportunityNavigation() {
   if (!allowed && state.activeTab === "opportunities") {
     state.activeTab = "features";
     state.lastPrimaryTab = "features";
+    persistLastPrimaryTab();
+    setHashForTab("features");
+  }
+}
+
+function updateClientNavigation() {
+  const allowed = canManageClients();
+  for (const button of elements.tabButtons) {
+    if (button.dataset.tab === "clients") {
+      button.hidden = !allowed;
+    }
+  }
+
+  if (!allowed && state.activeTab === "clients") {
+    state.activeTab = "features";
+    state.lastPrimaryTab = "features";
+    state.adminView = "list";
+    state.adminSelectedUserEmail = "";
     persistLastPrimaryTab();
     setHashForTab("features");
   }
@@ -9924,6 +10192,7 @@ function populateMonitorTimezoneOptions() {
 
 function updateTabButtons() {
   updateOpportunityNavigation();
+  updateClientNavigation();
   for (const button of elements.tabButtons) {
     const isSettingsButton = button.dataset.tab === "settings";
     const isActive = isSettingsButton
@@ -9936,7 +10205,6 @@ function updateTabButtons() {
 
 function updateSettingsButtons() {
   state.settingsMode = normalizeSettingsMode(state.settingsMode);
-  const adminVisible = isAdminUser();
   const modeContent = getSettingsModeContent(state.settingsMode);
 
   for (const button of elements.settingsButtons) {
@@ -9958,12 +10226,8 @@ function updateSettingsButtons() {
   }
 
   const showAccount = state.settingsMode === "account";
-  const showUsers = state.settingsMode === "users" && adminVisible;
   elements.accountSettingsPane.classList.toggle("is-hidden", !showAccount);
   elements.preferencesSettingsPane.classList.toggle("is-hidden", state.settingsMode !== "preferences");
-  if (elements.userAccessSettingsPane) {
-    elements.userAccessSettingsPane.classList.toggle("is-hidden", !showUsers);
-  }
 }
 
 function updatePanelVisibility() {
@@ -9976,6 +10240,7 @@ function updatePanelVisibility() {
   elements.appView.classList.toggle("is-feature-page", inStudio);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.opportunitiesPanel?.classList.toggle("is-hidden", state.activeTab !== "opportunities");
+  elements.clientsPanel?.classList.toggle("is-hidden", state.activeTab !== "clients");
   elements.personalDetailsPanel.classList.toggle("is-hidden", state.activeTab !== "personal-details");
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
   elements.previewPanel.classList.toggle("is-hidden", state.activeTab !== "preview");
@@ -10072,6 +10337,7 @@ function updatePersonalDetailsFields() {
 
 function renderApp(options = {}) {
   updateOpportunityNavigation();
+  updateClientNavigation();
   updateHeader();
   updateTabButtons();
   updateFeatureStudioHeader();
@@ -10184,6 +10450,9 @@ function refreshView() {
     }
     if (state.activeTab === "opportunities") {
       void refreshOpportunities();
+    }
+    if (state.activeTab === "clients") {
+      void refreshAdminUsers();
     }
     return;
   }
@@ -11336,8 +11605,8 @@ function bindEvents() {
       window.scrollTo(0, 0);
     });
   }
-  if (elements.userAccessSettingsPane) {
-    elements.userAccessSettingsPane.addEventListener("focusin", (event) => {
+  if (elements.adminUsersPane) {
+    elements.adminUsersPane.addEventListener("focusin", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) || target.dataset.adminFeatureSearchInput !== "true") {
         return;
@@ -11351,7 +11620,7 @@ function bindEvents() {
       }
     });
 
-    elements.userAccessSettingsPane.addEventListener("input", (event) => {
+    elements.adminUsersPane.addEventListener("input", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement)) {
         return;
@@ -11361,7 +11630,7 @@ function bindEvents() {
         const caret = target.selectionStart;
         state.adminUserSearch = target.value;
         renderAdminUsersPane();
-        const nextInput = elements.userAccessSettingsPane.querySelector('[data-admin-search-input="true"]');
+        const nextInput = elements.adminUsersPane.querySelector('[data-admin-search-input="true"]');
         if (nextInput instanceof HTMLInputElement) {
           nextInput.focus();
           if (typeof caret === "number") {
@@ -11406,9 +11675,15 @@ function bindEvents() {
       }
     });
 
-    elements.userAccessSettingsPane.addEventListener("change", (event) => {
+    elements.adminUsersPane.addEventListener("change", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") {
+        return;
+      }
+
+      const activeUserEmail = normalizeEmail(target.dataset.adminActiveUser || "");
+      if (activeUserEmail) {
+        void saveAdminUserStatus(activeUserEmail, target.checked);
         return;
       }
 
@@ -11433,7 +11708,7 @@ function bindEvents() {
       renderAdminUsersPane();
     });
 
-    elements.userAccessSettingsPane.addEventListener("click", (event) => {
+    elements.adminUsersPane.addEventListener("click", (event) => {
       const target = getEventTargetElement(event);
       if (!target) {
         return;
@@ -11517,7 +11792,7 @@ function bindEvents() {
       }
     });
 
-    elements.userAccessSettingsPane.addEventListener("keydown", (event) => {
+    elements.adminUsersPane.addEventListener("keydown", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement)) {
         return;
@@ -11683,6 +11958,9 @@ function bindEvents() {
       }
       if (route.tab === "opportunities") {
         void refreshOpportunities();
+      }
+      if (route.tab === "clients") {
+        void refreshAdminUsers();
       }
       return;
     }

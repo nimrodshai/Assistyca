@@ -150,6 +150,51 @@ class PortalUserAccessTests(unittest.TestCase):
                 display_name="Owner",
             )
 
+    def test_inactive_client_stays_visible_to_admin_management(self) -> None:
+        self.database.register_user("owner@example.com")
+        self.database.save_billing_customer(
+            "owner@example.com",
+            provider="lemon_squeezy",
+            subscription_status="active",
+        )
+
+        inactive_user = self.database.update_user_status("owner@example.com", is_active=False)
+
+        self.assertFalse(inactive_user["isActive"])
+        self.assertIsNone(self.database.get_billing_customer("owner@example.com"))
+        self.assertEqual(
+            self.database.get_billing_customer("owner@example.com", include_inactive=True)["subscriptionStatus"],
+            "active",
+        )
+        self.assertEqual(self.database.list_users(include_inactive=False), [])
+        self.assertEqual(self.database.list_users(include_inactive=True)[0]["email"], "owner@example.com")
+        self.assertEqual(self.database.list_feature_assignments("owner@example.com", include_inactive=True)[0]["email"], "owner@example.com")
+
+        self.database.set_user_feature_assignments(
+            "owner@example.com",
+            [FOLLOW_UP_FEATURE_ID],
+            include_inactive=True,
+        )
+        reactivated_user = self.database.update_user_status("owner@example.com", is_active=True)
+
+        self.assertTrue(reactivated_user["isActive"])
+        self.assertEqual(
+            [feature["featureId"] for feature in self.database.list_assigned_features("owner@example.com")],
+            [FOLLOW_UP_FEATURE_ID],
+        )
+
+    def test_update_user_status_rejects_disabling_last_active_admin(self) -> None:
+        self.database.register_user("admin@example.com", is_admin=True)
+
+        with self.assertRaisesRegex(ValueError, "last admin"):
+            self.database.update_user_status("admin@example.com", is_active=False)
+
+        self.database.register_user("other@example.com", is_admin=True)
+        disabled_user = self.database.update_user_status("admin@example.com", is_active=False)
+
+        self.assertFalse(disabled_user["isActive"])
+        self.assertEqual(self.database.count_admin_users(), 1)
+
     def test_delete_user_handles_legacy_feature_assignments_without_cascade(self) -> None:
         self.database.register_user("owner@example.com")
 

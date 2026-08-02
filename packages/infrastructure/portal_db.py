@@ -1499,13 +1499,22 @@ class PortalDatabase:
             "updatedAt": payload.get("updated_at"),
         }
 
-    def _resolve_active_user_id(self, conn: sqlite3.Connection, email: str) -> int:
+    def _resolve_user_id(
+        self,
+        conn: sqlite3.Connection,
+        email: str,
+        *,
+        include_inactive: bool = False,
+    ) -> int:
         normalized_email = normalize_email(email)
         if not normalized_email:
             raise ValueError("Email is required.")
 
+        query = "SELECT id FROM users WHERE email = ?"
+        if not include_inactive:
+            query += " AND is_active = 1"
         user_row = conn.execute(
-            "SELECT id FROM users WHERE email = ? AND is_active = 1",
+            query,
             (normalized_email,),
         ).fetchone()
         if user_row is None:
@@ -1513,18 +1522,22 @@ class PortalDatabase:
 
         return int(user_row["id"])
 
+    def _resolve_active_user_id(self, conn: sqlite3.Connection, email: str) -> int:
+        return self._resolve_user_id(conn, email, include_inactive=False)
+
     def _load_billing_customer_row(
         self,
         conn: sqlite3.Connection,
         *,
         user_id: int | None = None,
         email: str | None = None,
+        include_inactive: bool = False,
     ) -> dict[str, Any] | None:
         if user_id is None:
             if email is None:
                 return None
             try:
-                user_id = self._resolve_active_user_id(conn, email)
+                user_id = self._resolve_user_id(conn, email, include_inactive=include_inactive)
             except (KeyError, ValueError):
                 return None
 
@@ -3365,13 +3378,18 @@ class PortalDatabase:
             user_id = self._resolve_active_user_id(conn, normalized_email)
             return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id)
 
-    def list_feature_assignments(self, email: str) -> list[dict[str, Any]]:
+    def list_feature_assignments(
+        self,
+        email: str,
+        *,
+        include_inactive: bool = False,
+    ) -> list[dict[str, Any]]:
         normalized_email = normalize_email(email)
         if not normalized_email:
             return []
 
         with self._connection() as conn:
-            user_id = self._resolve_active_user_id(conn, normalized_email)
+            user_id = self._resolve_user_id(conn, normalized_email, include_inactive=include_inactive)
             rows = conn.execute(
                 """
                 SELECT feature_id
@@ -3513,6 +3531,8 @@ class PortalDatabase:
         self,
         email: str,
         feature_ids: Iterable[str],
+        *,
+        include_inactive: bool = False,
     ) -> list[dict[str, Any]]:
         normalized_email = normalize_email(email)
         if not normalized_email:
@@ -3529,7 +3549,7 @@ class PortalDatabase:
 
         now = now_iso()
         with self._connection() as conn:
-            user_id = self._resolve_active_user_id(conn, normalized_email)
+            user_id = self._resolve_user_id(conn, normalized_email, include_inactive=include_inactive)
             active_features = conn.execute(
                 """
                 SELECT feature_id
@@ -4539,13 +4559,55 @@ class PortalDatabase:
             item_key=normalized_item_key,
         ) or {}
 
-    def get_billing_customer(self, email: str) -> dict[str, Any] | None:
+    def update_user_status(self, email: str, *, is_active: bool) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_email)
+            if user is None:
+                raise KeyError(f"Unknown user: {normalized_email}")
+
+            user_id = int(user.get("id") or 0)
+            if (
+                not is_active
+                and bool(user.get("isActive"))
+                and bool(user.get("isAdmin"))
+                and self.count_admin_users(conn) <= 1
+            ):
+                raise ValueError("Add another admin before disabling the last admin account.")
+
+            now = now_iso()
+            conn.execute(
+                """
+                UPDATE users
+                SET is_active = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    1 if is_active else 0,
+                    now,
+                    user_id,
+                ),
+            )
+            if is_active:
+                self._ensure_default_feature_assignments_for_user(conn, user_id)
+
+            return self._load_user_row(conn, normalized_email) or {}
+
+    def get_billing_customer(self, email: str, *, include_inactive: bool = False) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)
         if not normalized_email:
             return None
 
         with self._connection() as conn:
-            return self._load_billing_customer_row(conn, email=normalized_email)
+            return self._load_billing_customer_row(
+                conn,
+                email=normalized_email,
+                include_inactive=include_inactive,
+            )
 
     def save_billing_customer(
         self,

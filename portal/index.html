@@ -131,6 +131,7 @@
         <nav class="tab-strip" aria-label="Assistyca tabs">
           <button class="tab-button is-active" data-tab="features" type="button">Tools</button>
           <button class="tab-button" data-tab="opportunities" type="button" hidden>Opportunities</button>
+          <button class="tab-button" data-tab="clients" type="button" hidden>Clients</button>
           <button class="tab-button" data-tab="preview" type="button" hidden>Preview</button>
           <button class="tab-button" data-tab="simulator" type="button" hidden>Simulator</button>
         </nav>
@@ -165,7 +166,7 @@
                 type="button"
                 data-menu-action="admin-users"
               >
-                User access
+                Clients
               </button>
               <div class="menu-divider" aria-hidden="true"></div>
               <button class="menu-item danger" type="button" data-menu-action="logout">
@@ -208,6 +209,34 @@
 
         <div id="opportunitiesSummary" class="opportunities-summary" aria-live="polite"></div>
         <div id="opportunitiesList" class="opportunities-list"></div>
+      </section>
+
+      <section id="clientsPanel" class="tab-panel clients-panel is-hidden">
+        <div class="panel-intro clients-intro">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h1>Clients</h1>
+            <p class="lede compact">
+              Manage who can log in, who is paying, and which tools each client can see.
+            </p>
+          </div>
+
+          <div class="clients-actions">
+            <button
+              id="adminOpenAddUserButton"
+              class="primary-button small"
+              type="button"
+              data-admin-open-add-user="true"
+            >
+              Add client
+            </button>
+          </div>
+        </div>
+
+        <article id="adminUsersShell" class="clients-management-surface admin-user-access-card">
+          <div id="adminUsersError" class="field-error is-hidden" role="status" aria-live="polite"></div>
+          <div id="adminUsersContent" class="admin-users-content"></div>
+        </article>
       </section>
 
       <section id="personalDetailsPanel" class="tab-panel is-hidden">
@@ -1203,25 +1232,6 @@ Owner said afternoons are easier."
             </article>
           </div>
 
-          <div id="userAccessSettingsPane" class="settings-pane-grid is-hidden">
-            <article id="adminUsersShell" class="glass-card settings-card admin-user-access-card">
-              <div class="card-head admin-user-access-head">
-                <div class="admin-user-access-actions">
-                  <button
-                    id="adminOpenAddUserButton"
-                    class="primary-button small"
-                    type="button"
-                    data-admin-open-add-user="true"
-                  >
-                    Register user
-                  </button>
-                </div>
-              </div>
-
-              <div id="adminUsersError" class="field-error is-hidden" role="status" aria-live="polite"></div>
-              <div id="adminUsersContent" class="admin-users-content"></div>
-            </article>
-          </div>
         </div>
       </section>
     </section>
