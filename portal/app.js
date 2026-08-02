@@ -676,7 +676,6 @@ const elements = {
   whatsappHistorySection: document.querySelector("#whatsappHistorySection"),
   whatsappHistoryRefreshButton: document.querySelector("#whatsappHistoryRefreshButton"),
   whatsappHistoryFileInput: document.querySelector("#whatsappHistoryFileInput"),
-  whatsappHistoryImportButton: document.querySelector("#whatsappHistoryImportButton"),
   whatsappHistoryImportStatus: document.querySelector("#whatsappHistoryImportStatus"),
   whatsappHistoryDiagnostics: document.querySelector("#whatsappHistoryDiagnostics"),
   whatsappHistoryConversationList: document.querySelector("#whatsappHistoryConversationList"),
@@ -3775,12 +3774,6 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
   if (elements.whatsappHistoryFileInput) {
     elements.whatsappHistoryFileInput.disabled = isImporting || isDeleting || !isSignedIn() || !isWhatsAppFeature(feature);
   }
-  if (elements.whatsappHistoryImportButton) {
-    elements.whatsappHistoryImportButton.disabled = isImporting || isDeleting || !selectedFileCount || !isSignedIn() || !isWhatsAppFeature(feature);
-    elements.whatsappHistoryImportButton.classList.toggle("is-loading", isImporting);
-    elements.whatsappHistoryImportButton.setAttribute("aria-busy", String(isImporting));
-    elements.whatsappHistoryImportButton.textContent = isImporting ? "Importing..." : "Import";
-  }
   if (elements.whatsappHistoryImportStatus) {
     const importError = String(state.whatsappHistoryImportError || "").trim();
     const importStatus = String(state.whatsappHistoryImportStatus || "").trim();
@@ -4045,6 +4038,9 @@ async function importWhatsAppHistoryExports() {
       setStatus("WhatsApp history import failed.");
     }
   } finally {
+    if (elements.whatsappHistoryFileInput) {
+      elements.whatsappHistoryFileInput.value = "";
+    }
     state.whatsappHistoryImportBusy = false;
     renderWhatsAppHistory(getSelectedFeature());
     updateFeatureStudioHeader();
@@ -11193,15 +11189,14 @@ function bindEvents() {
     elements.whatsappHistoryFileInput.addEventListener("change", () => {
       state.whatsappHistoryImportError = "";
       const fileCount = elements.whatsappHistoryFileInput.files?.length || 0;
-      state.whatsappHistoryImportStatus = fileCount
-        ? `${fileCount} chat file${fileCount === 1 ? "" : "s"} selected`
-        : "";
+      if (fileCount) {
+        state.whatsappHistoryImportStatus = `Reading ${fileCount} chat file${fileCount === 1 ? "" : "s"}...`;
+        renderWhatsAppHistory();
+        void importWhatsAppHistoryExports();
+        return;
+      }
+      state.whatsappHistoryImportStatus = "";
       renderWhatsAppHistory();
-    });
-  }
-  if (elements.whatsappHistoryImportButton) {
-    elements.whatsappHistoryImportButton.addEventListener("click", () => {
-      void importWhatsAppHistoryExports();
     });
   }
   if (elements.whatsappHistoryDeleteButton) {
