@@ -16,6 +16,7 @@ from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.portal_auth.server import parse_whatsapp_export_messages
 from packages.infrastructure.portal_auth.server import parse_whatsapp_export_timestamp
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
@@ -1444,6 +1445,54 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
 
         self.assertIsNotNone(parsed)
         self.assertTrue(parsed.startswith("2026-03-08T"))
+
+    def test_whatsapp_history_import_uses_export_wide_month_first_dates(self) -> None:
+        messages = parse_whatsapp_export_messages(
+            "\u202a[7/29/26, 18:17:00]\u202c \u202dדולב פלא\u202c: חחחח\n"
+            "\u202a[8/2/26, 09:15:20]\u202c Nimrod Shai: Message from today\n"
+        )
+
+        self.assertEqual(len(messages), 2)
+        self.assertTrue(messages[0]["messageAt"].startswith("2026-07-29T"))
+        self.assertTrue(messages[1]["messageAt"].startswith("2026-08-02T"))
+
+    def test_whatsapp_history_import_saves_month_first_august_messages_after_july(self) -> None:
+        status, body = self._request(
+            "POST",
+            "/api/whatsapp/history/import",
+            {
+                "files": [
+                    {
+                        "name": "WhatsApp Chat with Dolev.txt",
+                        "content": (
+                            "[7/29/26, 18:17:00] דולב פלא: חחחח\n"
+                            "[8/2/26, 09:15:20] Nimrod Shai: Message from today\n"
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["messagesParsed"], 2)
+        self.assertEqual(body["messagesSaved"], 2)
+        self.assertEqual(body["imports"][0]["dateOrder"], "month_first")
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        conversation = history["conversations"][0]
+        self.assertEqual(conversation["messageCount"], 2)
+        self.assertTrue(conversation["lastMessageAt"].startswith("2026-08-02T"))
+        self.assertTrue(conversation["messages"][-1]["messageAt"].startswith("2026-08-02T"))
 
     def test_whatsapp_history_import_infers_owner_for_generic_chat_file(self) -> None:
         status, body = self._request(

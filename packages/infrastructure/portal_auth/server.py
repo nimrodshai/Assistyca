@@ -95,7 +95,11 @@ WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assist
 WHATSAPP_HISTORY_IMPORT_MAX_FILES = 20
 WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS = 20_000_000
 WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES = 100_000
-WHATSAPP_HISTORY_IMPORT_CONTROL_CHARS = str.maketrans("", "", "\ufeff\u200e\u200f")
+WHATSAPP_HISTORY_IMPORT_CONTROL_CHARS = str.maketrans(
+    "",
+    "",
+    "\ufeff\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069",
+)
 CONTACT_NAME_MAX_LENGTH = 120
 CONTACT_CHANNEL_MAX_LENGTH = 180
 CONTACT_BUSINESS_MAX_LENGTH = 140
@@ -1401,6 +1405,7 @@ def parse_whatsapp_export_timestamp(
     time_text: str,
     *,
     now: datetime | None = None,
+    date_order: str = "",
 ) -> str | None:
     date_value = normalize_import_text(date_text).replace("-", "/").replace(".", "/")
     time_value = re.sub(r"\s+", " ", normalize_import_text(time_text).upper().replace(".", "")).strip()
@@ -1434,7 +1439,16 @@ def parse_whatsapp_export_timestamp(
         "%Y/%m/%d %I:%M:%S %p",
         "%Y/%m/%d %I:%M %p",
     ]
-    formats = day_first_formats + month_first_formats + year_first_formats
+    ordered_formats = [
+        ("day_first", date_format)
+        for date_format in day_first_formats
+    ] + [
+        ("month_first", date_format)
+        for date_format in month_first_formats
+    ] + [
+        ("year_first", date_format)
+        for date_format in year_first_formats
+    ]
     raw_value = f"{date_value} {time_value}"
     current_local_time = (
         now.astimezone()
@@ -1442,43 +1456,100 @@ def parse_whatsapp_export_timestamp(
         else (now.replace(tzinfo=timezone.utc).astimezone() if isinstance(now, datetime) else datetime.now().astimezone())
     )
     local_tz = current_local_time.tzinfo or timezone.utc
-    candidates: list[datetime] = []
-    for date_format in formats:
+    candidates: list[tuple[str, datetime]] = []
+    for format_order, date_format in ordered_formats:
         try:
             parsed = datetime.strptime(raw_value, date_format)
         except ValueError:
             continue
-        candidates.append(parsed.replace(tzinfo=local_tz))
+        candidates.append((format_order, parsed.replace(tzinfo=local_tz)))
     if not candidates:
         return None
 
+    normalized_date_order = normalize_import_text(date_order).lower()
+    if normalized_date_order in {"day_first", "month_first", "year_first"}:
+        ordered_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate[0] == normalized_date_order
+        ]
+        if ordered_candidates:
+            candidates = ordered_candidates
+
     non_future_candidates = [
         candidate
-        for candidate in candidates
+        for _format_order, candidate in candidates
         if candidate <= current_local_time
     ]
-    chosen = (non_future_candidates or candidates)[0]
+    chosen = (non_future_candidates or [candidate for _format_order, candidate in candidates])[0]
     return chosen.astimezone(timezone.utc).isoformat()
 
 
+WHATSAPP_EXPORT_DATE_FRAGMENT = r"\d{1,4}[./-]\d{1,2}[./-]\d{2,4}"
+WHATSAPP_EXPORT_TIME_FRAGMENT = r"\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap]\.?[Mm]\.?)?"
 WHATSAPP_EXPORT_TIMESTAMP_RE = re.compile(
-    r"^\[?\d{1,4}[./-]\d{1,2}[./-]\d{2,4}(?:,|\s)\s*"
-    r"\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap]\.?[Mm]\.?)?"
+    rf"^\[?(?:"
+    rf"{WHATSAPP_EXPORT_DATE_FRAGMENT}(?:,|\s)\s*{WHATSAPP_EXPORT_TIME_FRAGMENT}"
+    rf"|{WHATSAPP_EXPORT_TIME_FRAGMENT}\s*,\s*{WHATSAPP_EXPORT_DATE_FRAGMENT}"
+    rf")"
 )
 
 WHATSAPP_EXPORT_LINE_RE = re.compile(
-    r"^\[?(?P<date>\d{1,4}[./-]\d{1,2}[./-]\d{2,4})(?:,|\s)\s*"
-    r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap]\.?[Mm]\.?)?)\]?"
+    rf"^\[?(?P<date>{WHATSAPP_EXPORT_DATE_FRAGMENT})(?:,|\s)\s*"
+    rf"(?P<time>{WHATSAPP_EXPORT_TIME_FRAGMENT})\]?"
+    r"\s*(?:[-–—]\s*)?(?P<body>.*)$"
+)
+
+WHATSAPP_EXPORT_TIME_FIRST_LINE_RE = re.compile(
+    rf"^\[?(?P<time>{WHATSAPP_EXPORT_TIME_FRAGMENT})\s*,\s*"
+    rf"(?P<date>{WHATSAPP_EXPORT_DATE_FRAGMENT})\]?"
     r"\s*(?:[-–—]\s*)?(?P<body>.*)$"
 )
 
 
-def parse_whatsapp_export_line(line: str) -> dict[str, str] | None:
+def match_whatsapp_export_line(line: str) -> re.Match[str] | None:
+    return WHATSAPP_EXPORT_LINE_RE.match(line) or WHATSAPP_EXPORT_TIME_FIRST_LINE_RE.match(line)
+
+
+def infer_whatsapp_export_date_order(content: str) -> str:
+    month_first_hits = 0
+    day_first_hits = 0
+    year_first_hits = 0
+    for raw_line in str(content or "").splitlines():
+        normalized_line = normalize_import_text(raw_line)
+        match = match_whatsapp_export_line(normalized_line)
+        if match is None:
+            continue
+        date_parts = [
+            part
+            for part in re.split(r"[./-]+", normalize_import_text(match.group("date")))
+            if part
+        ]
+        if len(date_parts) != 3 or not all(part.isdigit() for part in date_parts):
+            continue
+        first, second, _third = [int(part) for part in date_parts]
+        if len(date_parts[0]) == 4:
+            year_first_hits += 1
+        elif first > 12 and second <= 12:
+            day_first_hits += 1
+        elif second > 12 and first <= 12:
+            month_first_hits += 1
+
+    if month_first_hits > day_first_hits and month_first_hits >= year_first_hits:
+        return "month_first"
+    if day_first_hits > month_first_hits and day_first_hits >= year_first_hits:
+        return "day_first"
+    if year_first_hits > 0 and year_first_hits >= month_first_hits and year_first_hits >= day_first_hits:
+        return "year_first"
+    return ""
+
+
+def parse_whatsapp_export_line(line: str, *, date_order: str = "") -> dict[str, str] | None:
     normalized_line = normalize_import_text(line)
     if not normalized_line:
         return None
 
-    match = WHATSAPP_EXPORT_LINE_RE.match(normalized_line)
+    match = match_whatsapp_export_line(normalized_line)
     if not match:
         return None
 
@@ -1489,7 +1560,7 @@ def parse_whatsapp_export_line(line: str) -> dict[str, str] | None:
     sender, message = body.split(":", 1)
     sender_name = normalize_import_text(sender)
     message_text = str(message or "").strip()
-    message_at = parse_whatsapp_export_timestamp(match.group("date"), match.group("time"))
+    message_at = parse_whatsapp_export_timestamp(match.group("date"), match.group("time"), date_order=date_order)
     if not sender_name or not message_text or not message_at:
         return None
 
@@ -1509,6 +1580,7 @@ def parse_whatsapp_export_messages(content: str) -> list[dict[str, str]]:
 def analyze_whatsapp_export_messages(content: str) -> dict[str, Any]:
     messages: list[dict[str, str]] = []
     current: dict[str, str] | None = None
+    date_order = infer_whatsapp_export_date_order(content)
     line_count = 0
     blank_line_count = 0
     message_start_line_count = 0
@@ -1523,7 +1595,7 @@ def analyze_whatsapp_export_messages(content: str) -> dict[str, Any]:
             blank_line_count += 1
             continue
 
-        parsed = parse_whatsapp_export_line(raw_line)
+        parsed = parse_whatsapp_export_line(raw_line, date_order=date_order)
         if parsed is not None:
             if current is not None:
                 messages.append(current)
@@ -1537,7 +1609,7 @@ def analyze_whatsapp_export_messages(content: str) -> dict[str, Any]:
                 messages.append(current)
                 current = None
             system_or_unsupported_line_count += 1
-            line_match = WHATSAPP_EXPORT_LINE_RE.match(normalized_line)
+            line_match = match_whatsapp_export_line(normalized_line)
             body = normalize_import_text(line_match.group("body")) if line_match else ""
             if ":" in body:
                 unsupported_message_line_count += 1
@@ -1563,6 +1635,7 @@ def analyze_whatsapp_export_messages(content: str) -> dict[str, Any]:
             "systemOrUnsupportedLineCount": system_or_unsupported_line_count,
             "unsupportedMessageLineCount": unsupported_message_line_count,
             "orphanLineCount": orphan_line_count,
+            "dateOrder": date_order,
         },
     }
 
@@ -4193,6 +4266,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "systemOrUnsupportedLineCount": int(parse_diagnostics.get("systemOrUnsupportedLineCount") or 0),
                 "unsupportedMessageLineCount": int(parse_diagnostics.get("unsupportedMessageLineCount") or 0),
                 "orphanLineCount": int(parse_diagnostics.get("orphanLineCount") or 0),
+                "dateOrder": normalize_import_text(parse_diagnostics.get("dateOrder")),
             })
 
         if total_parsed <= 0:
