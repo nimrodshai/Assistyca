@@ -2725,6 +2725,286 @@ class PortalDatabase:
                 "isDuplicate": False,
             }
 
+    def save_whatsapp_messages_batch(
+        self,
+        *,
+        messages: Iterable[dict[str, Any]],
+        email: str | None = None,
+        user_id: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_messages: list[dict[str, Any]] = []
+        now = now_iso()
+
+        for source in messages:
+            if not isinstance(source, dict):
+                continue
+
+            conversation_id = normalize_text(source.get("conversationId") or source.get("conversation_id"))
+            direction = normalize_text(source.get("direction")).lower() or "inbound"
+            text = normalize_text(source.get("text"))
+            message_id = normalize_text(source.get("messageId") or source.get("message_id"))
+            message_type = normalize_text(source.get("messageType") or source.get("message_type")) or "text"
+            sender_name = normalize_text(source.get("senderName") or source.get("sender_name"))
+            sender_wa_id = normalize_text(source.get("senderWaId") or source.get("sender_wa_id"))
+            message_at = source.get("messageAt") or source.get("message_at")
+            metadata_payload = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+
+            if not conversation_id:
+                raise ValueError("Conversation id is required.")
+            if direction not in {"inbound", "outbound"}:
+                raise ValueError("Direction must be inbound or outbound.")
+            if not text:
+                raise ValueError("Message text is required.")
+
+            message_moment = parse_datetime(message_at) if message_at is not None else datetime.now(timezone.utc)
+            normalized_messages.append(
+                {
+                    "conversation_id": conversation_id,
+                    "direction": direction,
+                    "text": text,
+                    "message_id": message_id,
+                    "message_type": message_type,
+                    "sender_name": sender_name,
+                    "sender_wa_id": sender_wa_id,
+                    "message_at": message_moment.astimezone(timezone.utc).isoformat(),
+                    "metadata": dict(metadata_payload),
+                    "metadata_json": json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True),
+                }
+            )
+
+        if not normalized_messages:
+            return {
+                "messagesSaved": 0,
+                "duplicates": 0,
+                "conversations": [],
+            }
+
+        with self._connection() as conn:
+            resolved_user_id = int(user_id or 0)
+            if resolved_user_id <= 0:
+                normalized_email = normalize_email(email)
+                if not normalized_email:
+                    raise ValueError("Email or user id is required.")
+                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
+
+            messages_saved = 0
+            duplicates = 0
+            conversation_payloads: dict[str, dict[str, Any]] = {}
+
+            for message in normalized_messages:
+                conversation_id = message["conversation_id"]
+                payload = conversation_payloads.setdefault(
+                    conversation_id,
+                    {
+                        "sender_name": "",
+                        "sender_wa_id": "",
+                        "metadata": {},
+                    },
+                )
+                if message["sender_name"]:
+                    payload["sender_name"] = message["sender_name"]
+                if message["sender_wa_id"]:
+                    payload["sender_wa_id"] = message["sender_wa_id"]
+                payload["metadata"] = {
+                    **payload["metadata"],
+                    **message["metadata"],
+                }
+
+                existing_message = None
+                if message["message_id"]:
+                    existing_message = conn.execute(
+                        """
+                        SELECT id, conversation_id
+                        FROM whatsapp_conversation_messages
+                        WHERE user_id = ? AND message_id = ?
+                        LIMIT 1
+                        """,
+                        (resolved_user_id, message["message_id"]),
+                    ).fetchone()
+
+                if existing_message is not None:
+                    duplicates += 1
+                    existing_conversation_id = normalize_text(existing_message["conversation_id"])
+                    if existing_conversation_id and existing_conversation_id != conversation_id:
+                        conversation_payloads.setdefault(
+                            existing_conversation_id,
+                            {
+                                "sender_name": "",
+                                "sender_wa_id": "",
+                                "metadata": {},
+                            },
+                        )
+                    conn.execute(
+                        """
+                        UPDATE whatsapp_conversation_messages
+                        SET conversation_id = ?,
+                            direction = ?,
+                            message_type = ?,
+                            text = ?,
+                            message_at = ?,
+                            metadata_json = ?,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            conversation_id,
+                            message["direction"],
+                            message["message_type"],
+                            message["text"],
+                            message["message_at"],
+                            message["metadata_json"],
+                            now,
+                            int(existing_message["id"]),
+                        ),
+                    )
+                    continue
+
+                conn.execute(
+                    """
+                    INSERT INTO whatsapp_conversation_messages (
+                        user_id,
+                        conversation_id,
+                        message_id,
+                        direction,
+                        message_type,
+                        text,
+                        message_at,
+                        metadata_json,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_user_id,
+                        conversation_id,
+                        message["message_id"],
+                        message["direction"],
+                        message["message_type"],
+                        message["text"],
+                        message["message_at"],
+                        message["metadata_json"],
+                        now,
+                        now,
+                    ),
+                )
+                messages_saved += 1
+
+            conversations: list[dict[str, Any]] = []
+            for conversation_id, payload in conversation_payloads.items():
+                existing_conversation = self._load_whatsapp_conversation_row(
+                    conn,
+                    user_id=resolved_user_id,
+                    conversation_id=conversation_id,
+                ) or {}
+                last_message = conn.execute(
+                    """
+                    SELECT message_id, direction, text, message_at
+                    FROM whatsapp_conversation_messages
+                    WHERE user_id = ? AND conversation_id = ?
+                    ORDER BY message_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (resolved_user_id, conversation_id),
+                ).fetchone()
+                if last_message is None:
+                    conn.execute(
+                        """
+                        DELETE FROM whatsapp_conversations
+                        WHERE user_id = ? AND conversation_id = ?
+                        """,
+                        (resolved_user_id, conversation_id),
+                    )
+                    continue
+
+                last_inbound = conn.execute(
+                    """
+                    SELECT MAX(message_at) AS message_at
+                    FROM whatsapp_conversation_messages
+                    WHERE user_id = ? AND conversation_id = ? AND direction = 'inbound'
+                    """,
+                    (resolved_user_id, conversation_id),
+                ).fetchone()
+                last_outbound = conn.execute(
+                    """
+                    SELECT MAX(message_at) AS message_at
+                    FROM whatsapp_conversation_messages
+                    WHERE user_id = ? AND conversation_id = ? AND direction = 'outbound'
+                    """,
+                    (resolved_user_id, conversation_id),
+                ).fetchone()
+
+                existing_metadata = (
+                    existing_conversation.get("metadata")
+                    if isinstance(existing_conversation.get("metadata"), dict)
+                    else {}
+                )
+                merged_metadata = {
+                    **existing_metadata,
+                    **payload["metadata"],
+                }
+                sender_name = normalize_text(payload.get("sender_name")) or normalize_text(existing_conversation.get("senderName"))
+                sender_wa_id = normalize_text(payload.get("sender_wa_id")) or normalize_text(existing_conversation.get("senderWaId"))
+                created_at = existing_conversation.get("createdAt") or now
+
+                conn.execute(
+                    """
+                    INSERT INTO whatsapp_conversations (
+                        user_id,
+                        conversation_id,
+                        sender_name,
+                        sender_wa_id,
+                        last_message_text,
+                        last_message_id,
+                        last_message_direction,
+                        last_message_at,
+                        last_inbound_at,
+                        last_outbound_at,
+                        metadata_json,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, conversation_id) DO UPDATE SET
+                        sender_name = excluded.sender_name,
+                        sender_wa_id = excluded.sender_wa_id,
+                        last_message_text = excluded.last_message_text,
+                        last_message_id = excluded.last_message_id,
+                        last_message_direction = excluded.last_message_direction,
+                        last_message_at = excluded.last_message_at,
+                        last_inbound_at = excluded.last_inbound_at,
+                        last_outbound_at = excluded.last_outbound_at,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        resolved_user_id,
+                        conversation_id,
+                        sender_name,
+                        sender_wa_id,
+                        normalize_text(last_message["text"]),
+                        normalize_text(last_message["message_id"]),
+                        normalize_text(last_message["direction"]),
+                        last_message["message_at"],
+                        last_inbound["message_at"] if last_inbound is not None else None,
+                        last_outbound["message_at"] if last_outbound is not None else None,
+                        json.dumps(merged_metadata, ensure_ascii=True, sort_keys=True),
+                        created_at,
+                        now,
+                    ),
+                )
+                conversation = self._load_whatsapp_conversation_row(
+                    conn,
+                    user_id=resolved_user_id,
+                    conversation_id=conversation_id,
+                )
+                if conversation is not None:
+                    conversations.append(conversation)
+
+            return {
+                "messagesSaved": messages_saved,
+                "duplicates": duplicates,
+                "conversations": conversations,
+            }
+
     def get_whatsapp_conversation(
         self,
         conversation_id: str,

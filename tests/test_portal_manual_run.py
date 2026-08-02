@@ -1210,6 +1210,48 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(second_body["messagesSaved"], 0)
         self.assertEqual(second_body["duplicates"], 3)
 
+    def test_whatsapp_history_import_infers_owner_for_generic_chat_file(self) -> None:
+        status, body = self._request(
+            "POST",
+            "/api/whatsapp/history/import",
+            {
+                "files": [
+                    {
+                        "name": "_chat.txt",
+                        "content": (
+                            "13/01/2026, 09:00 - Maya Cohen: Hi, can you send the quote again?\n"
+                            "13/01/2026, 09:05 - Owner: Sure, I will send it today.\n"
+                            "13/01/2026, 09:06 - Maya Cohen: Thanks\n"
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["imports"][0]["conversationTitle"], "Maya Cohen")
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(history["ok"])
+        conversation = history["conversations"][0]
+        self.assertEqual(conversation["senderName"], "Maya Cohen")
+        self.assertEqual(conversation["messageCount"], 3)
+        self.assertEqual(
+            [message["direction"] for message in conversation["messages"]],
+            ["inbound", "outbound", "inbound"],
+        )
+        self.assertEqual(conversation["messages"][1]["metadata"]["importSenderName"], "Owner")
+
     def test_approval_phone_message_to_connected_number_is_customer_history(self) -> None:
         webhook_request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",

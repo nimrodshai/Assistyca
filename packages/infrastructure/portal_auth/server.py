@@ -1321,6 +1321,56 @@ def split_import_owner_names(value: Any) -> list[str]:
     return names
 
 
+def derive_import_email_name_candidates(email: str) -> list[str]:
+    local_part = normalize_import_text(str(email or "").split("@", 1)[0])
+    if not local_part:
+        return []
+
+    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", local_part).strip()
+    tokens = [token for token in cleaned.split() if token]
+    candidates = [cleaned] if cleaned else []
+    if len(tokens) > 1:
+        candidates.append(" ".join(reversed(tokens)))
+    return split_import_owner_names(candidates)
+
+
+def list_import_sender_names(messages: list[dict[str, str]]) -> list[str]:
+    seen: set[str] = set()
+    names: list[str] = []
+    for message in messages:
+        sender_name = normalize_import_text(message.get("senderName"))
+        sender_key = normalize_import_name_key(sender_name)
+        if sender_name and sender_key not in seen:
+            names.append(sender_name)
+            seen.add(sender_key)
+    return names
+
+
+def resolve_import_conversation_title(
+    fallback_title: str,
+    *,
+    sender_names: list[str],
+    owner_names: list[str],
+) -> str:
+    normalized_fallback = normalize_import_text(fallback_title)
+    fallback_key = normalize_import_name_key(normalized_fallback)
+    sender_keys = {normalize_import_name_key(name) for name in sender_names if normalize_import_name_key(name)}
+    if fallback_key and fallback_key in sender_keys:
+        return normalized_fallback
+
+    owner_keys = {normalize_import_name_key(name) for name in owner_names if normalize_import_name_key(name)}
+    if owner_keys:
+        other_senders = [
+            sender_name
+            for sender_name in sender_names
+            if normalize_import_name_key(sender_name) not in owner_keys
+        ]
+        if len(other_senders) == 1:
+            return other_senders[0]
+
+    return normalized_fallback or "WhatsApp conversation"
+
+
 def slugify_import_conversation_id(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", normalize_import_text(value).lower()).strip("-")
     return slug[:54] or "conversation"
@@ -3839,9 +3889,40 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self,
         session: PortalSession,
         payload: dict[str, Any],
+        *,
+        parsed_messages: list[dict[str, str]] | None = None,
+        conversation_title: str = "",
     ) -> list[str]:
-        _ = session
-        return split_import_owner_names(payload.get("ownerNames") or payload.get("ownerName"))
+        explicit_names = split_import_owner_names(payload.get("ownerNames") or payload.get("ownerName"))
+        if explicit_names:
+            return explicit_names
+
+        sender_names = list_import_sender_names(parsed_messages or [])
+        sender_keys = {normalize_import_name_key(name) for name in sender_names if normalize_import_name_key(name)}
+        if not sender_keys:
+            return []
+
+        title_key = normalize_import_name_key(conversation_title)
+        if title_key and title_key in sender_keys:
+            return []
+
+        user = self.database.get_user(session.email) or {}
+        connection = self.database.get_whatsapp_connection(session.email) or {}
+        candidates: list[str] = []
+        candidates.extend(split_import_owner_names(user.get("displayName")))
+        candidates.extend(derive_import_email_name_candidates(session.email))
+        candidates.extend(split_import_owner_names(connection.get("displayName")))
+        candidates.extend(split_import_owner_names(connection.get("verifiedName")))
+        candidates.append("You")
+
+        owner_names: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            candidate_key = normalize_import_name_key(candidate)
+            if candidate_key and candidate_key in sender_keys and candidate_key not in seen:
+                owner_names.append(candidate)
+                seen.add(candidate_key)
+        return owner_names
 
     def _handle_whatsapp_history_import_post(self) -> None:
         session = self._require_authenticated_session()
@@ -3874,7 +3955,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        owner_names = self._resolve_whatsapp_import_owner_names(session, payload)
         explicit_conversation_title = normalize_import_text(payload.get("conversationName"))
         explicit_conversation_id = normalize_import_text(payload.get("conversationId"))
         imported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -3895,15 +3975,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            conversation_title = derive_import_conversation_title(
+            fallback_conversation_title = derive_import_conversation_title(
                 file_name,
                 explicit_conversation_title if len(files) == 1 else "",
             )
             conversation_id = build_import_conversation_id(
-                conversation_title,
+                fallback_conversation_title,
                 explicit_conversation_id if len(files) == 1 else "",
             )
-            sender_wa_id = re.sub(r"\D+", "", conversation_title)
             parsed_messages = parse_whatsapp_export_messages(content)
             if total_parsed + len(parsed_messages) > WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES:
                 json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -3913,8 +3992,26 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            saved_count = 0
-            duplicate_count = 0
+            sender_names = list_import_sender_names(parsed_messages)
+            owner_names = self._resolve_whatsapp_import_owner_names(
+                session,
+                payload,
+                parsed_messages=parsed_messages,
+                conversation_title=fallback_conversation_title,
+            )
+            conversation_title = resolve_import_conversation_title(
+                fallback_conversation_title,
+                sender_names=sender_names,
+                owner_names=owner_names,
+            )
+            sender_wa_id = re.sub(r"\D+", "", conversation_title)
+            sender_keys = {normalize_import_name_key(name) for name in sender_names if normalize_import_name_key(name)}
+            direction_conversation_title = (
+                conversation_title
+                if normalize_import_name_key(conversation_title) in sender_keys
+                else ""
+            )
+            records: list[dict[str, Any]] = []
             for message_index, message in enumerate(parsed_messages):
                 sender_name = normalize_import_text(message.get("senderName"))
                 text = normalize_import_text(message.get("text"))
@@ -3923,35 +4020,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     continue
                 direction = resolve_import_message_direction(
                     sender_name=sender_name,
-                    conversation_title=conversation_title,
+                    conversation_title=direction_conversation_title,
                     owner_names=owner_names,
                 )
-                record = self.database.save_whatsapp_message(
-                    email=session.email,
-                    conversation_id=conversation_id,
-                    direction=direction,
-                    text=text,
-                    sender_name=conversation_title,
-                    sender_wa_id=sender_wa_id,
-                    message_id=build_import_message_id(
-                        conversation_id=conversation_id,
-                        message=message,
-                        index=message_index,
-                    ),
-                    message_type="text",
-                    message_at=message_at,
-                    metadata={
-                        "source": "manual_import",
-                        "importedAt": imported_at,
-                        "importFileName": file_name,
-                        "importSenderName": sender_name,
-                        "importConversationTitle": conversation_title,
-                    },
+                records.append(
+                    {
+                        "conversationId": conversation_id,
+                        "direction": direction,
+                        "text": text,
+                        "senderName": conversation_title,
+                        "senderWaId": sender_wa_id,
+                        "messageId": build_import_message_id(
+                            conversation_id=conversation_id,
+                            message=message,
+                            index=message_index,
+                        ),
+                        "messageType": "text",
+                        "messageAt": message_at,
+                        "metadata": {
+                            "source": "manual_import",
+                            "importedAt": imported_at,
+                            "importFileName": file_name,
+                            "importSenderName": sender_name,
+                            "importConversationTitle": conversation_title,
+                        },
+                    }
                 )
-                if record.get("isDuplicate"):
-                    duplicate_count += 1
-                else:
-                    saved_count += 1
+
+            batch_result = self.database.save_whatsapp_messages_batch(
+                email=session.email,
+                messages=records,
+            )
+            saved_count = int(batch_result.get("messagesSaved") or 0)
+            duplicate_count = int(batch_result.get("duplicates") or 0)
 
             total_parsed += len(parsed_messages)
             total_saved += saved_count

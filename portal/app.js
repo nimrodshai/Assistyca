@@ -1888,6 +1888,11 @@ async function apiRequest(path, options = {}) {
   }
 }
 
+function isAbortError(error) {
+  const label = `${error?.name || ""} ${error?.message || ""}`.toLowerCase();
+  return label.includes("abort");
+}
+
 function getClientKey(email) {
   const safeEmail = normalizeEmail(email) || "guest";
   return `${CLIENT_STATE_PREFIX}:${safeEmail}`;
@@ -3495,6 +3500,46 @@ function normalizeWhatsAppHistoryPayload(payload = {}) {
   };
 }
 
+function normalizeWhatsAppParticipantKey(value) {
+  return normalizeText(value).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function deriveWhatsAppEmailNameCandidates(email) {
+  const localPart = String(email || "").split("@", 1)[0] || "";
+  const cleaned = localPart.replace(/[^A-Za-z0-9]+/g, " ").trim();
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  const candidates = cleaned ? [cleaned] : [];
+  if (tokens.length > 1) {
+    candidates.push([...tokens].reverse().join(" "));
+  }
+  return candidates;
+}
+
+function getActiveWhatsAppSenderKeys() {
+  const keys = new Set();
+  const addCandidate = (value) => {
+    const key = normalizeWhatsAppParticipantKey(value);
+    if (key) {
+      keys.add(key);
+    }
+  };
+
+  addCandidate(clientState?.settings?.displayName || "");
+  deriveWhatsAppEmailNameCandidates(activeEmail).forEach(addCandidate);
+  addCandidate("You");
+  return keys;
+}
+
+function resolveWhatsAppHistoryMessageDirection(message = {}) {
+  const importSenderName = normalizeText(message.importSenderName || "");
+  if (importSenderName) {
+    return getActiveWhatsAppSenderKeys().has(normalizeWhatsAppParticipantKey(importSenderName))
+      ? "outbound"
+      : "inbound";
+  }
+  return message.direction === "outbound" ? "outbound" : "inbound";
+}
+
 function getCurrentWhatsAppHistory() {
   if (state.whatsappHistoryEmail !== normalizeEmail(activeEmail)) {
     return null;
@@ -3632,8 +3677,9 @@ function createWhatsAppHistoryConversationButton(conversation, isSelected) {
 }
 
 function createWhatsAppHistoryMessage(message) {
+  const direction = resolveWhatsAppHistoryMessageDirection(message);
   const item = document.createElement("div");
-  item.className = `whatsapp-history-message is-${message.direction}`;
+  item.className = `whatsapp-history-message is-${direction}`;
 
   const bubble = document.createElement("div");
   bubble.className = "whatsapp-history-bubble";
@@ -3644,14 +3690,14 @@ function createWhatsAppHistoryMessage(message) {
   const meta = document.createElement("span");
   meta.className = "whatsapp-history-message-meta";
   const timestamp = formatAdminDateTime(message.messageAt);
-  const directionLabel = message.direction === "outbound" ? "Business" : "Customer";
+  const directionLabel = direction === "outbound" ? "Business" : "Customer";
   const senderLabel = message.importSenderName || directionLabel;
   meta.textContent = timestamp ? `${senderLabel} · ${timestamp}` : senderLabel;
 
   bubble.append(text, meta);
   item.append(bubble);
 
-  if (message.direction === "inbound" && message.suggestedReply) {
+  if (direction === "inbound" && message.suggestedReply) {
     const suggestion = document.createElement("div");
     suggestion.className = "whatsapp-history-suggestion";
 
@@ -3690,6 +3736,17 @@ function createWhatsAppHistoryMessage(message) {
   }
 
   return item;
+}
+
+function scrollWhatsAppHistoryMessagesToBottom() {
+  const container = elements.whatsappHistoryMessages;
+  if (!container) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    container.scrollTop = container.scrollHeight;
+  });
 }
 
 function renderWhatsAppHistory(feature = getSelectedFeature()) {
@@ -3800,6 +3857,7 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
       );
     } else {
       elements.whatsappHistoryMessages.replaceChildren(...messages.map(createWhatsAppHistoryMessage));
+      scrollWhatsAppHistoryMessagesToBottom();
     }
   }
 }
@@ -3850,7 +3908,7 @@ async function importWhatsAppHistoryExports() {
     const response = await apiRequest("/api/whatsapp/history/import", {
       method: "POST",
       headers: getSessionAuthHeaders(),
-      timeoutMs: 45000,
+      timeoutMs: 180000,
       body: {
         files: importFiles,
       },
@@ -3871,9 +3929,15 @@ async function importWhatsAppHistoryExports() {
     setStatus(state.whatsappHistoryImportStatus);
     await refreshWhatsAppHistory({ force: true });
   } catch (error) {
-    state.whatsappHistoryImportError = formatApiErrorMessage(error, "We couldn’t import that WhatsApp chat file.");
-    state.whatsappHistoryImportStatus = "";
-    setStatus("WhatsApp history import failed.");
+    if (isAbortError(error)) {
+      state.whatsappHistoryImportError = "The import is taking longer than expected. Refresh history in a moment to check the saved messages.";
+      state.whatsappHistoryImportStatus = "";
+      setStatus("WhatsApp history import may still be processing.");
+    } else {
+      state.whatsappHistoryImportError = formatApiErrorMessage(error, "We couldn’t import that WhatsApp chat file.");
+      state.whatsappHistoryImportStatus = "";
+      setStatus("WhatsApp history import failed.");
+    }
   } finally {
     state.whatsappHistoryImportBusy = false;
     renderWhatsAppHistory(getSelectedFeature());
