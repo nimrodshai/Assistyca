@@ -3692,6 +3692,60 @@ body[data-modal="billing"] .app-shell {
   flex-wrap: wrap;
 }
 
+.whatsapp-history-owner-field {
+  display: grid;
+  gap: 0.28rem;
+  min-width: min(13rem, 100%);
+}
+
+.whatsapp-history-owner-field span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+}
+
+.whatsapp-history-owner-field input {
+  min-height: 2.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(20, 28, 38, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text);
+  font: inherit;
+  padding: 0.55rem 0.9rem;
+  outline: none;
+}
+
+.whatsapp-history-owner-field input:focus {
+  border-color: rgba(18, 140, 126, 0.4);
+  box-shadow: 0 0 0 4px rgba(18, 140, 126, 0.1);
+}
+
+.whatsapp-history-file-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.whatsapp-history-file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.whatsapp-history-import-status {
+  min-height: 1.2rem;
+  margin: -0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.whatsapp-history-import-status.is-warning {
+  color: #b42318;
+}
+
 .whatsapp-history-diagnostics {
   display: grid;
   gap: 0.65rem;
@@ -3826,6 +3880,16 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.whatsapp-history-source-badge {
+  flex: 0 0 auto;
+  padding: 0.13rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+  font-size: 0.68rem;
+  font-weight: 850;
 }
 
 .whatsapp-history-preview,
@@ -6069,9 +6133,17 @@ body[data-modal="billing"] .app-shell {
     justify-content: stretch;
   }
 
+  .whatsapp-history-owner-field,
+  .whatsapp-history-owner-field input,
   .whatsapp-history-header-actions .feature-status,
-  .whatsapp-history-header-actions .ghost-button {
+  .whatsapp-history-header-actions .ghost-button,
+  .whatsapp-history-header-actions .primary-button {
     width: 100%;
+  }
+
+  .whatsapp-history-import-status {
+    margin-top: -0.2rem;
+    text-align: left;
   }
 
   .whatsapp-history-layout {

@@ -512,6 +512,9 @@ const state = {
   featureActivationFieldErrors: {},
   whatsappHistory: null,
   whatsappHistoryLoading: false,
+  whatsappHistoryImportBusy: false,
+  whatsappHistoryImportStatus: "",
+  whatsappHistoryImportError: "",
   whatsappHistoryError: "",
   whatsappHistorySelectedConversationId: "",
   whatsappHistoryLoadedAt: 0,
@@ -670,6 +673,10 @@ const elements = {
   featureStudioWhatsAppHealthNoticeCopy: document.querySelector("#featureStudioWhatsAppHealthNoticeCopy"),
   whatsappHistorySection: document.querySelector("#whatsappHistorySection"),
   whatsappHistoryRefreshButton: document.querySelector("#whatsappHistoryRefreshButton"),
+  whatsappHistoryFileInput: document.querySelector("#whatsappHistoryFileInput"),
+  whatsappHistoryImportButton: document.querySelector("#whatsappHistoryImportButton"),
+  whatsappHistoryOwnerNameInput: document.querySelector("#whatsappHistoryOwnerNameInput"),
+  whatsappHistoryImportStatus: document.querySelector("#whatsappHistoryImportStatus"),
   whatsappHistoryDiagnostics: document.querySelector("#whatsappHistoryDiagnostics"),
   whatsappHistoryConversationList: document.querySelector("#whatsappHistoryConversationList"),
   whatsappHistorySelectedAvatar: document.querySelector("#whatsappHistorySelectedAvatar"),
@@ -3416,6 +3423,8 @@ function normalizeWhatsAppHistoryMessage(source = {}) {
     direction: ["inbound", "outbound"].includes(direction) ? direction : "inbound",
     messageType: String(source.messageType || source.message_type || "text").trim() || "text",
     text: getWhatsAppHistoryDisplayText({ direction, text: source.text || "", metadata }),
+    importSenderName: normalizeText(metadata.importSenderName || metadata.import_sender_name || ""),
+    source: normalizeText(metadata.source || ""),
     suggestedReply,
     approvalId,
     approvalReviewUrl,
@@ -3531,9 +3540,15 @@ function buildWhatsAppHistoryConversationMeta(conversation) {
   const parts = [];
   const senderWaId = String(conversation?.senderWaId || "").trim();
   const lastMessageAt = formatAdminDateTime(conversation?.lastMessageAt || "");
+  const metadata = conversation?.metadata && typeof conversation.metadata === "object" ? conversation.metadata : {};
+  const imported = String(metadata.source || "").trim() === "manual_import"
+    || Boolean(metadata.importedAt || metadata.imported_at);
 
   if (senderWaId) {
     parts.push(senderWaId);
+  }
+  if (imported) {
+    parts.push("Imported");
   }
   if (lastMessageAt) {
     parts.push(lastMessageAt);
@@ -3596,6 +3611,14 @@ function createWhatsAppHistoryConversationButton(conversation, isSelected) {
 
   titleRow.append(title);
 
+  const metadata = conversation.metadata && typeof conversation.metadata === "object" ? conversation.metadata : {};
+  if (String(metadata.source || "").trim() === "manual_import" || metadata.importedAt || metadata.imported_at) {
+    const badge = document.createElement("span");
+    badge.className = "whatsapp-history-source-badge";
+    badge.textContent = "Imported";
+    titleRow.append(badge);
+  }
+
   const preview = document.createElement("span");
   preview.className = "whatsapp-history-preview";
   preview.textContent = conversation.lastMessageText || "No message preview";
@@ -3623,7 +3646,8 @@ function createWhatsAppHistoryMessage(message) {
   meta.className = "whatsapp-history-message-meta";
   const timestamp = formatAdminDateTime(message.messageAt);
   const directionLabel = message.direction === "outbound" ? "Business" : "Customer";
-  meta.textContent = timestamp ? `${directionLabel} · ${timestamp}` : directionLabel;
+  const senderLabel = message.importSenderName || directionLabel;
+  meta.textContent = timestamp ? `${senderLabel} · ${timestamp}` : senderLabel;
 
   bubble.append(text, meta);
   item.append(bubble);
@@ -3677,13 +3701,35 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
   const conversations = getWhatsAppHistoryConversations();
   const selectedConversation = getSelectedWhatsAppHistoryConversation();
   const isLoading = Boolean(state.whatsappHistoryLoading);
+  const isImporting = Boolean(state.whatsappHistoryImportBusy);
   const errorText = String(state.whatsappHistoryError || "").trim();
+  const selectedFileCount = elements.whatsappHistoryFileInput?.files?.length || 0;
 
   if (elements.whatsappHistoryRefreshButton) {
-    elements.whatsappHistoryRefreshButton.disabled = isLoading || !isSignedIn() || !isWhatsAppFeature(feature);
+    elements.whatsappHistoryRefreshButton.disabled = isLoading || isImporting || !isSignedIn() || !isWhatsAppFeature(feature);
     elements.whatsappHistoryRefreshButton.classList.toggle("is-loading", isLoading);
     elements.whatsappHistoryRefreshButton.setAttribute("aria-busy", String(isLoading));
     elements.whatsappHistoryRefreshButton.textContent = isLoading ? "Refreshing..." : "Refresh";
+  }
+  if (elements.whatsappHistoryFileInput) {
+    elements.whatsappHistoryFileInput.disabled = isImporting || !isSignedIn() || !isWhatsAppFeature(feature);
+  }
+  if (elements.whatsappHistoryOwnerNameInput) {
+    elements.whatsappHistoryOwnerNameInput.disabled = isImporting;
+  }
+  if (elements.whatsappHistoryImportButton) {
+    elements.whatsappHistoryImportButton.disabled = isImporting || !selectedFileCount || !isSignedIn() || !isWhatsAppFeature(feature);
+    elements.whatsappHistoryImportButton.classList.toggle("is-loading", isImporting);
+    elements.whatsappHistoryImportButton.setAttribute("aria-busy", String(isImporting));
+    elements.whatsappHistoryImportButton.textContent = isImporting ? "Importing..." : "Import";
+  }
+  if (elements.whatsappHistoryImportStatus) {
+    const importError = String(state.whatsappHistoryImportError || "").trim();
+    const importStatus = String(state.whatsappHistoryImportStatus || "").trim();
+    elements.whatsappHistoryImportStatus.textContent = importError
+      || importStatus
+      || (selectedFileCount ? `${selectedFileCount} export${selectedFileCount === 1 ? "" : "s"} selected` : "");
+    elements.whatsappHistoryImportStatus.classList.toggle("is-warning", Boolean(importError));
   }
 
   if (elements.whatsappHistoryDiagnostics) {
@@ -3705,7 +3751,7 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
       );
     } else if (!conversations.length) {
       elements.whatsappHistoryConversationList.replaceChildren(
-        createWhatsAppHistoryEmptyState("No saved conversations yet", "New customer messages will appear here after WhatsApp sends them to Assistyca."),
+        createWhatsAppHistoryEmptyState("No saved conversations yet", "Live customer messages and imported WhatsApp exports will appear here."),
       );
     } else {
       elements.whatsappHistoryConversationList.replaceChildren(
@@ -3770,6 +3816,74 @@ function selectWhatsAppHistoryConversation(conversationId) {
 
   state.whatsappHistorySelectedConversationId = normalizedId;
   renderWhatsAppHistory();
+}
+
+async function readWhatsAppHistoryImportFile(file) {
+  const content = await file.text();
+  return {
+    name: String(file.name || "whatsapp-export.txt").trim() || "whatsapp-export.txt",
+    content,
+  };
+}
+
+async function importWhatsAppHistoryExports() {
+  const feature = getSelectedFeature();
+  if (!isSignedIn() || !isWhatsAppFeature(feature) || state.whatsappHistoryImportBusy) {
+    return;
+  }
+
+  const files = Array.from(elements.whatsappHistoryFileInput?.files || []);
+  if (!files.length) {
+    state.whatsappHistoryImportError = "Choose a WhatsApp text export first.";
+    state.whatsappHistoryImportStatus = "";
+    renderWhatsAppHistory(feature);
+    elements.whatsappHistoryFileInput?.focus();
+    return;
+  }
+
+  state.whatsappHistoryImportBusy = true;
+  state.whatsappHistoryImportError = "";
+  state.whatsappHistoryImportStatus = `Reading ${files.length} export${files.length === 1 ? "" : "s"}...`;
+  renderWhatsAppHistory(feature);
+
+  try {
+    const importFiles = await Promise.all(files.map(readWhatsAppHistoryImportFile));
+    state.whatsappHistoryImportStatus = "Importing WhatsApp history...";
+    renderWhatsAppHistory(feature);
+
+    const response = await apiRequest("/api/whatsapp/history/import", {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      timeoutMs: 45000,
+      body: {
+        ownerName: elements.whatsappHistoryOwnerNameInput?.value || "",
+        files: importFiles,
+      },
+    });
+
+    const imports = Array.isArray(response.imports) ? response.imports : [];
+    const firstImportedConversationId = imports.find((item) => item?.conversationId)?.conversationId || "";
+    if (firstImportedConversationId) {
+      state.whatsappHistorySelectedConversationId = firstImportedConversationId;
+    }
+    if (elements.whatsappHistoryFileInput) {
+      elements.whatsappHistoryFileInput.value = "";
+    }
+    state.whatsappHistoryImportStatus = String(
+      response.message
+      || `Imported ${response.messagesSaved || 0} messages.`,
+    );
+    setStatus(state.whatsappHistoryImportStatus);
+    await refreshWhatsAppHistory({ force: true });
+  } catch (error) {
+    state.whatsappHistoryImportError = formatApiErrorMessage(error, "We couldn’t import that WhatsApp export.");
+    state.whatsappHistoryImportStatus = "";
+    setStatus("WhatsApp history import failed.");
+  } finally {
+    state.whatsappHistoryImportBusy = false;
+    renderWhatsAppHistory(getSelectedFeature());
+    updateFeatureStudioHeader();
+  }
 }
 
 async function refreshWhatsAppHistory(options = {}) {
@@ -10908,6 +11022,21 @@ function bindEvents() {
   if (elements.whatsappHistoryRefreshButton) {
     elements.whatsappHistoryRefreshButton.addEventListener("click", () => {
       void refreshWhatsAppHistory({ force: true });
+    });
+  }
+  if (elements.whatsappHistoryFileInput) {
+    elements.whatsappHistoryFileInput.addEventListener("change", () => {
+      state.whatsappHistoryImportError = "";
+      const fileCount = elements.whatsappHistoryFileInput.files?.length || 0;
+      state.whatsappHistoryImportStatus = fileCount
+        ? `${fileCount} export${fileCount === 1 ? "" : "s"} selected`
+        : "";
+      renderWhatsAppHistory();
+    });
+  }
+  if (elements.whatsappHistoryImportButton) {
+    elements.whatsappHistoryImportButton.addEventListener("click", () => {
+      void importWhatsAppHistoryExports();
     });
   }
   if (elements.whatsappHistoryConversationList) {

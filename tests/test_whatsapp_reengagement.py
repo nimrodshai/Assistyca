@@ -181,6 +181,54 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertFalse(second_summary["ran"])
         self.assertEqual(len(sent_messages), 1)
 
+    def test_scheduler_includes_manual_import_without_sender_wa_id(self) -> None:
+        self._connect_whatsapp()
+        self.database.set_feature_activation(
+            "owner@example.com",
+            feature_id=REENGAGEMENT_FEATURE_ID,
+            feature_name="WhatsApp Re-engagement Assistant",
+            is_active=True,
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="manual-maya-cohen",
+            direction="outbound",
+            text="Sure, I will send the quote today.",
+            sender_name="Maya Cohen",
+            sender_wa_id="",
+            message_id="manual-import-old-1",
+            message_type="text",
+            message_at="2025-12-01T09:05:00+00:00",
+            metadata={"source": "manual_import"},
+        )
+
+        sent_messages: list[str] = []
+
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "owner-1",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                schedule_weekday=6,
+                schedule_hour=9,
+                schedule_minute=0,
+                inactivity_months=6,
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            side_effect=RuntimeError("offline"),
+        ):
+            summary = scheduler.run_pending(now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
+
+        self.assertTrue(summary["ran"])
+        self.assertEqual(len(sent_messages), 1)
+        self.assertIn("Maya Cohen", sent_messages[0])
+
 
 if __name__ == "__main__":
     unittest.main()

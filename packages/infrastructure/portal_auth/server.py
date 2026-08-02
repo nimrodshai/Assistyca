@@ -92,6 +92,10 @@ SESSION_TOKEN_VERSION = 1
 SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
+WHATSAPP_HISTORY_IMPORT_MAX_FILES = 20
+WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS = 2_000_000
+WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES = 12_000
+WHATSAPP_HISTORY_IMPORT_CONTROL_CHARS = str.maketrans("", "", "\ufeff\u200e\u200f")
 CONTACT_NAME_MAX_LENGTH = 120
 CONTACT_CHANNEL_MAX_LENGTH = 180
 CONTACT_BUSINESS_MAX_LENGTH = 140
@@ -1293,6 +1297,182 @@ def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
     return parsed
 
 
+def normalize_import_text(value: Any) -> str:
+    return normalize_text(value).translate(WHATSAPP_HISTORY_IMPORT_CONTROL_CHARS).strip()
+
+
+def normalize_import_name_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", normalize_import_text(value).lower()).strip()
+
+
+def split_import_owner_names(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_items = [normalize_import_text(item) for item in value]
+    else:
+        raw_items = re.split(r"[,;\n]+", normalize_import_text(value))
+    seen: set[str] = set()
+    names: list[str] = []
+    for item in raw_items:
+        name = normalize_import_text(item)
+        key = normalize_import_name_key(name)
+        if name and key not in seen:
+            names.append(name)
+            seen.add(key)
+    return names
+
+
+def slugify_import_conversation_id(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", normalize_import_text(value).lower()).strip("-")
+    return slug[:54] or "conversation"
+
+
+def derive_import_conversation_title(file_name: str, explicit_title: str = "") -> str:
+    if normalize_import_text(explicit_title):
+        return normalize_import_text(explicit_title)
+
+    stem = Path(normalize_import_text(file_name) or "WhatsApp conversation").stem
+    title = re.sub(r"\s+", " ", stem).strip()
+    title = re.sub(r"^WhatsApp Chat with\s+", "", title, flags=re.IGNORECASE).strip()
+    title = re.sub(r"^Chat with\s+", "", title, flags=re.IGNORECASE).strip()
+    return title or "WhatsApp conversation"
+
+
+def build_import_conversation_id(title: str, explicit_id: str = "") -> str:
+    normalized_id = normalize_import_text(explicit_id)
+    if normalized_id:
+        return normalized_id
+
+    digest = hashlib.sha1(normalize_import_text(title).lower().encode("utf-8")).hexdigest()[:10]
+    return f"manual-{slugify_import_conversation_id(title)}-{digest}"
+
+
+def parse_whatsapp_export_timestamp(date_text: str, time_text: str) -> str | None:
+    date_value = normalize_import_text(date_text).replace("-", "/").replace(".", "/")
+    time_value = re.sub(r"\s+", " ", normalize_import_text(time_text).upper().replace(".", "")).strip()
+    time_value = re.sub(r"(?<=\d)([AP]M)\b", r" \1", time_value)
+    if not date_value or not time_value:
+        return None
+
+    day_first_formats = [
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%y %H:%M:%S",
+        "%d/%m/%y %H:%M",
+        "%d/%m/%Y %I:%M:%S %p",
+        "%d/%m/%Y %I:%M %p",
+        "%d/%m/%y %I:%M:%S %p",
+        "%d/%m/%y %I:%M %p",
+    ]
+    month_first_formats = [
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%y %H:%M:%S",
+        "%m/%d/%y %H:%M",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%y %I:%M:%S %p",
+        "%m/%d/%y %I:%M %p",
+    ]
+    formats = day_first_formats + month_first_formats
+    raw_value = f"{date_value} {time_value}"
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    for date_format in formats:
+        try:
+            parsed = datetime.strptime(raw_value, date_format)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=local_tz).astimezone(timezone.utc).isoformat()
+    return None
+
+
+WHATSAPP_EXPORT_LINE_RE = re.compile(
+    r"^\[?(?P<date>\d{1,4}[./-]\d{1,2}[./-]\d{2,4}),\s*"
+    r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap]\.?[Mm]\.?)?)\]?"
+    r"\s*(?:-\s*)?(?P<body>.*)$"
+)
+
+
+def parse_whatsapp_export_line(line: str) -> dict[str, str] | None:
+    normalized_line = normalize_import_text(line)
+    if not normalized_line:
+        return None
+
+    match = WHATSAPP_EXPORT_LINE_RE.match(normalized_line)
+    if not match:
+        return None
+
+    body = normalize_import_text(match.group("body"))
+    if ":" not in body:
+        return None
+
+    sender, message = body.split(":", 1)
+    sender_name = normalize_import_text(sender)
+    message_text = str(message or "").strip()
+    message_at = parse_whatsapp_export_timestamp(match.group("date"), match.group("time"))
+    if not sender_name or not message_text or not message_at:
+        return None
+
+    return {
+        "senderName": sender_name,
+        "text": message_text,
+        "messageAt": message_at,
+    }
+
+
+def parse_whatsapp_export_messages(content: str) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for raw_line in str(content or "").splitlines():
+        parsed = parse_whatsapp_export_line(raw_line)
+        if parsed is not None:
+            if current is not None:
+                messages.append(current)
+            current = parsed
+            continue
+        continuation = normalize_import_text(raw_line)
+        if current is not None and continuation:
+            current["text"] = f'{current["text"]}\n{continuation}'
+    if current is not None:
+        messages.append(current)
+    return messages
+
+
+def resolve_import_message_direction(
+    *,
+    sender_name: str,
+    conversation_title: str,
+    owner_names: list[str],
+) -> str:
+    sender_key = normalize_import_name_key(sender_name)
+    owner_keys = {normalize_import_name_key(name) for name in owner_names if normalize_import_name_key(name)}
+    conversation_key = normalize_import_name_key(conversation_title)
+
+    if owner_keys:
+        return "outbound" if sender_key in owner_keys else "inbound"
+    if conversation_key:
+        return "inbound" if sender_key == conversation_key else "outbound"
+    return "inbound"
+
+
+def build_import_message_id(
+    *,
+    conversation_id: str,
+    message: dict[str, str],
+    index: int,
+) -> str:
+    fingerprint = "\n".join(
+        [
+            normalize_import_text(conversation_id),
+            normalize_import_text(message.get("messageAt")),
+            normalize_import_text(message.get("senderName")),
+            normalize_import_text(message.get("text")),
+            str(index),
+        ]
+    )
+    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()
+    return f"manual-import-{digest}"
+
+
 def json_response(
     handler: SimpleHTTPRequestHandler,
     status: int,
@@ -1706,6 +1886,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/whatsapp/connection":
             self._handle_whatsapp_connection_post()
+            return
+
+        if path == "/api/whatsapp/history/import":
+            self._handle_whatsapp_history_import_post()
             return
 
         if path == "/api/admin/users" or path.startswith("/api/admin/users/"):
@@ -3647,6 +3831,169 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "threads": service.list_threads(),
+        })
+
+    def _resolve_whatsapp_import_owner_names(
+        self,
+        session: PortalSession,
+        payload: dict[str, Any],
+    ) -> list[str]:
+        names = split_import_owner_names(payload.get("ownerNames") or payload.get("ownerName"))
+        user = self.database.get_user(session.email) or {}
+        connection = self.database.get_whatsapp_connection(session.email) or {}
+        profile = normalize_user_profile(user.get("profile"))
+        fallback_names = [
+            normalize_text(user.get("displayName")),
+            normalize_text(profile.get("businessSummary")),
+            normalize_text(connection.get("displayName")),
+            normalize_text(connection.get("verifiedName")),
+            "You",
+        ]
+        seen = {normalize_import_name_key(name) for name in names}
+        for fallback in fallback_names:
+            key = normalize_import_name_key(fallback)
+            if fallback and key not in seen:
+                names.append(fallback)
+                seen.add(key)
+        return names
+
+    def _handle_whatsapp_history_import_post(self) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        files = payload.get("files")
+        if not isinstance(files, list) or not files:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_files",
+                "message": "Choose at least one WhatsApp export file.",
+            })
+            return
+        if len(files) > WHATSAPP_HISTORY_IMPORT_MAX_FILES:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "too_many_files",
+                "message": f"Upload {WHATSAPP_HISTORY_IMPORT_MAX_FILES} files or fewer at a time.",
+            })
+            return
+
+        owner_names = self._resolve_whatsapp_import_owner_names(session, payload)
+        explicit_conversation_title = normalize_import_text(payload.get("conversationName"))
+        explicit_conversation_id = normalize_import_text(payload.get("conversationId"))
+        imported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        total_parsed = 0
+        total_saved = 0
+        total_duplicates = 0
+        import_results: list[dict[str, Any]] = []
+
+        for file_index, file_payload in enumerate(files):
+            source = file_payload if isinstance(file_payload, dict) else {}
+            file_name = normalize_import_text(source.get("name") or f"whatsapp-export-{file_index + 1}.txt")
+            content = str(source.get("content") or "")
+            if len(content) > WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "file_too_large",
+                    "message": f"{file_name} is too large. Upload a smaller WhatsApp text export.",
+                })
+                return
+
+            conversation_title = derive_import_conversation_title(
+                file_name,
+                explicit_conversation_title if len(files) == 1 else "",
+            )
+            conversation_id = build_import_conversation_id(
+                conversation_title,
+                explicit_conversation_id if len(files) == 1 else "",
+            )
+            sender_wa_id = re.sub(r"\D+", "", conversation_title)
+            parsed_messages = parse_whatsapp_export_messages(content)
+            if total_parsed + len(parsed_messages) > WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "too_many_messages",
+                    "message": f"Import {WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES} messages or fewer at a time.",
+                })
+                return
+
+            saved_count = 0
+            duplicate_count = 0
+            for message_index, message in enumerate(parsed_messages):
+                sender_name = normalize_import_text(message.get("senderName"))
+                text = normalize_import_text(message.get("text"))
+                message_at = normalize_import_text(message.get("messageAt"))
+                if not sender_name or not text or not message_at:
+                    continue
+                direction = resolve_import_message_direction(
+                    sender_name=sender_name,
+                    conversation_title=conversation_title,
+                    owner_names=owner_names,
+                )
+                record = self.database.save_whatsapp_message(
+                    email=session.email,
+                    conversation_id=conversation_id,
+                    direction=direction,
+                    text=text,
+                    sender_name=conversation_title,
+                    sender_wa_id=sender_wa_id,
+                    message_id=build_import_message_id(
+                        conversation_id=conversation_id,
+                        message=message,
+                        index=message_index,
+                    ),
+                    message_type="text",
+                    message_at=message_at,
+                    metadata={
+                        "source": "manual_import",
+                        "importedAt": imported_at,
+                        "importFileName": file_name,
+                        "importSenderName": sender_name,
+                        "importConversationTitle": conversation_title,
+                    },
+                )
+                if record.get("isDuplicate"):
+                    duplicate_count += 1
+                else:
+                    saved_count += 1
+
+            total_parsed += len(parsed_messages)
+            total_saved += saved_count
+            total_duplicates += duplicate_count
+            import_results.append({
+                "fileName": file_name,
+                "conversationId": conversation_id,
+                "conversationTitle": conversation_title,
+                "messagesParsed": len(parsed_messages),
+                "messagesSaved": saved_count,
+                "duplicates": duplicate_count,
+            })
+
+        if total_parsed <= 0:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "no_messages_found",
+                "message": "No WhatsApp messages were found in the uploaded export.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": f"Imported {total_saved} message{'s' if total_saved != 1 else ''}.",
+            "messagesParsed": total_parsed,
+            "messagesSaved": total_saved,
+            "duplicates": total_duplicates,
+            "imports": import_results,
         })
 
     def _handle_whatsapp_history_get(self, _parsed: urllib_parse.ParseResult) -> None:

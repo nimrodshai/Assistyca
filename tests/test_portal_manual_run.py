@@ -1146,6 +1146,72 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             f"/approval/{messages[0]['approvalId']}"
         ))
 
+    def test_whatsapp_history_import_saves_exported_chat(self) -> None:
+        status, body = self._request(
+            "POST",
+            "/api/whatsapp/history/import",
+            {
+                "ownerName": "Dor",
+                "files": [
+                    {
+                        "name": "WhatsApp Chat with Maya Cohen.txt",
+                        "content": (
+                            "13/01/2026, 09:00 - Maya Cohen: Hi, can you send the quote again?\n"
+                            "13/01/2026, 09:05 - Dor: Sure, I will send it today.\n"
+                            "13/01/2026, 09:06 - Maya Cohen: Thanks\n"
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["messagesSaved"], 3)
+        self.assertEqual(body["imports"][0]["conversationTitle"], "Maya Cohen")
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(history["ok"])
+        self.assertEqual(history["conversationCount"], 1)
+        conversation = history["conversations"][0]
+        self.assertEqual(conversation["senderName"], "Maya Cohen")
+        self.assertEqual(conversation["metadata"]["source"], "manual_import")
+        self.assertEqual(conversation["messageCount"], 3)
+        messages = conversation["messages"]
+        self.assertEqual([message["direction"] for message in messages], ["inbound", "outbound", "inbound"])
+        self.assertEqual(messages[1]["metadata"]["importSenderName"], "Dor")
+
+        second_status, second_body = self._request(
+            "POST",
+            "/api/whatsapp/history/import",
+            {
+                "ownerName": "Dor",
+                "files": [
+                    {
+                        "name": "WhatsApp Chat with Maya Cohen.txt",
+                        "content": (
+                            "13/01/2026, 09:00 - Maya Cohen: Hi, can you send the quote again?\n"
+                            "13/01/2026, 09:05 - Dor: Sure, I will send it today.\n"
+                            "13/01/2026, 09:06 - Maya Cohen: Thanks\n"
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(second_status, 200)
+        self.assertEqual(second_body["messagesSaved"], 0)
+        self.assertEqual(second_body["duplicates"], 3)
+
     def test_approval_phone_message_to_connected_number_is_customer_history(self) -> None:
         webhook_request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",

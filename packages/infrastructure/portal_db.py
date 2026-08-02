@@ -3489,7 +3489,6 @@ class PortalDatabase:
                 SELECT conversation_id
                 FROM whatsapp_conversations
                 WHERE user_id = ?
-                  AND sender_wa_id <> ''
                   AND COALESCE(last_message_at, '') <> ''
                   AND last_message_at <= ?
                   AND (
