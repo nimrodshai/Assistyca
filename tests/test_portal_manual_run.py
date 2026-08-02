@@ -1435,6 +1435,16 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertTrue(parsed.startswith("2026-03-12T"))
 
+    def test_whatsapp_history_import_rejects_tomorrow_for_ambiguous_date(self) -> None:
+        parsed = parse_whatsapp_export_timestamp(
+            "3/8/26",
+            "07:35:20",
+            now=datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertTrue(parsed.startswith("2026-03-08T"))
+
     def test_whatsapp_history_import_infers_owner_for_generic_chat_file(self) -> None:
         status, body = self._request(
             "POST",

@@ -21,7 +21,6 @@ import time
 import hmac
 import hashlib
 from datetime import datetime
-from datetime import timedelta
 from datetime import timezone
 from dataclasses import dataclass
 from dataclasses import field
@@ -1443,23 +1442,22 @@ def parse_whatsapp_export_timestamp(
         else (now.replace(tzinfo=timezone.utc).astimezone() if isinstance(now, datetime) else datetime.now().astimezone())
     )
     local_tz = current_local_time.tzinfo or timezone.utc
-    future_cutoff = current_local_time + timedelta(days=1)
-    candidates: list[tuple[int, datetime]] = []
-    for format_index, date_format in enumerate(formats):
+    candidates: list[datetime] = []
+    for date_format in formats:
         try:
             parsed = datetime.strptime(raw_value, date_format)
         except ValueError:
             continue
-        candidates.append((format_index, parsed.replace(tzinfo=local_tz)))
+        candidates.append(parsed.replace(tzinfo=local_tz))
     if not candidates:
         return None
 
     non_future_candidates = [
         candidate
         for candidate in candidates
-        if candidate[1] <= future_cutoff
+        if candidate <= current_local_time
     ]
-    chosen = (non_future_candidates or candidates)[0][1]
+    chosen = (non_future_candidates or candidates)[0]
     return chosen.astimezone(timezone.utc).isoformat()
 
 
