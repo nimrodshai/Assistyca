@@ -36,12 +36,12 @@ class PortalAuthSessionTests(unittest.TestCase):
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
 
-    def _verify_otp_and_get_cookie(self) -> str:
-        code, _ = self.server.store.issue_challenge("owner@example.com")
+    def _verify_otp_and_get_cookie(self, email: str = "owner@example.com") -> str:
+        code, _ = self.server.store.issue_challenge(email)
         request = urllib_request.Request(
             f"{self.base_url}/api/auth/otp/verify",
             data=json.dumps({
-                "email": "owner@example.com",
+                "email": email,
                 "code": code,
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
@@ -82,6 +82,24 @@ class PortalAuthSessionTests(unittest.TestCase):
 
         self.assertTrue(payload["signedIn"])
         self.assertEqual(payload["email"], "owner@example.com")
+
+    def test_opportunities_owner_can_manage_clients_without_admin_flag(self) -> None:
+        owner_email = "nimrod.shai@gmail.com"
+        client_email = "client@example.com"
+        self.server.database.register_user(owner_email, is_admin=False)
+        self.server.database.register_user(client_email)
+        cookie_value = self._verify_otp_and_get_cookie(owner_email)
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/admin/users",
+            headers={"Cookie": cookie_value},
+        )
+        with urllib_request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["currentUser"]["isAdmin"])
+        self.assertIn(client_email, {user["email"] for user in payload["users"]})
 
 
 if __name__ == "__main__":

@@ -987,7 +987,7 @@ function canReviewOpportunities() {
 }
 
 function canManageClients() {
-  return isAdminUser();
+  return isAdminUser() || canReviewOpportunities();
 }
 
 function clearAuthSession() {
@@ -1311,7 +1311,7 @@ function setAdminUserSaveQueued(email, isQueued) {
 
 function queueAdminUserFeatureAutosave(email) {
   const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail || !isAdminUser()) {
+  if (!normalizedEmail || !canManageClients()) {
     return;
   }
 
@@ -7776,7 +7776,7 @@ function createAdminUserDetailView(user) {
 }
 
 function renderAdminUsersPane() {
-  const adminVisible = isAdminUser();
+  const adminVisible = canManageClients();
   if (elements.adminUsersMenuItem) {
     elements.adminUsersMenuItem.classList.toggle("is-hidden", !adminVisible);
   }
@@ -7847,7 +7847,7 @@ function renderAdminUsersPane() {
 
 async function refreshAdminUsers(options = {}) {
   const shouldRender = options.render !== false;
-  if (!isAdminUser()) {
+  if (!canManageClients()) {
     return null;
   }
 
@@ -7971,7 +7971,7 @@ async function refreshOpportunities(options = {}) {
 }
 
 async function addAdminUser() {
-  if (!isAdminUser() || state.adminAddUserBusy) {
+  if (!canManageClients() || state.adminAddUserBusy) {
     return;
   }
 
@@ -8024,7 +8024,7 @@ async function addAdminUser() {
 
 async function saveAdminUserDetails() {
   const user = getAdminSelectedUser();
-  if (!isAdminUser() || !user || state.adminEditUserBusy) {
+  if (!canManageClients() || !user || state.adminEditUserBusy) {
     return;
   }
 
@@ -8077,7 +8077,7 @@ async function saveAdminUserDetails() {
 async function saveAdminUserStatus(email, isActive) {
   const normalizedEmail = normalizeEmail(email);
   const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
-  if (!isAdminUser() || !user || state.adminStatusBusyByEmail[normalizedEmail]) {
+  if (!canManageClients() || !user || state.adminStatusBusyByEmail[normalizedEmail]) {
     return;
   }
 
@@ -8131,7 +8131,7 @@ async function saveAdminUserStatus(email, isActive) {
 async function saveAdminUserFeatures(email) {
   const normalizedEmail = normalizeEmail(email);
   const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
-  if (!isAdminUser() || !user || state.adminSaveBusyByEmail[normalizedEmail]) {
+  if (!canManageClients() || !user || state.adminSaveBusyByEmail[normalizedEmail]) {
     return;
   }
 
@@ -8202,7 +8202,7 @@ async function saveAdminUserFeatures(email) {
 function deleteAdminUser(email) {
   const normalizedEmail = normalizeEmail(email);
   const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
-  if (!isAdminUser() || !user || state.adminDeleteBusyByEmail[normalizedEmail]) {
+  if (!canManageClients() || !user || state.adminDeleteBusyByEmail[normalizedEmail]) {
     return;
   }
 
@@ -8235,7 +8235,7 @@ function deleteAdminUser(email) {
 async function confirmAdminUserDelete(email) {
   const normalizedEmail = normalizeEmail(email);
   const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
-  if (!isAdminUser() || !user || state.adminDeleteBusyByEmail[normalizedEmail]) {
+  if (!canManageClients() || !user || state.adminDeleteBusyByEmail[normalizedEmail]) {
     return;
   }
 
@@ -10754,7 +10754,7 @@ function completeSignIn(session) {
   void refreshBillingReport();
   void refreshWhatsAppConnection();
   void refreshFeatureActivationStates();
-  if (authSession.isAdmin) {
+  if (canManageClients()) {
     void refreshAdminUsers({ render: false });
   }
 }
@@ -11323,7 +11323,7 @@ async function bootstrapAuthState() {
     void refreshBillingReport();
     void refreshWhatsAppConnection();
     void refreshFeatureActivationStates();
-    if (authSession?.isAdmin) {
+    if (canManageClients()) {
       void refreshAdminUsers({ render: false });
     }
   };

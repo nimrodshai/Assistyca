@@ -2801,6 +2801,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
         return None
 
+    def _require_client_manager_user(self) -> tuple[PortalSession, dict[str, Any]] | None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return None
+
+        session, user = authenticated
+        if bool(user.get("isAdmin")) or normalize_email(session.email) == self._contact_opportunities_owner_email():
+            return session, user
+
+        json_response(self, HTTPStatus.FORBIDDEN, {
+            "ok": False,
+            "error": "forbidden",
+            "message": "Client management access is required.",
+        })
+        return None
+
     def _contact_opportunities_owner_email(self) -> str:
         return normalize_email(os.getenv("PORTAL_OPPORTUNITIES_OWNER_EMAIL") or CONTACT_OPPORTUNITY_OWNER_EMAIL)
 
@@ -2885,7 +2901,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_admin_users_get(self) -> None:
-        authenticated = self._require_admin_user()
+        authenticated = self._require_client_manager_user()
         if authenticated is None:
             return
 
@@ -2907,7 +2923,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_admin_users_post(self, parsed: urllib_parse.ParseResult) -> None:
-        authenticated = self._require_admin_user()
+        authenticated = self._require_client_manager_user()
         if authenticated is None:
             return
 
@@ -3167,7 +3183,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def _handle_admin_users_delete(self, parsed: urllib_parse.ParseResult) -> None:
-        authenticated = self._require_admin_user()
+        authenticated = self._require_client_manager_user()
         if authenticated is None:
             return
 
