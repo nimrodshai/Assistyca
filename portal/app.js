@@ -3728,7 +3728,7 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
     const importStatus = String(state.whatsappHistoryImportStatus || "").trim();
     elements.whatsappHistoryImportStatus.textContent = importError
       || importStatus
-      || (selectedFileCount ? `${selectedFileCount} export${selectedFileCount === 1 ? "" : "s"} selected` : "");
+      || (selectedFileCount ? `${selectedFileCount} chat file${selectedFileCount === 1 ? "" : "s"} selected` : "");
     elements.whatsappHistoryImportStatus.classList.toggle("is-warning", Boolean(importError));
   }
 
@@ -3751,7 +3751,7 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
       );
     } else if (!conversations.length) {
       elements.whatsappHistoryConversationList.replaceChildren(
-        createWhatsAppHistoryEmptyState("No saved conversations yet", "Live customer messages and imported WhatsApp exports will appear here."),
+        createWhatsAppHistoryEmptyState("No saved conversations yet", "Live customer messages and imported WhatsApp chat files will appear here."),
       );
     } else {
       elements.whatsappHistoryConversationList.replaceChildren(
@@ -3821,7 +3821,7 @@ function selectWhatsAppHistoryConversation(conversationId) {
 async function readWhatsAppHistoryImportFile(file) {
   const content = await file.text();
   return {
-    name: String(file.name || "whatsapp-export.txt").trim() || "whatsapp-export.txt",
+    name: String(file.name || "whatsapp-chat.txt").trim() || "whatsapp-chat.txt",
     content,
   };
 }
@@ -3834,7 +3834,7 @@ async function importWhatsAppHistoryExports() {
 
   const files = Array.from(elements.whatsappHistoryFileInput?.files || []);
   if (!files.length) {
-    state.whatsappHistoryImportError = "Choose a WhatsApp text export first.";
+    state.whatsappHistoryImportError = "Choose a WhatsApp chat file first.";
     state.whatsappHistoryImportStatus = "";
     renderWhatsAppHistory(feature);
     elements.whatsappHistoryFileInput?.focus();
@@ -3843,7 +3843,7 @@ async function importWhatsAppHistoryExports() {
 
   state.whatsappHistoryImportBusy = true;
   state.whatsappHistoryImportError = "";
-  state.whatsappHistoryImportStatus = `Reading ${files.length} export${files.length === 1 ? "" : "s"}...`;
+  state.whatsappHistoryImportStatus = `Reading ${files.length} chat file${files.length === 1 ? "" : "s"}...`;
   renderWhatsAppHistory(feature);
 
   try {
@@ -3876,7 +3876,7 @@ async function importWhatsAppHistoryExports() {
     setStatus(state.whatsappHistoryImportStatus);
     await refreshWhatsAppHistory({ force: true });
   } catch (error) {
-    state.whatsappHistoryImportError = formatApiErrorMessage(error, "We couldn’t import that WhatsApp export.");
+    state.whatsappHistoryImportError = formatApiErrorMessage(error, "We couldn’t import that WhatsApp chat file.");
     state.whatsappHistoryImportStatus = "";
     setStatus("WhatsApp history import failed.");
   } finally {
@@ -11029,7 +11029,7 @@ function bindEvents() {
       state.whatsappHistoryImportError = "";
       const fileCount = elements.whatsappHistoryFileInput.files?.length || 0;
       state.whatsappHistoryImportStatus = fileCount
-        ? `${fileCount} export${fileCount === 1 ? "" : "s"} selected`
+        ? `${fileCount} chat file${fileCount === 1 ? "" : "s"} selected`
         : "";
       renderWhatsAppHistory();
     });

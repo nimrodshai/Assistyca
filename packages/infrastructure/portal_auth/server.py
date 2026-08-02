@@ -3879,7 +3879,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "missing_files",
-                "message": "Choose at least one WhatsApp export file.",
+                "message": "Choose at least one WhatsApp chat file.",
             })
             return
         if len(files) > WHATSAPP_HISTORY_IMPORT_MAX_FILES:
@@ -3901,13 +3901,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         for file_index, file_payload in enumerate(files):
             source = file_payload if isinstance(file_payload, dict) else {}
-            file_name = normalize_import_text(source.get("name") or f"whatsapp-export-{file_index + 1}.txt")
+            file_name = normalize_import_text(source.get("name") or f"whatsapp-chat-{file_index + 1}.txt")
             content = str(source.get("content") or "")
             if len(content) > WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS:
                 json_response(self, HTTPStatus.BAD_REQUEST, {
                     "ok": False,
                     "error": "file_too_large",
-                    "message": f"{file_name} is too large. Upload a smaller WhatsApp text export.",
+                    "message": f"{file_name} is too large. Upload a smaller WhatsApp chat file.",
                 })
                 return
 
@@ -3985,7 +3985,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "no_messages_found",
-                "message": "No WhatsApp messages were found in the uploaded export.",
+                "message": "No WhatsApp messages were found in the uploaded chat file.",
             })
             return
 

@@ -1151,13 +1151,13 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             "POST",
             "/api/whatsapp/history/import",
             {
-                "ownerName": "Dor",
+                "ownerName": "Owner",
                 "files": [
                     {
                         "name": "WhatsApp Chat with Maya Cohen.txt",
                         "content": (
                             "13/01/2026, 09:00 - Maya Cohen: Hi, can you send the quote again?\n"
-                            "13/01/2026, 09:05 - Dor: Sure, I will send it today.\n"
+                            "13/01/2026, 09:05 - Owner: Sure, I will send it today.\n"
                             "13/01/2026, 09:06 - Maya Cohen: Thanks\n"
                         ),
                     }
@@ -1188,19 +1188,19 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(conversation["messageCount"], 3)
         messages = conversation["messages"]
         self.assertEqual([message["direction"] for message in messages], ["inbound", "outbound", "inbound"])
-        self.assertEqual(messages[1]["metadata"]["importSenderName"], "Dor")
+        self.assertEqual(messages[1]["metadata"]["importSenderName"], "Owner")
 
         second_status, second_body = self._request(
             "POST",
             "/api/whatsapp/history/import",
             {
-                "ownerName": "Dor",
+                "ownerName": "Owner",
                 "files": [
                     {
                         "name": "WhatsApp Chat with Maya Cohen.txt",
                         "content": (
                             "13/01/2026, 09:00 - Maya Cohen: Hi, can you send the quote again?\n"
-                            "13/01/2026, 09:05 - Dor: Sure, I will send it today.\n"
+                            "13/01/2026, 09:05 - Owner: Sure, I will send it today.\n"
                             "13/01/2026, 09:06 - Maya Cohen: Thanks\n"
                         ),
                     }
