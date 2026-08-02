@@ -1430,6 +1430,8 @@ def parse_whatsapp_export_messages(content: str) -> list[dict[str, str]]:
             current = parsed
             continue
         continuation = normalize_import_text(raw_line)
+        if WHATSAPP_EXPORT_LINE_RE.match(continuation):
+            continue
         if current is not None and continuation:
             current["text"] = f'{current["text"]}\n{continuation}'
     if current is not None:
