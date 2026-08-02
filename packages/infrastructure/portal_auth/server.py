@@ -93,8 +93,8 @@ SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 WHATSAPP_HISTORY_IMPORT_MAX_FILES = 20
-WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS = 2_000_000
-WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES = 12_000
+WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS = 20_000_000
+WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES = 100_000
 WHATSAPP_HISTORY_IMPORT_CONTROL_CHARS = str.maketrans("", "", "\ufeff\u200e\u200f")
 CONTACT_NAME_MAX_LENGTH = 120
 CONTACT_CHANNEL_MAX_LENGTH = 180
@@ -1423,7 +1423,13 @@ def parse_whatsapp_export_timestamp(date_text: str, time_text: str) -> str | Non
         "%m/%d/%y %I:%M:%S %p",
         "%m/%d/%y %I:%M %p",
     ]
-    formats = day_first_formats + month_first_formats
+    year_first_formats = [
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d %I:%M:%S %p",
+        "%Y/%m/%d %I:%M %p",
+    ]
+    formats = day_first_formats + month_first_formats + year_first_formats
     raw_value = f"{date_value} {time_value}"
     local_tz = datetime.now().astimezone().tzinfo or timezone.utc
     for date_format in formats:
@@ -1435,10 +1441,15 @@ def parse_whatsapp_export_timestamp(date_text: str, time_text: str) -> str | Non
     return None
 
 
+WHATSAPP_EXPORT_TIMESTAMP_RE = re.compile(
+    r"^\[?\d{1,4}[./-]\d{1,2}[./-]\d{2,4}(?:,|\s)\s*"
+    r"\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap]\.?[Mm]\.?)?"
+)
+
 WHATSAPP_EXPORT_LINE_RE = re.compile(
-    r"^\[?(?P<date>\d{1,4}[./-]\d{1,2}[./-]\d{2,4}),\s*"
+    r"^\[?(?P<date>\d{1,4}[./-]\d{1,2}[./-]\d{2,4})(?:,|\s)\s*"
     r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap]\.?[Mm]\.?)?)\]?"
-    r"\s*(?:-\s*)?(?P<body>.*)$"
+    r"\s*(?:[-–—]\s*)?(?P<body>.*)$"
 )
 
 
@@ -1470,23 +1481,67 @@ def parse_whatsapp_export_line(line: str) -> dict[str, str] | None:
 
 
 def parse_whatsapp_export_messages(content: str) -> list[dict[str, str]]:
+    return analyze_whatsapp_export_messages(content)["messages"]
+
+
+def analyze_whatsapp_export_messages(content: str) -> dict[str, Any]:
     messages: list[dict[str, str]] = []
     current: dict[str, str] | None = None
+    line_count = 0
+    blank_line_count = 0
+    message_start_line_count = 0
+    continuation_line_count = 0
+    system_or_unsupported_line_count = 0
+    unsupported_message_line_count = 0
+    orphan_line_count = 0
     for raw_line in str(content or "").splitlines():
+        line_count += 1
+        normalized_line = normalize_import_text(raw_line)
+        if not normalized_line:
+            blank_line_count += 1
+            continue
+
         parsed = parse_whatsapp_export_line(raw_line)
         if parsed is not None:
             if current is not None:
                 messages.append(current)
             current = parsed
+            message_start_line_count += 1
             continue
-        continuation = normalize_import_text(raw_line)
-        if WHATSAPP_EXPORT_LINE_RE.match(continuation):
+
+        if WHATSAPP_EXPORT_TIMESTAMP_RE.match(normalized_line):
+            if current is not None:
+                messages.append(current)
+                current = None
+            system_or_unsupported_line_count += 1
+            line_match = WHATSAPP_EXPORT_LINE_RE.match(normalized_line)
+            body = normalize_import_text(line_match.group("body")) if line_match else ""
+            if ":" in body:
+                unsupported_message_line_count += 1
             continue
-        if current is not None and continuation:
-            current["text"] = f'{current["text"]}\n{continuation}'
+
+        if current is not None:
+            current["text"] = f'{current["text"]}\n{normalized_line}'
+            continuation_line_count += 1
+            continue
+
+        orphan_line_count += 1
     if current is not None:
         messages.append(current)
-    return messages
+    skipped_line_count = system_or_unsupported_line_count + orphan_line_count
+    return {
+        "messages": messages,
+        "diagnostics": {
+            "lineCount": line_count,
+            "blankLineCount": blank_line_count,
+            "messageStartLineCount": message_start_line_count,
+            "continuationLineCount": continuation_line_count,
+            "skippedLineCount": skipped_line_count,
+            "systemOrUnsupportedLineCount": system_or_unsupported_line_count,
+            "unsupportedMessageLineCount": unsupported_message_line_count,
+            "orphanLineCount": orphan_line_count,
+        },
+    }
 
 
 def resolve_import_message_direction(
@@ -3968,6 +4023,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         total_parsed = 0
         total_saved = 0
         total_duplicates = 0
+        total_source_lines = 0
+        total_skipped_lines = 0
+        total_system_or_unsupported_lines = 0
+        total_unsupported_message_lines = 0
+        total_continuation_lines = 0
         import_results: list[dict[str, Any]] = []
 
         for file_index, file_payload in enumerate(files):
@@ -3990,7 +4050,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 fallback_conversation_title,
                 explicit_conversation_id if len(files) == 1 else "",
             )
-            parsed_messages = parse_whatsapp_export_messages(content)
+            parse_result = analyze_whatsapp_export_messages(content)
+            parsed_messages = parse_result["messages"]
+            parse_diagnostics = (
+                parse_result.get("diagnostics")
+                if isinstance(parse_result.get("diagnostics"), dict)
+                else {}
+            )
             if total_parsed + len(parsed_messages) > WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES:
                 json_response(self, HTTPStatus.BAD_REQUEST, {
                     "ok": False,
@@ -4064,6 +4130,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             total_parsed += len(parsed_messages)
             total_saved += saved_count
             total_duplicates += duplicate_count
+            total_source_lines += int(parse_diagnostics.get("lineCount") or 0)
+            total_skipped_lines += int(parse_diagnostics.get("skippedLineCount") or 0)
+            total_system_or_unsupported_lines += int(parse_diagnostics.get("systemOrUnsupportedLineCount") or 0)
+            total_unsupported_message_lines += int(parse_diagnostics.get("unsupportedMessageLineCount") or 0)
+            total_continuation_lines += int(parse_diagnostics.get("continuationLineCount") or 0)
             import_results.append({
                 "fileName": file_name,
                 "conversationId": conversation_id,
@@ -4071,6 +4142,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "messagesParsed": len(parsed_messages),
                 "messagesSaved": saved_count,
                 "duplicates": duplicate_count,
+                "lineCount": int(parse_diagnostics.get("lineCount") or 0),
+                "messageStartLineCount": int(parse_diagnostics.get("messageStartLineCount") or 0),
+                "continuationLineCount": int(parse_diagnostics.get("continuationLineCount") or 0),
+                "skippedLineCount": int(parse_diagnostics.get("skippedLineCount") or 0),
+                "systemOrUnsupportedLineCount": int(parse_diagnostics.get("systemOrUnsupportedLineCount") or 0),
+                "unsupportedMessageLineCount": int(parse_diagnostics.get("unsupportedMessageLineCount") or 0),
+                "orphanLineCount": int(parse_diagnostics.get("orphanLineCount") or 0),
             })
 
         if total_parsed <= 0:
@@ -4087,6 +4165,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "messagesParsed": total_parsed,
             "messagesSaved": total_saved,
             "duplicates": total_duplicates,
+            "lineCount": total_source_lines,
+            "skippedLineCount": total_skipped_lines,
+            "systemOrUnsupportedLineCount": total_system_or_unsupported_lines,
+            "unsupportedMessageLineCount": total_unsupported_message_lines,
+            "continuationLineCount": total_continuation_lines,
             "imports": import_results,
         })
 

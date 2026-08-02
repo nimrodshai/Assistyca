@@ -1166,7 +1166,10 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
+        self.assertEqual(body["messagesParsed"], 3)
         self.assertEqual(body["messagesSaved"], 3)
+        self.assertEqual(body["lineCount"], 3)
+        self.assertEqual(body["skippedLineCount"], 0)
         self.assertEqual(body["imports"][0]["conversationTitle"], "Maya Cohen")
 
         history_request = urllib_request.Request(
@@ -1209,6 +1212,36 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(second_status, 200)
         self.assertEqual(second_body["messagesSaved"], 0)
         self.assertEqual(second_body["duplicates"], 3)
+
+    def test_whatsapp_history_import_reports_export_diagnostics(self) -> None:
+        status, body = self._request(
+            "POST",
+            "/api/whatsapp/history/import",
+            {
+                "files": [
+                    {
+                        "name": "WhatsApp Chat with Maya Cohen.txt",
+                        "content": (
+                            "2026/01/13 09:00 – Maya Cohen: Year-first dates work.\n"
+                            "13.01.2026 09:05 — Owner: Dotted dates without commas work too.\n"
+                            "13/01/2026, 09:06 - Messages and calls are end-to-end encrypted.\n"
+                            "13/01/2026, 09:07 - Maya Cohen: This has\n"
+                            "multiple lines.\n"
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["messagesParsed"], 3)
+        self.assertEqual(body["messagesSaved"], 3)
+        self.assertEqual(body["lineCount"], 5)
+        self.assertEqual(body["continuationLineCount"], 1)
+        self.assertEqual(body["skippedLineCount"], 1)
+        self.assertEqual(body["systemOrUnsupportedLineCount"], 1)
+        self.assertEqual(body["unsupportedMessageLineCount"], 0)
 
     def test_whatsapp_history_import_infers_owner_for_generic_chat_file(self) -> None:
         status, body = self._request(

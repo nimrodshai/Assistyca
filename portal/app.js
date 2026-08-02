@@ -3369,6 +3369,48 @@ function formatWhatsAppMessageCount(count) {
   return `${value} message${value === 1 ? "" : "s"}`;
 }
 
+function formatWhatsAppImportLineCount(count) {
+  const value = Math.max(0, Number.parseInt(count, 10) || 0);
+  return `${value} line${value === 1 ? "" : "s"}`;
+}
+
+function buildWhatsAppHistoryImportStatusMessage(response = {}) {
+  const saved = Math.max(0, Number.parseInt(response.messagesSaved, 10) || 0);
+  const parsed = Math.max(0, Number.parseInt(response.messagesParsed, 10) || 0);
+  const duplicates = Math.max(0, Number.parseInt(response.duplicates, 10) || 0);
+  const lineCount = Math.max(0, Number.parseInt(response.lineCount, 10) || 0);
+  const skipped = Math.max(0, Number.parseInt(response.skippedLineCount, 10) || 0);
+  const unsupported = Math.max(0, Number.parseInt(response.unsupportedMessageLineCount, 10) || 0);
+  const continuation = Math.max(0, Number.parseInt(response.continuationLineCount, 10) || 0);
+  const parts = [];
+
+  if (saved > 0) {
+    parts.push(`Imported ${formatWhatsAppMessageCount(saved)}`);
+  } else if (parsed > 0 && duplicates > 0) {
+    parts.push(`No new messages imported; ${formatWhatsAppMessageCount(duplicates)} were already saved`);
+  } else {
+    parts.push(String(response.message || "WhatsApp history import completed.").replace(/\.$/, ""));
+  }
+
+  if (parsed > 0 && (parsed !== saved || lineCount || duplicates)) {
+    parts.push(`${formatWhatsAppMessageCount(parsed)} parsed from the file`);
+  }
+  if (lineCount > 0) {
+    const detail = continuation > 0
+      ? `${formatWhatsAppImportLineCount(lineCount)} read, including ${formatWhatsAppImportLineCount(continuation)} of multi-line message text`
+      : `${formatWhatsAppImportLineCount(lineCount)} read`;
+    parts.push(detail);
+  }
+  if (skipped > 0) {
+    const skippedText = unsupported > 0
+      ? `${formatWhatsAppImportLineCount(skipped)} skipped as system/unsupported export rows; ${formatWhatsAppImportLineCount(unsupported)} looked like message rows`
+      : `${formatWhatsAppImportLineCount(skipped)} skipped as system/unsupported export rows`;
+    parts.push(skippedText);
+  }
+
+  return `${parts.join(". ")}.`;
+}
+
 function isWhatsAppExternalOutboundPlaceholder(payload = {}) {
   const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
   const direction = String(payload.direction || "").trim().toLowerCase();
@@ -4021,10 +4063,7 @@ async function importWhatsAppHistoryExports() {
     if (elements.whatsappHistoryFileInput) {
       elements.whatsappHistoryFileInput.value = "";
     }
-    state.whatsappHistoryImportStatus = String(
-      response.message
-      || `Imported ${response.messagesSaved || 0} messages.`,
-    );
+    state.whatsappHistoryImportStatus = buildWhatsAppHistoryImportStatusMessage(response);
     setStatus(state.whatsappHistoryImportStatus);
     await refreshWhatsAppHistory({ force: true });
   } catch (error) {
