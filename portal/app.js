@@ -3377,15 +3377,21 @@ function formatWhatsAppImportLineCount(count) {
 function buildWhatsAppHistoryImportStatusMessage(response = {}) {
   const saved = Math.max(0, Number.parseInt(response.messagesSaved, 10) || 0);
   const parsed = Math.max(0, Number.parseInt(response.messagesParsed, 10) || 0);
+  const replaced = Math.max(0, Number.parseInt(response.messagesReplaced, 10) || 0);
   const duplicates = Math.max(0, Number.parseInt(response.duplicates, 10) || 0);
   const lineCount = Math.max(0, Number.parseInt(response.lineCount, 10) || 0);
+  const blankLines = Math.max(0, Number.parseInt(response.blankLineCount, 10) || 0);
   const skipped = Math.max(0, Number.parseInt(response.skippedLineCount, 10) || 0);
   const unsupported = Math.max(0, Number.parseInt(response.unsupportedMessageLineCount, 10) || 0);
   const continuation = Math.max(0, Number.parseInt(response.continuationLineCount, 10) || 0);
   const parts = [];
 
   if (saved > 0) {
-    parts.push(`Imported ${formatWhatsAppMessageCount(saved)}`);
+    parts.push(
+      replaced > 0
+        ? `Imported ${formatWhatsAppMessageCount(saved)}, replacing ${formatWhatsAppMessageCount(replaced)}`
+        : `Imported ${formatWhatsAppMessageCount(saved)}`,
+    );
   } else if (parsed > 0 && duplicates > 0) {
     parts.push(`No new messages imported; ${formatWhatsAppMessageCount(duplicates)} were already saved`);
   } else {
@@ -3400,6 +3406,9 @@ function buildWhatsAppHistoryImportStatusMessage(response = {}) {
       ? `${formatWhatsAppImportLineCount(lineCount)} read, including ${formatWhatsAppImportLineCount(continuation)} of multi-line message text`
       : `${formatWhatsAppImportLineCount(lineCount)} read`;
     parts.push(detail);
+  }
+  if (blankLines > 0) {
+    parts.push(`${formatWhatsAppImportLineCount(blankLines)} blank lines ignored`);
   }
   if (skipped > 0) {
     const skippedText = unsupported > 0

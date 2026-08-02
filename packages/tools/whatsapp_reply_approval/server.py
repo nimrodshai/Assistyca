@@ -57,6 +57,49 @@ OWNER_DISABLE_CONTACT_COMMANDS = {
     "stop asking for this contact",
     "stop suggestions for this contact",
 }
+OWNER_SEND_COMMANDS = {
+    "send",
+    "approve",
+    "מאשר",
+    "מאשרת",
+    "מאושר",
+    "מאושרת",
+    "אישור",
+    "שלח",
+    "שלחי",
+    "תשלח",
+    "תשלחי",
+}
+OWNER_REVIEW_COMMANDS = {
+    "sure",
+    "yes",
+    "generate",
+    "preview",
+    "review",
+    "כן",
+    "בטח",
+    "אפשר",
+    "הצג",
+    "הצגי",
+    "תראה",
+    "תראי",
+}
+OWNER_SKIP_COMMANDS = {
+    "skip",
+    "cancel",
+    "later",
+    "דלג",
+    "דלגי",
+    "בטל",
+    "בטלי",
+    "אחר כך",
+}
+OWNER_PENDING_APPROVAL_COMMANDS = (
+    OWNER_SEND_COMMANDS
+    | OWNER_REVIEW_COMMANDS
+    | OWNER_SKIP_COMMANDS
+    | OWNER_DISABLE_CONTACT_COMMANDS
+)
 
 PAGE_STYLE = """
 <style>
@@ -1807,36 +1850,40 @@ def build_owner_help_text(approval: dict[str, Any] | None = None) -> str:
     return f"For {sender_name} (ref {ref}), tap Send, tap Edit and then send the revised text, or tap Skip."
 
 
+def normalize_owner_command_keyword(text: str) -> str:
+    return normalize_text(text).lower().rstrip("!.?.,:;")
+
+
+def is_owner_pending_approval_command(text: str) -> bool:
+    return normalize_owner_command_keyword(text) in OWNER_PENDING_APPROVAL_COMMANDS
+
+
 def parse_owner_command_text(text: str) -> tuple[str, str]:
     normalized = normalize_text(text)
     lower = normalized.lower()
-    compact_lower = lower.rstrip("!.")
+    compact_lower = normalize_owner_command_keyword(normalized)
     if not normalized:
         return "help", ""
     if compact_lower in OWNER_DISABLE_CONTACT_COMMANDS:
         return OWNER_DISABLE_CONTACT_ACTION, ""
-    if lower in {"send", "approve"}:
+    if compact_lower in OWNER_SEND_COMMANDS:
         return "send_suggested", ""
-    if compact_lower in {"sure", "yes", "generate", "preview", "review"}:
+    if compact_lower in OWNER_REVIEW_COMMANDS:
         return "show_suggestion", ""
-    if lower == "edit":
+    if compact_lower in {"edit", "ערוך", "ערכי"}:
         return "edit_request", ""
     if lower.startswith("send:"):
         return "send_custom", normalized.split(":", 1)[1].strip()
     if lower.startswith("edit:") or lower.startswith("reply:"):
         return "send_custom", normalized.split(":", 1)[1].strip()
-    if lower in {"skip", "cancel", "later"}:
+    if compact_lower in OWNER_SKIP_COMMANDS:
         return "skip", ""
-    if lower.startswith("send "):
-        suffix = normalized.split(" ", 1)[1].strip()
-        if suffix:
-            return "send_reference_or_custom", suffix
-        return "send_suggested", ""
-    if lower.startswith("approve "):
-        suffix = normalized.split(" ", 1)[1].strip()
-        if suffix:
-            return "send_reference_or_custom", suffix
-        return "send_suggested", ""
+    for send_command in OWNER_SEND_COMMANDS:
+        if lower.startswith(f"{send_command} "):
+            suffix = normalized.split(" ", 1)[1].strip()
+            if suffix:
+                return "send_reference_or_custom", suffix
+            return "send_suggested", ""
     return "help", normalized
 
 
@@ -1978,19 +2025,7 @@ class WhatsAppApprovalHandler(BaseHTTPRequestHandler):
             return awaiting_edit[0]
 
         pending = store.list_approvals(status="pending")
-        if len(pending) == 1 and text.lower().rstrip("!.") in {
-            "send",
-            "approve",
-            "skip",
-            "cancel",
-            "later",
-            "sure",
-            "yes",
-            "generate",
-            "preview",
-            "review",
-            *OWNER_DISABLE_CONTACT_COMMANDS,
-        }:
+        if len(pending) == 1 and is_owner_pending_approval_command(text):
             return pending[0]
 
         return None

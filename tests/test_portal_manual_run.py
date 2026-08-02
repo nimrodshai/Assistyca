@@ -7,6 +7,8 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from unittest import mock
 from urllib import error as urllib_error
@@ -14,6 +16,7 @@ from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.portal_auth.server import parse_whatsapp_export_timestamp
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
@@ -21,6 +24,7 @@ from packages.tools.whatsapp_reply_approval.server import BackendStore
 from packages.tools.whatsapp_reply_approval.server import OWNER_REVIEW_ACTION_TEXT
 from packages.tools.whatsapp_reply_approval.server import OWNER_REVIEW_INTRO_TEXT
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+from packages.tools.whatsapp_reply_approval.server import parse_owner_command_text
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 
 
@@ -592,6 +596,45 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(updated["owner_review_message_id"], "wamid.hot-review-actions")
         self.assertEqual(updated["owner_review_text"], approval["suggested_reply"])
 
+    def test_owner_hebrew_approval_sends_single_pending_suggestion(self) -> None:
+        service = self._build_service()
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-hebrew-approval",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+
+        self.assertEqual(parse_owner_command_text("מאשר"), ("send_suggested", ""))
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.customer-hebrew-approval",
+        ):
+            result = service.handle_owner_event(
+                {
+                    "thread_id": "15551234567",
+                    "sender_name": "Owner",
+                    "sender_wa_id": "15551234567",
+                    "message_text": "מאשר",
+                    "message_type": "text",
+                    "source_message_id": "wamid.owner-hebrew-approval",
+                    "reply_to_message_id": "",
+                    "interactive_reply": {},
+                    "raw_payload": {"object": "whatsapp_business_account"},
+                }
+            )
+
+        self.assertEqual(result["action"], "send_suggested")
+        self.assertEqual(result["sent_message_id"], "wamid.customer-hebrew-approval")
+        updated = service.store.get_approval(approval["approval_id"])
+        self.assertEqual(updated["status"], "sent")
+        self.assertEqual(updated["sent_text"], approval["suggested_reply"])
+
     def test_owner_disable_contact_button_suppresses_future_suggestions(self) -> None:
         service = self._build_service()
         approval = service.store.record_inbound_message(
@@ -1146,6 +1189,125 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             f"/approval/{messages[0]['approvalId']}"
         ))
 
+    def test_hebrew_owner_approval_without_reply_context_sends_pending_suggestion(self) -> None:
+        customer_request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "12345",
+                                        },
+                                        "contacts": [
+                                            {
+                                                "wa_id": "15559876543",
+                                                "profile": {
+                                                    "name": "Maya Cohen",
+                                                },
+                                            }
+                                        ],
+                                        "messages": [
+                                            {
+                                                "id": "wamid.inbound-hebrew-owner-approval-1",
+                                                "from": "15559876543",
+                                                "timestamp": "1720861200",
+                                                "type": "text",
+                                                "text": {
+                                                    "body": "Can you help tomorrow?",
+                                                },
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(customer_request, timeout=5) as response:
+            customer_body = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(customer_body["results"][0]["type"], "customer")
+
+        owner_request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {
+                                            "phone_number_id": "12345",
+                                        },
+                                        "contacts": [
+                                            {
+                                                "wa_id": "15551234567",
+                                                "profile": {
+                                                    "name": "Owner",
+                                                },
+                                            }
+                                        ],
+                                        "messages": [
+                                            {
+                                                "id": "wamid.owner-hebrew-approval-1",
+                                                "from": "15551234567",
+                                                "timestamp": "1720861260",
+                                                "type": "text",
+                                                "text": {
+                                                    "body": "מאשר",
+                                                },
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+
+        with urllib_request.urlopen(owner_request, timeout=5) as response:
+            owner_body = json.loads(response.read().decode("utf-8"))
+            owner_status = response.status
+
+        self.assertEqual(owner_status, 200)
+        self.assertEqual(owner_body["received"], 1)
+        self.assertEqual(owner_body["results"][0]["type"], "owner")
+        self.assertEqual(owner_body["results"][0]["action"], "send_suggested")
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(history["ok"])
+        self.assertEqual(history["conversationCount"], 1)
+        messages = history["conversations"][0]["messages"]
+        self.assertEqual([message["direction"] for message in messages], ["inbound", "outbound"])
+        self.assertNotIn("מאשר", [message["text"] for message in messages])
+
     def test_whatsapp_history_import_saves_exported_chat(self) -> None:
         status, body = self._request(
             "POST",
@@ -1210,8 +1372,9 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         )
 
         self.assertEqual(second_status, 200)
-        self.assertEqual(second_body["messagesSaved"], 0)
-        self.assertEqual(second_body["duplicates"], 3)
+        self.assertEqual(second_body["messagesSaved"], 3)
+        self.assertEqual(second_body["messagesReplaced"], 3)
+        self.assertEqual(second_body["duplicates"], 0)
 
     def test_whatsapp_history_import_reports_export_diagnostics(self) -> None:
         status, body = self._request(
@@ -1242,6 +1405,16 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(body["skippedLineCount"], 1)
         self.assertEqual(body["systemOrUnsupportedLineCount"], 1)
         self.assertEqual(body["unsupportedMessageLineCount"], 0)
+
+    def test_whatsapp_history_import_prefers_non_future_ambiguous_date(self) -> None:
+        parsed = parse_whatsapp_export_timestamp(
+            "03/12/2026",
+            "19:13",
+            now=datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertTrue(parsed.startswith("2026-03-12T"))
 
     def test_whatsapp_history_import_infers_owner_for_generic_chat_file(self) -> None:
         status, body = self._request(

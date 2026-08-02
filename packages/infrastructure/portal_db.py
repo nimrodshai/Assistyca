@@ -3005,6 +3005,85 @@ class PortalDatabase:
                 "conversations": conversations,
             }
 
+    def delete_whatsapp_manual_import_messages(
+        self,
+        conversation_id: str,
+        *,
+        email: str | None = None,
+        user_id: int | None = None,
+        import_file_name: str = "",
+    ) -> dict[str, Any]:
+        normalized_conversation_id = normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            raise ValueError("Conversation id is required.")
+        normalized_import_file_name = normalize_text(import_file_name)
+
+        with self._connection() as conn:
+            resolved_user_id = int(user_id or 0)
+            if resolved_user_id <= 0:
+                normalized_email = normalize_email(email)
+                if not normalized_email:
+                    raise ValueError("Email or user id is required.")
+                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
+
+            rows = conn.execute(
+                """
+                SELECT id, metadata_json
+                FROM whatsapp_conversation_messages
+                WHERE user_id = ? AND conversation_id = ?
+                """,
+                (resolved_user_id, normalized_conversation_id),
+            ).fetchall()
+            manual_message_ids: list[int] = []
+            for row in rows:
+                metadata = _load_json_dict(row["metadata_json"])
+                if metadata.get("source") != "manual_import":
+                    continue
+                if (
+                    normalized_import_file_name
+                    and normalize_text(metadata.get("importFileName")) != normalized_import_file_name
+                ):
+                    continue
+                manual_message_ids.append(int(row["id"]))
+
+            if manual_message_ids:
+                conn.executemany(
+                    """
+                    DELETE FROM whatsapp_conversation_messages
+                    WHERE user_id = ? AND id = ?
+                    """,
+                    [(resolved_user_id, message_id) for message_id in manual_message_ids],
+                )
+                conn.execute(
+                    """
+                    DELETE FROM whatsapp_reengagement_notifications
+                    WHERE user_id = ? AND conversation_id = ?
+                    """,
+                    (resolved_user_id, normalized_conversation_id),
+                )
+
+                remaining = conn.execute(
+                    """
+                    SELECT COUNT(*) AS message_count
+                    FROM whatsapp_conversation_messages
+                    WHERE user_id = ? AND conversation_id = ?
+                    """,
+                    (resolved_user_id, normalized_conversation_id),
+                ).fetchone()
+                if remaining is None or int(remaining["message_count"] or 0) <= 0:
+                    conn.execute(
+                        """
+                        DELETE FROM whatsapp_conversations
+                        WHERE user_id = ? AND conversation_id = ?
+                        """,
+                        (resolved_user_id, normalized_conversation_id),
+                    )
+
+            return {
+                "conversationId": normalized_conversation_id,
+                "messagesDeleted": len(manual_message_ids),
+            }
+
     def delete_whatsapp_conversation(
         self,
         conversation_id: str,

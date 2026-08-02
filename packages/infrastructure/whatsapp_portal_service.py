@@ -13,7 +13,6 @@ from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
 from packages.tools.whatsapp_reply_approval.server import BackendStore
 from packages.tools.whatsapp_reply_approval.server import OWNER_DISABLE_CONTACT_ACTION
-from packages.tools.whatsapp_reply_approval.server import OWNER_DISABLE_CONTACT_COMMANDS
 from packages.tools.whatsapp_reply_approval.server import RuntimeConfig
 from packages.tools.whatsapp_reply_approval.server import OWNER_REVIEW_INTRO_TEXT
 from packages.tools.whatsapp_reply_approval.server import build_owner_contact_disabled_text
@@ -28,6 +27,7 @@ from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import normalize_bool
 from packages.tools.whatsapp_reply_approval.server import normalize_text
 from packages.tools.whatsapp_reply_approval.server import normalize_whatsapp_id
+from packages.tools.whatsapp_reply_approval.server import is_owner_pending_approval_command
 from packages.tools.whatsapp_reply_approval.server import parse_owner_command_text
 from packages.tools.whatsapp_reply_approval.server import render_approval_page
 from packages.tools.whatsapp_reply_approval.server import render_dashboard
@@ -643,19 +643,7 @@ class PortalWhatsAppService:
             return awaiting_edit[0]
 
         pending = self.store.list_approvals(status="pending")
-        if len(pending) == 1 and text.lower().rstrip("!.") in {
-            "send",
-            "approve",
-            "skip",
-            "cancel",
-            "later",
-            "sure",
-            "yes",
-            "generate",
-            "preview",
-            "review",
-            *OWNER_DISABLE_CONTACT_COMMANDS,
-        }:
+        if len(pending) == 1 and is_owner_pending_approval_command(text):
             return pending[0]
 
         return None

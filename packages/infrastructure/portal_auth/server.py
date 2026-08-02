@@ -21,6 +21,7 @@ import time
 import hmac
 import hashlib
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from dataclasses import dataclass
 from dataclasses import field
@@ -1396,7 +1397,12 @@ def build_import_conversation_id(title: str, explicit_id: str = "") -> str:
     return f"manual-{slugify_import_conversation_id(title)}-{digest}"
 
 
-def parse_whatsapp_export_timestamp(date_text: str, time_text: str) -> str | None:
+def parse_whatsapp_export_timestamp(
+    date_text: str,
+    time_text: str,
+    *,
+    now: datetime | None = None,
+) -> str | None:
     date_value = normalize_import_text(date_text).replace("-", "/").replace(".", "/")
     time_value = re.sub(r"\s+", " ", normalize_import_text(time_text).upper().replace(".", "")).strip()
     time_value = re.sub(r"(?<=\d)([AP]M)\b", r" \1", time_value)
@@ -1431,14 +1437,30 @@ def parse_whatsapp_export_timestamp(date_text: str, time_text: str) -> str | Non
     ]
     formats = day_first_formats + month_first_formats + year_first_formats
     raw_value = f"{date_value} {time_value}"
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-    for date_format in formats:
+    current_local_time = (
+        now.astimezone()
+        if isinstance(now, datetime) and now.tzinfo is not None
+        else (now.replace(tzinfo=timezone.utc).astimezone() if isinstance(now, datetime) else datetime.now().astimezone())
+    )
+    local_tz = current_local_time.tzinfo or timezone.utc
+    future_cutoff = current_local_time + timedelta(days=1)
+    candidates: list[tuple[int, datetime]] = []
+    for format_index, date_format in enumerate(formats):
         try:
             parsed = datetime.strptime(raw_value, date_format)
         except ValueError:
             continue
-        return parsed.replace(tzinfo=local_tz).astimezone(timezone.utc).isoformat()
-    return None
+        candidates.append((format_index, parsed.replace(tzinfo=local_tz)))
+    if not candidates:
+        return None
+
+    non_future_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate[1] <= future_cutoff
+    ]
+    chosen = (non_future_candidates or candidates)[0][1]
+    return chosen.astimezone(timezone.utc).isoformat()
 
 
 WHATSAPP_EXPORT_TIMESTAMP_RE = re.compile(
@@ -1477,6 +1499,8 @@ def parse_whatsapp_export_line(line: str) -> dict[str, str] | None:
         "senderName": sender_name,
         "text": message_text,
         "messageAt": message_at,
+        "sourceDate": normalize_import_text(match.group("date")),
+        "sourceTime": normalize_import_text(match.group("time")),
     }
 
 
@@ -1505,6 +1529,7 @@ def analyze_whatsapp_export_messages(content: str) -> dict[str, Any]:
         if parsed is not None:
             if current is not None:
                 messages.append(current)
+            parsed["sourceLine"] = str(line_count)
             current = parsed
             message_start_line_count += 1
             continue
@@ -1570,7 +1595,9 @@ def build_import_message_id(
     fingerprint = "\n".join(
         [
             normalize_import_text(conversation_id),
-            normalize_import_text(message.get("messageAt")),
+            normalize_import_text(message.get("sourceLine")),
+            normalize_import_text(message.get("sourceDate")),
+            normalize_import_text(message.get("sourceTime")),
             normalize_import_text(message.get("senderName")),
             normalize_import_text(message.get("text")),
             str(index),
@@ -4022,8 +4049,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         imported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         total_parsed = 0
         total_saved = 0
+        total_replaced = 0
         total_duplicates = 0
         total_source_lines = 0
+        total_blank_lines = 0
         total_skipped_lines = 0
         total_system_or_unsupported_lines = 0
         total_unsupported_message_lines = 0
@@ -4120,6 +4149,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     }
                 )
 
+            replacement_result = self.database.delete_whatsapp_manual_import_messages(
+                conversation_id,
+                email=session.email,
+                import_file_name=file_name,
+            )
+            replaced_count = int(replacement_result.get("messagesDeleted") or 0)
             batch_result = self.database.save_whatsapp_messages_batch(
                 email=session.email,
                 messages=records,
@@ -4129,8 +4164,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
             total_parsed += len(parsed_messages)
             total_saved += saved_count
+            total_replaced += replaced_count
             total_duplicates += duplicate_count
             total_source_lines += int(parse_diagnostics.get("lineCount") or 0)
+            total_blank_lines += int(parse_diagnostics.get("blankLineCount") or 0)
             total_skipped_lines += int(parse_diagnostics.get("skippedLineCount") or 0)
             total_system_or_unsupported_lines += int(parse_diagnostics.get("systemOrUnsupportedLineCount") or 0)
             total_unsupported_message_lines += int(parse_diagnostics.get("unsupportedMessageLineCount") or 0)
@@ -4141,8 +4178,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "conversationTitle": conversation_title,
                 "messagesParsed": len(parsed_messages),
                 "messagesSaved": saved_count,
+                "messagesReplaced": replaced_count,
                 "duplicates": duplicate_count,
                 "lineCount": int(parse_diagnostics.get("lineCount") or 0),
+                "blankLineCount": int(parse_diagnostics.get("blankLineCount") or 0),
                 "messageStartLineCount": int(parse_diagnostics.get("messageStartLineCount") or 0),
                 "continuationLineCount": int(parse_diagnostics.get("continuationLineCount") or 0),
                 "skippedLineCount": int(parse_diagnostics.get("skippedLineCount") or 0),
@@ -4164,8 +4203,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "message": f"Imported {total_saved} message{'s' if total_saved != 1 else ''}.",
             "messagesParsed": total_parsed,
             "messagesSaved": total_saved,
+            "messagesReplaced": total_replaced,
             "duplicates": total_duplicates,
             "lineCount": total_source_lines,
+            "blankLineCount": total_blank_lines,
             "skippedLineCount": total_skipped_lines,
             "systemOrUnsupportedLineCount": total_system_or_unsupported_lines,
             "unsupportedMessageLineCount": total_unsupported_message_lines,
@@ -4716,9 +4757,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             routed_user_ids.add(int(connection.get("userId") or 0))
             try:
                 is_owner_sender = service.is_owner_sender(str(event.get("sender_wa_id", "")))
+                explicit_owner_approval = (
+                    service.resolve_explicit_owner_target_approval(event)
+                    if is_owner_sender
+                    else None
+                )
+                implicit_owner_approval = (
+                    service.resolve_owner_target_approval(event)
+                    if is_owner_sender and explicit_owner_approval is None
+                    else explicit_owner_approval
+                )
                 is_owner_command = is_owner_sender and (
                     route_source == "platform_owner_alert"
-                    or service.resolve_explicit_owner_target_approval(event) is not None
+                    or explicit_owner_approval is not None
+                    or implicit_owner_approval is not None
                 )
                 if is_owner_command:
                     self._record_whatsapp_owner_command_activity(
