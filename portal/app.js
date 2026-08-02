@@ -675,7 +675,6 @@ const elements = {
   whatsappHistoryRefreshButton: document.querySelector("#whatsappHistoryRefreshButton"),
   whatsappHistoryFileInput: document.querySelector("#whatsappHistoryFileInput"),
   whatsappHistoryImportButton: document.querySelector("#whatsappHistoryImportButton"),
-  whatsappHistoryOwnerNameInput: document.querySelector("#whatsappHistoryOwnerNameInput"),
   whatsappHistoryImportStatus: document.querySelector("#whatsappHistoryImportStatus"),
   whatsappHistoryDiagnostics: document.querySelector("#whatsappHistoryDiagnostics"),
   whatsappHistoryConversationList: document.querySelector("#whatsappHistoryConversationList"),
@@ -3714,9 +3713,6 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
   if (elements.whatsappHistoryFileInput) {
     elements.whatsappHistoryFileInput.disabled = isImporting || !isSignedIn() || !isWhatsAppFeature(feature);
   }
-  if (elements.whatsappHistoryOwnerNameInput) {
-    elements.whatsappHistoryOwnerNameInput.disabled = isImporting;
-  }
   if (elements.whatsappHistoryImportButton) {
     elements.whatsappHistoryImportButton.disabled = isImporting || !selectedFileCount || !isSignedIn() || !isWhatsAppFeature(feature);
     elements.whatsappHistoryImportButton.classList.toggle("is-loading", isImporting);
@@ -3856,7 +3852,6 @@ async function importWhatsAppHistoryExports() {
       headers: getSessionAuthHeaders(),
       timeoutMs: 45000,
       body: {
-        ownerName: elements.whatsappHistoryOwnerNameInput?.value || "",
         files: importFiles,
       },
     });

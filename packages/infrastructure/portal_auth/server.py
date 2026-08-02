@@ -3840,24 +3840,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         session: PortalSession,
         payload: dict[str, Any],
     ) -> list[str]:
-        names = split_import_owner_names(payload.get("ownerNames") or payload.get("ownerName"))
-        user = self.database.get_user(session.email) or {}
-        connection = self.database.get_whatsapp_connection(session.email) or {}
-        profile = normalize_user_profile(user.get("profile"))
-        fallback_names = [
-            normalize_text(user.get("displayName")),
-            normalize_text(profile.get("businessSummary")),
-            normalize_text(connection.get("displayName")),
-            normalize_text(connection.get("verifiedName")),
-            "You",
-        ]
-        seen = {normalize_import_name_key(name) for name in names}
-        for fallback in fallback_names:
-            key = normalize_import_name_key(fallback)
-            if fallback and key not in seen:
-                names.append(fallback)
-                seen.add(key)
-        return names
+        _ = session
+        return split_import_owner_names(payload.get("ownerNames") or payload.get("ownerName"))
 
     def _handle_whatsapp_history_import_post(self) -> None:
         session = self._require_authenticated_session()

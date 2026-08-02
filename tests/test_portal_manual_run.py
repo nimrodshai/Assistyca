@@ -1151,7 +1151,6 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             "POST",
             "/api/whatsapp/history/import",
             {
-                "ownerName": "Owner",
                 "files": [
                     {
                         "name": "WhatsApp Chat with Maya Cohen.txt",
@@ -1194,7 +1193,6 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             "POST",
             "/api/whatsapp/history/import",
             {
-                "ownerName": "Owner",
                 "files": [
                     {
                         "name": "WhatsApp Chat with Maya Cohen.txt",
