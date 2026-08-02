@@ -1252,6 +1252,53 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         )
         self.assertEqual(conversation["messages"][1]["metadata"]["importSenderName"], "Owner")
 
+    def test_whatsapp_history_delete_removes_saved_conversation(self) -> None:
+        status, body = self._request(
+            "POST",
+            "/api/whatsapp/history/import",
+            {
+                "files": [
+                    {
+                        "name": "WhatsApp Chat with Maya Cohen.txt",
+                        "content": (
+                            "13/01/2026, 09:00 - Maya Cohen: Hi, can you send the quote again?\n"
+                            "13/01/2026, 09:05 - Owner: Sure, I will send it today.\n"
+                            "13/01/2026, 09:06 - Maya Cohen: Thanks\n"
+                        ),
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        conversation_id = body["imports"][0]["conversationId"]
+        delete_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history/conversations/{conversation_id}",
+            method="DELETE",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(delete_request, timeout=5) as response:
+            delete_body = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(delete_body["conversationId"], conversation_id)
+        self.assertEqual(delete_body["messagesDeleted"], 3)
+
+        history_request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/history",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+            },
+        )
+        with urllib_request.urlopen(history_request, timeout=5) as response:
+            history = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(history["ok"])
+        self.assertEqual(history["conversationCount"], 0)
+        self.assertEqual(history["messageCount"], 0)
+
     def test_approval_phone_message_to_connected_number_is_customer_history(self) -> None:
         webhook_request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",

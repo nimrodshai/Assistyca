@@ -3005,6 +3005,82 @@ class PortalDatabase:
                 "conversations": conversations,
             }
 
+    def delete_whatsapp_conversation(
+        self,
+        conversation_id: str,
+        *,
+        email: str | None = None,
+        user_id: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_conversation_id = normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            raise ValueError("Conversation id is required.")
+
+        with self._connection() as conn:
+            resolved_user_id = int(user_id or 0)
+            if resolved_user_id <= 0:
+                normalized_email = normalize_email(email)
+                if not normalized_email:
+                    raise ValueError("Email or user id is required.")
+                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
+
+            conversation = self._load_whatsapp_conversation_row(
+                conn,
+                user_id=resolved_user_id,
+                conversation_id=normalized_conversation_id,
+            )
+            if conversation is None:
+                raise KeyError(f"Unknown WhatsApp conversation: {normalized_conversation_id}")
+
+            message_count_row = conn.execute(
+                """
+                SELECT COUNT(*) AS message_count
+                FROM whatsapp_conversation_messages
+                WHERE user_id = ? AND conversation_id = ?
+                """,
+                (resolved_user_id, normalized_conversation_id),
+            ).fetchone()
+            notification_count_row = conn.execute(
+                """
+                SELECT COUNT(*) AS notification_count
+                FROM whatsapp_reengagement_notifications
+                WHERE user_id = ? AND conversation_id = ?
+                """,
+                (resolved_user_id, normalized_conversation_id),
+            ).fetchone()
+
+            conn.execute(
+                """
+                DELETE FROM whatsapp_conversation_messages
+                WHERE user_id = ? AND conversation_id = ?
+                """,
+                (resolved_user_id, normalized_conversation_id),
+            )
+            conn.execute(
+                """
+                DELETE FROM whatsapp_reengagement_notifications
+                WHERE user_id = ? AND conversation_id = ?
+                """,
+                (resolved_user_id, normalized_conversation_id),
+            )
+            conn.execute(
+                """
+                DELETE FROM whatsapp_conversations
+                WHERE user_id = ? AND conversation_id = ?
+                """,
+                (resolved_user_id, normalized_conversation_id),
+            )
+
+            return {
+                **conversation,
+                "messagesDeleted": int(message_count_row["message_count"] or 0) if message_count_row else 0,
+                "notificationsDeleted": (
+                    int(notification_count_row["notification_count"] or 0)
+                    if notification_count_row
+                    else 0
+                ),
+            }
+
     def get_whatsapp_conversation(
         self,
         conversation_id: str,

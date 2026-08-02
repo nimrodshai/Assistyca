@@ -1756,7 +1756,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib_parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-        if path.startswith("/api/admin/") or path.startswith("/api/features/"):
+        if (
+            path.startswith("/api/admin/")
+            or path.startswith("/api/features/")
+            or path.startswith("/api/whatsapp/history/")
+        ):
             self._handle_api_delete(parsed)
             return
 
@@ -1970,6 +1974,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         if path.startswith("/api/admin/users/"):
             self._handle_admin_users_delete(parsed)
+            return
+        if path.startswith("/api/whatsapp/history/conversations/"):
+            self._handle_whatsapp_history_conversation_delete(parsed)
             return
         if path.startswith("/api/features/"):
             self._handle_feature_run_delete(parsed)
@@ -4120,6 +4127,50 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "connection": self._serialize_whatsapp_connection(connection),
             "diagnostics": self._build_whatsapp_history_diagnostics(connection, payload_conversations),
             "conversations": payload_conversations,
+        })
+
+    def _handle_whatsapp_history_conversation_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if len(parts) != 5 or parts[:4] != ["api", "whatsapp", "history", "conversations"]:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": "Conversation not found.",
+            })
+            return
+
+        conversation_id = normalize_text(urllib_parse.unquote(parts[4]))
+        if not conversation_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_conversation_id",
+                "message": "Choose a conversation to delete.",
+            })
+            return
+
+        try:
+            deleted = self.database.delete_whatsapp_conversation(
+                conversation_id,
+                email=session.email,
+            )
+        except KeyError:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": "Conversation not found.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Conversation deleted.",
+            "conversationId": conversation_id,
+            "messagesDeleted": int(deleted.get("messagesDeleted") or 0),
+            "notificationsDeleted": int(deleted.get("notificationsDeleted") or 0),
         })
 
     def _attach_whatsapp_history_suggestions(

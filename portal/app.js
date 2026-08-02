@@ -513,6 +513,8 @@ const state = {
   whatsappHistory: null,
   whatsappHistoryLoading: false,
   whatsappHistoryImportBusy: false,
+  whatsappHistoryDeleteBusy: false,
+  whatsappHistoryDeleteTargetId: "",
   whatsappHistoryImportStatus: "",
   whatsappHistoryImportError: "",
   whatsappHistoryError: "",
@@ -682,6 +684,7 @@ const elements = {
   whatsappHistorySelectedTitle: document.querySelector("#whatsappHistorySelectedTitle"),
   whatsappHistorySelectedMeta: document.querySelector("#whatsappHistorySelectedMeta"),
   whatsappHistorySelectedCount: document.querySelector("#whatsappHistorySelectedCount"),
+  whatsappHistoryDeleteButton: document.querySelector("#whatsappHistoryDeleteButton"),
   whatsappHistoryMessages: document.querySelector("#whatsappHistoryMessages"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
@@ -1715,6 +1718,7 @@ function openAuthAlert(title, message, options = {}) {
   if (elements.authAlertDismissButton) {
     elements.authAlertDismissButton.textContent = String(options.buttonLabel || "OK");
     elements.authAlertDismissButton.classList.toggle("is-hidden", hidePrimaryButton);
+    elements.authAlertDismissButton.classList.toggle("danger", normalizeText(options.primaryTone).toLowerCase() === "danger");
     elements.authAlertDismissButton.disabled = Boolean(options.primaryDisabled);
   }
 
@@ -3758,20 +3762,21 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
   const selectedConversation = getSelectedWhatsAppHistoryConversation();
   const isLoading = Boolean(state.whatsappHistoryLoading);
   const isImporting = Boolean(state.whatsappHistoryImportBusy);
+  const isDeleting = Boolean(state.whatsappHistoryDeleteBusy);
   const errorText = String(state.whatsappHistoryError || "").trim();
   const selectedFileCount = elements.whatsappHistoryFileInput?.files?.length || 0;
 
   if (elements.whatsappHistoryRefreshButton) {
-    elements.whatsappHistoryRefreshButton.disabled = isLoading || isImporting || !isSignedIn() || !isWhatsAppFeature(feature);
+    elements.whatsappHistoryRefreshButton.disabled = isLoading || isImporting || isDeleting || !isSignedIn() || !isWhatsAppFeature(feature);
     elements.whatsappHistoryRefreshButton.classList.toggle("is-loading", isLoading);
     elements.whatsappHistoryRefreshButton.setAttribute("aria-busy", String(isLoading));
     elements.whatsappHistoryRefreshButton.textContent = isLoading ? "Refreshing..." : "Refresh";
   }
   if (elements.whatsappHistoryFileInput) {
-    elements.whatsappHistoryFileInput.disabled = isImporting || !isSignedIn() || !isWhatsAppFeature(feature);
+    elements.whatsappHistoryFileInput.disabled = isImporting || isDeleting || !isSignedIn() || !isWhatsAppFeature(feature);
   }
   if (elements.whatsappHistoryImportButton) {
-    elements.whatsappHistoryImportButton.disabled = isImporting || !selectedFileCount || !isSignedIn() || !isWhatsAppFeature(feature);
+    elements.whatsappHistoryImportButton.disabled = isImporting || isDeleting || !selectedFileCount || !isSignedIn() || !isWhatsAppFeature(feature);
     elements.whatsappHistoryImportButton.classList.toggle("is-loading", isImporting);
     elements.whatsappHistoryImportButton.setAttribute("aria-busy", String(isImporting));
     elements.whatsappHistoryImportButton.textContent = isImporting ? "Importing..." : "Import";
@@ -3836,6 +3841,21 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
       ? formatWhatsAppMessageCount(selectedConversation.messageCount)
       : "0 messages";
   }
+  if (elements.whatsappHistoryDeleteButton) {
+    const isDeletingSelected = isDeleting
+      && selectedConversation?.conversationId === state.whatsappHistoryDeleteTargetId;
+    elements.whatsappHistoryDeleteButton.disabled = (
+      isLoading
+      || isImporting
+      || isDeleting
+      || !selectedConversation
+      || !isSignedIn()
+      || !isWhatsAppFeature(feature)
+    );
+    elements.whatsappHistoryDeleteButton.classList.toggle("is-loading", isDeletingSelected);
+    elements.whatsappHistoryDeleteButton.setAttribute("aria-busy", String(isDeletingSelected));
+    elements.whatsappHistoryDeleteButton.textContent = isDeletingSelected ? "Deleting..." : "Delete";
+  }
 
   if (elements.whatsappHistoryMessages) {
     const messages = selectedConversation?.messages || [];
@@ -3870,6 +3890,92 @@ function selectWhatsAppHistoryConversation(conversationId) {
 
   state.whatsappHistorySelectedConversationId = normalizedId;
   renderWhatsAppHistory();
+}
+
+function removeWhatsAppConversationFromState(conversationId) {
+  const normalizedId = String(conversationId || "").trim();
+  const history = getCurrentWhatsAppHistory();
+  if (!normalizedId || !history) {
+    return;
+  }
+
+  const conversations = history.conversations.filter((conversation) => (
+    conversation.conversationId !== normalizedId
+  ));
+  state.whatsappHistory = {
+    ...history,
+    conversationCount: conversations.length,
+    messageCount: conversations.reduce((total, conversation) => total + conversation.messageCount, 0),
+    conversations,
+  };
+  if (state.whatsappHistorySelectedConversationId === normalizedId) {
+    state.whatsappHistorySelectedConversationId = conversations[0]?.conversationId || "";
+  }
+}
+
+function deleteSelectedWhatsAppHistoryConversation() {
+  const conversation = getSelectedWhatsAppHistoryConversation();
+  if (!conversation || state.whatsappHistoryDeleteBusy) {
+    return;
+  }
+
+  const title = buildWhatsAppHistoryConversationTitle(conversation);
+  const messageCount = formatWhatsAppMessageCount(conversation.messageCount);
+  openAuthAlert(
+    "Delete conversation?",
+    `Delete ${title} from saved WhatsApp history? This removes ${messageCount}, and the scheduler will no longer scan this conversation unless it is imported or received again.`,
+    {
+      eyebrow: "Delete WhatsApp history",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Delete",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Cancel",
+      returnFocus: elements.whatsappHistoryDeleteButton,
+      focusTarget: "secondary",
+      onPrimary: () => {
+        void confirmWhatsAppHistoryConversationDelete(conversation.conversationId);
+      },
+    },
+  );
+}
+
+async function confirmWhatsAppHistoryConversationDelete(conversationId) {
+  const normalizedId = String(conversationId || "").trim();
+  if (!normalizedId || state.whatsappHistoryDeleteBusy) {
+    return;
+  }
+
+  state.whatsappHistoryDeleteBusy = true;
+  state.whatsappHistoryDeleteTargetId = normalizedId;
+  state.whatsappHistoryError = "";
+  renderWhatsAppHistory();
+
+  let didSucceed = false;
+  try {
+    await apiRequest(`/api/whatsapp/history/conversations/${encodeURIComponent(normalizedId)}`, {
+      method: "DELETE",
+      headers: getSessionAuthHeaders(),
+    });
+    removeWhatsAppConversationFromState(normalizedId);
+    didSucceed = true;
+    await refreshWhatsAppHistory({ force: true });
+  } catch (error) {
+    openAuthAlert(
+      "Couldn’t delete conversation",
+      formatApiErrorMessage(error, "We couldn’t delete that conversation right now."),
+      {
+        eyebrow: "Delete WhatsApp history",
+      },
+    );
+  } finally {
+    state.whatsappHistoryDeleteBusy = false;
+    state.whatsappHistoryDeleteTargetId = "";
+    renderWhatsAppHistory(getSelectedFeature());
+    if (didSucceed) {
+      setStatus("Conversation deleted.");
+    }
+  }
 }
 
 async function readWhatsAppHistoryImportFile(file) {
@@ -11096,6 +11202,11 @@ function bindEvents() {
   if (elements.whatsappHistoryImportButton) {
     elements.whatsappHistoryImportButton.addEventListener("click", () => {
       void importWhatsAppHistoryExports();
+    });
+  }
+  if (elements.whatsappHistoryDeleteButton) {
+    elements.whatsappHistoryDeleteButton.addEventListener("click", () => {
+      deleteSelectedWhatsAppHistoryConversation();
     });
   }
   if (elements.whatsappHistoryConversationList) {

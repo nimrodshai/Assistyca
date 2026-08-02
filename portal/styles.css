@@ -764,6 +764,11 @@ a {
   transform: translateY(-1px);
 }
 
+.primary-button.danger {
+  background: linear-gradient(180deg, #b42318, #8c1f13);
+  box-shadow: 0 10px 20px rgba(180, 35, 24, 0.16);
+}
+
 .ghost-button {
   padding: 0.78rem 0.95rem;
   color: var(--text);
@@ -3926,6 +3931,14 @@ body[data-modal="billing"] .app-shell {
   margin: 0.2rem 0 0;
 }
 
+.whatsapp-history-thread-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex: 0 0 auto;
+}
+
 .whatsapp-history-messages {
   display: grid;
   align-content: start;
@@ -6138,6 +6151,11 @@ body[data-modal="billing"] .app-shell {
 
   .whatsapp-history-contact {
     width: 100%;
+  }
+
+  .whatsapp-history-thread-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .whatsapp-history-contact h3,
