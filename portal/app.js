@@ -24,6 +24,12 @@ const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
 const OPPORTUNITIES_OWNER_EMAIL = "nimrod.shai@gmail.com";
+const ADMIN_CLIENT_TYPES = [
+  { value: "paying", label: "Paying", className: "is-client-type-paying" },
+  { value: "demo", label: "Demo", className: "is-client-type-demo" },
+  { value: "qa", label: "QA", className: "is-client-type-qa" },
+];
+const DEFAULT_ADMIN_CLIENT_TYPE = "demo";
 const VALID_TABS = new Set(["features", "opportunities", "clients", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor", "history"]);
 const TAB_ALIASES = new Map([
@@ -493,6 +499,7 @@ const state = {
   adminSaveBusyByEmail: {},
   adminSaveQueuedByEmail: {},
   adminStatusBusyByEmail: {},
+  adminTypeBusyByEmail: {},
   adminDeleteBusyByEmail: {},
   adminUserDrafts: {},
   adminView: "list",
@@ -1051,18 +1058,44 @@ function normalizeAdminPaymentStatus(paymentStatus = null) {
   };
 }
 
+function normalizeAdminClientType(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return ADMIN_CLIENT_TYPES.some((type) => type.value === normalized) ? normalized : "";
+}
+
+function deriveAdminClientType(paymentStatus = {}) {
+  return normalizeAdminPaymentStatus(paymentStatus).isPaying ? "paying" : DEFAULT_ADMIN_CLIENT_TYPE;
+}
+
+function getAdminClientTypeOption(value) {
+  const normalized = normalizeAdminClientType(value) || DEFAULT_ADMIN_CLIENT_TYPE;
+  return ADMIN_CLIENT_TYPES.find((type) => type.value === normalized) || ADMIN_CLIENT_TYPES[1];
+}
+
+function getAdminClientTypeLabel(value) {
+  return getAdminClientTypeOption(value).label;
+}
+
+function getAdminClientTypeClass(value) {
+  return getAdminClientTypeOption(value).className;
+}
+
 function normalizeAdminUserRecord(user = {}) {
+  const paymentStatus = normalizeAdminPaymentStatus(user.paymentStatus || user.payment_status || null);
+  const clientType = normalizeAdminClientType(user.clientType || user.client_type)
+    || deriveAdminClientType(paymentStatus);
   return {
     email: normalizeEmail(user.email || ""),
     displayName: String(user.displayName || "").trim(),
     isActive: Boolean(user.isActive),
     isAdmin: Boolean(user.isAdmin),
+    clientType,
     registeredAt: String(user.registeredAt || "").trim(),
     lastLoginAt: String(user.lastLoginAt || "").trim(),
     usageCount: Number(user.usageCount || user.usage_count || 0),
     lastUsageAt: String(user.lastUsageAt || user.last_usage_at || "").trim(),
     billing: user.billing && typeof user.billing === "object" ? user.billing : {},
-    paymentStatus: normalizeAdminPaymentStatus(user.paymentStatus || user.payment_status || null),
+    paymentStatus,
     assignedFeatureIds: sortUniqueFeatureIds(user.assignedFeatureIds || user.featureIds || []),
   };
 }
@@ -1176,6 +1209,9 @@ function replaceAdminUserState(previousEmail, user) {
   const { [normalizedPreviousEmail]: _statusBusy, ...nextStatusBusy } = state.adminStatusBusyByEmail;
   state.adminStatusBusyByEmail = nextStatusBusy;
 
+  const { [normalizedPreviousEmail]: _typeBusy, ...nextTypeBusy } = state.adminTypeBusyByEmail;
+  state.adminTypeBusyByEmail = nextTypeBusy;
+
   const { [normalizedPreviousEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
 
@@ -1205,6 +1241,9 @@ function removeAdminUserState(email) {
 
   const { [normalizedEmail]: _statusBusy, ...nextStatusBusy } = state.adminStatusBusyByEmail;
   state.adminStatusBusyByEmail = nextStatusBusy;
+
+  const { [normalizedEmail]: _typeBusy, ...nextTypeBusy } = state.adminTypeBusyByEmail;
+  state.adminTypeBusyByEmail = nextTypeBusy;
 
   const { [normalizedEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
@@ -1407,21 +1446,35 @@ function formatAdminUserTools(user, maxVisible = 2) {
   return `${names.slice(0, maxVisible).join(", ")} +${names.length - maxVisible}`;
 }
 
-function getAdminPaymentLabel(paymentStatus = {}) {
-  const normalizedPayment = normalizeAdminPaymentStatus(paymentStatus);
-  if (normalizedPayment.isPaying) {
-    return "Paying";
-  }
-  return normalizedPayment.subscriptionStatus
-    ? `Not paying · ${normalizedPayment.subscriptionStatus.replace(/_/g, " ")}`
-    : "Not paying";
-}
-
 function createAdminStateBadge(label, className = "") {
   const badge = document.createElement("span");
   badge.className = `feature-status${className ? ` ${className}` : ""}`;
   badge.textContent = label;
   return badge;
+}
+
+function createAdminClientTypeSelect(user, options = {}) {
+  const normalizedEmail = normalizeEmail(user?.email || "");
+  const isBusy = Boolean(state.adminTypeBusyByEmail[normalizedEmail]);
+  const select = document.createElement("select");
+  select.className = "admin-client-type-select";
+  select.value = normalizeAdminClientType(user?.clientType) || deriveAdminClientType(user?.paymentStatus);
+  select.dataset.adminClientTypeUser = normalizedEmail;
+  select.dataset.adminClientTypeValue = select.value;
+  select.disabled = Boolean(options.disabled) || isBusy;
+  select.setAttribute(
+    "aria-label",
+    `Client type for ${user?.displayName || normalizedEmail || "client"}`,
+  );
+
+  for (const type of ADMIN_CLIENT_TYPES) {
+    const option = document.createElement("option");
+    option.value = type.value;
+    option.textContent = type.label;
+    select.append(option);
+  }
+
+  return select;
 }
 
 function createAdminActiveSwitch(user, options = {}) {
@@ -1450,22 +1503,18 @@ function createAdminActiveSwitch(user, options = {}) {
   track.className = "admin-switch-track";
   track.setAttribute("aria-hidden", "true");
 
-  const text = document.createElement("span");
-  text.className = "admin-switch-label";
-  text.textContent = isBusy
-    ? "Saving"
-    : user?.isActive ? "Active" : "Inactive";
-
-  label.append(input, track, text);
+  label.append(input, track);
   return label;
 }
 
 function getAdminClientStats(users = state.adminUsers) {
   const total = users.length;
   const active = users.filter((user) => user.isActive).length;
-  const paying = users.filter((user) => user.paymentStatus?.isPaying).length;
+  const paying = users.filter((user) => normalizeAdminClientType(user.clientType) === "paying").length;
+  const demo = users.filter((user) => normalizeAdminClientType(user.clientType) === "demo").length;
+  const qa = users.filter((user) => normalizeAdminClientType(user.clientType) === "qa").length;
   const inactive = total - active;
-  return { total, active, paying, inactive };
+  return { total, active, paying, demo, qa, inactive };
 }
 
 function resetAdminState() {
@@ -1479,6 +1528,7 @@ function resetAdminState() {
   state.adminSaveBusyByEmail = {};
   state.adminSaveQueuedByEmail = {};
   state.adminStatusBusyByEmail = {};
+  state.adminTypeBusyByEmail = {};
   state.adminDeleteBusyByEmail = {};
   state.adminUserDrafts = {};
   state.adminView = "list";
@@ -7290,8 +7340,9 @@ function createAdminUsersListView() {
   const summaryItems = [
     ["Clients", stats.total, "Registered accounts"],
     ["Active", stats.active, "Can sign in"],
-    ["Paying", stats.paying, "Subscription active"],
-    ["Inactive", stats.inactive, "Login disabled"],
+    ["Paying", stats.paying, "Client type"],
+    ["Demo", stats.demo, "Client type"],
+    ["QA", stats.qa, "Client type"],
   ];
   for (const [labelText, valueText, metaText] of summaryItems) {
     const item = document.createElement("div");
@@ -7365,7 +7416,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Payment", "Active", "Visible tools", "Last login", ""]) {
+  for (const heading of ["Client", "Email", "Client type", "Active", "Visible tools", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -7387,11 +7438,10 @@ function createAdminUsersListView() {
     const emailCell = document.createElement("td");
     emailCell.textContent = user.email;
 
-    const paymentCell = document.createElement("td");
-    paymentCell.append(createAdminStateBadge(
-      getAdminPaymentLabel(user.paymentStatus),
-      user.paymentStatus?.isPaying ? "is-paid" : "is-unpaid",
-    ));
+    const clientTypeCell = document.createElement("td");
+    clientTypeCell.append(createAdminClientTypeSelect(user, {
+      disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
+    }));
 
     const activeCell = document.createElement("td");
     activeCell.append(createAdminActiveSwitch(user, {
@@ -7420,7 +7470,7 @@ function createAdminUsersListView() {
     actionCell.append(manageButton);
 
     row.classList.toggle("is-inactive-client", !user.isActive);
-    row.append(nameCell, emailCell, paymentCell, activeCell, toolsCell, lastLoginCell, actionCell);
+    row.append(nameCell, emailCell, clientTypeCell, activeCell, toolsCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 
@@ -7596,9 +7646,9 @@ function createAdminUserDetailView(user) {
   strip.className = "admin-detail-strip";
   const roleBadge = createAdminStateBadge(user.isAdmin ? "Admin" : "Client");
 
-  const paymentBadge = createAdminStateBadge(
-    getAdminPaymentLabel(user.paymentStatus),
-    user.paymentStatus?.isPaying ? "is-paid" : "is-unpaid",
+  const clientTypeBadge = createAdminStateBadge(
+    getAdminClientTypeLabel(user.clientType),
+    getAdminClientTypeClass(user.clientType),
   );
 
   const activeBadge = createAdminStateBadge(
@@ -7610,7 +7660,7 @@ function createAdminUserDetailView(user) {
   toolsBadge.className = "feature-status";
   toolsBadge.textContent = `${draftFeatureIds.length} visible tool${draftFeatureIds.length === 1 ? "" : "s"}`;
 
-  strip.append(roleBadge, paymentBadge, activeBadge, toolsBadge);
+  strip.append(roleBadge, clientTypeBadge, activeBadge, toolsBadge);
 
   const grid = document.createElement("div");
   grid.className = "admin-detail-grid";
@@ -7622,7 +7672,7 @@ function createAdminUserDetailView(user) {
   const infoRows = document.createElement("div");
   infoRows.className = "detail-stack";
   infoRows.append(
-    createAdminDetailRow("Payment", getAdminPaymentLabel(user.paymentStatus)),
+    createAdminDetailRow("Client type", getAdminClientTypeLabel(user.clientType)),
     createAdminDetailRow("Login", user.isActive ? "Active" : "Inactive"),
     createAdminDetailRow("Registered", formatAdminDateTime(user.registeredAt) || "Unknown"),
     createAdminDetailRow("Last login", user.lastLoginAt ? formatAdminDateTime(user.lastLoginAt) : "No login yet"),
@@ -7635,6 +7685,10 @@ function createAdminUserDetailView(user) {
   const statusControl = createAdminActiveSwitch(user, {
     disabled: isSaving || isDeleting,
   });
+  const clientTypeControl = createAdminClientTypeSelect(user, {
+    disabled: isSaving || isDeleting || isStatusSaving,
+  });
+  infoActions.append(clientTypeControl);
   infoActions.append(statusControl);
 
   const editButton = document.createElement("button");
@@ -8124,6 +8178,67 @@ async function saveAdminUserStatus(email, isActive) {
     renderApp();
     if (updatedUser) {
       setStatus(updatedUser.isActive ? "Client activated" : "Client disabled");
+    }
+  }
+}
+
+async function saveAdminUserClientType(email, clientType) {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedClientType = normalizeAdminClientType(clientType);
+  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
+  if (!canManageClients() || !user || !normalizedClientType || state.adminTypeBusyByEmail[normalizedEmail]) {
+    return;
+  }
+
+  const previousClientType = normalizeAdminClientType(user.clientType) || deriveAdminClientType(user.paymentStatus);
+  if (previousClientType === normalizedClientType) {
+    return;
+  }
+
+  state.adminTypeBusyByEmail = {
+    ...state.adminTypeBusyByEmail,
+    [normalizedEmail]: true,
+  };
+  state.adminUsers = state.adminUsers.map((entry) => (
+    entry.email === normalizedEmail
+      ? { ...entry, clientType: normalizedClientType }
+      : entry
+  ));
+  state.adminUsersError = "";
+  renderApp();
+
+  let updatedUser = null;
+  try {
+    const response = await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/client-type`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        clientType: normalizedClientType,
+      },
+    });
+
+    updatedUser = upsertAdminUserState(response.user || {
+      ...user,
+      clientType: normalizedClientType,
+    });
+    void refreshAdminUsers({ render: false });
+  } catch (error) {
+    state.adminUsers = state.adminUsers.map((entry) => (
+      entry.email === normalizedEmail
+        ? { ...entry, clientType: previousClientType }
+        : entry
+    ));
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t update that client type right now.");
+    openAuthAlert("Couldn’t update client type", state.adminUsersError, {
+      eyebrow: "Client type",
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    });
+  } finally {
+    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminTypeBusyByEmail;
+    state.adminTypeBusyByEmail = nextBusy;
+    renderApp();
+    if (updatedUser) {
+      setStatus(`Client type set to ${getAdminClientTypeLabel(updatedUser.clientType)}`);
     }
   }
 }
@@ -11677,6 +11792,11 @@ function bindEvents() {
 
     elements.adminUsersPane.addEventListener("change", (event) => {
       const target = event.target;
+      if (target instanceof HTMLSelectElement && target.dataset.adminClientTypeUser) {
+        void saveAdminUserClientType(target.dataset.adminClientTypeUser || "", target.value);
+        return;
+      }
+
       if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") {
         return;
       }

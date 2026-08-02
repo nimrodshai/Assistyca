@@ -37,6 +37,15 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertEqual(user["displayName"], "Admin User")
         self.assertTrue(user["isAdmin"])
 
+    def test_update_user_client_type_persists_admin_classification(self) -> None:
+        self.database.register_user("owner@example.com")
+
+        updated_user = self.database.update_user_client_type("owner@example.com", client_type="QA")
+        users = self.database.list_users(include_inactive=True)
+
+        self.assertEqual(updated_user["clientType"], "qa")
+        self.assertEqual(users[0]["clientType"], "qa")
+
     def test_set_user_feature_assignments_can_clear_and_replace_defaults(self) -> None:
         self.database.register_user("owner@example.com")
 

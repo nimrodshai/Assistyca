@@ -101,6 +101,29 @@ class PortalAuthSessionTests(unittest.TestCase):
         self.assertFalse(payload["currentUser"]["isAdmin"])
         self.assertIn(client_email, {user["email"] for user in payload["users"]})
 
+    def test_opportunities_owner_can_update_client_type_without_admin_flag(self) -> None:
+        owner_email = "nimrod.shai@gmail.com"
+        client_email = "client@example.com"
+        self.server.database.register_user(owner_email, is_admin=False)
+        self.server.database.register_user(client_email)
+        cookie_value = self._verify_otp_and_get_cookie(owner_email)
+
+        update_request = urllib_request.Request(
+            f"{self.base_url}/api/admin/users/{client_email}/client-type",
+            data=json.dumps({"clientType": "qa"}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": cookie_value,
+            },
+            method="POST",
+        )
+        with urllib_request.urlopen(update_request) as response:
+            update_payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(update_payload["ok"])
+        self.assertEqual(update_payload["user"]["clientType"], "qa")
+        self.assertEqual(self.server.database.get_user(client_email)["clientType"], "qa")
+
 
 if __name__ == "__main__":
     unittest.main()

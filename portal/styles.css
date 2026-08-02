@@ -2435,19 +2435,22 @@ body[data-modal="billing"] .app-shell {
 }
 
 .feature-status.is-paid,
-.feature-status.is-active-client {
+.feature-status.is-active-client,
+.feature-status.is-client-type-paying {
   color: #0f766e;
   background: rgba(15, 118, 110, 0.1);
   border: 1px solid rgba(15, 118, 110, 0.12);
 }
 
-.feature-status.is-unpaid {
+.feature-status.is-unpaid,
+.feature-status.is-client-type-demo {
   color: #8c5a10;
   background: rgba(212, 154, 58, 0.12);
   border: 1px solid rgba(212, 154, 58, 0.18);
 }
 
-.feature-status.is-inactive-client {
+.feature-status.is-inactive-client,
+.feature-status.is-client-type-qa {
   color: #6d7785;
   background: rgba(140, 150, 163, 0.12);
   border: 1px solid rgba(140, 150, 163, 0.16);
@@ -2541,7 +2544,7 @@ body[data-modal="billing"] .app-shell {
 
 .clients-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
   gap: 0.75rem;
 }
 
@@ -4913,7 +4916,6 @@ body[data-modal="billing"] .app-shell {
 .admin-switch {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
   width: max-content;
   max-width: 100%;
   min-height: 2.25rem;
@@ -4921,6 +4923,60 @@ body[data-modal="billing"] .app-shell {
   font-size: 0.84rem;
   font-weight: 750;
   white-space: nowrap;
+}
+
+.admin-client-type-select {
+  width: 7rem;
+  min-height: 2.28rem;
+  padding: 0.42rem 2rem 0.42rem 0.78rem;
+  border: 1px solid rgba(20, 28, 38, 0.1);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 252, 0.94));
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  box-shadow:
+    0 8px 18px rgba(25, 38, 54, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  cursor: pointer;
+}
+
+.admin-client-type-select:hover,
+.admin-client-type-select:focus-visible {
+  border-color: rgba(15, 118, 110, 0.24);
+  outline: 0;
+  box-shadow:
+    0 10px 22px rgba(25, 38, 54, 0.07),
+    0 0 0 3px rgba(15, 118, 110, 0.1);
+}
+
+.admin-client-type-select:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.admin-client-type-select[data-admin-client-type-value="paying"] {
+  color: #0f766e;
+  background:
+    linear-gradient(180deg, rgba(240, 253, 250, 0.98), rgba(224, 242, 241, 0.88));
+  border-color: rgba(15, 118, 110, 0.16);
+}
+
+.admin-client-type-select[data-admin-client-type-value="demo"] {
+  color: #8c5a10;
+  background:
+    linear-gradient(180deg, rgba(255, 251, 235, 0.98), rgba(254, 243, 199, 0.78));
+  border-color: rgba(212, 154, 58, 0.18);
+}
+
+.admin-client-type-select[data-admin-client-type-value="qa"] {
+  color: #5e6877;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(226, 232, 240, 0.72));
+  border-color: rgba(140, 150, 163, 0.18);
 }
 
 .admin-switch input {
@@ -4970,8 +5026,7 @@ body[data-modal="billing"] .app-shell {
   outline-offset: 3px;
 }
 
-.admin-switch input:disabled + .admin-switch-track,
-.admin-switch input:disabled ~ .admin-switch-label {
+.admin-switch input:disabled + .admin-switch-track {
   opacity: 0.58;
   cursor: not-allowed;
 }

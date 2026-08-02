@@ -54,6 +54,7 @@ from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.portal_db import normalize_client_type
 from packages.infrastructure.portal_db import normalize_user_profile
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
@@ -2858,11 +2859,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         billing_customer = self.database.get_billing_customer(email, include_inactive=True) or {}
         subscription_status = normalize_text(billing_customer.get("subscriptionStatus"))
         is_paying = subscription_status in ACTIVE_SUBSCRIPTION_STATUSES
+        client_type = normalize_client_type(user.get("clientType")) or ("paying" if is_paying else "demo")
         return {
             "email": email,
             "displayName": normalize_text(user.get("displayName")),
             "isActive": bool(user.get("isActive")),
             "isAdmin": bool(user.get("isAdmin")),
+            "clientType": client_type,
             "registeredAt": user.get("registeredAt"),
             "lastLoginAt": user.get("lastLoginAt"),
             "usageCount": int(user.get("usageCount") or 0),
@@ -3108,6 +3111,58 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
                 "message": "User access updated.",
+                "user": self._serialize_admin_user(user),
+            })
+            return
+
+        if len(parts) == 5 and parts[:3] == ["api", "admin", "users"] and parts[4] == "client-type":
+            email = normalize_email(urllib_parse.unquote(parts[3]))
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_json",
+                    "message": str(exc),
+                })
+                return
+
+            client_type = normalize_client_type(payload.get("clientType") or payload.get("client_type"))
+            if not is_valid_email(email):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_email",
+                    "message": "Enter a valid email address.",
+                })
+                return
+            if not client_type:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_client_type",
+                    "message": "Client type must be Paying, Demo, or QA.",
+                })
+                return
+
+            try:
+                user = self.database.update_user_client_type(email, client_type=client_type)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_client_type",
+                    "message": str(exc),
+                })
+                return
+            except KeyError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {
+                    "ok": False,
+                    "error": "not_found",
+                    "message": str(exc),
+                })
+                return
+
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "Client type updated.",
                 "user": self._serialize_admin_user(user),
             })
             return

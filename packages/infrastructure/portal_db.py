@@ -23,6 +23,7 @@ DEFAULT_MONTHLY_MINIMUM_CENTS = 5000
 DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS = "active"
+VALID_CLIENT_TYPES = ("paying", "demo", "qa")
 RAW_CENTS_QUANT = Decimal("0.0001")
 USD_QUANT = Decimal("0.01")
 DEFAULT_MODEL_PRICE_PROVIDER = "openai"
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1,
     is_admin INTEGER NOT NULL DEFAULT 0,
+    client_type TEXT NOT NULL DEFAULT '',
     last_login_at TEXT,
     last_otp_requested_at TEXT,
     last_otp_verified_at TEXT,
@@ -457,6 +459,13 @@ def normalize_user_profile(value: Any) -> dict[str, str]:
     }
 
 
+def normalize_client_type(value: Any) -> str:
+    normalized = normalize_text(value).lower().replace(" ", "_").replace("-", "_")
+    if normalized in VALID_CLIENT_TYPES:
+        return normalized
+    return ""
+
+
 def humanize_identifier(value: Any) -> str:
     text = normalize_text(value)
     if not text:
@@ -735,6 +744,8 @@ class PortalDatabase:
         }
         if "is_admin" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        if "client_type" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN client_type TEXT NOT NULL DEFAULT ''")
         if "profile_json" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'")
 
@@ -1080,6 +1091,7 @@ class PortalDatabase:
         is_active: bool = True,
         notes: str = "",
         is_admin: bool = False,
+        client_type: str | None = None,
         update_profile: bool = True,
     ) -> int:
         normalized_email = normalize_email(email)
@@ -1098,10 +1110,11 @@ class PortalDatabase:
                     display_name,
                     is_active,
                     is_admin,
+                    client_type,
                     notes,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     normalized_email,
@@ -1109,6 +1122,7 @@ class PortalDatabase:
                     normalize_text(display_name),
                     1 if is_active else 0,
                     1 if is_admin else 0,
+                    normalize_client_type(client_type),
                     normalize_text(notes),
                     now,
                     now,
@@ -1122,6 +1136,7 @@ class PortalDatabase:
                     SET display_name = ?,
                         is_active = ?,
                         is_admin = ?,
+                        client_type = COALESCE(NULLIF(?, ''), client_type),
                         notes = ?,
                         updated_at = ?
                     WHERE id = ?
@@ -1130,6 +1145,7 @@ class PortalDatabase:
                         normalize_text(display_name),
                         1 if is_active else 0,
                         1 if is_admin else 0,
+                        normalize_client_type(client_type),
                         normalize_text(notes),
                         now,
                         int(existing["id"]),
@@ -1207,6 +1223,7 @@ class PortalDatabase:
                 u.display_name,
                 u.is_active,
                 u.is_admin,
+                u.client_type,
                 u.last_login_at,
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
@@ -1250,6 +1267,7 @@ class PortalDatabase:
                 "displayName": normalize_text(payload.get("display_name")),
                 "isActive": bool(payload.get("is_active")),
                 "isAdmin": bool(payload.get("is_admin")),
+                "clientType": normalize_client_type(payload.get("client_type")),
                 "registeredAt": payload.get("registered_at"),
                 "lastLoginAt": payload.get("last_login_at"),
                 "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
@@ -1275,6 +1293,7 @@ class PortalDatabase:
             "display_name",
             "is_active",
             "is_admin",
+            "client_type",
             "registered_at",
             "last_login_at",
             "last_otp_requested_at",
@@ -1981,6 +2000,7 @@ class PortalDatabase:
                 u.display_name,
                 u.is_active,
                 u.is_admin,
+                u.client_type,
                 u.last_login_at,
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
@@ -2030,6 +2050,7 @@ class PortalDatabase:
                     "displayName": normalize_text(payload.get("display_name")),
                     "isActive": bool(payload.get("is_active")),
                     "isAdmin": bool(payload.get("is_admin")),
+                    "clientType": normalize_client_type(payload.get("client_type")),
                     "registeredAt": payload.get("registered_at"),
                     "lastLoginAt": payload.get("last_login_at"),
                     "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
@@ -2057,6 +2078,7 @@ class PortalDatabase:
                 "display_name",
                 "is_active",
                 "is_admin",
+                "client_type",
                 "registered_at",
                 "last_login_at",
                 "last_otp_requested_at",
@@ -2085,6 +2107,7 @@ class PortalDatabase:
         notes: str = "",
         is_active: bool = True,
         is_admin: bool = False,
+        client_type: str | None = None,
         registered_at: str | datetime | None = None,
         currency: str | None = None,
         monthly_minimum_cents: int | None = None,
@@ -2105,6 +2128,7 @@ class PortalDatabase:
                 is_active=is_active,
                 notes=notes,
                 is_admin=is_admin,
+                client_type=client_type,
             )
             self._ensure_user_billing(
                 conn,
@@ -2276,6 +2300,34 @@ class PortalDatabase:
                     normalize_text(display_name),
                     now_iso(),
                     user_id,
+                ),
+            )
+            return self._load_user_row(conn, normalized_email) or {}
+
+    def update_user_client_type(self, email: str, *, client_type: str) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        normalized_client_type = normalize_client_type(client_type)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if not normalized_client_type:
+            raise ValueError("Client type must be paying, demo, or qa.")
+
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_email)
+            if user is None:
+                raise KeyError(f"Unknown user: {normalized_email}")
+
+            conn.execute(
+                """
+                UPDATE users
+                SET client_type = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_client_type,
+                    now_iso(),
+                    int(user.get("id") or 0),
                 ),
             )
             return self._load_user_row(conn, normalized_email) or {}
