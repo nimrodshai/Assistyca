@@ -3980,6 +3980,101 @@ class PortalDatabase:
                 )
             return targets
 
+    def get_whatsapp_reengagement_target(
+        self,
+        email: str,
+        feature_id: str,
+        *,
+        require_active: bool = True,
+    ) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        normalized_feature_id = normalize_text(feature_id)
+        if not normalized_email or not normalized_feature_id:
+            return None
+
+        active_clause = ""
+        if require_active:
+            active_clause = """
+                  AND act.is_active = 1
+                  AND w.connection_status = 'connected'
+                  AND w.phone_number_id <> ''
+                  AND w.owner_wa_id <> ''
+            """
+
+        with self._connection() as conn:
+            row = conn.execute(
+                f"""
+                SELECT
+                    u.id AS user_id,
+                    u.email,
+                    u.display_name,
+                    u.profile_json,
+                    w.business_account_id,
+                    w.phone_number_id,
+                    w.access_token,
+                    w.owner_wa_id,
+                    w.display_phone_number,
+                    w.verified_name,
+                    w.connection_status,
+                    w.metadata_json,
+                    w.connected_at,
+                    w.last_tested_at,
+                    act.activated_at,
+                    act.updated_at AS activation_updated_at,
+                    act.metadata_json AS activation_metadata_json,
+                    assign.metadata_json AS assignment_metadata_json
+                FROM users AS u
+                INNER JOIN feature_assignments AS assign
+                    ON assign.user_id = u.id
+                INNER JOIN features AS f
+                    ON f.feature_id = assign.feature_id
+                LEFT JOIN feature_activations AS act
+                    ON act.user_id = u.id AND act.feature_id = assign.feature_id
+                LEFT JOIN whatsapp_connections AS w
+                    ON w.user_id = u.id
+                WHERE u.is_active = 1
+                  AND u.email = ?
+                  AND assign.feature_id = ?
+                  AND assign.is_assigned = 1
+                  AND f.is_active = 1
+                  {active_clause}
+                LIMIT 1
+                """,
+                (normalized_email, normalized_feature_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        connection_metadata = _load_json_dict(payload.get("metadata_json"))
+        activation_metadata = _load_json_dict(payload.get("activation_metadata_json"))
+        assignment_metadata = _load_json_dict(payload.get("assignment_metadata_json"))
+        settings_payload = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
+        return {
+            "userId": int(payload.get("user_id") or 0),
+            "email": normalize_email(payload.get("email")),
+            "displayName": normalize_text(payload.get("display_name")),
+            "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
+            "businessAccountId": normalize_text(payload.get("business_account_id")),
+            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
+            "accessToken": normalize_text(payload.get("access_token")),
+            "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
+            "ownerWaId": normalize_text(payload.get("owner_wa_id")),
+            "displayPhoneNumber": normalize_text(payload.get("display_phone_number")),
+            "verifiedName": normalize_text(payload.get("verified_name")),
+            "connectionStatus": normalize_text(payload.get("connection_status")) or "not_connected",
+            "metadata": connection_metadata if isinstance(connection_metadata, dict) else {},
+            "settings": settings_payload if isinstance(settings_payload, dict) else {},
+            "settingsSavedAt": normalize_text(assignment_metadata.get("settingsSavedAt")),
+            "connectedAt": payload.get("connected_at"),
+            "lastTestedAt": payload.get("last_tested_at"),
+            "featureId": normalized_feature_id,
+            "activatedAt": payload.get("activated_at"),
+            "activationUpdatedAt": payload.get("activation_updated_at"),
+            "activationMetadata": activation_metadata if isinstance(activation_metadata, dict) else {},
+        }
+
     def list_due_whatsapp_reengagement_conversations(
         self,
         *,
@@ -4036,6 +4131,40 @@ class PortalDatabase:
                 feature_id=feature_id,
                 scheduled_for=scheduled_for_value,
             )
+
+    def get_latest_whatsapp_reengagement_run(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        before_scheduled_for: str | datetime | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0 or not normalized_feature_id:
+            return None
+
+        query = """
+                SELECT scheduled_for
+                FROM whatsapp_reengagement_runs
+                WHERE user_id = ? AND feature_id = ?
+                """
+        params: list[Any] = [int(user_id), normalized_feature_id]
+        if before_scheduled_for is not None:
+            query += " AND scheduled_for < ?"
+            params.append(parse_datetime(before_scheduled_for).astimezone(timezone.utc).isoformat())
+        query += """
+                ORDER BY scheduled_for DESC
+                LIMIT 1
+                """
+        with self._connection() as conn:
+            row = conn.execute(query, tuple(params)).fetchone()
+        if row is None:
+            return None
+        return self.get_whatsapp_reengagement_run(
+            user_id=int(user_id),
+            feature_id=normalized_feature_id,
+            scheduled_for=row["scheduled_for"],
+        )
 
     def save_whatsapp_reengagement_run(
         self,

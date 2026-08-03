@@ -77,6 +77,7 @@ const SAVED_ACCESS_TOKEN_FIELD_VALUE = "................";
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
 const MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier";
+const REENGAGEMENT_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer";
 const WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant";
 const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
   "WhatsApp Business Reply Suggestion Assistant",
@@ -138,6 +139,15 @@ const DEFAULT_MONITOR_SETTINGS = {
   deliveryChannel: "email",
   telegramChatId: "",
 };
+const DEFAULT_REENGAGEMENT_SETTINGS = {
+  model: "gpt-5.5",
+  intervalDays: 7,
+  scheduleTimeLocal: "09:00",
+  scheduleTimezone: "",
+  inactivityValue: 6,
+  inactivityUnit: "months",
+  maxContextMessages: 100,
+};
 const MANUAL_PRICING_SNAPSHOT = {
   source: "manual",
   sourceUrl: "https://developers.openai.com/api/docs/pricing",
@@ -197,6 +207,8 @@ const MANUAL_PRICING_SNAPSHOT = {
 };
 const MONITOR_INTERVAL_DAYS_MIN = 1;
 const MONITOR_INTERVAL_DAYS_MAX = 365;
+const REENGAGEMENT_INACTIVITY_VALUE_MIN = 1;
+const REENGAGEMENT_INACTIVITY_VALUE_MAX = 10000;
 const DEFAULT_MONITOR_SCHEDULE_TIME = "09:00";
 const DEFAULT_TOOL_MODEL = DEFAULT_MONITOR_SETTINGS.model;
 const DEFAULT_FEATURE_SETTINGS = {
@@ -265,7 +277,7 @@ const DEFAULT_FEATURES = [
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
   {
-    id: "whatsapp-business-follow-up-outreach-writer",
+    id: REENGAGEMENT_FEATURE_ID,
     name: "WhatsApp Re-engagement Assistant",
     description: "Helps you reconnect with past customers using ready-to-send WhatsApp follow-ups, so more quiet conversations turn back into active work.",
     channel: "WhatsApp",
@@ -296,8 +308,8 @@ const DEFAULT_FEATURES = [
     assignment: {},
     paymentStatus: null,
     metadata: {},
-    settings: { ...DEFAULT_FEATURE_SETTINGS },
-    savedSettings: { ...DEFAULT_FEATURE_SETTINGS },
+    settings: { ...DEFAULT_REENGAGEMENT_SETTINGS },
+    savedSettings: { ...DEFAULT_REENGAGEMENT_SETTINGS },
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
@@ -575,6 +587,8 @@ let monitorManualRunRequestId = "";
 let monitorManualRunCancelling = false;
 let monitorManualRunCancellationError = "";
 let monitorManualRunOverlayVisible = false;
+let reengagementDemoRunBusy = false;
+let reengagementDemoRunTargetId = "";
 let whatsappSampleMessageBusy = false;
 let whatsappSampleMessageTargetId = "";
 let whatsappHistoryRefreshPromise = null;
@@ -675,6 +689,14 @@ const elements = {
   monitorTelegramChatId: document.querySelector("#monitorTelegramChatId"),
   monitorWhatsAppField: document.querySelector("#monitorWhatsAppField"),
   monitorWhatsAppSetupButton: document.querySelector("#monitorWhatsAppSetupButton"),
+  reengagementScheduleCard: document.querySelector("#reengagementScheduleCard"),
+  reengagementIntervalDays: document.querySelector("#reengagementIntervalDays"),
+  reengagementScheduleTime: document.querySelector("#reengagementScheduleTime"),
+  reengagementScheduleTimezoneLabel: document.querySelector("#reengagementScheduleTimezoneLabel"),
+  reengagementInactivityValue: document.querySelector("#reengagementInactivityValue"),
+  reengagementInactivityUnit: document.querySelector("#reengagementInactivityUnit"),
+  reengagementNextRun: document.querySelector("#reengagementNextRun"),
+  reengagementNextRunValue: document.querySelector("#reengagementNextRunValue"),
   featureModelCard: document.querySelector("#featureModelCard"),
   featureModelSelect: document.querySelector("#featureModelSelect"),
   featureModelBand: document.querySelector("#featureModelBand"),
@@ -1719,6 +1741,10 @@ function isMonitorFeature(feature = getSelectedFeature()) {
   return Boolean(feature && feature.id === MONITOR_FEATURE_ID);
 }
 
+function isReengagementFeature(feature = getSelectedFeature()) {
+  return Boolean(feature && feature.id === REENGAGEMENT_FEATURE_ID);
+}
+
 function isWhatsAppReplyAssistantFeature(feature = getSelectedFeature()) {
   return Boolean(feature && feature.id === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
 }
@@ -2195,12 +2221,8 @@ function loadClientState(email) {
       metadata: feature?.metadata && typeof feature.metadata === "object"
         ? { ...feature.metadata }
         : {},
-      settings: featureId === MONITOR_FEATURE_ID
-        ? normalizeFeatureMonitorSettings(feature?.settings || {})
-        : normalizeFeatureSettings(feature?.settings || {}),
-      savedSettings: featureId === MONITOR_FEATURE_ID
-        ? normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {})
-        : normalizeFeatureSettings(feature?.savedSettings || feature?.settings || {}),
+      settings: normalizeSettingsForFeature(featureId, feature?.settings || {}),
+      savedSettings: normalizeSettingsForFeature(featureId, feature?.savedSettings || feature?.settings || {}),
       whatsapp: normalizeFeatureWhatsApp(feature?.whatsapp || feature?.activation || {}),
       savedWhatsApp: normalizeFeatureWhatsApp(
         feature?.savedWhatsApp
@@ -2581,6 +2603,133 @@ function normalizeFeatureMonitorSettings(settings = {}) {
   };
 }
 
+function normalizeReengagementInactivityUnit(value, fallback = DEFAULT_REENGAGEMENT_SETTINGS.inactivityUnit) {
+  const text = String(value || "").trim().toLowerCase();
+  const aliases = {
+    m: "minutes",
+    min: "minutes",
+    mins: "minutes",
+    minute: "minutes",
+    minutes: "minutes",
+    h: "hours",
+    hr: "hours",
+    hrs: "hours",
+    hour: "hours",
+    hours: "hours",
+    d: "days",
+    day: "days",
+    days: "days",
+    month: "months",
+    months: "months",
+  };
+  const normalized = aliases[text] || "";
+  if (normalized) {
+    return normalized;
+  }
+  return aliases[String(fallback || "").trim().toLowerCase()] || DEFAULT_REENGAGEMENT_SETTINGS.inactivityUnit;
+}
+
+function normalizeReengagementInactivityValue(value, fallback = DEFAULT_REENGAGEMENT_SETTINGS.inactivityValue) {
+  const parsedFallback = Number.parseInt(fallback, 10);
+  const safeFallback = Number.isFinite(parsedFallback)
+    ? Math.min(REENGAGEMENT_INACTIVITY_VALUE_MAX, Math.max(REENGAGEMENT_INACTIVITY_VALUE_MIN, parsedFallback))
+    : DEFAULT_REENGAGEMENT_SETTINGS.inactivityValue;
+  const parsedValue = Number.parseInt(value, 10);
+  return Number.isFinite(parsedValue)
+    ? Math.min(REENGAGEMENT_INACTIVITY_VALUE_MAX, Math.max(REENGAGEMENT_INACTIVITY_VALUE_MIN, parsedValue))
+    : safeFallback;
+}
+
+function normalizeFeatureReengagementSettings(settings = {}) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const legacyMonths = source.inactivityMonths || source.inactivity_months;
+  const inactivityUnit = normalizeReengagementInactivityUnit(
+    source.inactivityUnit || source.inactivity_unit || (legacyMonths ? "months" : DEFAULT_REENGAGEMENT_SETTINGS.inactivityUnit),
+  );
+  const inactivityValue = source.inactivityValue || legacyMonths || DEFAULT_REENGAGEMENT_SETTINGS.inactivityValue;
+  const scheduleTimeLocal = normalizeMonitorScheduleTime(
+    source.scheduleTimeLocal || source.scheduleTime || "",
+    DEFAULT_REENGAGEMENT_SETTINGS.scheduleTimeLocal,
+  );
+  const scheduleTimezone = scheduleTimeLocal
+    ? normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", defaultTimeZone())
+    : normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", "");
+
+  return {
+    ...normalizeFeatureSettings(source),
+    intervalDays: normalizeMonitorIntervalDays(source.intervalDays, DEFAULT_REENGAGEMENT_SETTINGS.intervalDays),
+    scheduleTimeLocal,
+    scheduleTimezone,
+    inactivityValue: normalizeReengagementInactivityValue(inactivityValue),
+    inactivityUnit,
+    maxContextMessages: Math.min(
+      DEFAULT_REENGAGEMENT_SETTINGS.maxContextMessages,
+      Math.max(1, Number.parseInt(source.maxContextMessages, 10) || DEFAULT_REENGAGEMENT_SETTINGS.maxContextMessages),
+    ),
+  };
+}
+
+function normalizeSettingsForFeature(featureId, settings = {}) {
+  if (featureId === MONITOR_FEATURE_ID) {
+    return normalizeFeatureMonitorSettings(settings);
+  }
+  if (featureId === REENGAGEMENT_FEATURE_ID) {
+    return normalizeFeatureReengagementSettings(settings);
+  }
+  return normalizeFeatureSettings(settings);
+}
+
+function getReengagementScheduleTimezone(feature = getSelectedFeature()) {
+  const settings = isReengagementFeature(feature) ? getSelectedFeatureSettings(feature) : DEFAULT_REENGAGEMENT_SETTINGS;
+  return normalizeMonitorScheduleTimezone(settings.scheduleTimezone, getWorkspaceTimeZone()) || getWorkspaceTimeZone();
+}
+
+function getReengagementScheduleTime(feature = getSelectedFeature()) {
+  if (!feature || !isReengagementFeature(feature)) {
+    return DEFAULT_REENGAGEMENT_SETTINGS.scheduleTimeLocal;
+  }
+
+  const settings = getSelectedFeatureSettings(feature);
+  const explicitTime = normalizeMonitorScheduleTime(settings.scheduleTimeLocal);
+  if (explicitTime) {
+    return explicitTime;
+  }
+
+  const derivedTime = formatMonitorScheduleTimeFromMoment(
+    feature.nextRunAt || feature.settingsSavedAt || feature.setupStatus?.nextRunAt || "",
+    getReengagementScheduleTimezone(feature),
+  );
+  return derivedTime || DEFAULT_REENGAGEMENT_SETTINGS.scheduleTimeLocal;
+}
+
+function buildReengagementSettingsForSave(feature = getSelectedFeature(), settings = getSelectedFeatureSettings(feature)) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const scheduleTimeLocal = normalizeMonitorScheduleTime(
+    source.scheduleTimeLocal,
+    getReengagementScheduleTime(feature),
+  );
+  const scheduleTimezone = scheduleTimeLocal
+    ? normalizeMonitorScheduleTimezone(source.scheduleTimezone, getReengagementScheduleTimezone(feature))
+    : "";
+
+  return normalizeFeatureReengagementSettings({
+    ...source,
+    scheduleTimeLocal,
+    scheduleTimezone,
+    maxContextMessages: DEFAULT_REENGAGEMENT_SETTINGS.maxContextMessages,
+  });
+}
+
+function buildSettingsForSave(feature = getSelectedFeature(), settings = getSelectedFeatureSettings(feature)) {
+  if (isMonitorFeature(feature)) {
+    return buildMonitorSettingsForSave(feature, settings);
+  }
+  if (isReengagementFeature(feature)) {
+    return buildReengagementSettingsForSave(feature, settings);
+  }
+  return normalizeFeatureSettings(settings);
+}
+
 function getFeaturePricing(feature = getSelectedFeature()) {
   return normalizeFeaturePricing(feature?.pricing || DEFAULT_FEATURE_PRICING);
 }
@@ -2590,7 +2739,7 @@ function buildFeaturePitch(feature = getSelectedFeature()) {
     return "Scheduled Web Monitor keeps watch for the dates, opportunities, and public updates that matter to this client. It turns a plain-language brief into recurring web research, then sends concise alerts with source links so the right person hears about conferences, holidays, deadlines, or niche developments before they slip by.";
   }
 
-  if (feature?.id === "whatsapp-business-follow-up-outreach-writer") {
+  if (feature?.id === REENGAGEMENT_FEATURE_ID) {
     return "WhatsApp Re-engagement Assistant makes it easy to follow up with past customers without starting from scratch. It prepares outreach messages you can review and send, helping you restart conversations, stay top of mind, and bring more opportunities back into your pipeline.";
   }
 
@@ -2688,12 +2837,11 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
   const savedWhatsApp = isWhatsAppFeature({ channel })
     ? normalizeFeatureWhatsApp(existingFeature?.savedWhatsApp || existingFeature?.whatsapp || serverFeature?.whatsapp || {})
     : normalizeFeatureWhatsApp({});
-  const settings = featureId === MONITOR_FEATURE_ID
-    ? normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.settings || {})
-    : normalizeFeatureSettings(serverFeature?.settings || existingFeature?.settings || {});
-  const savedSettings = featureId === MONITOR_FEATURE_ID
-    ? normalizeFeatureMonitorSettings(serverFeature?.settings || existingFeature?.savedSettings || existingFeature?.settings || {})
-    : normalizeFeatureSettings(serverFeature?.settings || existingFeature?.savedSettings || existingFeature?.settings || {});
+  const settings = normalizeSettingsForFeature(featureId, serverFeature?.settings || existingFeature?.settings || {});
+  const savedSettings = normalizeSettingsForFeature(
+    featureId,
+    serverFeature?.settings || existingFeature?.savedSettings || existingFeature?.settings || {},
+  );
 
   return {
     id: featureId,
@@ -2935,9 +3083,7 @@ function sendFeatureConfigKeepalive(feature = getSelectedFeature()) {
       keepalive: true,
       body: JSON.stringify({
         prompt: { ...feature.prompt },
-        settings: isMonitorFeature(feature)
-          ? buildMonitorSettingsForSave(feature, feature.settings)
-          : { ...feature.settings },
+        settings: buildSettingsForSave(feature, feature.settings),
       }),
     });
   } catch {
@@ -3022,9 +3168,7 @@ async function saveSelectedFeatureConfig(options = {}) {
         headers: getSessionAuthHeaders(),
         body: {
           prompt: { ...feature.prompt },
-          settings: isMonitorFeature(feature)
-            ? buildMonitorSettingsForSave(feature, feature.settings)
-            : { ...feature.settings },
+          settings: buildSettingsForSave(feature, feature.settings),
         },
       });
 
@@ -3344,15 +3488,11 @@ function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
 }
 
 function getSelectedFeatureSettings(feature = getSelectedFeature()) {
-  return isMonitorFeature(feature)
-    ? normalizeFeatureMonitorSettings(feature?.settings || {})
-    : normalizeFeatureSettings(feature?.settings || {});
+  return normalizeSettingsForFeature(feature?.id || "", feature?.settings || {});
 }
 
 function getSavedFeatureSettings(feature = getSelectedFeature()) {
-  return isMonitorFeature(feature)
-    ? normalizeFeatureMonitorSettings(feature?.savedSettings || feature?.settings || {})
-    : normalizeFeatureSettings(feature?.savedSettings || feature?.settings || {});
+  return normalizeSettingsForFeature(feature?.id || "", feature?.savedSettings || feature?.settings || {});
 }
 
 function getSavedFeatureWhatsApp(feature = getSelectedFeature()) {
@@ -4380,17 +4520,14 @@ function hasFeatureConfigChanges(feature = getSelectedFeature()) {
     return true;
   }
 
-  if (!isMonitorFeature(feature)) {
-    const currentSettings = getSelectedFeatureSettings(feature);
-    const savedSettings = getSavedFeatureSettings(feature);
-    return Object.keys(DEFAULT_FEATURE_SETTINGS).some(
-      (key) => JSON.stringify(currentSettings[key] ?? "") !== JSON.stringify(savedSettings[key] ?? ""),
-    );
-  }
-
   const currentSettings = getSelectedFeatureSettings(feature);
   const savedSettings = getSavedFeatureSettings(feature);
-  return Object.keys(DEFAULT_MONITOR_SETTINGS).some(
+  const defaultSettings = isMonitorFeature(feature)
+    ? DEFAULT_MONITOR_SETTINGS
+    : isReengagementFeature(feature)
+      ? DEFAULT_REENGAGEMENT_SETTINGS
+      : DEFAULT_FEATURE_SETTINGS;
+  return Object.keys(defaultSettings).some(
     (key) => JSON.stringify(currentSettings[key] ?? "") !== JSON.stringify(savedSettings[key] ?? ""),
   );
 }
@@ -4404,6 +4541,14 @@ function isMonitorManualRunBusy(feature = getSelectedFeature()) {
     monitorManualRunBusy
     && feature
     && feature.id === monitorManualRunTargetId,
+  );
+}
+
+function isReengagementDemoRunBusy(feature = getSelectedFeature()) {
+  return Boolean(
+    reengagementDemoRunBusy
+    && feature
+    && feature.id === reengagementDemoRunTargetId,
   );
 }
 
@@ -9305,6 +9450,138 @@ async function runSelectedMonitorNow() {
   }
 }
 
+function formatReengagementInactivityLabel(settings = {}) {
+  const inactivityValue = normalizeReengagementInactivityValue(settings.inactivityValue);
+  const inactivityUnit = normalizeReengagementInactivityUnit(settings.inactivityUnit);
+  const singular = inactivityUnit.endsWith("s") ? inactivityUnit.slice(0, -1) : inactivityUnit;
+  return `${inactivityValue} ${inactivityValue === 1 ? singular : inactivityUnit}`;
+}
+
+function formatReengagementCandidateName(candidate = {}) {
+  return String(candidate.senderName || candidate.senderWaId || candidate.conversationId || "Unknown conversation").trim();
+}
+
+function getReengagementDemoAlertTitle(run = {}) {
+  const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
+  if (candidatesCount === 1) {
+    return "1 inactive conversation";
+  }
+  if (candidatesCount > 1) {
+    return `${candidatesCount} inactive conversations`;
+  }
+  return "No inactive conversations";
+}
+
+function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run finished.") {
+  const candidates = Array.isArray(run?.candidates) ? run.candidates : [];
+  const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
+  const inactivityLabel = formatReengagementInactivityLabel(settings);
+  const cutoffAt = String(run?.cutoffAt || "").trim();
+  const cutoffLabel = cutoffAt ? formatMonitorNextRunDate(cutoffAt, getReengagementScheduleTimezone()) : "";
+
+  if (!candidates.length) {
+    return cutoffLabel
+      ? `No saved conversations were inactive for more than ${inactivityLabel}. Cutoff checked: ${cutoffLabel}.`
+      : `No saved conversations were inactive for more than ${inactivityLabel}.`;
+  }
+
+  const previewLines = candidates.slice(0, 3).map((candidate, index) => {
+    const name = formatReengagementCandidateName(candidate);
+    const lastMessageAt = String(candidate.lastMessageAt || "").trim();
+    const lastMessageLabel = lastMessageAt ? formatMonitorNextRunDate(lastMessageAt, getReengagementScheduleTimezone()) : "unknown date";
+    const draft = String(candidate.draftText || "").trim() || "No draft generated.";
+    return `${index + 1}. ${name} · last active ${lastMessageLabel}\n${draft}`;
+  });
+  const remainingCount = candidates.length - previewLines.length;
+  const suffix = remainingCount > 0
+    ? `\n\nShowing first ${previewLines.length}; ${remainingCount} more ${remainingCount === 1 ? "conversation" : "conversations"} matched.`
+    : "";
+  return `${fallbackMessage}\n\n${previewLines.join("\n\n")}${suffix}`;
+}
+
+async function runSelectedReengagementDemo() {
+  if (reengagementDemoRunBusy) {
+    setStatus("A re-engagement demo is already running.");
+    return;
+  }
+
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    setStatus("Refresh the tool and try the demo again.");
+    return;
+  }
+
+  if (hasPendingFeatureConfigAutosave(feature.id) || hasFeatureConfigChanges(feature) || featureConfigBusy) {
+    try {
+      await flushSelectedFeatureConfigAutosave({
+        featureId: feature.id,
+        alertOnError: true,
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+        statusMessage: "Saving settings before the demo...",
+      });
+    } catch {
+      return;
+    }
+  }
+
+  reengagementDemoRunBusy = true;
+  reengagementDemoRunTargetId = feature.id;
+  try {
+    updateFeatureStudioHeader();
+    openAuthAlert(
+      "Running demo",
+      "Checking saved conversations and generating follow-up drafts. Nothing will be sent.",
+      {
+        eyebrow: "Demo run",
+        buttonLabel: "Running...",
+        primaryDisabled: true,
+        dismissOnBackdrop: false,
+        dismissOnEscape: false,
+        iconMode: "spinner",
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+        tone: "progress",
+      },
+    );
+    setStatus("Running the re-engagement demo. Nothing will be sent.");
+    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        runRequestId: createManualMonitorRunRequestId(),
+      },
+      timeoutMs: 90000,
+    });
+
+    const completionMessage = String(response.message || "Demo run finished.");
+    setStatus(completionMessage);
+    openAuthAlert(
+      getReengagementDemoAlertTitle(response.run),
+      getReengagementDemoAlertMessage(response.run, completionMessage),
+      {
+        eyebrow: "Demo results",
+        buttonLabel: "OK",
+        icon: Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "✓" : "!",
+        tone: Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "success" : "warning",
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+      },
+    );
+  } catch (error) {
+    openFeatureActivationAlert(
+      "Couldn’t run the demo",
+      formatApiErrorMessage(error, "We couldn’t run the re-engagement demo right now."),
+      {
+        eyebrow: "Try again",
+        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+      },
+    );
+    setStatus("Couldn’t run the re-engagement demo.");
+  } finally {
+    reengagementDemoRunBusy = false;
+    reengagementDemoRunTargetId = "";
+    updateFeatureStudioHeader();
+  }
+}
+
 function waitForDelay(delayMs) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, Math.max(0, Number(delayMs) || 0));
@@ -9910,7 +10187,7 @@ function updateFeatureStudioHeader() {
   const studioView = getSelectedFeatureStudioView(feature);
   const activationBusy = isFeatureActivationBusy(feature);
   const transitionBusy = isFeatureActivationTransitionBusy(feature);
-  const manualRunBusy = isMonitorManualRunBusy(feature);
+  const manualRunBusy = isMonitorManualRunBusy(feature) || isReengagementDemoRunBusy(feature);
   const hasActivationChanges = hasFeatureActivationChanges(feature);
 
   state.featureStudioView = studioView;
@@ -10096,18 +10373,29 @@ function updateFeatureStudioHeader() {
     elements.featureStudioWhatsAppHistoryButton.disabled = transitionBusy || manualRunBusy || sampleMessageBusy;
   }
   if (elements.featureStudioMonitorRunButton) {
-    const showManualRun = isMonitorFeature(feature) && isActivated;
+    const showMonitorRun = isMonitorFeature(feature) && isActivated;
+    const showReengagementDemo = isReengagementFeature(feature);
+    const showManualRun = showMonitorRun || showReengagementDemo;
     const manualRunReady = showManualRun;
+    const reengagementBusy = isReengagementDemoRunBusy(feature);
     elements.featureStudioMonitorRunButton.hidden = !showManualRun;
-    elements.featureStudioMonitorRunButton.textContent = manualRunBusy
-      ? monitorManualRunCancelling
-        ? "Cancelling..."
-        : "Testing..."
-      : "Test now";
+    elements.featureStudioMonitorRunButton.textContent = reengagementBusy
+      ? "Running demo..."
+      : manualRunBusy
+        ? monitorManualRunCancelling
+          ? "Cancelling..."
+          : "Testing..."
+        : showReengagementDemo
+          ? "Demo run"
+          : "Test now";
     elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || manualRunBusy;
     elements.featureStudioMonitorRunButton.classList.toggle("is-loading", false);
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
-    elements.featureStudioMonitorRunButton.title = manualRunBusy
+    elements.featureStudioMonitorRunButton.title = reengagementBusy
+      ? "A re-engagement demo is currently running"
+      : showReengagementDemo
+        ? "Find inactive conversations and preview follow-up drafts without sending anything"
+        : manualRunBusy
       ? monitorManualRunCancelling
         ? "The current monitor test is being cancelled"
         : "A monitor test is currently running"
@@ -10198,8 +10486,10 @@ function getMonitorNextRunLabel(feature) {
 function updateMonitorFields() {
   const feature = getSelectedFeature();
   const isMonitor = isMonitorFeature(feature);
+  const isScheduledTool = isMonitor || isReengagementFeature(feature);
   if (elements.featureStudioEditorSection) {
     elements.featureStudioEditorSection.classList.toggle("is-monitor-flow", isMonitor);
+    elements.featureStudioEditorSection.classList.toggle("is-scheduled-flow", isScheduledTool);
   }
   if (elements.monitorTargetCard) {
     elements.monitorTargetCard.classList.toggle("is-hidden", !isMonitor);
@@ -10253,6 +10543,71 @@ function updateMonitorFields() {
     elements.monitorTelegramChatId.value = monitorSettings.telegramChatId;
   }
   updateMonitorFieldVisibility(monitorSettings);
+}
+
+function getReengagementNextRunLabel(feature) {
+  if (!feature || !isReengagementFeature(feature)) {
+    return "";
+  }
+
+  if (!isFeatureActivated(feature)) {
+    return "Activate to schedule";
+  }
+
+  const nextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
+  if (!nextRunAt) {
+    return hasFeatureConfigChanges(feature) ? "Saving changes..." : "Next run will appear soon";
+  }
+
+  const formatted = formatMonitorNextRunDate(nextRunAt, getReengagementScheduleTimezone(feature));
+  if (!formatted) {
+    return "Next run will appear soon";
+  }
+
+  const parsed = new Date(nextRunAt);
+  if (!Number.isNaN(parsed.getTime()) && parsed.getTime() <= Date.now()) {
+    return `Due now · ${formatted}`;
+  }
+  return formatted;
+}
+
+function updateReengagementFields() {
+  const feature = getSelectedFeature();
+  const isReengagement = isReengagementFeature(feature);
+  if (elements.reengagementScheduleCard) {
+    elements.reengagementScheduleCard.classList.toggle("is-hidden", !isReengagement);
+  }
+  if (elements.reengagementNextRun) {
+    elements.reengagementNextRun.hidden = !isReengagement;
+  }
+  if (!isReengagement) {
+    return;
+  }
+
+  const settings = getSelectedFeatureSettings(feature);
+  if (elements.reengagementIntervalDays) {
+    elements.reengagementIntervalDays.value = String(settings.intervalDays);
+  }
+  if (elements.reengagementScheduleTime) {
+    elements.reengagementScheduleTime.value = getReengagementScheduleTime(feature);
+  }
+  if (elements.reengagementScheduleTimezoneLabel) {
+    const scheduleTimezone = getReengagementScheduleTimezone(feature);
+    elements.reengagementScheduleTimezoneLabel.textContent = scheduleTimezone === getWorkspaceTimeZone()
+      ? "Workspace time"
+      : "Saved time zone";
+    elements.reengagementScheduleTimezoneLabel.title = scheduleTimezone;
+  }
+  if (elements.reengagementInactivityValue) {
+    elements.reengagementInactivityValue.value = String(settings.inactivityValue);
+  }
+  if (elements.reengagementInactivityUnit) {
+    elements.reengagementInactivityUnit.value = settings.inactivityUnit;
+  }
+  if (elements.reengagementNextRunValue) {
+    elements.reengagementNextRunValue.textContent = getReengagementNextRunLabel(feature);
+    elements.reengagementNextRunValue.title = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "");
+  }
 }
 
 function getFeatureModelOptions() {
@@ -10464,6 +10819,7 @@ function renderApp(options = {}) {
   updateFeatureActivationFields();
   populateMonitorTimezoneOptions();
   updateMonitorFields();
+  updateReengagementFields();
   updatePromptFields();
   updatePreview();
   updateSimulatorPanel();
@@ -11035,15 +11391,10 @@ function syncFeatureModelField(event) {
     return;
   }
 
-  const nextSettings = isMonitorFeature(feature)
-    ? normalizeFeatureMonitorSettings({
-      ...currentSettings,
-      model: nextModel,
-    })
-    : normalizeFeatureSettings({
-      ...currentSettings,
-      model: nextModel,
-    });
+  const nextSettings = buildSettingsForSave(feature, {
+    ...currentSettings,
+    model: nextModel,
+  });
 
   feature.settings = nextSettings;
   persistClientState();
@@ -11178,6 +11529,182 @@ function finalizeMonitorIntervalDaysField(event) {
     }
   }
 
+  if (hasPendingFeatureConfigAutosave(feature.id)) {
+    void flushSelectedFeatureConfigAutosave({
+      featureId: feature.id,
+      alertOnError: false,
+      noChangesMessage: false,
+    }).catch(() => {});
+  }
+}
+
+function syncReengagementIntervalDaysField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    return;
+  }
+
+  const rawValue = String(event.target.value || "").trim();
+  if (!rawValue) {
+    return;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const normalizedIntervalDays = normalizeMonitorIntervalDays(rawValue, currentSettings.intervalDays);
+  const normalizedValue = String(normalizedIntervalDays);
+  if (event.target.value !== normalizedValue) {
+    event.target.value = normalizedValue;
+  }
+  if (currentSettings.intervalDays === normalizedIntervalDays) {
+    return;
+  }
+
+  feature.settings = buildReengagementSettingsForSave(feature, {
+    ...currentSettings,
+    intervalDays: normalizedIntervalDays,
+  });
+  persistClientState();
+  updateReengagementFields();
+  updateFeatureStudioHeader();
+  scheduleSelectedFeatureConfigAutosave(feature);
+}
+
+function syncReengagementScheduleTimeField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    return;
+  }
+
+  const rawValue = String(event.target.value || "").trim();
+  const normalizedTime = normalizeMonitorScheduleTime(rawValue, "");
+  if (!normalizedTime) {
+    return;
+  }
+  if (event.type !== "input" && event.target.value !== normalizedTime) {
+    event.target.value = normalizedTime;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const nextTimezone = getWorkspaceTimeZone();
+  if (
+    normalizeMonitorScheduleTime(currentSettings.scheduleTimeLocal) === normalizedTime
+    && normalizeMonitorScheduleTimezone(currentSettings.scheduleTimezone) === nextTimezone
+  ) {
+    updateReengagementFields();
+    return;
+  }
+
+  feature.settings = buildReengagementSettingsForSave(feature, {
+    ...currentSettings,
+    scheduleTimeLocal: normalizedTime,
+    scheduleTimezone: nextTimezone,
+  });
+  persistClientState();
+  updateReengagementFields();
+  updateFeatureStudioHeader();
+  scheduleSelectedFeatureConfigAutosave(feature);
+}
+
+function syncReengagementInactivityValueField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    return;
+  }
+
+  const rawValue = String(event.target.value || "").trim();
+  if (!rawValue) {
+    return;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const normalizedValue = normalizeReengagementInactivityValue(rawValue, currentSettings.inactivityValue);
+  if (event.target.value !== String(normalizedValue)) {
+    event.target.value = String(normalizedValue);
+  }
+  if (currentSettings.inactivityValue === normalizedValue) {
+    return;
+  }
+
+  feature.settings = buildReengagementSettingsForSave(feature, {
+    ...currentSettings,
+    inactivityValue: normalizedValue,
+  });
+  persistClientState();
+  updateReengagementFields();
+  updateFeatureStudioHeader();
+  scheduleSelectedFeatureConfigAutosave(feature);
+}
+
+function syncReengagementInactivityUnitField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    return;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const inactivityUnit = normalizeReengagementInactivityUnit(event.target.value, currentSettings.inactivityUnit);
+  if (event.target.value !== inactivityUnit) {
+    event.target.value = inactivityUnit;
+  }
+  if (currentSettings.inactivityUnit === inactivityUnit) {
+    return;
+  }
+
+  feature.settings = buildReengagementSettingsForSave(feature, {
+    ...currentSettings,
+    inactivityUnit,
+  });
+  persistClientState();
+  updateReengagementFields();
+  updateFeatureStudioHeader();
+  scheduleSelectedFeatureConfigAutosave(feature);
+}
+
+function finalizeReengagementIntervalDaysField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    return;
+  }
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const rawValue = String(event.target.value || "").trim();
+  event.target.value = rawValue
+    ? String(normalizeMonitorIntervalDays(rawValue, currentSettings.intervalDays))
+    : String(currentSettings.intervalDays);
+  if (hasPendingFeatureConfigAutosave(feature.id)) {
+    void flushSelectedFeatureConfigAutosave({
+      featureId: feature.id,
+      alertOnError: false,
+      noChangesMessage: false,
+    }).catch(() => {});
+  }
+}
+
+function finalizeReengagementScheduleTimeField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    return;
+  }
+  const normalizedTime = normalizeMonitorScheduleTime(event.target.value, getReengagementScheduleTime(feature));
+  event.target.value = normalizedTime || getReengagementScheduleTime(feature);
+  if (hasPendingFeatureConfigAutosave(feature.id)) {
+    void flushSelectedFeatureConfigAutosave({
+      featureId: feature.id,
+      alertOnError: false,
+      noChangesMessage: false,
+    }).catch(() => {});
+  }
+}
+
+function finalizeReengagementInactivityValueField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isReengagementFeature(feature)) {
+    return;
+  }
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const rawValue = String(event.target.value || "").trim();
+  event.target.value = rawValue
+    ? String(normalizeReengagementInactivityValue(rawValue, currentSettings.inactivityValue))
+    : String(currentSettings.inactivityValue);
   if (hasPendingFeatureConfigAutosave(feature.id)) {
     void flushSelectedFeatureConfigAutosave({
       featureId: feature.id,
@@ -11669,6 +12196,10 @@ function bindEvents() {
     elements.featureStudioMonitorRunButton.addEventListener("click", () => {
       if (monitorManualRunBusy && getSelectedFeature()?.id === monitorManualRunTargetId) {
         void requestMonitorManualRunCancellation();
+        return;
+      }
+      if (isReengagementFeature(getSelectedFeature())) {
+        void runSelectedReengagementDemo();
         return;
       }
       void runSelectedMonitorNow();
@@ -12182,6 +12713,22 @@ function bindEvents() {
     elements.monitorWhatsAppSetupButton.addEventListener("click", () => {
       startFeatureActivation({ statusMessage: "WhatsApp setup opened." });
     });
+  }
+  if (elements.reengagementIntervalDays) {
+    elements.reengagementIntervalDays.addEventListener("input", syncReengagementIntervalDaysField);
+    elements.reengagementIntervalDays.addEventListener("blur", finalizeReengagementIntervalDaysField);
+  }
+  if (elements.reengagementScheduleTime) {
+    elements.reengagementScheduleTime.addEventListener("input", syncReengagementScheduleTimeField);
+    elements.reengagementScheduleTime.addEventListener("change", syncReengagementScheduleTimeField);
+    elements.reengagementScheduleTime.addEventListener("blur", finalizeReengagementScheduleTimeField);
+  }
+  if (elements.reengagementInactivityValue) {
+    elements.reengagementInactivityValue.addEventListener("input", syncReengagementInactivityValueField);
+    elements.reengagementInactivityValue.addEventListener("blur", finalizeReengagementInactivityValueField);
+  }
+  if (elements.reengagementInactivityUnit) {
+    elements.reengagementInactivityUnit.addEventListener("change", syncReengagementInactivityUnitField);
   }
 
   elements.displayNameInput.addEventListener("input", syncSettingsField("displayName"));

@@ -16,6 +16,10 @@ from packages.tools.scheduled_monitor.monitor import build_monitor_setup_status
 from packages.tools.scheduled_monitor.monitor import normalize_monitor_settings
 from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
+from packages.infrastructure.whatsapp_reengagement import normalize_reengagement_settings
+from packages.infrastructure.whatsapp_reengagement import resolve_next_reengagement_slot
+from packages.infrastructure.whatsapp_reengagement import resolve_timezone
 
 
 ACTIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "on_trial"})
@@ -221,13 +225,15 @@ class FeatureActivationService:
         )
         if normalized_feature_id == "scheduled-web-monitor-notifier":
             settings_payload = normalize_monitor_settings(settings_payload)
+        elif normalized_feature_id == REENGAGEMENT_FEATURE_ID:
+            settings_payload = normalize_reengagement_settings(settings_payload)
 
         metadata_payload = {
             **existing_metadata,
             "prompt": prompt_payload,
             "settings": settings_payload,
         }
-        if normalized_feature_id == "scheduled-web-monitor-notifier":
+        if normalized_feature_id in {"scheduled-web-monitor-notifier", REENGAGEMENT_FEATURE_ID}:
             metadata_payload["settingsSavedAt"] = now_iso()
 
         self.database.save_feature_assignment_metadata(
@@ -462,6 +468,8 @@ class FeatureActivationService:
             **saved_prompt,
         }
         resolved_settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
+        if feature_id == REENGAGEMENT_FEATURE_ID:
+            resolved_settings = normalize_reengagement_settings(resolved_settings)
         resolved_setup_status = setup_status or self._resolve_setup_status(email, feature=feature)
         resolved_payment_status = payment_status or self._resolve_payment_status(
             email,
@@ -471,7 +479,7 @@ class FeatureActivationService:
         )
 
         is_active = bool(activation.get("isActive"))
-        monitor_schedule = {}
+        schedule_state = {}
         if feature_id == "scheduled-web-monitor-notifier":
             settings_saved_at = normalize_text(assignment_metadata.get("settingsSavedAt"))
             last_run = self.database.get_latest_feature_monitor_run(
@@ -485,7 +493,7 @@ class FeatureActivationService:
                 settings_saved_at=settings_saved_at,
                 last_scheduled_for=normalize_text(last_run.get("scheduledFor")) if last_run else "",
             )
-            monitor_schedule = {
+            schedule_state = {
                 "settingsSavedAt": settings_saved_at,
                 "lastRunAt": normalize_text(last_run.get("scheduledFor")) if last_run else "",
                 "lastRunStatus": normalize_text(last_run.get("status")) if last_run else "",
@@ -493,7 +501,29 @@ class FeatureActivationService:
             }
             resolved_setup_status = {
                 **resolved_setup_status,
-                **monitor_schedule,
+                **schedule_state,
+            }
+        elif feature_id == REENGAGEMENT_FEATURE_ID:
+            settings_saved_at = normalize_text(assignment_metadata.get("settingsSavedAt"))
+            last_run = self.database.get_latest_whatsapp_reengagement_run(
+                user_id=int(assignment.get("userId") or activation.get("userId") or 0),
+                feature_id=feature_id,
+            )
+            tz = resolve_timezone(normalize_text(resolved_settings.get("scheduleTimezone")))
+            next_run = resolve_next_reengagement_slot(
+                now=datetime.now(timezone.utc),
+                settings=resolved_settings,
+                tz=tz,
+            )
+            schedule_state = {
+                "settingsSavedAt": settings_saved_at,
+                "lastRunAt": normalize_text(last_run.get("scheduledFor")) if last_run else "",
+                "lastRunStatus": normalize_text(last_run.get("status")) if last_run else "",
+                "nextRunAt": next_run.isoformat() if is_active and next_run else "",
+            }
+            resolved_setup_status = {
+                **resolved_setup_status,
+                **schedule_state,
             }
         setup_complete = bool(
             is_active
@@ -515,10 +545,10 @@ class FeatureActivationService:
             "activated": is_active,
             "activatedAt": activation.get("activatedAt"),
             "deactivatedAt": activation.get("deactivatedAt"),
-            "settingsSavedAt": monitor_schedule.get("settingsSavedAt", ""),
-            "lastRunAt": monitor_schedule.get("lastRunAt", ""),
-            "lastRunStatus": monitor_schedule.get("lastRunStatus", ""),
-            "nextRunAt": monitor_schedule.get("nextRunAt", ""),
+            "settingsSavedAt": schedule_state.get("settingsSavedAt", ""),
+            "lastRunAt": schedule_state.get("lastRunAt", ""),
+            "lastRunStatus": schedule_state.get("lastRunStatus", ""),
+            "nextRunAt": schedule_state.get("nextRunAt", ""),
             "setupComplete": setup_complete,
             "setupStatus": resolved_setup_status,
             "paymentStatus": resolved_payment_status,

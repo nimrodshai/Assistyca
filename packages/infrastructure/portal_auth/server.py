@@ -66,6 +66,7 @@ from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppServic
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
 from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
 from packages.infrastructure.whatsapp_portal_service import normalize_portal_owner_wa_id
+from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
 from packages.infrastructure.whatsapp_reengagement import load_whatsapp_reengagement_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
@@ -1741,6 +1742,16 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
         label = "match" if findings_count == 1 else "matches"
         return f"Manual run finished. Found {findings_count} {label}."
     return "Manual run finished."
+
+
+def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
+    payload = run if isinstance(run, dict) else {}
+    candidates_count = max(0, int(payload.get("candidatesCount") or 0))
+    if candidates_count == 1:
+        return "Demo found 1 inactive conversation and generated a follow-up draft."
+    if candidates_count > 1:
+        return f"Demo found {candidates_count} inactive conversations and generated follow-up drafts."
+    return "Demo found no inactive conversations for the current inactivity window."
 
 
 def send_api_headers(handler: SimpleHTTPRequestHandler, *, content_length: int | None = None) -> None:
@@ -4030,6 +4041,42 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         if action_name == "run":
+            if feature_id == REENGAGEMENT_FEATURE_ID:
+                scheduler = WhatsAppReengagementScheduler(
+                    self.database,
+                    send_owner_message=lambda _connection, _message_text: "",
+                    config=load_whatsapp_reengagement_config(),
+                )
+                try:
+                    result = scheduler.run_demo_for_email(session.email)
+                except Exception as exc:  # noqa: BLE001 - surface to the UI
+                    json_response(self, HTTPStatus.BAD_GATEWAY, {
+                        "ok": False,
+                        "error": "demo_run_failed",
+                        "message": f"Demo run failed: {exc}",
+                    })
+                    return
+
+                if not result.get("ok"):
+                    error_name = normalize_text(result.get("error"))
+                    status = HTTPStatus.BAD_REQUEST
+                    if error_name == "feature_not_available":
+                        status = HTTPStatus.NOT_FOUND
+                    elif error_name == "disabled":
+                        status = HTTPStatus.SERVICE_UNAVAILABLE
+                    elif error_name in {"activation_required", "setup_required"}:
+                        status = HTTPStatus.CONFLICT
+                    json_response(self, status, result)
+                    return
+
+                run = result.get("run") if isinstance(result.get("run"), dict) else {}
+                json_response(self, HTTPStatus.OK, {
+                    "ok": True,
+                    "message": describe_manual_reengagement_demo_run(run),
+                    "run": run,
+                })
+                return
+
             if feature_id != MONITOR_FEATURE_ID:
                 json_response(self, HTTPStatus.NOT_FOUND, {
                     "ok": False,

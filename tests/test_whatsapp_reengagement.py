@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -228,6 +229,149 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertTrue(summary["ran"])
         self.assertEqual(len(sent_messages), 1)
         self.assertIn("Maya Cohen", sent_messages[0])
+
+    def test_scheduler_uses_saved_inactivity_and_latest_100_messages(self) -> None:
+        self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                    "intervalDays": 1,
+                    "scheduleTimeLocal": "12:00",
+                    "scheduleTimezone": "UTC",
+                    "inactivityValue": 5,
+                    "inactivityUnit": "minutes",
+                    "maxContextMessages": 100,
+                }
+            },
+        )
+        self.database.set_feature_activation(
+            "owner@example.com",
+            feature_id=REENGAGEMENT_FEATURE_ID,
+            feature_name="WhatsApp Re-engagement Assistant",
+            is_active=True,
+        )
+        first_message_at = datetime(2026, 7, 13, 10, 6, tzinfo=timezone.utc)
+        for index in range(105):
+            self.database.save_whatsapp_message(
+                email="owner@example.com",
+                conversation_id="15550002222",
+                direction="inbound" if index % 2 == 0 else "outbound",
+                text=f"message-{index + 1:03d}",
+                sender_name="Maya Cohen",
+                sender_wa_id="15550002222",
+                message_id=f"wamid.context-{index + 1}",
+                message_type="text",
+                message_at=(first_message_at + timedelta(minutes=index)).isoformat(),
+            )
+
+        sent_messages: list[str] = []
+        fake_response = SimpleNamespace(
+            output_text="Hi Maya, just checking in on this.",
+            request_id="req_context",
+            response_id="resp_context",
+            model="gpt-5.4",
+        )
+
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "owner-context",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                schedule_weekday=6,
+                schedule_hour=9,
+                schedule_minute=0,
+                inactivity_months=6,
+                poll_seconds=60,
+                model="gpt-5.5",
+                max_context_messages=100,
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ) as mock_openai_response:
+            summary = scheduler.run_pending(now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
+
+        self.assertTrue(summary["ran"])
+        self.assertEqual(len(sent_messages), 1)
+        prompt = mock_openai_response.call_args.kwargs["prompt"]
+        self.assertNotIn("message-001", prompt)
+        self.assertIn("message-006", prompt)
+        self.assertIn("message-105", prompt)
+
+    def test_demo_run_drafts_without_sending_or_marking_notified(self) -> None:
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                    "inactivityValue": 1,
+                    "inactivityUnit": "months",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550003333",
+            direction="inbound",
+            text="Can you remind me what we discussed about pricing?",
+            sender_name="Dani Levi",
+            sender_wa_id="15550003333",
+            message_id="wamid.demo-old-1",
+            message_type="text",
+            message_at="2026-05-01T09:00:00+00:00",
+        )
+
+        fake_response = SimpleNamespace(
+            output_text="Hi Dani, just checking in in case the pricing question is still relevant.",
+            request_id="req_demo",
+            response_id="resp_demo",
+            model="gpt-5.4",
+        )
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, _message_text: (_ for _ in ()).throw(AssertionError("demo sent")),
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ):
+            result = scheduler.run_demo_for_email(
+                "owner@example.com",
+                now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["demo"])
+        candidates = result["run"]["candidates"]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["senderName"], "Dani Levi")
+        self.assertIn("pricing question", candidates[0]["draftText"])
+
+        conversation = self.database.get_whatsapp_conversation(
+            "15550003333",
+            email="owner@example.com",
+        )
+        self.assertFalse(conversation["lastReengagementNotifiedAt"])
+        self.assertIsNone(
+            self.database.get_latest_whatsapp_reengagement_run(
+                user_id=int(conversation["userId"]),
+                feature_id=REENGAGEMENT_FEATURE_ID,
+            )
+        )
 
 
 if __name__ == "__main__":

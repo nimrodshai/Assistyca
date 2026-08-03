@@ -3658,23 +3658,28 @@ body[data-modal="billing"] .app-shell {
   align-items: start;
 }
 
-.studio-fields.is-monitor-flow {
+.studio-fields.is-monitor-flow,
+.studio-fields.is-scheduled-flow {
   grid-template-columns: minmax(0, 1fr);
   width: min(100%, 38rem);
   gap: 1rem;
 }
 
 .studio-fields.is-monitor-flow > .config-card,
-.studio-fields.is-monitor-flow > .setup-card {
+.studio-fields.is-monitor-flow > .setup-card,
+.studio-fields.is-scheduled-flow > .config-card,
+.studio-fields.is-scheduled-flow > .setup-card {
   width: 100%;
 }
 
-.studio-fields.is-monitor-flow .setup-card {
+.studio-fields.is-monitor-flow .setup-card,
+.studio-fields.is-scheduled-flow .setup-card {
   grid-column: auto;
 }
 
 .studio-fields.is-monitor-flow #monitorScheduleCard .monitor-settings-grid,
-.studio-fields.is-monitor-flow #monitorDeliveryCard .monitor-settings-grid {
+.studio-fields.is-monitor-flow #monitorDeliveryCard .monitor-settings-grid,
+.studio-fields.is-scheduled-flow #reengagementScheduleCard .monitor-settings-grid {
   grid-template-columns: 1fr;
 }
 
@@ -4236,7 +4241,8 @@ body[data-modal="billing"] .app-shell {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-#monitorScheduleCard .monitor-settings-grid {
+#monitorScheduleCard .monitor-settings-grid,
+#reengagementScheduleCard .monitor-settings-grid {
   grid-template-columns: 1fr;
 }
 
@@ -4275,6 +4281,21 @@ body[data-modal="billing"] .app-shell {
   width: 8.35rem;
   min-width: 8.35rem;
   padding-inline: 0.85rem;
+}
+
+.reengagement-inactivity-field input {
+  width: 5.5rem;
+  min-width: 5.5rem;
+}
+
+.reengagement-inactivity-field select {
+  width: 9rem;
+  min-width: 9rem;
+  min-height: 3.35rem;
+  padding: 0.72rem 2.35rem 0.72rem 0.9rem;
+  border-radius: 1.15rem;
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .monitor-schedule-inline-meta {
@@ -6273,6 +6294,7 @@ body[data-modal="billing"] .app-shell {
 
   .monitor-settings-grid,
   #monitorDeliveryCard .monitor-settings-grid,
+  #reengagementScheduleCard .monitor-settings-grid,
   .monitor-watch-input-row,
   .pricing-intro,
   .pricing-banner,
@@ -6293,7 +6315,8 @@ body[data-modal="billing"] .app-shell {
   }
 
   .monitor-schedule-inline-field input,
-  .monitor-schedule-time-field input {
+  .monitor-schedule-time-field input,
+  .reengagement-inactivity-field select {
     width: 100%;
     min-width: 0;
   }

@@ -8,7 +8,7 @@
       name="description"
       content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
     />
-    <link rel="stylesheet" href="./styles.css?v=87" />
+    <link rel="stylesheet" href="./styles.css?v=88" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -637,6 +637,66 @@
                   </div>
                 </div>
               </div>
+            </div>
+          </article>
+
+          <article id="reengagementScheduleCard" class="glass-card config-card is-hidden">
+            <div class="card-head">
+              <h3>Schedule</h3>
+            </div>
+
+            <div class="monitor-settings-grid reengagement-settings-grid">
+              <div class="monitor-schedule-controls">
+                <label class="field compact monitor-schedule-inline-field">
+                  <span class="monitor-schedule-inline-copy">Run every</span>
+                  <input
+                    id="reengagementIntervalDays"
+                    type="number"
+                    min="1"
+                    max="365"
+                    inputmode="numeric"
+                    aria-label="Run every number of days"
+                  />
+                  <span class="monitor-schedule-inline-copy">days</span>
+                </label>
+
+                <label class="field compact monitor-schedule-inline-field monitor-schedule-time-field">
+                  <span class="monitor-schedule-inline-copy">Run at</span>
+                  <input
+                    id="reengagementScheduleTime"
+                    type="time"
+                    aria-label="Run at"
+                  />
+                  <span id="reengagementScheduleTimezoneLabel" class="monitor-schedule-inline-meta">Workspace time</span>
+                </label>
+
+                <label class="field compact monitor-schedule-inline-field reengagement-inactivity-field">
+                  <span class="monitor-schedule-inline-copy">Inactive for more than</span>
+                  <input
+                    id="reengagementInactivityValue"
+                    type="number"
+                    min="1"
+                    max="10000"
+                    inputmode="numeric"
+                    aria-label="Inactive for more than"
+                  />
+                  <select id="reengagementInactivityUnit" aria-label="Inactivity unit">
+                    <option value="minutes">minutes</option>
+                    <option value="hours">hours</option>
+                    <option value="days">days</option>
+                    <option value="months">months</option>
+                  </select>
+                </label>
+              </div>
+
+              <div id="reengagementNextRun" class="monitor-next-run" hidden>
+                <span>Next run date</span>
+                <strong id="reengagementNextRunValue">Activate to schedule</strong>
+              </div>
+
+              <p class="monitor-delivery-caption reengagement-context-note">
+                Drafts use the latest 100 saved messages.
+              </p>
             </div>
           </article>
 
@@ -1291,6 +1351,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=96"></script>
+    <script src="./app.js?v=97"></script>
   </body>
 </html>

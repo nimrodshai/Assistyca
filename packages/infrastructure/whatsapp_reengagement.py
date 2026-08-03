@@ -5,6 +5,7 @@ from __future__ import annotations
 import calendar
 import os
 from dataclasses import dataclass
+from datetime import date
 from datetime import datetime
 from datetime import time as time_of_day
 from datetime import timedelta
@@ -28,7 +29,12 @@ DEFAULT_REENGAGEMENT_MINUTE = 0
 DEFAULT_REENGAGEMENT_MONTHS = 6
 DEFAULT_REENGAGEMENT_POLL_SECONDS = 300
 DEFAULT_REENGAGEMENT_MODEL = "gpt-5.5"
-DEFAULT_MAX_CONTEXT_MESSAGES = 24
+DEFAULT_REENGAGEMENT_INTERVAL_DAYS = 7
+DEFAULT_REENGAGEMENT_INACTIVITY_UNIT = "months"
+DEFAULT_REENGAGEMENT_INACTIVITY_VALUE = 6
+DEFAULT_MAX_CONTEXT_MESSAGES = 100
+MAX_CONTEXT_MESSAGES = 100
+REENGAGEMENT_INACTIVITY_UNITS = frozenset({"minutes", "hours", "days", "months"})
 
 
 @dataclass
@@ -64,6 +70,11 @@ def safe_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def clamp_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    parsed = safe_int(value, default)
+    return max(minimum, min(maximum, parsed))
 
 
 def parse_weekday(value: Any, default: int = DEFAULT_REENGAGEMENT_WEEKDAY) -> int:
@@ -103,7 +114,12 @@ def load_whatsapp_reengagement_config() -> WhatsAppReengagementConfig:
         inactivity_months=max(1, safe_int(os.getenv("PORTAL_WHATSAPP_REENGAGEMENT_INACTIVITY_MONTHS"), DEFAULT_REENGAGEMENT_MONTHS)),
         poll_seconds=max(30, safe_int(os.getenv("PORTAL_WHATSAPP_REENGAGEMENT_POLL_SECONDS"), DEFAULT_REENGAGEMENT_POLL_SECONDS)),
         model=normalize_text(os.getenv("PORTAL_WHATSAPP_REENGAGEMENT_MODEL")) or DEFAULT_REENGAGEMENT_MODEL,
-        max_context_messages=max(6, safe_int(os.getenv("PORTAL_WHATSAPP_REENGAGEMENT_MAX_CONTEXT_MESSAGES"), DEFAULT_MAX_CONTEXT_MESSAGES)),
+        max_context_messages=clamp_int(
+            os.getenv("PORTAL_WHATSAPP_REENGAGEMENT_MAX_CONTEXT_MESSAGES"),
+            default=DEFAULT_MAX_CONTEXT_MESSAGES,
+            minimum=1,
+            maximum=MAX_CONTEXT_MESSAGES,
+        ),
     )
 
 
@@ -128,6 +144,203 @@ def subtract_calendar_months(moment: datetime, months: int) -> datetime:
         month += 12
     day = min(moment.day, calendar.monthrange(year, month)[1])
     return moment.replace(year=year, month=month, day=day)
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def normalize_schedule_time(value: Any, fallback: str = "") -> str:
+    text = normalize_text(value)
+    if not text:
+        text = normalize_text(fallback)
+    if not text:
+        return ""
+    parts = text.split(":", 1)
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        return normalize_schedule_time(fallback, "") if fallback and fallback != text else ""
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return normalize_schedule_time(fallback, "") if fallback and fallback != text else ""
+    return f"{hour:02d}:{minute:02d}"
+
+
+def normalize_inactivity_unit(value: Any, fallback: str = DEFAULT_REENGAGEMENT_INACTIVITY_UNIT) -> str:
+    text = normalize_text(value).lower()
+    aliases = {
+        "m": "minutes",
+        "min": "minutes",
+        "mins": "minutes",
+        "minute": "minutes",
+        "minutes": "minutes",
+        "h": "hours",
+        "hr": "hours",
+        "hrs": "hours",
+        "hour": "hours",
+        "hours": "hours",
+        "d": "days",
+        "day": "days",
+        "days": "days",
+        "month": "months",
+        "months": "months",
+    }
+    normalized = aliases.get(text, "")
+    if normalized in REENGAGEMENT_INACTIVITY_UNITS:
+        return normalized
+    fallback_normalized = aliases.get(normalize_text(fallback).lower(), "")
+    return fallback_normalized if fallback_normalized in REENGAGEMENT_INACTIVITY_UNITS else DEFAULT_REENGAGEMENT_INACTIVITY_UNIT
+
+
+def default_schedule_time(config: WhatsAppReengagementConfig | None = None) -> str:
+    source = config or WhatsAppReengagementConfig()
+    return f"{source.schedule_hour:02d}:{source.schedule_minute:02d}"
+
+
+def normalize_reengagement_settings(
+    settings: dict[str, Any] | None = None,
+    *,
+    config: WhatsAppReengagementConfig | None = None,
+) -> dict[str, Any]:
+    source = settings if isinstance(settings, dict) else {}
+    resolved_config = config or WhatsAppReengagementConfig()
+    inactivity_unit = normalize_inactivity_unit(
+        source.get("inactivityUnit") or source.get("inactivity_unit") or source.get("inactivityCadence"),
+        DEFAULT_REENGAGEMENT_INACTIVITY_UNIT,
+    )
+    legacy_months = source.get("inactivityMonths") or source.get("inactivity_months")
+    inactivity_default = (
+        resolved_config.inactivity_months
+        if inactivity_unit == "months"
+        else DEFAULT_REENGAGEMENT_INACTIVITY_VALUE
+    )
+    inactivity_value_source = source.get("inactivityValue")
+    if inactivity_value_source in (None, "") and legacy_months not in (None, ""):
+        inactivity_value_source = legacy_months
+        inactivity_unit = "months"
+
+    return {
+        "model": normalize_text(source.get("model")) or resolved_config.model,
+        "intervalDays": clamp_int(
+            source.get("intervalDays") or source.get("interval_days"),
+            default=DEFAULT_REENGAGEMENT_INTERVAL_DAYS,
+            minimum=1,
+            maximum=365,
+        ),
+        "scheduleTimeLocal": normalize_schedule_time(
+            source.get("scheduleTimeLocal") or source.get("scheduleTime") or source.get("schedule_time"),
+            default_schedule_time(resolved_config),
+        ),
+        "scheduleTimezone": normalize_text(
+            source.get("scheduleTimezone") or source.get("scheduleTimeZone") or resolved_config.timezone_name
+        ),
+        "scheduleWeekday": parse_weekday(
+            source.get("scheduleWeekday") or source.get("schedule_weekday"),
+            default=resolved_config.schedule_weekday,
+        ),
+        "inactivityValue": clamp_int(
+            inactivity_value_source,
+            default=inactivity_default,
+            minimum=1,
+            maximum=10000,
+        ),
+        "inactivityUnit": inactivity_unit,
+        "maxContextMessages": clamp_int(
+            source.get("maxContextMessages") or source.get("max_context_messages"),
+            default=resolved_config.max_context_messages,
+            minimum=1,
+            maximum=MAX_CONTEXT_MESSAGES,
+        ),
+    }
+
+
+def reengagement_anchor_date(schedule_weekday: int = DEFAULT_REENGAGEMENT_WEEKDAY) -> date:
+    # 1970-01-05 was a Monday. Offsetting from it preserves the previous weekly default.
+    return (datetime(1970, 1, 5, tzinfo=timezone.utc) + timedelta(days=schedule_weekday)).date()
+
+
+def latest_reengagement_scheduled_slot(
+    moment: datetime,
+    settings: dict[str, Any],
+    tz: timezone | ZoneInfo,
+) -> datetime:
+    local_moment = moment.astimezone(tz)
+    schedule_time = normalize_schedule_time(settings.get("scheduleTimeLocal"), DEFAULT_REENGAGEMENT_HOUR)
+    if not schedule_time:
+        schedule_time = default_schedule_time()
+    hour, minute = [int(part) for part in schedule_time.split(":", 1)]
+    interval_days = clamp_int(
+        settings.get("intervalDays"),
+        default=DEFAULT_REENGAGEMENT_INTERVAL_DAYS,
+        minimum=1,
+        maximum=365,
+    )
+    candidate_day = local_moment.date()
+    candidate = datetime.combine(candidate_day, time_of_day(hour, minute), tzinfo=tz)
+    if candidate > local_moment:
+        candidate_day -= timedelta(days=1)
+        candidate = datetime.combine(candidate_day, time_of_day(hour, minute), tzinfo=tz)
+
+    anchor_day = reengagement_anchor_date(parse_weekday(settings.get("scheduleWeekday")))
+    days_since_anchor = (candidate_day - anchor_day).days
+    if days_since_anchor >= 0:
+        offset_days = days_since_anchor % interval_days
+        scheduled_day = candidate_day - timedelta(days=offset_days)
+    else:
+        offset_days = (-days_since_anchor) % interval_days
+        scheduled_day = candidate_day - timedelta(days=(interval_days - offset_days) % interval_days)
+    scheduled = datetime.combine(scheduled_day, time_of_day(hour, minute), tzinfo=tz)
+    if scheduled > local_moment:
+        scheduled -= timedelta(days=interval_days)
+    return scheduled.astimezone(timezone.utc)
+
+
+def resolve_next_reengagement_slot(
+    *,
+    now: datetime,
+    settings: dict[str, Any],
+    tz: timezone | ZoneInfo,
+) -> datetime:
+    current_time = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    current_time = current_time.astimezone(timezone.utc)
+    latest_slot = latest_reengagement_scheduled_slot(current_time, settings, tz)
+    interval_days = clamp_int(
+        settings.get("intervalDays"),
+        default=DEFAULT_REENGAGEMENT_INTERVAL_DAYS,
+        minimum=1,
+        maximum=365,
+    )
+    next_local = latest_slot.astimezone(tz) + timedelta(days=interval_days)
+    return next_local.astimezone(timezone.utc)
+
+
+def resolve_reengagement_cutoff_at(
+    *,
+    now: datetime,
+    settings: dict[str, Any],
+    tz: timezone | ZoneInfo,
+) -> datetime:
+    current_time = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    local_time = current_time.astimezone(tz)
+    value = clamp_int(settings.get("inactivityValue"), default=DEFAULT_REENGAGEMENT_INACTIVITY_VALUE, minimum=1, maximum=10000)
+    unit = normalize_inactivity_unit(settings.get("inactivityUnit"))
+    if unit == "minutes":
+        return (local_time - timedelta(minutes=value)).astimezone(timezone.utc)
+    if unit == "hours":
+        return (local_time - timedelta(hours=value)).astimezone(timezone.utc)
+    if unit == "days":
+        return (local_time - timedelta(days=value)).astimezone(timezone.utc)
+    return subtract_calendar_months(local_time, value).astimezone(timezone.utc)
 
 
 def latest_scheduled_slot(moment: datetime, config: WhatsAppReengagementConfig, tz: timezone | ZoneInfo) -> datetime:
@@ -165,7 +378,7 @@ def short_customer_name(conversation: dict[str, Any]) -> str:
     return sender_wa_id or "this client"
 
 
-def build_context_excerpt(messages: list[dict[str, Any]], limit: int = 12) -> str:
+def build_context_excerpt(messages: list[dict[str, Any]], limit: int = DEFAULT_MAX_CONTEXT_MESSAGES) -> str:
     lines: list[str] = []
     for message in messages[-limit:]:
         direction = normalize_text(message.get("direction")).lower()
@@ -350,8 +563,16 @@ class WhatsAppReengagementScheduler:
         connection: dict[str, Any],
         scheduled_for: datetime,
         cutoff_at: datetime,
+        settings: dict[str, Any],
+        tz: timezone | ZoneInfo,
     ) -> dict[str, Any]:
         user_id = int(connection.get("userId") or 0)
+        max_context_messages = clamp_int(
+            settings.get("maxContextMessages"),
+            default=self.config.max_context_messages,
+            minimum=1,
+            maximum=MAX_CONTEXT_MESSAGES,
+        )
         due_conversations = self.database.list_due_whatsapp_reengagement_conversations(
             user_id=user_id,
             cutoff_at=cutoff_at,
@@ -363,17 +584,17 @@ class WhatsAppReengagementScheduler:
             messages = self.database.list_whatsapp_conversation_messages(
                 normalize_text(conversation.get("conversationId")),
                 user_id=user_id,
-                limit=self.config.max_context_messages,
+                limit=max_context_messages,
             )
             draft_text, source, model_name, draft_metadata = self._generate_draft(
-                connection=connection,
+                connection={**connection, "settings": settings},
                 conversation=conversation,
                 messages=messages,
             )
             owner_notification = build_owner_notification(
                 conversation=conversation,
                 draft_text=draft_text,
-                tz=self.timezone,
+                tz=tz,
             )
             try:
                 owner_message_id = self.send_owner_message(connection, owner_notification)
@@ -427,6 +648,115 @@ class WhatsAppReengagementScheduler:
             "run": run_record,
         }
 
+    def _build_demo_candidate(
+        self,
+        *,
+        connection: dict[str, Any],
+        conversation: dict[str, Any],
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        user_id = int(connection.get("userId") or 0)
+        max_context_messages = clamp_int(
+            settings.get("maxContextMessages"),
+            default=self.config.max_context_messages,
+            minimum=1,
+            maximum=MAX_CONTEXT_MESSAGES,
+        )
+        messages = self.database.list_whatsapp_conversation_messages(
+            normalize_text(conversation.get("conversationId")),
+            user_id=user_id,
+            limit=max_context_messages,
+        )
+        draft_text, source, model_name, draft_metadata = self._generate_draft(
+            connection={**connection, "settings": settings},
+            conversation=conversation,
+            messages=messages,
+        )
+        return {
+            "conversationId": normalize_text(conversation.get("conversationId")),
+            "senderName": normalize_text(conversation.get("senderName")),
+            "senderWaId": normalize_text(conversation.get("senderWaId")),
+            "lastMessageAt": normalize_text(conversation.get("lastMessageAt")),
+            "lastMessageText": normalize_text(conversation.get("lastMessageText")),
+            "messageCount": int(conversation.get("messageCount") or 0),
+            "contextMessageCount": len(messages),
+            "draftText": draft_text,
+            "source": source,
+            "modelName": model_name,
+            "metadata": draft_metadata,
+        }
+
+    def _settings_for_connection(self, connection: dict[str, Any]) -> dict[str, Any]:
+        settings = connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
+        return normalize_reengagement_settings(settings, config=self.config)
+
+    def _timezone_for_settings(self, settings: dict[str, Any]) -> timezone | ZoneInfo:
+        return resolve_timezone(normalize_text(settings.get("scheduleTimezone")) or self.config.timezone_name)
+
+    def run_demo_for_email(self, email: str, *, now: datetime | None = None) -> dict[str, Any]:
+        connection = self.database.get_whatsapp_reengagement_target(
+            email,
+            REENGAGEMENT_FEATURE_ID,
+            require_active=False,
+        )
+        if connection is None:
+            return {
+                "ok": False,
+                "error": "feature_not_available",
+                "message": "This tool is not available for this account.",
+            }
+
+        user_id = int(connection.get("userId") or 0)
+        if user_id <= 0:
+            return {
+                "ok": False,
+                "error": "setup_required",
+                "message": "Open WhatsApp details before running a demo.",
+            }
+
+        current_time = now or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        current_time = current_time.astimezone(timezone.utc)
+
+        settings = self._settings_for_connection(connection)
+        tz = self._timezone_for_settings(settings)
+        scheduled_for = latest_reengagement_scheduled_slot(current_time, settings, tz)
+        next_run = resolve_next_reengagement_slot(now=current_time, settings=settings, tz=tz)
+        cutoff_at = resolve_reengagement_cutoff_at(now=current_time, settings=settings, tz=tz)
+        due_conversations = self.database.list_due_whatsapp_reengagement_conversations(
+            user_id=user_id,
+            cutoff_at=cutoff_at,
+        )
+        candidates = [
+            self._build_demo_candidate(
+                connection=connection,
+                conversation=conversation,
+                settings=settings,
+            )
+            for conversation in due_conversations
+        ]
+        status = "completed" if candidates else "no_candidates"
+        return {
+            "ok": True,
+            "demo": True,
+            "message": (
+                f"Demo found {len(candidates)} inactive conversation"
+                f"{'' if len(candidates) == 1 else 's'}."
+            ),
+            "run": {
+                "status": status,
+                "scheduledFor": scheduled_for.isoformat(),
+                "nextRunAt": next_run.isoformat(),
+                "cutoffAt": cutoff_at.isoformat(),
+                "conversationsChecked": len(due_conversations),
+                "candidatesCount": len(candidates),
+                "notificationsSent": 0,
+                "settings": settings,
+                "candidates": candidates,
+            },
+        }
+
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         if not self.config.enabled:
             return {"ok": True, "ran": False, "reason": "disabled"}
@@ -436,14 +766,14 @@ class WhatsAppReengagementScheduler:
             current_time = current_time.replace(tzinfo=timezone.utc)
         current_time = current_time.astimezone(timezone.utc)
 
-        scheduled_for = latest_scheduled_slot(current_time, self.config, self.timezone)
-        cutoff_at = subtract_calendar_months(current_time.astimezone(self.timezone), self.config.inactivity_months)
-        cutoff_at = cutoff_at.astimezone(timezone.utc)
-
         targets = self.database.list_active_whatsapp_reengagement_targets(REENGAGEMENT_FEATURE_ID)
         runs: list[dict[str, Any]] = []
         skipped = 0
         for connection in targets:
+            settings = self._settings_for_connection(connection)
+            tz = self._timezone_for_settings(settings)
+            scheduled_for = latest_reengagement_scheduled_slot(current_time, settings, tz)
+            cutoff_at = resolve_reengagement_cutoff_at(now=current_time, settings=settings, tz=tz)
             existing_run = self.database.get_whatsapp_reengagement_run(
                 user_id=int(connection.get("userId") or 0),
                 feature_id=REENGAGEMENT_FEATURE_ID,
@@ -457,14 +787,16 @@ class WhatsAppReengagementScheduler:
                     connection=connection,
                     scheduled_for=scheduled_for,
                     cutoff_at=cutoff_at,
+                    settings=settings,
+                    tz=tz,
                 )
             )
 
         return {
             "ok": True,
             "ran": bool(runs),
-            "scheduledFor": scheduled_for.isoformat(),
-            "cutoffAt": cutoff_at.isoformat(),
+            "scheduledFor": runs[-1]["run"]["scheduledFor"] if runs else "",
+            "cutoffAt": runs[-1]["run"]["metadata"].get("cutoffAt", "") if runs else "",
             "targets": len(targets),
             "skipped": skipped,
             "runs": runs,
