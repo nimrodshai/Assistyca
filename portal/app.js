@@ -1456,11 +1456,10 @@ function createAdminStateBadge(label, className = "") {
 function createAdminClientTypeSelect(user, options = {}) {
   const normalizedEmail = normalizeEmail(user?.email || "");
   const isBusy = Boolean(state.adminTypeBusyByEmail[normalizedEmail]);
+  const selectedClientType = normalizeAdminClientType(user?.clientType) || deriveAdminClientType(user?.paymentStatus);
   const select = document.createElement("select");
   select.className = "admin-client-type-select";
-  select.value = normalizeAdminClientType(user?.clientType) || deriveAdminClientType(user?.paymentStatus);
   select.dataset.adminClientTypeUser = normalizedEmail;
-  select.dataset.adminClientTypeValue = select.value;
   select.disabled = Boolean(options.disabled) || isBusy;
   select.setAttribute(
     "aria-label",
@@ -1471,9 +1470,12 @@ function createAdminClientTypeSelect(user, options = {}) {
     const option = document.createElement("option");
     option.value = type.value;
     option.textContent = type.label;
+    option.selected = type.value === selectedClientType;
     select.append(option);
   }
 
+  select.value = selectedClientType;
+  select.dataset.adminClientTypeValue = selectedClientType;
   return select;
 }
 

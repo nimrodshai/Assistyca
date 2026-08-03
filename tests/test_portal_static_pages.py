@@ -36,6 +36,17 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertEqual(resolve_static_page_alias("/about/"), Path("about/index.html"))
         self.assertIsNone(resolve_static_page_alias("/"))
 
+    def test_admin_client_type_select_applies_value_after_options_exist(self) -> None:
+        body = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        start = body.index("function createAdminClientTypeSelect")
+        end = body.index("function createAdminActiveSwitch", start)
+        snippet = body[start:end]
+
+        self.assertIn("const selectedClientType", snippet)
+        self.assertIn("option.selected = type.value === selectedClientType;", snippet)
+        self.assertLess(snippet.index("select.append(option);"), snippet.index("select.value = selectedClientType;"))
+        self.assertIn("select.dataset.adminClientTypeValue = selectedClientType;", snippet)
+
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")
