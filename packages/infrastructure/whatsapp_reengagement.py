@@ -495,6 +495,53 @@ def build_owner_notification(
     return "\n".join(lines)
 
 
+def build_demo_owner_notification(
+    *,
+    conversation: dict[str, Any],
+    draft_text: str,
+    tz: timezone | ZoneInfo,
+) -> str:
+    return "\n".join(
+        [
+            "Demo result from Assistyca.",
+            "No customer message was sent.",
+            "",
+            build_owner_notification(
+                conversation=conversation,
+                draft_text=draft_text,
+                tz=tz,
+            ),
+        ]
+    )
+
+
+def build_demo_no_candidates_notification(
+    *,
+    settings: dict[str, Any],
+    cutoff_at: datetime,
+    tz: timezone | ZoneInfo,
+) -> str:
+    value = clamp_int(
+        settings.get("inactivityValue"),
+        default=DEFAULT_REENGAGEMENT_INACTIVITY_VALUE,
+        minimum=1,
+        maximum=10000,
+    )
+    unit = normalize_inactivity_unit(settings.get("inactivityUnit"))
+    unit_label = unit[:-1] if value == 1 and unit.endswith("s") else unit
+    cutoff_label = format_message_time(cutoff_at.isoformat(), tz)
+    return "\n".join(
+        [
+            "Demo result from Assistyca.",
+            "No customer message was sent.",
+            "",
+            "No inactive conversations matched the current settings.",
+            f"Looking for: no activity for more than {value} {unit_label}.",
+            f"Cutoff checked: {cutoff_label}.",
+        ]
+    )
+
+
 class WhatsAppReengagementScheduler:
     def __init__(
         self,
@@ -693,6 +740,14 @@ class WhatsAppReengagementScheduler:
     def _timezone_for_settings(self, settings: dict[str, Any]) -> timezone | ZoneInfo:
         return resolve_timezone(normalize_text(settings.get("scheduleTimezone")) or self.config.timezone_name)
 
+    def _owner_delivery_ready(self, connection: dict[str, Any]) -> bool:
+        return bool(
+            normalize_text(connection.get("phoneNumberId"))
+            and normalize_text(connection.get("ownerWaId"))
+            and normalize_text(connection.get("connectionStatus")) == "connected"
+            and bool(connection.get("accessTokenConfigured"))
+        )
+
     def run_demo_for_email(self, email: str, *, now: datetime | None = None) -> dict[str, Any]:
         connection = self.database.get_whatsapp_reengagement_target(
             email,
@@ -712,6 +767,12 @@ class WhatsAppReengagementScheduler:
                 "ok": False,
                 "error": "setup_required",
                 "message": "Open WhatsApp details before running a demo.",
+            }
+        if not self._owner_delivery_ready(connection):
+            return {
+                "ok": False,
+                "error": "setup_required",
+                "message": "Finish WhatsApp setup before running a demo so Assistyca can send the results to your phone.",
             }
 
         current_time = now or datetime.now(timezone.utc)
@@ -736,13 +797,64 @@ class WhatsAppReengagementScheduler:
             )
             for conversation in due_conversations
         ]
+        owner_message_ids: list[str] = []
+        delivery_errors: list[str] = []
+        if candidates:
+            for candidate in candidates:
+                message_text = build_demo_owner_notification(
+                    conversation=candidate,
+                    draft_text=normalize_text(candidate.get("draftText")),
+                    tz=tz,
+                )
+                try:
+                    owner_message_ids.append(self.send_owner_message(connection, message_text))
+                except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
+                    delivery_errors.append(
+                        f"{normalize_text(candidate.get('conversationId'))}: {exc}"
+                    )
+        else:
+            try:
+                owner_message_ids.append(
+                    self.send_owner_message(
+                        connection,
+                        build_demo_no_candidates_notification(
+                            settings=settings,
+                            cutoff_at=cutoff_at,
+                            tz=tz,
+                        ),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
+                delivery_errors.append(str(exc))
+
         status = "completed" if candidates else "no_candidates"
+        if delivery_errors and owner_message_ids:
+            status = "partial"
+        elif delivery_errors:
+            return {
+                "ok": False,
+                "error": "demo_delivery_failed",
+                "message": "The demo generated results but could not send them to WhatsApp.",
+                "run": {
+                    "status": "failed",
+                    "scheduledFor": scheduled_for.isoformat(),
+                    "nextRunAt": next_run.isoformat(),
+                    "cutoffAt": cutoff_at.isoformat(),
+                    "conversationsChecked": len(due_conversations),
+                    "candidatesCount": len(candidates),
+                    "notificationsSent": 0,
+                    "settings": settings,
+                    "candidates": candidates,
+                    "ownerMessageIds": owner_message_ids,
+                    "deliveryErrors": delivery_errors,
+                },
+            }
         return {
             "ok": True,
             "demo": True,
             "message": (
                 f"Demo found {len(candidates)} inactive conversation"
-                f"{'' if len(candidates) == 1 else 's'}."
+                f"{'' if len(candidates) == 1 else 's'} and sent the results to WhatsApp."
             ),
             "run": {
                 "status": status,
@@ -751,9 +863,11 @@ class WhatsAppReengagementScheduler:
                 "cutoffAt": cutoff_at.isoformat(),
                 "conversationsChecked": len(due_conversations),
                 "candidatesCount": len(candidates),
-                "notificationsSent": 0,
+                "notificationsSent": len(owner_message_ids),
                 "settings": settings,
                 "candidates": candidates,
+                "ownerMessageIds": owner_message_ids,
+                "deliveryErrors": delivery_errors,
             },
         }
 

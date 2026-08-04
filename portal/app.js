@@ -9463,40 +9463,32 @@ function formatReengagementCandidateName(candidate = {}) {
 
 function getReengagementDemoAlertTitle(run = {}) {
   const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
-  if (candidatesCount === 1) {
-    return "1 inactive conversation";
+  const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
+  if (notificationsSent > 0) {
+    return "WhatsApp report sent";
   }
-  if (candidatesCount > 1) {
-    return `${candidatesCount} inactive conversations`;
-  }
-  return "No inactive conversations";
+  return candidatesCount > 0 ? "Demo results ready" : "No inactive conversations";
 }
 
 function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run finished.") {
-  const candidates = Array.isArray(run?.candidates) ? run.candidates : [];
+  const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
+  const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
+  const deliveryErrors = Array.isArray(run?.deliveryErrors) ? run.deliveryErrors : [];
   const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
   const inactivityLabel = formatReengagementInactivityLabel(settings);
-  const cutoffAt = String(run?.cutoffAt || "").trim();
-  const cutoffLabel = cutoffAt ? formatMonitorNextRunDate(cutoffAt, getReengagementScheduleTimezone()) : "";
 
-  if (!candidates.length) {
-    return cutoffLabel
-      ? `No saved conversations were inactive for more than ${inactivityLabel}. Cutoff checked: ${cutoffLabel}.`
-      : `No saved conversations were inactive for more than ${inactivityLabel}.`;
+  if (notificationsSent > 0) {
+    const reportLabel = notificationsSent === 1 ? "WhatsApp message" : "WhatsApp messages";
+    const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
+    const base = candidatesCount > 0
+      ? `Sent ${notificationsSent} demo ${reportLabel} with details for ${matchLabel}.`
+      : `Sent a no-results demo ${reportLabel} for the current ${inactivityLabel} inactivity window.`;
+    return deliveryErrors.length
+      ? `${base} Some results could not be delivered, so try again if anything looks missing. Customers were not contacted.`
+      : `${base} Customers were not contacted.`;
   }
 
-  const previewLines = candidates.slice(0, 3).map((candidate, index) => {
-    const name = formatReengagementCandidateName(candidate);
-    const lastMessageAt = String(candidate.lastMessageAt || "").trim();
-    const lastMessageLabel = lastMessageAt ? formatMonitorNextRunDate(lastMessageAt, getReengagementScheduleTimezone()) : "unknown date";
-    const draft = String(candidate.draftText || "").trim() || "No draft generated.";
-    return `${index + 1}. ${name} · last active ${lastMessageLabel}\n${draft}`;
-  });
-  const remainingCount = candidates.length - previewLines.length;
-  const suffix = remainingCount > 0
-    ? `\n\nShowing first ${previewLines.length}; ${remainingCount} more ${remainingCount === 1 ? "conversation" : "conversations"} matched.`
-    : "";
-  return `${fallbackMessage}\n\n${previewLines.join("\n\n")}${suffix}`;
+  return `${fallbackMessage} Customers were not contacted.`;
 }
 
 async function runSelectedReengagementDemo() {
@@ -9530,7 +9522,7 @@ async function runSelectedReengagementDemo() {
     updateFeatureStudioHeader();
     openAuthAlert(
       "Running demo",
-      "Checking saved conversations and generating follow-up drafts. Nothing will be sent.",
+      "Checking saved conversations, generating follow-up drafts, and sending the demo report to your WhatsApp. Customers will not be contacted.",
       {
         eyebrow: "Demo run",
         buttonLabel: "Running...",
@@ -9542,7 +9534,7 @@ async function runSelectedReengagementDemo() {
         tone: "progress",
       },
     );
-    setStatus("Running the re-engagement demo. Nothing will be sent.");
+    setStatus("Running the re-engagement demo and sending the report to WhatsApp.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),

@@ -304,7 +304,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertIn("message-006", prompt)
         self.assertIn("message-105", prompt)
 
-    def test_demo_run_drafts_without_sending_or_marking_notified(self) -> None:
+    def test_demo_run_sends_owner_whatsapp_without_marking_notified(self) -> None:
+        self._connect_whatsapp()
         self.database.save_feature_assignment_metadata(
             "owner@example.com",
             REENGAGEMENT_FEATURE_ID,
@@ -334,9 +335,10 @@ class WhatsAppReengagementTests(unittest.TestCase):
             response_id="resp_demo",
             model="gpt-5.4",
         )
+        sent_messages: list[str] = []
         scheduler = WhatsAppReengagementScheduler(
             self.database,
-            send_owner_message=lambda _connection, _message_text: (_ for _ in ()).throw(AssertionError("demo sent")),
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "owner-demo-1",
             config=WhatsAppReengagementConfig(
                 enabled=True,
                 timezone_name="UTC",
@@ -360,6 +362,13 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["senderName"], "Dani Levi")
         self.assertIn("pricing question", candidates[0]["draftText"])
+        self.assertEqual(result["run"]["notificationsSent"], 1)
+        self.assertEqual(result["run"]["ownerMessageIds"], ["owner-demo-1"])
+        self.assertEqual(len(sent_messages), 1)
+        self.assertIn("Demo result from Assistyca", sent_messages[0])
+        self.assertIn("No customer message was sent", sent_messages[0])
+        self.assertIn("Dani Levi", sent_messages[0])
+        self.assertIn("pricing question", sent_messages[0])
 
         conversation = self.database.get_whatsapp_conversation(
             "15550003333",

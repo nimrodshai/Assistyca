@@ -1747,11 +1747,24 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
 def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
     payload = run if isinstance(run, dict) else {}
     candidates_count = max(0, int(payload.get("candidatesCount") or 0))
+    notifications_sent = max(0, int(payload.get("notificationsSent") or 0))
     if candidates_count == 1:
-        return "Demo found 1 inactive conversation and generated a follow-up draft."
+        return (
+            "Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to WhatsApp."
+            if notifications_sent > 0
+            else "Demo found 1 inactive conversation and generated a follow-up draft."
+        )
     if candidates_count > 1:
-        return f"Demo found {candidates_count} inactive conversations and generated follow-up drafts."
-    return "Demo found no inactive conversations for the current inactivity window."
+        return (
+            f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent the report to WhatsApp."
+            if notifications_sent > 0
+            else f"Demo found {candidates_count} inactive conversations and generated follow-up drafts."
+        )
+    return (
+        "Demo found no inactive conversations for the current inactivity window and sent the report to WhatsApp."
+        if notifications_sent > 0
+        else "Demo found no inactive conversations for the current inactivity window."
+    )
 
 
 def send_api_headers(handler: SimpleHTTPRequestHandler, *, content_length: int | None = None) -> None:
@@ -4044,7 +4057,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if feature_id == REENGAGEMENT_FEATURE_ID:
                 scheduler = WhatsAppReengagementScheduler(
                     self.database,
-                    send_owner_message=lambda _connection, _message_text: "",
+                    send_owner_message=build_whatsapp_reengagement_sender(self.server, self.root),  # type: ignore[arg-type]
                     config=load_whatsapp_reengagement_config(),
                 )
                 try:
@@ -4064,6 +4077,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND
                     elif error_name == "disabled":
                         status = HTTPStatus.SERVICE_UNAVAILABLE
+                    elif error_name == "demo_delivery_failed":
+                        status = HTTPStatus.BAD_GATEWAY
                     elif error_name in {"activation_required", "setup_required"}:
                         status = HTTPStatus.CONFLICT
                     json_response(self, status, result)
