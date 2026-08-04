@@ -3689,10 +3689,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         routed_user_ids: set[int],
     ) -> None:
         result_counts: dict[str, int] = {}
+        status_counts: dict[str, int] = {}
+        status_failures: list[dict[str, str]] = []
         phone_number_ids: set[str] = set()
         for result in results:
             result_type = normalize_text(result.get("type")) or "unknown"
             result_counts[result_type] = result_counts.get(result_type, 0) + 1
+            status = normalize_text(result.get("status")).lower()
+            if status:
+                status_counts[status] = status_counts.get(status, 0) + 1
+                if status == "failed":
+                    status_failures.append(
+                        {
+                            "type": result_type,
+                            "phoneNumberId": self._mask_whatsapp_log_identifier(result.get("phone_number_id")),
+                            "recipientWaId": self._mask_whatsapp_log_identifier(result.get("recipient_wa_id")),
+                            "messageId": self._mask_whatsapp_log_identifier(result.get("message_id")),
+                            "error": normalize_text(result.get("error")),
+                        }
+                    )
             phone_number_id = normalize_text(result.get("phone_number_id"))
             if phone_number_id:
                 phone_number_ids.add(self._mask_whatsapp_log_identifier(phone_number_id))
@@ -3712,6 +3727,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "resultCounts": result_counts,
                     "routedUserCount": len([user_id for user_id in routed_user_ids if user_id > 0]),
                     "statusEvents": len(status_events),
+                    "statusCounts": status_counts,
+                    "statusFailures": status_failures[:5],
                 },
                 ensure_ascii=True,
                 sort_keys=True,
@@ -5053,12 +5070,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             event_message_id = normalize_text(status_event.get("message_id"))
             if not latest_owner_message_id or latest_owner_message_id != event_message_id:
                 if route_source == "platform_owner_alert":
+                    self._record_whatsapp_owner_delivery_event(connection, status_event)
                     results.append({
-                        "type": "status_owner_alert_ignored",
+                        "type": "status_owner_alert",
                         "message_id": event_message_id,
                         "phone_number_id": phone_number_id,
                         "status": normalize_text(status_event.get("status")).lower(),
                         "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+                        "error": normalize_text(status_event.get("error_message")),
+                        "route": route_source,
                     })
                     continue
                 message_record = self._record_whatsapp_external_outbound_status(connection, status_event)
@@ -5068,6 +5088,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "phone_number_id": phone_number_id,
                     "status": normalize_text(status_event.get("status")).lower(),
                     "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+                    "error": normalize_text(status_event.get("error_message")),
                     "saved": bool(message_record and not message_record.get("isDuplicate")),
                     "is_duplicate": bool(message_record and message_record.get("isDuplicate")),
                 })
@@ -5080,6 +5101,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "phone_number_id": phone_number_id,
                 "status": normalize_text(status_event.get("status")).lower(),
                 "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+                "error": normalize_text(status_event.get("error_message")),
                 "route": route_source,
             })
 
