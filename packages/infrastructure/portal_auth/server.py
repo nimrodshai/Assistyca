@@ -1744,24 +1744,49 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     return "Manual run finished."
 
 
+def format_reengagement_owner_label(run: dict[str, Any]) -> str:
+    owner_wa_id = normalize_text(run.get("ownerWaId"))
+    if not owner_wa_id:
+        return "your WhatsApp"
+    if owner_wa_id.isdigit():
+        return f"+{owner_wa_id}"
+    return owner_wa_id
+
+
 def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
     payload = run if isinstance(run, dict) else {}
+    status = normalize_text(payload.get("status")).lower()
+    delivery_mode = normalize_text(payload.get("deliveryMode")).lower()
+    owner_label = format_reengagement_owner_label(payload)
     candidates_count = max(0, int(payload.get("candidatesCount") or 0))
     notifications_sent = max(0, int(payload.get("notificationsSent") or 0))
+    if status == "cancelled":
+        if notifications_sent > 0:
+            label = "report" if notifications_sent == 1 else "reports"
+            if delivery_mode == "mock":
+                return f"Demo cancelled after simulating {notifications_sent} WhatsApp {label} for {owner_label}. Customers were not contacted."
+            return f"Demo cancelled after sending {notifications_sent} WhatsApp {label}. Customers were not contacted."
+        return "Demo cancelled before any WhatsApp report was sent. Customers were not contacted."
+    if notifications_sent > 0 and delivery_mode == "mock":
+        if candidates_count == 1:
+            return f"Demo found 1 inactive conversation, generated a follow-up draft, and simulated the WhatsApp report for {owner_label}. Live WhatsApp delivery is not configured."
+        if candidates_count > 1:
+            return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and simulated {notifications_sent} WhatsApp reports for {owner_label}. Live WhatsApp delivery is not configured."
+        return f"Demo found no inactive conversations for the current inactivity window and simulated a no-results WhatsApp report for {owner_label}. Live WhatsApp delivery is not configured."
     if candidates_count == 1:
         return (
-            "Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to WhatsApp."
+            f"Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to {owner_label}."
             if notifications_sent > 0
             else "Demo found 1 inactive conversation and generated a follow-up draft."
         )
     if candidates_count > 1:
         return (
-            f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent the report to WhatsApp."
+            f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent {notifications_sent} reports to {owner_label}."
             if notifications_sent > 0
             else f"Demo found {candidates_count} inactive conversations and generated follow-up drafts."
         )
     return (
-        "Demo found no inactive conversations for the current inactivity window and sent the report to WhatsApp."
+        f"Demo found no inactive conversations for the current inactivity window and sent a no-results report to {owner_label}."
         if notifications_sent > 0
         else "Demo found no inactive conversations for the current inactivity window."
     )
@@ -1797,12 +1822,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return self.server.root  # type: ignore[attr-defined]
 
     @property
-    def manual_monitor_run_events(self) -> dict[tuple[str, str, str], threading.Event]:
-        return self.server.manual_monitor_run_events  # type: ignore[attr-defined]
+    def manual_feature_run_events(self) -> dict[tuple[str, str, str], threading.Event]:
+        return self.server.manual_feature_run_events  # type: ignore[attr-defined]
 
     @property
-    def manual_monitor_run_lock(self) -> threading.RLock:
-        return self.server.manual_monitor_run_lock  # type: ignore[attr-defined]
+    def manual_feature_run_lock(self) -> threading.RLock:
+        return self.server.manual_feature_run_lock  # type: ignore[attr-defined]
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         return
@@ -2163,7 +2188,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def _manual_monitor_run_key(
+    def _manual_feature_run_key(
         self,
         *,
         email: str,
@@ -2176,7 +2201,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             normalize_manual_run_request_id(request_id),
         )
 
-    def _register_manual_monitor_run(
+    def _register_manual_feature_run(
         self,
         *,
         email: str,
@@ -2187,45 +2212,45 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not normalized_request_id:
             return None
 
-        key = self._manual_monitor_run_key(
+        key = self._manual_feature_run_key(
             email=email,
             feature_id=feature_id,
             request_id=normalized_request_id,
         )
         event = threading.Event()
-        with self.manual_monitor_run_lock:
-            self.manual_monitor_run_events[key] = event
+        with self.manual_feature_run_lock:
+            self.manual_feature_run_events[key] = event
         return event
 
-    def _get_manual_monitor_run(
+    def _get_manual_feature_run(
         self,
         *,
         email: str,
         feature_id: str,
         request_id: str,
     ) -> threading.Event | None:
-        key = self._manual_monitor_run_key(
+        key = self._manual_feature_run_key(
             email=email,
             feature_id=feature_id,
             request_id=request_id,
         )
-        with self.manual_monitor_run_lock:
-            return self.manual_monitor_run_events.get(key)
+        with self.manual_feature_run_lock:
+            return self.manual_feature_run_events.get(key)
 
-    def _clear_manual_monitor_run(
+    def _clear_manual_feature_run(
         self,
         *,
         email: str,
         feature_id: str,
         request_id: str,
     ) -> None:
-        key = self._manual_monitor_run_key(
+        key = self._manual_feature_run_key(
             email=email,
             feature_id=feature_id,
             request_id=request_id,
         )
-        with self.manual_monitor_run_lock:
-            self.manual_monitor_run_events.pop(key, None)
+        with self.manual_feature_run_lock:
+            self.manual_feature_run_events.pop(key, None)
 
     def _handle_otp_request(self) -> None:
         try:
@@ -4055,13 +4080,37 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if action_name == "run":
             if feature_id == REENGAGEMENT_FEATURE_ID:
+                run_request_id = normalize_manual_run_request_id(payload.get("runRequestId"))
+                if not run_request_id:
+                    json_response(self, HTTPStatus.BAD_REQUEST, {
+                        "ok": False,
+                        "error": "invalid_run_request_id",
+                        "message": "A valid manual run request id is required.",
+                    })
+                    return
+
                 scheduler = WhatsAppReengagementScheduler(
                     self.database,
                     send_owner_message=build_whatsapp_reengagement_sender(self.server, self.root),  # type: ignore[arg-type]
                     config=load_whatsapp_reengagement_config(),
                 )
+                cancel_event = self._register_manual_feature_run(
+                    email=session.email,
+                    feature_id=feature_id,
+                    request_id=run_request_id,
+                )
+                if cancel_event is None:
+                    json_response(self, HTTPStatus.BAD_REQUEST, {
+                        "ok": False,
+                        "error": "invalid_run_request_id",
+                        "message": "A valid manual run request id is required.",
+                    })
+                    return
                 try:
-                    result = scheduler.run_demo_for_email(session.email)
+                    result = scheduler.run_demo_for_email(
+                        session.email,
+                        cancel_check=cancel_event.is_set,
+                    )
                 except Exception as exc:  # noqa: BLE001 - surface to the UI
                     json_response(self, HTTPStatus.BAD_GATEWAY, {
                         "ok": False,
@@ -4069,6 +4118,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         "message": f"Demo run failed: {exc}",
                     })
                     return
+                finally:
+                    self._clear_manual_feature_run(
+                        email=session.email,
+                        feature_id=feature_id,
+                        request_id=run_request_id,
+                    )
 
                 if not result.get("ok"):
                     error_name = normalize_text(result.get("error"))
@@ -4113,7 +4168,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 self.database,
                 config=load_scheduled_monitor_config(),
             )
-            cancel_event = self._register_manual_monitor_run(
+            cancel_event = self._register_manual_feature_run(
                 email=session.email,
                 feature_id=feature_id,
                 request_id=run_request_id,
@@ -4138,7 +4193,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
             finally:
-                self._clear_manual_monitor_run(
+                self._clear_manual_feature_run(
                     email=session.email,
                     feature_id=feature_id,
                     request_id=run_request_id,
@@ -4862,11 +4917,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         feature_id = urllib_parse.unquote(parts[2])
-        if feature_id != MONITOR_FEATURE_ID:
+        if feature_id not in {MONITOR_FEATURE_ID, REENGAGEMENT_FEATURE_ID}:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
                 "error": "feature_not_available",
-                "message": "This tool does not support manual runs.",
+                "message": "This tool does not support cancellable runs.",
             })
             return
 
@@ -4889,7 +4944,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        cancel_event = self._get_manual_monitor_run(
+        cancel_event = self._get_manual_feature_run(
             email=session.email,
             feature_id=feature_id,
             request_id=run_request_id,
@@ -4903,9 +4958,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         cancel_event.set()
+        message = (
+            "Cancellation requested. The demo will stop before sending any more WhatsApp reports."
+            if feature_id == REENGAGEMENT_FEATURE_ID
+            else "Cancellation requested. The test will stop after the current search step."
+        )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "message": "Cancellation requested. The test will stop after the current search step.",
+            "message": message,
         })
 
     def _handle_whatsapp_webhook_verification(self, parsed: urllib_parse.ParseResult) -> None:
@@ -5241,8 +5301,10 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     )  # type: ignore[attr-defined]
     server.whatsapp_stores = {}  # type: ignore[attr-defined]
     server.whatsapp_store_lock = threading.RLock()  # type: ignore[attr-defined]
-    server.manual_monitor_run_events = {}  # type: ignore[attr-defined]
-    server.manual_monitor_run_lock = threading.RLock()  # type: ignore[attr-defined]
+    server.manual_feature_run_events = {}  # type: ignore[attr-defined]
+    server.manual_feature_run_lock = threading.RLock()  # type: ignore[attr-defined]
+    server.manual_monitor_run_events = server.manual_feature_run_events  # type: ignore[attr-defined]
+    server.manual_monitor_run_lock = server.manual_feature_run_lock  # type: ignore[attr-defined]
     return server
 
 

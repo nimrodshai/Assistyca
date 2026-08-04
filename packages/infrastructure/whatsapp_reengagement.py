@@ -542,6 +542,20 @@ def build_demo_no_candidates_notification(
     )
 
 
+def is_mock_whatsapp_message_id(value: Any) -> bool:
+    return normalize_text(value).startswith("mock-")
+
+
+def resolve_owner_delivery_mode(message_ids: list[str]) -> str:
+    if not message_ids:
+        return "none"
+    if all(is_mock_whatsapp_message_id(message_id) for message_id in message_ids):
+        return "mock"
+    if any(is_mock_whatsapp_message_id(message_id) for message_id in message_ids):
+        return "mixed"
+    return "live"
+
+
 class WhatsAppReengagementScheduler:
     def __init__(
         self,
@@ -748,7 +762,13 @@ class WhatsAppReengagementScheduler:
             and bool(connection.get("accessTokenConfigured"))
         )
 
-    def run_demo_for_email(self, email: str, *, now: datetime | None = None) -> dict[str, Any]:
+    def run_demo_for_email(
+        self,
+        email: str,
+        *,
+        now: datetime | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         connection = self.database.get_whatsapp_reengagement_target(
             email,
             REENGAGEMENT_FEATURE_ID,
@@ -789,18 +809,62 @@ class WhatsAppReengagementScheduler:
             user_id=user_id,
             cutoff_at=cutoff_at,
         )
-        candidates = [
-            self._build_demo_candidate(
-                connection=connection,
-                conversation=conversation,
-                settings=settings,
-            )
-            for conversation in due_conversations
-        ]
+
+        candidates: list[dict[str, Any]] = []
         owner_message_ids: list[str] = []
         delivery_errors: list[str] = []
+
+        def is_cancelled() -> bool:
+            return bool(callable(cancel_check) and cancel_check())
+
+        def cancelled_result() -> dict[str, Any]:
+            sent_count = len(owner_message_ids)
+            report_label = "report" if sent_count == 1 else "reports"
+            delivery_mode = resolve_owner_delivery_mode(owner_message_ids)
+            message = (
+                f"Demo run cancelled after sending {sent_count} WhatsApp {report_label}. Customers were not contacted."
+                if sent_count
+                else "Demo run cancelled before any WhatsApp report was sent. Customers were not contacted."
+            )
+            return {
+                "ok": True,
+                "demo": True,
+                "message": message,
+                "run": {
+                    "status": "cancelled",
+                    "scheduledFor": scheduled_for.isoformat(),
+                    "nextRunAt": next_run.isoformat(),
+                    "cutoffAt": cutoff_at.isoformat(),
+                    "conversationsChecked": len(due_conversations),
+                    "candidatesCount": len(candidates),
+                    "notificationsSent": sent_count,
+                    "ownerWaId": normalize_text(connection.get("ownerWaId")),
+                    "deliveryMode": delivery_mode,
+                    "settings": settings,
+                    "candidates": candidates,
+                    "ownerMessageIds": owner_message_ids,
+                    "deliveryErrors": delivery_errors,
+                },
+            }
+
+        for conversation in due_conversations:
+            if is_cancelled():
+                return cancelled_result()
+            candidates.append(
+                self._build_demo_candidate(
+                    connection=connection,
+                    conversation=conversation,
+                    settings=settings,
+                )
+            )
+
+        if is_cancelled():
+            return cancelled_result()
+
         if candidates:
             for candidate in candidates:
+                if is_cancelled():
+                    return cancelled_result()
                 message_text = build_demo_owner_notification(
                     conversation=candidate,
                     draft_text=normalize_text(candidate.get("draftText")),
@@ -813,6 +877,8 @@ class WhatsAppReengagementScheduler:
                         f"{normalize_text(candidate.get('conversationId'))}: {exc}"
                     )
         else:
+            if is_cancelled():
+                return cancelled_result()
             try:
                 owner_message_ids.append(
                     self.send_owner_message(
@@ -826,6 +892,9 @@ class WhatsAppReengagementScheduler:
                 )
             except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
                 delivery_errors.append(str(exc))
+
+        if is_cancelled():
+            return cancelled_result()
 
         status = "completed" if candidates else "no_candidates"
         if delivery_errors and owner_message_ids:
@@ -843,18 +912,22 @@ class WhatsAppReengagementScheduler:
                     "conversationsChecked": len(due_conversations),
                     "candidatesCount": len(candidates),
                     "notificationsSent": 0,
+                    "ownerWaId": normalize_text(connection.get("ownerWaId")),
+                    "deliveryMode": resolve_owner_delivery_mode(owner_message_ids),
                     "settings": settings,
                     "candidates": candidates,
                     "ownerMessageIds": owner_message_ids,
                     "deliveryErrors": delivery_errors,
                 },
             }
+        delivery_mode = resolve_owner_delivery_mode(owner_message_ids)
+        delivery_action = "simulated the WhatsApp report" if delivery_mode == "mock" else "sent the results to WhatsApp"
         return {
             "ok": True,
             "demo": True,
             "message": (
                 f"Demo found {len(candidates)} inactive conversation"
-                f"{'' if len(candidates) == 1 else 's'} and sent the results to WhatsApp."
+                f"{'' if len(candidates) == 1 else 's'} and {delivery_action}."
             ),
             "run": {
                 "status": status,
@@ -864,6 +937,8 @@ class WhatsAppReengagementScheduler:
                 "conversationsChecked": len(due_conversations),
                 "candidatesCount": len(candidates),
                 "notificationsSent": len(owner_message_ids),
+                "ownerWaId": normalize_text(connection.get("ownerWaId")),
+                "deliveryMode": delivery_mode,
                 "settings": settings,
                 "candidates": candidates,
                 "ownerMessageIds": owner_message_ids,

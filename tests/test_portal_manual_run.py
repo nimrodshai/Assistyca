@@ -16,8 +16,10 @@ from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.portal_auth.server import describe_manual_reengagement_demo_run
 from packages.infrastructure.portal_auth.server import parse_whatsapp_export_messages
 from packages.infrastructure.portal_auth.server import parse_whatsapp_export_timestamp
+from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
@@ -156,6 +158,85 @@ class PortalManualRunTests(unittest.TestCase):
         self.assertEqual(post_result["status"], 200)
         self.assertEqual(post_result["body"]["run"]["status"], "cancelled")
         self.assertIn("cancelled", str(post_result["body"]["message"]).lower())
+
+    def test_delete_reengagement_demo_run_marks_active_run_cancelled(self) -> None:
+        request_started = threading.Event()
+        post_result: dict[str, object] = {}
+
+        def fake_run_demo_for_email(_scheduler, email: str, *, now=None, cancel_check=None):
+            self.assertEqual(email, "owner@example.com")
+            request_started.set()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if callable(cancel_check) and cancel_check():
+                    return {
+                        "ok": True,
+                        "demo": True,
+                        "run": {
+                            "status": "cancelled",
+                            "scheduledFor": "2026-07-13T12:00:00+00:00",
+                            "candidatesCount": 0,
+                            "notificationsSent": 0,
+                        },
+                    }
+                time.sleep(0.01)
+            return {
+                "ok": False,
+                "error": "cancel_timeout",
+                "message": "Cancellation was never received.",
+            }
+
+        def send_post() -> None:
+            try:
+                status, body = self._request(
+                    "POST",
+                    f"/api/features/{REENGAGEMENT_FEATURE_ID}/run",
+                    {"runRequestId": "demo-run-1"},
+                )
+                post_result["status"] = status
+                post_result["body"] = body
+            except Exception as exc:  # pragma: no cover - test failure surface
+                post_result["error"] = exc
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.WhatsAppReengagementScheduler.run_demo_for_email",
+            new=fake_run_demo_for_email,
+        ):
+            post_thread = threading.Thread(target=send_post, daemon=True)
+            post_thread.start()
+            self.assertTrue(request_started.wait(timeout=1))
+
+            cancel_status, cancel_body = self._request(
+                "DELETE",
+                f"/api/features/{REENGAGEMENT_FEATURE_ID}/run",
+                {"runRequestId": "demo-run-1"},
+            )
+
+            post_thread.join(timeout=2)
+
+        if "error" in post_result:
+            raise post_result["error"]  # type: ignore[misc]
+
+        self.assertEqual(cancel_status, 200)
+        self.assertTrue(cancel_body["ok"])
+        self.assertEqual(post_result["status"], 200)
+        self.assertEqual(post_result["body"]["run"]["status"], "cancelled")
+        self.assertIn("cancelled", str(post_result["body"]["message"]).lower())
+
+    def test_reengagement_demo_description_names_mock_delivery(self) -> None:
+        message = describe_manual_reengagement_demo_run(
+            {
+                "status": "no_candidates",
+                "candidatesCount": 0,
+                "notificationsSent": 1,
+                "ownerWaId": "972507322341",
+                "deliveryMode": "mock",
+            }
+        )
+
+        self.assertIn("simulated", message)
+        self.assertIn("+972507322341", message)
+        self.assertIn("Live WhatsApp delivery is not configured", message)
 
 
 class PortalWhatsAppTemplateTests(unittest.TestCase):

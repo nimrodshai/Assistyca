@@ -589,6 +589,10 @@ let monitorManualRunCancellationError = "";
 let monitorManualRunOverlayVisible = false;
 let reengagementDemoRunBusy = false;
 let reengagementDemoRunTargetId = "";
+let reengagementDemoRunRequestId = "";
+let reengagementDemoRunCancelling = false;
+let reengagementDemoRunCancellationError = "";
+let reengagementDemoRunOverlayVisible = false;
 let whatsappSampleMessageBusy = false;
 let whatsappSampleMessageTargetId = "";
 let whatsappHistoryRefreshPromise = null;
@@ -9461,34 +9465,168 @@ function formatReengagementCandidateName(candidate = {}) {
   return String(candidate.senderName || candidate.senderWaId || candidate.conversationId || "Unknown conversation").trim();
 }
 
+function formatReengagementOwnerLabel(run = {}) {
+  const explicitOwner = normalizeText(run?.ownerWaId);
+  const owner = explicitOwner || getFeatureWhatsAppOwnerLabel(getSelectedFeature());
+  if (/^\d+$/.test(owner)) {
+    return `+${owner}`;
+  }
+  return owner || "your WhatsApp";
+}
+
+function getReengagementDeliveryMode(run = {}) {
+  return normalizeText(run?.deliveryMode).toLowerCase();
+}
+
 function getReengagementDemoAlertTitle(run = {}) {
+  const status = normalizeText(run?.status).toLowerCase();
+  if (status === "cancelled") {
+    return "Demo cancelled";
+  }
   const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
   const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
   if (notificationsSent > 0) {
+    const deliveryMode = getReengagementDeliveryMode(run);
+    if (deliveryMode === "mock") {
+      return "WhatsApp report simulated";
+    }
+    if (deliveryMode === "mixed") {
+      return "WhatsApp report partly sent";
+    }
     return "WhatsApp report sent";
   }
   return candidatesCount > 0 ? "Demo results ready" : "No inactive conversations";
 }
 
 function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run finished.") {
+  const status = normalizeText(run?.status).toLowerCase();
+  const deliveryMode = getReengagementDeliveryMode(run);
+  const ownerLabel = formatReengagementOwnerLabel(run);
   const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
   const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
   const deliveryErrors = Array.isArray(run?.deliveryErrors) ? run.deliveryErrors : [];
   const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
   const inactivityLabel = formatReengagementInactivityLabel(settings);
 
+  if (status === "cancelled") {
+    if (notificationsSent > 0) {
+      const reportLabel = notificationsSent === 1 ? "WhatsApp report" : "WhatsApp reports";
+      if (deliveryMode === "mock") {
+        return `Cancelled after simulating ${notificationsSent} demo ${reportLabel} for ${ownerLabel}. Customers were not contacted.`;
+      }
+      return `Cancelled after sending ${notificationsSent} demo ${reportLabel}. Customers were not contacted.`;
+    }
+    return "Cancelled before any demo WhatsApp report was sent. Customers were not contacted.";
+  }
+
   if (notificationsSent > 0) {
     const reportLabel = notificationsSent === 1 ? "WhatsApp message" : "WhatsApp messages";
     const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
+    if (deliveryMode === "mock") {
+      const base = candidatesCount > 0
+        ? `Simulated ${notificationsSent} demo ${reportLabel} for ${ownerLabel} with details for ${matchLabel}.`
+        : `Simulated a no-results demo ${reportLabel} for ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
+      return `${base} Live WhatsApp delivery is not configured, so nothing reached your WhatsApp. Customers were not contacted.`;
+    }
     const base = candidatesCount > 0
-      ? `Sent ${notificationsSent} demo ${reportLabel} with details for ${matchLabel}.`
-      : `Sent a no-results demo ${reportLabel} for the current ${inactivityLabel} inactivity window.`;
+      ? `Sent ${notificationsSent} demo ${reportLabel} to ${ownerLabel} with details for ${matchLabel}.`
+      : `Sent a no-results demo ${reportLabel} to ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
     return deliveryErrors.length
       ? `${base} Some results could not be delivered, so try again if anything looks missing. Customers were not contacted.`
       : `${base} Customers were not contacted.`;
   }
 
   return `${fallbackMessage} Customers were not contacted.`;
+}
+
+function syncReengagementDemoRunOverlay() {
+  if (!reengagementDemoRunBusy) {
+    return;
+  }
+
+  let title = "Running demo";
+  let message = "Checking saved conversations, generating follow-up drafts, and sending the demo report to your WhatsApp. Customers will not be contacted.";
+  let secondaryButtonLabel = "Cancel";
+  let secondaryDisabled = false;
+
+  if (reengagementDemoRunCancelling) {
+    title = "Cancelling demo";
+    message = "Stopping after the current step and before sending any more WhatsApp reports. Customers will not be contacted.";
+    secondaryButtonLabel = "Cancelling...";
+    secondaryDisabled = true;
+  } else if (reengagementDemoRunCancellationError) {
+    title = "Couldn’t cancel yet";
+    message = `${reengagementDemoRunCancellationError} The demo is still running, so you can try cancelling again or wait for it to finish.`;
+    secondaryButtonLabel = "Try again";
+  }
+
+  openAuthAlert(title, message, {
+    eyebrow: "Demo run",
+    buttonLabel: "Running...",
+    primaryDisabled: true,
+    secondaryButtonLabel,
+    secondaryDisabled,
+    closeOnSecondary: false,
+    dismissOnBackdrop: false,
+    dismissOnEscape: false,
+    focusTarget: secondaryDisabled ? "primary" : "secondary",
+    iconMode: "spinner",
+    onSecondary: () => {
+      void requestReengagementDemoRunCancellation();
+    },
+    returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+    tone: "progress",
+  });
+  reengagementDemoRunOverlayVisible = true;
+}
+
+function releaseReengagementDemoRunOverlay() {
+  if (!reengagementDemoRunOverlayVisible) {
+    return;
+  }
+
+  reengagementDemoRunOverlayVisible = false;
+  closeAuthAlert();
+}
+
+async function requestReengagementDemoRunCancellation() {
+  if (reengagementDemoRunCancelling || !reengagementDemoRunBusy || !reengagementDemoRunRequestId) {
+    return;
+  }
+
+  const feature = getSelectedFeature();
+  if (!feature || feature.id !== reengagementDemoRunTargetId) {
+    return;
+  }
+
+  const requestId = reengagementDemoRunRequestId;
+  reengagementDemoRunCancelling = true;
+  reengagementDemoRunCancellationError = "";
+  updateFeatureStudioHeader();
+  syncReengagementDemoRunOverlay();
+  setStatus("Cancelling the re-engagement demo. We’ll stop before sending any more WhatsApp reports.");
+
+  try {
+    await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
+      method: "DELETE",
+      headers: getSessionAuthHeaders(),
+      body: {
+        runRequestId: requestId,
+      },
+    });
+  } catch (error) {
+    if (!reengagementDemoRunBusy || reengagementDemoRunRequestId !== requestId) {
+      return;
+    }
+    reengagementDemoRunCancelling = false;
+    reengagementDemoRunCancellationError = formatApiErrorMessage(
+      error,
+      "We couldn’t cancel the demo just yet. You can try again in a moment.",
+    );
+    updateFeatureStudioHeader();
+    syncReengagementDemoRunOverlay();
+    setStatus(reengagementDemoRunCancellationError);
+  }
 }
 
 async function runSelectedReengagementDemo() {
@@ -9518,33 +9656,24 @@ async function runSelectedReengagementDemo() {
 
   reengagementDemoRunBusy = true;
   reengagementDemoRunTargetId = feature.id;
+  reengagementDemoRunRequestId = createManualMonitorRunRequestId();
+  reengagementDemoRunCancelling = false;
+  reengagementDemoRunCancellationError = "";
   try {
     updateFeatureStudioHeader();
-    openAuthAlert(
-      "Running demo",
-      "Checking saved conversations, generating follow-up drafts, and sending the demo report to your WhatsApp. Customers will not be contacted.",
-      {
-        eyebrow: "Demo run",
-        buttonLabel: "Running...",
-        primaryDisabled: true,
-        dismissOnBackdrop: false,
-        dismissOnEscape: false,
-        iconMode: "spinner",
-        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
-        tone: "progress",
-      },
-    );
+    syncReengagementDemoRunOverlay();
     setStatus("Running the re-engagement demo and sending the report to WhatsApp.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),
       body: {
-        runRequestId: createManualMonitorRunRequestId(),
+        runRequestId: reengagementDemoRunRequestId,
       },
       timeoutMs: 90000,
     });
 
     const completionMessage = String(response.message || "Demo run finished.");
+    reengagementDemoRunOverlayVisible = false;
     setStatus(completionMessage);
     openAuthAlert(
       getReengagementDemoAlertTitle(response.run),
@@ -9552,12 +9681,17 @@ async function runSelectedReengagementDemo() {
       {
         eyebrow: "Demo results",
         buttonLabel: "OK",
-        icon: Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "✓" : "!",
-        tone: Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "success" : "warning",
+        icon: normalizeText(response.run?.status).toLowerCase() === "cancelled"
+          ? "!"
+          : Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "✓" : "!",
+        tone: normalizeText(response.run?.status).toLowerCase() === "cancelled"
+          ? "warning"
+          : Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "success" : "warning",
         returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
       },
     );
   } catch (error) {
+    reengagementDemoRunOverlayVisible = false;
     openFeatureActivationAlert(
       "Couldn’t run the demo",
       formatApiErrorMessage(error, "We couldn’t run the re-engagement demo right now."),
@@ -9570,6 +9704,10 @@ async function runSelectedReengagementDemo() {
   } finally {
     reengagementDemoRunBusy = false;
     reengagementDemoRunTargetId = "";
+    reengagementDemoRunRequestId = "";
+    reengagementDemoRunCancelling = false;
+    reengagementDemoRunCancellationError = "";
+    releaseReengagementDemoRunOverlay();
     updateFeatureStudioHeader();
   }
 }
@@ -10372,7 +10510,9 @@ function updateFeatureStudioHeader() {
     const reengagementBusy = isReengagementDemoRunBusy(feature);
     elements.featureStudioMonitorRunButton.hidden = !showManualRun;
     elements.featureStudioMonitorRunButton.textContent = reengagementBusy
-      ? "Running demo..."
+      ? reengagementDemoRunCancelling
+        ? "Cancelling..."
+        : "Running demo..."
       : manualRunBusy
         ? monitorManualRunCancelling
           ? "Cancelling..."
@@ -10384,7 +10524,9 @@ function updateFeatureStudioHeader() {
     elements.featureStudioMonitorRunButton.classList.toggle("is-loading", false);
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
     elements.featureStudioMonitorRunButton.title = reengagementBusy
-      ? "A re-engagement demo is currently running"
+      ? reengagementDemoRunCancelling
+        ? "The current re-engagement demo is being cancelled"
+        : "A re-engagement demo is currently running"
       : showReengagementDemo
         ? "Find inactive conversations and preview follow-up drafts without sending anything"
         : manualRunBusy

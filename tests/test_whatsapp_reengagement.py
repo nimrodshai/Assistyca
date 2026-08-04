@@ -364,6 +364,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertIn("pricing question", candidates[0]["draftText"])
         self.assertEqual(result["run"]["notificationsSent"], 1)
         self.assertEqual(result["run"]["ownerMessageIds"], ["owner-demo-1"])
+        self.assertEqual(result["run"]["ownerWaId"], "15551234567")
+        self.assertEqual(result["run"]["deliveryMode"], "live")
         self.assertEqual(len(sent_messages), 1)
         self.assertIn("Demo result from Assistyca", sent_messages[0])
         self.assertIn("No customer message was sent", sent_messages[0])
@@ -372,6 +374,111 @@ class WhatsAppReengagementTests(unittest.TestCase):
 
         conversation = self.database.get_whatsapp_conversation(
             "15550003333",
+            email="owner@example.com",
+        )
+        self.assertFalse(conversation["lastReengagementNotifiedAt"])
+        self.assertIsNone(
+            self.database.get_latest_whatsapp_reengagement_run(
+                user_id=int(conversation["userId"]),
+                feature_id=REENGAGEMENT_FEATURE_ID,
+            )
+        )
+
+    def test_demo_run_marks_mock_owner_delivery(self) -> None:
+        self._connect_whatsapp()
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, _message_text: "mock-demo-1",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        result = scheduler.run_demo_for_email(
+            "owner@example.com",
+            now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["notificationsSent"], 1)
+        self.assertEqual(result["run"]["ownerMessageIds"], ["mock-demo-1"])
+        self.assertEqual(result["run"]["ownerWaId"], "15551234567")
+        self.assertEqual(result["run"]["deliveryMode"], "mock")
+        self.assertIn("simulated", result["message"])
+
+    def test_demo_run_cancellation_skips_owner_whatsapp_delivery(self) -> None:
+        self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                    "inactivityValue": 1,
+                    "inactivityUnit": "months",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550004444",
+            direction="inbound",
+            text="Please remind me about the appointment options.",
+            sender_name="Noa Cohen",
+            sender_wa_id="15550004444",
+            message_id="wamid.demo-cancel-old-1",
+            message_type="text",
+            message_at="2026-05-01T09:00:00+00:00",
+        )
+
+        cancellation_requested = False
+        sent_messages: list[str] = []
+
+        def fake_openai_response(**kwargs) -> SimpleNamespace:
+            nonlocal cancellation_requested
+            cancellation_requested = True
+            return SimpleNamespace(
+                output_text="Hi Noa, just checking in on the appointment options.",
+                request_id="req_demo_cancelled",
+                response_id="resp_demo_cancelled",
+                model="gpt-5.4",
+            )
+
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "owner-cancelled",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            side_effect=fake_openai_response,
+        ):
+            result = scheduler.run_demo_for_email(
+                "owner@example.com",
+                now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+                cancel_check=lambda: cancellation_requested,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["demo"])
+        self.assertEqual(result["run"]["status"], "cancelled")
+        self.assertEqual(result["run"]["candidatesCount"], 1)
+        self.assertEqual(result["run"]["notificationsSent"], 0)
+        self.assertEqual(result["run"]["ownerWaId"], "15551234567")
+        self.assertEqual(result["run"]["deliveryMode"], "none")
+        self.assertEqual(sent_messages, [])
+
+        conversation = self.database.get_whatsapp_conversation(
+            "15550004444",
             email="owner@example.com",
         )
         self.assertFalse(conversation["lastReengagementNotifiedAt"])
