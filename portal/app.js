@@ -441,8 +441,19 @@ const SCENARIOS = {
     sender: "Maya Cohen",
     meta: "6+ months since the last thread",
     user: "Thanks, I’ll think about it and get back to you.",
+    messages: [
+      {
+        direction: "incoming",
+        text: "Thanks, I’ll think about it and get back to you.",
+      },
+      {
+        direction: "outgoing",
+        text: "👍",
+      },
+    ],
     ask: "Hi Maya, just checking in in case you still need help with the leak repair we discussed. If you want to pick it back up, send me a message and I’ll take it from there.",
     insight: "Keeps old conversations from going cold without sounding pushy.",
+    exactReply: true,
   },
   monitor: {
     label: "Scheduled alert",
@@ -2753,13 +2764,36 @@ function buildFeaturePitch(feature = getSelectedFeature()) {
 function buildFeatureExample(feature = getSelectedFeature()) {
   const prompt = feature?.prompt || getSelectedPrompt();
   const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
+  const messages = Array.isArray(scenario.messages) && scenario.messages.length
+    ? scenario.messages
+    : [{ direction: "incoming", text: scenario.user }];
   return {
     sender: scenario.sender || "Customer",
     avatar: getInitialsFromName(scenario.sender || feature?.name || "WA"),
     meta: scenario.meta || "Recent lead",
     incoming: scenario.user,
+    messages,
     outgoing: buildResponseText(prompt),
   };
+}
+
+function renderFeatureExampleMessages(example = {}) {
+  if (!elements.featureStudioExampleMessage) {
+    return;
+  }
+
+  elements.featureStudioExampleMessage.innerHTML = "";
+  const messages = Array.isArray(example.messages) && example.messages.length
+    ? example.messages
+    : [{ direction: "incoming", text: example.incoming }];
+
+  for (const message of messages) {
+    const bubble = document.createElement("div");
+    const direction = normalizeText(message?.direction).toLowerCase() === "outgoing" ? "outgoing" : "incoming";
+    bubble.className = `bubble ${direction}`;
+    bubble.textContent = String(message?.text || "");
+    elements.featureStudioExampleMessage.append(bubble);
+  }
 }
 
 function buildFeatureEditorHint(feature = getSelectedFeature()) {
@@ -10399,9 +10433,7 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioExampleMeta) {
     elements.featureStudioExampleMeta.textContent = example.meta;
   }
-  if (elements.featureStudioExampleMessage) {
-    elements.featureStudioExampleMessage.textContent = example.incoming;
-  }
+  renderFeatureExampleMessages(example);
   if (elements.featureStudioExampleReply) {
     elements.featureStudioExampleReply.textContent = example.outgoing;
   }

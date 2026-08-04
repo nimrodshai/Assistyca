@@ -2759,6 +2759,11 @@ body[data-modal="billing"] .app-shell {
   gap: 0.35rem;
 }
 
+.example-message-thread {
+  display: grid;
+  gap: 0.42rem;
+}
+
 .approval-label {
   color: var(--muted-strong);
   font-size: 0.72rem;
