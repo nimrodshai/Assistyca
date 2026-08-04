@@ -311,8 +311,18 @@ class PortalWhatsAppService:
         owner_wa_id = normalize_whatsapp_id(self.config.owner_wa_id)
         return bool(owner_wa_id and normalize_whatsapp_id(sender_wa_id) == owner_wa_id)
 
+    def resolve_owner_send_credentials(self) -> tuple[str, str]:
+        sender_access_token = resolve_whatsapp_sender_access_token()
+        sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
+        if sender_access_token and sender_phone_number_id:
+            return sender_access_token, sender_phone_number_id
+        if self.config.live_send_enabled:
+            return self.config.access_token, self.config.phone_number_id
+        return "", ""
+
     def owner_send_enabled(self) -> bool:
-        return bool(resolve_whatsapp_sender_access_token() and resolve_whatsapp_sender_phone_number_id())
+        access_token, phone_number_id = self.resolve_owner_send_credentials()
+        return bool(access_token and phone_number_id)
 
     def verify_signature(self, body: bytes, signature_header: str | None) -> bool:
         return verify_whatsapp_signature(self.config.app_secret, body, signature_header)
@@ -329,8 +339,7 @@ class PortalWhatsAppService:
         if not owner_wa_id:
             raise RuntimeError("Owner WhatsApp ID is not configured.")
 
-        sender_access_token = resolve_whatsapp_sender_access_token()
-        sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
+        sender_access_token, sender_phone_number_id = self.resolve_owner_send_credentials()
 
         if sender_access_token and sender_phone_number_id:
             message_id = send_whatsapp_message(
@@ -345,7 +354,9 @@ class PortalWhatsAppService:
         elif self.config.allow_mock_send:
             message_id = f"mock-{uuid.uuid4().hex}"
         else:
-            raise RuntimeError("Live WhatsApp send is not configured.")
+            raise RuntimeError(
+                "Live WhatsApp send is not configured. Finish WhatsApp setup with a saved access token or configure the Assistyca sender access token."
+            )
 
         if approval is not None and approval.get("approval_id"):
             self.store.append_approval_message_id(str(approval["approval_id"]), message_id)
@@ -584,7 +595,7 @@ class PortalWhatsAppService:
     def send_sample_owner_message(self) -> tuple[str, str]:
         if not self.owner_send_enabled():
             raise RuntimeError(
-                "Finish WhatsApp setup with the Assistyca sender access token before sending a sample."
+                "Finish WhatsApp setup with a saved access token or the Assistyca sender access token before sending a sample."
             )
 
         message_text = build_sample_owner_notification_text(self.config.client_name)

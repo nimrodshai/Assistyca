@@ -69,7 +69,7 @@ Required environment variables on Render:
 - `PORTAL_DB_SEED_PAID_EMAILS` for the comma-separated list of portal users that should be treated as paid and entitled for billing-required tools during debugging or controlled internal testing
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
-- `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number.
+- `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number. Owner alerts can also use the portal-saved client WhatsApp connection token when no Assistyca sender token is configured.
 - `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional override for the Assistyca-owned sender number. If unset, the backend uses `1186653017865246`.
 - `WHATSAPP_ALLOW_MOCK_SEND=0` in production so demos and owner alerts fail loudly unless WhatsApp Cloud API delivery is actually configured.
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification

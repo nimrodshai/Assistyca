@@ -487,6 +487,32 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             },
         )
 
+    def test_owner_notification_falls_back_to_saved_connection_token(self) -> None:
+        service = self._build_service()
+        service.config.access_token = "client-token"
+        service.config.phone_number_id = "22222"
+        service.config.allow_mock_send = False
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "",
+                "WHATSAPP_SENDER_ACCESS_TOKEN": "",
+                "WHATSAPP_ACCESS_TOKEN": "",
+            },
+            clear=False,
+        ), mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.client-owner",
+        ) as mocked_send:
+            self.assertTrue(service.owner_send_enabled())
+            message_id = service.send_owner_message(None, message_text="Real owner alert")
+
+        self.assertEqual(message_id, "wamid.client-owner")
+        self.assertEqual(mocked_send.call_args.kwargs["access_token"], "client-token")
+        self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "22222")
+        self.assertEqual(mocked_send.call_args.kwargs["recipient_wa_id"], "15551234567")
+
     def test_owner_notification_uses_quick_reply_template_when_configured(self) -> None:
         service = self._build_service(
             templates={
@@ -1052,7 +1078,7 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertFalse(body["ok"])
         self.assertEqual(body["error"], "setup_required")
-        self.assertIn("assistyca sender access token", str(body["message"]).lower())
+        self.assertIn("saved access token", str(body["message"]).lower())
 
     def test_whatsapp_connection_endpoint_requires_client_token_even_with_sender_token(self) -> None:
         with mock.patch.dict(os.environ, {"WHATSAPP_ACCESS_TOKEN": "sender-token"}, clear=False):

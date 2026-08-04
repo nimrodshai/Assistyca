@@ -4031,7 +4031,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
                     "error": "setup_required",
-                    "message": "Finish WhatsApp setup with the Assistyca sender access token before sending a sample.",
+                    "message": "Finish WhatsApp setup with a saved access token or the Assistyca sender access token before sending a sample.",
                 })
                 return
 
