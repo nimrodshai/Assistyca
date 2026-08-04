@@ -1765,6 +1765,8 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
             label = "report" if notifications_sent == 1 else "reports"
             if delivery_mode == "mock":
                 return f"Demo cancelled after simulating {notifications_sent} WhatsApp {label} for {owner_label}. Customers were not contacted."
+            if delivery_mode == "template_prompt":
+                return f"Demo cancelled after sending a WhatsApp template prompt to {owner_label}. Customers were not contacted."
             return f"Demo cancelled after sending {notifications_sent} WhatsApp {label}. Customers were not contacted."
         return "Demo cancelled before any WhatsApp report was sent. Customers were not contacted."
     if notifications_sent > 0 and delivery_mode == "mock":
@@ -1773,6 +1775,12 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
         if candidates_count > 1:
             return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and simulated {notifications_sent} WhatsApp reports for {owner_label}. Live WhatsApp delivery is not configured."
         return f"Demo found no inactive conversations for the current inactivity window and simulated a no-results WhatsApp report for {owner_label}. Live WhatsApp delivery is not configured."
+    if notifications_sent > 0 and delivery_mode == "template_prompt":
+        if candidates_count == 1:
+            return f"Demo found 1 inactive conversation, generated a follow-up draft, and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the report."
+        if candidates_count > 1:
+            return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the reports."
+        return f"Demo found no inactive conversations and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the no-results report."
     if candidates_count == 1:
         return (
             f"Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to {owner_label}."
@@ -5338,8 +5346,8 @@ def resolve_static_page_alias(path: str) -> Path | None:
     return STATIC_PAGE_ALIASES.get(normalized_path)
 
 
-def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) -> Callable[[dict[str, Any], str], str]:
-    def send_owner_message(connection: dict[str, Any], message_text: str) -> str:
+def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) -> Callable[[dict[str, Any], str], Any]:
+    def send_owner_message(connection: dict[str, Any], message_text: str) -> Any:
         service = build_portal_service_from_connection(
             root=root,
             connection=connection,
@@ -5347,7 +5355,7 @@ def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) 
             store_cache=server.whatsapp_stores,  # type: ignore[attr-defined]
             store_lock=server.whatsapp_store_lock,  # type: ignore[attr-defined]
         )
-        return service.send_owner_message(None, message_text=message_text)
+        return service.send_reengagement_report(connection, message_text)
 
     return send_owner_message
 

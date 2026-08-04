@@ -71,6 +71,10 @@ Required environment variables on Render:
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
 - `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number. Owner alerts can also use the portal-saved client WhatsApp connection token when no Assistyca sender token is configured.
 - `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional override for the Assistyca-owned sender number. If unset, the backend uses `1186653017865246`.
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME` approved Meta template used to ask the owner whether to receive generated re-engagement report details outside the 24-hour window. Defaults to `whatsapp_reengagement_report_prompt`.
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE` language code for that template. Defaults to `en`.
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX` quick-reply button index for the "Send details" button. Defaults to `0`.
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION` quick-reply payload action. Defaults to `send`.
 - `WHATSAPP_ALLOW_MOCK_SEND=0` in production so demos and owner alerts fail loudly unless WhatsApp Cloud API delivery is actually configured.
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification

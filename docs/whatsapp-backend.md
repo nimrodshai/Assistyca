@@ -94,6 +94,29 @@ For the "Sure!" flow, both templates must have one body variable for the sender 
 
 For the URL flow, the template must have one body variable for the sender name and one dynamic URL button variable for the approval link.
 
+### WhatsApp Re-engagement Report Template
+
+Re-engagement reports use a template prompt when the owner is outside the 24-hour WhatsApp service window. The backend stores the generated report, sends the template, and sends the full details only after the owner taps the quick reply.
+
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME`: approved Meta template for re-engagement report prompts. Defaults to `whatsapp_reengagement_report_prompt`.
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE`: template language code. Defaults to `en`.
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX`: quick-reply button index. Defaults to `0`.
+- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION`: quick-reply payload action. Defaults to `send`.
+
+The approved template must have one body variable and one quick reply button. Suggested body text:
+
+```text
+Assistyca has a re-engagement update: {{1}}. Want me to send the details?
+```
+
+Suggested quick reply button text:
+
+```text
+Send details
+```
+
+The backend fills `{{1}}` with text such as `we found 2 people who have not been reached in a long time`, and the quick-reply payload is generated as `reengagement:<report-id>:send`.
+
 ### Send Mode
 
 - Approved replies to customers use the client connection's saved access token and phone number ID.

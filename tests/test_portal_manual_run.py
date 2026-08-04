@@ -339,6 +339,31 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             },
         )
 
+    def test_build_portal_runtime_config_reads_reengagement_report_template_env(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME": "reengagement_report_prompt",
+                "WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE": "en",
+                "WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX": "1",
+                "WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION": "details",
+            },
+            clear=False,
+        ):
+            config = build_portal_runtime_config(
+                client_id="portal-user-1",
+                client_name="Portal User",
+                base_url="https://example.com",
+                phone_number_id="12345",
+                owner_wa_id="15551234567",
+                data_path=self.data_path,
+            )
+
+        self.assertEqual(config.templates["reengagement_report"]["name"], "reengagement_report_prompt")
+        self.assertEqual(config.templates["reengagement_report"]["language"], "en")
+        self.assertEqual(config.templates["reengagement_report"]["button_index"], "1")
+        self.assertEqual(config.templates["reengagement_report"]["button_action"], "details")
+
     def test_build_portal_runtime_config_accepts_legacy_owner_notification_template_env(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -703,6 +728,104 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(updated["owner_review_reply_message_id"], "wamid.hot-review-reply")
         self.assertEqual(updated["owner_review_message_id"], "wamid.hot-review-actions")
         self.assertEqual(updated["owner_review_text"], approval["suggested_reply"])
+
+    def test_reengagement_report_uses_template_and_stores_pending_details(self) -> None:
+        service = self._build_service(
+            templates={
+                "reengagement_report": {
+                    "name": "reengagement_report_prompt",
+                    "language": "en",
+                    "button_index": "0",
+                    "button_action": "send",
+                },
+            },
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.reengagement-prompt",
+        ) as mocked_send:
+            delivery = service.send_reengagement_report(
+                {
+                    "reengagementReport": {
+                        "demo": True,
+                        "candidatesCount": 2,
+                        "scheduledFor": "2026-08-04T20:00:00+00:00",
+                    }
+                },
+                "Full generated report details",
+            )
+
+        self.assertEqual(delivery["messageId"], "wamid.reengagement-prompt")
+        self.assertEqual(delivery["deliveryMode"], "template_prompt")
+        report = service.find_reengagement_report(delivery["reportId"])
+        self.assertIsNotNone(report)
+        assert report is not None
+        self.assertEqual(report["status"], "prompt_sent")
+        self.assertEqual(report["messageText"], "Full generated report details")
+        self.assertEqual(report["promptMessageId"], "wamid.reengagement-prompt")
+        template = mocked_send.call_args.kwargs["template"]
+        self.assertEqual(template["name"], "reengagement_report_prompt")
+        self.assertEqual(
+            template["components"][0]["parameters"][0]["text"],
+            "we found 2 people who have not been reached in a long time",
+        )
+        payload = template["components"][1]["parameters"][0]["payload"]
+        self.assertEqual(payload, f"reengagement:{delivery['reportId']}:send")
+        self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
+        self.assertIsNone(mocked_send.call_args.kwargs["interactive"])
+
+    def test_reengagement_template_reply_sends_stored_report_details(self) -> None:
+        service = self._build_service(
+            templates={
+                "reengagement_report": {
+                    "name": "reengagement_report_prompt",
+                    "language": "en",
+                    "button_index": "0",
+                    "button_action": "send",
+                },
+            },
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.reengagement-prompt",
+        ):
+            delivery = service.send_reengagement_report(
+                {"reengagementReport": {"demo": True, "candidatesCount": 1}},
+                "Full generated report details",
+            )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.reengagement-details",
+        ) as mocked_send:
+            result = service.handle_owner_event(
+                {
+                    "thread_id": "15551234567",
+                    "sender_name": "Owner",
+                    "sender_wa_id": "15551234567",
+                    "message_text": "Send details",
+                    "message_type": "interactive",
+                    "source_message_id": "wamid.owner-send-details",
+                    "reply_to_message_id": "wamid.reengagement-prompt",
+                    "interactive_reply": {
+                        "id": f"reengagement:{delivery['reportId']}:send",
+                        "title": "Send details",
+                        "type": "button_reply",
+                    },
+                    "raw_payload": {"object": "whatsapp_business_account"},
+                }
+            )
+
+        self.assertEqual(result["action"], "reengagement_report_sent")
+        self.assertEqual(result["message_id"], "wamid.reengagement-details")
+        self.assertEqual(mocked_send.call_args.kwargs["message_text"], "Full generated report details")
+        updated = service.find_reengagement_report(delivery["reportId"])
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(updated["status"], "sent")
+        self.assertEqual(updated["detailsMessageId"], "wamid.reengagement-details")
 
     def test_owner_hebrew_approval_sends_single_pending_suggestion(self) -> None:
         service = self._build_service()

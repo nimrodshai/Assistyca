@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
@@ -24,6 +25,7 @@ from packages.tools.whatsapp_reply_approval.server import build_owner_notificati
 from packages.tools.whatsapp_reply_approval.server import build_owner_review_actions_payload
 from packages.tools.whatsapp_reply_approval.server import build_owner_skip_text
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+from packages.tools.whatsapp_reply_approval.server import now_iso
 from packages.tools.whatsapp_reply_approval.server import normalize_bool
 from packages.tools.whatsapp_reply_approval.server import normalize_text
 from packages.tools.whatsapp_reply_approval.server import normalize_whatsapp_id
@@ -45,12 +47,33 @@ DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE = "en"
 DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE = "path"
 DEFAULT_OWNER_NOTIFICATION_DISABLE_BUTTON_INDEX = "1"
 DEFAULT_OWNER_NOTIFICATION_DISABLE_BUTTON_ACTION = OWNER_DISABLE_CONTACT_ACTION
+DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_NAME = "whatsapp_reengagement_report_prompt"
+DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE = "en"
+DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX = "0"
+DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION = "send"
+REENGAGEMENT_REPORT_ACTIONS = {"send", "show", "details", "receive"}
+REENGAGEMENT_REPORT_COMMANDS = {
+    "yes",
+    "send",
+    "send it",
+    "send details",
+    "show",
+    "show details",
+    "details",
+    "receive",
+    "sure",
+    "ok",
+    "כן",
+    "שלח",
+    "שלחי",
+}
 
 
 def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -> dict[str, Any]:
     source = templates if isinstance(templates, dict) else {}
     sample_source = source.get("sample_owner") if isinstance(source.get("sample_owner"), dict) else {}
     owner_source = source.get("owner_notification") if isinstance(source.get("owner_notification"), dict) else {}
+    reengagement_source = source.get("reengagement_report") if isinstance(source.get("reengagement_report"), dict) else {}
     sample_name = normalize_text(
         os.getenv("WHATSAPP_SAMPLE_TEMPLATE_NAME")
         or sample_source.get("name")
@@ -139,6 +162,30 @@ def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -
         or source.get("owner_notification_url_mode")
         or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE
     ).lower() or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE
+    reengagement_name = normalize_text(
+        os.getenv("WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME")
+        or reengagement_source.get("name")
+        or source.get("reengagement_report_name")
+        or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_NAME
+    )
+    reengagement_language = normalize_text(
+        os.getenv("WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE")
+        or reengagement_source.get("language")
+        or source.get("reengagement_report_language")
+        or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE
+    ) or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE
+    reengagement_button_index = normalize_text(
+        os.getenv("WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX")
+        or reengagement_source.get("button_index")
+        or source.get("reengagement_report_button_index")
+        or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX
+    ) or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX
+    reengagement_button_action = normalize_text(
+        os.getenv("WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION")
+        or reengagement_source.get("button_action")
+        or source.get("reengagement_report_button_action")
+        or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION
+    ).lower() or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION
     owner_notification = {
         "name": owner_name,
         "language": owner_language,
@@ -161,6 +208,12 @@ def resolve_portal_whatsapp_templates(templates: dict[str, Any] | None = None) -
             "language": sample_language,
         },
         "owner_notification": owner_notification,
+        "reengagement_report": {
+            "name": reengagement_name,
+            "language": reengagement_language,
+            "button_index": reengagement_button_index,
+            "button_action": reengagement_button_action,
+        },
     }
 
 
@@ -375,6 +428,205 @@ class PortalWhatsAppService:
             "language": {
                 "code": template_language,
             },
+        }
+
+    def summarize_reengagement_report_prompt(self, report: dict[str, Any]) -> str:
+        try:
+            candidates_count = int(report.get("candidatesCount") or 0)
+        except (TypeError, ValueError):
+            candidates_count = 0
+        if candidates_count == 1:
+            return "we found 1 person who has not been reached in a long time"
+        if candidates_count > 1:
+            return f"we found {candidates_count} people who have not been reached in a long time"
+        return "we did not find anyone matching the current inactivity window"
+
+    def get_reengagement_report_template(self, report: dict[str, Any]) -> dict[str, Any] | None:
+        templates = self.config.templates if isinstance(self.config.templates, dict) else {}
+        report_template = (
+            templates.get("reengagement_report")
+            if isinstance(templates.get("reengagement_report"), dict)
+            else {}
+        )
+        template_name = normalize_text(report_template.get("name"))
+        if not template_name:
+            return None
+
+        template_language = (
+            normalize_text(report_template.get("language") or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE)
+            or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE
+        )
+        button_index = (
+            normalize_text(report_template.get("button_index") or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX)
+            or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX
+        )
+        button_action = (
+            normalize_text(report_template.get("button_action") or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION)
+            or DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION
+        ).lower()
+        if button_action not in REENGAGEMENT_REPORT_ACTIONS:
+            button_action = DEFAULT_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION
+
+        report_id = normalize_text(report.get("reportId"))
+        prompt_summary = normalize_text(report.get("promptSummary")) or self.summarize_reengagement_report_prompt(report)
+        return {
+            "name": template_name,
+            "language": {
+                "code": template_language,
+            },
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": prompt_summary,
+                        }
+                    ],
+                },
+                {
+                    "type": "button",
+                    "sub_type": "quick_reply",
+                    "index": button_index,
+                    "parameters": [
+                        {
+                            "type": "payload",
+                            "payload": f"reengagement:{report_id}:{button_action}",
+                        }
+                    ],
+                },
+            ],
+        }
+
+    def create_reengagement_report_record(
+        self,
+        *,
+        message_text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        source = metadata if isinstance(metadata, dict) else {}
+        try:
+            candidates_count = max(0, int(source.get("candidatesCount") or 0))
+        except (TypeError, ValueError):
+            candidates_count = 0
+        report_id = uuid.uuid4().hex
+        report = {
+            "reportId": report_id,
+            "status": "pending",
+            "ownerWaId": normalize_whatsapp_id(self.config.owner_wa_id),
+            "messageText": normalize_text(message_text),
+            "promptSummary": "",
+            "candidatesCount": candidates_count,
+            "demo": bool(source.get("demo")),
+            "scheduledFor": normalize_text(source.get("scheduledFor")),
+            "cutoffAt": normalize_text(source.get("cutoffAt")),
+            "createdAt": now_iso(),
+            "updatedAt": now_iso(),
+            "metadata": json.loads(json.dumps(source, ensure_ascii=True)),
+        }
+        report["promptSummary"] = self.summarize_reengagement_report_prompt(report)
+        with self.store.lock:
+            reports = self.store.data.setdefault("reengagement_reports", {})
+            reports[report_id] = report
+            self.store.save()
+        return json.loads(json.dumps(report))
+
+    def update_reengagement_report_record(self, report_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        normalized_id = normalize_text(report_id)
+        if not normalized_id:
+            return None
+        with self.store.lock:
+            reports = self.store.data.setdefault("reengagement_reports", {})
+            report = reports.get(normalized_id)
+            if not isinstance(report, dict):
+                return None
+            report.update(updates)
+            report["updatedAt"] = now_iso()
+            self.store.save()
+            return json.loads(json.dumps(report))
+
+    def find_reengagement_report(self, report_id: str) -> dict[str, Any] | None:
+        normalized_id = normalize_text(report_id)
+        if not normalized_id:
+            return None
+        with self.store.lock:
+            report = self.store.data.setdefault("reengagement_reports", {}).get(normalized_id)
+            if not isinstance(report, dict):
+                return None
+            return json.loads(json.dumps(report))
+
+    def find_reengagement_report_by_message_id(self, message_id: str) -> dict[str, Any] | None:
+        needle = normalize_text(message_id)
+        if not needle:
+            return None
+        with self.store.lock:
+            reports = self.store.data.setdefault("reengagement_reports", {})
+            for report in reports.values():
+                if not isinstance(report, dict):
+                    continue
+                known_ids = {
+                    normalize_text(report.get("promptMessageId")),
+                    normalize_text(report.get("detailsMessageId")),
+                    normalize_text(report.get("lastMessageId")),
+                }
+                known_ids.update(normalize_text(item) for item in report.get("messageIds", []))
+                if needle in {item for item in known_ids if item}:
+                    return json.loads(json.dumps(report))
+            return None
+
+    def send_reengagement_report(self, connection: dict[str, Any], message_text: str) -> dict[str, Any]:
+        metadata = connection.get("reengagementReport") if isinstance(connection.get("reengagementReport"), dict) else {}
+        report = self.create_reengagement_report_record(message_text=message_text, metadata=metadata)
+        template = self.get_reengagement_report_template(report)
+        if template is None:
+            message_id = self.send_owner_message(None, message_text=message_text)
+            delivery_mode = "mock" if message_id.startswith("mock-") else "live"
+            self.update_reengagement_report_record(
+                normalize_text(report.get("reportId")),
+                {
+                    "status": "sent",
+                    "detailsMessageId": message_id,
+                    "lastMessageId": message_id,
+                    "messageIds": [message_id],
+                    "deliveryMode": delivery_mode,
+                },
+            )
+            return {
+                "messageId": message_id,
+                "deliveryMode": delivery_mode,
+                "reportId": normalize_text(report.get("reportId")),
+            }
+
+        try:
+            message_id = self.send_owner_message(None, template=template)
+        except Exception as exc:
+            self.update_reengagement_report_record(
+                normalize_text(report.get("reportId")),
+                {
+                    "status": "prompt_failed",
+                    "promptError": str(exc),
+                    "deliveryMode": "template_prompt",
+                    "template": template,
+                },
+            )
+            raise
+
+        delivery_mode = "mock" if message_id.startswith("mock-") else "template_prompt"
+        self.update_reengagement_report_record(
+            normalize_text(report.get("reportId")),
+            {
+                "status": "prompt_sent",
+                "promptMessageId": message_id,
+                "lastMessageId": message_id,
+                "messageIds": [message_id],
+                "deliveryMode": delivery_mode,
+                "template": template,
+            },
+        )
+        return {
+            "messageId": message_id,
+            "deliveryMode": delivery_mode,
+            "reportId": normalize_text(report.get("reportId")),
         }
 
     def build_approval_review_url(self, approval: dict[str, Any]) -> str:
@@ -643,6 +895,98 @@ class PortalWhatsAppService:
 
         return None
 
+    def resolve_reengagement_report_request(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        context_id = normalize_text(event.get("reply_to_message_id"))
+        if context_id:
+            report = self.find_reengagement_report_by_message_id(context_id)
+            if report is not None:
+                return report
+
+        interactive_reply = event.get("interactive_reply", {})
+        if isinstance(interactive_reply, dict):
+            interactive_id = normalize_text(interactive_reply.get("id"))
+            if interactive_id:
+                match = re.match(
+                    r"^reengagement:([0-9a-f]+):(send|show|details|receive)$",
+                    interactive_id,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    report = self.find_reengagement_report(match.group(1))
+                    if report is not None:
+                        return report
+                report = self.find_reengagement_report_by_message_id(interactive_id)
+                if report is not None:
+                    return report
+
+        text = normalize_text(event.get("message_text"))
+        if normalize_text(text).lower().rstrip("!.?.,:;") in REENGAGEMENT_REPORT_COMMANDS:
+            with self.store.lock:
+                pending_reports = [
+                    json.loads(json.dumps(report))
+                    for report in self.store.data.setdefault("reengagement_reports", {}).values()
+                    if isinstance(report, dict)
+                    and normalize_whatsapp_id(report.get("ownerWaId")) == normalize_whatsapp_id(self.config.owner_wa_id)
+                    and normalize_text(report.get("status")) == "prompt_sent"
+                ]
+            if len(pending_reports) == 1:
+                return pending_reports[0]
+
+        return None
+
+    def handle_reengagement_report_request(self, report: dict[str, Any]) -> dict[str, Any]:
+        report_id = normalize_text(report.get("reportId"))
+        status = normalize_text(report.get("status"))
+        if status == "sent":
+            message_id = self.send_owner_message(
+                None,
+                message_text="I already sent that re-engagement report.",
+            )
+            return {
+                "type": "owner",
+                "action": "reengagement_report_already_sent",
+                "report": report,
+                "message_id": message_id,
+            }
+
+        message_text = normalize_text(report.get("messageText"))
+        if not message_text:
+            message_id = self.send_owner_message(
+                None,
+                message_text="I could not find the saved re-engagement report details.",
+            )
+            return {
+                "type": "owner",
+                "action": "reengagement_report_missing",
+                "report": report,
+                "message_id": message_id,
+            }
+
+        details_message_id = self.send_owner_message(None, message_text=message_text)
+        updated = self.update_reengagement_report_record(
+            report_id,
+            {
+                "status": "sent",
+                "detailsMessageId": details_message_id,
+                "lastMessageId": details_message_id,
+                "sentAt": now_iso(),
+                "messageIds": [
+                    *[
+                        normalize_text(item)
+                        for item in report.get("messageIds", [])
+                        if normalize_text(item)
+                    ],
+                    details_message_id,
+                ],
+            },
+        ) or report
+        return {
+            "type": "owner",
+            "action": "reengagement_report_sent",
+            "report": updated,
+            "message_id": details_message_id,
+        }
+
     def resolve_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
         explicit_approval = self.resolve_explicit_owner_target_approval(event)
         if explicit_approval is not None:
@@ -728,6 +1072,10 @@ class PortalWhatsAppService:
         }
 
     def handle_owner_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        reengagement_report = self.resolve_reengagement_report_request(event)
+        if reengagement_report is not None:
+            return self.handle_reengagement_report_request(reengagement_report)
+
         approval = self.resolve_owner_target_approval(event)
         command, argument = parse_owner_command_text(event.get("message_text", ""))
         interactive_reply = event.get("interactive_reply", {})

@@ -9524,6 +9524,9 @@ function getReengagementDemoAlertTitle(run = {}) {
     if (deliveryMode === "mock") {
       return "WhatsApp report simulated";
     }
+    if (deliveryMode === "template_prompt") {
+      return "WhatsApp prompt sent";
+    }
     if (deliveryMode === "mixed") {
       return "WhatsApp report partly sent";
     }
@@ -9548,6 +9551,9 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
       if (deliveryMode === "mock") {
         return `Cancelled after simulating ${notificationsSent} demo ${reportLabel} for ${ownerLabel}. Customers were not contacted.`;
       }
+      if (deliveryMode === "template_prompt") {
+        return `Cancelled after sending a WhatsApp template prompt to ${ownerLabel}. Customers were not contacted.`;
+      }
       return `Cancelled after sending ${notificationsSent} demo ${reportLabel}. Customers were not contacted.`;
     }
     return "Cancelled before any demo WhatsApp report was sent. Customers were not contacted.";
@@ -9561,6 +9567,12 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
         ? `Simulated ${notificationsSent} demo ${reportLabel} for ${ownerLabel} with details for ${matchLabel}.`
         : `Simulated a no-results demo ${reportLabel} for ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
       return `${base} Live WhatsApp delivery is not configured, so nothing reached your WhatsApp. Customers were not contacted.`;
+    }
+    if (deliveryMode === "template_prompt") {
+      const base = candidatesCount > 0
+        ? `Sent a WhatsApp template prompt to ${ownerLabel} for ${matchLabel}.`
+        : `Sent a WhatsApp template prompt to ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
+      return `${base} Tap Send details in WhatsApp to receive the generated report. Customers were not contacted.`;
     }
     const base = candidatesCount > 0
       ? `Sent ${notificationsSent} demo ${reportLabel} to ${ownerLabel} with details for ${matchLabel}.`
@@ -9579,7 +9591,7 @@ function syncReengagementDemoRunOverlay() {
   }
 
   let title = "Running demo";
-  let message = "Checking saved conversations, generating follow-up drafts, and sending the demo report to your WhatsApp. Customers will not be contacted.";
+  let message = "Checking saved conversations, generating follow-up drafts, and sending the WhatsApp prompt. Customers will not be contacted.";
   let secondaryButtonLabel = "Cancel";
   let secondaryDisabled = false;
 

@@ -409,6 +409,70 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(result["run"]["deliveryMode"], "mock")
         self.assertIn("simulated", result["message"])
 
+    def test_demo_run_marks_template_prompt_delivery(self) -> None:
+        self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "inactivityValue": 1,
+                    "inactivityUnit": "months",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550005555",
+            direction="inbound",
+            text="Can you send the old estimate again?",
+            sender_name="Ari Cohen",
+            sender_wa_id="15550005555",
+            message_id="wamid.demo-template-old-1",
+            message_type="text",
+            message_at="2026-05-01T09:00:00+00:00",
+        )
+
+        sent_reports: list[str] = []
+        sent_metadata: list[dict[str, object]] = []
+
+        def fake_send_owner_message(connection: dict[str, object], message_text: str) -> dict[str, str]:
+            sent_reports.append(message_text)
+            report_metadata = connection.get("reengagementReport")
+            if isinstance(report_metadata, dict):
+                sent_metadata.append(report_metadata)
+            return {
+                "messageId": "wamid.reengagement-template",
+                "deliveryMode": "template_prompt",
+                "reportId": "report-1",
+            }
+
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=fake_send_owner_message,
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        result = scheduler.run_demo_for_email(
+            "owner@example.com",
+            now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["notificationsSent"], 1)
+        self.assertEqual(result["run"]["ownerMessageIds"], ["wamid.reengagement-template"])
+        self.assertEqual(result["run"]["deliveryMode"], "template_prompt")
+        self.assertEqual(result["run"]["ownerDeliveries"][0]["reportId"], "report-1")
+        self.assertIn("template prompt", result["message"])
+        self.assertEqual(sent_metadata[0]["candidatesCount"], 1)
+        self.assertIn("No customer message was sent", sent_reports[0])
+        self.assertIn("Ari Cohen", sent_reports[0])
+
     def test_demo_run_cancellation_skips_owner_whatsapp_delivery(self) -> None:
         self._connect_whatsapp()
         self.database.save_feature_assignment_metadata(

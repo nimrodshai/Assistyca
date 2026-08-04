@@ -97,6 +97,14 @@ services:
         value: disable_contact
       - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE
         value: path
+      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME
+        value: whatsapp_reengagement_report_prompt
+      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE
+        value: en
+      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX
+        value: "0"
+      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION
+        value: send
       - key: WHATSAPP_VERIFY_TOKEN
         sync: false
       - key: WHATSAPP_APP_SECRET

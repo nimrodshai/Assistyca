@@ -515,6 +515,41 @@ def build_demo_owner_notification(
     )
 
 
+def build_owner_report(
+    *,
+    candidates: list[dict[str, Any]],
+    tz: timezone | ZoneInfo,
+    demo: bool = False,
+) -> str:
+    if not candidates:
+        return ""
+
+    header = [
+        "Demo result from Assistyca." if demo else "Assistyca re-engagement report.",
+        "No customer message was sent." if demo else "Customers were not contacted.",
+        "",
+        (
+            f"Found {len(candidates)} inactive conversation"
+            f"{'' if len(candidates) == 1 else 's'}."
+        ),
+    ]
+    sections: list[str] = []
+    for index, candidate in enumerate(candidates, start=1):
+        sections.append(
+            "\n".join(
+                [
+                    f"Result {index}:",
+                    build_owner_notification(
+                        conversation=candidate,
+                        draft_text=normalize_text(candidate.get("draftText")),
+                        tz=tz,
+                    ),
+                ]
+            )
+        )
+    return "\n\n".join(["\n".join(header), *sections])
+
+
 def build_demo_no_candidates_notification(
     *,
     settings: dict[str, Any],
@@ -556,12 +591,45 @@ def resolve_owner_delivery_mode(message_ids: list[str]) -> str:
     return "live"
 
 
+def normalize_owner_delivery_result(value: Any) -> dict[str, str]:
+    if isinstance(value, dict):
+        message_id = normalize_text(value.get("messageId") or value.get("message_id") or value.get("id"))
+        delivery_mode = normalize_text(value.get("deliveryMode") or value.get("delivery_mode")).lower()
+        report_id = normalize_text(value.get("reportId") or value.get("report_id"))
+    else:
+        message_id = normalize_text(value)
+        delivery_mode = ""
+        report_id = ""
+    if not delivery_mode:
+        delivery_mode = "mock" if is_mock_whatsapp_message_id(message_id) else "live" if message_id else "none"
+    return {
+        "messageId": message_id,
+        "deliveryMode": delivery_mode,
+        "reportId": report_id,
+    }
+
+
+def resolve_owner_delivery_mode_from_results(deliveries: list[dict[str, str]]) -> str:
+    modes = {normalize_text(delivery.get("deliveryMode")).lower() for delivery in deliveries}
+    modes.discard("")
+    modes.discard("none")
+    if not modes:
+        return resolve_owner_delivery_mode([normalize_text(delivery.get("messageId")) for delivery in deliveries])
+    if modes == {"mock"}:
+        return "mock"
+    if modes == {"template_prompt"}:
+        return "template_prompt"
+    if modes == {"live"}:
+        return "live"
+    return "mixed"
+
+
 class WhatsAppReengagementScheduler:
     def __init__(
         self,
         database: PortalDatabase,
         *,
-        send_owner_message: Callable[[dict[str, Any], str], str],
+        send_owner_message: Callable[[dict[str, Any], str], Any],
         config: WhatsAppReengagementConfig | None = None,
     ) -> None:
         self.database = database
@@ -638,7 +706,7 @@ class WhatsAppReengagementScheduler:
             user_id=user_id,
             cutoff_at=cutoff_at,
         )
-        notifications_sent = 0
+        candidates: list[dict[str, Any]] = []
         errors: list[str] = []
 
         for conversation in due_conversations:
@@ -652,35 +720,69 @@ class WhatsAppReengagementScheduler:
                 conversation=conversation,
                 messages=messages,
             )
-            owner_notification = build_owner_notification(
-                conversation=conversation,
-                draft_text=draft_text,
+            candidates.append(
+                {
+                    "conversationId": normalize_text(conversation.get("conversationId")),
+                    "senderName": normalize_text(conversation.get("senderName")),
+                    "senderWaId": normalize_text(conversation.get("senderWaId")),
+                    "lastMessageAt": normalize_text(conversation.get("lastMessageAt")),
+                    "lastMessageText": normalize_text(conversation.get("lastMessageText")),
+                    "messageCount": int(conversation.get("messageCount") or 0),
+                    "draftText": draft_text,
+                    "source": source,
+                    "modelName": model_name,
+                    "metadata": draft_metadata,
+                }
+            )
+
+        notifications_sent = 0
+        delivery: dict[str, str] = {"messageId": "", "deliveryMode": "none", "reportId": ""}
+        if candidates:
+            owner_report = build_owner_report(
+                candidates=candidates,
                 tz=tz,
+                demo=False,
             )
             try:
-                owner_message_id = self.send_owner_message(connection, owner_notification)
-            except Exception as exc:  # noqa: BLE001 - log and continue with other threads
-                errors.append(
-                    f"{normalize_text(conversation.get('conversationId'))}: {exc}"
+                delivery = normalize_owner_delivery_result(
+                    self.send_owner_message(
+                        {
+                            **connection,
+                            "reengagementReport": {
+                                "demo": False,
+                                "candidatesCount": len(candidates),
+                                "scheduledFor": scheduled_for.isoformat(),
+                                "cutoffAt": cutoff_at.isoformat(),
+                            },
+                        },
+                        owner_report,
+                    )
                 )
-                continue
+            except Exception as exc:  # noqa: BLE001 - log and continue with other threads
+                errors.append(str(exc))
+            else:
+                notifications_sent = 1
 
-            self.database.save_whatsapp_reengagement_notification(
-                user_id=user_id,
-                conversation_id=normalize_text(conversation.get("conversationId")),
-                feature_id=REENGAGEMENT_FEATURE_ID,
-                scheduled_for=scheduled_for,
-                owner_message_id=owner_message_id,
-                draft_text=draft_text,
-                source=source,
-                model_name=model_name,
-                metadata={
-                    **draft_metadata,
-                    "senderWaId": normalize_text(conversation.get("senderWaId")),
-                    "senderName": normalize_text(conversation.get("senderName")),
-                },
-            )
-            notifications_sent += 1
+        if delivery.get("messageId"):
+            for candidate in candidates:
+                candidate_metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+                self.database.save_whatsapp_reengagement_notification(
+                    user_id=user_id,
+                    conversation_id=normalize_text(candidate.get("conversationId")),
+                    feature_id=REENGAGEMENT_FEATURE_ID,
+                    scheduled_for=scheduled_for,
+                    owner_message_id=normalize_text(delivery.get("messageId")),
+                    draft_text=normalize_text(candidate.get("draftText")),
+                    source=normalize_text(candidate.get("source")),
+                    model_name=normalize_text(candidate.get("modelName")),
+                    metadata={
+                        **candidate_metadata,
+                        "senderWaId": normalize_text(candidate.get("senderWaId")),
+                        "senderName": normalize_text(candidate.get("senderName")),
+                        "deliveryMode": normalize_text(delivery.get("deliveryMode")),
+                        "reengagementReportId": normalize_text(delivery.get("reportId")),
+                    },
+                )
 
         status = "completed"
         if errors and notifications_sent:
@@ -812,6 +914,7 @@ class WhatsAppReengagementScheduler:
 
         candidates: list[dict[str, Any]] = []
         owner_message_ids: list[str] = []
+        owner_deliveries: list[dict[str, str]] = []
         delivery_errors: list[str] = []
 
         def is_cancelled() -> bool:
@@ -820,7 +923,7 @@ class WhatsAppReengagementScheduler:
         def cancelled_result() -> dict[str, Any]:
             sent_count = len(owner_message_ids)
             report_label = "report" if sent_count == 1 else "reports"
-            delivery_mode = resolve_owner_delivery_mode(owner_message_ids)
+            delivery_mode = resolve_owner_delivery_mode_from_results(owner_deliveries)
             message = (
                 f"Demo run cancelled after sending {sent_count} WhatsApp {report_label}. Customers were not contacted."
                 if sent_count
@@ -843,6 +946,7 @@ class WhatsAppReengagementScheduler:
                     "settings": settings,
                     "candidates": candidates,
                     "ownerMessageIds": owner_message_ids,
+                    "ownerDeliveries": owner_deliveries,
                     "deliveryErrors": delivery_errors,
                 },
             }
@@ -862,27 +966,46 @@ class WhatsAppReengagementScheduler:
             return cancelled_result()
 
         if candidates:
-            for candidate in candidates:
-                if is_cancelled():
-                    return cancelled_result()
-                message_text = build_demo_owner_notification(
-                    conversation=candidate,
-                    draft_text=normalize_text(candidate.get("draftText")),
-                    tz=tz,
-                )
-                try:
-                    owner_message_ids.append(self.send_owner_message(connection, message_text))
-                except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
-                    delivery_errors.append(
-                        f"{normalize_text(candidate.get('conversationId'))}: {exc}"
+            message_text = build_owner_report(
+                candidates=candidates,
+                tz=tz,
+                demo=True,
+            )
+            try:
+                delivery = normalize_owner_delivery_result(
+                    self.send_owner_message(
+                        {
+                            **connection,
+                            "reengagementReport": {
+                                "demo": True,
+                                "candidatesCount": len(candidates),
+                                "scheduledFor": scheduled_for.isoformat(),
+                                "cutoffAt": cutoff_at.isoformat(),
+                            },
+                        },
+                        message_text,
                     )
+                )
+                if delivery.get("messageId"):
+                    owner_message_ids.append(normalize_text(delivery.get("messageId")))
+                    owner_deliveries.append(delivery)
+            except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
+                delivery_errors.append(str(exc))
         else:
             if is_cancelled():
                 return cancelled_result()
             try:
-                owner_message_ids.append(
+                delivery = normalize_owner_delivery_result(
                     self.send_owner_message(
-                        connection,
+                        {
+                            **connection,
+                            "reengagementReport": {
+                                "demo": True,
+                                "candidatesCount": 0,
+                                "scheduledFor": scheduled_for.isoformat(),
+                                "cutoffAt": cutoff_at.isoformat(),
+                            },
+                        },
                         build_demo_no_candidates_notification(
                             settings=settings,
                             cutoff_at=cutoff_at,
@@ -890,6 +1013,9 @@ class WhatsAppReengagementScheduler:
                         ),
                     )
                 )
+                if delivery.get("messageId"):
+                    owner_message_ids.append(normalize_text(delivery.get("messageId")))
+                    owner_deliveries.append(delivery)
             except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
                 delivery_errors.append(str(exc))
 
@@ -917,11 +1043,17 @@ class WhatsAppReengagementScheduler:
                     "settings": settings,
                     "candidates": candidates,
                     "ownerMessageIds": owner_message_ids,
+                    "ownerDeliveries": owner_deliveries,
                     "deliveryErrors": delivery_errors,
                 },
             }
-        delivery_mode = resolve_owner_delivery_mode(owner_message_ids)
-        delivery_action = "simulated the WhatsApp report" if delivery_mode == "mock" else "sent the results to WhatsApp"
+        delivery_mode = resolve_owner_delivery_mode_from_results(owner_deliveries)
+        if delivery_mode == "mock":
+            delivery_action = "simulated the WhatsApp report"
+        elif delivery_mode == "template_prompt":
+            delivery_action = "sent a WhatsApp template prompt"
+        else:
+            delivery_action = "sent the results to WhatsApp"
         return {
             "ok": True,
             "demo": True,
@@ -942,6 +1074,7 @@ class WhatsAppReengagementScheduler:
                 "settings": settings,
                 "candidates": candidates,
                 "ownerMessageIds": owner_message_ids,
+                "ownerDeliveries": owner_deliveries,
                 "deliveryErrors": delivery_errors,
             },
         }
