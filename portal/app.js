@@ -9617,13 +9617,14 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
     return "Cancelled before any demo WhatsApp report was sent. Customers were not contacted.";
   }
 
+  if (!conversationsChecked && candidatesCount <= 0) {
+    return "No saved conversations are available yet. Import WhatsApp history or wait for conversations to be captured, then run the demo again. Customers were not contacted.";
+  }
+
   if (deliveryErrors.length && notificationsSent <= 0) {
     if (candidatesCount > 0) {
       const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
       return `Found ${matchLabel} and prepared the follow-up drafts below. WhatsApp delivery failed, so nothing was sent to ${ownerLabel}. Customers were not contacted.`;
-    }
-    if (!conversationsChecked) {
-      return `Checked ${checkedLabel}. Import WhatsApp history or wait for conversations to be captured, then run the demo again. WhatsApp delivery also failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
     }
     const skippedSummary = formatReengagementSkippedSummary(run);
     const scanSummary = skippedSummary

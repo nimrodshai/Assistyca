@@ -1019,7 +1019,7 @@ class WhatsAppReengagementScheduler:
                     owner_deliveries.append(delivery)
             except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
                 delivery_errors.append(str(exc))
-        elif owner_delivery_ready:
+        elif owner_delivery_ready and saved_conversations_count > 0:
             if is_cancelled():
                 return cancelled_result()
             try:
@@ -1064,13 +1064,17 @@ class WhatsAppReengagementScheduler:
             delivery_action = "prepared portal results"
         else:
             delivery_action = "sent the results to WhatsApp"
+        if not candidates and saved_conversations_count <= 0:
+            message = "No saved conversations are available for this demo yet."
+        else:
+            message = (
+                f"Demo found {len(candidates)} inactive conversation"
+                f"{'' if len(candidates) == 1 else 's'} and {delivery_action}."
+            )
         return {
             "ok": True,
             "demo": True,
-            "message": (
-                f"Demo found {len(candidates)} inactive conversation"
-                f"{'' if len(candidates) == 1 else 's'} and {delivery_action}."
-            ),
+            "message": message,
             "run": {
                 "status": status,
                 "scheduledFor": scheduled_for.isoformat(),

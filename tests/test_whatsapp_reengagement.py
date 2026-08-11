@@ -728,11 +728,12 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(candidates[0]["senderName"], "Dani Levi")
         self.assertIn("pricing question", candidates[0]["draftText"])
 
-    def test_demo_run_marks_mock_owner_delivery(self) -> None:
+    def test_demo_run_skips_owner_delivery_without_saved_conversations(self) -> None:
         self._connect_whatsapp()
+        sent_messages: list[str] = []
         scheduler = WhatsAppReengagementScheduler(
             self.database,
-            send_owner_message=lambda _connection, _message_text: "mock-demo-1",
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "mock-demo-1",
             config=WhatsAppReengagementConfig(
                 enabled=True,
                 timezone_name="UTC",
@@ -747,10 +748,65 @@ class WhatsAppReengagementTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
+        self.assertTrue(result["demo"])
+        self.assertEqual(result["run"]["status"], "no_candidates")
+        self.assertEqual(result["run"]["conversationsChecked"], 0)
+        self.assertEqual(result["run"]["notificationsSent"], 0)
+        self.assertEqual(result["run"]["ownerMessageIds"], [])
+        self.assertEqual(result["run"]["deliveryErrors"], [])
+        self.assertEqual(result["run"]["deliveryMode"], "none")
+        self.assertEqual(sent_messages, [])
+        self.assertIn("No saved conversations", result["message"])
+
+    def test_demo_run_marks_mock_owner_delivery_for_no_matches_with_saved_history(self) -> None:
+        self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "inactivityValue": 1,
+                    "inactivityUnit": "months",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550009999",
+            direction="inbound",
+            text="Thanks, I will check and come back to you.",
+            sender_name="Recent Lead",
+            sender_wa_id="15550009999",
+            message_id="wamid.demo-recent-1",
+            message_type="text",
+            message_at="2026-07-12T09:00:00+00:00",
+        )
+        sent_messages: list[str] = []
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "mock-demo-1",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        result = scheduler.run_demo_for_email(
+            "owner@example.com",
+            now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["conversationsChecked"], 1)
+        self.assertEqual(result["run"]["candidatesCount"], 0)
         self.assertEqual(result["run"]["notificationsSent"], 1)
         self.assertEqual(result["run"]["ownerMessageIds"], ["mock-demo-1"])
         self.assertEqual(result["run"]["ownerWaId"], "15551234567")
         self.assertEqual(result["run"]["deliveryMode"], "mock")
+        self.assertEqual(len(sent_messages), 1)
+        self.assertIn("No inactive conversations matched", sent_messages[0])
         self.assertIn("simulated", result["message"])
 
     def test_demo_run_marks_template_prompt_delivery(self) -> None:

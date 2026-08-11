@@ -47,29 +47,23 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertLess(snippet.index("select.append(option);"), snippet.index("select.value = selectedClientType;"))
         self.assertIn("select.dataset.adminClientTypeValue = selectedClientType;", snippet)
 
-    def test_reengagement_demo_results_panel_has_edit_and_copy_hooks(self) -> None:
+    def test_reengagement_demo_results_use_completion_popup_not_editor_card(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
-        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn('id="reengagementDemoResultsCard"', html)
-        self.assertIn('id="reengagementDemoResultsSummary"', html)
-        self.assertIn('id="reengagementDemoResultsList"', html)
-        self.assertIn("function renderReengagementDemoResults", script)
-        self.assertIn("copyReengagementDemoDraft", script)
+        self.assertNotIn('id="reengagementDemoResultsCard"', html)
+        self.assertNotIn('id="reengagementDemoResultsSummary"', html)
+        self.assertNotIn('id="reengagementDemoResultsList"', html)
         self.assertIn("function formatReengagementSkippedSummary", script)
         self.assertIn("skippedConversations", script)
         self.assertIn("function formatReengagementCheckedConversationsLabel", script)
-        self.assertIn("No saved conversations yet", script)
-        self.assertIn("Import real WhatsApp history", script)
+        self.assertIn("No saved conversations are available yet", script)
+        self.assertNotIn("WhatsApp delivery also failed", script)
         self.assertIn("state.reengagementDemoResult =", script)
         self.assertIn("const errorPayload = error?.payload", script)
         self.assertIn("const errorRun = errorPayload.run", script)
         self.assertIn("getReengagementDemoAlertIcon(errorRun)", script)
-        self.assertIn('textarea.addEventListener("input"', script)
-        self.assertIn("navigator.clipboard.writeText(text)", script)
-        self.assertIn(".reengagement-demo-copy-button", styles)
-        self.assertIn(".copy-icon::before", styles)
+        self.assertIn("openAuthAlert(", script)
 
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
