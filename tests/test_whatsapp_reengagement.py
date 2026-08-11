@@ -115,10 +115,29 @@ class WhatsAppReengagementTests(unittest.TestCase):
         )
 
         self.assertIn("היי", draft)
+        self.assertIn("רלוונטי להמשיך", draft)
         self.assertIn("שלחו לי הודעה", draft)
+        self.assertNotIn("עזרה עם זה", draft)
         self.assertNotIn("אפשר לשלוח לי הודעה ואמשיך משם", draft)
         self.assertNotIn("Hi", draft)
         self.assertNotIn("דולב", draft)
+
+    def test_fallback_draft_uses_help_only_when_context_mentions_help(self) -> None:
+        draft = build_fallback_draft(
+            {
+                "senderName": "לקוח",
+                "lastMessageText": "אפשר עזרה?",
+            },
+            [
+                {
+                    "direction": "inbound",
+                    "text": "אפשר עזרה?",
+                }
+            ],
+        )
+
+        self.assertIn("צריך עזרה", draft)
+        self.assertNotIn("עזרה עם זה", draft)
 
     def test_fallback_draft_does_not_mix_latin_name_into_hebrew_conversation(self) -> None:
         draft = build_fallback_draft(
@@ -160,6 +179,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
 
         self.assertIn("Write in the main language", prompt)
         self.assertIn("Use direct, human phrasing", prompt)
+        self.assertIn("generic relevance check", prompt)
+        self.assertIn("help with this", prompt)
         self.assertIn("Do not use the customer name by default", prompt)
         self.assertIn("different script", prompt)
         self.assertIn("Nimrod Shai", prompt)
@@ -211,6 +232,54 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(metadata, {})
         self.assertIn("הצעת המחיר", draft)
         self.assertNotIn("Nimrod", draft)
+
+    def test_scheduler_rejects_vague_help_ai_draft(self) -> None:
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, _message_text: "owner-1",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+        fake_response = SimpleNamespace(
+            output_text="Hi Maya, just checking in in case you still need help with this.",
+            request_id="req_vague_help",
+            response_id="resp_vague_help",
+            model="gpt-5.4",
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ):
+            draft, source, model, metadata = scheduler._generate_draft(
+                connection={
+                    "email": "owner@example.com",
+                    "metadata": {"assistant": {}},
+                    "profile": {},
+                    "settings": {"model": "gpt-5.4"},
+                },
+                conversation={
+                    "conversationId": "english-general",
+                    "senderName": "Maya Cohen",
+                    "lastInboundAt": "2026-05-01T09:00:00+00:00",
+                },
+                messages=[
+                    {
+                        "direction": "inbound",
+                        "text": "Thanks, I will think about it.",
+                    }
+                ],
+            )
+
+        self.assertEqual(source, "fallback")
+        self.assertEqual(model, "")
+        self.assertEqual(metadata, {})
+        self.assertIn("still like to continue", draft)
+        self.assertNotIn("help with this", draft)
 
     def test_scheduler_sends_one_reengagement_message_for_dormant_conversation(self) -> None:
         self._connect_whatsapp()
@@ -278,7 +347,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
 
         self.assertTrue(summary["ran"])
         self.assertEqual(len(sent_messages), 1)
-        self.assertIn("just checking in", sent_messages[0])
+        self.assertIn("still like to continue", sent_messages[0])
+        self.assertNotIn("help with this", sent_messages[0])
         self.assertIn("Maya Cohen", sent_messages[0])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4")
 

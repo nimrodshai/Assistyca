@@ -466,7 +466,21 @@ def is_reengagement_draft_compatible(
         conversation,
         messages,
         draft_text,
+    ) and not draft_uses_vague_help_reference(
+        draft_text,
     )
+
+
+def draft_uses_vague_help_reference(draft_text: str) -> bool:
+    text = normalize_text(draft_text).lower()
+    vague_phrases = (
+        "help with this",
+        "help with that",
+        "checking in on this",
+        "עזרה עם זה",
+        "לעזור עם זה",
+    )
+    return any(phrase in text for phrase in vague_phrases)
 
 
 def build_context_excerpt(messages: list[dict[str, Any]], limit: int = DEFAULT_MAX_CONTEXT_MESSAGES) -> str:
@@ -519,6 +533,11 @@ def build_reengagement_prompt(
         "Write in the main language of the conversation context. Do not choose the language from the customer name.",
         "Keep it low-pressure, natural, and easy to copy.",
         (
+            "Mention a concrete topic only when it is clearly present in the conversation. "
+            "If the context is thin or unclear, use a generic relevance check instead of vague phrases like "
+            "'help with this' or 'עזרה עם זה'."
+        ),
+        (
             "Use direct, human phrasing. Avoid passive sign-offs like 'אפשר לשלוח לי הודעה ואמשיך משם'; "
             "prefer straightforward wording like 'שלחו לי הודעה ונמשיך משם' when writing Hebrew."
         ),
@@ -565,17 +584,17 @@ def build_fallback_draft(conversation: dict[str, Any], messages: list[dict[str, 
             return "היי, רציתי לבדוק אם הצעת המחיר שדיברנו עליה עדיין רלוונטית. אם כן, שלחו לי הודעה ונמשיך משם."
         if any(keyword in latest_inbound for keyword in ("תור", "פגישה", "לקבוע", "לתאם", "זמן", "מתי", "זמין", "זמינות")):
             return "היי, רציתי לבדוק אם עדיין רלוונטי לתאם את מה שדיברנו עליו. אם כן, שלחו לי הודעה ונקבע זמן."
-        if latest_inbound:
-            return "היי, רציתי לבדוק אם עדיין צריך עזרה עם זה. אם כן, שלחו לי הודעה ונמשיך משם."
-        return "היי, רציתי לבדוק אם עדיין צריך עזרה. אם כן, שלחו לי הודעה ונמשיך משם."
+        if any(keyword in latest_inbound for keyword in ("עזרה", "לעזור", "סיוע")):
+            return "היי, רציתי לבדוק אם עדיין צריך עזרה. אם כן, שלחו לי הודעה ונמשיך משם."
+        return "היי, רציתי לבדוק אם עדיין רלוונטי להמשיך. אם כן, שלחו לי הודעה ונמשיך משם."
 
     if any(keyword in lowered for keyword in ("quote", "price", "cost", "estimate")):
         return "Hi, just checking in on the quote we discussed. If you still want to move forward, send me a message and I can pick it up from there."
     if any(keyword in lowered for keyword in ("appointment", "schedule", "available", "resched")):
         return "Hi, just checking in in case you still want to continue with the appointment we discussed. If you want to pick a time, message me and I’ll help from there."
-    if latest_inbound:
-        return "Hi, just checking in in case you still need help with this. If you’d like to pick it back up, send me a message and I’ll take it from there."
-    return "Hi, just checking in in case you still need help. If you want to continue, send me a message and I’ll take it from there."
+    if any(keyword in lowered for keyword in ("help", "support", "issue", "problem")):
+        return "Hi, just checking in in case you still need help. If so, message me here and we’ll pick it up from there."
+    return "Hi, just checking whether you’d still like to continue. If so, message me here and we’ll pick it up from there."
 
 
 def clean_generated_draft(value: str) -> str:
