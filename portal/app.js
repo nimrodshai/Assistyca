@@ -9510,6 +9510,15 @@ function getReengagementDeliveryMode(run = {}) {
   return normalizeText(run?.deliveryMode).toLowerCase();
 }
 
+function getReengagementConversationsChecked(run = {}) {
+  return Math.max(0, Number(run?.conversationsChecked || 0));
+}
+
+function formatReengagementCheckedConversationsLabel(run = {}) {
+  const conversationsChecked = getReengagementConversationsChecked(run);
+  return conversationsChecked === 1 ? "1 saved conversation" : `${conversationsChecked} saved conversations`;
+}
+
 function hasReengagementDemoDeliveryErrors(run = {}) {
   return Array.isArray(run?.deliveryErrors) && run.deliveryErrors.length > 0;
 }
@@ -9550,6 +9559,9 @@ function getReengagementDemoAlertTitle(run = {}) {
     }
     return "WhatsApp report sent";
   }
+  if (!getReengagementConversationsChecked(run) && candidatesCount <= 0) {
+    return "No saved conversations yet";
+  }
   return candidatesCount > 0 ? "Demo results ready" : "No inactive conversations";
 }
 
@@ -9559,6 +9571,8 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
   const ownerLabel = formatReengagementOwnerLabel(run);
   const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
   const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
+  const conversationsChecked = getReengagementConversationsChecked(run);
+  const checkedLabel = formatReengagementCheckedConversationsLabel(run);
   const deliveryErrors = Array.isArray(run?.deliveryErrors) ? run.deliveryErrors : [];
   const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
   const inactivityLabel = formatReengagementInactivityLabel(settings);
@@ -9581,6 +9595,9 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
     if (candidatesCount > 0) {
       const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
       return `Found ${matchLabel} and prepared the follow-up drafts below. WhatsApp delivery failed, so nothing was sent to ${ownerLabel}. Customers were not contacted.`;
+    }
+    if (!conversationsChecked) {
+      return `Checked ${checkedLabel}. Import WhatsApp history or wait for conversations to be captured, then run the demo again. WhatsApp delivery also failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
     }
     return `Checked the current ${inactivityLabel} inactivity window. WhatsApp delivery failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
   }
@@ -9639,6 +9656,9 @@ function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
     return fallbackMessage || "The demo was cancelled before the full findings list was completed.";
   }
   if (!candidatesCount) {
+    if (!conversationsChecked) {
+      return "No saved conversations are available for this demo yet. Import WhatsApp history or let new conversations arrive, then run the demo again.";
+    }
     return conversationsChecked
       ? `Checked ${conversationsChecked} saved conversations. None matched the current inactivity rule: more than ${inactivityLabel} without activity.`
       : `No saved conversations matched the current inactivity rule: more than ${inactivityLabel} without activity.`;
@@ -9719,12 +9739,15 @@ function renderReengagementDemoResults(feature = getSelectedFeature()) {
   summary.textContent = formatReengagementDemoSummary(run, result?.message || "");
   const candidates = getReengagementDemoCandidates(run);
   if (!candidates.length) {
+    const conversationsChecked = getReengagementConversationsChecked(run);
     const empty = document.createElement("div");
     empty.className = "reengagement-demo-empty";
     const title = document.createElement("strong");
-    title.textContent = "No matching conversations";
+    title.textContent = conversationsChecked ? "No matching conversations" : "No saved conversations yet";
     const copy = document.createElement("p");
-    copy.textContent = "Import more WhatsApp history or lower the inactivity window, then run the demo again.";
+    copy.textContent = conversationsChecked
+      ? "Lower the inactivity window or wait for older conversations, then run the demo again."
+      : "Import real WhatsApp history or let this tool capture conversations before running the demo again.";
     empty.append(title, copy);
     list.append(empty);
     return;
