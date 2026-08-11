@@ -518,6 +518,10 @@ def build_reengagement_prompt(
         "Write one WhatsApp re-engagement message for a business owner to send manually to an old customer.",
         "Write in the main language of the conversation context. Do not choose the language from the customer name.",
         "Keep it low-pressure, natural, and easy to copy.",
+        (
+            "Use direct, human phrasing. Avoid passive sign-offs like 'אפשר לשלוח לי הודעה ואמשיך משם'; "
+            "prefer straightforward wording like 'שלחו לי הודעה ונמשיך משם' when writing Hebrew."
+        ),
         "Do not use the customer name by default. Use it only if it naturally fits the conversation.",
         "Never include the customer name when it is written in a different language or script from the conversation.",
         "Do not invent discounts, availability, or facts that are not in the conversation.",
@@ -558,12 +562,12 @@ def build_fallback_draft(conversation: dict[str, Any], messages: list[dict[str, 
     lowered = latest_inbound.lower()
     if conversation_script == "hebrew":
         if any(keyword in latest_inbound for keyword in ("הצעת מחיר", "מחיר", "עלות", "כמה", "הערכה", "הצעה")):
-            return "היי, רק רציתי לבדוק אם הצעת המחיר שדיברנו עליה עדיין רלוונטית. אם כן, אפשר לשלוח לי הודעה ואמשיך משם."
+            return "היי, רציתי לבדוק אם הצעת המחיר שדיברנו עליה עדיין רלוונטית. אם כן, שלחו לי הודעה ונמשיך משם."
         if any(keyword in latest_inbound for keyword in ("תור", "פגישה", "לקבוע", "לתאם", "זמן", "מתי", "זמין", "זמינות")):
-            return "היי, רק רציתי לבדוק אם עדיין רלוונטי לתאם את מה שדיברנו עליו. אם כן, אפשר לשלוח לי הודעה ואמשיך משם."
+            return "היי, רציתי לבדוק אם עדיין רלוונטי לתאם את מה שדיברנו עליו. אם כן, שלחו לי הודעה ונקבע זמן."
         if latest_inbound:
-            return "היי, רק רציתי לבדוק אם עדיין צריך עזרה עם זה. אם זה עדיין רלוונטי, אפשר לשלוח לי הודעה ואמשיך משם."
-        return "היי, רק רציתי לבדוק אם עדיין צריך עזרה. אם זה עדיין רלוונטי, אפשר לשלוח לי הודעה ואמשיך משם."
+            return "היי, רציתי לבדוק אם עדיין צריך עזרה עם זה. אם כן, שלחו לי הודעה ונמשיך משם."
+        return "היי, רציתי לבדוק אם עדיין צריך עזרה. אם כן, שלחו לי הודעה ונמשיך משם."
 
     if any(keyword in lowered for keyword in ("quote", "price", "cost", "estimate")):
         return "Hi, just checking in on the quote we discussed. If you still want to move forward, send me a message and I can pick it up from there."

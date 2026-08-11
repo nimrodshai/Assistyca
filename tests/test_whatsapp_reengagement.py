@@ -115,7 +115,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
         )
 
         self.assertIn("היי", draft)
-        self.assertIn("רלוונטי", draft)
+        self.assertIn("שלחו לי הודעה", draft)
+        self.assertNotIn("אפשר לשלוח לי הודעה ואמשיך משם", draft)
         self.assertNotIn("Hi", draft)
         self.assertNotIn("דולב", draft)
 
@@ -134,6 +135,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
         )
 
         self.assertIn("הצעת המחיר", draft)
+        self.assertIn("שלחו לי הודעה ונמשיך משם", draft)
+        self.assertNotIn("אפשר לשלוח לי הודעה ואמשיך משם", draft)
         self.assertNotIn("Nimrod", draft)
         self.assertNotIn("Hi", draft)
 
@@ -156,6 +159,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
         )
 
         self.assertIn("Write in the main language", prompt)
+        self.assertIn("Use direct, human phrasing", prompt)
         self.assertIn("Do not use the customer name by default", prompt)
         self.assertIn("different script", prompt)
         self.assertIn("Nimrod Shai", prompt)
