@@ -466,21 +466,26 @@ def is_reengagement_draft_compatible(
         conversation,
         messages,
         draft_text,
-    ) and not draft_uses_vague_help_reference(
+    ) and not draft_uses_unsupported_generic_reference(
         draft_text,
     )
 
 
-def draft_uses_vague_help_reference(draft_text: str) -> bool:
+def draft_uses_unsupported_generic_reference(draft_text: str) -> bool:
     text = normalize_text(draft_text).lower()
-    vague_phrases = (
+    unsupported_phrases = (
         "help with this",
         "help with that",
         "checking in on this",
+        "still like to continue",
+        "want to continue",
+        "pick it up from there",
         "עזרה עם זה",
         "לעזור עם זה",
+        "רלוונטי להמשיך",
+        "נמשיך משם",
     )
-    return any(phrase in text for phrase in vague_phrases)
+    return any(phrase in text for phrase in unsupported_phrases)
 
 
 def build_context_excerpt(messages: list[dict[str, Any]], limit: int = DEFAULT_MAX_CONTEXT_MESSAGES) -> str:
@@ -534,12 +539,18 @@ def build_reengagement_prompt(
         "Keep it low-pressure, natural, and easy to copy.",
         (
             "Mention a concrete topic only when it is clearly present in the conversation. "
-            "If the context is thin or unclear, use a generic relevance check instead of vague phrases like "
-            "'help with this' or 'עזרה עם זה'."
+            "If the context is thin or unclear, use a neutral check-in that does not point at a task, "
+            "problem, quote, appointment, 'this', 'that', or a next step that is not actually in the context."
+        ),
+        (
+            "For thin context, prefer wording like 'היי, רציתי לבדוק אם עדיין רלוונטי מבחינתכם. "
+            "אם כן, שלחו לי הודעה כאן.' in Hebrew, or 'Hi, just checking whether staying in touch still "
+            "makes sense for you. If so, message me here.' in English."
         ),
         (
             "Use direct, human phrasing. Avoid passive sign-offs like 'אפשר לשלוח לי הודעה ואמשיך משם'; "
-            "prefer straightforward wording like 'שלחו לי הודעה ונמשיך משם' when writing Hebrew."
+            "prefer straightforward wording like 'שלחו לי הודעה כאן' when writing Hebrew unless a concrete "
+            "next step is present in the conversation."
         ),
         "Do not use the customer name by default. Use it only if it naturally fits the conversation.",
         "Never include the customer name when it is written in a different language or script from the conversation.",
@@ -586,7 +597,7 @@ def build_fallback_draft(conversation: dict[str, Any], messages: list[dict[str, 
             return "היי, רציתי לבדוק אם עדיין רלוונטי לתאם את מה שדיברנו עליו. אם כן, שלחו לי הודעה ונקבע זמן."
         if any(keyword in latest_inbound for keyword in ("עזרה", "לעזור", "סיוע")):
             return "היי, רציתי לבדוק אם עדיין צריך עזרה. אם כן, שלחו לי הודעה ונמשיך משם."
-        return "היי, רציתי לבדוק אם עדיין רלוונטי להמשיך. אם כן, שלחו לי הודעה ונמשיך משם."
+        return "היי, רציתי לבדוק אם עדיין רלוונטי מבחינתכם. אם כן, שלחו לי הודעה כאן."
 
     if any(keyword in lowered for keyword in ("quote", "price", "cost", "estimate")):
         return "Hi, just checking in on the quote we discussed. If you still want to move forward, send me a message and I can pick it up from there."
@@ -594,7 +605,7 @@ def build_fallback_draft(conversation: dict[str, Any], messages: list[dict[str, 
         return "Hi, just checking in in case you still want to continue with the appointment we discussed. If you want to pick a time, message me and I’ll help from there."
     if any(keyword in lowered for keyword in ("help", "support", "issue", "problem")):
         return "Hi, just checking in in case you still need help. If so, message me here and we’ll pick it up from there."
-    return "Hi, just checking whether you’d still like to continue. If so, message me here and we’ll pick it up from there."
+    return "Hi, just checking whether staying in touch still makes sense for you. If so, message me here."
 
 
 def clean_generated_draft(value: str) -> str:
