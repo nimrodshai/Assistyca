@@ -928,6 +928,7 @@ class WhatsAppReengagementScheduler:
         conversation_scan = self.database.scan_whatsapp_reengagement_conversations(
             user_id=user_id,
             cutoff_at=cutoff_at,
+            include_already_notified=True,
         )
         due_conversations = list(conversation_scan.get("conversations") or [])
         saved_conversations_count = int(conversation_scan.get("savedConversationsCount") or len(due_conversations))

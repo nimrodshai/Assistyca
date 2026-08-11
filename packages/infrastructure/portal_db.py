@@ -4080,6 +4080,7 @@ class PortalDatabase:
         *,
         user_id: int,
         cutoff_at: str | datetime,
+        include_already_notified: bool = False,
     ) -> dict[str, Any]:
         if user_id <= 0:
             return {
@@ -4113,7 +4114,11 @@ class PortalDatabase:
                 continue
 
             notified_for = normalize_text(conversation.get("lastReengagementNotifiedForMessageAt"))
-            if notified_for and parse_datetime(notified_for).astimezone(timezone.utc) >= activity_moment:
+            if (
+                not include_already_notified
+                and notified_for
+                and parse_datetime(notified_for).astimezone(timezone.utc) >= activity_moment
+            ):
                 skipped_counts["alreadyNotified"] += 1
                 continue
 
