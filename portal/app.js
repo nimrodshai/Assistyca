@@ -723,7 +723,6 @@ const elements = {
   featureStudioWhatsAppHealthNoticeTitle: document.querySelector("#featureStudioWhatsAppHealthNoticeTitle"),
   featureStudioWhatsAppHealthNoticeCopy: document.querySelector("#featureStudioWhatsAppHealthNoticeCopy"),
   whatsappHistorySection: document.querySelector("#whatsappHistorySection"),
-  whatsappHistoryRefreshButton: document.querySelector("#whatsappHistoryRefreshButton"),
   whatsappHistoryFileInput: document.querySelector("#whatsappHistoryFileInput"),
   whatsappHistoryImportStatus: document.querySelector("#whatsappHistoryImportStatus"),
   whatsappHistoryDiagnostics: document.querySelector("#whatsappHistoryDiagnostics"),
@@ -4185,12 +4184,6 @@ function renderWhatsAppHistory(feature = getSelectedFeature()) {
   const errorText = String(state.whatsappHistoryError || "").trim();
   const selectedFileCount = elements.whatsappHistoryFileInput?.files?.length || 0;
 
-  if (elements.whatsappHistoryRefreshButton) {
-    elements.whatsappHistoryRefreshButton.disabled = isLoading || isImporting || isDeleting || !isSignedIn() || !isWhatsAppFeature(feature);
-    elements.whatsappHistoryRefreshButton.classList.toggle("is-loading", isLoading);
-    elements.whatsappHistoryRefreshButton.setAttribute("aria-busy", String(isLoading));
-    elements.whatsappHistoryRefreshButton.textContent = isLoading ? "Refreshing..." : "Refresh";
-  }
   if (elements.whatsappHistoryFileInput) {
     elements.whatsappHistoryFileInput.disabled = isImporting || isDeleting || !isSignedIn() || !isWhatsAppFeature(feature);
   }
@@ -12333,11 +12326,6 @@ function bindEvents() {
   if (elements.featureStudioWhatsAppHistoryButton) {
     elements.featureStudioWhatsAppHistoryButton.addEventListener("click", () => {
       openWhatsAppHistory();
-    });
-  }
-  if (elements.whatsappHistoryRefreshButton) {
-    elements.whatsappHistoryRefreshButton.addEventListener("click", () => {
-      void refreshWhatsAppHistory({ force: true });
     });
   }
   if (elements.whatsappHistoryFileInput) {
