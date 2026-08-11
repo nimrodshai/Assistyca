@@ -304,6 +304,90 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertIn("message-006", prompt)
         self.assertIn("message-105", prompt)
 
+    def test_scheduler_uses_last_inbound_as_inactivity_anchor(self) -> None:
+        self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                    "intervalDays": 1,
+                    "scheduleTimeLocal": "12:00",
+                    "scheduleTimezone": "UTC",
+                    "inactivityValue": 5,
+                    "inactivityUnit": "minutes",
+                }
+            },
+        )
+        self.database.set_feature_activation(
+            "owner@example.com",
+            feature_id=REENGAGEMENT_FEATURE_ID,
+            feature_name="WhatsApp Re-engagement Assistant",
+            is_active=True,
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550005555",
+            direction="inbound",
+            text="Can you send me the pricing options?",
+            sender_name="Noa Bar",
+            sender_wa_id="15550005555",
+            message_id="wamid.anchor-inbound",
+            message_type="text",
+            message_at="2026-07-13T11:00:00+00:00",
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550005555",
+            direction="outbound",
+            text="I will check and send it soon.",
+            sender_name="Noa Bar",
+            sender_wa_id="15550005555",
+            message_id="wamid.anchor-outbound",
+            message_type="text",
+            message_at="2026-07-13T11:59:00+00:00",
+        )
+
+        sent_messages: list[str] = []
+        fake_response = SimpleNamespace(
+            output_text="Hi Noa, just checking in on the pricing options we discussed.",
+            request_id="req_anchor",
+            response_id="resp_anchor",
+            model="gpt-5.4",
+        )
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "owner-anchor",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ) as mock_openai_response:
+            summary = scheduler.run_pending(now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
+
+        self.assertTrue(summary["ran"])
+        self.assertEqual(len(sent_messages), 1)
+        self.assertIn("Last customer activity", sent_messages[0])
+        self.assertIn("Noa Bar", sent_messages[0])
+        prompt = mock_openai_response.call_args.kwargs["prompt"]
+        self.assertIn("Last customer activity at: 2026-07-13T11:00:00+00:00", prompt)
+        conversation = self.database.get_whatsapp_conversation(
+            "15550005555",
+            email="owner@example.com",
+        )
+        self.assertEqual(
+            conversation["lastReengagementNotifiedForMessageAt"],
+            "2026-07-13T11:00:00+00:00",
+        )
+
     def test_demo_run_sends_owner_whatsapp_without_marking_notified(self) -> None:
         self._connect_whatsapp()
         self.database.save_feature_assignment_metadata(

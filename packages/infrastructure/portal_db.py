@@ -4091,13 +4091,13 @@ class PortalDatabase:
                 SELECT conversation_id
                 FROM whatsapp_conversations
                 WHERE user_id = ?
-                  AND COALESCE(last_message_at, '') <> ''
-                  AND last_message_at <= ?
+                  AND COALESCE(NULLIF(last_inbound_at, ''), last_message_at, '') <> ''
+                  AND COALESCE(NULLIF(last_inbound_at, ''), last_message_at) <= ?
                   AND (
                     COALESCE(last_reengagement_notified_for_message_at, '') = ''
-                    OR last_reengagement_notified_for_message_at < last_message_at
+                    OR last_reengagement_notified_for_message_at < COALESCE(NULLIF(last_inbound_at, ''), last_message_at)
                   )
-                ORDER BY last_message_at ASC, conversation_id ASC
+                ORDER BY COALESCE(NULLIF(last_inbound_at, ''), last_message_at) ASC, conversation_id ASC
                 """,
                 (int(user_id), cutoff_value),
             ).fetchall()
@@ -4273,7 +4273,7 @@ class PortalDatabase:
             if conversation is None:
                 raise KeyError(f"Unknown conversation: {normalized_conversation_id}")
 
-            last_message_at = normalize_text(conversation.get("lastMessageAt"))
+            last_message_at = normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
             if not last_message_at:
                 raise ValueError("Conversation has no last message timestamp.")
 

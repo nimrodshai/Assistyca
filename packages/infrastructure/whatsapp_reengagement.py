@@ -416,7 +416,7 @@ def build_reengagement_prompt(
     tone_guidance = normalize_text(assistant.get("tone_guidance")) or "Warm, direct, and practical."
     business_notes = normalize_text(assistant.get("business_notes"))
     shared_profile_notes = build_shared_profile_notes(connection.get("profile"))
-    last_message_at = normalize_text(conversation.get("lastMessageAt"))
+    last_activity_at = reengagement_activity_at(conversation)
     context = build_context_excerpt(messages)
     customer_name = short_customer_name(conversation)
 
@@ -434,7 +434,7 @@ def build_reengagement_prompt(
     sections.extend(
         [
             f"Customer name: {customer_name}",
-            f"Last recorded message at: {last_message_at}",
+            f"Last customer activity at: {last_activity_at}",
             "Conversation context:",
             context or "No saved context.",
         ]
@@ -468,6 +468,17 @@ def clean_generated_draft(value: str) -> str:
     return text
 
 
+def reengagement_activity_at(conversation: dict[str, Any]) -> str:
+    return normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
+
+
+def latest_inbound_text(messages: list[dict[str, Any]], fallback: str = "") -> str:
+    for message in reversed(messages):
+        if normalize_text(message.get("direction")).lower() == "inbound":
+            return normalize_text(message.get("text"))
+    return normalize_text(fallback)
+
+
 def build_owner_notification(
     *,
     conversation: dict[str, Any],
@@ -476,7 +487,7 @@ def build_owner_notification(
 ) -> str:
     customer_name = short_customer_name(conversation)
     sender_wa_id = normalize_text(conversation.get("senderWaId"))
-    last_message_at = format_message_time(normalize_text(conversation.get("lastMessageAt")), tz)
+    last_message_at = format_message_time(reengagement_activity_at(conversation), tz)
     lines = [
         "This client wasn't reached in a long time, here's a re-engagement message.",
         "",
@@ -486,7 +497,7 @@ def build_owner_notification(
         lines.append(f"WhatsApp: {sender_wa_id}")
     lines.extend(
         [
-            f"Last message: {last_message_at}",
+            f"Last customer activity: {last_message_at}",
             "",
             "Suggested message:",
             draft_text,
@@ -725,8 +736,8 @@ class WhatsAppReengagementScheduler:
                     "conversationId": normalize_text(conversation.get("conversationId")),
                     "senderName": normalize_text(conversation.get("senderName")),
                     "senderWaId": normalize_text(conversation.get("senderWaId")),
-                    "lastMessageAt": normalize_text(conversation.get("lastMessageAt")),
-                    "lastMessageText": normalize_text(conversation.get("lastMessageText")),
+                    "lastMessageAt": reengagement_activity_at(conversation),
+                    "lastMessageText": latest_inbound_text(messages, normalize_text(conversation.get("lastMessageText"))),
                     "messageCount": int(conversation.get("messageCount") or 0),
                     "draftText": draft_text,
                     "source": source,
@@ -839,8 +850,8 @@ class WhatsAppReengagementScheduler:
             "conversationId": normalize_text(conversation.get("conversationId")),
             "senderName": normalize_text(conversation.get("senderName")),
             "senderWaId": normalize_text(conversation.get("senderWaId")),
-            "lastMessageAt": normalize_text(conversation.get("lastMessageAt")),
-            "lastMessageText": normalize_text(conversation.get("lastMessageText")),
+            "lastMessageAt": reengagement_activity_at(conversation),
+            "lastMessageText": latest_inbound_text(messages, normalize_text(conversation.get("lastMessageText"))),
             "messageCount": int(conversation.get("messageCount") or 0),
             "contextMessageCount": len(messages),
             "draftText": draft_text,

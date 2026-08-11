@@ -9676,7 +9676,7 @@ function formatReengagementDemoCandidateMeta(candidate = {}, run = {}) {
   const meta = [];
   const lastMessageAt = formatAdminDateTime(candidate.lastMessageAt);
   if (lastMessageAt) {
-    meta.push(`Last activity ${lastMessageAt}`);
+    meta.push(`Last customer activity ${lastMessageAt}`);
   }
   const messageCount = Math.max(0, Number(candidate.messageCount || 0));
   if (messageCount) {
