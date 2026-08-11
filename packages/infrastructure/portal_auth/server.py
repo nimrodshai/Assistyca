@@ -4728,10 +4728,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         webhook_url = f"{self._public_base_url()}/webhooks/whatsapp"
         connection_status = normalize_text(connection.get("connectionStatus"))
         last_inbound_at = normalize_text(metadata.get("lastInboundAt"))
-        last_owner_command_at = normalize_text(metadata.get("lastOwnerCommandAt"))
-        last_webhook_event_type = normalize_text(metadata.get("lastWebhookEventType"))
-        last_owner_status = normalize_text(metadata.get("lastOwnerNotificationStatus")).lower()
-        last_owner_error = normalize_text(metadata.get("lastOwnerNotificationError"))
 
         if connection_status and connection_status != "connected":
             diagnostics.append(
@@ -4742,40 +4738,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 }
             )
 
-        if not conversations:
-            if last_owner_command_at:
-                diagnostics.append(
-                    {
-                        "tone": "neutral",
-                        "title": "Latest webhook came from the owner phone",
-                        "message": "Replies to Assistyca approval alerts are owner commands, so they do not create customer history. Messages sent directly to the connected WhatsApp number are saved as customer history.",
-                    }
-                )
-            elif not last_inbound_at:
-                diagnostics.append(
-                    {
-                        "tone": "warning",
-                        "title": "No customer webhook has reached this workspace yet",
-                        "message": f"Meta should send messages to {webhook_url}. If the callback points at another Assistyca URL, this database will stay empty.",
-                    }
-                )
-
-        if conversations and last_webhook_event_type == "owner_command":
-            diagnostics.append(
-                {
-                    "tone": "neutral",
-                    "title": "Latest webhook was an owner command",
-                    "message": "Replies to Assistyca approval alerts stay out of customer history. Direct messages to the connected WhatsApp number are still saved as customer conversations.",
-                }
-            )
-
-        if last_owner_status == "failed":
+        if not conversations and not last_inbound_at:
             diagnostics.append(
                 {
                     "tone": "warning",
-                    "title": "Latest approval alert failed",
-                    "message": last_owner_error
-                    or "The incoming message was saved, but WhatsApp did not accept the owner notification.",
+                    "title": "No customer webhook has reached this workspace yet",
+                    "message": f"Meta should send messages to {webhook_url}. If the callback points at another Assistyca URL, this database will stay empty.",
                 }
             )
 

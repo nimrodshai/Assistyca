@@ -2130,7 +2130,10 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
 
         self.assertTrue(history["ok"])
         self.assertEqual(history["conversationCount"], 0)
-        self.assertEqual(history["diagnostics"][0]["title"], "Latest webhook came from the owner phone")
+        diagnostic_titles = {item["title"] for item in history["diagnostics"]}
+        self.assertNotIn("Latest webhook came from the owner phone", diagnostic_titles)
+        self.assertNotIn("Latest webhook was an owner command", diagnostic_titles)
+        self.assertNotIn("Latest approval alert failed", diagnostic_titles)
 
     def test_whatsapp_status_webhook_records_external_business_send_placeholder(self) -> None:
         request = urllib_request.Request(
