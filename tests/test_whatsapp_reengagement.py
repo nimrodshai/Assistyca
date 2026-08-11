@@ -388,6 +388,134 @@ class WhatsAppReengagementTests(unittest.TestCase):
             "2026-07-13T11:00:00+00:00",
         )
 
+    def test_reengagement_scan_counts_saved_conversations_and_skip_reasons(self) -> None:
+        due_message = self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="scan-due",
+            direction="inbound",
+            text="Can you send the details?",
+            sender_name="Due Customer",
+            sender_wa_id="15550001001",
+            message_id="wamid.scan-due",
+            message_type="text",
+            message_at="2026-07-13T11:40:00+00:00",
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="scan-recent",
+            direction="inbound",
+            text="I just replied.",
+            sender_name="Recent Customer",
+            sender_wa_id="15550001002",
+            message_id="wamid.scan-recent",
+            message_type="text",
+            message_at="2026-07-13T11:58:00+00:00",
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="scan-already",
+            direction="inbound",
+            text="Maybe later.",
+            sender_name="Handled Customer",
+            sender_wa_id="15550001003",
+            message_id="wamid.scan-already",
+            message_type="text",
+            message_at="2026-07-13T11:35:00+00:00",
+        )
+        user_id = int(due_message["userId"])
+        self.database.save_whatsapp_reengagement_notification(
+            user_id=user_id,
+            conversation_id="scan-already",
+            feature_id=REENGAGEMENT_FEATURE_ID,
+            scheduled_for="2026-07-13T11:45:00+00:00",
+            owner_message_id="owner-already",
+        )
+
+        scan = self.database.scan_whatsapp_reengagement_conversations(
+            user_id=user_id,
+            cutoff_at="2026-07-13T11:54:00+00:00",
+        )
+
+        self.assertEqual(scan["savedConversationsCount"], 3)
+        self.assertEqual(
+            [conversation["conversationId"] for conversation in scan["conversations"]],
+            ["scan-due"],
+        )
+        self.assertEqual(scan["skippedCounts"]["recentActivity"], 1)
+        self.assertEqual(scan["skippedCounts"]["alreadyNotified"], 1)
+        self.assertEqual(scan["skippedCounts"]["missingTimestamp"], 0)
+
+    def test_demo_run_reports_saved_and_due_conversation_counts(self) -> None:
+        self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                    "inactivityValue": 6,
+                    "inactivityUnit": "minutes",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="demo-due",
+            direction="inbound",
+            text="Can you send the quote?",
+            sender_name="Due Demo",
+            sender_wa_id="15550002001",
+            message_id="wamid.demo-due-counts",
+            message_type="text",
+            message_at="2026-07-13T11:40:00+00:00",
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="demo-recent",
+            direction="inbound",
+            text="I just replied.",
+            sender_name="Recent Demo",
+            sender_wa_id="15550002002",
+            message_id="wamid.demo-recent-counts",
+            message_type="text",
+            message_at="2026-07-13T11:58:00+00:00",
+        )
+
+        fake_response = SimpleNamespace(
+            output_text="Hi, just checking in in case you still need the quote.",
+            request_id="req_demo_counts",
+            response_id="resp_demo_counts",
+            model="gpt-5.4",
+        )
+        sent_messages: list[str] = []
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "owner-demo-counts",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ):
+            result = scheduler.run_demo_for_email(
+                "owner@example.com",
+                now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["conversationsChecked"], 2)
+        self.assertEqual(result["run"]["dueConversationsCount"], 1)
+        self.assertEqual(result["run"]["skippedConversations"]["recentActivity"], 1)
+        self.assertEqual(result["run"]["candidatesCount"], 1)
+        self.assertEqual(result["run"]["candidates"][0]["conversationId"], "demo-due")
+        self.assertEqual(len(sent_messages), 1)
+
     def test_demo_run_sends_owner_whatsapp_without_marking_notified(self) -> None:
         self._connect_whatsapp()
         self.database.save_feature_assignment_metadata(

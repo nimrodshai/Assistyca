@@ -4075,43 +4075,75 @@ class PortalDatabase:
             "activationMetadata": activation_metadata if isinstance(activation_metadata, dict) else {},
         }
 
+    def scan_whatsapp_reengagement_conversations(
+        self,
+        *,
+        user_id: int,
+        cutoff_at: str | datetime,
+    ) -> dict[str, Any]:
+        if user_id <= 0:
+            return {
+                "conversations": [],
+                "savedConversationsCount": 0,
+                "skippedCounts": {
+                    "missingTimestamp": 0,
+                    "recentActivity": 0,
+                    "alreadyNotified": 0,
+                },
+            }
+
+        cutoff_moment = parse_datetime(cutoff_at).astimezone(timezone.utc)
+        saved_conversations = self.list_whatsapp_conversations(user_id=user_id)
+        due_conversations: list[dict[str, Any]] = []
+        skipped_counts = {
+            "missingTimestamp": 0,
+            "recentActivity": 0,
+            "alreadyNotified": 0,
+        }
+
+        for conversation in saved_conversations:
+            activity_at = normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
+            if not activity_at:
+                skipped_counts["missingTimestamp"] += 1
+                continue
+
+            activity_moment = parse_datetime(activity_at).astimezone(timezone.utc)
+            if activity_moment > cutoff_moment:
+                skipped_counts["recentActivity"] += 1
+                continue
+
+            notified_for = normalize_text(conversation.get("lastReengagementNotifiedForMessageAt"))
+            if notified_for and parse_datetime(notified_for).astimezone(timezone.utc) >= activity_moment:
+                skipped_counts["alreadyNotified"] += 1
+                continue
+
+            due_conversations.append(conversation)
+
+        due_conversations.sort(
+            key=lambda conversation: (
+                parse_datetime(
+                    normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
+                ).astimezone(timezone.utc),
+                normalize_text(conversation.get("conversationId")),
+            )
+        )
+        return {
+            "conversations": due_conversations,
+            "savedConversationsCount": len(saved_conversations),
+            "skippedCounts": skipped_counts,
+        }
+
     def list_due_whatsapp_reengagement_conversations(
         self,
         *,
         user_id: int,
         cutoff_at: str | datetime,
     ) -> list[dict[str, Any]]:
-        if user_id <= 0:
-            return []
-
-        cutoff_value = parse_datetime(cutoff_at).astimezone(timezone.utc).isoformat()
-        with self._connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT conversation_id
-                FROM whatsapp_conversations
-                WHERE user_id = ?
-                  AND COALESCE(NULLIF(last_inbound_at, ''), last_message_at, '') <> ''
-                  AND COALESCE(NULLIF(last_inbound_at, ''), last_message_at) <= ?
-                  AND (
-                    COALESCE(last_reengagement_notified_for_message_at, '') = ''
-                    OR last_reengagement_notified_for_message_at < COALESCE(NULLIF(last_inbound_at, ''), last_message_at)
-                  )
-                ORDER BY COALESCE(NULLIF(last_inbound_at, ''), last_message_at) ASC, conversation_id ASC
-                """,
-                (int(user_id), cutoff_value),
-            ).fetchall()
-
-            conversations: list[dict[str, Any]] = []
-            for row in rows:
-                record = self._load_whatsapp_conversation_row(
-                    conn,
-                    user_id=int(user_id),
-                    conversation_id=row["conversation_id"],
-                )
-                if record is not None:
-                    conversations.append(record)
-            return conversations
+        scan = self.scan_whatsapp_reengagement_conversations(
+            user_id=user_id,
+            cutoff_at=cutoff_at,
+        )
+        return list(scan.get("conversations") or [])
 
     def get_whatsapp_reengagement_run(
         self,

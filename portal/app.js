@@ -9519,6 +9519,32 @@ function formatReengagementCheckedConversationsLabel(run = {}) {
   return conversationsChecked === 1 ? "1 saved conversation" : `${conversationsChecked} saved conversations`;
 }
 
+function getReengagementSkippedConversations(run = {}) {
+  const skipped = run?.skippedConversations && typeof run.skippedConversations === "object"
+    ? run.skippedConversations
+    : {};
+  return {
+    missingTimestamp: Math.max(0, Number(skipped.missingTimestamp || 0)),
+    recentActivity: Math.max(0, Number(skipped.recentActivity || 0)),
+    alreadyNotified: Math.max(0, Number(skipped.alreadyNotified || 0)),
+  };
+}
+
+function formatReengagementSkippedSummary(run = {}) {
+  const skipped = getReengagementSkippedConversations(run);
+  const parts = [];
+  if (skipped.recentActivity) {
+    parts.push(`${skipped.recentActivity} ${skipped.recentActivity === 1 ? "was" : "were"} still inside the inactivity window`);
+  }
+  if (skipped.alreadyNotified) {
+    parts.push(`${skipped.alreadyNotified} ${skipped.alreadyNotified === 1 ? "was" : "were"} already handled for the latest customer activity`);
+  }
+  if (skipped.missingTimestamp) {
+    parts.push(`${skipped.missingTimestamp} had no saved activity timestamp`);
+  }
+  return parts.join("; ");
+}
+
 function hasReengagementDemoDeliveryErrors(run = {}) {
   return Array.isArray(run?.deliveryErrors) && run.deliveryErrors.length > 0;
 }
@@ -9599,7 +9625,11 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
     if (!conversationsChecked) {
       return `Checked ${checkedLabel}. Import WhatsApp history or wait for conversations to be captured, then run the demo again. WhatsApp delivery also failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
     }
-    return `Checked the current ${inactivityLabel} inactivity window. WhatsApp delivery failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
+    const skippedSummary = formatReengagementSkippedSummary(run);
+    const scanSummary = skippedSummary
+      ? `Checked ${checkedLabel}. ${skippedSummary}.`
+      : `Checked ${checkedLabel} against the current ${inactivityLabel} inactivity window.`;
+    return `${scanSummary} WhatsApp delivery failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
   }
 
   if (notificationsSent > 0) {
@@ -9646,7 +9676,8 @@ function getReengagementDemoCandidateKey(candidate = {}, index = 0) {
 function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
   const status = normalizeText(run?.status).toLowerCase();
   const candidatesCount = Math.max(0, Number(run?.candidatesCount || getReengagementDemoCandidates(run).length || 0));
-  const conversationsChecked = Math.max(0, Number(run?.conversationsChecked || 0));
+  const conversationsChecked = getReengagementConversationsChecked(run);
+  const checkedLabel = formatReengagementCheckedConversationsLabel(run);
   const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
   const inactivityLabel = formatReengagementInactivityLabel(settings);
   const deliveryMode = getReengagementDeliveryMode(run);
@@ -9659,9 +9690,9 @@ function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
     if (!conversationsChecked) {
       return "No saved conversations are available for this demo yet. Import WhatsApp history or let new conversations arrive, then run the demo again.";
     }
-    return conversationsChecked
-      ? `Checked ${conversationsChecked} saved conversations. None matched the current inactivity rule: more than ${inactivityLabel} without activity.`
-      : `No saved conversations matched the current inactivity rule: more than ${inactivityLabel} without activity.`;
+    const skippedSummary = formatReengagementSkippedSummary(run);
+    const base = `Checked ${checkedLabel}. None matched the current inactivity rule: more than ${inactivityLabel} without customer activity.`;
+    return skippedSummary ? `${base} ${skippedSummary}.` : base;
   }
   const matchLabel = candidatesCount === 1 ? "conversation" : "conversations";
   const deliveryNote = deliveryErrors.length
@@ -9740,13 +9771,14 @@ function renderReengagementDemoResults(feature = getSelectedFeature()) {
   const candidates = getReengagementDemoCandidates(run);
   if (!candidates.length) {
     const conversationsChecked = getReengagementConversationsChecked(run);
+    const skippedSummary = formatReengagementSkippedSummary(run);
     const empty = document.createElement("div");
     empty.className = "reengagement-demo-empty";
     const title = document.createElement("strong");
     title.textContent = conversationsChecked ? "No matching conversations" : "No saved conversations yet";
     const copy = document.createElement("p");
     copy.textContent = conversationsChecked
-      ? "Lower the inactivity window or wait for older conversations, then run the demo again."
+      ? skippedSummary || "Lower the inactivity window or wait for older conversations, then run the demo again."
       : "Import real WhatsApp history or let this tool capture conversations before running the demo again.";
     empty.append(title, copy);
     list.append(empty);
@@ -9949,7 +9981,7 @@ async function runSelectedReengagementDemo() {
   try {
     updateFeatureStudioHeader();
     syncReengagementDemoRunOverlay();
-    setStatus("Running the re-engagement demo and preparing portal results.");
+    setStatus("Running the re-engagement demo and preparing results.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),

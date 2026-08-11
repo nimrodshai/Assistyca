@@ -713,9 +713,16 @@ class WhatsAppReengagementScheduler:
             minimum=1,
             maximum=MAX_CONTEXT_MESSAGES,
         )
-        due_conversations = self.database.list_due_whatsapp_reengagement_conversations(
+        conversation_scan = self.database.scan_whatsapp_reengagement_conversations(
             user_id=user_id,
             cutoff_at=cutoff_at,
+        )
+        due_conversations = list(conversation_scan.get("conversations") or [])
+        saved_conversations_count = int(conversation_scan.get("savedConversationsCount") or len(due_conversations))
+        skipped_conversations = (
+            conversation_scan.get("skippedCounts")
+            if isinstance(conversation_scan.get("skippedCounts"), dict)
+            else {}
         )
         candidates: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -805,18 +812,23 @@ class WhatsAppReengagementScheduler:
             user_id=user_id,
             feature_id=REENGAGEMENT_FEATURE_ID,
             scheduled_for=scheduled_for,
-            conversations_checked=len(due_conversations),
+            conversations_checked=saved_conversations_count,
             notifications_sent=notifications_sent,
             status=status,
             metadata={
                 "cutoffAt": cutoff_at.isoformat(),
                 "errors": errors,
+                "savedConversationsCount": saved_conversations_count,
+                "dueConversationsCount": len(due_conversations),
+                "skippedConversations": skipped_conversations,
             },
         )
         return {
             "userId": user_id,
             "email": normalize_text(connection.get("email")).lower(),
-            "conversationsChecked": len(due_conversations),
+            "conversationsChecked": saved_conversations_count,
+            "dueConversationsCount": len(due_conversations),
+            "skippedConversations": skipped_conversations,
             "notificationsSent": notifications_sent,
             "errors": errors,
             "run": run_record,
@@ -913,9 +925,16 @@ class WhatsAppReengagementScheduler:
         scheduled_for = latest_reengagement_scheduled_slot(current_time, settings, tz)
         next_run = resolve_next_reengagement_slot(now=current_time, settings=settings, tz=tz)
         cutoff_at = resolve_reengagement_cutoff_at(now=current_time, settings=settings, tz=tz)
-        due_conversations = self.database.list_due_whatsapp_reengagement_conversations(
+        conversation_scan = self.database.scan_whatsapp_reengagement_conversations(
             user_id=user_id,
             cutoff_at=cutoff_at,
+        )
+        due_conversations = list(conversation_scan.get("conversations") or [])
+        saved_conversations_count = int(conversation_scan.get("savedConversationsCount") or len(due_conversations))
+        skipped_conversations = (
+            conversation_scan.get("skippedCounts")
+            if isinstance(conversation_scan.get("skippedCounts"), dict)
+            else {}
         )
 
         candidates: list[dict[str, Any]] = []
@@ -944,7 +963,9 @@ class WhatsAppReengagementScheduler:
                     "scheduledFor": scheduled_for.isoformat(),
                     "nextRunAt": next_run.isoformat(),
                     "cutoffAt": cutoff_at.isoformat(),
-                    "conversationsChecked": len(due_conversations),
+                    "conversationsChecked": saved_conversations_count,
+                    "dueConversationsCount": len(due_conversations),
+                    "skippedConversations": skipped_conversations,
                     "candidatesCount": len(candidates),
                     "notificationsSent": sent_count,
                     "ownerWaId": normalize_text(connection.get("ownerWaId")),
@@ -1055,7 +1076,9 @@ class WhatsAppReengagementScheduler:
                 "scheduledFor": scheduled_for.isoformat(),
                 "nextRunAt": next_run.isoformat(),
                 "cutoffAt": cutoff_at.isoformat(),
-                "conversationsChecked": len(due_conversations),
+                "conversationsChecked": saved_conversations_count,
+                "dueConversationsCount": len(due_conversations),
+                "skippedConversations": skipped_conversations,
                 "candidatesCount": len(candidates),
                 "notificationsSent": len(owner_message_ids),
                 "ownerWaId": normalize_text(connection.get("ownerWaId")),
