@@ -1022,28 +1022,7 @@ class WhatsAppReengagementScheduler:
         if delivery_errors and owner_message_ids:
             status = "partial"
         elif delivery_errors:
-            return {
-                "ok": False,
-                "error": "demo_delivery_failed",
-                "message": "The demo generated results but could not send them to WhatsApp.",
-                "run": {
-                    "status": "failed",
-                    "scheduledFor": scheduled_for.isoformat(),
-                    "nextRunAt": next_run.isoformat(),
-                    "cutoffAt": cutoff_at.isoformat(),
-                    "conversationsChecked": len(due_conversations),
-                    "candidatesCount": len(candidates),
-                    "notificationsSent": 0,
-                    "ownerWaId": normalize_text(connection.get("ownerWaId")),
-                    "deliveryMode": resolve_owner_delivery_mode(owner_message_ids),
-                    "portalOnly": not owner_delivery_ready,
-                    "settings": settings,
-                    "candidates": candidates,
-                    "ownerMessageIds": owner_message_ids,
-                    "ownerDeliveries": owner_deliveries,
-                    "deliveryErrors": delivery_errors,
-                },
-            }
+            status = "delivery_failed"
         delivery_mode = resolve_owner_delivery_mode_from_results(owner_deliveries)
         if delivery_mode == "mock":
             delivery_action = "simulated the WhatsApp report"

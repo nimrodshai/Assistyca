@@ -9510,6 +9510,26 @@ function getReengagementDeliveryMode(run = {}) {
   return normalizeText(run?.deliveryMode).toLowerCase();
 }
 
+function hasReengagementDemoDeliveryErrors(run = {}) {
+  return Array.isArray(run?.deliveryErrors) && run.deliveryErrors.length > 0;
+}
+
+function getReengagementDemoAlertIcon(run = {}) {
+  const status = normalizeText(run?.status).toLowerCase();
+  if (status === "cancelled" || hasReengagementDemoDeliveryErrors(run)) {
+    return "!";
+  }
+  return Math.max(0, Number(run?.candidatesCount || 0)) > 0 ? "✓" : "!";
+}
+
+function getReengagementDemoAlertTone(run = {}) {
+  const status = normalizeText(run?.status).toLowerCase();
+  if (status === "cancelled" || hasReengagementDemoDeliveryErrors(run)) {
+    return "warning";
+  }
+  return Math.max(0, Number(run?.candidatesCount || 0)) > 0 ? "success" : "warning";
+}
+
 function getReengagementDemoAlertTitle(run = {}) {
   const status = normalizeText(run?.status).toLowerCase();
   if (status === "cancelled") {
@@ -9555,6 +9575,14 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
       return `Cancelled after sending ${notificationsSent} demo ${reportLabel}. Customers were not contacted.`;
     }
     return "Cancelled before any demo WhatsApp report was sent. Customers were not contacted.";
+  }
+
+  if (deliveryErrors.length && notificationsSent <= 0) {
+    if (candidatesCount > 0) {
+      const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
+      return `Found ${matchLabel} and prepared the follow-up drafts below. WhatsApp delivery failed, so nothing was sent to ${ownerLabel}. Customers were not contacted.`;
+    }
+    return `Checked the current ${inactivityLabel} inactivity window. WhatsApp delivery failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
   }
 
   if (notificationsSent > 0) {
@@ -9605,6 +9633,7 @@ function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
   const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
   const inactivityLabel = formatReengagementInactivityLabel(settings);
   const deliveryMode = getReengagementDeliveryMode(run);
+  const deliveryErrors = Array.isArray(run?.deliveryErrors) ? run.deliveryErrors : [];
 
   if (status === "cancelled") {
     return fallbackMessage || "The demo was cancelled before the full findings list was completed.";
@@ -9615,7 +9644,9 @@ function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
       : `No saved conversations matched the current inactivity rule: more than ${inactivityLabel} without activity.`;
   }
   const matchLabel = candidatesCount === 1 ? "conversation" : "conversations";
-  const deliveryNote = deliveryMode === "none"
+  const deliveryNote = deliveryErrors.length
+    ? "WhatsApp delivery failed, so no WhatsApp message was sent."
+    : deliveryMode === "none"
     ? "No WhatsApp message was sent."
     : "Customers were not contacted.";
   return `Found ${candidatesCount} ${matchLabel} inactive for more than ${inactivityLabel}. Review, edit, and copy the generated follow-up drafts below. ${deliveryNote}`;
@@ -9921,17 +9952,41 @@ async function runSelectedReengagementDemo() {
       {
         eyebrow: "Demo results",
         buttonLabel: "OK",
-        icon: normalizeText(response.run?.status).toLowerCase() === "cancelled"
-          ? "!"
-          : Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "✓" : "!",
-        tone: normalizeText(response.run?.status).toLowerCase() === "cancelled"
-          ? "warning"
-          : Math.max(0, Number(response.run?.candidatesCount || 0)) > 0 ? "success" : "warning",
+        icon: getReengagementDemoAlertIcon(response.run),
+        tone: getReengagementDemoAlertTone(response.run),
         returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
       },
     );
   } catch (error) {
     reengagementDemoRunOverlayVisible = false;
+    const errorPayload = error?.payload && typeof error.payload === "object" ? error.payload : {};
+    const errorRun = errorPayload.run && typeof errorPayload.run === "object" ? errorPayload.run : null;
+    if (errorRun) {
+      const completionMessage = String(
+        errorPayload.message
+          || formatApiErrorMessage(error, "Demo generated findings, but WhatsApp delivery failed."),
+      );
+      state.reengagementDemoResult = {
+        featureId: feature.id,
+        message: completionMessage,
+        run: errorRun,
+      };
+      state.reengagementDemoDrafts = {};
+      renderReengagementDemoResults(feature);
+      setStatus(completionMessage);
+      openAuthAlert(
+        getReengagementDemoAlertTitle(errorRun),
+        getReengagementDemoAlertMessage(errorRun, completionMessage),
+        {
+          eyebrow: "Demo results",
+          buttonLabel: "OK",
+          icon: getReengagementDemoAlertIcon(errorRun),
+          tone: getReengagementDemoAlertTone(errorRun),
+          returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
+        },
+      );
+      return;
+    }
     openFeatureActivationAlert(
       "Couldn’t run the demo",
       formatApiErrorMessage(error, "We couldn’t run the re-engagement demo right now."),

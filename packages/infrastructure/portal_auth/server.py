@@ -1760,6 +1760,7 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
     owner_label = format_reengagement_owner_label(payload)
     candidates_count = max(0, int(payload.get("candidatesCount") or 0))
     notifications_sent = max(0, int(payload.get("notificationsSent") or 0))
+    delivery_errors = payload.get("deliveryErrors") if isinstance(payload.get("deliveryErrors"), list) else []
     if status == "cancelled":
         if notifications_sent > 0:
             label = "report" if notifications_sent == 1 else "reports"
@@ -1769,6 +1770,12 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
                 return f"Demo cancelled after sending a WhatsApp template prompt to {owner_label}. Customers were not contacted."
             return f"Demo cancelled after sending {notifications_sent} WhatsApp {label}. Customers were not contacted."
         return "Demo cancelled before any WhatsApp report was sent. Customers were not contacted."
+    if delivery_errors and notifications_sent <= 0:
+        if candidates_count == 1:
+            return "Demo found 1 inactive conversation and generated a follow-up draft. WhatsApp delivery failed, so review the finding in the portal."
+        if candidates_count > 1:
+            return f"Demo found {candidates_count} inactive conversations and generated follow-up drafts. WhatsApp delivery failed, so review the findings in the portal."
+        return "Demo found no inactive conversations. WhatsApp delivery failed before a no-results report could be sent."
     if notifications_sent > 0 and delivery_mode == "mock":
         if candidates_count == 1:
             return f"Demo found 1 inactive conversation, generated a follow-up draft, and simulated the WhatsApp report for {owner_label}. Live WhatsApp delivery is not configured."

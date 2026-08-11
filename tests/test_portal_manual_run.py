@@ -34,6 +34,24 @@ from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 
 
+class PortalManualRunDescriptionTests(unittest.TestCase):
+    def test_reengagement_demo_description_keeps_findings_on_delivery_failure(self) -> None:
+        message = describe_manual_reengagement_demo_run(
+            {
+                "status": "delivery_failed",
+                "candidatesCount": 2,
+                "notificationsSent": 0,
+                "ownerWaId": "972507322341",
+                "deliveryMode": "none",
+                "deliveryErrors": ["Action not available because account is restricted."],
+            }
+        )
+
+        self.assertIn("generated follow-up drafts", message)
+        self.assertIn("WhatsApp delivery failed", message)
+        self.assertIn("review the findings in the portal", message)
+
+
 class PortalManualRunTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

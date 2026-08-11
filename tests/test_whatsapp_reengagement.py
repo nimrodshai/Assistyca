@@ -384,6 +384,74 @@ class WhatsAppReengagementTests(unittest.TestCase):
             )
         )
 
+    def test_demo_run_keeps_portal_results_when_owner_delivery_fails(self) -> None:
+        self._connect_whatsapp()
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                    "inactivityValue": 1,
+                    "inactivityUnit": "months",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550004444",
+            direction="inbound",
+            text="Do you still have the quote from last time?",
+            sender_name="Romi Tal",
+            sender_wa_id="15550004444",
+            message_id="wamid.demo-delivery-fail-1",
+            message_type="text",
+            message_at="2026-05-01T09:00:00+00:00",
+        )
+
+        fake_response = SimpleNamespace(
+            output_text="Hi Romi, checking in in case the quote is still useful.",
+            request_id="req_demo_delivery_fail",
+            response_id="resp_demo_delivery_fail",
+            model="gpt-5.4",
+        )
+
+        def failing_send_owner_message(_connection: dict[str, object], _message_text: str) -> str:
+            raise RuntimeError("Action not available because account is restricted.")
+
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=failing_send_owner_message,
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ):
+            result = scheduler.run_demo_for_email(
+                "owner@example.com",
+                now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["demo"])
+        self.assertEqual(result["run"]["status"], "delivery_failed")
+        self.assertFalse(result["run"]["portalOnly"])
+        self.assertEqual(result["run"]["notificationsSent"], 0)
+        self.assertEqual(result["run"]["ownerMessageIds"], [])
+        self.assertEqual(result["run"]["deliveryMode"], "none")
+        self.assertIn("account is restricted", result["run"]["deliveryErrors"][0])
+        candidates = result["run"]["candidates"]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["senderName"], "Romi Tal")
+        self.assertIn("quote", candidates[0]["draftText"])
+
     def test_demo_run_returns_portal_results_without_whatsapp_connection(self) -> None:
         self.database.save_feature_assignment_metadata(
             "owner@example.com",
