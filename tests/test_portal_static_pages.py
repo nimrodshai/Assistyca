@@ -47,6 +47,22 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertLess(snippet.index("select.append(option);"), snippet.index("select.value = selectedClientType;"))
         self.assertIn("select.dataset.adminClientTypeValue = selectedClientType;", snippet)
 
+    def test_reengagement_demo_results_panel_has_edit_and_copy_hooks(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="reengagementDemoResultsCard"', html)
+        self.assertIn('id="reengagementDemoResultsSummary"', html)
+        self.assertIn('id="reengagementDemoResultsList"', html)
+        self.assertIn("function renderReengagementDemoResults", script)
+        self.assertIn("copyReengagementDemoDraft", script)
+        self.assertIn("state.reengagementDemoResult =", script)
+        self.assertIn("textarea.addEventListener(\"input\"", script)
+        self.assertIn("navigator.clipboard.writeText(text)", script)
+        self.assertIn(".reengagement-demo-copy-button", styles)
+        self.assertIn(".copy-icon::before", styles)
+
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")

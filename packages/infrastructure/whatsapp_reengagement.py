@@ -890,12 +890,7 @@ class WhatsAppReengagementScheduler:
                 "error": "setup_required",
                 "message": "Open WhatsApp details before running a demo.",
             }
-        if not self._owner_delivery_ready(connection):
-            return {
-                "ok": False,
-                "error": "setup_required",
-                "message": "Finish WhatsApp setup before running a demo so Assistyca can send the results to your phone.",
-            }
+        owner_delivery_ready = self._owner_delivery_ready(connection)
 
         current_time = now or datetime.now(timezone.utc)
         if current_time.tzinfo is None:
@@ -943,6 +938,7 @@ class WhatsAppReengagementScheduler:
                     "notificationsSent": sent_count,
                     "ownerWaId": normalize_text(connection.get("ownerWaId")),
                     "deliveryMode": delivery_mode,
+                    "portalOnly": not owner_delivery_ready,
                     "settings": settings,
                     "candidates": candidates,
                     "ownerMessageIds": owner_message_ids,
@@ -965,7 +961,7 @@ class WhatsAppReengagementScheduler:
         if is_cancelled():
             return cancelled_result()
 
-        if candidates:
+        if candidates and owner_delivery_ready:
             message_text = build_owner_report(
                 candidates=candidates,
                 tz=tz,
@@ -991,7 +987,7 @@ class WhatsAppReengagementScheduler:
                     owner_deliveries.append(delivery)
             except Exception as exc:  # noqa: BLE001 - report delivery failure to the UI
                 delivery_errors.append(str(exc))
-        else:
+        elif owner_delivery_ready:
             if is_cancelled():
                 return cancelled_result()
             try:
@@ -1040,6 +1036,7 @@ class WhatsAppReengagementScheduler:
                     "notificationsSent": 0,
                     "ownerWaId": normalize_text(connection.get("ownerWaId")),
                     "deliveryMode": resolve_owner_delivery_mode(owner_message_ids),
+                    "portalOnly": not owner_delivery_ready,
                     "settings": settings,
                     "candidates": candidates,
                     "ownerMessageIds": owner_message_ids,
@@ -1052,6 +1049,8 @@ class WhatsAppReengagementScheduler:
             delivery_action = "simulated the WhatsApp report"
         elif delivery_mode == "template_prompt":
             delivery_action = "sent a WhatsApp template prompt"
+        elif delivery_mode == "none":
+            delivery_action = "prepared portal results"
         else:
             delivery_action = "sent the results to WhatsApp"
         return {
@@ -1071,6 +1070,7 @@ class WhatsAppReengagementScheduler:
                 "notificationsSent": len(owner_message_ids),
                 "ownerWaId": normalize_text(connection.get("ownerWaId")),
                 "deliveryMode": delivery_mode,
+                "portalOnly": not owner_delivery_ready,
                 "settings": settings,
                 "candidates": candidates,
                 "ownerMessageIds": owner_message_ids,

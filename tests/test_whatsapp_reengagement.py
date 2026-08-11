@@ -384,6 +384,70 @@ class WhatsAppReengagementTests(unittest.TestCase):
             )
         )
 
+    def test_demo_run_returns_portal_results_without_whatsapp_connection(self) -> None:
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "model": "gpt-5.4",
+                    "inactivityValue": 1,
+                    "inactivityUnit": "months",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="manual-dani-levi",
+            direction="inbound",
+            text="Can you remind me what we discussed about pricing?",
+            sender_name="Dani Levi",
+            sender_wa_id="",
+            message_id="manual-demo-old-1",
+            message_type="text",
+            message_at="2026-05-01T09:00:00+00:00",
+            metadata={"source": "manual_import"},
+        )
+
+        fake_response = SimpleNamespace(
+            output_text="Hi Dani, just checking in in case the pricing question is still relevant.",
+            request_id="req_demo_portal",
+            response_id="resp_demo_portal",
+            model="gpt-5.4",
+        )
+        sent_messages: list[str] = []
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, message_text: sent_messages.append(message_text) or "owner-demo-1",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ):
+            result = scheduler.run_demo_for_email(
+                "owner@example.com",
+                now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["demo"])
+        self.assertTrue(result["run"]["portalOnly"])
+        self.assertEqual(result["run"]["notificationsSent"], 0)
+        self.assertEqual(result["run"]["ownerMessageIds"], [])
+        self.assertEqual(result["run"]["deliveryMode"], "none")
+        self.assertEqual(sent_messages, [])
+        candidates = result["run"]["candidates"]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["senderName"], "Dani Levi")
+        self.assertIn("pricing question", candidates[0]["draftText"])
+
     def test_demo_run_marks_mock_owner_delivery(self) -> None:
         self._connect_whatsapp()
         scheduler = WhatsAppReengagementScheduler(

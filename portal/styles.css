@@ -3666,8 +3666,15 @@ body[data-modal="billing"] .app-shell {
 .studio-fields.is-monitor-flow,
 .studio-fields.is-scheduled-flow {
   grid-template-columns: minmax(0, 1fr);
-  width: min(100%, 38rem);
   gap: 1rem;
+}
+
+.studio-fields.is-monitor-flow {
+  width: min(100%, 38rem);
+}
+
+.studio-fields.is-scheduled-flow {
+  width: min(100%, 48rem);
 }
 
 .studio-fields.is-monitor-flow > .config-card,
@@ -4310,6 +4317,157 @@ body[data-modal="billing"] .app-shell {
   letter-spacing: 0.02em;
   line-height: 1.2;
   white-space: nowrap;
+}
+
+.reengagement-demo-results-card {
+  gap: 1rem;
+}
+
+.reengagement-demo-results-list {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.reengagement-demo-result,
+.reengagement-demo-empty {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.84)),
+    rgba(255, 255, 255, 0.9);
+}
+
+.reengagement-demo-result-head,
+.reengagement-demo-draft-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.reengagement-demo-result-title {
+  min-width: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.reengagement-demo-result-title h4,
+.reengagement-demo-empty strong {
+  margin: 0;
+  color: #111b18;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.reengagement-demo-result-title p,
+.reengagement-demo-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.reengagement-demo-badge {
+  flex: 0 0 auto;
+  padding: 0.34rem 0.62rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  background: rgba(15, 118, 110, 0.09);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.reengagement-demo-preview {
+  margin: 0;
+  padding: 0.72rem 0.82rem;
+  border-left: 3px solid rgba(15, 118, 110, 0.22);
+  border-radius: 12px;
+  background: rgba(237, 243, 249, 0.72);
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.reengagement-demo-draft {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.reengagement-demo-draft-head label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.reengagement-demo-copy-button {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--accent);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.reengagement-demo-copy-button:hover,
+.reengagement-demo-copy-button:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(15, 118, 110, 0.34);
+  background: rgba(240, 253, 250, 0.96);
+  outline: none;
+}
+
+.copy-icon {
+  position: relative;
+  display: block;
+  width: 1rem;
+  height: 1rem;
+}
+
+.copy-icon::before,
+.copy-icon::after {
+  content: "";
+  position: absolute;
+  width: 0.58rem;
+  height: 0.72rem;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+}
+
+.copy-icon::before {
+  top: 0.08rem;
+  left: 0.34rem;
+  opacity: 0.42;
+}
+
+.copy-icon::after {
+  top: 0.28rem;
+  left: 0.08rem;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.reengagement-demo-draft textarea {
+  width: 100%;
+  min-height: 8.25rem;
+  resize: vertical;
+  border: 1px solid rgba(20, 28, 38, 0.09);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text);
+  line-height: 1.55;
 }
 
 .monitor-next-run {

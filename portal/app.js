@@ -566,6 +566,8 @@ const state = {
   pricingLoading: false,
   pricingError: "",
   monitorWatchItemDraft: "",
+  reengagementDemoResult: null,
+  reengagementDemoDrafts: {},
   lastPrimaryTab: normalizeTab(loadJson(LAST_PRIMARY_TAB_KEY, "features")) || "features",
 };
 
@@ -712,6 +714,9 @@ const elements = {
   reengagementInactivityUnit: document.querySelector("#reengagementInactivityUnit"),
   reengagementNextRun: document.querySelector("#reengagementNextRun"),
   reengagementNextRunValue: document.querySelector("#reengagementNextRunValue"),
+  reengagementDemoResultsCard: document.querySelector("#reengagementDemoResultsCard"),
+  reengagementDemoResultsSummary: document.querySelector("#reengagementDemoResultsSummary"),
+  reengagementDemoResultsList: document.querySelector("#reengagementDemoResultsList"),
   featureModelCard: document.querySelector("#featureModelCard"),
   featureModelSelect: document.querySelector("#featureModelSelect"),
   featureModelBand: document.querySelector("#featureModelBand"),
@@ -9575,7 +9580,194 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
       : `${base} Customers were not contacted.`;
   }
 
+  if (candidatesCount > 0 && deliveryMode === "none") {
+    const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
+    return `Found ${matchLabel}. Review, edit, and copy the generated follow-up drafts below. Customers were not contacted.`;
+  }
+
   return `${fallbackMessage} Customers were not contacted.`;
+}
+
+function getReengagementDemoCandidates(run = {}) {
+  return Array.isArray(run?.candidates) ? run.candidates : [];
+}
+
+function getReengagementDemoCandidateKey(candidate = {}, index = 0) {
+  return normalizeText(candidate.conversationId)
+    || normalizeText(candidate.senderWaId)
+    || `candidate-${index + 1}`;
+}
+
+function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
+  const status = normalizeText(run?.status).toLowerCase();
+  const candidatesCount = Math.max(0, Number(run?.candidatesCount || getReengagementDemoCandidates(run).length || 0));
+  const conversationsChecked = Math.max(0, Number(run?.conversationsChecked || 0));
+  const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
+  const inactivityLabel = formatReengagementInactivityLabel(settings);
+  const deliveryMode = getReengagementDeliveryMode(run);
+
+  if (status === "cancelled") {
+    return fallbackMessage || "The demo was cancelled before the full findings list was completed.";
+  }
+  if (!candidatesCount) {
+    return conversationsChecked
+      ? `Checked ${conversationsChecked} saved conversations. None matched the current inactivity rule: more than ${inactivityLabel} without activity.`
+      : `No saved conversations matched the current inactivity rule: more than ${inactivityLabel} without activity.`;
+  }
+  const matchLabel = candidatesCount === 1 ? "conversation" : "conversations";
+  const deliveryNote = deliveryMode === "none"
+    ? "No WhatsApp message was sent."
+    : "Customers were not contacted.";
+  return `Found ${candidatesCount} ${matchLabel} inactive for more than ${inactivityLabel}. Review, edit, and copy the generated follow-up drafts below. ${deliveryNote}`;
+}
+
+function formatReengagementDemoCandidateMeta(candidate = {}, run = {}) {
+  const meta = [];
+  const lastMessageAt = formatAdminDateTime(candidate.lastMessageAt);
+  if (lastMessageAt) {
+    meta.push(`Last activity ${lastMessageAt}`);
+  }
+  const messageCount = Math.max(0, Number(candidate.messageCount || 0));
+  if (messageCount) {
+    meta.push(`${messageCount} saved ${messageCount === 1 ? "message" : "messages"}`);
+  }
+  const contextCount = Math.max(0, Number(candidate.contextMessageCount || 0));
+  if (contextCount && contextCount !== messageCount) {
+    meta.push(`${contextCount} used for draft context`);
+  }
+  const source = normalizeText(candidate.source);
+  if (source) {
+    meta.push(source === "fallback" ? "Fallback draft" : source === "openai" ? "AI draft" : source);
+  }
+  const modelName = normalizeText(candidate.modelName);
+  if (modelName) {
+    meta.push(modelName);
+  }
+  const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
+  meta.push(`Rule matched: inactive for more than ${formatReengagementInactivityLabel(settings)}`);
+  return meta.join(" · ");
+}
+
+async function copyReengagementDemoDraft(candidateKey, candidateName, textarea) {
+  const text = String(textarea?.value || "").trim();
+  if (!text) {
+    setStatus("There is no draft text to copy.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    state.reengagementDemoDrafts[candidateKey] = text;
+    setStatus(`Copied follow-up draft for ${candidateName}.`);
+  } catch {
+    setStatus("Copy failed in this browser.");
+  }
+}
+
+function renderReengagementDemoResults(feature = getSelectedFeature()) {
+  const card = elements.reengagementDemoResultsCard;
+  const summary = elements.reengagementDemoResultsSummary;
+  const list = elements.reengagementDemoResultsList;
+  if (!card || !summary || !list) {
+    return;
+  }
+
+  const result = state.reengagementDemoResult;
+  const run = result?.run && typeof result.run === "object" ? result.run : null;
+  const resultFeatureId = normalizeText(result?.featureId);
+  const selectedFeatureId = normalizeText(feature?.id);
+  const showResults = Boolean(isReengagementFeature(feature) && run && resultFeatureId === selectedFeatureId);
+  card.classList.toggle("is-hidden", !showResults);
+  list.innerHTML = "";
+
+  if (!showResults || !run) {
+    summary.textContent = "Run the demo to find inactive conversations and prepare follow-up drafts.";
+    return;
+  }
+
+  summary.textContent = formatReengagementDemoSummary(run, result?.message || "");
+  const candidates = getReengagementDemoCandidates(run);
+  if (!candidates.length) {
+    const empty = document.createElement("div");
+    empty.className = "reengagement-demo-empty";
+    const title = document.createElement("strong");
+    title.textContent = "No matching conversations";
+    const copy = document.createElement("p");
+    copy.textContent = "Import more WhatsApp history or lower the inactivity window, then run the demo again.";
+    empty.append(title, copy);
+    list.append(empty);
+    return;
+  }
+
+  candidates.forEach((candidate, index) => {
+    const candidateKey = getReengagementDemoCandidateKey(candidate, index);
+    const candidateName = formatReengagementCandidateName(candidate);
+    const savedDraftText = String(state.reengagementDemoDrafts[candidateKey] || "").trim();
+    const generatedDraftText = String(candidate.draftText || "").trim();
+    const draftText = savedDraftText || generatedDraftText;
+    state.reengagementDemoDrafts[candidateKey] = draftText;
+
+    const item = document.createElement("article");
+    item.className = "reengagement-demo-result";
+
+    const header = document.createElement("div");
+    header.className = "reengagement-demo-result-head";
+    const titleGroup = document.createElement("div");
+    titleGroup.className = "reengagement-demo-result-title";
+    const title = document.createElement("h4");
+    title.textContent = candidateName;
+    const meta = document.createElement("p");
+    meta.textContent = formatReengagementDemoCandidateMeta(candidate, run);
+    titleGroup.append(title, meta);
+    const badge = document.createElement("span");
+    badge.className = "reengagement-demo-badge";
+    badge.textContent = "Matched";
+    header.append(titleGroup, badge);
+
+    const lastMessage = normalizeText(candidate.lastMessageText);
+    if (lastMessage) {
+      const preview = document.createElement("p");
+      preview.className = "reengagement-demo-preview";
+      preview.textContent = lastMessage;
+      item.append(header, preview);
+    } else {
+      item.append(header);
+    }
+
+    const draftWrap = document.createElement("div");
+    draftWrap.className = "reengagement-demo-draft";
+    const draftHead = document.createElement("div");
+    draftHead.className = "reengagement-demo-draft-head";
+    const label = document.createElement("label");
+    const textareaId = `reengagementDemoDraft-${index}`;
+    label.setAttribute("for", textareaId);
+    label.textContent = "Suggested follow-up";
+    const copyButton = document.createElement("button");
+    copyButton.className = "reengagement-demo-copy-button";
+    copyButton.type = "button";
+    copyButton.title = `Copy follow-up draft for ${candidateName}`;
+    copyButton.setAttribute("aria-label", `Copy follow-up draft for ${candidateName}`);
+    const copyIcon = document.createElement("span");
+    copyIcon.className = "copy-icon";
+    copyIcon.setAttribute("aria-hidden", "true");
+    copyButton.append(copyIcon);
+    draftHead.append(label, copyButton);
+
+    const textarea = document.createElement("textarea");
+    textarea.id = textareaId;
+    textarea.rows = 4;
+    textarea.value = draftText;
+    textarea.addEventListener("input", () => {
+      state.reengagementDemoDrafts[candidateKey] = textarea.value;
+    });
+    copyButton.addEventListener("click", () => {
+      void copyReengagementDemoDraft(candidateKey, candidateName, textarea);
+    });
+
+    draftWrap.append(draftHead, textarea);
+    item.append(draftWrap);
+    list.append(item);
+  });
 }
 
 function syncReengagementDemoRunOverlay() {
@@ -9584,7 +9776,7 @@ function syncReengagementDemoRunOverlay() {
   }
 
   let title = "Running demo";
-  let message = "Checking saved conversations, generating follow-up drafts, and sending the WhatsApp prompt. Customers will not be contacted.";
+  let message = "Checking saved conversations and generating follow-up drafts. If WhatsApp delivery is configured, we’ll also send the owner prompt. Customers will not be contacted.";
   let secondaryButtonLabel = "Cancel";
   let secondaryDisabled = false;
 
@@ -9698,10 +9890,12 @@ async function runSelectedReengagementDemo() {
   reengagementDemoRunRequestId = createManualMonitorRunRequestId();
   reengagementDemoRunCancelling = false;
   reengagementDemoRunCancellationError = "";
+  state.reengagementDemoResult = null;
+  state.reengagementDemoDrafts = {};
   try {
     updateFeatureStudioHeader();
     syncReengagementDemoRunOverlay();
-    setStatus("Running the re-engagement demo and sending the report to WhatsApp.");
+    setStatus("Running the re-engagement demo and preparing portal results.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),
@@ -9712,6 +9906,13 @@ async function runSelectedReengagementDemo() {
     });
 
     const completionMessage = String(response.message || "Demo run finished.");
+    state.reengagementDemoResult = {
+      featureId: feature.id,
+      message: completionMessage,
+      run: response.run && typeof response.run === "object" ? response.run : {},
+    };
+    state.reengagementDemoDrafts = {};
+    renderReengagementDemoResults(feature);
     reengagementDemoRunOverlayVisible = false;
     setStatus(completionMessage);
     openAuthAlert(
@@ -10576,6 +10777,7 @@ function updateFeatureStudioHeader() {
           : "Run a test without changing the schedule"
         : String(feature.setupStatus?.message || "");
   }
+  renderReengagementDemoResults(feature);
 
   if (studioView === "history") {
     renderWhatsAppHistory(feature);
