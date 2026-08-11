@@ -13,6 +13,8 @@ from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementConfig
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
+from packages.infrastructure.whatsapp_reengagement import build_fallback_draft
+from packages.infrastructure.whatsapp_reengagement import build_reengagement_prompt
 
 
 class WhatsAppReengagementTests(unittest.TestCase):
@@ -97,6 +99,114 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(metadata["assistant"]["tone_guidance"], "Warm and practical.")
         self.assertEqual(metadata["lastInboundAt"], "2026-07-13T09:15:00+00:00")
         self.assertEqual(metadata["lastOwnerNotificationStatus"], "sent")
+
+    def test_fallback_draft_uses_main_conversation_language_and_avoids_name(self) -> None:
+        draft = build_fallback_draft(
+            {
+                "senderName": "דולב פלא",
+                "lastMessageText": "וברצינות, ככל שעושים את זה יותר זה משתפר",
+            },
+            [
+                {
+                    "direction": "inbound",
+                    "text": "וברצינות, ככל שעושים את זה יותר זה משתפר",
+                }
+            ],
+        )
+
+        self.assertIn("היי", draft)
+        self.assertIn("רלוונטי", draft)
+        self.assertNotIn("Hi", draft)
+        self.assertNotIn("דולב", draft)
+
+    def test_fallback_draft_does_not_mix_latin_name_into_hebrew_conversation(self) -> None:
+        draft = build_fallback_draft(
+            {
+                "senderName": "Nimrod Shai",
+                "lastMessageText": "אפשר לקבל מחיר?",
+            },
+            [
+                {
+                    "direction": "inbound",
+                    "text": "אפשר לקבל מחיר?",
+                }
+            ],
+        )
+
+        self.assertIn("הצעת המחיר", draft)
+        self.assertNotIn("Nimrod", draft)
+        self.assertNotIn("Hi", draft)
+
+    def test_reengagement_prompt_sets_language_and_name_rules(self) -> None:
+        prompt = build_reengagement_prompt(
+            connection={
+                "metadata": {"assistant": {}},
+                "profile": {},
+            },
+            conversation={
+                "senderName": "Nimrod Shai",
+                "lastInboundAt": "2026-05-01T09:00:00+00:00",
+            },
+            messages=[
+                {
+                    "direction": "inbound",
+                    "text": "אפשר לקבל מחיר?",
+                }
+            ],
+        )
+
+        self.assertIn("Write in the main language", prompt)
+        self.assertIn("Do not use the customer name by default", prompt)
+        self.assertIn("different script", prompt)
+        self.assertIn("Nimrod Shai", prompt)
+
+    def test_scheduler_rejects_wrong_language_ai_draft(self) -> None:
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=lambda _connection, _message_text: "owner-1",
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+        fake_response = SimpleNamespace(
+            output_text="Hi Nimrod, just checking in about the price we discussed.",
+            request_id="req_wrong_language",
+            response_id="resp_wrong_language",
+            model="gpt-5.4",
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ):
+            draft, source, model, metadata = scheduler._generate_draft(
+                connection={
+                    "email": "owner@example.com",
+                    "metadata": {"assistant": {}},
+                    "profile": {},
+                    "settings": {"model": "gpt-5.4"},
+                },
+                conversation={
+                    "conversationId": "hebrew-price",
+                    "senderName": "Nimrod Shai",
+                    "lastInboundAt": "2026-05-01T09:00:00+00:00",
+                },
+                messages=[
+                    {
+                        "direction": "inbound",
+                        "text": "אפשר לקבל מחיר?",
+                    }
+                ],
+            )
+
+        self.assertEqual(source, "fallback")
+        self.assertEqual(model, "")
+        self.assertEqual(metadata, {})
+        self.assertIn("הצעת המחיר", draft)
+        self.assertNotIn("Nimrod", draft)
 
     def test_scheduler_sends_one_reengagement_message_for_dormant_conversation(self) -> None:
         self._connect_whatsapp()

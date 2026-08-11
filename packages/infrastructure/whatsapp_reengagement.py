@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import os
+import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
@@ -35,6 +36,12 @@ DEFAULT_REENGAGEMENT_INACTIVITY_VALUE = 6
 DEFAULT_MAX_CONTEXT_MESSAGES = 100
 MAX_CONTEXT_MESSAGES = 100
 REENGAGEMENT_INACTIVITY_UNITS = frozenset({"minutes", "hours", "days", "months"})
+SCRIPT_LABELS = {
+    "arabic": "Arabic",
+    "cyrillic": "Cyrillic",
+    "hebrew": "Hebrew",
+    "latin": "Latin-script",
+}
 
 
 @dataclass
@@ -378,6 +385,90 @@ def short_customer_name(conversation: dict[str, Any]) -> str:
     return sender_wa_id or "this client"
 
 
+def detect_character_script(char: str) -> str:
+    if not char.isalpha():
+        return ""
+    name = unicodedata.name(char, "")
+    if "HEBREW" in name:
+        return "hebrew"
+    if "ARABIC" in name:
+        return "arabic"
+    if "CYRILLIC" in name:
+        return "cyrillic"
+    if "LATIN" in name:
+        return "latin"
+    return ""
+
+
+def dominant_text_script(*values: str) -> str:
+    counts = {script: 0 for script in SCRIPT_LABELS}
+    for value in values:
+        for char in normalize_text(value):
+            script = detect_character_script(char)
+            if script:
+                counts[script] += 1
+    script, count = max(counts.items(), key=lambda item: item[1])
+    return script if count else ""
+
+
+def dominant_conversation_script(conversation: dict[str, Any], messages: list[dict[str, Any]]) -> str:
+    texts = [normalize_text(message.get("text")) for message in messages if normalize_text(message.get("text"))]
+    if not texts:
+        last_message_text = normalize_text(conversation.get("lastMessageText"))
+        if last_message_text:
+            texts.append(last_message_text)
+    return dominant_text_script(*texts)
+
+
+def customer_name_matches_conversation_script(
+    conversation: dict[str, Any],
+    messages: list[dict[str, Any]],
+    customer_name: str,
+) -> bool:
+    conversation_script = dominant_conversation_script(conversation, messages)
+    name_script = dominant_text_script(customer_name)
+    return not conversation_script or not name_script or conversation_script == name_script
+
+
+def draft_uses_disallowed_customer_name(
+    conversation: dict[str, Any],
+    messages: list[dict[str, Any]],
+    draft_text: str,
+) -> bool:
+    customer_name = short_customer_name(conversation)
+    if customer_name == "this client" or customer_name_matches_conversation_script(conversation, messages, customer_name):
+        return False
+    tokens = [token.strip(".,:;!?()[]{}\"'") for token in customer_name.split()]
+    blocked_tokens = [token for token in tokens if len(token) > 1]
+    return any(token and token in draft_text for token in blocked_tokens)
+
+
+def draft_matches_conversation_script(
+    conversation: dict[str, Any],
+    messages: list[dict[str, Any]],
+    draft_text: str,
+) -> bool:
+    conversation_script = dominant_conversation_script(conversation, messages)
+    draft_script = dominant_text_script(draft_text)
+    return not conversation_script or not draft_script or conversation_script == draft_script
+
+
+def is_reengagement_draft_compatible(
+    conversation: dict[str, Any],
+    messages: list[dict[str, Any]],
+    draft_text: str,
+) -> bool:
+    return draft_matches_conversation_script(
+        conversation,
+        messages,
+        draft_text,
+    ) and not draft_uses_disallowed_customer_name(
+        conversation,
+        messages,
+        draft_text,
+    )
+
+
 def build_context_excerpt(messages: list[dict[str, Any]], limit: int = DEFAULT_MAX_CONTEXT_MESSAGES) -> str:
     lines: list[str] = []
     for message in messages[-limit:]:
@@ -419,21 +510,35 @@ def build_reengagement_prompt(
     last_activity_at = reengagement_activity_at(conversation)
     context = build_context_excerpt(messages)
     customer_name = short_customer_name(conversation)
+    conversation_script = dominant_conversation_script(conversation, messages)
+    conversation_script_label = SCRIPT_LABELS.get(conversation_script, "the conversation language")
+    name_script_matches = customer_name_matches_conversation_script(conversation, messages, customer_name)
 
     sections = [
         "Write one WhatsApp re-engagement message for a business owner to send manually to an old customer.",
+        "Write in the main language of the conversation context. Do not choose the language from the customer name.",
         "Keep it low-pressure, natural, and easy to copy.",
+        "Do not use the customer name by default. Use it only if it naturally fits the conversation.",
+        "Never include the customer name when it is written in a different language or script from the conversation.",
         "Do not invent discounts, availability, or facts that are not in the conversation.",
         "Do not add labels, bullets, quotes, or explanation. Return only the message text.",
         f"Tone guidance: {tone_guidance}",
     ]
+    if conversation_script:
+        sections.append(f"Detected conversation script: {conversation_script_label}.")
     if business_notes:
         sections.append(f"Business notes: {business_notes}")
     if shared_profile_notes:
         sections.append("Shared client context:\n" + "\n".join(f"- {item}" for item in shared_profile_notes))
+    if customer_name != "this client":
+        customer_name_note = (
+            f"Customer display name (optional, use only if natural): {customer_name}"
+            if name_script_matches
+            else f"Customer display name (do not use in the message; different script from conversation): {customer_name}"
+        )
+        sections.append(customer_name_note)
     sections.extend(
         [
-            f"Customer name: {customer_name}",
             f"Last customer activity at: {last_activity_at}",
             "Conversation context:",
             context or "No saved context.",
@@ -443,22 +548,30 @@ def build_reengagement_prompt(
 
 
 def build_fallback_draft(conversation: dict[str, Any], messages: list[dict[str, Any]]) -> str:
-    customer_name = short_customer_name(conversation)
     latest_inbound = ""
     for message in reversed(messages):
         if normalize_text(message.get("direction")).lower() == "inbound":
             latest_inbound = normalize_text(message.get("text"))
             break
 
+    conversation_script = dominant_conversation_script(conversation, messages)
     lowered = latest_inbound.lower()
-    greeting = f"Hi {customer_name}," if customer_name != "this client" else "Hi,"
+    if conversation_script == "hebrew":
+        if any(keyword in latest_inbound for keyword in ("הצעת מחיר", "מחיר", "עלות", "כמה", "הערכה", "הצעה")):
+            return "היי, רק רציתי לבדוק אם הצעת המחיר שדיברנו עליה עדיין רלוונטית. אם כן, אפשר לשלוח לי הודעה ואמשיך משם."
+        if any(keyword in latest_inbound for keyword in ("תור", "פגישה", "לקבוע", "לתאם", "זמן", "מתי", "זמין", "זמינות")):
+            return "היי, רק רציתי לבדוק אם עדיין רלוונטי לתאם את מה שדיברנו עליו. אם כן, אפשר לשלוח לי הודעה ואמשיך משם."
+        if latest_inbound:
+            return "היי, רק רציתי לבדוק אם עדיין צריך עזרה עם זה. אם זה עדיין רלוונטי, אפשר לשלוח לי הודעה ואמשיך משם."
+        return "היי, רק רציתי לבדוק אם עדיין צריך עזרה. אם זה עדיין רלוונטי, אפשר לשלוח לי הודעה ואמשיך משם."
+
     if any(keyword in lowered for keyword in ("quote", "price", "cost", "estimate")):
-        return f"{greeting} just checking in on the quote we discussed. If you still want to move forward, send me a message and I can pick it up from there."
+        return "Hi, just checking in on the quote we discussed. If you still want to move forward, send me a message and I can pick it up from there."
     if any(keyword in lowered for keyword in ("appointment", "schedule", "available", "resched")):
-        return f"{greeting} just checking in in case you still want to continue with the appointment we discussed. If you want to pick a time, message me and I’ll help from there."
+        return "Hi, just checking in in case you still want to continue with the appointment we discussed. If you want to pick a time, message me and I’ll help from there."
     if latest_inbound:
-        return f"{greeting} just checking in in case you still need help with this. If you’d like to pick it back up, send me a message and I’ll take it from there."
-    return f"{greeting} just checking in in case you still need help. If you want to continue, send me a message and I’ll take it from there."
+        return "Hi, just checking in in case you still need help with this. If you’d like to pick it back up, send me a message and I’ll take it from there."
+    return "Hi, just checking in in case you still need help. If you want to continue, send me a message and I’ll take it from there."
 
 
 def clean_generated_draft(value: str) -> str:
@@ -681,7 +794,7 @@ class WhatsAppReengagementScheduler:
                 },
             )
             draft_text = clean_generated_draft(result.output_text)
-            if draft_text:
+            if draft_text and is_reengagement_draft_compatible(conversation, messages, draft_text):
                 return (
                     draft_text,
                     "openai",
