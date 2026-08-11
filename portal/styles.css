@@ -2166,6 +2166,13 @@ body[data-modal="billing"] .app-shell {
   will-change: transform, opacity;
 }
 
+.auth-alert-dialog[data-variant="demo-results"] {
+  width: min(100%, 52rem);
+  max-height: calc(100svh - 3rem);
+  overflow: auto;
+  align-content: start;
+}
+
 .auth-alert-overlay.is-open .auth-alert-dialog {
   opacity: 1;
   transform: translateY(0) scale(1);
@@ -2225,6 +2232,10 @@ body[data-modal="billing"] .app-shell {
   margin-top: 0.45rem;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.auth-alert-body {
+  min-width: 0;
 }
 
 .auth-alert-actions {
@@ -4324,6 +4335,11 @@ body[data-modal="billing"] .app-shell {
 }
 
 .reengagement-demo-results-list {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.reengagement-demo-alert-results {
   display: grid;
   gap: 0.9rem;
 }

@@ -50,20 +50,29 @@ class PortalStaticPageTests(unittest.TestCase):
     def test_reengagement_demo_results_use_completion_popup_not_editor_card(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
         self.assertNotIn('id="reengagementDemoResultsCard"', html)
         self.assertNotIn('id="reengagementDemoResultsSummary"', html)
         self.assertNotIn('id="reengagementDemoResultsList"', html)
+        self.assertIn('id="authAlertBody"', html)
         self.assertIn("function formatReengagementSkippedSummary", script)
         self.assertIn("skippedConversations", script)
         self.assertIn("function formatReengagementCheckedConversationsLabel", script)
         self.assertIn("No saved conversations are available yet", script)
         self.assertNotIn("WhatsApp delivery also failed", script)
+        self.assertNotIn("Demo results ready", script)
         self.assertIn("state.reengagementDemoResult =", script)
         self.assertIn("const errorPayload = error?.payload", script)
         self.assertIn("const errorRun = errorPayload.run", script)
-        self.assertIn("getReengagementDemoAlertIcon(errorRun)", script)
+        self.assertIn("function createReengagementDemoAlertBody", script)
+        self.assertIn("function openReengagementDemoResultsAlert", script)
+        self.assertIn("getReengagementDemoAlertIcon(run)", script)
+        self.assertIn("openReengagementDemoResultsAlert(", script)
+        self.assertIn('variant: hasCandidateResults ? "demo-results" : "default"', script)
         self.assertIn("openAuthAlert(", script)
+        self.assertIn('.auth-alert-dialog[data-variant="demo-results"]', styles)
+        self.assertIn(".reengagement-demo-alert-results", styles)
 
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
