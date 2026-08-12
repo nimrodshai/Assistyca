@@ -9723,26 +9723,10 @@ function formatReengagementDemoCandidateMeta(candidate = {}, run = {}) {
   const meta = [];
   const lastMessageAt = formatAdminDateTime(candidate.lastMessageAt);
   if (lastMessageAt) {
-    meta.push(`Last customer activity ${lastMessageAt}`);
-  }
-  const messageCount = Math.max(0, Number(candidate.messageCount || 0));
-  if (messageCount) {
-    meta.push(`${messageCount} saved ${messageCount === 1 ? "message" : "messages"}`);
-  }
-  const contextCount = Math.max(0, Number(candidate.contextMessageCount || 0));
-  if (contextCount && contextCount !== messageCount) {
-    meta.push(`${contextCount} used for draft context`);
-  }
-  const source = normalizeText(candidate.source);
-  if (source) {
-    meta.push(source === "fallback" ? "Fallback draft" : source === "openai" ? "AI draft" : source);
-  }
-  const modelName = normalizeText(candidate.modelName);
-  if (modelName) {
-    meta.push(modelName);
+    meta.push(`Last active ${lastMessageAt}`);
   }
   const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
-  meta.push(`Rule matched: inactive for more than ${formatReengagementInactivityLabel(settings)}`);
+  meta.push(`Inactive ${formatReengagementInactivityLabel(settings)}`);
   return meta.join(" · ");
 }
 
@@ -9797,20 +9781,7 @@ function createReengagementDemoCandidateResult(candidate = {}, index = 0, run = 
   const meta = document.createElement("p");
   meta.textContent = formatReengagementDemoCandidateMeta(candidate, run);
   titleGroup.append(title, meta);
-  const badge = document.createElement("span");
-  badge.className = "reengagement-demo-badge";
-  badge.textContent = "Matched";
-  header.append(titleGroup, badge);
-
-  const lastMessage = normalizeText(candidate.lastMessageText);
-  if (lastMessage) {
-    const preview = document.createElement("p");
-    preview.className = "reengagement-demo-preview";
-    preview.textContent = lastMessage;
-    item.append(header, preview);
-  } else {
-    item.append(header);
-  }
+  item.append(header);
 
   const draftWrap = document.createElement("div");
   draftWrap.className = "reengagement-demo-draft";
@@ -9819,7 +9790,7 @@ function createReengagementDemoCandidateResult(candidate = {}, index = 0, run = 
   const label = document.createElement("label");
   const textareaId = `reengagementDemoDraft-${index}`;
   label.setAttribute("for", textareaId);
-  label.textContent = "Suggested follow-up";
+  label.textContent = "Draft";
   const copyButton = document.createElement("button");
   copyButton.className = "reengagement-demo-copy-button";
   copyButton.type = "button";
@@ -9833,7 +9804,7 @@ function createReengagementDemoCandidateResult(candidate = {}, index = 0, run = 
 
   const textarea = document.createElement("textarea");
   textarea.id = textareaId;
-  textarea.rows = 4;
+  textarea.rows = 2;
   textarea.value = draftText;
   textarea.addEventListener("input", () => {
     state.reengagementDemoDrafts[candidateKey] = textarea.value;
