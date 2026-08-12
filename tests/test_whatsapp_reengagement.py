@@ -926,9 +926,11 @@ class WhatsAppReengagementTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["demo"])
+        self.assertEqual(result["run"]["evaluatedAt"], "2026-07-13T12:00:00+00:00")
         candidates = result["run"]["candidates"]
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["senderName"], "Dani Levi")
+        self.assertEqual(candidates[0]["inactiveSeconds"], 6_318_000)
         self.assertIn("pricing question", candidates[0]["draftText"])
         self.assertEqual(result["run"]["notificationsSent"], 1)
         self.assertEqual(result["run"]["ownerMessageIds"], ["owner-demo-1"])

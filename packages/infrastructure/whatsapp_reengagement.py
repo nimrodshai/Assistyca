@@ -656,6 +656,15 @@ def reengagement_activity_at(conversation: dict[str, Any]) -> str:
     return normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
 
 
+def reengagement_inactive_seconds(activity_at: Any, evaluated_at: datetime) -> int:
+    activity_moment = parse_datetime(activity_at)
+    if activity_moment is None:
+        return 0
+    evaluated_moment = evaluated_at if evaluated_at.tzinfo else evaluated_at.replace(tzinfo=timezone.utc)
+    evaluated_moment = evaluated_moment.astimezone(timezone.utc)
+    return max(0, int((evaluated_moment - activity_moment).total_seconds()))
+
+
 def latest_inbound_text(messages: list[dict[str, Any]], fallback: str = "") -> str:
     for message in reversed(messages):
         if normalize_text(message.get("direction")).lower() == "inbound":
@@ -1024,6 +1033,7 @@ class WhatsAppReengagementScheduler:
         connection: dict[str, Any],
         conversation: dict[str, Any],
         settings: dict[str, Any],
+        evaluated_at: datetime,
     ) -> dict[str, Any]:
         user_id = int(connection.get("userId") or 0)
         max_context_messages = clamp_int(
@@ -1042,11 +1052,13 @@ class WhatsAppReengagementScheduler:
             conversation=conversation,
             messages=messages,
         )
+        last_message_at = reengagement_activity_at(conversation)
         return {
             "conversationId": normalize_text(conversation.get("conversationId")),
             "senderName": normalize_text(conversation.get("senderName")),
             "senderWaId": normalize_text(conversation.get("senderWaId")),
-            "lastMessageAt": reengagement_activity_at(conversation),
+            "lastMessageAt": last_message_at,
+            "inactiveSeconds": reengagement_inactive_seconds(last_message_at, evaluated_at),
             "lastMessageText": latest_inbound_text(messages, normalize_text(conversation.get("lastMessageText"))),
             "messageCount": int(conversation.get("messageCount") or 0),
             "contextMessageCount": len(messages),
@@ -1148,6 +1160,7 @@ class WhatsAppReengagementScheduler:
                     "scheduledFor": scheduled_for.isoformat(),
                     "nextRunAt": next_run.isoformat(),
                     "cutoffAt": cutoff_at.isoformat(),
+                    "evaluatedAt": current_time.isoformat(),
                     "conversationsChecked": saved_conversations_count,
                     "dueConversationsCount": len(due_conversations),
                     "skippedConversations": skipped_conversations,
@@ -1172,6 +1185,7 @@ class WhatsAppReengagementScheduler:
                     connection=connection,
                     conversation=conversation,
                     settings=settings,
+                    evaluated_at=current_time,
                 )
             )
 
@@ -1265,6 +1279,7 @@ class WhatsAppReengagementScheduler:
                 "scheduledFor": scheduled_for.isoformat(),
                 "nextRunAt": next_run.isoformat(),
                 "cutoffAt": cutoff_at.isoformat(),
+                "evaluatedAt": current_time.isoformat(),
                 "conversationsChecked": saved_conversations_count,
                 "dueConversationsCount": len(due_conversations),
                 "skippedConversations": skipped_conversations,

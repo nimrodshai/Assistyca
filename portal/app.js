@@ -9505,6 +9505,112 @@ function formatReengagementInactivityLabel(settings = {}) {
   return `${inactivityValue} ${inactivityValue === 1 ? singular : inactivityUnit}`;
 }
 
+function getReengagementInactivityWindowMilliseconds(settings = {}) {
+  const inactivityValue = normalizeReengagementInactivityValue(settings.inactivityValue);
+  const inactivityUnit = normalizeReengagementInactivityUnit(settings.inactivityUnit);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (inactivityUnit === "minutes") {
+    return inactivityValue * minute;
+  }
+  if (inactivityUnit === "hours") {
+    return inactivityValue * hour;
+  }
+  if (inactivityUnit === "days") {
+    return inactivityValue * day;
+  }
+  return inactivityValue * 30 * day;
+}
+
+function formatReengagementDurationPart(value, singular, plural = `${singular}s`) {
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
+function formatReengagementElapsedDuration(milliseconds) {
+  const value = Math.max(0, Number(milliseconds) || 0);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (value < minute) {
+    return "less than 1 minute";
+  }
+
+  const totalMinutes = Math.max(1, Math.floor(value / minute));
+  if (totalMinutes < 60) {
+    return formatReengagementDurationPart(totalMinutes, "minute");
+  }
+
+  const totalHours = Math.floor(totalMinutes / 60);
+  const remainingMinutes = totalMinutes % 60;
+  if (totalHours < 24) {
+    const label = formatReengagementDurationPart(totalHours, "hour");
+    return remainingMinutes && totalHours < 6
+      ? `${label} ${formatReengagementDurationPart(remainingMinutes, "minute")}`
+      : label;
+  }
+
+  const totalDays = Math.floor(totalHours / 24);
+  const remainingHours = totalHours % 24;
+  if (totalDays < 30) {
+    const label = formatReengagementDurationPart(totalDays, "day");
+    return remainingHours && totalDays < 3
+      ? `${label} ${formatReengagementDurationPart(remainingHours, "hour")}`
+      : label;
+  }
+
+  const totalMonths = Math.floor(totalDays / 30);
+  if (totalMonths < 12) {
+    return formatReengagementDurationPart(totalMonths, "month");
+  }
+
+  const totalYears = Math.floor(totalDays / 365);
+  const remainingMonths = Math.floor((totalDays - (totalYears * 365)) / 30);
+  const label = formatReengagementDurationPart(totalYears, "year");
+  return remainingMonths && totalYears < 3
+    ? `${label} ${formatReengagementDurationPart(remainingMonths, "month")}`
+    : label;
+}
+
+function parseReengagementDemoTimestamp(value) {
+  const text = normalizeText(value);
+  if (!text) {
+    return 0;
+  }
+  const parsed = new Date(text);
+  const time = parsed.getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function getReengagementDemoEvaluatedAtMilliseconds(run = {}) {
+  for (const key of ["evaluatedAt", "completedAt", "createdAt", "runAt"]) {
+    const time = parseReengagementDemoTimestamp(run?.[key]);
+    if (time) {
+      return time;
+    }
+  }
+
+  const cutoffAt = parseReengagementDemoTimestamp(run?.cutoffAt);
+  if (cutoffAt) {
+    const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
+    return cutoffAt + getReengagementInactivityWindowMilliseconds(settings);
+  }
+  return Date.now();
+}
+
+function getReengagementDemoCandidateInactiveMilliseconds(candidate = {}, run = {}) {
+  const inactiveSeconds = Number(candidate.inactiveSeconds ?? candidate.inactive_seconds);
+  if (Number.isFinite(inactiveSeconds) && inactiveSeconds >= 0) {
+    return inactiveSeconds * 1000;
+  }
+
+  const lastActivityAt = parseReengagementDemoTimestamp(candidate.lastMessageAt || candidate.last_message_at);
+  if (!lastActivityAt) {
+    return 0;
+  }
+  return Math.max(0, getReengagementDemoEvaluatedAtMilliseconds(run) - lastActivityAt);
+}
+
 function formatReengagementCandidateName(candidate = {}) {
   return String(candidate.senderName || candidate.senderWaId || candidate.conversationId || "Unknown conversation").trim();
 }
@@ -9716,12 +9822,14 @@ function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
     : deliveryMode === "none"
     ? "No WhatsApp message was sent."
     : "Customers were not contacted.";
-  return `Found ${candidatesCount} ${matchLabel} inactive for more than ${inactivityLabel}. Review, edit, and copy the generated follow-up drafts below. ${deliveryNote}`;
+  return `Found ${candidatesCount} inactive ${matchLabel}. Review, edit, and copy the generated follow-up drafts below. ${deliveryNote}`;
 }
 
 function formatReengagementDemoCandidateMeta(candidate = {}, run = {}) {
-  const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
-  return `Inactive for ${formatReengagementInactivityLabel(settings)}`;
+  const inactiveLabel = formatReengagementElapsedDuration(
+    getReengagementDemoCandidateInactiveMilliseconds(candidate, run),
+  );
+  return inactiveLabel ? `Inactive for ${inactiveLabel}` : "Inactive";
 }
 
 async function copyReengagementDemoDraft(candidateKey, candidateName, textarea) {
