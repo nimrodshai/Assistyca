@@ -480,10 +480,12 @@ def draft_uses_unsupported_generic_reference(draft_text: str) -> bool:
         "still like to continue",
         "want to continue",
         "pick it up from there",
+        "message me here",
         "עזרה עם זה",
         "לעזור עם זה",
         "רלוונטי להמשיך",
         "נמשיך משם",
+        "שלחו לי הודעה כאן",
     )
     return any(phrase in text for phrase in unsupported_phrases)
 
@@ -498,6 +500,34 @@ def build_context_excerpt(messages: list[dict[str, Any]], limit: int = DEFAULT_M
             continue
         lines.append(f"{role}: {text}")
     return "\n".join(lines).strip()
+
+
+def conversation_indicates_completed_work(messages: list[dict[str, Any]]) -> bool:
+    text = "\n".join(normalize_text(message.get("text")) for message in messages)
+    lowered = text.lower()
+    completed_markers = (
+        "העבודה הושלמה",
+        "העבודה הסתיימה",
+        "הסתיימה מבחינתי",
+        "הכול סגור",
+        "הכל סגור",
+        "מבחינתי הכול סגור",
+        "מבחינתי הכל סגור",
+        "אין צורך בשינויים נוספים",
+        "סוגר את הקריאה",
+        "תשלום התקבל",
+        "קיבלתי את הקבלה",
+        "קיבלתי את החשבונית",
+        "work is complete",
+        "job is complete",
+        "everything is closed",
+        "all set",
+        "no further changes",
+        "final payment",
+        "payment received",
+        "invoice received",
+    )
+    return any(marker in lowered for marker in completed_markers)
 
 
 def build_shared_profile_notes(profile: Any) -> list[str]:
@@ -544,13 +574,16 @@ def build_reengagement_prompt(
         ),
         (
             "For thin context, prefer wording like 'היי, רציתי לבדוק אם עדיין רלוונטי מבחינתכם. "
-            "אם כן, שלחו לי הודעה כאן.' in Hebrew, or 'Hi, just checking whether staying in touch still "
-            "makes sense for you. If so, message me here.' in English."
+            "אם כן, תגידו לי.' in Hebrew, or 'Hi, just checking whether staying in touch still "
+            "makes sense for you. If so, tell me.' in English."
+        ),
+        (
+            "When the conversation clearly says the work was completed, keep the follow-up service-oriented, "
+            "for example 'היי, רציתי לבדוק שהכול עדיין בסדר. אם יש משהו לעדכן או לשפר, דברו איתי.'"
         ),
         (
             "Use direct, human phrasing. Avoid passive sign-offs like 'אפשר לשלוח לי הודעה ואמשיך משם'; "
-            "prefer straightforward wording like 'שלחו לי הודעה כאן' when writing Hebrew unless a concrete "
-            "next step is present in the conversation."
+            "prefer casual wording like 'דברו איתי' or 'תגידו לי' when writing Hebrew."
         ),
         "Do not use the customer name by default. Use it only if it naturally fits the conversation.",
         "Never include the customer name when it is written in a different language or script from the conversation.",
@@ -591,21 +624,25 @@ def build_fallback_draft(conversation: dict[str, Any], messages: list[dict[str, 
     conversation_script = dominant_conversation_script(conversation, messages)
     lowered = latest_inbound.lower()
     if conversation_script == "hebrew":
+        if conversation_indicates_completed_work(messages):
+            return "היי, רציתי לבדוק שהכול עדיין בסדר. אם יש משהו לעדכן או לשפר, דברו איתי."
         if any(keyword in latest_inbound for keyword in ("הצעת מחיר", "מחיר", "עלות", "כמה", "הערכה", "הצעה")):
-            return "היי, רציתי לבדוק אם הצעת המחיר שדיברנו עליה עדיין רלוונטית. אם כן, שלחו לי הודעה ונמשיך משם."
+            return "היי, רציתי לבדוק אם הצעת המחיר שדיברנו עליה עדיין רלוונטית. אם כן, דברו איתי."
         if any(keyword in latest_inbound for keyword in ("תור", "פגישה", "לקבוע", "לתאם", "זמן", "מתי", "זמין", "זמינות")):
-            return "היי, רציתי לבדוק אם עדיין רלוונטי לתאם את מה שדיברנו עליו. אם כן, שלחו לי הודעה ונקבע זמן."
+            return "היי, רציתי לבדוק אם עדיין רלוונטי לתאם את מה שדיברנו עליו. אם כן, תגידו לי ונקבע זמן."
         if any(keyword in latest_inbound for keyword in ("עזרה", "לעזור", "סיוע")):
-            return "היי, רציתי לבדוק אם עדיין צריך עזרה. אם כן, שלחו לי הודעה ונמשיך משם."
-        return "היי, רציתי לבדוק אם עדיין רלוונטי מבחינתכם. אם כן, שלחו לי הודעה כאן."
+            return "היי, רציתי לבדוק אם עדיין צריך עזרה. אם כן, דברו איתי."
+        return "היי, רציתי לבדוק אם עדיין רלוונטי מבחינתכם. אם כן, תגידו לי."
 
+    if conversation_indicates_completed_work(messages):
+        return "Hi, just checking that everything is still okay. If there’s anything to update or improve, tell me."
     if any(keyword in lowered for keyword in ("quote", "price", "cost", "estimate")):
-        return "Hi, just checking in on the quote we discussed. If you still want to move forward, send me a message and I can pick it up from there."
+        return "Hi, just checking in on the quote we discussed. If it is still relevant, tell me."
     if any(keyword in lowered for keyword in ("appointment", "schedule", "available", "resched")):
-        return "Hi, just checking in in case you still want to continue with the appointment we discussed. If you want to pick a time, message me and I’ll help from there."
+        return "Hi, just checking whether the appointment we discussed is still relevant. If so, tell me and we’ll pick a time."
     if any(keyword in lowered for keyword in ("help", "support", "issue", "problem")):
-        return "Hi, just checking in in case you still need help. If so, message me here and we’ll pick it up from there."
-    return "Hi, just checking whether staying in touch still makes sense for you. If so, message me here."
+        return "Hi, just checking in case you still need help. If so, tell me."
+    return "Hi, just checking whether staying in touch still makes sense for you. If so, tell me."
 
 
 def clean_generated_draft(value: str) -> str:

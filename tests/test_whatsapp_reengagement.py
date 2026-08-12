@@ -116,7 +116,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
 
         self.assertIn("היי", draft)
         self.assertIn("רלוונטי מבחינתכם", draft)
-        self.assertIn("שלחו לי הודעה כאן", draft)
+        self.assertIn("תגידו לי", draft)
+        self.assertNotIn("שלחו לי הודעה כאן", draft)
         self.assertNotIn("רלוונטי להמשיך", draft)
         self.assertNotIn("נמשיך משם", draft)
         self.assertNotIn("זה", draft)
@@ -140,7 +141,41 @@ class WhatsAppReengagementTests(unittest.TestCase):
         )
 
         self.assertIn("צריך עזרה", draft)
+        self.assertIn("דברו איתי", draft)
+        self.assertNotIn("שלחו לי הודעה כאן", draft)
         self.assertNotIn("עזרה עם זה", draft)
+
+    def test_fallback_draft_for_completed_work_uses_casual_service_check(self) -> None:
+        draft = build_fallback_draft(
+            {
+                "senderName": "מרים רוזן",
+                "lastMessageText": "מצוין.",
+            },
+            [
+                {
+                    "direction": "outbound",
+                    "text": "בוצע פתיחת סתימה בצינור ניקוז. תשלום התקבל.",
+                },
+                {
+                    "direction": "inbound",
+                    "text": "מבחינתי הכול סגור.",
+                },
+                {
+                    "direction": "outbound",
+                    "text": "אני סוגר את הקריאה.",
+                },
+                {
+                    "direction": "inbound",
+                    "text": "מצוין.",
+                },
+            ],
+        )
+
+        self.assertIn("הכול עדיין בסדר", draft)
+        self.assertIn("לעדכן או לשפר", draft)
+        self.assertIn("דברו איתי", draft)
+        self.assertNotIn("שלחו לי הודעה כאן", draft)
+        self.assertNotIn("נמשיך משם", draft)
 
     def test_fallback_draft_does_not_mix_latin_name_into_hebrew_conversation(self) -> None:
         draft = build_fallback_draft(
@@ -157,7 +192,9 @@ class WhatsAppReengagementTests(unittest.TestCase):
         )
 
         self.assertIn("הצעת המחיר", draft)
-        self.assertIn("שלחו לי הודעה ונמשיך משם", draft)
+        self.assertIn("דברו איתי", draft)
+        self.assertNotIn("שלחו לי הודעה כאן", draft)
+        self.assertNotIn("נמשיך משם", draft)
         self.assertNotIn("אפשר לשלוח לי הודעה ואמשיך משם", draft)
         self.assertNotIn("Nimrod", draft)
         self.assertNotIn("Hi", draft)
@@ -185,6 +222,9 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertIn("neutral check-in", prompt)
         self.assertIn("does not point at a task", prompt)
         self.assertIn("רלוונטי מבחינתכם", prompt)
+        self.assertIn("תגידו לי", prompt)
+        self.assertIn("לעדכן או לשפר", prompt)
+        self.assertIn("דברו איתי", prompt)
         self.assertIn("Do not use the customer name by default", prompt)
         self.assertIn("different script", prompt)
         self.assertIn("Nimrod Shai", prompt)
@@ -283,7 +323,9 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(model, "")
         self.assertEqual(metadata, {})
         self.assertIn("staying in touch still makes sense", draft)
+        self.assertIn("tell me", draft)
         self.assertNotIn("help with this", draft)
+        self.assertNotIn("message me here", draft)
         self.assertNotIn("continue", draft)
 
     def test_scheduler_rejects_ai_draft_that_invents_continuation(self) -> None:
@@ -332,6 +374,8 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertEqual(model, "")
         self.assertEqual(metadata, {})
         self.assertIn("staying in touch still makes sense", draft)
+        self.assertIn("tell me", draft)
+        self.assertNotIn("message me here", draft)
         self.assertNotIn("continue", draft)
 
     def test_scheduler_sends_one_reengagement_message_for_dormant_conversation(self) -> None:
@@ -401,7 +445,9 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertTrue(summary["ran"])
         self.assertEqual(len(sent_messages), 1)
         self.assertIn("staying in touch still makes sense", sent_messages[0])
+        self.assertIn("tell me", sent_messages[0])
         self.assertNotIn("help with this", sent_messages[0])
+        self.assertNotIn("message me here", sent_messages[0])
         self.assertNotIn("continue", sent_messages[0])
         self.assertIn("Maya Cohen", sent_messages[0])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4")
