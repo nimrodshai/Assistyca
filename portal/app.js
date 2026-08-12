@@ -9720,14 +9720,8 @@ function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
 }
 
 function formatReengagementDemoCandidateMeta(candidate = {}, run = {}) {
-  const meta = [];
-  const lastMessageAt = formatAdminDateTime(candidate.lastMessageAt);
-  if (lastMessageAt) {
-    meta.push(`Last active ${lastMessageAt}`);
-  }
   const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
-  meta.push(`Inactive ${formatReengagementInactivityLabel(settings)}`);
-  return meta.join(" · ");
+  return `Inactive for ${formatReengagementInactivityLabel(settings)}`;
 }
 
 async function copyReengagementDemoDraft(candidateKey, candidateName, textarea) {
