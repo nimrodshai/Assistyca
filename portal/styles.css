@@ -4457,6 +4457,7 @@ body[data-modal="billing"] .app-shell {
   width: 100%;
   min-height: 4.1rem;
   resize: vertical;
+  overflow-y: hidden;
   border: 1px solid rgba(20, 28, 38, 0.09);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.94);

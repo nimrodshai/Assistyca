@@ -9746,6 +9746,21 @@ async function copyReengagementDemoDraft(candidateKey, candidateName, textarea) 
   }
 }
 
+function resizeReengagementDemoDraftTextarea(textarea) {
+  if (!textarea) {
+    return;
+  }
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
+function scheduleReengagementDemoDraftResize(textarea) {
+  resizeReengagementDemoDraftTextarea(textarea);
+  window.requestAnimationFrame(() => {
+    resizeReengagementDemoDraftTextarea(textarea);
+  });
+}
+
 function createReengagementDemoEmptyResult(run = {}) {
   const conversationsChecked = getReengagementConversationsChecked(run);
   const skippedSummary = formatReengagementSkippedSummary(run);
@@ -9781,6 +9796,7 @@ function createReengagementDemoCandidateResult(candidate = {}, index = 0, run = 
   const meta = document.createElement("p");
   meta.textContent = formatReengagementDemoCandidateMeta(candidate, run);
   titleGroup.append(title, meta);
+  header.append(titleGroup);
   item.append(header);
 
   const draftWrap = document.createElement("div");
@@ -9808,6 +9824,7 @@ function createReengagementDemoCandidateResult(candidate = {}, index = 0, run = 
   textarea.value = draftText;
   textarea.addEventListener("input", () => {
     state.reengagementDemoDrafts[candidateKey] = textarea.value;
+    resizeReengagementDemoDraftTextarea(textarea);
   });
   copyButton.addEventListener("click", () => {
     void copyReengagementDemoDraft(candidateKey, candidateName, textarea);
@@ -9815,6 +9832,7 @@ function createReengagementDemoCandidateResult(candidate = {}, index = 0, run = 
 
   draftWrap.append(draftHead, textarea);
   item.append(draftWrap);
+  scheduleReengagementDemoDraftResize(textarea);
   return item;
 }
 
