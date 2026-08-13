@@ -6,7 +6,7 @@ from typing import Any
 
 
 SUPPORTED_WHATSAPP_TOOL_DELIVERY_CHANNELS = ("whatsapp", "telegram")
-DEFAULT_WHATSAPP_TOOL_DELIVERY_CHANNELS = ("whatsapp",)
+DEFAULT_WHATSAPP_TOOL_DELIVERY_CHANNELS: tuple[str, ...] = ()
 
 
 def normalize_text(value: Any) -> str:
@@ -18,14 +18,15 @@ def normalize_whatsapp_tool_delivery_channels(
     *,
     fallback: tuple[str, ...] = DEFAULT_WHATSAPP_TOOL_DELIVERY_CHANNELS,
 ) -> list[str]:
-    if isinstance(value, str):
+    explicit_iterable = isinstance(value, (list, tuple, set))
+    if explicit_iterable:
+        raw_channels = list(value)
+    elif isinstance(value, str):
         lowered = normalize_text(value).lower()
         if lowered in {"both", "all", "whatsapp+telegram", "whatsapp_telegram"}:
-            raw_channels: list[Any] = ["whatsapp", "telegram"]
+            raw_channels = ["whatsapp", "telegram"]
         else:
             raw_channels = [part.strip() for part in lowered.replace("+", ",").split(",")]
-    elif isinstance(value, (list, tuple, set)):
-        raw_channels = list(value)
     else:
         raw_channels = []
 
@@ -35,9 +36,11 @@ def normalize_whatsapp_tool_delivery_channels(
         if normalized in SUPPORTED_WHATSAPP_TOOL_DELIVERY_CHANNELS and normalized not in channels:
             channels.append(normalized)
 
+    if explicit_iterable:
+        return channels
     if channels:
         return channels
-    return [channel for channel in fallback if channel in SUPPORTED_WHATSAPP_TOOL_DELIVERY_CHANNELS] or ["whatsapp"]
+    return [channel for channel in fallback if channel in SUPPORTED_WHATSAPP_TOOL_DELIVERY_CHANNELS]
 
 
 def normalize_whatsapp_tool_delivery_settings(settings: dict[str, Any] | None = None) -> dict[str, Any]:

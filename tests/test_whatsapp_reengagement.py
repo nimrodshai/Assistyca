@@ -737,6 +737,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
             metadata={
                 "settings": {
                     "model": "gpt-5.4",
+                    "deliveryChannels": ["whatsapp"],
                     "inactivityValue": 6,
                     "inactivityUnit": "minutes",
                 }
@@ -807,6 +808,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
             metadata={
                 "settings": {
                     "model": "gpt-5.4",
+                    "deliveryChannels": ["whatsapp"],
                     "inactivityValue": 1,
                     "inactivityUnit": "months",
                 }
@@ -880,6 +882,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
             metadata={
                 "settings": {
                     "model": "gpt-5.4",
+                    "deliveryChannels": ["whatsapp"],
                     "inactivityValue": 1,
                     "inactivityUnit": "months",
                 }
@@ -962,6 +965,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
             metadata={
                 "settings": {
                     "model": "gpt-5.4",
+                    "deliveryChannels": ["whatsapp"],
                     "inactivityValue": 1,
                     "inactivityUnit": "months",
                 }
@@ -1123,6 +1127,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
             REENGAGEMENT_FEATURE_ID,
             metadata={
                 "settings": {
+                    "deliveryChannels": ["whatsapp"],
                     "inactivityValue": 1,
                     "inactivityUnit": "months",
                 }
@@ -1174,6 +1179,7 @@ class WhatsAppReengagementTests(unittest.TestCase):
             REENGAGEMENT_FEATURE_ID,
             metadata={
                 "settings": {
+                    "deliveryChannels": ["whatsapp"],
                     "inactivityValue": 1,
                     "inactivityUnit": "months",
                 }

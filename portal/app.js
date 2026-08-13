@@ -147,7 +147,7 @@ const DEFAULT_REENGAGEMENT_SETTINGS = {
   inactivityValue: 6,
   inactivityUnit: "months",
   maxContextMessages: 100,
-  deliveryChannels: ["whatsapp"],
+  deliveryChannels: [],
   telegramChatId: "",
 };
 const MANUAL_PRICING_SNAPSHOT = {
@@ -218,9 +218,23 @@ const DEFAULT_FEATURE_SETTINGS = {
 };
 const DEFAULT_WHATSAPP_TOOL_SETTINGS = {
   ...DEFAULT_FEATURE_SETTINGS,
-  deliveryChannels: ["whatsapp"],
+  deliveryChannels: [],
   telegramChatId: "",
 };
+const WHATSAPP_TOOL_PLATFORM_OPTIONS = [
+  {
+    id: "whatsapp",
+    label: "WhatsApp",
+    shortLabel: "WA",
+    caption: "Connected workspace number",
+  },
+  {
+    id: "telegram",
+    label: "Telegram",
+    shortLabel: "TG",
+    caption: "Bot chat delivery",
+  },
+];
 const DEFAULT_TOOL_MODEL_OPTIONS = MANUAL_PRICING_SNAPSHOT.cards.map((card) => ({
   id: String(card?.modelId || "").trim(),
   name: String(card?.modelName || card?.modelId || "Model").trim(),
@@ -698,6 +712,7 @@ const elements = {
   monitorTargetCard: document.querySelector("#monitorTargetCard"),
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
+  monitorDeliveryChannelField: document.querySelector("#monitorDeliveryChannelField"),
   monitorWatchItemsEditor: document.querySelector("#monitorWatchItemsEditor"),
   monitorWatchItemsList: document.querySelector("#monitorWatchItemsList"),
   monitorWatchItemInput: document.querySelector("#monitorWatchItemInput"),
@@ -708,6 +723,10 @@ const elements = {
   monitorNextRun: document.querySelector("#monitorNextRun"),
   monitorNextRunValue: document.querySelector("#monitorNextRunValue"),
   monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
+  deliveryPlatformManager: document.querySelector("#deliveryPlatformManager"),
+  deliveryPlatformList: document.querySelector("#deliveryPlatformList"),
+  deliveryPlatformAddButton: document.querySelector("#deliveryPlatformAddButton"),
+  deliveryPlatformMenu: document.querySelector("#deliveryPlatformMenu"),
   monitorEmailField: document.querySelector("#monitorEmailField"),
   monitorEmailSummary: document.querySelector("#monitorEmailSummary"),
   monitorTelegramField: document.querySelector("#monitorTelegramField"),
@@ -2613,7 +2632,8 @@ function normalizeFeatureSettings(settings = {}) {
 }
 
 function normalizeWhatsAppToolDeliveryChannels(value, fallback = DEFAULT_WHATSAPP_TOOL_SETTINGS.deliveryChannels) {
-  const fallbackChannels = Array.isArray(fallback) && fallback.length ? fallback : ["whatsapp"];
+  const hasArrayFallback = Array.isArray(fallback);
+  const fallbackChannels = hasArrayFallback ? fallback : ["whatsapp"];
   let rawChannels = [];
   if (Array.isArray(value)) {
     rawChannels = value;
@@ -2634,11 +2654,14 @@ function normalizeWhatsAppToolDeliveryChannels(value, fallback = DEFAULT_WHATSAP
     }
   }
 
+  if (Array.isArray(value)) {
+    return channels;
+  }
   if (channels.length) {
     return channels;
   }
   const normalizedFallback = fallbackChannels.filter((channel) => ["whatsapp", "telegram"].includes(channel));
-  return normalizedFallback.length ? normalizedFallback : ["whatsapp"];
+  return normalizedFallback.length ? normalizedFallback : hasArrayFallback ? [] : ["whatsapp"];
 }
 
 function normalizeWhatsAppToolDeliverySettings(settings = {}) {
@@ -2661,13 +2684,16 @@ function normalizeFeatureWhatsAppToolSettings(settings = {}) {
 }
 
 function getWhatsAppDeliverySelection(settings = {}) {
-  const channels = normalizeWhatsAppToolDeliveryChannels(settings.deliveryChannels || settings.deliveryChannel || "whatsapp");
+  const channels = getWhatsAppToolDeliveryChannels(settings);
   const hasWhatsApp = channels.includes("whatsapp");
   const hasTelegram = channels.includes("telegram");
   if (hasWhatsApp && hasTelegram) {
     return "both";
   }
-  return hasTelegram ? "telegram" : "whatsapp";
+  if (hasTelegram) {
+    return "telegram";
+  }
+  return hasWhatsApp ? "whatsapp" : "";
 }
 
 function normalizeFeatureMonitorSettings(settings = {}) {
@@ -11160,6 +11186,108 @@ function setDeliveryChannelOptionState(value, isVisible) {
   option.disabled = !isVisible;
 }
 
+function getWhatsAppToolPlatformOption(platformId) {
+  const normalizedId = String(platformId || "").trim().toLowerCase();
+  return WHATSAPP_TOOL_PLATFORM_OPTIONS.find((option) => option.id === normalizedId) || null;
+}
+
+function getWhatsAppToolDeliveryChannels(settings = getSelectedFeatureSettings()) {
+  return normalizeWhatsAppToolDeliveryChannels(
+    Array.isArray(settings?.deliveryChannels) ? settings.deliveryChannels : settings?.deliveryChannel,
+    [],
+  );
+}
+
+function setDeliveryPlatformMenuOpen(isOpen) {
+  if (!elements.deliveryPlatformMenu) {
+    return;
+  }
+  const shouldOpen = Boolean(isOpen);
+  elements.deliveryPlatformMenu.hidden = !shouldOpen;
+  elements.deliveryPlatformMenu.classList.toggle("is-hidden", !shouldOpen);
+  elements.deliveryPlatformMenu.classList.toggle("is-open", shouldOpen);
+  elements.deliveryPlatformAddButton?.setAttribute("aria-expanded", String(shouldOpen));
+}
+
+function updateDeliveryPlatformMenu(settings = getSelectedFeatureSettings()) {
+  if (!elements.deliveryPlatformMenu) {
+    return;
+  }
+  const channels = getWhatsAppToolDeliveryChannels(settings);
+  const selected = new Set(channels);
+  for (const button of elements.deliveryPlatformMenu.querySelectorAll("[data-delivery-platform-option]")) {
+    const platformId = String(button.dataset.deliveryPlatformOption || "").trim().toLowerCase();
+    const isSelected = selected.has(platformId);
+    button.disabled = isSelected;
+    button.setAttribute("aria-disabled", String(isSelected));
+  }
+  if (elements.deliveryPlatformAddButton) {
+    const hasAvailablePlatform = WHATSAPP_TOOL_PLATFORM_OPTIONS.some((option) => !selected.has(option.id));
+    elements.deliveryPlatformAddButton.disabled = !hasAvailablePlatform;
+    elements.deliveryPlatformAddButton.textContent = hasAvailablePlatform ? "+ Add platform" : "All platforms added";
+    if (!hasAvailablePlatform) {
+      setDeliveryPlatformMenuOpen(false);
+    }
+  }
+}
+
+function renderDeliveryPlatformList(settings = getSelectedFeatureSettings()) {
+  if (!elements.deliveryPlatformList) {
+    return;
+  }
+  const channels = getWhatsAppToolDeliveryChannels(settings);
+  const rows = [];
+
+  if (!channels.length) {
+    const empty = document.createElement("div");
+    empty.className = "delivery-platform-empty";
+    empty.setAttribute("role", "listitem");
+    empty.textContent = "No platforms added yet";
+    rows.push(empty);
+  }
+
+  for (const channel of channels) {
+    const option = getWhatsAppToolPlatformOption(channel);
+    if (!option) {
+      continue;
+    }
+    const row = document.createElement("div");
+    row.className = "delivery-platform-row";
+    row.setAttribute("role", "listitem");
+
+    const badge = document.createElement("span");
+    badge.className = `delivery-platform-badge is-${option.id}`;
+    badge.setAttribute("aria-hidden", "true");
+    badge.textContent = option.shortLabel;
+
+    const copy = document.createElement("span");
+    copy.className = "delivery-platform-copy";
+    const label = document.createElement("strong");
+    label.textContent = option.label;
+    const caption = document.createElement("span");
+    if (option.id === "whatsapp") {
+      caption.textContent = getFeatureWhatsAppConnectedLabel();
+    } else {
+      const chatId = String(settings?.telegramChatId || "").trim();
+      caption.textContent = chatId ? `Chat ${chatId}` : "Chat id missing";
+    }
+    copy.append(label, caption);
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "delivery-platform-remove";
+    removeButton.dataset.deliveryPlatformRemove = option.id;
+    removeButton.setAttribute("aria-label", `Remove ${option.label}`);
+    removeButton.textContent = "×";
+
+    row.append(badge, copy, removeButton);
+    rows.push(row);
+  }
+
+  elements.deliveryPlatformList.replaceChildren(...rows);
+  updateDeliveryPlatformMenu(settings);
+}
+
 function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
   const feature = getSelectedFeature();
   const isMonitor = isMonitorFeature(feature);
@@ -11180,9 +11308,19 @@ function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
   }
 
   setDeliveryChannelOptionState("email", isMonitor);
-  setDeliveryChannelOptionState("both", isWhatsAppTool);
   setDeliveryChannelOptionState("telegram", true);
   setDeliveryChannelOptionState("whatsapp", true);
+  if (elements.monitorDeliveryChannelField) {
+    elements.monitorDeliveryChannelField.classList.toggle("is-hidden", isWhatsAppTool);
+  }
+  if (elements.deliveryPlatformManager) {
+    elements.deliveryPlatformManager.classList.toggle("is-hidden", !isWhatsAppTool);
+    if (!isWhatsAppTool) {
+      setDeliveryPlatformMenuOpen(false);
+    } else {
+      renderDeliveryPlatformList(settings);
+    }
+  }
 
   setMonitorDeliveryPanelState(elements.monitorEmailField, isMonitor && settings.deliveryChannel === "email");
   setMonitorDeliveryPanelState(
@@ -12186,6 +12324,68 @@ function syncDeliverySettingsField(key) {
   };
 }
 
+function saveWhatsAppToolDeliveryChannels(nextChannels) {
+  const feature = getSelectedFeature();
+  if (!feature || !isWhatsAppFeature(feature)) {
+    return false;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const deliveryChannels = normalizeWhatsAppToolDeliveryChannels(nextChannels, []);
+  if (JSON.stringify(deliveryChannels) === JSON.stringify(getWhatsAppToolDeliveryChannels(currentSettings))) {
+    updateMonitorFields();
+    return false;
+  }
+
+  const nextSource = {
+    ...currentSettings,
+    deliveryChannels,
+  };
+  feature.settings = isReengagementFeature(feature)
+    ? buildReengagementSettingsForSave(feature, nextSource)
+    : normalizeFeatureWhatsAppToolSettings(nextSource);
+  updateMonitorFields();
+  persistClientState();
+  updateFeatureStudioHeader();
+  void flushSelectedFeatureConfigAutosave({
+    featureId: feature.id,
+    alertOnError: false,
+    noChangesMessage: false,
+  }).catch(() => {});
+  return true;
+}
+
+function addWhatsAppToolDeliveryPlatform(platformId) {
+  const option = getWhatsAppToolPlatformOption(platformId);
+  if (!option) {
+    return false;
+  }
+  const currentChannels = getWhatsAppToolDeliveryChannels();
+  if (currentChannels.includes(option.id)) {
+    return false;
+  }
+  const didSave = saveWhatsAppToolDeliveryChannels([...currentChannels, option.id]);
+  if (didSave) {
+    setStatus(`${option.label} platform added.`);
+  }
+  setDeliveryPlatformMenuOpen(false);
+  return didSave;
+}
+
+function removeWhatsAppToolDeliveryPlatform(platformId) {
+  const option = getWhatsAppToolPlatformOption(platformId);
+  if (!option) {
+    return false;
+  }
+  const currentChannels = getWhatsAppToolDeliveryChannels();
+  const nextChannels = currentChannels.filter((channel) => channel !== option.id);
+  const didSave = saveWhatsAppToolDeliveryChannels(nextChannels);
+  if (didSave) {
+    setStatus(`${option.label} platform removed.`);
+  }
+  return didSave;
+}
+
 function syncMonitorIntervalDaysField(event) {
   const feature = getSelectedFeature();
   if (!feature || !isMonitorFeature(feature)) {
@@ -12633,7 +12833,7 @@ function getMonitorFieldElement(field) {
     scheduleTimeLocal: elements.monitorScheduleTime,
     scheduleTimezone: elements.monitorScheduleTime,
     deliveryChannel: elements.monitorDeliveryChannel,
-    deliveryChannels: elements.monitorDeliveryChannel,
+    deliveryChannels: elements.deliveryPlatformAddButton || elements.monitorDeliveryChannel,
     telegramChatId: elements.monitorTelegramChatId,
   };
 
@@ -13282,6 +13482,15 @@ function bindEvents() {
       renderAdminUsersPane();
     }
 
+    if (
+      elements.deliveryPlatformMenu
+      && elements.deliveryPlatformManager
+      && !elements.deliveryPlatformMenu.hidden
+      && !elements.deliveryPlatformManager.contains(event.target)
+    ) {
+      setDeliveryPlatformMenuOpen(false);
+    }
+
     if (!elements.accountMenu.contains(event.target) && !elements.accountMenuButton.contains(event.target)) {
       closeMenu();
     }
@@ -13298,6 +13507,11 @@ function bindEvents() {
 
       if (state.billingHelpOpen) {
         closeBillingHelp();
+        return;
+      }
+
+      if (elements.deliveryPlatformMenu && !elements.deliveryPlatformMenu.hidden) {
+        setDeliveryPlatformMenuOpen(false);
         return;
       }
 
@@ -13460,6 +13674,38 @@ function bindEvents() {
   }
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.addEventListener("change", syncDeliverySettingsField("deliveryChannel"));
+  }
+  if (elements.deliveryPlatformAddButton) {
+    elements.deliveryPlatformAddButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      if (elements.deliveryPlatformAddButton.disabled) {
+        return;
+      }
+      const isOpen = !elements.deliveryPlatformMenu?.hidden;
+      setDeliveryPlatformMenuOpen(!isOpen);
+    });
+  }
+  if (elements.deliveryPlatformMenu) {
+    elements.deliveryPlatformMenu.addEventListener("click", (event) => {
+      const target = getEventTargetElement(event);
+      const optionButton = target?.closest("[data-delivery-platform-option]");
+      if (!optionButton || optionButton.disabled) {
+        return;
+      }
+      event.preventDefault();
+      addWhatsAppToolDeliveryPlatform(optionButton.dataset.deliveryPlatformOption || "");
+    });
+  }
+  if (elements.deliveryPlatformList) {
+    elements.deliveryPlatformList.addEventListener("click", (event) => {
+      const target = getEventTargetElement(event);
+      const removeButton = target?.closest("[data-delivery-platform-remove]");
+      if (!removeButton) {
+        return;
+      }
+      event.preventDefault();
+      removeWhatsAppToolDeliveryPlatform(removeButton.dataset.deliveryPlatformRemove || "");
+    });
   }
   if (elements.monitorTelegramChatId) {
     elements.monitorTelegramChatId.addEventListener("input", syncDeliverySettingsField("telegramChatId"));

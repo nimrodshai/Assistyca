@@ -6,6 +6,11 @@ from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_to
 
 
 class WhatsAppToolDeliveryTests(unittest.TestCase):
+    def test_missing_channels_default_to_empty_platform_list(self) -> None:
+        settings = normalize_whatsapp_tool_delivery_settings({})
+
+        self.assertEqual(settings["deliveryChannels"], [])
+
     def test_normalizes_both_delivery_channels(self) -> None:
         settings = normalize_whatsapp_tool_delivery_settings(
             {
@@ -26,14 +31,23 @@ class WhatsAppToolDeliveryTests(unittest.TestCase):
 
         self.assertEqual(settings["deliveryChannels"], ["telegram", "whatsapp"])
 
-    def test_invalid_channels_fall_back_to_whatsapp(self) -> None:
+    def test_explicit_empty_channels_stay_empty(self) -> None:
+        settings = normalize_whatsapp_tool_delivery_settings(
+            {
+                "deliveryChannels": [],
+            }
+        )
+
+        self.assertEqual(settings["deliveryChannels"], [])
+
+    def test_invalid_explicit_channels_stay_empty(self) -> None:
         settings = normalize_whatsapp_tool_delivery_settings(
             {
                 "deliveryChannels": ["email"],
             }
         )
 
-        self.assertEqual(settings["deliveryChannels"], ["whatsapp"])
+        self.assertEqual(settings["deliveryChannels"], [])
 
 
 if __name__ == "__main__":

@@ -600,15 +600,32 @@
             </div>
 
             <div class="monitor-settings-grid">
-              <label class="field compact monitor-delivery-channel-field">
+              <label id="monitorDeliveryChannelField" class="field compact monitor-delivery-channel-field">
                 <span>Channel</span>
                 <select id="monitorDeliveryChannel">
                   <option value="email">Email</option>
                   <option value="telegram">Telegram</option>
                   <option value="whatsapp">WhatsApp</option>
-                  <option value="both">WhatsApp + Telegram</option>
                 </select>
               </label>
+
+              <div id="deliveryPlatformManager" class="delivery-platform-manager is-hidden">
+                <div class="delivery-platform-head">
+                  <span>Platforms</span>
+                  <button
+                    id="deliveryPlatformAddButton"
+                    class="ghost-button small delivery-platform-add"
+                    type="button"
+                    aria-controls="deliveryPlatformMenu"
+                    aria-expanded="false"
+                  >+ Add platform</button>
+                </div>
+                <div id="deliveryPlatformList" class="delivery-platform-list" role="list"></div>
+                <div id="deliveryPlatformMenu" class="delivery-platform-menu is-hidden" role="menu" hidden>
+                  <button type="button" role="menuitem" data-delivery-platform-option="whatsapp">WhatsApp</button>
+                  <button type="button" role="menuitem" data-delivery-platform-option="telegram">Telegram</button>
+                </div>
+              </div>
 
               <div class="monitor-delivery-detail">
                 <div id="monitorEmailField" class="field compact monitor-delivery-panel is-active" aria-hidden="false">

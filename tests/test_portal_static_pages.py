@@ -91,6 +91,21 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('.auth-alert-dialog[data-variant="demo-results"]', styles)
         self.assertIn(".reengagement-demo-alert-results", styles)
 
+    def test_whatsapp_delivery_uses_platform_list(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="deliveryPlatformManager"', html)
+        self.assertIn('id="deliveryPlatformList"', html)
+        self.assertIn('data-delivery-platform-option="whatsapp"', html)
+        self.assertIn('data-delivery-platform-option="telegram"', html)
+        self.assertNotIn('<option value="both">WhatsApp + Telegram</option>', html)
+        self.assertIn("function renderDeliveryPlatformList", script)
+        self.assertIn("dataset.deliveryPlatformRemove", script)
+        self.assertIn("No platforms added yet", script)
+        self.assertIn(".delivery-platform-row", styles)
+
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")

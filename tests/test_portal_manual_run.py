@@ -288,6 +288,8 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             templates=templates,
         )
         config.access_token = "test-token"
+        if delivery_settings is None:
+            delivery_settings = {"deliveryChannels": ["whatsapp"]}
         return PortalWhatsAppService(config, BackendStore(self.data_path), delivery_settings=delivery_settings)
 
     def test_build_portal_runtime_config_reads_sample_template_env(self) -> None:
@@ -1232,6 +1234,15 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             return exc.code, body
 
     def test_feature_sample_endpoint_sends_owner_alert_and_updates_health_metadata(self) -> None:
+        self.server.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            WHATSAPP_REPLY_ASSISTANT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "deliveryChannels": ["whatsapp"],
+                }
+            },
+        )
         with mock.patch.dict(os.environ, {"WHATSAPP_ACCESS_TOKEN": "test-token"}, clear=False):
             with mock.patch(
                 "packages.infrastructure.portal_auth.server.PortalWhatsAppService.send_sample_owner_message",

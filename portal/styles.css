@@ -4543,6 +4543,176 @@ body[data-modal="billing"] .app-shell {
     0 14px 28px rgba(25, 38, 54, 0.05);
 }
 
+.delivery-platform-manager {
+  position: relative;
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+  align-content: start;
+}
+
+.delivery-platform-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.delivery-platform-head span {
+  color: var(--muted-strong);
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.delivery-platform-add {
+  min-height: 2.45rem;
+  padding-inline: 0.9rem;
+  white-space: nowrap;
+}
+
+.delivery-platform-list {
+  display: grid;
+  gap: 0.58rem;
+  min-width: 0;
+}
+
+.delivery-platform-empty,
+.delivery-platform-row {
+  min-width: 0;
+  min-height: 3.55rem;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  border-radius: 1.25rem;
+  background:
+    linear-gradient(180deg, rgba(250, 252, 253, 0.98), rgba(255, 255, 255, 0.96)),
+    rgba(255, 255, 255, 0.97);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 12px 26px rgba(25, 38, 54, 0.04);
+}
+
+.delivery-platform-empty {
+  display: grid;
+  align-items: center;
+  padding: 0.72rem 0.95rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.delivery-platform-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.72rem;
+  padding: 0.62rem 0.62rem 0.62rem 0.72rem;
+}
+
+.delivery-platform-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 999px;
+  background: rgba(15, 128, 117, 0.1);
+  color: var(--brand-dark);
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.delivery-platform-badge.is-telegram {
+  background: rgba(28, 115, 189, 0.1);
+  color: #1f6fae;
+}
+
+.delivery-platform-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.delivery-platform-copy strong,
+.delivery-platform-copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delivery-platform-copy strong {
+  color: var(--text);
+  font-size: 0.98rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.delivery-platform-copy span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.delivery-platform-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 2.22rem;
+  height: 2.22rem;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  color: rgba(25, 38, 54, 0.72);
+  font-size: 1.2rem;
+  font-weight: 650;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.delivery-platform-remove:hover,
+.delivery-platform-remove:focus-visible {
+  border-color: rgba(210, 82, 43, 0.24);
+  color: #b74622;
+  outline: none;
+}
+
+.delivery-platform-menu {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.45rem;
+  border: 1px solid rgba(20, 28, 38, 0.08);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 40px rgba(25, 38, 54, 0.12);
+  z-index: 8;
+}
+
+.delivery-platform-menu button {
+  min-height: 2.55rem;
+  padding: 0.55rem 0.72rem;
+  border: 0;
+  border-radius: 0.78rem;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 760;
+  text-align: left;
+  cursor: pointer;
+}
+
+.delivery-platform-menu button:hover:not(:disabled),
+.delivery-platform-menu button:focus-visible:not(:disabled) {
+  background: rgba(15, 128, 117, 0.08);
+  outline: none;
+}
+
+.delivery-platform-menu button:disabled {
+  color: rgba(112, 126, 145, 0.62);
+  cursor: default;
+}
+
 .monitor-delivery-panel {
   display: none;
   gap: 0.5rem;
@@ -6466,11 +6636,16 @@ body[data-modal="billing"] .app-shell {
   }
 
   .monitor-schedule-inline-field,
+  .delivery-platform-head,
   .monitor-delivery-inline {
     display: grid;
     grid-template-columns: 1fr;
     width: 100%;
     justify-items: stretch;
+  }
+
+  .delivery-platform-add {
+    width: 100%;
   }
 
   .monitor-schedule-inline-field input,
