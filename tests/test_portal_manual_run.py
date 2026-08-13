@@ -48,7 +48,7 @@ class PortalManualRunDescriptionTests(unittest.TestCase):
         )
 
         self.assertIn("generated follow-up drafts", message)
-        self.assertIn("WhatsApp delivery failed", message)
+        self.assertIn("Owner delivery failed", message)
         self.assertIn("review the findings in the portal", message)
 
 
@@ -272,7 +272,12 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.env_patcher.stop()
         self.temp_dir.cleanup()
 
-    def _build_service(self, *, templates: dict[str, object] | None = None) -> PortalWhatsAppService:
+    def _build_service(
+        self,
+        *,
+        templates: dict[str, object] | None = None,
+        delivery_settings: dict[str, object] | None = None,
+    ) -> PortalWhatsAppService:
         config = build_portal_runtime_config(
             client_id="portal-user-1",
             client_name="Portal User",
@@ -283,7 +288,7 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
             templates=templates,
         )
         config.access_token = "test-token"
-        return PortalWhatsAppService(config, BackendStore(self.data_path))
+        return PortalWhatsAppService(config, BackendStore(self.data_path), delivery_settings=delivery_settings)
 
     def test_build_portal_runtime_config_reads_sample_template_env(self) -> None:
         with mock.patch.dict(
@@ -555,6 +560,42 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.kwargs["access_token"], "client-token")
         self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "22222")
         self.assertEqual(mocked_send.call_args.kwargs["recipient_wa_id"], "15551234567")
+
+    def test_owner_notification_can_send_telegram_review_link(self) -> None:
+        service = self._build_service(
+            delivery_settings={
+                "deliveryChannels": ["telegram"],
+                "telegramChatId": "987654321",
+            },
+        )
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-telegram",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+            return_value="wamid.should-not-send",
+        ) as mocked_whatsapp, mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_telegram_notification",
+            return_value={"ok": True, "result": {"message_id": 42}},
+        ) as mocked_telegram:
+            message_id = service.notify_owner_about_approval(approval)
+
+        self.assertEqual(message_id, "telegram-42")
+        mocked_whatsapp.assert_not_called()
+        mocked_telegram.assert_called_once()
+        self.assertEqual(mocked_telegram.call_args.kwargs["chat_id"], "987654321")
+        self.assertIn("Review and send: https://example.com/approval/", mocked_telegram.call_args.kwargs["text"])
+        stored_approval = service.store.get_approval(approval["approval_id"])
+        self.assertEqual(stored_approval["owner_notification_telegram_message_id"], "telegram-42")
+        self.assertEqual(stored_approval["owner_notification_delivery_channels"], ["telegram"])
 
     def test_owner_notification_uses_quick_reply_template_when_configured(self) -> None:
         service = self._build_service(

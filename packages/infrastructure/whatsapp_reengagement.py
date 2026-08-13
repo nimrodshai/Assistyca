@@ -20,6 +20,9 @@ from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.tool_model_selection import resolve_tool_model
+from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_telegram
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_whatsapp
 
 
 REENGAGEMENT_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer"
@@ -236,6 +239,7 @@ def normalize_reengagement_settings(
         inactivity_value_source = legacy_months
         inactivity_unit = "months"
 
+    delivery_settings = normalize_whatsapp_tool_delivery_settings(source)
     return {
         "model": normalize_text(source.get("model")) or resolved_config.model,
         "intervalDays": clamp_int(
@@ -268,6 +272,7 @@ def normalize_reengagement_settings(
             minimum=1,
             maximum=MAX_CONTEXT_MESSAGES,
         ),
+        **delivery_settings,
     }
 
 
@@ -825,6 +830,8 @@ def resolve_owner_delivery_mode_from_results(deliveries: list[dict[str, str]]) -
         return "template_prompt"
     if modes == {"live"}:
         return "live"
+    if modes == {"telegram"}:
+        return "telegram"
     return "mixed"
 
 
@@ -1076,12 +1083,22 @@ class WhatsAppReengagementScheduler:
         return resolve_timezone(normalize_text(settings.get("scheduleTimezone")) or self.config.timezone_name)
 
     def _owner_delivery_ready(self, connection: dict[str, Any]) -> bool:
-        return bool(
-            normalize_text(connection.get("phoneNumberId"))
+        settings = normalize_reengagement_settings(
+            connection.get("settings") if isinstance(connection.get("settings"), dict) else {},
+            config=self.config,
+        )
+        whatsapp_ready = bool(
+            whatsapp_tool_delivery_uses_whatsapp(settings)
+            and normalize_text(connection.get("phoneNumberId"))
             and normalize_text(connection.get("ownerWaId"))
             and normalize_text(connection.get("connectionStatus")) == "connected"
             and bool(connection.get("accessTokenConfigured"))
         )
+        telegram_ready = bool(
+            whatsapp_tool_delivery_uses_telegram(settings)
+            and normalize_text(settings.get("telegramChatId"))
+        )
+        return whatsapp_ready or telegram_ready
 
     def run_demo_for_email(
         self,

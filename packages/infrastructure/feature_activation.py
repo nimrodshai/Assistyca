@@ -20,9 +20,11 @@ from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_I
 from packages.infrastructure.whatsapp_reengagement import normalize_reengagement_settings
 from packages.infrastructure.whatsapp_reengagement import resolve_next_reengagement_slot
 from packages.infrastructure.whatsapp_reengagement import resolve_timezone
+from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
 
 
 ACTIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "on_trial"})
+WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 DEFAULT_PRODUCT_NAME = "Assistyca"
 DEFAULT_PAYMENT_STATUS_CACHE_TTL_SECONDS = 120
 
@@ -227,6 +229,11 @@ class FeatureActivationService:
             settings_payload = normalize_monitor_settings(settings_payload)
         elif normalized_feature_id == REENGAGEMENT_FEATURE_ID:
             settings_payload = normalize_reengagement_settings(settings_payload)
+        elif normalized_feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
+            settings_payload = {
+                **settings_payload,
+                **normalize_whatsapp_tool_delivery_settings(settings_payload),
+            }
 
         metadata_payload = {
             **existing_metadata,
@@ -470,6 +477,11 @@ class FeatureActivationService:
         resolved_settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
         if feature_id == REENGAGEMENT_FEATURE_ID:
             resolved_settings = normalize_reengagement_settings(resolved_settings)
+        elif feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
+            resolved_settings = {
+                **resolved_settings,
+                **normalize_whatsapp_tool_delivery_settings(resolved_settings),
+            }
         resolved_setup_status = setup_status or self._resolve_setup_status(email, feature=feature)
         resolved_payment_status = payment_status or self._resolve_payment_status(
             email,

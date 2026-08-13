@@ -147,6 +147,8 @@ const DEFAULT_REENGAGEMENT_SETTINGS = {
   inactivityValue: 6,
   inactivityUnit: "months",
   maxContextMessages: 100,
+  deliveryChannels: ["whatsapp"],
+  telegramChatId: "",
 };
 const MANUAL_PRICING_SNAPSHOT = {
   source: "manual",
@@ -213,6 +215,11 @@ const DEFAULT_MONITOR_SCHEDULE_TIME = "09:00";
 const DEFAULT_TOOL_MODEL = DEFAULT_MONITOR_SETTINGS.model;
 const DEFAULT_FEATURE_SETTINGS = {
   model: DEFAULT_TOOL_MODEL,
+};
+const DEFAULT_WHATSAPP_TOOL_SETTINGS = {
+  ...DEFAULT_FEATURE_SETTINGS,
+  deliveryChannels: ["whatsapp"],
+  telegramChatId: "",
 };
 const DEFAULT_TOOL_MODEL_OPTIONS = MANUAL_PRICING_SNAPSHOT.cards.map((card) => ({
   id: String(card?.modelId || "").trim(),
@@ -2605,6 +2612,64 @@ function normalizeFeatureSettings(settings = {}) {
   };
 }
 
+function normalizeWhatsAppToolDeliveryChannels(value, fallback = DEFAULT_WHATSAPP_TOOL_SETTINGS.deliveryChannels) {
+  const fallbackChannels = Array.isArray(fallback) && fallback.length ? fallback : ["whatsapp"];
+  let rawChannels = [];
+  if (Array.isArray(value)) {
+    rawChannels = value;
+  } else {
+    const text = String(value || "").trim().toLowerCase();
+    if (["both", "all", "whatsapp+telegram", "whatsapp_telegram"].includes(text)) {
+      rawChannels = ["whatsapp", "telegram"];
+    } else if (text) {
+      rawChannels = text.replace(/\+/g, ",").split(",");
+    }
+  }
+
+  const channels = [];
+  for (const channel of rawChannels) {
+    const normalized = String(channel || "").trim().toLowerCase();
+    if (["whatsapp", "telegram"].includes(normalized) && !channels.includes(normalized)) {
+      channels.push(normalized);
+    }
+  }
+
+  if (channels.length) {
+    return channels;
+  }
+  const normalizedFallback = fallbackChannels.filter((channel) => ["whatsapp", "telegram"].includes(channel));
+  return normalizedFallback.length ? normalizedFallback : ["whatsapp"];
+}
+
+function normalizeWhatsAppToolDeliverySettings(settings = {}) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const deliveryChannels = normalizeWhatsAppToolDeliveryChannels(
+    source.deliveryChannels || source.delivery_channels || source.deliveryChannel || source.delivery_channel,
+  );
+  return {
+    deliveryChannels,
+    telegramChatId: String(source.telegramChatId || source.telegram_chat_id || "").trim(),
+  };
+}
+
+function normalizeFeatureWhatsAppToolSettings(settings = {}) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  return {
+    ...normalizeFeatureSettings(source),
+    ...normalizeWhatsAppToolDeliverySettings(source),
+  };
+}
+
+function getWhatsAppDeliverySelection(settings = {}) {
+  const channels = normalizeWhatsAppToolDeliveryChannels(settings.deliveryChannels || settings.deliveryChannel || "whatsapp");
+  const hasWhatsApp = channels.includes("whatsapp");
+  const hasTelegram = channels.includes("telegram");
+  if (hasWhatsApp && hasTelegram) {
+    return "both";
+  }
+  return hasTelegram ? "telegram" : "whatsapp";
+}
+
 function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
@@ -2688,6 +2753,7 @@ function normalizeFeatureReengagementSettings(settings = {}) {
 
   return {
     ...normalizeFeatureSettings(source),
+    ...normalizeWhatsAppToolDeliverySettings(source),
     intervalDays: normalizeMonitorIntervalDays(source.intervalDays, DEFAULT_REENGAGEMENT_SETTINGS.intervalDays),
     scheduleTimeLocal,
     scheduleTimezone,
@@ -2706,6 +2772,9 @@ function normalizeSettingsForFeature(featureId, settings = {}) {
   }
   if (featureId === REENGAGEMENT_FEATURE_ID) {
     return normalizeFeatureReengagementSettings(settings);
+  }
+  if (featureId === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID) {
+    return normalizeFeatureWhatsAppToolSettings(settings);
   }
   return normalizeFeatureSettings(settings);
 }
@@ -2757,6 +2826,9 @@ function buildSettingsForSave(feature = getSelectedFeature(), settings = getSele
   }
   if (isReengagementFeature(feature)) {
     return buildReengagementSettingsForSave(feature, settings);
+  }
+  if (isWhatsAppReplyAssistantFeature(feature)) {
+    return normalizeFeatureWhatsAppToolSettings(settings);
   }
   return normalizeFeatureSettings(settings);
 }
@@ -4574,7 +4646,9 @@ function hasFeatureConfigChanges(feature = getSelectedFeature()) {
     ? DEFAULT_MONITOR_SETTINGS
     : isReengagementFeature(feature)
       ? DEFAULT_REENGAGEMENT_SETTINGS
-      : DEFAULT_FEATURE_SETTINGS;
+      : isWhatsAppReplyAssistantFeature(feature)
+        ? DEFAULT_WHATSAPP_TOOL_SETTINGS
+        : DEFAULT_FEATURE_SETTINGS;
   return Object.keys(defaultSettings).some(
     (key) => JSON.stringify(currentSettings[key] ?? "") !== JSON.stringify(savedSettings[key] ?? ""),
   );
@@ -9701,10 +9775,13 @@ function getReengagementDemoAlertTitle(run = {}) {
     if (deliveryMode === "template_prompt") {
       return "WhatsApp prompt sent";
     }
-    if (deliveryMode === "mixed") {
-      return "WhatsApp report partly sent";
+    if (deliveryMode === "telegram") {
+      return "Telegram report sent";
     }
-    return "WhatsApp report sent";
+    if (deliveryMode === "mixed") {
+      return "Reports partly sent";
+    }
+    return "Owner report sent";
   }
   if (!getReengagementConversationsChecked(run) && candidatesCount <= 0) {
     return "No saved conversations yet";
@@ -9726,7 +9803,9 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
 
   if (status === "cancelled") {
     if (notificationsSent > 0) {
-      const reportLabel = notificationsSent === 1 ? "WhatsApp report" : "WhatsApp reports";
+      const reportLabel = deliveryMode === "telegram"
+        ? (notificationsSent === 1 ? "Telegram report" : "Telegram reports")
+        : (notificationsSent === 1 ? "WhatsApp report" : "WhatsApp reports");
       if (deliveryMode === "mock") {
         return `Cancelled after simulating ${notificationsSent} demo ${reportLabel} for ${ownerLabel}. Customers were not contacted.`;
       }
@@ -9735,7 +9814,7 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
       }
       return `Cancelled after sending ${notificationsSent} demo ${reportLabel}. Customers were not contacted.`;
     }
-    return "Cancelled before any demo WhatsApp report was sent. Customers were not contacted.";
+    return "Cancelled before any demo owner report was sent. Customers were not contacted.";
   }
 
   if (!conversationsChecked && candidatesCount <= 0) {
@@ -9745,17 +9824,21 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
   if (deliveryErrors.length && notificationsSent <= 0) {
     if (candidatesCount > 0) {
       const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
-      return `Found ${matchLabel} and prepared the follow-up drafts below. WhatsApp delivery failed, so nothing was sent to ${ownerLabel}. Customers were not contacted.`;
+      return `Found ${matchLabel} and prepared the follow-up drafts below. Owner delivery failed, so nothing was sent. Customers were not contacted.`;
     }
     const skippedSummary = formatReengagementSkippedSummary(run);
     const scanSummary = skippedSummary
       ? `Checked ${checkedLabel}. ${skippedSummary}.`
       : `Checked ${checkedLabel} against the current ${inactivityLabel} inactivity window.`;
-    return `${scanSummary} WhatsApp delivery failed before a no-results report could be sent to ${ownerLabel}. Customers were not contacted.`;
+    return `${scanSummary} Owner delivery failed before a no-results report could be sent. Customers were not contacted.`;
   }
 
   if (notificationsSent > 0) {
-    const reportLabel = notificationsSent === 1 ? "WhatsApp message" : "WhatsApp messages";
+    const reportLabel = deliveryMode === "telegram"
+      ? (notificationsSent === 1 ? "Telegram message" : "Telegram messages")
+      : deliveryMode === "mixed"
+        ? (notificationsSent === 1 ? "owner message" : "owner messages")
+        : (notificationsSent === 1 ? "WhatsApp message" : "WhatsApp messages");
     const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
     if (deliveryMode === "mock") {
       const base = candidatesCount > 0
@@ -9768,6 +9851,12 @@ function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run f
         ? `Sent a WhatsApp template prompt to ${ownerLabel} for ${matchLabel}.`
         : `Sent a WhatsApp template prompt to ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
       return `${base} Tap Send details in WhatsApp to receive the generated report. Customers were not contacted.`;
+    }
+    if (deliveryMode === "telegram") {
+      const base = candidatesCount > 0
+        ? `Sent ${notificationsSent} demo ${reportLabel} with details for ${matchLabel}.`
+        : `Sent a no-results demo ${reportLabel} for the current ${inactivityLabel} inactivity window.`;
+      return `${base} Customers were not contacted.`;
     }
     const base = candidatesCount > 0
       ? `Sent ${notificationsSent} demo ${reportLabel} to ${ownerLabel} with details for ${matchLabel}.`
@@ -11062,8 +11151,22 @@ function setMonitorDeliveryPanelState(panel, isActive) {
   }
 }
 
+function setDeliveryChannelOptionState(value, isVisible) {
+  const option = elements.monitorDeliveryChannel?.querySelector(`option[value="${value}"]`);
+  if (!option) {
+    return;
+  }
+  option.hidden = !isVisible;
+  option.disabled = !isVisible;
+}
+
 function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
-  const isMonitor = isMonitorFeature(getSelectedFeature());
+  const feature = getSelectedFeature();
+  const isMonitor = isMonitorFeature(feature);
+  const isWhatsAppTool = isWhatsAppFeature(feature);
+  const whatsappDeliverySelection = getWhatsAppDeliverySelection(settings);
+  const usesWhatsAppDelivery = isWhatsAppTool && ["whatsapp", "both"].includes(whatsappDeliverySelection);
+  const usesTelegramDelivery = isWhatsAppTool && ["telegram", "both"].includes(whatsappDeliverySelection);
   const sharedPromptCards = [
     elements.featureToneCard,
     elements.featureRulesCard,
@@ -11076,9 +11179,20 @@ function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
     }
   }
 
-  setMonitorDeliveryPanelState(elements.monitorEmailField, settings.deliveryChannel === "email");
-  setMonitorDeliveryPanelState(elements.monitorTelegramField, settings.deliveryChannel === "telegram");
-  setMonitorDeliveryPanelState(elements.monitorWhatsAppField, settings.deliveryChannel === "whatsapp");
+  setDeliveryChannelOptionState("email", isMonitor);
+  setDeliveryChannelOptionState("both", isWhatsAppTool);
+  setDeliveryChannelOptionState("telegram", true);
+  setDeliveryChannelOptionState("whatsapp", true);
+
+  setMonitorDeliveryPanelState(elements.monitorEmailField, isMonitor && settings.deliveryChannel === "email");
+  setMonitorDeliveryPanelState(
+    elements.monitorTelegramField,
+    isMonitor ? settings.deliveryChannel === "telegram" : usesTelegramDelivery,
+  );
+  setMonitorDeliveryPanelState(
+    elements.monitorWhatsAppField,
+    isMonitor ? settings.deliveryChannel === "whatsapp" : usesWhatsAppDelivery,
+  );
 }
 
 function getMonitorNextRunLabel(feature) {
@@ -11111,6 +11225,7 @@ function getMonitorNextRunLabel(feature) {
 function updateMonitorFields() {
   const feature = getSelectedFeature();
   const isMonitor = isMonitorFeature(feature);
+  const supportsOwnerDelivery = isMonitor || isWhatsAppFeature(feature);
   const isScheduledTool = isMonitor || isReengagementFeature(feature);
   if (elements.featureStudioEditorSection) {
     elements.featureStudioEditorSection.classList.toggle("is-monitor-flow", isMonitor);
@@ -11126,38 +11241,42 @@ function updateMonitorFields() {
     elements.monitorNextRun.hidden = !isMonitor;
   }
   if (elements.monitorDeliveryCard) {
-    elements.monitorDeliveryCard.classList.toggle("is-hidden", !isMonitor);
+    elements.monitorDeliveryCard.classList.toggle("is-hidden", !supportsOwnerDelivery);
   }
-  if (!isMonitor) {
+  if (!supportsOwnerDelivery) {
     updateMonitorFieldVisibility(DEFAULT_MONITOR_SETTINGS);
     return;
   }
 
   const monitorSettings = getSelectedFeatureSettings(feature);
-  state.monitorWatchItemDraft = loadMonitorWatchDraft(feature.id);
-  renderMonitorWatchItems(monitorSettings.watchItems);
-  if (elements.monitorWatchItemInput) {
-    elements.monitorWatchItemInput.value = state.monitorWatchItemDraft;
-  }
-  if (elements.monitorIntervalDays) {
-    elements.monitorIntervalDays.value = String(monitorSettings.intervalDays);
-  }
-  if (elements.monitorScheduleTime) {
-    elements.monitorScheduleTime.value = getMonitorScheduleTime(feature);
-  }
-  if (elements.monitorScheduleTimezoneLabel) {
-    const scheduleTimezone = getMonitorScheduleTimezone(feature);
-    elements.monitorScheduleTimezoneLabel.textContent = scheduleTimezone === getWorkspaceTimeZone()
-      ? "Workspace time"
-      : "Saved time zone";
-    elements.monitorScheduleTimezoneLabel.title = scheduleTimezone;
-  }
-  if (elements.monitorNextRunValue) {
-    elements.monitorNextRunValue.textContent = getMonitorNextRunLabel(feature);
-    elements.monitorNextRunValue.title = resolveMonitorNextRunAt(feature);
+  if (isMonitor) {
+    state.monitorWatchItemDraft = loadMonitorWatchDraft(feature.id);
+    renderMonitorWatchItems(monitorSettings.watchItems);
+    if (elements.monitorWatchItemInput) {
+      elements.monitorWatchItemInput.value = state.monitorWatchItemDraft;
+    }
+    if (elements.monitorIntervalDays) {
+      elements.monitorIntervalDays.value = String(monitorSettings.intervalDays);
+    }
+    if (elements.monitorScheduleTime) {
+      elements.monitorScheduleTime.value = getMonitorScheduleTime(feature);
+    }
+    if (elements.monitorScheduleTimezoneLabel) {
+      const scheduleTimezone = getMonitorScheduleTimezone(feature);
+      elements.monitorScheduleTimezoneLabel.textContent = scheduleTimezone === getWorkspaceTimeZone()
+        ? "Workspace time"
+        : "Saved time zone";
+      elements.monitorScheduleTimezoneLabel.title = scheduleTimezone;
+    }
+    if (elements.monitorNextRunValue) {
+      elements.monitorNextRunValue.textContent = getMonitorNextRunLabel(feature);
+      elements.monitorNextRunValue.title = resolveMonitorNextRunAt(feature);
+    }
   }
   if (elements.monitorDeliveryChannel) {
-    elements.monitorDeliveryChannel.value = monitorSettings.deliveryChannel;
+    elements.monitorDeliveryChannel.value = isMonitor
+      ? monitorSettings.deliveryChannel
+      : getWhatsAppDeliverySelection(monitorSettings);
   }
   if (elements.monitorEmailSummary) {
     const emailSummary = activeEmail || "Workspace account email";
@@ -12028,20 +12147,35 @@ function syncFeatureModelField(event) {
   scheduleSelectedFeatureConfigAutosave(feature);
 }
 
-function syncMonitorSettingsField(key) {
+function syncDeliverySettingsField(key) {
   return (event) => {
     const feature = getSelectedFeature();
-    if (!feature || !isMonitorFeature(feature)) {
+    if (!feature || (!isMonitorFeature(feature) && !isWhatsAppFeature(feature))) {
       return;
     }
 
-    const nextSettings = buildMonitorSettingsForSave(feature, {
-      ...getSelectedFeatureSettings(feature),
-      [key]: event.target.value,
-    });
+    const currentSettings = getSelectedFeatureSettings(feature);
+    let nextSettings;
+    if (isMonitorFeature(feature)) {
+      nextSettings = buildMonitorSettingsForSave(feature, {
+        ...currentSettings,
+        [key]: event.target.value,
+      });
+    } else {
+      const deliveryPatch = key === "deliveryChannel"
+        ? { deliveryChannels: normalizeWhatsAppToolDeliveryChannels(event.target.value) }
+        : { [key]: event.target.value };
+      const nextSource = {
+        ...currentSettings,
+        ...deliveryPatch,
+      };
+      nextSettings = isReengagementFeature(feature)
+        ? buildReengagementSettingsForSave(feature, nextSource)
+        : normalizeFeatureWhatsAppToolSettings(nextSource);
+    }
 
     feature.settings = nextSettings;
-    updateMonitorFieldVisibility(nextSettings);
+    updateMonitorFields();
     persistClientState();
     updateFeatureStudioHeader();
     void flushSelectedFeatureConfigAutosave({
@@ -12499,6 +12633,7 @@ function getMonitorFieldElement(field) {
     scheduleTimeLocal: elements.monitorScheduleTime,
     scheduleTimezone: elements.monitorScheduleTime,
     deliveryChannel: elements.monitorDeliveryChannel,
+    deliveryChannels: elements.monitorDeliveryChannel,
     telegramChatId: elements.monitorTelegramChatId,
   };
 
@@ -13324,10 +13459,10 @@ function bindEvents() {
     elements.monitorScheduleTime.addEventListener("blur", finalizeMonitorScheduleTimeField);
   }
   if (elements.monitorDeliveryChannel) {
-    elements.monitorDeliveryChannel.addEventListener("change", syncMonitorSettingsField("deliveryChannel"));
+    elements.monitorDeliveryChannel.addEventListener("change", syncDeliverySettingsField("deliveryChannel"));
   }
   if (elements.monitorTelegramChatId) {
-    elements.monitorTelegramChatId.addEventListener("input", syncMonitorSettingsField("telegramChatId"));
+    elements.monitorTelegramChatId.addEventListener("input", syncDeliverySettingsField("telegramChatId"));
   }
   if (elements.monitorWhatsAppSetupButton) {
     elements.monitorWhatsAppSetupButton.addEventListener("click", () => {

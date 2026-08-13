@@ -1231,6 +1231,78 @@ class WhatsAppReengagementTests(unittest.TestCase):
         self.assertIn("No customer message was sent", sent_reports[0])
         self.assertIn("Ari Cohen", sent_reports[0])
 
+    def test_demo_run_can_deliver_reengagement_report_to_telegram(self) -> None:
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            REENGAGEMENT_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "deliveryChannels": ["telegram"],
+                    "telegramChatId": "987654321",
+                    "inactivityValue": 1,
+                    "inactivityUnit": "months",
+                }
+            },
+        )
+        self.database.save_whatsapp_message(
+            email="owner@example.com",
+            conversation_id="15550007777",
+            direction="inbound",
+            text="Thanks, I will check and update you.",
+            sender_name="Noa Levi",
+            sender_wa_id="15550007777",
+            message_id="wamid.demo-telegram-old-1",
+            message_type="text",
+            message_at="2026-05-01T09:00:00+00:00",
+        )
+
+        sent_reports: list[str] = []
+        sent_settings: list[dict[str, object]] = []
+
+        def fake_send_owner_message(connection: dict[str, object], message_text: str) -> dict[str, str]:
+            sent_reports.append(message_text)
+            settings = connection.get("settings")
+            if isinstance(settings, dict):
+                sent_settings.append(settings)
+            return {
+                "messageId": "telegram-42",
+                "deliveryMode": "telegram",
+            }
+
+        scheduler = WhatsAppReengagementScheduler(
+            self.database,
+            send_owner_message=fake_send_owner_message,
+            config=WhatsAppReengagementConfig(
+                enabled=True,
+                timezone_name="UTC",
+                poll_seconds=60,
+                model="gpt-5.5",
+            ),
+        )
+        fake_response = SimpleNamespace(
+            output_text="Hi Noa, just checking whether staying in touch still makes sense for you. If so, tell me.",
+            request_id="req_telegram",
+            response_id="resp_telegram",
+            model="gpt-5.5",
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_reengagement.call_openai_response",
+            return_value=fake_response,
+        ):
+            result = scheduler.run_demo_for_email(
+                "owner@example.com",
+                now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["run"]["notificationsSent"], 1)
+        self.assertEqual(result["run"]["ownerMessageIds"], ["telegram-42"])
+        self.assertEqual(result["run"]["deliveryMode"], "telegram")
+        self.assertFalse(result["run"]["portalOnly"])
+        self.assertEqual(sent_settings[0]["deliveryChannels"], ["telegram"])
+        self.assertIn("Noa Levi", sent_reports[0])
+
     def test_demo_run_cancellation_skips_owner_whatsapp_delivery(self) -> None:
         self._connect_whatsapp()
         self.database.save_feature_assignment_metadata(

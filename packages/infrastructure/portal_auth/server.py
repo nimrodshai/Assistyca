@@ -69,6 +69,9 @@ from packages.infrastructure.whatsapp_portal_service import normalize_portal_own
 from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
 from packages.infrastructure.whatsapp_reengagement import load_whatsapp_reengagement_config
+from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_telegram
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_whatsapp
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
 from packages.tools.scheduled_monitor.monitor import load_scheduled_monitor_config
@@ -1768,14 +1771,16 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
                 return f"Demo cancelled after simulating {notifications_sent} WhatsApp {label} for {owner_label}. Customers were not contacted."
             if delivery_mode == "template_prompt":
                 return f"Demo cancelled after sending a WhatsApp template prompt to {owner_label}. Customers were not contacted."
+            if delivery_mode == "telegram":
+                return f"Demo cancelled after sending {notifications_sent} Telegram {label}. Customers were not contacted."
             return f"Demo cancelled after sending {notifications_sent} WhatsApp {label}. Customers were not contacted."
-        return "Demo cancelled before any WhatsApp report was sent. Customers were not contacted."
+        return "Demo cancelled before any owner report was sent. Customers were not contacted."
     if delivery_errors and notifications_sent <= 0:
         if candidates_count == 1:
-            return "Demo found 1 inactive conversation and generated a follow-up draft. WhatsApp delivery failed, so review the finding in the portal."
+            return "Demo found 1 inactive conversation and generated a follow-up draft. Owner delivery failed, so review the finding in the portal."
         if candidates_count > 1:
-            return f"Demo found {candidates_count} inactive conversations and generated follow-up drafts. WhatsApp delivery failed, so review the findings in the portal."
-        return "Demo found no inactive conversations. WhatsApp delivery failed before a no-results report could be sent."
+            return f"Demo found {candidates_count} inactive conversations and generated follow-up drafts. Owner delivery failed, so review the findings in the portal."
+        return "Demo found no inactive conversations. Owner delivery failed before a no-results report could be sent."
     if notifications_sent > 0 and delivery_mode == "mock":
         if candidates_count == 1:
             return f"Demo found 1 inactive conversation, generated a follow-up draft, and simulated the WhatsApp report for {owner_label}. Live WhatsApp delivery is not configured."
@@ -1788,6 +1793,12 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
         if candidates_count > 1:
             return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the reports."
         return f"Demo found no inactive conversations and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the no-results report."
+    if notifications_sent > 0 and delivery_mode == "telegram":
+        if candidates_count == 1:
+            return "Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to Telegram."
+        if candidates_count > 1:
+            return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent {notifications_sent} reports to Telegram."
+        return "Demo found no inactive conversations for the current inactivity window and sent a no-results report to Telegram."
     if candidates_count == 1:
         return (
             f"Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to {owner_label}."
@@ -3438,10 +3449,29 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _normalize_digits(self, value: Any) -> str:
         return re.sub(r"\D+", "", str(value or ""))
 
+    def _resolve_whatsapp_tool_settings(self, connection: dict[str, Any]) -> dict[str, Any]:
+        existing_settings = connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
+        if existing_settings:
+            return existing_settings
+
+        email = normalize_text(connection.get("email"))
+        if not email:
+            return {}
+
+        feature_id = normalize_text(connection.get("featureId")) or WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
+        assignment = self.database.get_feature_assignment(email, feature_id) or {}
+        metadata = assignment.get("metadata") if isinstance(assignment.get("metadata"), dict) else {}
+        settings = metadata.get("settings") if isinstance(metadata.get("settings"), dict) else {}
+        return settings if isinstance(settings, dict) else {}
+
     def _build_whatsapp_service(self, connection: dict[str, Any]) -> PortalWhatsAppService:
+        service_connection = {
+            **connection,
+            "settings": self._resolve_whatsapp_tool_settings(connection),
+        }
         return build_portal_service_from_connection(
             root=self.root,
-            connection=connection,
+            connection=service_connection,
             base_url=self._public_base_url(),
             store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
             store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
@@ -4059,11 +4089,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            if not whatsapp_service.owner_send_enabled():
+            if not whatsapp_service.owner_notification_enabled():
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
                     "error": "setup_required",
-                    "message": "Finish WhatsApp setup with a saved access token or the Assistyca sender access token before sending a sample.",
+                    "message": "Finish WhatsApp setup with a saved access token, or choose Telegram with a chat id, before sending a sample.",
                 })
                 return
 
@@ -4083,7 +4113,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.BAD_GATEWAY, {
                     "ok": False,
                     "error": "sample_send_failed",
-                    "message": f"Sample WhatsApp alert failed: {exc}",
+                    "message": f"Sample owner alert failed: {exc}",
                     "connection": self._serialize_whatsapp_connection(updated_connection),
                 })
                 return
@@ -4102,7 +4132,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "message": (
                     f"Sample alert requested for {owner_label}. "
-                    "We’ll update the status here as soon as WhatsApp confirms delivery. "
+                    "We’ll update the status here as soon as the delivery provider confirms delivery. "
                     "This still does not confirm incoming customer messages are forwarding yet."
                 ),
                 "ownerMessageId": owner_message_id,
@@ -5321,16 +5351,64 @@ def resolve_static_page_alias(path: str) -> Path | None:
     return STATIC_PAGE_ALIASES.get(normalized_path)
 
 
+def normalize_telegram_delivery_message_id(response: dict[str, Any]) -> str:
+    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    message_id = normalize_text(result.get("message_id") or response.get("message_id"))
+    return f"telegram-{message_id}" if message_id else f"telegram-{int(time.time() * 1000)}"
+
+
 def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) -> Callable[[dict[str, Any], str], Any]:
     def send_owner_message(connection: dict[str, Any], message_text: str) -> Any:
+        settings = normalize_whatsapp_tool_delivery_settings(
+            connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
+        )
         service = build_portal_service_from_connection(
             root=root,
-            connection=connection,
+            connection={
+                **connection,
+                "settings": settings,
+            },
             base_url=normalize_text(os.getenv("PUBLIC_BASE_URL")) or "http://127.0.0.1",
             store_cache=server.whatsapp_stores,  # type: ignore[attr-defined]
             store_lock=server.whatsapp_store_lock,  # type: ignore[attr-defined]
         )
-        return service.send_reengagement_report(connection, message_text)
+        deliveries: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        if whatsapp_tool_delivery_uses_whatsapp(settings):
+            try:
+                deliveries.append(service.send_reengagement_report(connection, message_text))
+            except Exception as exc:  # noqa: BLE001 - Telegram can still receive the report
+                errors.append(f"WhatsApp: {exc}")
+
+        if whatsapp_tool_delivery_uses_telegram(settings):
+            try:
+                telegram_response = send_telegram_notification(
+                    chat_id=normalize_text(settings.get("telegramChatId")),
+                    text=message_text,
+                )
+                deliveries.append(
+                    {
+                        "messageId": normalize_telegram_delivery_message_id(telegram_response),
+                        "deliveryMode": "telegram",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Telegram: {exc}")
+
+        if not deliveries:
+            raise RuntimeError("; ".join(errors) or "No owner delivery channel is configured.")
+
+        if len(deliveries) == 1:
+            return deliveries[0]
+
+        primary_delivery = deliveries[0]
+        return {
+            "messageId": normalize_text(primary_delivery.get("messageId")),
+            "deliveryMode": "mixed",
+            "reportId": normalize_text(primary_delivery.get("reportId")),
+            "deliveries": deliveries,
+        }
 
     return send_owner_message
 

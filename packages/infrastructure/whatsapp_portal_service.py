@@ -10,7 +10,11 @@ from urllib import parse as urllib_parse
 
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
+from packages.infrastructure.notification_delivery import send_telegram_notification
 from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp_store_root
+from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_telegram
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_whatsapp
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
 from packages.tools.whatsapp_reply_approval.server import BackendStore
 from packages.tools.whatsapp_reply_approval.server import OWNER_DISABLE_CONTACT_ACTION
@@ -303,6 +307,7 @@ def build_portal_service_from_connection(
     metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
     assistant = metadata.get("assistant") if isinstance(metadata.get("assistant"), dict) else None
     templates = metadata.get("templates") if isinstance(metadata.get("templates"), dict) else None
+    settings = connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
     data_path = portal_whatsapp_store_path_for_connection(root, connection)
     config = build_portal_runtime_config(
         client_id=f"portal-user-{int(connection.get('userId') or 0) or 'unknown'}",
@@ -320,7 +325,7 @@ def build_portal_service_from_connection(
     )
 
     if store_cache is None:
-        return PortalWhatsAppService(config, BackendStore(data_path))
+        return PortalWhatsAppService(config, BackendStore(data_path), delivery_settings=settings)
 
     resolved_path = data_path.resolve()
     cache_key = str(resolved_path)
@@ -336,7 +341,7 @@ def build_portal_service_from_connection(
                 store = BackendStore(resolved_path)
                 store_cache[cache_key] = store
 
-    return PortalWhatsAppService(config, store)
+    return PortalWhatsAppService(config, store, delivery_settings=settings)
 
 
 def build_sample_owner_notification_text(client_name: str) -> str:
@@ -356,9 +361,15 @@ def build_sample_owner_notification_text(client_name: str) -> str:
 
 
 class PortalWhatsAppService:
-    def __init__(self, config: RuntimeConfig, store: BackendStore):
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        store: BackendStore,
+        delivery_settings: dict[str, Any] | None = None,
+    ):
         self.config = config
         self.store = store
+        self.delivery_settings = normalize_whatsapp_tool_delivery_settings(delivery_settings)
 
     def is_owner_sender(self, sender_wa_id: str) -> bool:
         owner_wa_id = normalize_whatsapp_id(self.config.owner_wa_id)
@@ -376,6 +387,28 @@ class PortalWhatsAppService:
     def owner_send_enabled(self) -> bool:
         access_token, phone_number_id = self.resolve_owner_send_credentials()
         return bool(access_token and phone_number_id)
+
+    def owner_whatsapp_send_enabled(self) -> bool:
+        return bool(whatsapp_tool_delivery_uses_whatsapp(self.delivery_settings) and self.owner_send_enabled())
+
+    def owner_telegram_send_enabled(self) -> bool:
+        return bool(
+            whatsapp_tool_delivery_uses_telegram(self.delivery_settings)
+            and normalize_text(self.delivery_settings.get("telegramChatId"))
+        )
+
+    def owner_notification_enabled(self) -> bool:
+        return self.owner_whatsapp_send_enabled() or self.owner_telegram_send_enabled()
+
+    def send_owner_telegram_message(self, message_text: str) -> str:
+        chat_id = normalize_text(self.delivery_settings.get("telegramChatId"))
+        if not chat_id:
+            raise RuntimeError("Telegram chat id is not configured.")
+
+        response = send_telegram_notification(chat_id=chat_id, text=message_text)
+        result = response.get("result") if isinstance(response.get("result"), dict) else {}
+        message_id = normalize_text(result.get("message_id") or response.get("message_id"))
+        return f"telegram-{message_id}" if message_id else f"telegram-{uuid.uuid4().hex}"
 
     def verify_signature(self, body: bytes, signature_header: str | None) -> bool:
         return verify_whatsapp_signature(self.config.app_secret, body, signature_header)
@@ -786,20 +819,54 @@ class PortalWhatsAppService:
     def notify_owner_about_approval(self, approval: dict[str, Any]) -> str:
         notification_text = build_owner_notification_text(approval)
         notification_template = self.get_owner_notification_template(approval)
-        interactive = None if notification_template is not None else build_owner_interactive_payload(approval)
-        message_id = self.send_owner_message(
-            approval,
-            message_text=None if notification_template is not None else notification_text,
-            interactive=interactive,
-            template=notification_template,
-        )
+        review_url = self.build_approval_review_url(approval)
+        delivery_channels: list[str] = []
+        delivery_errors: list[str] = []
+        whatsapp_message_id = ""
+        telegram_message_id = ""
+
+        if whatsapp_tool_delivery_uses_whatsapp(self.delivery_settings):
+            try:
+                interactive = None if notification_template is not None else build_owner_interactive_payload(approval)
+                whatsapp_message_id = self.send_owner_message(
+                    approval,
+                    message_text=None if notification_template is not None else notification_text,
+                    interactive=interactive,
+                    template=notification_template,
+                )
+                delivery_channels.append("whatsapp")
+            except Exception as exc:  # noqa: BLE001 - keep alternate owner channels available
+                delivery_errors.append(f"WhatsApp: {exc}")
+
+        if whatsapp_tool_delivery_uses_telegram(self.delivery_settings):
+            try:
+                telegram_text = "\n".join(
+                    [
+                        notification_text,
+                        "",
+                        f"Review and send: {review_url}",
+                    ]
+                )
+                telegram_message_id = self.send_owner_telegram_message(telegram_text)
+                delivery_channels.append("telegram")
+            except Exception as exc:  # noqa: BLE001 - report failure if no channel succeeds
+                delivery_errors.append(f"Telegram: {exc}")
+
+        message_id = whatsapp_message_id or telegram_message_id
+        if not message_id:
+            raise RuntimeError("; ".join(delivery_errors) or "No owner delivery channel is configured.")
+
         self.store.mark_owner_notification_sent(
             str(approval["approval_id"]),
             {
                 "owner_notification_message_id": message_id,
+                "owner_notification_whatsapp_message_id": whatsapp_message_id,
+                "owner_notification_telegram_message_id": telegram_message_id,
+                "owner_notification_delivery_channels": delivery_channels,
+                "owner_notification_delivery_errors": delivery_errors,
                 "owner_notification_text": notification_text,
                 "owner_notification_template": notification_template,
-                "owner_notification_review_url": self.build_approval_review_url(approval),
+                "owner_notification_review_url": review_url,
                 "owner_state": "pending",
             },
         )
@@ -845,18 +912,36 @@ class PortalWhatsAppService:
         return message_id
 
     def send_sample_owner_message(self) -> tuple[str, str]:
-        if not self.owner_send_enabled():
+        if not self.owner_notification_enabled():
             raise RuntimeError(
-                "Finish WhatsApp setup with a saved access token or the Assistyca sender access token before sending a sample."
+                "Choose a working owner delivery channel before sending a sample."
             )
 
         message_text = build_sample_owner_notification_text(self.config.client_name)
         sample_template = self.get_sample_owner_template()
-        message_id = self.send_owner_message(
-            None,
-            message_text=None if sample_template is not None else message_text,
-            template=sample_template,
-        )
+        message_ids: list[str] = []
+        errors: list[str] = []
+        if whatsapp_tool_delivery_uses_whatsapp(self.delivery_settings):
+            try:
+                message_ids.append(
+                    self.send_owner_message(
+                        None,
+                        message_text=None if sample_template is not None else message_text,
+                        template=sample_template,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - Telegram may still prove owner delivery works
+                errors.append(f"WhatsApp: {exc}")
+
+        if whatsapp_tool_delivery_uses_telegram(self.delivery_settings):
+            try:
+                message_ids.append(self.send_owner_telegram_message(message_text))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Telegram: {exc}")
+
+        if not message_ids:
+            raise RuntimeError("; ".join(errors) or "No owner delivery channel is configured.")
+        message_id = message_ids[0]
         return message_id, message_text
 
     def resolve_explicit_owner_target_approval(self, event: dict[str, Any]) -> dict[str, Any] | None:
