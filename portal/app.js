@@ -678,7 +678,6 @@ const elements = {
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
-  featureStudioWhatsAppDetailsButton: document.querySelector("#featureStudioWhatsAppDetailsButton"),
   featureStudioWhatsAppSampleButton: document.querySelector("#featureStudioWhatsAppSampleButton"),
   featureStudioWhatsAppHistoryButton: document.querySelector("#featureStudioWhatsAppHistoryButton"),
   featureStudioMonitorRunButton: document.querySelector("#featureStudioMonitorRunButton"),
@@ -11082,12 +11081,6 @@ function updateFeatureStudioHeader() {
     elements.featureStudioEditorToggleButton.disabled = transitionBusy || manualRunBusy || sampleMessageBusy;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
   }
-  if (elements.featureStudioWhatsAppDetailsButton) {
-    const showDetailsButton = studioView === "editor" && canOpenFeatureWhatsAppDetails(feature);
-    elements.featureStudioWhatsAppDetailsButton.hidden = !showDetailsButton;
-    elements.featureStudioWhatsAppDetailsButton.disabled = activationBusy || transitionBusy || manualRunBusy || sampleMessageBusy;
-    elements.featureStudioWhatsAppDetailsButton.title = "Open the saved WhatsApp IDs, token, and approval phone";
-  }
   if (elements.featureStudioWhatsAppSampleButton) {
     const showSampleButton = canSendWhatsAppReplySample(feature);
     const sampleReady = showSampleButton && !hasFeatureActivationChanges(feature);
@@ -13100,11 +13093,6 @@ function bindEvents() {
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.addEventListener("click", () => {
       void toggleSelectedFeatureEditorActivation();
-    });
-  }
-  if (elements.featureStudioWhatsAppDetailsButton) {
-    elements.featureStudioWhatsAppDetailsButton.addEventListener("click", () => {
-      startFeatureActivation({ statusMessage: "WhatsApp details opened." });
     });
   }
   if (elements.featureStudioWhatsAppSampleButton) {
