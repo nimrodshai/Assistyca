@@ -2682,6 +2682,15 @@ function normalizeFeatureWhatsAppToolSettings(settings = {}) {
   };
 }
 
+function normalizeFeatureWhatsAppReplyAssistantSettings(settings = {}) {
+  const normalized = normalizeFeatureWhatsAppToolSettings(settings);
+  return {
+    ...normalized,
+    deliveryChannels: normalized.deliveryChannels.filter((channel) => channel === "whatsapp"),
+    telegramChatId: "",
+  };
+}
+
 function getWhatsAppDeliverySelection(settings = {}) {
   const channels = getWhatsAppToolDeliveryChannels(settings);
   const hasWhatsApp = channels.includes("whatsapp");
@@ -2799,7 +2808,7 @@ function normalizeSettingsForFeature(featureId, settings = {}) {
     return normalizeFeatureReengagementSettings(settings);
   }
   if (featureId === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID) {
-    return normalizeFeatureWhatsAppToolSettings(settings);
+    return normalizeFeatureWhatsAppReplyAssistantSettings(settings);
   }
   return normalizeFeatureSettings(settings);
 }
@@ -2853,7 +2862,7 @@ function buildSettingsForSave(feature = getSelectedFeature(), settings = getSele
     return buildReengagementSettingsForSave(feature, settings);
   }
   if (isWhatsAppReplyAssistantFeature(feature)) {
-    return normalizeFeatureWhatsAppToolSettings(settings);
+    return normalizeFeatureWhatsAppReplyAssistantSettings(settings);
   }
   return normalizeFeatureSettings(settings);
 }
@@ -11181,11 +11190,24 @@ function setDeliveryChannelOptionState(value, isVisible) {
 
 function getWhatsAppToolPlatformOption(platformId) {
   const normalizedId = String(platformId || "").trim().toLowerCase();
-  return WHATSAPP_TOOL_PLATFORM_OPTIONS.find((option) => option.id === normalizedId) || null;
+  return getWhatsAppToolPlatformOptions().find((option) => option.id === normalizedId) || null;
 }
 
-function getWhatsAppToolDeliveryChannels(settings = getSelectedFeatureSettings()) {
-  return normalizeWhatsAppToolDeliveryChannels(
+function getWhatsAppToolPlatformOptions(feature = getSelectedFeature()) {
+  if (isWhatsAppReplyAssistantFeature(feature)) {
+    return WHATSAPP_TOOL_PLATFORM_OPTIONS.filter((option) => option.id === "whatsapp");
+  }
+  return WHATSAPP_TOOL_PLATFORM_OPTIONS;
+}
+
+function normalizeWhatsAppToolDeliveryChannelsForFeature(feature, value, fallback = DEFAULT_WHATSAPP_TOOL_SETTINGS.deliveryChannels) {
+  const allowedPlatformIds = new Set(getWhatsAppToolPlatformOptions(feature).map((option) => option.id));
+  return normalizeWhatsAppToolDeliveryChannels(value, fallback).filter((channel) => allowedPlatformIds.has(channel));
+}
+
+function getWhatsAppToolDeliveryChannels(settings = getSelectedFeatureSettings(), feature = getSelectedFeature()) {
+  return normalizeWhatsAppToolDeliveryChannelsForFeature(
+    feature,
     Array.isArray(settings?.deliveryChannels) ? settings.deliveryChannels : settings?.deliveryChannel,
     [],
   );
@@ -11208,14 +11230,19 @@ function updateDeliveryPlatformMenu(settings = getSelectedFeatureSettings()) {
   }
   const channels = getWhatsAppToolDeliveryChannels(settings);
   const selected = new Set(channels);
+  const availableOptions = getWhatsAppToolPlatformOptions();
+  const availablePlatformIds = new Set(availableOptions.map((option) => option.id));
   for (const button of elements.deliveryPlatformMenu.querySelectorAll("[data-delivery-platform-option]")) {
     const platformId = String(button.dataset.deliveryPlatformOption || "").trim().toLowerCase();
+    const isAvailable = availablePlatformIds.has(platformId);
     const isSelected = selected.has(platformId);
-    button.disabled = isSelected;
-    button.setAttribute("aria-disabled", String(isSelected));
+    button.hidden = !isAvailable;
+    button.classList.toggle("is-hidden", !isAvailable);
+    button.disabled = !isAvailable || isSelected;
+    button.setAttribute("aria-disabled", String(!isAvailable || isSelected));
   }
   if (elements.deliveryPlatformAddButton) {
-    const hasAvailablePlatform = WHATSAPP_TOOL_PLATFORM_OPTIONS.some((option) => !selected.has(option.id));
+    const hasAvailablePlatform = availableOptions.some((option) => !selected.has(option.id));
     elements.deliveryPlatformAddButton.disabled = !hasAvailablePlatform;
     elements.deliveryPlatformAddButton.textContent = hasAvailablePlatform ? "+ Add platform" : "All platforms added";
     if (!hasAvailablePlatform) {
@@ -12300,9 +12327,7 @@ function syncDeliverySettingsField(key) {
         ...currentSettings,
         ...deliveryPatch,
       };
-      nextSettings = isReengagementFeature(feature)
-        ? buildReengagementSettingsForSave(feature, nextSource)
-        : normalizeFeatureWhatsAppToolSettings(nextSource);
+      nextSettings = buildSettingsForSave(feature, nextSource);
     }
 
     feature.settings = nextSettings;
@@ -12324,7 +12349,7 @@ function saveWhatsAppToolDeliveryChannels(nextChannels) {
   }
 
   const currentSettings = getSelectedFeatureSettings(feature);
-  const deliveryChannels = normalizeWhatsAppToolDeliveryChannels(nextChannels, []);
+  const deliveryChannels = normalizeWhatsAppToolDeliveryChannelsForFeature(feature, nextChannels, []);
   if (JSON.stringify(deliveryChannels) === JSON.stringify(getWhatsAppToolDeliveryChannels(currentSettings))) {
     updateMonitorFields();
     return false;
@@ -12334,9 +12359,7 @@ function saveWhatsAppToolDeliveryChannels(nextChannels) {
     ...currentSettings,
     deliveryChannels,
   };
-  feature.settings = isReengagementFeature(feature)
-    ? buildReengagementSettingsForSave(feature, nextSource)
-    : normalizeFeatureWhatsAppToolSettings(nextSource);
+  feature.settings = buildSettingsForSave(feature, nextSource);
   updateMonitorFields();
   persistClientState();
   updateFeatureStudioHeader();

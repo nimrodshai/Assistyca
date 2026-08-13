@@ -10,10 +10,8 @@ from urllib import parse as urllib_parse
 
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
-from packages.infrastructure.notification_delivery import send_telegram_notification
 from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp_store_root
 from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
-from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_telegram
 from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_whatsapp
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
 from packages.tools.whatsapp_reply_approval.server import BackendStore
@@ -391,24 +389,8 @@ class PortalWhatsAppService:
     def owner_whatsapp_send_enabled(self) -> bool:
         return bool(whatsapp_tool_delivery_uses_whatsapp(self.delivery_settings) and self.owner_send_enabled())
 
-    def owner_telegram_send_enabled(self) -> bool:
-        return bool(
-            whatsapp_tool_delivery_uses_telegram(self.delivery_settings)
-            and normalize_text(self.delivery_settings.get("telegramChatId"))
-        )
-
     def owner_notification_enabled(self) -> bool:
-        return self.owner_whatsapp_send_enabled() or self.owner_telegram_send_enabled()
-
-    def send_owner_telegram_message(self, message_text: str) -> str:
-        chat_id = normalize_text(self.delivery_settings.get("telegramChatId"))
-        if not chat_id:
-            raise RuntimeError("Telegram chat id is not configured.")
-
-        response = send_telegram_notification(chat_id=chat_id, text=message_text)
-        result = response.get("result") if isinstance(response.get("result"), dict) else {}
-        message_id = normalize_text(result.get("message_id") or response.get("message_id"))
-        return f"telegram-{message_id}" if message_id else f"telegram-{uuid.uuid4().hex}"
+        return self.owner_whatsapp_send_enabled()
 
     def verify_signature(self, body: bytes, signature_header: str | None) -> bool:
         return verify_whatsapp_signature(self.config.app_secret, body, signature_header)
@@ -823,7 +805,6 @@ class PortalWhatsAppService:
         delivery_channels: list[str] = []
         delivery_errors: list[str] = []
         whatsapp_message_id = ""
-        telegram_message_id = ""
 
         if whatsapp_tool_delivery_uses_whatsapp(self.delivery_settings):
             try:
@@ -838,21 +819,7 @@ class PortalWhatsAppService:
             except Exception as exc:  # noqa: BLE001 - keep alternate owner channels available
                 delivery_errors.append(f"WhatsApp: {exc}")
 
-        if whatsapp_tool_delivery_uses_telegram(self.delivery_settings):
-            try:
-                telegram_text = "\n".join(
-                    [
-                        notification_text,
-                        "",
-                        f"Review and send: {review_url}",
-                    ]
-                )
-                telegram_message_id = self.send_owner_telegram_message(telegram_text)
-                delivery_channels.append("telegram")
-            except Exception as exc:  # noqa: BLE001 - report failure if no channel succeeds
-                delivery_errors.append(f"Telegram: {exc}")
-
-        message_id = whatsapp_message_id or telegram_message_id
+        message_id = whatsapp_message_id
         if not message_id:
             raise RuntimeError("; ".join(delivery_errors) or "No owner delivery channel is configured.")
 
@@ -861,7 +828,7 @@ class PortalWhatsAppService:
             {
                 "owner_notification_message_id": message_id,
                 "owner_notification_whatsapp_message_id": whatsapp_message_id,
-                "owner_notification_telegram_message_id": telegram_message_id,
+                "owner_notification_telegram_message_id": "",
                 "owner_notification_delivery_channels": delivery_channels,
                 "owner_notification_delivery_errors": delivery_errors,
                 "owner_notification_text": notification_text,
@@ -930,14 +897,8 @@ class PortalWhatsAppService:
                         template=sample_template,
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 - Telegram may still prove owner delivery works
+            except Exception as exc:  # noqa: BLE001 - report a setup/send failure cleanly
                 errors.append(f"WhatsApp: {exc}")
-
-        if whatsapp_tool_delivery_uses_telegram(self.delivery_settings):
-            try:
-                message_ids.append(self.send_owner_telegram_message(message_text))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"Telegram: {exc}")
 
         if not message_ids:
             raise RuntimeError("; ".join(errors) or "No owner delivery channel is configured.")

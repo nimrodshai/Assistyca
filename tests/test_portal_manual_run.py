@@ -563,7 +563,7 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "22222")
         self.assertEqual(mocked_send.call_args.kwargs["recipient_wa_id"], "15551234567")
 
-    def test_owner_notification_can_send_telegram_review_link(self) -> None:
+    def test_owner_notification_ignores_telegram_delivery_settings(self) -> None:
         service = self._build_service(
             delivery_settings={
                 "deliveryChannels": ["telegram"],
@@ -584,20 +584,14 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         with mock.patch(
             "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
             return_value="wamid.should-not-send",
-        ) as mocked_whatsapp, mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_telegram_notification",
-            return_value={"ok": True, "result": {"message_id": 42}},
-        ) as mocked_telegram:
-            message_id = service.notify_owner_about_approval(approval)
+        ) as mocked_whatsapp, self.assertRaisesRegex(RuntimeError, "No owner delivery channel"):
+            service.notify_owner_about_approval(approval)
 
-        self.assertEqual(message_id, "telegram-42")
         mocked_whatsapp.assert_not_called()
-        mocked_telegram.assert_called_once()
-        self.assertEqual(mocked_telegram.call_args.kwargs["chat_id"], "987654321")
-        self.assertIn("Review and send: https://example.com/approval/", mocked_telegram.call_args.kwargs["text"])
         stored_approval = service.store.get_approval(approval["approval_id"])
-        self.assertEqual(stored_approval["owner_notification_telegram_message_id"], "telegram-42")
-        self.assertEqual(stored_approval["owner_notification_delivery_channels"], ["telegram"])
+        self.assertFalse(stored_approval.get("owner_notification_message_id"))
+        self.assertFalse(stored_approval.get("owner_notification_telegram_message_id"))
+        self.assertEqual(stored_approval.get("owner_notification_delivery_channels", []), [])
 
     def test_owner_notification_uses_quick_reply_template_when_configured(self) -> None:
         service = self._build_service(
