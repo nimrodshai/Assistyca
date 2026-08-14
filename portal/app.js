@@ -11231,16 +11231,18 @@ function updateDeliveryPlatformMenu(settings = getSelectedFeatureSettings()) {
   const channels = getWhatsAppToolDeliveryChannels(settings);
   const selected = new Set(channels);
   const availableOptions = getWhatsAppToolPlatformOptions();
-  const availablePlatformIds = new Set(availableOptions.map((option) => option.id));
-  for (const button of elements.deliveryPlatformMenu.querySelectorAll("[data-delivery-platform-option]")) {
-    const platformId = String(button.dataset.deliveryPlatformOption || "").trim().toLowerCase();
-    const isAvailable = availablePlatformIds.has(platformId);
-    const isSelected = selected.has(platformId);
-    button.hidden = !isAvailable;
-    button.classList.toggle("is-hidden", !isAvailable);
-    button.disabled = !isAvailable || isSelected;
-    button.setAttribute("aria-disabled", String(!isAvailable || isSelected));
-  }
+  const buttons = availableOptions.map((option) => {
+    const button = document.createElement("button");
+    const isSelected = selected.has(option.id);
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset.deliveryPlatformOption = option.id;
+    button.disabled = isSelected;
+    button.setAttribute("aria-disabled", String(isSelected));
+    button.textContent = option.label;
+    return button;
+  });
+  elements.deliveryPlatformMenu.replaceChildren(...buttons);
   if (elements.deliveryPlatformAddButton) {
     const hasAvailablePlatform = availableOptions.some((option) => !selected.has(option.id));
     elements.deliveryPlatformAddButton.disabled = !hasAvailablePlatform;
