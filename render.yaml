@@ -57,6 +57,10 @@ services:
         value: "1800"
       - key: PORTAL_SCHEDULED_MONITOR_MAX_ITEMS_PER_RUN
         value: "5"
+      - key: PORTAL_SCHEDULED_ACTIONS_ENABLED
+        value: "1"
+      - key: PORTAL_SCHEDULED_ACTIONS_POLL_SECONDS
+        value: "10"
       - key: PORTAL_CONTACT_AGENT_MODEL
         value: gpt-5.5
       - key: OPENAI_API_KEY

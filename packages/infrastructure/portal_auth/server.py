@@ -58,6 +58,8 @@ from packages.infrastructure.portal_db import normalize_client_type
 from packages.infrastructure.portal_db import normalize_user_profile
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
+from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
+from packages.infrastructure.scheduled_actions import load_scheduled_action_config
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
 from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_numbers
 from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
@@ -1922,6 +1924,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
+            or path == "/api/scheduled-actions"
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
             or path.startswith("/api/threads")
@@ -1947,6 +1950,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
+            or path == "/api/scheduled-actions"
             or path == "/webhooks/whatsapp"
             or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
@@ -1973,6 +1977,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
+            or path == "/api/scheduled-actions"
             or path == "/webhooks/whatsapp"
             or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
@@ -2176,6 +2181,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/whatsapp/history/import":
             self._handle_whatsapp_history_import_post()
+            return
+
+        if path == "/api/scheduled-actions":
+            self._handle_scheduled_actions_post()
             return
 
         if path == "/api/admin/users" or path.startswith("/api/admin/users/"):
@@ -2695,6 +2704,116 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         lines.extend(["", "Message:", message])
         return "\n".join(lines).strip()
+
+    def _handle_scheduled_actions_post(self) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, user = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        action_type = normalize_text(payload.get("actionType") or payload.get("action_type") or "send_message").lower()
+        channel = normalize_text(payload.get("channel")).lower()
+        recipient_ref = normalize_text(payload.get("recipientRef") or payload.get("recipient_ref") or "owner")
+        timezone_name = normalize_text(payload.get("timezone") or payload.get("timeZone") or payload.get("scheduleTimezone"))
+        run_at_text = normalize_text(payload.get("runAt") or payload.get("run_at"))
+        action_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        message_text = normalize_text(
+            payload.get("messageText")
+            or payload.get("message_text")
+            or action_payload.get("messageText")
+            or action_payload.get("text")
+        )
+
+        if action_type != "send_message":
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "unsupported_action_type",
+                "message": "Only scheduled send_message actions are supported right now.",
+            })
+            return
+        if channel != "whatsapp":
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "unsupported_channel",
+                "message": "Only WhatsApp scheduled messages are supported right now.",
+            })
+            return
+        if not message_text:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_message",
+                "message": "Scheduled WhatsApp messages need message text.",
+            })
+            return
+
+        try:
+            run_at = datetime.fromisoformat(run_at_text.replace("Z", "+00:00"))
+        except ValueError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_run_at",
+                "message": "runAt must be an ISO date-time.",
+            })
+            return
+        if run_at.tzinfo is None:
+            run_at = run_at.replace(tzinfo=timezone.utc)
+        run_at_utc = run_at.astimezone(timezone.utc)
+
+        connection = self.database.get_whatsapp_connection(session.email)
+        if (
+            not connection
+            or not normalize_text(connection.get("phoneNumberId"))
+            or not normalize_text(connection.get("accessToken"))
+            or not normalize_text(connection.get("ownerWaId"))
+        ):
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "missing_whatsapp_connection",
+                "message": "Connect WhatsApp before scheduling a WhatsApp message.",
+            })
+            return
+
+        scheduled_payload = {
+            **action_payload,
+            "messageText": message_text[:1600],
+            "source": normalize_text(payload.get("source")) or "portal_agent",
+        }
+        if "recipientWaId" not in scheduled_payload:
+            scheduled_payload["recipientWaId"] = normalize_text(connection.get("ownerWaId"))
+
+        try:
+            action = self.database.create_scheduled_action(
+                user_id=int(user.get("id") or 0),
+                action_type=action_type,
+                channel=channel,
+                recipient_ref=recipient_ref,
+                run_at=run_at_utc,
+                timezone_name=timezone_name,
+                payload=scheduled_payload,
+            )
+        except (KeyError, ValueError) as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_scheduled_action",
+                "message": str(exc),
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Scheduled WhatsApp message saved.",
+            "action": action,
+        })
 
     def _handle_whatsapp_test(self) -> None:
         session = self._get_authenticated_session()
@@ -5557,6 +5676,30 @@ def main() -> int:
     else:
         print("Scheduled web monitor is disabled.", flush=True)
 
+    scheduled_action_config = load_scheduled_action_config()
+    scheduled_action_stop_event = threading.Event()
+    scheduled_action_thread: threading.Thread | None = None
+    if scheduled_action_config.enabled:
+        scheduled_actions = ScheduledActionScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=scheduled_action_config,
+        )
+        scheduled_action_thread = threading.Thread(
+            target=scheduled_actions.serve_forever,
+            args=(scheduled_action_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="scheduled-actions-scheduler",
+        )
+        scheduled_action_thread.start()
+        print(
+            "Scheduled actions enabled. "
+            f"Polls every {scheduled_action_config.poll_seconds} seconds.",
+            flush=True,
+        )
+    else:
+        print("Scheduled actions are disabled.", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -5568,6 +5711,9 @@ def main() -> int:
         monitor_stop_event.set()
         if monitor_thread is not None:
             monitor_thread.join(timeout=1.0)
+        scheduled_action_stop_event.set()
+        if scheduled_action_thread is not None:
+            scheduled_action_thread.join(timeout=1.0)
         server.server_close()
 
     return 0

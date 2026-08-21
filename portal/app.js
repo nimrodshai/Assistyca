@@ -515,6 +515,40 @@ const AGENT_BLUEPRINTS = {
     ],
     alternatives: ["Manual copy/paste", "Telegram alerts", "Email alerts"],
   },
+  scheduledMessage: {
+    type: "scheduled-message",
+    title: "Scheduled message",
+    summary:
+      "Schedule one approved message for an exact local time, then send it through the chosen delivery channel.",
+    response:
+      "I can turn that into a scheduled action: an exact-time trigger plus a send-message action. I will ask only for any missing time, channel, recipient, or message text before scheduling it.",
+    relatedFeatureId: "",
+    primaryActionLabel: "Schedule message",
+    setupActionLabel: "Open delivery setup",
+    missingCredential: "",
+    skills: [
+      {
+        label: "Exact-time scheduler",
+        detail: "Stores the approved send time as a durable one-shot action.",
+      },
+      {
+        label: "Message delivery",
+        detail: "Sends the approved text through the selected channel when the action is due.",
+      },
+      {
+        label: "Delivery tracking",
+        detail: "Records provider message IDs and failures for follow-up.",
+      },
+    ],
+    helpers: [
+      {
+        name: "Scheduled Action Agent",
+        purpose: "Track the approved send time and dispatch the message when it is due.",
+      },
+    ],
+    questions: [],
+    alternatives: ["WhatsApp", "Email", "Telegram", "Portal inbox"],
+  },
   reengagement: {
     type: "reengagement",
     title: "Customer re-engagement",
@@ -2557,6 +2591,10 @@ function normalizeAgentTextItem(value, fallback = "") {
   return String(value || fallback).trim();
 }
 
+function normalizeAgentObjectItem(value = {}) {
+  return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
+}
+
 function normalizeAgentSkillItem(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const label = normalizeAgentTextItem(source.label || source.name, "Skill");
@@ -2627,10 +2665,15 @@ function normalizeAgentProposal(value = {}) {
     approved: Boolean(source.approved),
     createdAt: normalizeAgentTextItem(source.createdAt || source.created_at, new Date().toISOString()),
     approvedAt: normalizeAgentTextItem(source.approvedAt || source.approved_at, ""),
+    details: normalizeAgentObjectItem(source.details),
+    executionPlan: normalizeAgentObjectItem(source.executionPlan || source.execution_plan),
     skills: Array.isArray(source.skills) ? source.skills.map(normalizeAgentSkillItem).filter(Boolean) : [],
     helpers: Array.isArray(source.helpers) ? source.helpers.map(normalizeAgentHelperDraft).filter(Boolean) : [],
     questions: Array.isArray(source.questions)
       ? source.questions.map((question) => normalizeAgentTextItem(question, "")).filter(Boolean)
+      : [],
+    questionKeys: Array.isArray(source.questionKeys || source.question_keys)
+      ? (source.questionKeys || source.question_keys).map((questionKey) => normalizeAgentTextItem(questionKey, "")).filter(Boolean)
       : [],
     answers: Array.isArray(source.answers)
       ? source.answers.map((answer) => normalizeAgentTextItem(answer, "")).filter(Boolean)
@@ -9104,8 +9147,215 @@ function getAgentWorkspace() {
   return clientState.agent;
 }
 
+function normalizeAgentDeliveryChannel(value) {
+  const text = String(value || "").toLowerCase();
+  if (/\bwhats\s*app\b|\bwhatsapp\b/.test(text)) {
+    return "whatsapp";
+  }
+  if (/\btelegram\b/.test(text)) {
+    return "telegram";
+  }
+  if (/\bemail\b|\bmail\b/.test(text)) {
+    return "email";
+  }
+  if (/\bportal\b|\bworkspace\b|\bchat\b/.test(text)) {
+    return "portal";
+  }
+  return "";
+}
+
+function extractAgentTimeLocal(text) {
+  const value = String(text || "");
+  const colonMatch = value.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\s*(a\.?m\.?|p\.?m\.?|am|pm)?\b/i);
+  const hourOnlyMatch = value.match(/\b(1[0-2]|0?[1-9])\s*(a\.?m\.?|p\.?m\.?|am|pm)\b/i);
+  const match = colonMatch || hourOnlyMatch;
+  if (!match) {
+    return "";
+  }
+
+  let hour = Number.parseInt(match[1], 10);
+  const minute = colonMatch ? Number.parseInt(match[2], 10) : 0;
+  const meridiem = String(colonMatch ? match[3] || "" : match[2] || "").toLowerCase().replace(/\./g, "");
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return "";
+  }
+  if (meridiem === "pm" && hour < 12) {
+    hour += 12;
+  }
+  if (meridiem === "am" && hour === 12) {
+    hour = 0;
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return "";
+  }
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function extractAgentDatePolicy(text) {
+  const value = String(text || "").toLowerCase();
+  if (/\btomorrow\b/.test(value)) {
+    return "tomorrow";
+  }
+  if (/\btoday\b|\btonight\b/.test(value)) {
+    return "today";
+  }
+  return "next_occurrence";
+}
+
+function extractAgentScheduledMessageText(text, timeLocal = "") {
+  const value = String(text || "").trim();
+  const quotedMatch = value.match(/\b(?:saying|that says|with text|message(?: saying)?|text)\s+["“']([^"”']{1,400})["”']/i);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1].trim();
+  }
+
+  const reminderMatch = value.match(/\bremind me to\s+(.+?)\s+(?:at|when|by)\b/i);
+  if (reminderMatch?.[1]) {
+    return reminderMatch[1].trim();
+  }
+
+  if (timeLocal) {
+    return `It's ${timeLocal}.`;
+  }
+  return "";
+}
+
+function isAgentScheduledMessageRequest(text) {
+  const value = String(text || "").toLowerCase();
+  const asksForSend = /\b(send|message|notify|remind|alert)\b/.test(value);
+  const hasTimeTrigger = Boolean(extractAgentTimeLocal(value)) || /\b(today|tomorrow|tonight)\b/.test(value);
+  return asksForSend && hasTimeTrigger;
+}
+
+function resolveAgentScheduledRunAt(details = {}, now = new Date()) {
+  const timeLocal = String(details.timeLocal || "").trim();
+  const timeMatch = timeLocal.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!timeMatch) {
+    return "";
+  }
+
+  const timeZone = normalizeMonitorScheduleTimezone(
+    details.timezone || clientState?.settings?.timezone || defaultTimeZone(),
+    "UTC",
+  ) || "UTC";
+  const currentTime = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
+  const currentParts = getMonitorZonedDateTimeParts(currentTime, timeZone);
+  if (!currentParts) {
+    return "";
+  }
+
+  const hour = Number.parseInt(timeMatch[1], 10);
+  const minute = Number.parseInt(timeMatch[2], 10);
+  let dateParts = {
+    year: currentParts.year,
+    month: currentParts.month,
+    day: currentParts.day,
+  };
+  const datePolicy = String(details.datePolicy || "next_occurrence").trim();
+  if (datePolicy === "tomorrow") {
+    dateParts = addMonitorUtcDays(dateParts, 1);
+  }
+
+  let candidate = buildMonitorDateInTimeZone({
+    ...dateParts,
+    hour,
+    minute,
+    second: 0,
+  }, timeZone);
+
+  if (datePolicy === "next_occurrence" && candidate && candidate.getTime() <= currentTime.getTime()) {
+    dateParts = addMonitorUtcDays(dateParts, 1);
+    candidate = buildMonitorDateInTimeZone({
+      ...dateParts,
+      hour,
+      minute,
+      second: 0,
+    }, timeZone);
+  }
+
+  return candidate && !Number.isNaN(candidate.getTime()) ? candidate.toISOString() : "";
+}
+
+function buildAgentScheduledMessageQuestionPlan(details = {}) {
+  const questions = [];
+  const questionKeys = [];
+  if (!normalizeAgentDeliveryChannel(details.channel)) {
+    questionKeys.push("channel");
+    questions.push("Which channel should I use to send it?");
+  }
+  if (!String(details.timeLocal || details.runAt || "").trim()) {
+    questionKeys.push("time");
+    questions.push("What exact local time should I send it?");
+  }
+  if (!String(details.messageText || "").trim()) {
+    questionKeys.push("messageText");
+    questions.push("What should the message say?");
+  }
+  return { questions, questionKeys };
+}
+
+function buildAgentScheduledMessageDetails(text) {
+  const requestText = String(text || "");
+  const channel = normalizeAgentDeliveryChannel(requestText);
+  const timeLocal = extractAgentTimeLocal(requestText);
+  const timezone = normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC";
+  const datePolicy = extractAgentDatePolicy(requestText);
+  const messageText = extractAgentScheduledMessageText(requestText, timeLocal);
+  const details = {
+    actionType: "send_message",
+    channel,
+    recipientRef: /\b(me|myself|owner)\b/i.test(requestText) ? "owner" : "owner",
+    timeLocal,
+    datePolicy,
+    timezone,
+    messageText,
+    runAt: "",
+  };
+  details.runAt = resolveAgentScheduledRunAt(details);
+  return details;
+}
+
+function buildAgentScheduledMessageExecutionPlan(details = {}) {
+  return {
+    trigger: {
+      type: "at",
+      runAt: String(details.runAt || "").trim(),
+      timeLocal: String(details.timeLocal || "").trim(),
+      timezone: String(details.timezone || "").trim(),
+      datePolicy: String(details.datePolicy || "next_occurrence").trim(),
+    },
+    action: {
+      type: "send_message",
+      channel: normalizeAgentDeliveryChannel(details.channel),
+      recipientRef: String(details.recipientRef || "owner").trim(),
+      messageText: String(details.messageText || "").trim(),
+    },
+  };
+}
+
+function formatAgentScheduledMessageChannel(channel) {
+  const normalized = normalizeAgentDeliveryChannel(channel);
+  if (normalized === "whatsapp") {
+    return "WhatsApp";
+  }
+  if (normalized === "telegram") {
+    return "Telegram";
+  }
+  if (normalized === "email") {
+    return "email";
+  }
+  if (normalized === "portal") {
+    return "this workspace";
+  }
+  return "the chosen channel";
+}
+
 function getAgentBlueprintForText(text) {
   const value = String(text || "").toLowerCase();
+  if (isAgentScheduledMessageRequest(value)) {
+    return AGENT_BLUEPRINTS.scheduledMessage;
+  }
+
   if (/\b(gmail|inbox|email|mailbox|digest|summari[sz]e|summary)\b/.test(value)) {
     return AGENT_BLUEPRINTS.emailDigest;
   }
@@ -9131,6 +9381,17 @@ function cloneAgentItems(items = []) {
 
 function createAgentProposalFromRequest(text) {
   const blueprint = getAgentBlueprintForText(text);
+  const scheduledDetails = blueprint.type === "scheduled-message" ? buildAgentScheduledMessageDetails(text) : {};
+  const scheduledQuestionPlan = blueprint.type === "scheduled-message"
+    ? buildAgentScheduledMessageQuestionPlan(scheduledDetails)
+    : { questions: [...blueprint.questions], questionKeys: [] };
+  const scheduledChannel = normalizeAgentDeliveryChannel(scheduledDetails.channel);
+  const relatedFeatureId = blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp"
+    ? WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
+    : blueprint.relatedFeatureId;
+  const missingCredential = blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp"
+    ? (isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)) ? "" : "WhatsApp Business API access token")
+    : blueprint.missingCredential;
   const proposal = normalizeAgentProposal({
     id: createAgentId("agent-proposal"),
     type: blueprint.type,
@@ -9138,21 +9399,31 @@ function createAgentProposalFromRequest(text) {
     title: blueprint.title,
     summary: blueprint.summary,
     response: blueprint.response,
-    relatedFeatureId: blueprint.relatedFeatureId,
+    relatedFeatureId,
     primaryActionLabel: blueprint.primaryActionLabel,
     setupActionLabel: blueprint.setupActionLabel,
-    missingCredential: blueprint.missingCredential,
+    missingCredential,
     status: "needs-approval",
     approved: false,
     createdAt: new Date().toISOString(),
+    details: scheduledDetails,
+    executionPlan: blueprint.type === "scheduled-message"
+      ? buildAgentScheduledMessageExecutionPlan(scheduledDetails)
+      : {},
     skills: cloneAgentItems(blueprint.skills),
     helpers: cloneAgentItems(blueprint.helpers),
-    questions: [...blueprint.questions],
+    questions: scheduledQuestionPlan.questions,
+    questionKeys: scheduledQuestionPlan.questionKeys,
     alternatives: [...blueprint.alternatives],
   });
 
   if (proposal.type === "custom") {
     proposal.summary = `${blueprint.summary} Request: "${String(text).trim().slice(0, 140)}"`;
+  }
+  if (proposal.type === "scheduled-message") {
+    const channelLabel = formatAgentScheduledMessageChannel(scheduledDetails.channel);
+    const timeLabel = scheduledDetails.timeLocal ? ` at ${scheduledDetails.timeLocal}` : "";
+    proposal.summary = `Schedule a one-shot ${channelLabel} message${timeLabel}.`;
   }
 
   return proposal;
@@ -9189,6 +9460,10 @@ function createAgentAction(id, label, value = label, tone = "secondary") {
 function getAgentConversationQuestion(proposal, questionIndex = 0) {
   const index = Math.max(0, Number(questionIndex || 0));
   const requestText = String(proposal?.requestText || "").toLowerCase();
+
+  if (proposal?.type === "scheduled-message") {
+    return proposal.questions?.[index] || "What should I schedule?";
+  }
 
   if (proposal?.type === "email-digest") {
     return [
@@ -9235,6 +9510,24 @@ function getAgentConversationQuestion(proposal, questionIndex = 0) {
 
 function getAgentQuestionActions(proposal, questionIndex = 0) {
   const index = Math.max(0, Number(questionIndex || 0));
+
+  if (proposal?.type === "scheduled-message") {
+    const questionKey = proposal.questionKeys?.[index] || "";
+    if (questionKey === "channel") {
+      return [
+        createAgentAction("choose", "WhatsApp"),
+        createAgentAction("choose", "Email"),
+        createAgentAction("choose", "Telegram"),
+      ];
+    }
+    if (questionKey === "time") {
+      return [
+        createAgentAction("choose", "12:40"),
+        createAgentAction("choose", "9:00 AM"),
+      ];
+    }
+    return [];
+  }
 
   if (proposal?.type === "email-digest") {
     if (index === 0) {
@@ -9306,6 +9599,17 @@ function getAgentQuestionActions(proposal, questionIndex = 0) {
 
 function getAgentApprovalCopy(proposal) {
   const answers = Array.isArray(proposal?.answers) ? proposal.answers : [];
+  if (proposal?.type === "scheduled-message") {
+    const details = proposal.details && typeof proposal.details === "object" ? proposal.details : {};
+    const channel = formatAgentScheduledMessageChannel(details.channel);
+    const timeLabel = String(details.timeLocal || "").trim()
+      ? `the next ${String(details.timeLocal).trim()}`
+      : "the chosen time";
+    const timezone = String(details.timezone || "").trim() || "your workspace timezone";
+    const messageText = String(details.messageText || "").trim() || "the approved message";
+    return `I’m ready to send you a ${channel} message saying "${messageText}" at ${timeLabel} (${timezone}). Should I set it up?`;
+  }
+
   if (proposal?.type === "email-digest") {
     const mailbox = answers[0] || "your mailbox";
     const time = answers[1] || "your chosen time";
@@ -9371,6 +9675,10 @@ function getProposalReadinessLabel(proposal) {
 
   if (proposal.approved) {
     return "Approved";
+  }
+
+  if (proposal.status === "scheduling") {
+    return "Scheduling";
   }
 
   if (proposal.missingCredential) {
@@ -9524,9 +9832,15 @@ function renderAgentProposalCard() {
   const questionsTitle = document.createElement("h3");
   questionsTitle.textContent = "Questions before it runs";
   const questionList = document.createElement("ul");
-  for (const question of proposal.questions) {
+  if (proposal.questions.length) {
+    for (const question of proposal.questions) {
+      const item = document.createElement("li");
+      item.textContent = question;
+      questionList.append(item);
+    }
+  } else {
     const item = document.createElement("li");
-    item.textContent = question;
+    item.textContent = "No missing details; ready for approval.";
     questionList.append(item);
   }
   questions.append(questionsTitle, questionList);
@@ -9634,6 +9948,53 @@ function getPendingAgentQuestion() {
   return proposal;
 }
 
+function getAgentQuestionTotal(proposal) {
+  if (proposal?.type === "scheduled-message") {
+    return Array.isArray(proposal.questions) ? proposal.questions.length : 0;
+  }
+  if (/\b(calendar|schedule|agenda|appointments?)\b/i.test(proposal?.requestText || "")) {
+    return 1;
+  }
+  return 3;
+}
+
+function applyAgentScheduledMessageAnswer(proposal, answer) {
+  if (proposal?.type !== "scheduled-message") {
+    return;
+  }
+
+  const answerIndex = Math.max(0, (Array.isArray(proposal.answers) ? proposal.answers.length : 0) - 1);
+  const questionKey = proposal.questionKeys?.[answerIndex] || "";
+  const details = proposal.details && typeof proposal.details === "object" ? { ...proposal.details } : {};
+  if (questionKey === "channel") {
+    details.channel = normalizeAgentDeliveryChannel(answer) || String(answer || "").trim().toLowerCase();
+  } else if (questionKey === "time") {
+    details.timeLocal = extractAgentTimeLocal(answer);
+    details.datePolicy = extractAgentDatePolicy(answer);
+  } else if (questionKey === "messageText") {
+    details.messageText = String(answer || "").trim();
+  }
+
+  if (!details.messageText && details.timeLocal) {
+    details.messageText = extractAgentScheduledMessageText(proposal.requestText, details.timeLocal);
+  }
+  details.timezone = details.timezone || normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC";
+  details.runAt = resolveAgentScheduledRunAt(details);
+  proposal.details = details;
+  proposal.executionPlan = buildAgentScheduledMessageExecutionPlan(details);
+  const channel = normalizeAgentDeliveryChannel(details.channel);
+  if (channel === "whatsapp") {
+    proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
+    proposal.setupActionLabel = "Open WhatsApp setup";
+    proposal.missingCredential = isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
+      ? ""
+      : "WhatsApp Business API access token";
+  }
+  const channelLabel = formatAgentScheduledMessageChannel(channel);
+  const timeLabel = details.timeLocal ? ` at ${details.timeLocal}` : "";
+  proposal.summary = `Schedule a one-shot ${channelLabel} message${timeLabel}.`;
+}
+
 function handleAgentQuestionAnswer(proposal, answer) {
   if (!proposal) {
     return false;
@@ -9646,8 +10007,10 @@ function handleAgentQuestionAnswer(proposal, answer) {
 
   proposal.answers = Array.isArray(proposal.answers) ? proposal.answers : [];
   proposal.answers.push(cleanAnswer);
+  applyAgentScheduledMessageAnswer(proposal, cleanAnswer);
   const nextIndex = proposal.answers.length;
-  if (nextIndex < 3 && !/\b(calendar|schedule|agenda|appointments?)\b/i.test(proposal.requestText || "")) {
+  const totalQuestions = getAgentQuestionTotal(proposal);
+  if (nextIndex < totalQuestions) {
     pushAgentQuestion(proposal, nextIndex);
   } else {
     pushAgentApprovalPrompt(proposal);
@@ -9656,6 +10019,10 @@ function handleAgentQuestionAnswer(proposal, answer) {
 }
 
 function maybeHandleAgentNotificationDecision(text) {
+  if (isAgentScheduledMessageRequest(text)) {
+    return false;
+  }
+
   const proposal = getLatestApprovedAgentProposal();
   if (!proposal) {
     return false;
@@ -9710,6 +10077,28 @@ function maybeHandleAgentNotificationDecision(text) {
   return true;
 }
 
+function shouldTreatAgentInputAsNewRequest(text, pendingProposal = null) {
+  if (!pendingProposal) {
+    return true;
+  }
+
+  const value = String(text || "").trim();
+  const lowered = value.toLowerCase();
+  const wordCount = value.split(/\s+/).filter(Boolean).length;
+  if (isAgentScheduledMessageRequest(value)) {
+    return true;
+  }
+
+  const startsLikeRequest = /\b(can you|could you|please|i need|i want|help me|set up|setup|create|build|send me|notify me|remind me)\b/.test(lowered);
+  if (!startsLikeRequest) {
+    return false;
+  }
+
+  const blueprint = getAgentBlueprintForText(value);
+  const knownTask = blueprint?.type && blueprint.type !== "custom";
+  return Boolean(knownTask || wordCount > 5);
+}
+
 function handleAgentMessageAction(event) {
   const target = getEventTargetElement(event);
   const button = target?.closest("[data-agent-message-action]");
@@ -9722,7 +10111,7 @@ function handleAgentMessageAction(event) {
   const value = button.dataset.agentActionValue || button.textContent || "";
 
   if (action === "approve-proposal") {
-    approveAgentProposal(proposalId);
+    void approveAgentProposal(proposalId);
     return true;
   }
 
@@ -9757,7 +10146,7 @@ function handleAgentUserText(text) {
 
   pushAgentMessage("user", cleanText);
   const pendingQuestion = getPendingAgentQuestion();
-  if (pendingQuestion) {
+  if (pendingQuestion && !shouldTreatAgentInputAsNewRequest(cleanText, pendingQuestion)) {
     handleAgentQuestionAnswer(pendingQuestion, cleanText);
     return;
   }
@@ -9771,7 +10160,11 @@ function handleAgentUserText(text) {
   const agent = getAgentWorkspace();
   agent.proposals.push(proposal);
   agent.activeProposalId = proposal.id;
-  pushAgentQuestion(proposal, 0);
+  if (getAgentQuestionTotal(proposal) > 0) {
+    pushAgentQuestion(proposal, 0);
+  } else {
+    pushAgentApprovalPrompt(proposal);
+  }
 }
 
 function handleAgentComposerSubmit(event = null) {
@@ -9793,11 +10186,118 @@ function handleAgentComposerSubmit(event = null) {
   renderApp({ preserveStatus: true });
 }
 
-function approveAgentProposal(proposalId) {
+async function scheduleAgentScheduledMessageProposal(proposal) {
+  const details = proposal.details && typeof proposal.details === "object" ? { ...proposal.details } : {};
+  details.channel = normalizeAgentDeliveryChannel(details.channel);
+  details.timezone = details.timezone || normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC";
+  details.runAt = resolveAgentScheduledRunAt(details) || String(details.runAt || "").trim();
+  details.messageText = String(details.messageText || "").trim();
+
+  if (details.channel !== "whatsapp") {
+    throw new Error("Only WhatsApp scheduled messages are supported right now.");
+  }
+  if (!details.runAt) {
+    throw new Error("I need an exact send time before I can schedule this.");
+  }
+  if (!details.messageText) {
+    throw new Error("I need message text before I can schedule this.");
+  }
+
+  proposal.details = details;
+  proposal.executionPlan = buildAgentScheduledMessageExecutionPlan(details);
+  return apiRequest("/api/scheduled-actions", {
+    method: "POST",
+    body: {
+      actionType: "send_message",
+      channel: details.channel,
+      recipientRef: details.recipientRef || "owner",
+      runAt: details.runAt,
+      timezone: details.timezone,
+      messageText: details.messageText,
+      source: "portal_agent",
+      payload: {
+        proposalId: proposal.id,
+        requestText: proposal.requestText,
+        messageText: details.messageText,
+      },
+    },
+  });
+}
+
+async function approveAgentProposal(proposalId) {
   const agent = getAgentWorkspace();
   const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
-  if (!proposal || proposal.approved) {
+  if (!proposal || proposal.approved || proposal.status === "scheduling") {
     return;
+  }
+
+  if (
+    proposal.type === "scheduled-message"
+    && normalizeAgentDeliveryChannel(proposal.details?.channel) === "whatsapp"
+    && isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
+  ) {
+    proposal.missingCredential = "";
+    proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
+  }
+
+  if (proposal.type === "scheduled-message" && proposal.missingCredential) {
+    pushAgentMessage(
+      "assistant",
+      `I can schedule this, but I still need ${proposal.missingCredential}. Connect WhatsApp and then approve this plan again.`,
+      {
+        kind: "credential",
+        proposalId: proposal.id,
+        actions: [
+          createAgentAction("open-setup", "Connect WhatsApp", proposal.id, "primary"),
+          createAgentAction("credential-help", "Help me get it", proposal.id),
+        ],
+      },
+    );
+    persistAgentWorkspace("WhatsApp setup required.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  let scheduledAction = null;
+  if (proposal.type === "scheduled-message" && !proposal.missingCredential) {
+    proposal.status = "scheduling";
+    persistAgentWorkspace("Scheduling message...");
+    renderApp({ preserveStatus: true });
+    try {
+      const response = await scheduleAgentScheduledMessageProposal(proposal);
+      scheduledAction = response.action || null;
+      proposal.executionPlan = {
+        ...proposal.executionPlan,
+        backendActionId: scheduledAction?.id || "",
+        backendStatus: scheduledAction?.status || "",
+      };
+    } catch (error) {
+      proposal.status = "needs-approval";
+      const payload = error?.payload || {};
+      if (payload.error === "missing_whatsapp_connection") {
+        proposal.missingCredential = "WhatsApp Business API access token";
+        pushAgentMessage(
+          "assistant",
+          "I can schedule this, but WhatsApp needs to be connected first. Connect it and then approve the plan again.",
+          {
+            kind: "credential",
+            proposalId: proposal.id,
+            actions: [
+              createAgentAction("open-setup", "Connect WhatsApp", proposal.id, "primary"),
+              createAgentAction("credential-help", "Help me get it", proposal.id),
+            ],
+          },
+        );
+      } else {
+        pushAgentMessage("assistant", formatApiErrorMessage(error, "I could not schedule that message yet."), {
+          kind: "result",
+          proposalId: proposal.id,
+        });
+      }
+      persistAgentWorkspace("Scheduling failed.");
+      renderApp({ preserveStatus: true });
+      return;
+    }
   }
 
   proposal.approved = true;
@@ -9836,6 +10336,18 @@ function approveAgentProposal(proposalId) {
         ],
       },
     );
+  } else if (proposal.type === "scheduled-message") {
+    const details = proposal.details && typeof proposal.details === "object" ? proposal.details : {};
+    const channel = formatAgentScheduledMessageChannel(details.channel);
+    const timeLabel = String(details.timeLocal || "").trim()
+      ? `the next ${String(details.timeLocal).trim()}`
+      : "the scheduled time";
+    const timezone = String(details.timezone || "").trim() || "your workspace timezone";
+    const actionId = scheduledAction?.id ? ` Action #${scheduledAction.id} is saved.` : "";
+    pushAgentMessage("assistant", `All set. I scheduled the ${channel} message for ${timeLabel} (${timezone}).${actionId}`, {
+      kind: "result",
+      proposalId: proposal.id,
+    });
   } else {
     pushAgentMessage("assistant", "All set. I’ll use the details you gave me and keep the results here.", {
       kind: "result",
@@ -9917,7 +10429,7 @@ function handleAgentWorkspaceClick(event) {
 
   const approveButton = target?.closest("[data-agent-approve-proposal]");
   if (approveButton) {
-    approveAgentProposal(approveButton.dataset.agentApproveProposal || "");
+    void approveAgentProposal(approveButton.dataset.agentApproveProposal || "");
     return;
   }
 

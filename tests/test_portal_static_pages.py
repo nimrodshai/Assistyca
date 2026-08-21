@@ -112,6 +112,21 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("No platforms added yet", script)
         self.assertIn(".delivery-platform-row", styles)
 
+    def test_agent_scheduled_whatsapp_request_uses_scheduled_action_flow(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('type: "scheduled-message"', script)
+        self.assertIn("function isAgentScheduledMessageRequest", script)
+        self.assertLess(
+            script.index("if (isAgentScheduledMessageRequest(value))"),
+            script.index('return AGENT_BLUEPRINTS.whatsappReplies;'),
+        )
+        self.assertIn("function shouldTreatAgentInputAsNewRequest", script)
+        self.assertIn("function maybeHandleAgentNotificationDecision(text) {\n  if (isAgentScheduledMessageRequest(text))", script)
+        self.assertIn('apiRequest("/api/scheduled-actions"', script)
+        self.assertIn("getAgentQuestionTotal(proposal)", script)
+        self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
+
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")

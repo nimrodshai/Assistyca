@@ -6,5 +6,6 @@ node --check portal/app.js
 python3 -m unittest \
   tests.test_whatsapp_tool_delivery \
   tests.test_portal_manual_run \
+  tests.test_scheduled_actions \
   tests.test_whatsapp_reengagement \
   tests.test_portal_static_pages

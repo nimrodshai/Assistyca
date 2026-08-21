@@ -59,6 +59,7 @@ USER_OWNED_TABLES = (
     "feature_entitlements",
     "feature_monitor_notifications",
     "feature_monitor_runs",
+    "scheduled_actions",
     "feature_assignments",
     "billing_customers",
     "whatsapp_reengagement_notifications",
@@ -389,6 +390,26 @@ CREATE TABLE IF NOT EXISTS feature_monitor_notifications (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS scheduled_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    action_type TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    recipient_ref TEXT NOT NULL DEFAULT '',
+    run_at TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    last_error TEXT NOT NULL DEFAULT '',
+    claimed_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
@@ -432,6 +453,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_monitor_notifications_user_item
 ON feature_monitor_notifications(user_id, feature_id, item_key);
 CREATE INDEX IF NOT EXISTS idx_feature_monitor_notifications_user_schedule
 ON feature_monitor_notifications(user_id, feature_id, scheduled_for DESC);
+CREATE INDEX IF NOT EXISTS idx_scheduled_actions_due
+ON scheduled_actions(status, run_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_scheduled_actions_user_created
+ON scheduled_actions(user_id, created_at DESC);
 """
 
 
@@ -1514,6 +1539,30 @@ class PortalDatabase:
             "notificationsSent": int(payload.get("notifications_sent") or 0),
             "status": normalize_text(payload.get("status")),
             "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
+    def _load_scheduled_action_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        payload = _row_to_dict(row)
+        if not payload:
+            return None
+
+        return {
+            "id": int(payload.get("id") or 0),
+            "userId": int(payload.get("user_id") or 0),
+            "actionType": normalize_text(payload.get("action_type")),
+            "channel": normalize_text(payload.get("channel")),
+            "recipientRef": normalize_text(payload.get("recipient_ref")),
+            "runAt": payload.get("run_at"),
+            "timezone": normalize_text(payload.get("timezone")),
+            "status": normalize_text(payload.get("status")) or "pending",
+            "attemptCount": int(payload.get("attempt_count") or 0),
+            "providerMessageId": normalize_text(payload.get("provider_message_id")),
+            "payload": _load_json_dict(payload.get("payload_json")),
+            "lastError": normalize_text(payload.get("last_error")),
+            "claimedAt": payload.get("claimed_at"),
+            "completedAt": payload.get("completed_at"),
             "createdAt": payload.get("created_at"),
             "updatedAt": payload.get("updated_at"),
         }
@@ -4397,6 +4446,181 @@ class PortalDatabase:
             "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
             "createdAt": payload.get("created_at"),
         }
+
+    def create_scheduled_action(
+        self,
+        *,
+        user_id: int,
+        action_type: str,
+        channel: str,
+        recipient_ref: str,
+        run_at: str | datetime,
+        timezone_name: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_action_type = normalize_text(action_type)
+        normalized_channel = normalize_text(channel).lower()
+        normalized_recipient_ref = normalize_text(recipient_ref)
+        if user_id <= 0:
+            raise ValueError("User id is required.")
+        if not normalized_action_type:
+            raise ValueError("Action type is required.")
+        if not normalized_channel:
+            raise ValueError("Channel is required.")
+
+        run_at_value = parse_datetime(run_at).astimezone(timezone.utc).isoformat()
+        payload_json = json.dumps(payload or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO scheduled_actions (
+                    user_id,
+                    action_type,
+                    channel,
+                    recipient_ref,
+                    run_at,
+                    timezone,
+                    status,
+                    attempt_count,
+                    payload_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+                """,
+                (
+                    int(user_id),
+                    normalized_action_type,
+                    normalized_channel,
+                    normalized_recipient_ref,
+                    run_at_value,
+                    normalize_text(timezone_name),
+                    payload_json,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM scheduled_actions WHERE id = ? LIMIT 1",
+                (int(cursor.lastrowid or 0),),
+            ).fetchone()
+
+        action = self._load_scheduled_action_row(row)
+        if action is None:
+            raise RuntimeError("Scheduled action was not saved.")
+        return action
+
+    def get_scheduled_action(self, action_id: int) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_actions WHERE id = ? LIMIT 1",
+                (int(action_id),),
+            ).fetchone()
+        return self._load_scheduled_action_row(row)
+
+    def list_due_scheduled_actions(
+        self,
+        *,
+        now: str | datetime | None = None,
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM scheduled_actions
+                WHERE status = 'pending'
+                  AND run_at <= ?
+                ORDER BY run_at ASC, id ASC
+                LIMIT ?
+                """,
+                (reference, max(1, min(100, int(limit or 25)))),
+            ).fetchall()
+        return [
+            action
+            for action in (self._load_scheduled_action_row(row) for row in rows)
+            if action is not None
+        ]
+
+    def claim_scheduled_action(self, action_id: int) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0:
+            return None
+
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE scheduled_actions
+                SET status = 'running',
+                    attempt_count = attempt_count + 1,
+                    claimed_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status = 'pending'
+                """,
+                (now, now, int(action_id)),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM scheduled_actions WHERE id = ? LIMIT 1",
+                (int(action_id),),
+            ).fetchone()
+        return self._load_scheduled_action_row(row)
+
+    def finish_scheduled_action(
+        self,
+        *,
+        action_id: int,
+        status: str,
+        provider_message_id: str = "",
+        last_error: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_status = normalize_text(status).lower()
+        if int(action_id or 0) <= 0:
+            return None
+        if normalized_status not in {"sent", "failed", "cancelled"}:
+            raise ValueError("Scheduled action status must be sent, failed, or cancelled.")
+
+        now = now_iso()
+        fields = [
+            "status = ?",
+            "provider_message_id = ?",
+            "last_error = ?",
+            "completed_at = ?",
+            "updated_at = ?",
+        ]
+        params: list[Any] = [
+            normalized_status,
+            normalize_text(provider_message_id),
+            normalize_text(last_error)[:2000],
+            now,
+            now,
+        ]
+        if payload is not None:
+            fields.append("payload_json = ?")
+            params.append(json.dumps(payload, ensure_ascii=True, sort_keys=True))
+        params.append(int(action_id))
+
+        with self._connection() as conn:
+            conn.execute(
+                f"""
+                UPDATE scheduled_actions
+                SET {", ".join(fields)}
+                WHERE id = ?
+                """,
+                tuple(params),
+            )
+            row = conn.execute(
+                "SELECT * FROM scheduled_actions WHERE id = ? LIMIT 1",
+                (int(action_id),),
+            ).fetchone()
+        return self._load_scheduled_action_row(row)
 
     def get_feature_monitor_run(
         self,
