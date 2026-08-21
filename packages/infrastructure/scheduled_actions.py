@@ -15,6 +15,8 @@ from packages.infrastructure.portal_db import normalize_text
 
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
+DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME = "notification_message"
+DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en"
 SUPPORTED_SEND_CHANNELS = {"whatsapp"}
 OWNER_RECIPIENT_REFS = {"", "me", "owner", "you", "connected_owner", "account_owner"}
 
@@ -24,6 +26,8 @@ class ScheduledActionConfig:
     enabled: bool = True
     poll_seconds: int = DEFAULT_SCHEDULED_ACTION_POLL_SECONDS
     batch_size: int = DEFAULT_SCHEDULED_ACTION_BATCH_SIZE
+    whatsapp_template_name: str = DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME
+    whatsapp_template_language: str = DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE
 
 
 def parse_bool_env(value: str | None, default: bool = False) -> bool:
@@ -54,6 +58,14 @@ def load_scheduled_action_config() -> ScheduledActionConfig:
         batch_size=max(
             1,
             parse_int_env(os.getenv("PORTAL_SCHEDULED_ACTIONS_BATCH_SIZE"), DEFAULT_SCHEDULED_ACTION_BATCH_SIZE),
+        ),
+        whatsapp_template_name=(
+            normalize_text(os.getenv("WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME"))
+            or DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME
+        ),
+        whatsapp_template_language=(
+            normalize_text(os.getenv("WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE"))
+            or DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE
         ),
     )
 
@@ -137,31 +149,25 @@ class ScheduledActionScheduler:
         raise RuntimeError(f"Unsupported scheduled send channel: {channel}")
 
     def _dispatch_whatsapp(self, action: dict[str, Any], message_text: str) -> str:
-        user_id = int(action.get("userId") or 0)
-        if user_id <= 0:
-            raise RuntimeError("Scheduled WhatsApp message is missing a user id.")
-
-        connection = self.database.get_whatsapp_connection_by_user_id(user_id)
-        if not connection:
-            raise RuntimeError("WhatsApp is not connected for this account.")
-
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         recipient_ref = normalize_text(payload.get("recipientWaId") or action.get("recipientRef"))
         if recipient_ref.lower() in OWNER_RECIPIENT_REFS:
+            user_id = int(action.get("userId") or 0)
+            if user_id <= 0:
+                raise RuntimeError("Scheduled WhatsApp message is missing a user id.")
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id)
+            if not connection:
+                raise RuntimeError("No WhatsApp notification recipient is configured for this account.")
             recipient_ref = normalize_text(connection.get("ownerWaId"))
 
-        if not normalize_text(connection.get("accessToken")):
-            raise RuntimeError("WhatsApp access token is missing.")
-        if not normalize_text(connection.get("phoneNumberId")):
-            raise RuntimeError("WhatsApp phone number id is missing.")
         if not recipient_ref:
             raise RuntimeError("WhatsApp recipient is missing.")
 
         return send_whatsapp_notification(
-            phone_number_id=normalize_text(connection.get("phoneNumberId")),
-            access_token=normalize_text(connection.get("accessToken")),
             recipient_wa_id=recipient_ref,
             message_text=message_text,
+            template_name=self.config.whatsapp_template_name,
+            template_language=self.config.whatsapp_template_language,
         )
 
     def serve_forever(
@@ -187,6 +193,8 @@ class ScheduledActionScheduler:
 __all__ = [
     "DEFAULT_SCHEDULED_ACTION_BATCH_SIZE",
     "DEFAULT_SCHEDULED_ACTION_POLL_SECONDS",
+    "DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE",
+    "DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME",
     "ScheduledActionConfig",
     "ScheduledActionScheduler",
     "load_scheduled_action_config",

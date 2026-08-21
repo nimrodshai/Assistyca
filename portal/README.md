@@ -71,6 +71,8 @@ Required environment variables on Render:
 - `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
 - `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number. Owner alerts can also use the portal-saved client WhatsApp connection token when no Assistyca sender token is configured.
 - `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional override for the Assistyca-owned sender number. If unset, the backend uses `1186653017865246`.
+- `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME` approved Meta template for scheduled WhatsApp notifications. Defaults to `notification_message`; its body must contain one text variable (`{{1}}`) for the requested message.
+- `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE` exact language code approved with that template. Defaults to `en`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME` approved Meta template used to ask the owner whether to receive generated re-engagement report details outside the 24-hour window. Defaults to `whatsapp_reengagement_report_prompt`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE` language code for that template. Defaults to `en`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX` quick-reply button index for the "Send details" button. Defaults to `0`.
@@ -142,7 +144,7 @@ The portal setup form saves the WhatsApp Business Platform fields needed per wor
 Clients can find the WABA ID in Meta Business Settings at Accounts > WhatsApp Accounts, or by opening `https://business.facebook.com/latest/settings/whatsapp_account` and selecting the correct WhatsApp Business Account.
 
 `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` stay server-side in environment variables for webhook verification and signature checks. Client access tokens are never returned to the browser after save.
-The saved client `phone_number_id` is used to route inbound webhooks and to send approved replies from the client's number. Owner alerts, sample alerts, and Scheduled Web Monitor WhatsApp notifications are sent from the Assistyca sender number instead.
+The saved client `phone_number_id` is used to route inbound webhooks and to send approved replies from the client's number. Owner alerts, sample alerts, Scheduled Web Monitor WhatsApp notifications, and scheduled assistant messages are sent from the Assistyca sender number instead. Scheduled assistant messages resolve the destination from the saved approval phone, use the approved `notification_message` template, and never read the client connection token or client sender number.
 The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.
 
 For Scheduled Web Monitor delivery:

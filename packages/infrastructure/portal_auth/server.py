@@ -3031,14 +3031,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         connection = self.database.get_whatsapp_connection(session.email)
         if (
             not connection
-            or not normalize_text(connection.get("phoneNumberId"))
-            or not normalize_text(connection.get("accessToken"))
             or not normalize_text(connection.get("ownerWaId"))
         ):
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
-                "error": "missing_whatsapp_connection",
-                "message": "Connect WhatsApp before scheduling a WhatsApp message.",
+                "error": "missing_whatsapp_recipient",
+                "message": "Add the WhatsApp number that should receive scheduled notifications.",
+            })
+            return
+        if not resolve_whatsapp_sender_access_token() or not resolve_whatsapp_sender_phone_number_id():
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "whatsapp_delivery_not_configured",
+                "message": "Assistyca WhatsApp delivery is not configured on the server.",
             })
             return
 

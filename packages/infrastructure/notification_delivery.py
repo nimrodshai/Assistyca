@@ -436,6 +436,8 @@ def send_whatsapp_notification(
     message_text: str,
     access_token: str | None = None,
     api_version: str | None = None,
+    template_name: str | None = None,
+    template_language: str | None = None,
 ) -> str:
     resolved_phone_number_id = normalize_text(phone_number_id) or resolve_whatsapp_sender_phone_number_id()
     resolved_recipient = normalize_text(recipient_wa_id)
@@ -451,12 +453,35 @@ def send_whatsapp_notification(
     if not resolved_recipient:
         raise RuntimeError("WhatsApp delivery requires a recipient WhatsApp id.")
 
+    resolved_template_name = normalize_text(template_name)
+    resolved_template_language = normalize_text(template_language)
+    template = None
+    if resolved_template_name:
+        if not resolved_template_language:
+            raise RuntimeError("WhatsApp template delivery requires a language code.")
+        template = {
+            "name": resolved_template_name,
+            "language": {"code": resolved_template_language},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": message_text,
+                        }
+                    ],
+                }
+            ],
+        }
+
     return send_whatsapp_message(
         access_token=resolved_access_token,
         phone_number_id=resolved_phone_number_id,
         api_version=resolved_api_version,
         recipient_wa_id=resolved_recipient,
-        message_text=message_text,
+        message_text=None if template is not None else message_text,
+        template=template,
     )
 
 

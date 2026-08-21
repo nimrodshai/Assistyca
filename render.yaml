@@ -77,6 +77,14 @@ services:
         sync: false
       - key: WHATSAPP_ACCESS_TOKEN
         sync: false
+      - key: ASSISTYCA_WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID
+        value: "1186653017865246"
+      - key: WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME
+        value: notification_message
+      - key: WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE
+        value: en
       - key: WHATSAPP_ALLOW_MOCK_SEND
         value: "0"
       - key: WHATSAPP_SAMPLE_TEMPLATE_NAME
