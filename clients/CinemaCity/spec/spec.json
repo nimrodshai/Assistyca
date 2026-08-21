@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "title": "Cinema City Website Redesign",
+    "client_name": "Cinema City Israel",
+    "project_name": "Responsive cinema discovery and demo ticket-booking website",
+    "prepared_by": "Codex",
+    "date": "2026-08-21",
+    "status": "Build-ready concept specification",
+    "language": "en"
+  },
+  "overview": {
+    "client_request": "Create a build-ready Cinema City Israel website specification that a lower-cost model can implement without inventing key decisions."
+  },
+  "sections": {
+    "deliverables": [
+      "Deliver website-build-spec.md and deterministic fixture-data.json for the complete Hebrew RTL prototype.",
+      "Define the visual system, routes, booking flow, responsive and accessibility states, data, tests, and production boundaries."
+    ],
+    "workflow": [
+      "Read the handoff and fixtures, then build the repository, shell, routes, and booking flow in the specified order.",
+      "Run build, lint, tests, accessibility checks, and responsive screenshot review before handoff."
+    ],
+    "assumptions": [
+      "Cinema City Israel is the intended brand; the first build uses local fixtures, research image references, sample inventory, and simulated payment."
+    ],
+    "open_questions": [],
+    "acceptance_criteria": [
+      "The handoff defines the complete UI and build contract; fixtures cover eight cinemas, eight movies, screenings, seat maps, experiences, and a retrievable order."
+    ],
+    "future_ideas": []
+  },
+  "approval": {
+    "review_items": [
+      "Confirm Cinema City Israel, the frontend scope, The Lobby Starts Here visual direction, routes, and production boundaries."
+    ],
+    "signoff_label": "Project approval",
+    "name_label": "Name",
+    "date_label": "Date"
+  }
+}
