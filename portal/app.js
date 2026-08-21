@@ -45,7 +45,7 @@ const TAB_ALIASES = new Map([
   ["details", "personal-details"],
 ]);
 const TAB_LABELS = {
-  features: "Tools",
+  features: "Agent",
   opportunities: "Opportunities",
   clients: "Clients",
   "personal-details": "About your business",
@@ -390,6 +390,210 @@ const DEFAULT_SIMULATOR = {
   selectedApprovalId: "",
 };
 
+const AGENT_INITIAL_MESSAGE =
+  "Tell me what you want handled. I will map it to the right skills and helper agents, show you the plan, and wait for approval before creating anything.";
+const AGENT_MAX_MESSAGES = 40;
+const AGENT_BLUEPRINTS = {
+  emailDigest: {
+    type: "email-digest",
+    title: "Daily email digest",
+    summary:
+      "Create a daily assistant that reads new email, extracts the important items, and sends a concise digest on your schedule.",
+    response:
+      "I can set that up. I would add a Gmail reading skill, a scheduler, an Email Digest helper, and a delivery helper. Before it starts, I need approval plus your preferred delivery channel and time.",
+    relatedFeatureId: MONITOR_FEATURE_ID,
+    primaryActionLabel: "Create email digest helpers",
+    setupActionLabel: "Review scheduler setup",
+    missingCredential: "Gmail access",
+    skills: [
+      {
+        label: "Gmail reader",
+        detail: "Connects to the mailbox with read-only access for summary work.",
+      },
+      {
+        label: "Digest writer",
+        detail: "Groups urgent, customer, billing, and follow-up messages into a short brief.",
+      },
+      {
+        label: "Daily scheduler",
+        detail: "Runs at the chosen local time and keeps timezone rules explicit.",
+      },
+      {
+        label: "Notification delivery",
+        detail: "Sends the result by email, Telegram, WhatsApp, or portal-only fallback.",
+      },
+    ],
+    helpers: [
+      {
+        name: "Email Digest Agent",
+        purpose: "Read new messages and produce the daily summary.",
+      },
+      {
+        name: "Delivery Agent",
+        purpose: "Send or store the result through the approved channel.",
+      },
+    ],
+    questions: [
+      "Which mailbox should I summarize?",
+      "What time should the digest run?",
+      "How would you like to be notified with the results?",
+    ],
+    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Portal inbox"],
+  },
+  webMonitor: {
+    type: "web-monitor",
+    title: "Scheduled web monitor",
+    summary:
+      "Create a recurring monitor that searches the web for deadlines, events, mentions, and opportunities, then sends source-backed alerts.",
+    response:
+      "I can turn that into a scheduled monitoring workflow. The existing web monitor skill can do the search work, and I would add a helper to decide what is worth alerting you about.",
+    relatedFeatureId: MONITOR_FEATURE_ID,
+    primaryActionLabel: "Create monitor helper",
+    setupActionLabel: "Open monitor setup",
+    missingCredential: "",
+    skills: [
+      {
+        label: "Web search monitor",
+        detail: "Checks the public web on a recurring schedule.",
+      },
+      {
+        label: "Source-backed summarizer",
+        detail: "Filters weak matches and includes the important source details.",
+      },
+      {
+        label: "Alert delivery",
+        detail: "Sends only meaningful matches through the approved channel.",
+      },
+    ],
+    helpers: [
+      {
+        name: "Monitoring Agent",
+        purpose: "Run the search, compare results to the watchlist, and prepare alerts.",
+      },
+    ],
+    questions: [
+      "What exact topics, dates, or opportunities should I watch?",
+      "How often should I check?",
+      "Where should alerts be delivered?",
+    ],
+    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Portal inbox"],
+  },
+  whatsappReplies: {
+    type: "whatsapp-replies",
+    title: "WhatsApp reply assistant",
+    summary:
+      "Use WhatsApp skills to draft replies for incoming leads while keeping every send under human control.",
+    response:
+      "I can use the WhatsApp reply skill for this. If the WhatsApp Business API is not connected yet, I will guide you through the required IDs and access token, then keep manual approval in place.",
+    relatedFeatureId: WHATSAPP_REPLY_ASSISTANT_FEATURE_ID,
+    primaryActionLabel: "Create WhatsApp helper",
+    setupActionLabel: "Open WhatsApp setup",
+    missingCredential: "WhatsApp Business API access token",
+    skills: [
+      {
+        label: "WhatsApp listener",
+        detail: "Receives new customer messages from the connected workspace number.",
+      },
+      {
+        label: "Reply drafter",
+        detail: "Writes short, grounded responses using your business context.",
+      },
+      {
+        label: "Human approval",
+        detail: "Sends drafts for review before anything goes to the customer.",
+      },
+    ],
+    helpers: [
+      {
+        name: "WhatsApp Reply Agent",
+        purpose: "Watch inbound leads and prepare approval-ready reply drafts.",
+      },
+    ],
+    questions: [
+      "Which WhatsApp number should be connected?",
+      "Who approves reply drafts?",
+      "What should the assistant never promise without you?",
+    ],
+    alternatives: ["Manual copy/paste", "Telegram alerts", "Email alerts"],
+  },
+  reengagement: {
+    type: "reengagement",
+    title: "Customer re-engagement",
+    summary:
+      "Create a recurring helper that finds quiet WhatsApp conversations and drafts warm follow-ups.",
+    response:
+      "I can help with past-customer follow-up. I would use the saved WhatsApp history, run on a schedule, and generate reviewable follow-up drafts without sending automatically.",
+    relatedFeatureId: REENGAGEMENT_FEATURE_ID,
+    primaryActionLabel: "Create follow-up helper",
+    setupActionLabel: "Open follow-up setup",
+    missingCredential: "WhatsApp history or connected WhatsApp",
+    skills: [
+      {
+        label: "Conversation history",
+        detail: "Reads saved WhatsApp exports or connected message history.",
+      },
+      {
+        label: "Dormancy detector",
+        detail: "Finds conversations that have been quiet longer than your rule.",
+      },
+      {
+        label: "Follow-up writer",
+        detail: "Drafts low-pressure messages for review.",
+      },
+    ],
+    helpers: [
+      {
+        name: "Re-engagement Agent",
+        purpose: "Find quiet conversations and prepare follow-up drafts.",
+      },
+    ],
+    questions: [
+      "How long should a conversation be quiet before follow-up?",
+      "How often should the helper check?",
+      "Where should drafts be delivered?",
+    ],
+    alternatives: ["WhatsApp approval", "Telegram alerts", "Email alerts"],
+  },
+  custom: {
+    type: "custom",
+    title: "Custom task agent",
+    summary:
+      "Create a custom workflow from your request, then ask any missing questions before installation.",
+    response:
+      "I can shape that into a custom workflow. I will start with a planning helper, then identify the exact skills, external services, credentials, and notification path before anything runs.",
+    relatedFeatureId: "",
+    primaryActionLabel: "Create planning helper",
+    setupActionLabel: "Review available skills",
+    missingCredential: "",
+    skills: [
+      {
+        label: "Task planner",
+        detail: "Breaks the request into clear steps, dependencies, and approval points.",
+      },
+      {
+        label: "Skill matcher",
+        detail: "Checks available portal skills and identifies any missing integrations.",
+      },
+      {
+        label: "Question asker",
+        detail: "Collects only the decisions needed to move forward safely.",
+      },
+    ],
+    helpers: [
+      {
+        name: "Planning Agent",
+        purpose: "Map the task and recommend the right skills or helper agents.",
+      },
+    ],
+    questions: [
+      "What result should I produce?",
+      "How often should this happen?",
+      "How should I notify you when it is done?",
+    ],
+    alternatives: ["Portal inbox", "Email", "Telegram", "WhatsApp after setup"],
+  },
+};
+
 function normalizeTab(tab) {
   return TAB_ALIASES.get(String(tab || "").trim()) || String(tab || "").trim();
 }
@@ -665,6 +869,15 @@ const elements = {
   workspaceSubtitle: document.querySelector("#workspaceSubtitle"),
   saveState: document.querySelector("#saveState"),
   appBar: document.querySelector("#appBar"),
+  agentWorkspaceStatus: document.querySelector("#agentWorkspaceStatus"),
+  agentMessageList: document.querySelector("#agentMessageList"),
+  agentComposerForm: document.querySelector("#agentComposerForm"),
+  agentComposerInput: document.querySelector("#agentComposerInput"),
+  agentComposerButton: document.querySelector("#agentComposerButton"),
+  agentProposalCard: document.querySelector("#agentProposalCard"),
+  agentHelperCount: document.querySelector("#agentHelperCount"),
+  agentHelperList: document.querySelector("#agentHelperList"),
+  agentPromptButtons: Array.from(document.querySelectorAll("[data-agent-prompt]")),
   featureList: document.querySelector("#featureList"),
   featureStudioPanel: document.querySelector("#featureStudioPanel"),
   backToFeaturesButton: document.querySelector("#backToFeaturesButton"),
@@ -2291,6 +2504,7 @@ function loadClientState(email) {
   });
   const settings = { ...DEFAULT_SETTINGS, ...(saved.settings || {}) };
   const simulator = normalizeSimulatorState(savedSimulator, savedPrompt);
+  const agent = normalizeAgentWorkspace(saved.agent || {});
 
   if (!settings.workspaceName || isLegacyWorkspaceName(settings.workspaceName)) {
     settings.workspaceName = DEFAULT_SETTINGS.workspaceName;
@@ -2303,6 +2517,7 @@ function loadClientState(email) {
       settings,
       features,
       simulator,
+      agent,
     });
   }
 
@@ -2311,6 +2526,137 @@ function loadClientState(email) {
     settings,
     features,
     simulator,
+    agent,
+  };
+}
+
+function createAgentId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createAgentMessage(role, text, metadata = {}) {
+  return {
+    id: createAgentId("agent-message"),
+    role: role === "user" ? "user" : "assistant",
+    text: String(text || "").trim(),
+    createdAt: new Date().toISOString(),
+    metadata: metadata && typeof metadata === "object" ? { ...metadata } : {},
+  };
+}
+
+function normalizeAgentTextItem(value, fallback = "") {
+  return String(value || fallback).trim();
+}
+
+function normalizeAgentSkillItem(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const label = normalizeAgentTextItem(source.label || source.name, "Skill");
+  return {
+    label,
+    detail: normalizeAgentTextItem(source.detail || source.description || source.purpose, ""),
+  };
+}
+
+function normalizeAgentHelperDraft(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    name: normalizeAgentTextItem(source.name, "Helper agent"),
+    purpose: normalizeAgentTextItem(source.purpose || source.description, "Help complete the approved task."),
+  };
+}
+
+function normalizeAgentMessage(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const text = normalizeAgentTextItem(source.text || source.content, "");
+  if (!text) {
+    return null;
+  }
+
+  return {
+    id: normalizeAgentTextItem(source.id, createAgentId("agent-message")),
+    role: source.role === "user" ? "user" : "assistant",
+    text,
+    createdAt: normalizeAgentTextItem(source.createdAt || source.created_at, new Date().toISOString()),
+    metadata: source.metadata && typeof source.metadata === "object" ? { ...source.metadata } : {},
+  };
+}
+
+function normalizeAgentProposal(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const title = normalizeAgentTextItem(source.title, "Task plan");
+  const summary = normalizeAgentTextItem(source.summary, "");
+  if (!title && !summary) {
+    return null;
+  }
+
+  return {
+    id: normalizeAgentTextItem(source.id, createAgentId("agent-proposal")),
+    type: normalizeAgentTextItem(source.type, "custom"),
+    title,
+    summary,
+    response: normalizeAgentTextItem(source.response, ""),
+    relatedFeatureId: normalizeAgentTextItem(source.relatedFeatureId || source.related_feature_id, ""),
+    primaryActionLabel: normalizeAgentTextItem(source.primaryActionLabel || source.primary_action_label, "Approve plan"),
+    setupActionLabel: normalizeAgentTextItem(source.setupActionLabel || source.setup_action_label, "Open setup"),
+    missingCredential: normalizeAgentTextItem(source.missingCredential || source.missing_credential, ""),
+    status: normalizeAgentTextItem(source.status, source.approved ? "approved" : "needs-approval"),
+    approved: Boolean(source.approved),
+    createdAt: normalizeAgentTextItem(source.createdAt || source.created_at, new Date().toISOString()),
+    approvedAt: normalizeAgentTextItem(source.approvedAt || source.approved_at, ""),
+    skills: Array.isArray(source.skills) ? source.skills.map(normalizeAgentSkillItem).filter(Boolean) : [],
+    helpers: Array.isArray(source.helpers) ? source.helpers.map(normalizeAgentHelperDraft).filter(Boolean) : [],
+    questions: Array.isArray(source.questions)
+      ? source.questions.map((question) => normalizeAgentTextItem(question, "")).filter(Boolean)
+      : [],
+    alternatives: Array.isArray(source.alternatives)
+      ? source.alternatives.map((alternative) => normalizeAgentTextItem(alternative, "")).filter(Boolean)
+      : [],
+  };
+}
+
+function normalizeAgentHelper(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const name = normalizeAgentTextItem(source.name, "Helper agent");
+  return {
+    id: normalizeAgentTextItem(source.id, createAgentId("agent-helper")),
+    name,
+    purpose: normalizeAgentTextItem(source.purpose, "Help complete the approved task."),
+    status: normalizeAgentTextItem(source.status, "Ready"),
+    sourceProposalId: normalizeAgentTextItem(source.sourceProposalId || source.source_proposal_id, ""),
+    createdAt: normalizeAgentTextItem(source.createdAt || source.created_at, new Date().toISOString()),
+  };
+}
+
+function createDefaultAgentWorkspace() {
+  return {
+    messages: [createAgentMessage("assistant", AGENT_INITIAL_MESSAGE, { kind: "welcome" })],
+    proposals: [],
+    helpers: [],
+    activeProposalId: "",
+  };
+}
+
+function normalizeAgentWorkspace(agent = {}) {
+  const source = agent && typeof agent === "object" ? agent : {};
+  const fallback = createDefaultAgentWorkspace();
+  const messages = Array.isArray(source.messages)
+    ? source.messages.map(normalizeAgentMessage).filter(Boolean).slice(-AGENT_MAX_MESSAGES)
+    : [];
+  const proposals = Array.isArray(source.proposals)
+    ? source.proposals.map(normalizeAgentProposal).filter(Boolean)
+    : [];
+  const helpers = Array.isArray(source.helpers)
+    ? source.helpers.map(normalizeAgentHelper).filter(Boolean)
+    : [];
+  const activeProposalId = normalizeAgentTextItem(source.activeProposalId || source.active_proposal_id, "")
+    || proposals[proposals.length - 1]?.id
+    || "";
+
+  return {
+    messages: messages.length ? messages : fallback.messages,
+    proposals,
+    helpers,
+    activeProposalId,
   };
 }
 
@@ -8718,6 +9064,538 @@ function updateHeader() {
   document.title = `${workspaceName} · ${titleLabel}`;
 }
 
+function getAgentWorkspace() {
+  if (!clientState.agent) {
+    clientState.agent = createDefaultAgentWorkspace();
+  }
+
+  clientState.agent = normalizeAgentWorkspace(clientState.agent);
+  return clientState.agent;
+}
+
+function getAgentBlueprintForText(text) {
+  const value = String(text || "").toLowerCase();
+  if (/\b(gmail|inbox|email|mailbox|digest|summari[sz]e|summary)\b/.test(value)) {
+    return AGENT_BLUEPRINTS.emailDigest;
+  }
+
+  if (/\b(re-?engage|follow[- ]?up|past customer|quiet conversation|dormant)\b/.test(value)) {
+    return AGENT_BLUEPRINTS.reengagement;
+  }
+
+  if (/\b(whatsapp|reply|approval|lead|customer message)\b/.test(value)) {
+    return AGENT_BLUEPRINTS.whatsappReplies;
+  }
+
+  if (/\b(watch|monitor|deadline|alert|web|search|opportunit|event)\b/.test(value)) {
+    return AGENT_BLUEPRINTS.webMonitor;
+  }
+
+  return AGENT_BLUEPRINTS.custom;
+}
+
+function cloneAgentItems(items = []) {
+  return Array.isArray(items) ? items.map((item) => ({ ...item })) : [];
+}
+
+function createAgentProposalFromRequest(text) {
+  const blueprint = getAgentBlueprintForText(text);
+  const proposal = normalizeAgentProposal({
+    id: createAgentId("agent-proposal"),
+    type: blueprint.type,
+    title: blueprint.title,
+    summary: blueprint.summary,
+    response: blueprint.response,
+    relatedFeatureId: blueprint.relatedFeatureId,
+    primaryActionLabel: blueprint.primaryActionLabel,
+    setupActionLabel: blueprint.setupActionLabel,
+    missingCredential: blueprint.missingCredential,
+    status: "needs-approval",
+    approved: false,
+    createdAt: new Date().toISOString(),
+    skills: cloneAgentItems(blueprint.skills),
+    helpers: cloneAgentItems(blueprint.helpers),
+    questions: [...blueprint.questions],
+    alternatives: [...blueprint.alternatives],
+  });
+
+  if (proposal.type === "custom") {
+    proposal.summary = `${blueprint.summary} Request: "${String(text).trim().slice(0, 140)}"`;
+  }
+
+  return proposal;
+}
+
+function getActiveAgentProposal() {
+  const agent = getAgentWorkspace();
+  return agent.proposals.find((proposal) => proposal.id === agent.activeProposalId)
+    || agent.proposals[agent.proposals.length - 1]
+    || null;
+}
+
+function getLatestApprovedAgentProposal() {
+  const agent = getAgentWorkspace();
+  return [...agent.proposals].reverse().find((proposal) => proposal.approved) || null;
+}
+
+function pushAgentMessage(role, text, metadata = {}) {
+  const agent = getAgentWorkspace();
+  const message = createAgentMessage(role, text, metadata);
+  if (!message.text) {
+    return null;
+  }
+
+  agent.messages.push(message);
+  agent.messages = agent.messages.slice(-AGENT_MAX_MESSAGES);
+  return message;
+}
+
+function persistAgentWorkspace(status = "Agent workspace saved.") {
+  persistClientState();
+  setStatus(status);
+}
+
+function getProposalReadinessLabel(proposal) {
+  if (!proposal) {
+    return "Ready";
+  }
+
+  if (proposal.approved) {
+    return "Approved";
+  }
+
+  if (proposal.missingCredential) {
+    return "Needs credential";
+  }
+
+  const feature = proposal.relatedFeatureId ? getFeatureById(proposal.relatedFeatureId) : null;
+  if (feature && isFeatureSetupComplete(feature)) {
+    return "Skill ready";
+  }
+
+  return "Needs approval";
+}
+
+function getProposalSetupLabel(proposal) {
+  if (!proposal?.relatedFeatureId) {
+    return "Review skills";
+  }
+
+  const feature = getFeatureById(proposal.relatedFeatureId);
+  if (!feature) {
+    return proposal.setupActionLabel || "Review setup";
+  }
+
+  if (isFeatureSetupComplete(feature)) {
+    return "Open active skill";
+  }
+
+  return proposal.setupActionLabel || "Open setup";
+}
+
+function renderAgentMessage(message) {
+  const row = document.createElement("article");
+  row.className = `agent-message is-${message.role}`;
+
+  const label = document.createElement("span");
+  label.className = "agent-message-label";
+  label.textContent = message.role === "user" ? "You" : "Assistyca";
+
+  const bubble = document.createElement("p");
+  bubble.className = "agent-message-bubble";
+  bubble.textContent = message.text;
+
+  row.append(label, bubble);
+  return row;
+}
+
+function renderAgentMessages() {
+  if (!elements.agentMessageList) {
+    return;
+  }
+
+  const agent = getAgentWorkspace();
+  elements.agentMessageList.replaceChildren(...agent.messages.map(renderAgentMessage));
+  elements.agentMessageList.scrollTop = elements.agentMessageList.scrollHeight;
+}
+
+function createAgentList(items, className, itemClassName) {
+  const list = document.createElement("div");
+  list.className = className;
+
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = itemClassName;
+
+    const title = document.createElement("strong");
+    title.textContent = item.label || item.name || "Item";
+
+    const detail = document.createElement("p");
+    detail.textContent = item.detail || item.purpose || "";
+
+    row.append(title, detail);
+    list.append(row);
+  }
+
+  return list;
+}
+
+function renderAgentProposalCard() {
+  if (!elements.agentProposalCard) {
+    return;
+  }
+
+  const proposal = getActiveAgentProposal();
+  if (!proposal) {
+    const empty = document.createElement("div");
+    empty.className = "agent-empty-panel";
+    const eyebrow = document.createElement("p");
+    eyebrow.className = "eyebrow";
+    eyebrow.textContent = "Plan";
+    const title = document.createElement("h2");
+    title.textContent = "No plan yet";
+    const copy = document.createElement("p");
+    copy.textContent = "Send a request and the agent will turn it into an approval-ready plan.";
+    empty.append(eyebrow, title, copy);
+    elements.agentProposalCard.replaceChildren(empty);
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "agent-proposal-head";
+
+  const copyBlock = document.createElement("div");
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Proposed plan";
+  const title = document.createElement("h2");
+  title.textContent = proposal.title;
+  const summary = document.createElement("p");
+  summary.textContent = proposal.summary;
+  copyBlock.append(eyebrow, title, summary);
+
+  const status = document.createElement("span");
+  status.className = "feature-status";
+  status.textContent = getProposalReadinessLabel(proposal);
+  head.append(copyBlock, status);
+
+  const skillsTitle = document.createElement("h3");
+  skillsTitle.textContent = "Skills";
+  const skills = createAgentList(proposal.skills, "agent-mini-list", "agent-mini-row");
+
+  const helpersTitle = document.createElement("h3");
+  helpersTitle.textContent = "Helper agents";
+  const helpers = createAgentList(
+    proposal.helpers.map((helper) => ({
+      label: helper.name,
+      detail: helper.purpose,
+    })),
+    "agent-mini-list",
+    "agent-mini-row",
+  );
+
+  const questions = document.createElement("div");
+  questions.className = "agent-question-block";
+  const questionsTitle = document.createElement("h3");
+  questionsTitle.textContent = "Questions before it runs";
+  const questionList = document.createElement("ul");
+  for (const question of proposal.questions) {
+    const item = document.createElement("li");
+    item.textContent = question;
+    questionList.append(item);
+  }
+  questions.append(questionsTitle, questionList);
+
+  const actions = document.createElement("div");
+  actions.className = "agent-proposal-actions";
+
+  const approveButton = document.createElement("button");
+  approveButton.className = "primary-button small";
+  approveButton.type = "button";
+  approveButton.dataset.agentApproveProposal = proposal.id;
+  approveButton.textContent = proposal.approved ? "Approved" : proposal.primaryActionLabel;
+  approveButton.disabled = proposal.approved;
+
+  const setupButton = document.createElement("button");
+  setupButton.className = "ghost-button small";
+  setupButton.type = "button";
+  setupButton.dataset.agentOpenSetup = proposal.id;
+  setupButton.textContent = getProposalSetupLabel(proposal);
+
+  const changeButton = document.createElement("button");
+  changeButton.className = "ghost-button small";
+  changeButton.type = "button";
+  changeButton.dataset.agentRequestChanges = proposal.id;
+  changeButton.textContent = "Adjust plan";
+
+  actions.append(approveButton, setupButton, changeButton);
+
+  if (proposal.missingCredential) {
+    const credential = document.createElement("div");
+    credential.className = "agent-credential-callout";
+    const credentialCopy = document.createElement("p");
+    credentialCopy.textContent = `${proposal.missingCredential} may be required. If you do not know how to get it, I can help.`;
+    const helpButton = document.createElement("button");
+    helpButton.className = "ghost-button small";
+    helpButton.type = "button";
+    helpButton.dataset.agentCredentialHelp = proposal.id;
+    helpButton.textContent = "Help me get it";
+    credential.append(credentialCopy, helpButton);
+    elements.agentProposalCard.replaceChildren(head, skillsTitle, skills, helpersTitle, helpers, questions, credential, actions);
+    return;
+  }
+
+  elements.agentProposalCard.replaceChildren(head, skillsTitle, skills, helpersTitle, helpers, questions, actions);
+}
+
+function renderAgentHelpers() {
+  if (!elements.agentHelperList || !elements.agentHelperCount) {
+    return;
+  }
+
+  const agent = getAgentWorkspace();
+  elements.agentHelperCount.textContent = String(agent.helpers.length);
+
+  if (!agent.helpers.length) {
+    const empty = document.createElement("p");
+    empty.className = "agent-helper-empty";
+    empty.textContent = "Approved helper agents will appear here.";
+    elements.agentHelperList.replaceChildren(empty);
+    return;
+  }
+
+  const rows = agent.helpers.map((helper) => {
+    const row = document.createElement("article");
+    row.className = "agent-helper-row";
+
+    const copy = document.createElement("div");
+    const title = document.createElement("h3");
+    title.textContent = helper.name;
+    const purpose = document.createElement("p");
+    purpose.textContent = helper.purpose;
+    copy.append(title, purpose);
+
+    const status = document.createElement("span");
+    status.className = "feature-status";
+    status.textContent = helper.status;
+
+    row.append(copy, status);
+    return row;
+  });
+
+  elements.agentHelperList.replaceChildren(...rows);
+}
+
+function updateAgentWorkspace() {
+  if (!elements.agentMessageList) {
+    return;
+  }
+
+  const proposal = getActiveAgentProposal();
+  if (elements.agentWorkspaceStatus) {
+    elements.agentWorkspaceStatus.textContent = proposal ? getProposalReadinessLabel(proposal) : "Ready";
+  }
+
+  renderAgentMessages();
+  renderAgentProposalCard();
+  renderAgentHelpers();
+}
+
+function maybeHandleAgentNotificationDecision(text) {
+  const proposal = getLatestApprovedAgentProposal();
+  if (!proposal) {
+    return false;
+  }
+
+  const value = String(text || "").toLowerCase();
+  const mentionsChannel = /\b(whatsapp|telegram|email|mail|portal)\b/.test(value);
+  const looksLikeDeliveryAnswer = (
+    /^\s*(send|notify|deliver|use|whatsapp|telegram|email|mail|portal)\b/.test(value)
+    || /\b(notification|delivery|results? to|message me)\b/.test(value)
+  );
+  const looksLikeNewTask = /\b(summari[sz]e|summary|digest|watch|monitor|reply|create|set up|setup|help me)\b/.test(value);
+  if (!mentionsChannel || (looksLikeNewTask && !looksLikeDeliveryAnswer)) {
+    return false;
+  }
+
+  if (/\bwhatsapp\b/.test(value)) {
+    const whatsappFeature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
+    if (whatsappFeature && isFeatureSetupComplete(whatsappFeature)) {
+      pushAgentMessage("assistant", "Great. I will use WhatsApp delivery for this helper and keep the approved task visible here.");
+      return true;
+    }
+
+    pushAgentMessage(
+      "assistant",
+      "WhatsApp delivery is possible, but first I need the WhatsApp Business API setup. If you have the API details, open setup. If you do not know how to get them, use Help me get it and I will guide you. Email or Telegram can be used sooner.",
+    );
+    return true;
+  }
+
+  if (/\btelegram\b/.test(value)) {
+    pushAgentMessage("assistant", "Telegram works as an alternative. I will need the bot chat id before delivery can run.");
+    return true;
+  }
+
+  if (/\b(email|mail)\b/.test(value)) {
+    pushAgentMessage("assistant", "Email is the fastest path. I will send results to the workspace email unless you give me a different address.");
+    return true;
+  }
+
+  pushAgentMessage("assistant", "Portal-only delivery works too. I will keep the results inside this workspace until another channel is connected.");
+  return true;
+}
+
+function handleAgentComposerSubmit(event = null) {
+  event?.preventDefault();
+  const input = elements.agentComposerInput;
+  const text = String(input?.value || "").trim();
+  if (!text) {
+    input?.focus();
+    return;
+  }
+
+  if (input) {
+    input.value = "";
+  }
+
+  pushAgentMessage("user", text);
+  const handledDecision = maybeHandleAgentNotificationDecision(text);
+
+  if (!handledDecision) {
+    const proposal = createAgentProposalFromRequest(text);
+    const agent = getAgentWorkspace();
+    agent.proposals.push(proposal);
+    agent.activeProposalId = proposal.id;
+    pushAgentMessage("assistant", proposal.response, { proposalId: proposal.id });
+  }
+
+  persistAgentWorkspace("Agent updated.");
+  renderApp({ preserveStatus: true });
+}
+
+function approveAgentProposal(proposalId) {
+  const agent = getAgentWorkspace();
+  const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
+  if (!proposal || proposal.approved) {
+    return;
+  }
+
+  proposal.approved = true;
+  proposal.status = "approved";
+  proposal.approvedAt = new Date().toISOString();
+  for (const helper of proposal.helpers) {
+    const existingHelper = agent.helpers.find((candidate) => (
+      candidate.sourceProposalId === proposal.id
+      && candidate.name.toLowerCase() === helper.name.toLowerCase()
+    ));
+    if (existingHelper) {
+      existingHelper.status = proposal.missingCredential ? "Needs setup" : "Working";
+      continue;
+    }
+
+    agent.helpers.push(normalizeAgentHelper({
+      id: createAgentId("agent-helper"),
+      name: helper.name,
+      purpose: helper.purpose,
+      status: proposal.missingCredential ? "Needs setup" : "Working",
+      sourceProposalId: proposal.id,
+      createdAt: new Date().toISOString(),
+    }));
+  }
+
+  const helperNames = proposal.helpers.map((helper) => helper.name).join(", ");
+  const question = proposal.questions[proposal.questions.length - 1] || "How should I notify you when it is done?";
+  pushAgentMessage(
+    "assistant",
+    `Approved. I created ${helperNames || "the helper agent"} and started preparing the task. One thing is still unclear: ${question}`,
+    { proposalId: proposal.id },
+  );
+  persistAgentWorkspace("Helper agent created.");
+  renderApp({ preserveStatus: true });
+}
+
+function requestAgentProposalChanges(proposalId) {
+  const agent = getAgentWorkspace();
+  const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
+  if (!proposal) {
+    return;
+  }
+
+  agent.activeProposalId = proposal.id;
+  pushAgentMessage("assistant", "Tell me what you want changed in the plan, and I will revise the skills, helpers, or notification path before approval.");
+  persistAgentWorkspace("Agent waiting for changes.");
+  renderApp({ preserveStatus: true });
+}
+
+function openAgentProposalSetup(proposalId) {
+  const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
+  if (!proposal?.relatedFeatureId) {
+    pushAgentMessage("assistant", "This plan needs a custom setup path. Tell me which app, account, or API it should connect to first.");
+    persistAgentWorkspace("Agent updated.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  const feature = getFeatureById(proposal.relatedFeatureId);
+  if (!feature) {
+    return;
+  }
+
+  const view = isWhatsAppFeature(feature) && !isFeatureSetupComplete(feature)
+    ? "activation"
+    : getDefaultFeatureStudioView(feature);
+  openFeatureStudio(feature.id, view);
+}
+
+function openAgentCredentialHelp(proposalId) {
+  const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
+  const credential = proposal?.missingCredential || "API credentials";
+  openAuthAlert(
+    "I can help you get it",
+    `This task may need ${credential}. If you do not know where to find it, I can contact you and walk you through the setup.`,
+    {
+      eyebrow: "Credential help",
+      buttonLabel: "Got it",
+      secondaryButtonLabel: proposal?.relatedFeatureId ? "Open setup" : "",
+      onSecondary: () => {
+        if (proposal?.relatedFeatureId) {
+          openAgentProposalSetup(proposal.id);
+        }
+      },
+      tone: "progress",
+      icon: "i",
+      returnFocus: elements.agentComposerInput,
+    },
+  );
+}
+
+function handleAgentWorkspaceClick(event) {
+  const target = getEventTargetElement(event);
+  const approveButton = target?.closest("[data-agent-approve-proposal]");
+  if (approveButton) {
+    approveAgentProposal(approveButton.dataset.agentApproveProposal || "");
+    return;
+  }
+
+  const setupButton = target?.closest("[data-agent-open-setup]");
+  if (setupButton) {
+    openAgentProposalSetup(setupButton.dataset.agentOpenSetup || "");
+    return;
+  }
+
+  const changesButton = target?.closest("[data-agent-request-changes]");
+  if (changesButton) {
+    requestAgentProposalChanges(changesButton.dataset.agentRequestChanges || "");
+    return;
+  }
+
+  const helpButton = target?.closest("[data-agent-credential-help]");
+  if (helpButton) {
+    openAgentCredentialHelp(helpButton.dataset.agentCredentialHelp || "");
+  }
+}
+
 function createFeatureCard(feature) {
   const card = document.createElement("button");
   card.type = "button";
@@ -11718,6 +12596,7 @@ function renderApp(options = {}) {
   updateTabButtons();
   updateFeatureStudioHeader();
   updatePanelVisibility();
+  updateAgentWorkspace();
   updateFeatureList();
   updateOpportunitiesPanel();
   updateFeatureActivationFields();
@@ -13454,6 +14333,32 @@ function bindEvents() {
     button.addEventListener("click", () => {
       setActiveTab(button.dataset.tab || "features");
     });
+  }
+
+  if (elements.agentComposerForm) {
+    elements.agentComposerForm.addEventListener("submit", handleAgentComposerSubmit);
+  }
+
+  if (elements.agentComposerInput) {
+    elements.agentComposerInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        handleAgentComposerSubmit(event);
+      }
+    });
+  }
+
+  for (const button of elements.agentPromptButtons) {
+    button.addEventListener("click", () => {
+      if (elements.agentComposerInput) {
+        elements.agentComposerInput.value = button.dataset.agentPrompt || "";
+      }
+      handleAgentComposerSubmit();
+    });
+  }
+
+  if (elements.featuresPanel) {
+    elements.featuresPanel.addEventListener("click", handleAgentWorkspaceClick);
   }
 
   if (elements.opportunitiesRefreshButton) {

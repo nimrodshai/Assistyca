@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Assistyca | WhatsApp setup</title>
+    <title>Assistyca | Agent workspace</title>
     <meta
       name="description"
-      content="Connect your WhatsApp account, add the two details this feature needs, and finish setup inside Assistyca."
+      content="Ask the Assistyca agent for outcomes, approve helper agents and skills, and configure the services needed to finish the work."
     />
-    <link rel="stylesheet" href="./styles.css?v=91" />
+    <link rel="stylesheet" href="./styles.css?v=92" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -129,7 +129,7 @@
         </div>
 
         <nav class="tab-strip" aria-label="Assistyca tabs">
-          <button class="tab-button is-active" data-tab="features" type="button">Tools</button>
+          <button class="tab-button is-active" data-tab="features" type="button">Agent</button>
           <button class="tab-button" data-tab="opportunities" type="button" hidden>Opportunities</button>
           <button class="tab-button" data-tab="clients" type="button" hidden>Clients</button>
           <button class="tab-button" data-tab="preview" type="button" hidden>Preview</button>
@@ -180,14 +180,81 @@
         </div>
       </header>
 
-      <section id="featuresPanel" class="tab-panel">
-        <div class="panel-intro">
-          <div>
-            <h1>Tools</h1>
-          </div>
+      <section id="featuresPanel" class="tab-panel agent-panel">
+        <div class="agent-workspace">
+          <section class="agent-chat-column glass-card" aria-labelledby="agentWorkspaceTitle">
+            <header class="agent-chat-header">
+              <div>
+                <p class="eyebrow">Main agent</p>
+                <h1 id="agentWorkspaceTitle">What should we get done?</h1>
+                <p class="lede compact">
+                  Ask for an outcome. The agent will propose the skills, helper agents, credentials, and delivery path before anything is created.
+                </p>
+              </div>
+              <span id="agentWorkspaceStatus" class="feature-status">Ready</span>
+            </header>
+
+            <div id="agentMessageList" class="agent-message-list" aria-live="polite"></div>
+
+            <div class="agent-quick-actions" aria-label="Example requests">
+              <button class="ghost-button small" type="button" data-agent-prompt="Summarize my emails every morning and send me the important items.">
+                Daily email summary
+              </button>
+              <button class="ghost-button small" type="button" data-agent-prompt="Watch the web for deadlines and opportunities I should know about.">
+                Watch the web
+              </button>
+              <button class="ghost-button small" type="button" data-agent-prompt="Help me reply faster to WhatsApp leads without losing control.">
+                WhatsApp replies
+              </button>
+            </div>
+
+            <form id="agentComposerForm" class="agent-composer">
+              <label class="sr-only" for="agentComposerInput">Message the Assistyca agent</label>
+              <textarea
+                id="agentComposerInput"
+                rows="2"
+                placeholder="Ask for a task, workflow, or recurring assistant..."
+              ></textarea>
+              <button id="agentComposerButton" class="primary-button" type="submit">
+                Send
+              </button>
+            </form>
+          </section>
+
+          <aside class="agent-side-panel" aria-label="Agent plan and helpers">
+            <article id="agentProposalCard" class="glass-card agent-proposal-card">
+              <div class="agent-empty-panel">
+                <p class="eyebrow">Plan</p>
+                <h2>No plan yet</h2>
+                <p>Send a request and the agent will turn it into an approval-ready plan.</p>
+              </div>
+            </article>
+
+            <article class="glass-card agent-helper-card">
+              <div class="agent-section-heading">
+                <div>
+                  <p class="eyebrow">Helpers</p>
+                  <h2>Installed helper agents</h2>
+                </div>
+                <span id="agentHelperCount" class="feature-status">0</span>
+              </div>
+              <div id="agentHelperList" class="agent-helper-list"></div>
+            </article>
+          </aside>
         </div>
 
-        <div id="featureList" class="feature-list-grid"></div>
+        <section class="agent-skill-section">
+          <div class="agent-section-heading">
+            <div>
+              <p class="eyebrow">Available skills</p>
+              <h2>Tools the agent can use</h2>
+            </div>
+            <p class="agent-section-note">
+              These stay available for setup, billing, and legacy deep links.
+            </p>
+          </div>
+          <div id="featureList" class="feature-list-grid"></div>
+        </section>
       </section>
 
       <section id="opportunitiesPanel" class="tab-panel opportunities-panel is-hidden">
@@ -1073,7 +1140,7 @@ Owner said afternoons are easier."
         <div class="billing-page-header">
           <button id="backToToolsButton" class="feature-back-button billing-back-button" type="button">
             <span aria-hidden="true">&lt;</span>
-            <span>Back to tools</span>
+            <span>Back to agent</span>
           </button>
         </div>
 
@@ -1172,7 +1239,7 @@ Owner said afternoons are easier."
         <div class="billing-page-header">
           <button id="backToPricingToolsButton" class="feature-back-button billing-back-button" type="button">
             <span aria-hidden="true">&lt;</span>
-            <span>Back to tools</span>
+            <span>Back to agent</span>
           </button>
         </div>
 
@@ -1362,6 +1429,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=104"></script>
+    <script src="./app.js?v=105"></script>
   </body>
 </html>
