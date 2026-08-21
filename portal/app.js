@@ -12895,6 +12895,9 @@ function updatePanelVisibility() {
   const studioView = inStudio ? getSelectedFeatureStudioView(feature) : "overview";
   elements.appBar.classList.toggle("is-hidden", inStudio || inBilling || inPricing);
   elements.appView.classList.toggle("is-feature-page", inStudio);
+  const isChatWorkspace = state.activeTab === "features" && !inStudio;
+  elements.appView.classList.toggle("is-chat-workspace", isChatWorkspace);
+  document.body.classList.toggle("is-chat-view", isChatWorkspace);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.opportunitiesPanel?.classList.toggle("is-hidden", state.activeTab !== "opportunities");
   elements.clientsPanel?.classList.toggle("is-hidden", state.activeTab !== "clients");

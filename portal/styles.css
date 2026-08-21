@@ -7211,3 +7211,74 @@ body[data-modal="billing"] .app-shell {
     margin-bottom: 0.2rem;
   }
 }
+
+/* The agent view owns the viewport: history and tools scroll inside their own regions. */
+body.is-chat-view {
+  overflow: hidden;
+}
+
+.app-shell.is-chat-workspace {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.app-shell.is-chat-workspace .app-bar {
+  position: relative;
+  top: auto;
+}
+
+.app-shell.is-chat-workspace .agent-panel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-content: stretch;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell.is-chat-workspace .agent-workspace {
+  position: relative;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell.is-chat-workspace .agent-chat-column {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell.is-chat-workspace .agent-message-list {
+  min-height: 0;
+  max-height: none;
+  overscroll-behavior: contain;
+}
+
+.app-shell.is-chat-workspace .agent-tools-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell.is-chat-workspace .agent-tool-shelf {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.35rem;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 1080px) {
+  .app-shell.is-chat-workspace .agent-tools-panel.is-open {
+    position: absolute;
+    inset: 0.85rem;
+    z-index: 6;
+    width: auto;
+    height: min(calc(100% - 1.7rem), 28rem);
+    justify-self: stretch;
+  }
+}
