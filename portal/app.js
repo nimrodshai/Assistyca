@@ -10183,12 +10183,9 @@ function createScheduledActionDetail(action) {
   const head = document.createElement("div");
   head.className = "agent-action-detail-head";
   const copy = document.createElement("div");
-  const eyebrow = document.createElement("p");
-  eyebrow.className = "eyebrow";
-  eyebrow.textContent = `Action ${action.id}`;
   const title = document.createElement("h3");
   title.textContent = getScheduledActionTitle(action);
-  copy.append(eyebrow, title);
+  copy.append(title);
   head.append(copy, createScheduledActionStatus(action));
   card.append(head);
 

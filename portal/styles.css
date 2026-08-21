@@ -2825,13 +2825,6 @@ body[data-modal="billing"] .app-shell {
   box-shadow: var(--shadow-soft);
 }
 
-.agent-action-detail-head .eyebrow {
-  margin: 0 0 0.25rem;
-  color: var(--muted-strong);
-  font-size: 0.65rem;
-  letter-spacing: 0.11em;
-}
-
 .agent-action-detail-head h3 {
   margin: 0;
   font-family: var(--font-display);

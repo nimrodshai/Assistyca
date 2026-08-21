@@ -129,6 +129,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/scheduled-actions?limit=100"', script)
         self.assertIn("function renderAgentActions", script)
         self.assertIn("function createScheduledActionDetail", script)
+        self.assertNotIn("`Action ${action.id}`", script)
         self.assertIn("SCHEDULED_ACTIONS_POLL_MS", script)
         self.assertIn('id="agentActionsPanel"', html)
         self.assertIn('id="agentPendingActionList"', html)
