@@ -81,7 +81,7 @@ class ScheduledActionTests(unittest.TestCase):
             recipient_wa_id="972507322341",
             message_text="It's 12:40.",
             template_name="notification_message",
-            template_language="en",
+            template_language="en_US",
         )
 
     def test_whatsapp_template_notification_uses_platform_environment(self) -> None:
@@ -103,7 +103,7 @@ class ScheduledActionTests(unittest.TestCase):
                 recipient_wa_id="972507322341",
                 message_text="It's 12:40.",
                 template_name="notification_message",
-                template_language="en",
+                template_language="en_US",
             )
 
         self.assertEqual(result, "wamid.template")
@@ -115,7 +115,7 @@ class ScheduledActionTests(unittest.TestCase):
             message_text=None,
             template={
                 "name": "notification_message",
-                "language": {"code": "en"},
+                "language": {"code": "en_US"},
                 "components": [
                     {
                         "type": "body",

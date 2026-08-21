@@ -121,7 +121,7 @@ The backend fills `{{1}}` with text such as `we found 2 people who have not been
 
 - Approved replies to customers use the client connection's saved access token and phone number ID.
 - Owner alerts use the Assistyca sender token and the Assistyca phone number ID when configured. The default sender ID is `1186653017865246`, overrideable with `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID`. If no Assistyca sender token is configured, owner alerts fall back to the client's saved WhatsApp connection token and phone number ID.
-- Scheduled assistant notifications always use the Assistyca sender credentials from the backend environment. They send `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME` (default `notification_message`) in `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE` (default `en`) and fill the template's `{{1}}` body variable with the requested message.
+- Scheduled assistant notifications always use the Assistyca sender credentials from the backend environment. They send `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME` (default `notification_message`) in `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE` (default `en_US`) and fill the template's `{{1}}` body variable with the requested message.
 - If they are missing and `whatsapp.allow_mock_send` is true, the backend simulates the send so local development still works.
 
 ## Webhook Setup

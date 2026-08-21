@@ -84,7 +84,7 @@ services:
       - key: WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME
         value: notification_message
       - key: WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE
-        value: en
+        value: en_US
       - key: WHATSAPP_ALLOW_MOCK_SEND
         value: "0"
       - key: WHATSAPP_SAMPLE_TEMPLATE_NAME

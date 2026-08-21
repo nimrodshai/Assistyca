@@ -16,7 +16,7 @@ from packages.infrastructure.portal_db import normalize_text
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
 DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME = "notification_message"
-DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en"
+DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en_US"
 SUPPORTED_SEND_CHANNELS = {"whatsapp"}
 OWNER_RECIPIENT_REFS = {"", "me", "owner", "you", "connected_owner", "account_owner"}
 
