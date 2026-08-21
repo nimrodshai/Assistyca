@@ -393,6 +393,36 @@ const DEFAULT_SIMULATOR = {
 
 const AGENT_INITIAL_MESSAGE = "";
 const AGENT_MAX_MESSAGES = 40;
+const AGENT_ADD_TOOL_OPTIONS = [
+  {
+    id: "email",
+    label: "Email",
+    detail: "Digests, alerts, and summaries",
+    icon: "@",
+    prompt: "Help me add Email as a tool.",
+  },
+  {
+    id: "calendar",
+    label: "Calendar",
+    detail: "Availability, reminders, and scheduling",
+    icon: "C",
+    prompt: "Help me add Calendar as a tool.",
+  },
+  {
+    id: "telegram",
+    label: "Telegram",
+    detail: "Fast alerts and action buttons",
+    icon: "T",
+    prompt: "Help me add Telegram as a tool.",
+  },
+  {
+    id: "custom",
+    label: "Custom tool",
+    detail: "Connect another app or workflow",
+    icon: "+",
+    prompt: "Help me add a custom tool.",
+  },
+];
 const AGENT_BLUEPRINTS = {
   emailDigest: {
     type: "email-digest",
@@ -820,6 +850,7 @@ const state = {
   scheduledActionsError: "",
   scheduledActionsLoadedAt: 0,
   selectedScheduledActionId: "",
+  agentAddToolMenuOpen: false,
   paymentStatus: null,
   selectedSimulatorId: null,
   billingReport: null,
@@ -923,6 +954,8 @@ const elements = {
   agentPromptButtons: Array.from(document.querySelectorAll("[data-agent-prompt]")),
   featureList: document.querySelector("#featureList"),
   agentToolShelf: document.querySelector("#agentToolShelf"),
+  agentAddToolButton: document.querySelector("#agentAddToolButton"),
+  agentAddToolMenu: document.querySelector("#agentAddToolMenu"),
   agentActionsPanelBody: document.querySelector("#agentActionsPanelBody"),
   agentActionsListView: document.querySelector("#agentActionsListView"),
   agentActionsStatus: document.querySelector("#agentActionsStatus"),
@@ -1343,6 +1376,7 @@ function clearAuthSession() {
   state.scheduledActionsError = "";
   state.scheduledActionsLoadedAt = 0;
   state.selectedScheduledActionId = "";
+  state.agentAddToolMenuOpen = false;
   if (scheduledActionsPollTimer !== null) {
     window.clearInterval(scheduledActionsPollTimer);
     scheduledActionsPollTimer = null;
@@ -11351,6 +11385,16 @@ function handleAgentWorkspaceClick(event) {
     return;
   }
 
+  const addToolButton = target?.closest("[data-agent-add-tool]");
+  if (addToolButton) {
+    const option = getAgentAddToolOption(addToolButton.dataset.agentAddTool || "");
+    if (option?.prompt) {
+      setAgentAddToolMenuOpen(false);
+      void handleAgentUserText(option.prompt);
+    }
+    return;
+  }
+
   const toolButton = target?.closest("[data-agent-tool-prompt]");
   if (toolButton) {
     handleAgentUserText(toolButton.dataset.agentToolPrompt || "");
@@ -11438,6 +11482,54 @@ function getAgentToolLabel(feature) {
   return feature?.name || "Tool";
 }
 
+function getAgentAddToolOption(id) {
+  return AGENT_ADD_TOOL_OPTIONS.find((option) => option.id === id) || null;
+}
+
+function setAgentAddToolMenuOpen(open) {
+  state.agentAddToolMenuOpen = Boolean(open);
+  renderAgentAddToolMenu();
+}
+
+function createAgentAddToolOption(option) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "agent-add-tool-option";
+  item.dataset.agentAddTool = option.id;
+  item.setAttribute("role", "menuitem");
+
+  const icon = document.createElement("span");
+  icon.className = "agent-add-tool-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = option.icon || option.label.slice(0, 1).toUpperCase();
+
+  const copy = document.createElement("span");
+  copy.className = "agent-tool-copy";
+  const label = document.createElement("strong");
+  label.textContent = option.label;
+  const detail = document.createElement("span");
+  detail.textContent = option.detail;
+  copy.append(label, detail);
+
+  item.append(icon, copy);
+  return item;
+}
+
+function renderAgentAddToolMenu() {
+  if (!elements.agentAddToolButton || !elements.agentAddToolMenu) {
+    return;
+  }
+
+  const isOpen = Boolean(state.agentAddToolMenuOpen);
+  elements.agentAddToolButton.setAttribute("aria-expanded", String(isOpen));
+  elements.agentAddToolMenu.hidden = !isOpen;
+  elements.agentAddToolMenu.classList.toggle("is-hidden", !isOpen);
+  if (!isOpen) {
+    return;
+  }
+  elements.agentAddToolMenu.replaceChildren(...AGENT_ADD_TOOL_OPTIONS.map(createAgentAddToolOption));
+}
+
 function createAgentToolItem(feature) {
   const item = document.createElement("button");
   item.type = "button";
@@ -11470,6 +11562,7 @@ function createAgentToolItem(feature) {
 function updateFeatureList() {
   const features = clientState.features.length ? clientState.features : [];
   const target = elements.agentToolShelf || elements.featureList;
+  renderAgentAddToolMenu();
   if (!target) {
     return;
   }
@@ -15667,6 +15760,7 @@ async function bootstrapAuthState() {
     state.scheduledActionsError = "";
     state.scheduledActionsLoadedAt = 0;
     state.selectedScheduledActionId = "";
+    state.agentAddToolMenuOpen = false;
     applyRemoteAccountProfile(response);
     state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
     clearAuthChallenge();
@@ -16233,6 +16327,12 @@ function bindEvents() {
     });
   }
 
+  if (elements.agentAddToolButton) {
+    elements.agentAddToolButton.addEventListener("click", () => {
+      setAgentAddToolMenuOpen(!state.agentAddToolMenuOpen);
+    });
+  }
+
   if (elements.agentActionsRefreshButton) {
     elements.agentActionsRefreshButton.addEventListener("click", () => {
       void refreshScheduledActions();
@@ -16293,6 +16393,16 @@ function bindEvents() {
     }
 
     if (
+      state.agentAddToolMenuOpen
+      && elements.agentAddToolMenu
+      && elements.agentAddToolButton
+      && !elements.agentAddToolMenu.contains(event.target)
+      && !elements.agentAddToolButton.contains(event.target)
+    ) {
+      setAgentAddToolMenuOpen(false);
+    }
+
+    if (
       elements.deliveryPlatformMenu
       && elements.deliveryPlatformManager
       && !elements.deliveryPlatformMenu.hidden
@@ -16317,6 +16427,11 @@ function bindEvents() {
 
       if (state.billingHelpOpen) {
         closeBillingHelp();
+        return;
+      }
+
+      if (state.agentAddToolMenuOpen) {
+        setAgentAddToolMenuOpen(false);
         return;
       }
 
