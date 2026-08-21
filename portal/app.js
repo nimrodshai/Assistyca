@@ -9512,6 +9512,44 @@ function createAgentAction(id, label, value = label, tone = "secondary") {
   return { id, label, value, tone };
 }
 
+function resolveAgentMessageActions(messageId, resolvedBy = "user-message") {
+  const agent = getAgentWorkspace();
+  const message = agent.messages.find((candidate) => candidate.id === messageId);
+  if (!message || !Array.isArray(message.metadata?.actions) || !message.metadata.actions.length) {
+    return false;
+  }
+
+  message.metadata.actionsResolvedAt = message.metadata.actionsResolvedAt || new Date().toISOString();
+  message.metadata.actionsResolvedBy = String(resolvedBy || "user-message").trim();
+  return true;
+}
+
+function resolvePendingAgentMessageActions(resolvedBy = "user-message") {
+  const agent = getAgentWorkspace();
+  let didResolve = false;
+  for (const message of agent.messages) {
+    if (message.role !== "assistant" || message.metadata?.actionsResolvedAt) {
+      continue;
+    }
+    if (!Array.isArray(message.metadata?.actions) || !message.metadata.actions.length) {
+      continue;
+    }
+    message.metadata.actionsResolvedAt = new Date().toISOString();
+    message.metadata.actionsResolvedBy = String(resolvedBy || "user-message").trim();
+    didResolve = true;
+  }
+  return didResolve;
+}
+
+function areAgentMessageActionsResolved(message, messages = []) {
+  if (message.metadata?.actionsResolvedAt) {
+    return true;
+  }
+
+  const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
+  return messageIndex >= 0 && messageIndex < messages.length - 1;
+}
+
 function getAgentConversationQuestion(proposal, questionIndex = 0) {
   const index = Math.max(0, Number(questionIndex || 0));
   const requestText = String(proposal?.requestText || "").toLowerCase();
@@ -9822,14 +9860,16 @@ function renderAgentMessage(message) {
 
   const actions = Array.isArray(message.metadata?.actions) ? message.metadata.actions : [];
   if (actions.length && message.role !== "user") {
+    const agent = getAgentWorkspace();
     const proposal = message.metadata?.proposalId
-      ? getAgentWorkspace().proposals.find((candidate) => candidate.id === message.metadata.proposalId)
+      ? agent.proposals.find((candidate) => candidate.id === message.metadata.proposalId)
       : null;
     const messageRevision = Math.max(0, Number(message.metadata?.proposalRevision || 0));
     const isStaleApproval = kind === "approval"
       && proposal
       && messageRevision > 0
       && messageRevision !== Math.max(1, Number(proposal.revision || 1));
+    const actionsResolved = areAgentMessageActionsResolved(message, agent.messages);
     const actionRow = document.createElement("div");
     actionRow.className = "agent-message-actions";
     for (const action of actions) {
@@ -9840,7 +9880,8 @@ function renderAgentMessage(message) {
       button.dataset.agentActionValue = action.value || action.label;
       button.dataset.agentActionProposal = message.metadata?.proposalId || "";
       button.dataset.agentActionRevision = String(messageRevision || "");
-      button.disabled = Boolean(isStaleApproval);
+      button.dataset.agentActionMessage = message.id;
+      button.disabled = Boolean(isStaleApproval || actionsResolved);
       button.textContent = action.label;
       actionRow.append(button);
     }
@@ -10806,10 +10847,18 @@ function handleAgentMessageAction(event) {
     return false;
   }
 
+  if (button.disabled) {
+    return true;
+  }
+
   const action = button.dataset.agentMessageAction || "";
   const proposalId = button.dataset.agentActionProposal || "";
   const proposalRevision = Math.max(0, Number(button.dataset.agentActionRevision || 0));
   const value = button.dataset.agentActionValue || button.textContent || "";
+  const messageId = button.dataset.agentActionMessage || "";
+  resolveAgentMessageActions(messageId, action);
+  persistClientState();
+  renderAgentMessages();
 
   if (action === "approve-proposal") {
     void approveAgentProposal(proposalId, proposalRevision);
@@ -10969,6 +11018,7 @@ async function handleAgentUserText(text) {
     return;
   }
 
+  resolvePendingAgentMessageActions("user-message");
   pushAgentMessage("user", cleanText);
   const agent = getAgentWorkspace();
   const activeProposal = getActiveAgentProposal();

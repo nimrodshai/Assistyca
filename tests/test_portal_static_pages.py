@@ -160,6 +160,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-thinking-dots", styles)
         self.assertIn("function getAgentScheduledMessageApprovalCopy", script)
         self.assertIn("function formatAgentScheduledMessageMoment", script)
+        self.assertIn("function resolveAgentMessageActions", script)
+        self.assertIn("function resolvePendingAgentMessageActions", script)
+        self.assertIn("function areAgentMessageActionsResolved", script)
+        self.assertIn("button.dataset.agentActionMessage = message.id", script)
+        self.assertIn("button.disabled = Boolean(isStaleApproval || actionsResolved)", script)
+        self.assertIn('resolveAgentMessageActions(messageId, action)', script)
         self.assertIn("`Got it — ${channel} ${moment} instead. Want me to schedule it?`", script)
         self.assertIn("`Done — I’ll send it on ${channel} ${moment}.`", script)
         self.assertNotIn("Action #${scheduledAction.id}", script)
@@ -169,6 +175,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function handleAgentComposerSubmit")
         ]
         self.assertIn('apiRequest("/api/agent/turn"', handler)
+        self.assertIn('resolvePendingAgentMessageActions("user-message")', handler)
         self.assertNotIn("createAgentProposalFromRequest(cleanText)", handler)
 
     def test_about_pretty_route_serves_without_redirect(self) -> None:
