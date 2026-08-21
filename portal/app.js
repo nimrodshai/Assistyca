@@ -2663,7 +2663,9 @@ function normalizeAgentProposal(value = {}) {
     missingCredential: normalizeAgentTextItem(source.missingCredential || source.missing_credential, ""),
     status: normalizeAgentTextItem(source.status, source.approved ? "approved" : "needs-approval"),
     approved: Boolean(source.approved),
+    revision: Math.max(1, Number(source.revision || 1)),
     createdAt: normalizeAgentTextItem(source.createdAt || source.created_at, new Date().toISOString()),
+    updatedAt: normalizeAgentTextItem(source.updatedAt || source.updated_at, source.createdAt || source.created_at || new Date().toISOString()),
     approvedAt: normalizeAgentTextItem(source.approvedAt || source.approved_at, ""),
     details: normalizeAgentObjectItem(source.details),
     executionPlan: normalizeAgentObjectItem(source.executionPlan || source.execution_plan),
@@ -9202,6 +9204,15 @@ function extractAgentDatePolicy(text) {
   return "next_occurrence";
 }
 
+function getAgentDefaultScheduledMessageText(timeLocal = "") {
+  const normalizedTime = String(timeLocal || "").trim();
+  return normalizedTime ? `It's ${normalizedTime}.` : "";
+}
+
+function isAgentDefaultScheduledMessageText(messageText, timeLocal = "") {
+  return String(messageText || "").trim() === getAgentDefaultScheduledMessageText(timeLocal);
+}
+
 function extractAgentScheduledMessageText(text, timeLocal = "") {
   const value = String(text || "").trim();
   const quotedMatch = value.match(/\b(?:saying|that says|with text|message(?: saying)?|text)\s+["“']([^"”']{1,400})["”']/i);
@@ -9215,7 +9226,7 @@ function extractAgentScheduledMessageText(text, timeLocal = "") {
   }
 
   if (timeLocal) {
-    return `It's ${timeLocal}.`;
+    return getAgentDefaultScheduledMessageText(timeLocal);
   }
   return "";
 }
@@ -9301,6 +9312,9 @@ function buildAgentScheduledMessageDetails(text) {
   const timezone = normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC";
   const datePolicy = extractAgentDatePolicy(requestText);
   const messageText = extractAgentScheduledMessageText(requestText, timeLocal);
+  const messageSource = messageText && !isAgentDefaultScheduledMessageText(messageText, timeLocal)
+    ? "user"
+    : "generated";
   const details = {
     actionType: "send_message",
     channel,
@@ -9309,6 +9323,7 @@ function buildAgentScheduledMessageDetails(text) {
     datePolicy,
     timezone,
     messageText,
+    messageSource,
     runAt: "",
   };
   details.runAt = resolveAgentScheduledRunAt(details);
@@ -9405,7 +9420,9 @@ function createAgentProposalFromRequest(text) {
     missingCredential,
     status: "needs-approval",
     approved: false,
+    revision: 1,
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     details: scheduledDetails,
     executionPlan: blueprint.type === "scheduled-message"
       ? buildAgentScheduledMessageExecutionPlan(scheduledDetails)
@@ -9659,6 +9676,7 @@ function pushAgentApprovalPrompt(proposal) {
   pushAgentMessage("assistant", getAgentApprovalCopy(proposal), {
     kind: "approval",
     proposalId: proposal.id,
+    proposalRevision: Math.max(1, Number(proposal.revision || 1)),
     actions: getAgentApprovalActions(proposal),
   });
 }
@@ -9679,6 +9697,10 @@ function getProposalReadinessLabel(proposal) {
 
   if (proposal.status === "scheduling") {
     return "Scheduling";
+  }
+
+  if (proposal.status === "revising") {
+    return "Updating plan";
   }
 
   if (proposal.missingCredential) {
@@ -9723,6 +9745,14 @@ function renderAgentMessage(message) {
 
   const actions = Array.isArray(message.metadata?.actions) ? message.metadata.actions : [];
   if (actions.length && message.role !== "user") {
+    const proposal = message.metadata?.proposalId
+      ? getAgentWorkspace().proposals.find((candidate) => candidate.id === message.metadata.proposalId)
+      : null;
+    const messageRevision = Math.max(0, Number(message.metadata?.proposalRevision || 0));
+    const isStaleApproval = kind === "approval"
+      && proposal
+      && messageRevision > 0
+      && messageRevision !== Math.max(1, Number(proposal.revision || 1));
     const actionRow = document.createElement("div");
     actionRow.className = "agent-message-actions";
     for (const action of actions) {
@@ -9732,6 +9762,8 @@ function renderAgentMessage(message) {
       button.dataset.agentMessageAction = action.id;
       button.dataset.agentActionValue = action.value || action.label;
       button.dataset.agentActionProposal = message.metadata?.proposalId || "";
+      button.dataset.agentActionRevision = String(messageRevision || "");
+      button.disabled = Boolean(isStaleApproval);
       button.textContent = action.label;
       actionRow.append(button);
     }
@@ -9948,6 +9980,25 @@ function getPendingAgentQuestion() {
   return proposal;
 }
 
+function getPendingAgentProposalChange() {
+  const agent = getAgentWorkspace();
+  const proposal = getActiveAgentProposal();
+  if (!proposal || proposal.approved || proposal.status === "revising") {
+    return null;
+  }
+
+  const lastMessage = [...agent.messages].reverse().find((message) => message.role === "assistant");
+  if (
+    !lastMessage
+    || lastMessage.metadata?.kind !== "proposal-change"
+    || lastMessage.metadata?.proposalId !== proposal.id
+  ) {
+    return null;
+  }
+
+  return proposal;
+}
+
 function getAgentQuestionTotal(proposal) {
   if (proposal?.type === "scheduled-message") {
     return Array.isArray(proposal.questions) ? proposal.questions.length : 0;
@@ -9973,10 +10024,14 @@ function applyAgentScheduledMessageAnswer(proposal, answer) {
     details.datePolicy = extractAgentDatePolicy(answer);
   } else if (questionKey === "messageText") {
     details.messageText = String(answer || "").trim();
+    details.messageSource = "user";
   }
 
   if (!details.messageText && details.timeLocal) {
     details.messageText = extractAgentScheduledMessageText(proposal.requestText, details.timeLocal);
+    details.messageSource = isAgentDefaultScheduledMessageText(details.messageText, details.timeLocal)
+      ? "generated"
+      : "user";
   }
   details.timezone = details.timezone || normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC";
   details.runAt = resolveAgentScheduledRunAt(details);
@@ -9993,6 +10048,151 @@ function applyAgentScheduledMessageAnswer(proposal, answer) {
   const channelLabel = formatAgentScheduledMessageChannel(channel);
   const timeLabel = details.timeLocal ? ` at ${details.timeLocal}` : "";
   proposal.summary = `Schedule a one-shot ${channelLabel} message${timeLabel}.`;
+}
+
+function applyAgentScheduledMessageRevision(proposal, changes = {}) {
+  if (proposal?.type !== "scheduled-message") {
+    return false;
+  }
+
+  const patch = changes && typeof changes === "object" ? changes : {};
+  const details = proposal.details && typeof proposal.details === "object" ? { ...proposal.details } : {};
+  const previousTime = String(details.timeLocal || "").trim();
+  const previousMessage = String(details.messageText || "").trim();
+  const messageWasGenerated = details.messageSource === "generated"
+    || isAgentDefaultScheduledMessageText(previousMessage, previousTime);
+  const hasChange = (field) => Object.prototype.hasOwnProperty.call(patch, field);
+
+  if (hasChange("channel")) {
+    details.channel = normalizeAgentDeliveryChannel(patch.channel);
+  }
+  if (hasChange("timeLocal")) {
+    details.timeLocal = String(patch.timeLocal || "").trim();
+  }
+  if (hasChange("datePolicy")) {
+    details.datePolicy = String(patch.datePolicy || "next_occurrence").trim();
+  }
+  if (hasChange("messageText")) {
+    details.messageText = String(patch.messageText || "").trim();
+    details.messageSource = "user";
+  } else if (
+    hasChange("timeLocal")
+    && messageWasGenerated
+    && patch.preserveMessageText !== true
+  ) {
+    details.messageText = getAgentDefaultScheduledMessageText(details.timeLocal);
+    details.messageSource = "generated";
+  }
+
+  details.timezone = details.timezone
+    || normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC")
+    || "UTC";
+  details.runAt = resolveAgentScheduledRunAt(details);
+  proposal.details = details;
+  proposal.executionPlan = buildAgentScheduledMessageExecutionPlan(details);
+
+  const channel = normalizeAgentDeliveryChannel(details.channel);
+  if (channel === "whatsapp") {
+    proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
+    proposal.setupActionLabel = "Open WhatsApp setup";
+    proposal.missingCredential = isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
+      ? ""
+      : "WhatsApp Business API access token";
+  } else {
+    proposal.relatedFeatureId = "";
+    proposal.missingCredential = "";
+  }
+
+  const channelLabel = formatAgentScheduledMessageChannel(channel);
+  const timeLabel = details.timeLocal ? ` at ${details.timeLocal}` : "";
+  proposal.summary = `Schedule a one-shot ${channelLabel} message${timeLabel}.`;
+  proposal.revision = Math.max(1, Number(proposal.revision || 1)) + 1;
+  proposal.updatedAt = new Date().toISOString();
+  proposal.status = "needs-approval";
+  proposal.approved = false;
+  return true;
+}
+
+async function reviseAgentProposal(proposal, userMessage) {
+  if (!proposal || proposal.approved) {
+    return false;
+  }
+
+  const agent = getAgentWorkspace();
+  const proposalId = String(proposal.id || "").trim();
+  const liveProposal = agent.proposals.find((candidate) => candidate.id === proposalId);
+  if (!liveProposal || liveProposal.approved) {
+    return false;
+  }
+  const expectedRevision = Math.max(1, Number(liveProposal.revision || 1));
+  const proposalPayload = {
+    id: liveProposal.id,
+    type: liveProposal.type,
+    revision: expectedRevision,
+    requestText: liveProposal.requestText,
+    summary: liveProposal.summary,
+    details: liveProposal.details,
+  };
+  const conversationPayload = agent.messages.slice(-12).map((message) => ({
+    role: message.role,
+    text: message.text,
+  }));
+  liveProposal.status = "revising";
+  persistAgentWorkspace("Agent is updating the plan...");
+  renderApp({ preserveStatus: true });
+
+  try {
+    const response = await apiRequest("/api/agent/proposals/revise", {
+      method: "POST",
+      timeoutMs: 30000,
+      body: {
+        proposal: proposalPayload,
+        userMessage,
+        conversation: conversationPayload,
+      },
+    });
+
+    const currentAgent = getAgentWorkspace();
+    const currentProposal = currentAgent.proposals.find((candidate) => candidate.id === proposalId);
+    if (!currentProposal || Math.max(1, Number(currentProposal.revision || 1)) !== expectedRevision) {
+      return false;
+    }
+
+    if (response.outcome === "needs_clarification") {
+      currentProposal.status = "needs-approval";
+      pushAgentMessage("assistant", response.reply || "What would you like me to change?", {
+        kind: "proposal-change",
+        proposalId: currentProposal.id,
+        proposalRevision: expectedRevision,
+      });
+    } else if (applyAgentScheduledMessageRevision(currentProposal, response.changes)) {
+      pushAgentApprovalPrompt(currentProposal);
+    } else {
+      throw new Error("This proposal type cannot be revised yet.");
+    }
+
+    persistAgentWorkspace("Plan updated.");
+    renderApp({ preserveStatus: true });
+    return true;
+  } catch (error) {
+    const currentAgent = getAgentWorkspace();
+    const currentProposal = currentAgent.proposals.find((candidate) => candidate.id === proposalId);
+    if (currentProposal) {
+      currentProposal.status = "needs-approval";
+    }
+    pushAgentMessage(
+      "assistant",
+      formatApiErrorMessage(error, "I could not apply that change safely. Please describe it another way."),
+      {
+        kind: "proposal-change",
+        proposalId,
+        proposalRevision: expectedRevision,
+      },
+    );
+    persistAgentWorkspace("Plan change needs another try.");
+    renderApp({ preserveStatus: true });
+    return false;
+  }
 }
 
 function handleAgentQuestionAnswer(proposal, answer) {
@@ -10108,15 +10308,16 @@ function handleAgentMessageAction(event) {
 
   const action = button.dataset.agentMessageAction || "";
   const proposalId = button.dataset.agentActionProposal || "";
+  const proposalRevision = Math.max(0, Number(button.dataset.agentActionRevision || 0));
   const value = button.dataset.agentActionValue || button.textContent || "";
 
   if (action === "approve-proposal") {
-    void approveAgentProposal(proposalId);
+    void approveAgentProposal(proposalId, proposalRevision);
     return true;
   }
 
   if (action === "request-change") {
-    requestAgentProposalChanges(proposalId);
+    requestAgentProposalChanges(proposalId, proposalRevision);
     return true;
   }
 
@@ -10145,6 +10346,12 @@ function handleAgentUserText(text) {
   }
 
   pushAgentMessage("user", cleanText);
+  const pendingProposalChange = getPendingAgentProposalChange();
+  if (pendingProposalChange) {
+    void reviseAgentProposal(pendingProposalChange, cleanText);
+    return;
+  }
+
   const pendingQuestion = getPendingAgentQuestion();
   if (pendingQuestion && !shouldTreatAgentInputAsNewRequest(cleanText, pendingQuestion)) {
     handleAgentQuestionAnswer(pendingQuestion, cleanText);
@@ -10224,10 +10431,21 @@ async function scheduleAgentScheduledMessageProposal(proposal) {
   });
 }
 
-async function approveAgentProposal(proposalId) {
+async function approveAgentProposal(proposalId, expectedRevision = 0) {
   const agent = getAgentWorkspace();
   const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
   if (!proposal || proposal.approved || proposal.status === "scheduling") {
+    return;
+  }
+
+  const currentRevision = Math.max(1, Number(proposal.revision || 1));
+  if (expectedRevision > 0 && expectedRevision !== currentRevision) {
+    pushAgentMessage("assistant", "This plan changed. Please review and approve the latest version.", {
+      kind: "result",
+      proposalId: proposal.id,
+    });
+    persistAgentWorkspace("Latest plan approval required.");
+    renderApp({ preserveStatus: true });
     return;
   }
 
@@ -10358,17 +10576,30 @@ async function approveAgentProposal(proposalId) {
   renderApp({ preserveStatus: true });
 }
 
-function requestAgentProposalChanges(proposalId) {
+function requestAgentProposalChanges(proposalId, expectedRevision = 0) {
   const agent = getAgentWorkspace();
   const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
-  if (!proposal) {
+  if (!proposal || proposal.approved || proposal.status === "revising") {
+    return;
+  }
+
+  const currentRevision = Math.max(1, Number(proposal.revision || 1));
+  if (expectedRevision > 0 && expectedRevision !== currentRevision) {
+    pushAgentMessage("assistant", "That plan has already changed. Tell me what you want to change in the latest version.", {
+      kind: "proposal-change",
+      proposalId: proposal.id,
+      proposalRevision: currentRevision,
+    });
+    persistAgentWorkspace("Agent waiting for changes.");
+    renderApp({ preserveStatus: true });
     return;
   }
 
   agent.activeProposalId = proposal.id;
   pushAgentMessage("assistant", "Sure. What would you like to change?", {
-    kind: "question",
+    kind: "proposal-change",
     proposalId: proposal.id,
+    proposalRevision: currentRevision,
   });
   persistAgentWorkspace("Agent waiting for changes.");
   renderApp({ preserveStatus: true });

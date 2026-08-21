@@ -63,6 +63,8 @@ services:
         value: "10"
       - key: PORTAL_CONTACT_AGENT_MODEL
         value: gpt-5.5
+      - key: PORTAL_ASSISTANT_MODEL
+        value: gpt-5.5
       - key: OPENAI_API_KEY
         sync: false
       - key: PORTAL_RESEND_API_KEY

@@ -38,6 +38,14 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_INSTRUCTIONS
+from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH
+from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS
+from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
+from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
+from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
+from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
+from packages.infrastructure.agent_proposals import parse_agent_proposal_revision_json
 from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
 from packages.infrastructure.feature_activation import FeatureActivationService
@@ -1921,6 +1929,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/pricing/")
             or path == "/api/contact"
             or path == "/api/contact/agent"
+            or path == "/api/agent/proposals/revise"
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -1974,6 +1983,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/pricing/")
             or path == "/api/contact"
             or path == "/api/contact/agent"
+            or path == "/api/agent/proposals/revise"
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -2169,6 +2179,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/contact/agent":
             self._handle_contact_agent_turn()
+            return
+
+        if path == "/api/agent/proposals/revise":
+            self._handle_agent_proposal_revision()
             return
 
         if path == "/api/whatsapp/test":
@@ -2557,6 +2571,105 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             **agent_payload,
+        })
+
+    def _handle_agent_proposal_revision(self) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        user_message = normalize_contact_message(
+            payload.get("userMessage"),
+            AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH,
+        )
+        try:
+            proposal = normalize_agent_proposal_for_revision(payload.get("proposal"))
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_proposal",
+                "message": str(exc),
+            })
+            return
+
+        if not user_message:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_revision_request",
+                "message": "Tell me what you want to change.",
+            })
+            return
+
+        conversation = normalize_agent_proposal_revision_conversation(payload.get("conversation"))
+        prompt = build_agent_proposal_revision_prompt(
+            proposal=proposal,
+            user_message=user_message,
+            conversation=conversation,
+        )
+        model = (
+            normalize_text(os.getenv("PORTAL_ASSISTANT_MODEL"))
+            or normalize_text(os.getenv("OPENAI_MODEL"))
+            or "gpt-5.5"
+        )
+
+        try:
+            result = call_openai_response(
+                tool_name="portal_agent_proposal_revision",
+                tool_id="portal_agent",
+                billing_email=session.email,
+                prompt=prompt,
+                model=model,
+                instructions=AGENT_PROPOSAL_REVISION_INSTRUCTIONS,
+                max_output_tokens=AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS,
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                config=load_openai_config(
+                    default_model=model,
+                    strict_tracking=False,
+                    include_prompt_in_metadata=False,
+                ),
+                metadata={
+                    "source": "portal_agent",
+                    "proposalType": proposal["type"],
+                    "proposalRevision": proposal["revision"],
+                },
+            )
+        except OpenAIError as exc:
+            print(f"Portal agent proposal revision failed: {exc.message}", flush=True)
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "agent_revision_unavailable",
+                "message": "I could not understand that change right now. Please try again in a moment.",
+            })
+            return
+
+        try:
+            revision = normalize_agent_proposal_revision_response(
+                parse_agent_proposal_revision_json(result.output_text)
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"Portal agent proposal revision returned invalid JSON: {exc}", flush=True)
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "invalid_agent_revision",
+                "message": "I could not apply that change safely. Please describe it another way.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            **revision,
         })
 
     def _handle_contact_submit(self) -> None:

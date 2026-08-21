@@ -127,6 +127,17 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("getAgentQuestionTotal(proposal)", script)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 
+    def test_agent_proposal_changes_use_contextual_structured_revision(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('kind: "proposal-change"', script)
+        self.assertIn('apiRequest("/api/agent/proposals/revise"', script)
+        self.assertIn("function applyAgentScheduledMessageRevision", script)
+        self.assertIn("getAgentDefaultScheduledMessageText(details.timeLocal)", script)
+        self.assertIn("patch.preserveMessageText !== true", script)
+        self.assertIn("proposal.revision", script)
+        self.assertIn("proposalRevision", script)
+
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")

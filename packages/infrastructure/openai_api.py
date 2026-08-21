@@ -143,6 +143,8 @@ def safe_float(value: Any) -> float:
 
 
 def parse_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
     text = normalize_text(value).lower()
     if not text:
         return default
