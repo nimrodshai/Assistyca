@@ -253,6 +253,8 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertEqual(kwargs["tool_name"], "portal_conversational_agent")
         self.assertIn('"activeProposal":{"id":"proposal-1"', kwargs["prompt"])
         self.assertIn("not a new request", kwargs["prompt"])
+        self.assertIn("must not ask for confirmation or approval", kwargs["prompt"])
+        self.assertIn("application renders the single approval question", kwargs["prompt"])
 
     def test_initial_scheduled_message_turn_uses_openai_proposal(self) -> None:
         token = self._session_token_for("owner@example.com")

@@ -9623,17 +9623,39 @@ function getAgentQuestionActions(proposal, questionIndex = 0) {
   return [];
 }
 
+function formatAgentScheduledMessageMoment(details = {}) {
+  const time = String(details.timeLocal || "").trim() || "the chosen time";
+  const datePolicy = String(details.datePolicy || "next_occurrence").trim();
+  if (datePolicy === "today") {
+    return `today at ${time}`;
+  }
+  if (datePolicy === "tomorrow") {
+    return `tomorrow at ${time}`;
+  }
+  return `at ${time}`;
+}
+
+function getAgentScheduledMessageApprovalCopy(proposal) {
+  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
+  const channel = formatAgentScheduledMessageChannel(details.channel);
+  const moment = formatAgentScheduledMessageMoment(details);
+  const isRevision = Math.max(1, Number(proposal?.revision || 1)) > 1;
+  const messageText = String(details.messageText || "").trim();
+  const hasCustomMessage = details.messageSource === "user" && messageText;
+
+  if (isRevision) {
+    return `Got it — ${channel} ${moment} instead. Want me to schedule it?`;
+  }
+  if (hasCustomMessage) {
+    return `Sure — I’ll send “${messageText}” on ${channel} ${moment}. Want me to schedule it?`;
+  }
+  return `Sure — I can message you on ${channel} ${moment}. Want me to schedule it?`;
+}
+
 function getAgentApprovalCopy(proposal) {
   const answers = Array.isArray(proposal?.answers) ? proposal.answers : [];
   if (proposal?.type === "scheduled-message") {
-    const details = proposal.details && typeof proposal.details === "object" ? proposal.details : {};
-    const channel = formatAgentScheduledMessageChannel(details.channel);
-    const timeLabel = String(details.timeLocal || "").trim()
-      ? `the next ${String(details.timeLocal).trim()}`
-      : "the chosen time";
-    const timezone = String(details.timezone || "").trim() || "your workspace timezone";
-    const messageText = String(details.messageText || "").trim() || "the approved message";
-    return `I’ll send “${messageText}” on ${channel} at ${timeLabel} (${timezone}). Would you like me to schedule it?`;
+    return getAgentScheduledMessageApprovalCopy(proposal);
   }
 
   if (proposal?.type === "email-digest") {
@@ -9684,7 +9706,10 @@ function pushAgentQuestion(proposal, questionIndex = 0) {
 function pushAgentApprovalPrompt(proposal, introduction = "") {
   const naturalIntroduction = String(introduction || "").trim();
   const approvalCopy = getAgentApprovalCopy(proposal);
-  pushAgentMessage("assistant", naturalIntroduction ? `${naturalIntroduction}\n\n${approvalCopy}` : approvalCopy, {
+  const messageText = proposal?.type === "scheduled-message"
+    ? approvalCopy
+    : (naturalIntroduction ? `${naturalIntroduction}\n\n${approvalCopy}` : approvalCopy);
+  pushAgentMessage("assistant", messageText, {
     kind: "approval",
     proposalId: proposal.id,
     proposalRevision: Math.max(1, Number(proposal.revision || 1)),
@@ -10735,12 +10760,8 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
   } else if (proposal.type === "scheduled-message") {
     const details = proposal.details && typeof proposal.details === "object" ? proposal.details : {};
     const channel = formatAgentScheduledMessageChannel(details.channel);
-    const timeLabel = String(details.timeLocal || "").trim()
-      ? `the next ${String(details.timeLocal).trim()}`
-      : "the scheduled time";
-    const timezone = String(details.timezone || "").trim() || "your workspace timezone";
-    const actionId = scheduledAction?.id ? ` Action #${scheduledAction.id} is saved.` : "";
-    pushAgentMessage("assistant", `All set. I scheduled the ${channel} message for ${timeLabel} (${timezone}).${actionId}`, {
+    const moment = formatAgentScheduledMessageMoment(details);
+    pushAgentMessage("assistant", `Done — I’ll send it on ${channel} ${moment}.`, {
       kind: "result",
       proposalId: proposal.id,
     });

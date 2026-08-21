@@ -142,6 +142,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("agentTurnBusy = true", script)
         self.assertIn('kind: "thinking"', script)
         self.assertIn(".agent-thinking-dots", styles)
+        self.assertIn("function getAgentScheduledMessageApprovalCopy", script)
+        self.assertIn("function formatAgentScheduledMessageMoment", script)
+        self.assertIn("`Got it — ${channel} ${moment} instead. Want me to schedule it?`", script)
+        self.assertIn("`Done — I’ll send it on ${channel} ${moment}.`", script)
+        self.assertNotIn("Action #${scheduledAction.id}", script)
+        self.assertNotIn("Would you like me to schedule it?", script)
         handler = script[
             script.index("async function handleAgentUserText"):
             script.index("function handleAgentComposerSubmit")
