@@ -147,8 +147,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("AGENT_ADD_TOOL_OPTIONS", script)
         self.assertIn('label: "Email"', script)
         self.assertIn('label: "Calendar"', script)
+        self.assertIn("function createAgentAddToolLogo", script)
+        self.assertIn('icon: "telegram"', script)
         self.assertIn("function renderAgentAddToolMenu", script)
         self.assertIn("data-agent-add-tool", script)
+        self.assertNotIn(".agent-add-tool-menu {\n  position: absolute;", styles)
+        self.assertIn(".agent-add-tool-icon svg", styles)
         self.assertIn("getAgentQuestionTotal(proposal)", script)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 

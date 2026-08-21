@@ -398,28 +398,28 @@ const AGENT_ADD_TOOL_OPTIONS = [
     id: "email",
     label: "Email",
     detail: "Digests, alerts, and summaries",
-    icon: "@",
+    icon: "email",
     prompt: "Help me add Email as a tool.",
   },
   {
     id: "calendar",
     label: "Calendar",
     detail: "Availability, reminders, and scheduling",
-    icon: "C",
+    icon: "calendar",
     prompt: "Help me add Calendar as a tool.",
   },
   {
     id: "telegram",
     label: "Telegram",
     detail: "Fast alerts and action buttons",
-    icon: "T",
+    icon: "telegram",
     prompt: "Help me add Telegram as a tool.",
   },
   {
     id: "custom",
     label: "Custom tool",
     detail: "Connect another app or workflow",
-    icon: "+",
+    icon: "custom",
     prompt: "Help me add a custom tool.",
   },
 ];
@@ -11491,6 +11491,97 @@ function setAgentAddToolMenuOpen(open) {
   renderAgentAddToolMenu();
 }
 
+function createSvgElement(tagName, attributes = {}) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+  for (const [name, value] of Object.entries(attributes)) {
+    element.setAttribute(name, String(value));
+  }
+  return element;
+}
+
+function createAgentAddToolLogo(option) {
+  const iconType = String(option?.icon || option?.id || "").trim().toLowerCase();
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "18",
+    height: "18",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+
+  if (iconType === "email") {
+    svg.append(
+      createSvgElement("rect", {
+        x: "3.5",
+        y: "5.5",
+        width: "17",
+        height: "13",
+        rx: "3.2",
+        stroke: "currentColor",
+        "stroke-width": "2",
+      }),
+      createSvgElement("path", {
+        d: "M5 8l7 5.2L19 8",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      }),
+    );
+    return svg;
+  }
+
+  if (iconType === "calendar") {
+    svg.append(
+      createSvgElement("rect", {
+        x: "4",
+        y: "5.5",
+        width: "16",
+        height: "15",
+        rx: "3",
+        stroke: "currentColor",
+        "stroke-width": "2",
+      }),
+      createSvgElement("path", {
+        d: "M8 3.5v4M16 3.5v4M4.8 10h14.4M8 14h2.8M13.2 14H16M8 17h2.8",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        "stroke-linecap": "round",
+      }),
+    );
+    return svg;
+  }
+
+  if (iconType === "telegram") {
+    svg.append(
+      createSvgElement("path", {
+        d: "M20.3 4.8 3.9 11.1c-1.1.4-1.1 1.1-.2 1.4l4.2 1.3 1.6 5c.2.6.5.8 1 .8.5 0 .8-.2 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.3 1.7-.8l3-14c.3-1.2-.5-1.8-1.2-1.5Z",
+        fill: "currentColor",
+        transform: "translate(-1.6 -.4) scale(1.08)",
+      }),
+      createSvgElement("path", {
+        d: "m8.3 13.5 8.5-5.3-6.6 6.8-.2 3",
+        stroke: "rgba(255,255,255,0.72)",
+        "stroke-width": "1.35",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      }),
+    );
+    return svg;
+  }
+
+  svg.append(
+    createSvgElement("path", {
+      d: "M12 5v14M5 12h14",
+      stroke: "currentColor",
+      "stroke-width": "2.4",
+      "stroke-linecap": "round",
+    }),
+  );
+  return svg;
+}
+
 function createAgentAddToolOption(option) {
   const item = document.createElement("button");
   item.type = "button";
@@ -11501,7 +11592,7 @@ function createAgentAddToolOption(option) {
   const icon = document.createElement("span");
   icon.className = "agent-add-tool-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = option.icon || option.label.slice(0, 1).toUpperCase();
+  icon.append(createAgentAddToolLogo(option));
 
   const copy = document.createElement("span");
   copy.className = "agent-tool-copy";
