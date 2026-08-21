@@ -2771,6 +2771,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             turn = normalize_agent_turn_response(
                 parse_agent_proposal_revision_json(result.output_text),
                 has_active_proposal=active_proposal is not None,
+                active_proposal_type=str((active_proposal or {}).get("type") or ""),
             )
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"Portal conversational agent returned invalid JSON: {exc}", flush=True)

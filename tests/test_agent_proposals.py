@@ -13,6 +13,7 @@ from urllib import request as urllib_request
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
+from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -100,6 +101,78 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn('"activeProposal":{"id":"proposal-1"', prompt)
         self.assertIn('"latestUserMessage":"No, let\'s change it to 13:50"', prompt)
         self.assertIn("not a new request", prompt)
+
+    def test_conversational_turn_prompt_uses_field_based_intake(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="HaSharon and central Israel",
+            conversation=[
+                {"role": "user", "text": "Please check the web every 5 minutes for fun events to do with kids in August and email me"},
+                {"role": "assistant", "text": "What location should I search in?"},
+                {"role": "user", "text": "HaSharon and central Israel"},
+            ],
+            timezone_name="Asia/Jerusalem",
+            active_proposal={
+                "id": "proposal-1",
+                "type": "web-monitor",
+                "revision": 1,
+                "requestText": "Please check the web every 5 minutes for fun events to do with kids in August and email me",
+                "fields": {
+                    "watchQuery": "fun events to do with kids",
+                    "timeWindow": "August",
+                    "frequency": "every 5 minutes",
+                    "deliveryChannel": "Email",
+                },
+            },
+        )
+
+        self.assertIn('"proposalFieldSchemas"', prompt)
+        self.assertIn('"watchQuery":"fun events to do with kids"', prompt)
+        self.assertIn("changes.fields", prompt)
+        self.assertIn("Do not restart questions", prompt)
+
+    def test_question_turn_can_preserve_known_draft_fields(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "question",
+            "reply": "Sure — what location should I search in?",
+            "proposalType": "web-monitor",
+            "changes": {
+                "fields": {
+                    "watchQuery": "fun events to do with kids",
+                    "timeWindow": "August",
+                    "frequency": "every 5 minutes",
+                    "deliveryChannel": "Email",
+                    "ignoredField": "not allowed",
+                },
+            },
+        }, has_active_proposal=False)
+
+        self.assertEqual(turn["outcome"], "question")
+        self.assertEqual(turn["proposalType"], "web-monitor")
+        self.assertEqual(turn["changes"]["fields"], {
+            "watchQuery": "fun events to do with kids",
+            "timeWindow": "August",
+            "frequency": "every 5 minutes",
+            "deliveryChannel": "Email",
+        })
+
+    def test_active_non_scheduled_proposal_keeps_fields_for_turns(self) -> None:
+        proposal = normalize_agent_proposal_for_turn({
+            "id": "proposal-1",
+            "type": "web-monitor",
+            "revision": 1,
+            "requestText": "Watch for events",
+            "fields": {
+                "watchQuery": "kid-friendly events",
+                "frequency": "daily",
+                "deliveryChannel": "Email",
+            },
+        })
+
+        self.assertEqual(proposal["fields"], {
+            "watchQuery": "kid-friendly events",
+            "frequency": "daily",
+            "deliveryChannel": "Email",
+        })
 
 
 class AgentProposalRevisionApiTests(unittest.TestCase):

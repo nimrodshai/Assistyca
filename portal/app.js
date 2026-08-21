@@ -658,6 +658,152 @@ const AGENT_BLUEPRINTS = {
   },
 };
 
+const AGENT_PROPOSAL_FIELD_SCHEMAS = {
+  "email-digest": [
+    {
+      key: "mailbox",
+      question: "Which mailbox should I summarize?",
+      actions: ["Gmail", "Outlook"],
+    },
+    {
+      key: "schedule",
+      question: "What time should I send the summary?",
+      actions: ["8:00 AM", "9:00 AM"],
+    },
+    {
+      key: "deliveryChannel",
+      question: "Where should I send it?",
+      actions: ["Email", "Telegram", "WhatsApp"],
+    },
+  ],
+  "web-monitor": [
+    {
+      key: "watchQuery",
+      question: "What should I watch for?",
+    },
+    {
+      key: "location",
+      question: "What location should I search in for this?",
+      requiredWhen: "web-monitor-location-sensitive",
+    },
+    {
+      key: "timeWindow",
+      question: "What date range should I focus on?",
+      required: false,
+    },
+    {
+      key: "frequency",
+      question: "How often should I check?",
+      actions: ["Daily", "Weekly", "Monthly"],
+    },
+    {
+      key: "deliveryChannel",
+      question: "Where should I send alerts?",
+      actions: ["Email", "Telegram", "WhatsApp"],
+    },
+  ],
+  "whatsapp-replies": [
+    {
+      key: "whatsappNumber",
+      question: "Which WhatsApp number should I use?",
+    },
+    {
+      key: "approver",
+      question: "Who should approve reply drafts?",
+    },
+    {
+      key: "guardrails",
+      question: "What should I never promise without you?",
+    },
+  ],
+  reengagement: [
+    {
+      key: "inactivityPeriod",
+      question: "How long should a conversation be quiet before I suggest a follow-up?",
+      actions: ["1 month", "3 months", "6 months"],
+    },
+    {
+      key: "frequency",
+      question: "How often should I check?",
+      actions: ["Daily", "Weekly"],
+    },
+    {
+      key: "deliveryChannel",
+      question: "Where should I send drafts for review?",
+      actions: ["WhatsApp", "Email", "Telegram"],
+    },
+  ],
+  custom: [
+    {
+      key: "result",
+      question: "What should the finished result look like?",
+    },
+    {
+      key: "frequency",
+      question: "How often should this happen?",
+    },
+    {
+      key: "deliveryChannel",
+      question: "How should I let you know when it is done?",
+      actions: ["Portal inbox", "Email", "Telegram", "WhatsApp"],
+    },
+  ],
+};
+const AGENT_CALENDAR_FIELD_SCHEMA = [
+  {
+    key: "calendar",
+    question: "Which calendar should I use?",
+    actions: ["Google Calendar", "Outlook Calendar"],
+  },
+];
+const AGENT_PROPOSAL_FIELD_ALIASES = {
+  channel: "deliveryChannel",
+  delivery: "deliveryChannel",
+  delivery_channel: "deliveryChannel",
+  deliverychannel: "deliveryChannel",
+  notify: "deliveryChannel",
+  notification: "deliveryChannel",
+  notification_channel: "deliveryChannel",
+  notificationchannel: "deliveryChannel",
+  topic: "watchQuery",
+  query: "watchQuery",
+  watch: "watchQuery",
+  watch_query: "watchQuery",
+  watchquery: "watchQuery",
+  subject: "watchQuery",
+  search: "watchQuery",
+  search_query: "watchQuery",
+  searchquery: "watchQuery",
+  cadence: "frequency",
+  interval: "frequency",
+  schedule: "schedule",
+  time: "schedule",
+  mailbox: "mailbox",
+  inbox: "mailbox",
+  location: "location",
+  area: "location",
+  date_range: "timeWindow",
+  daterange: "timeWindow",
+  time_window: "timeWindow",
+  timewindow: "timeWindow",
+  period: "timeWindow",
+  number: "whatsappNumber",
+  whatsapp_number: "whatsappNumber",
+  whatsappnumber: "whatsappNumber",
+  approver: "approver",
+  reviewer: "approver",
+  guardrails: "guardrails",
+  restrictions: "guardrails",
+  inactivity: "inactivityPeriod",
+  inactivity_period: "inactivityPeriod",
+  inactivityperiod: "inactivityPeriod",
+  quiet_period: "inactivityPeriod",
+  quietperiod: "inactivityPeriod",
+  result: "result",
+  output: "result",
+  calendar: "calendar",
+};
+
 function normalizeTab(tab) {
   return TAB_ALIASES.get(String(tab || "").trim()) || String(tab || "").trim();
 }
@@ -2658,6 +2804,19 @@ function normalizeAgentObjectItem(value = {}) {
   return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
 }
 
+function normalizeAgentFieldValues(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const fields = {};
+  for (const [rawKey, rawValue] of Object.entries(source)) {
+    const key = normalizeAgentProposalFieldKey(rawKey);
+    const fieldValue = normalizeAgentTextItem(rawValue, "").slice(0, 400).trim();
+    if (key && fieldValue) {
+      fields[key] = fieldValue;
+    }
+  }
+  return fields;
+}
+
 function normalizeAgentSkillItem(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const label = normalizeAgentTextItem(source.label || source.name, "Skill");
@@ -2713,7 +2872,7 @@ function normalizeAgentProposal(value = {}) {
     return null;
   }
 
-  return {
+  const proposal = {
     id: normalizeAgentTextItem(source.id, createAgentId("agent-proposal")),
     type: normalizeAgentTextItem(source.type, "custom"),
     requestText: normalizeAgentTextItem(source.requestText || source.request_text, ""),
@@ -2731,6 +2890,7 @@ function normalizeAgentProposal(value = {}) {
     updatedAt: normalizeAgentTextItem(source.updatedAt || source.updated_at, source.createdAt || source.created_at || new Date().toISOString()),
     approvedAt: normalizeAgentTextItem(source.approvedAt || source.approved_at, ""),
     details: normalizeAgentObjectItem(source.details),
+    fields: normalizeAgentFieldValues(source.fields || source.field_values || source.fieldValues),
     executionPlan: normalizeAgentObjectItem(source.executionPlan || source.execution_plan),
     skills: Array.isArray(source.skills) ? source.skills.map(normalizeAgentSkillItem).filter(Boolean) : [],
     helpers: Array.isArray(source.helpers) ? source.helpers.map(normalizeAgentHelperDraft).filter(Boolean) : [],
@@ -2748,6 +2908,8 @@ function normalizeAgentProposal(value = {}) {
       ? source.alternatives.map((alternative) => normalizeAgentTextItem(alternative, "")).filter(Boolean)
       : [],
   };
+  syncAgentProposalFieldCompatibility(proposal);
+  return proposal;
 }
 
 function normalizeAgentHelper(value = {}) {
@@ -9469,6 +9631,9 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     ? blueprintOverride
     : getAgentBlueprintForText(text);
   const scheduledDetails = blueprint.type === "scheduled-message" ? buildAgentScheduledMessageDetails(text) : {};
+  const inferredFields = blueprint.type === "scheduled-message"
+    ? {}
+    : inferAgentProposalFieldsFromText(text, blueprint.type);
   const scheduledQuestionPlan = blueprint.type === "scheduled-message"
     ? buildAgentScheduledMessageQuestionPlan(scheduledDetails)
     : { questions: [...blueprint.questions], questionKeys: [] };
@@ -9496,6 +9661,7 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     details: scheduledDetails,
+    fields: inferredFields,
     executionPlan: blueprint.type === "scheduled-message"
       ? buildAgentScheduledMessageExecutionPlan(scheduledDetails)
       : {},
@@ -9513,6 +9679,8 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     const channelLabel = formatAgentScheduledMessageChannel(scheduledDetails.channel);
     const timeLabel = scheduledDetails.timeLocal ? ` at ${scheduledDetails.timeLocal}` : "";
     proposal.summary = `Schedule a one-shot ${channelLabel} message${timeLabel}.`;
+  } else {
+    updateAgentProposalSummaryFromFields(proposal);
   }
 
   return proposal;
@@ -9584,6 +9752,384 @@ function areAgentMessageActionsResolved(message, messages = []) {
   return messageIndex >= 0 && messageIndex < messages.length - 1;
 }
 
+function normalizeAgentProposalFieldKey(key) {
+  const rawKey = String(key || "").trim();
+  if (!rawKey) {
+    return "";
+  }
+  const aliasKey = rawKey
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s.-]+/g, "_")
+    .replace(/[^a-zA-Z0-9_]/g, "")
+    .toLowerCase();
+  return AGENT_PROPOSAL_FIELD_ALIASES[aliasKey] || rawKey.replace(/[^a-zA-Z0-9_]/g, "").slice(0, 80);
+}
+
+function getAgentProposalFieldKeyForSchema(rawKey, allowedKeys) {
+  let key = normalizeAgentProposalFieldKey(rawKey);
+  if (allowedKeys.has(key)) {
+    return key;
+  }
+
+  const aliasKey = String(rawKey || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s.-]+/g, "_")
+    .replace(/[^a-zA-Z0-9_]/g, "")
+    .toLowerCase();
+  if (["schedule", "time", "cadence", "interval"].includes(aliasKey) && allowedKeys.has("frequency")) {
+    key = "frequency";
+  } else if (["schedule", "time", "send_time", "sendtime"].includes(aliasKey) && allowedKeys.has("schedule")) {
+    key = "schedule";
+  }
+  return allowedKeys.has(key) ? key : "";
+}
+
+function getAgentProposalFieldSchema(proposal) {
+  const requestText = String(proposal?.requestText || "");
+  if (
+    proposal?.type === "custom"
+    && /\b(calendar|schedule|agenda|appointments?)\b/i.test(requestText)
+  ) {
+    return AGENT_CALENDAR_FIELD_SCHEMA;
+  }
+  return AGENT_PROPOSAL_FIELD_SCHEMAS[proposal?.type] || AGENT_PROPOSAL_FIELD_SCHEMAS.custom;
+}
+
+function getAgentProposalFieldMap(proposal) {
+  return proposal?.fields && typeof proposal.fields === "object" && !Array.isArray(proposal.fields)
+    ? proposal.fields
+    : {};
+}
+
+function hasAgentProposalFieldValue(proposal, key) {
+  return Boolean(String(getAgentProposalFieldMap(proposal)[key] || "").trim());
+}
+
+function isAgentWebMonitorLocationSensitive(proposal) {
+  if (proposal?.type !== "web-monitor") {
+    return false;
+  }
+  const fields = getAgentProposalFieldMap(proposal);
+  const text = `${proposal.requestText || ""} ${fields.watchQuery || ""}`.toLowerCase();
+  return /\b(events?|activities|things to do|kids?|children|famil(y|ies)|nearby|near me|local|restaurants?|venues?|classes?|workshops?|camps?)\b/.test(text);
+}
+
+function isAgentProposalFieldRequired(proposal, field) {
+  if (!field || field.required === false) {
+    return false;
+  }
+  if (field.requiredWhen === "web-monitor-location-sensitive") {
+    return isAgentWebMonitorLocationSensitive(proposal);
+  }
+  return true;
+}
+
+function getAgentNextMissingQuestionIndex(proposal) {
+  if (proposal?.type === "scheduled-message") {
+    const questions = Array.isArray(proposal.questions) ? proposal.questions : [];
+    const answers = Array.isArray(proposal.answers) ? proposal.answers : [];
+    return answers.length < questions.length ? answers.length : -1;
+  }
+
+  const schema = getAgentProposalFieldSchema(proposal);
+  for (let index = 0; index < schema.length; index += 1) {
+    const field = schema[index];
+    if (isAgentProposalFieldRequired(proposal, field) && !hasAgentProposalFieldValue(proposal, field.key)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function formatAgentProposalFieldValue(key, value) {
+  const cleanValue = String(value || "").trim().replace(/\s+/g, " ");
+  if (!cleanValue) {
+    return "";
+  }
+  if (key === "deliveryChannel") {
+    const channel = normalizeAgentDeliveryChannel(cleanValue);
+    return channel ? formatAgentScheduledMessageChannel(channel) : cleanValue;
+  }
+  return cleanValue.slice(0, 400).trim();
+}
+
+function getAgentProposalFieldKeysForAnswers(proposal, answerCount = 0) {
+  const schema = getAgentProposalFieldSchema(proposal);
+  if (answerCount === 1) {
+    const missingIndex = getAgentNextMissingQuestionIndex(proposal);
+    if (missingIndex >= 0 && schema[missingIndex]?.key) {
+      return [schema[missingIndex].key];
+    }
+  }
+
+  if (proposal?.type === "web-monitor") {
+    if (answerCount >= 5) {
+      return schema.map((field) => field.key);
+    }
+    if (answerCount === 4) {
+      return ["watchQuery", "location", "frequency", "deliveryChannel"];
+    }
+    return ["watchQuery", "frequency", "deliveryChannel"];
+  }
+
+  if (proposal?.type === "email-digest") {
+    return ["mailbox", "schedule", "deliveryChannel"];
+  }
+
+  if (proposal?.type === "whatsapp-replies") {
+    return ["whatsappNumber", "approver", "guardrails"];
+  }
+
+  if (proposal?.type === "reengagement") {
+    return ["inactivityPeriod", "frequency", "deliveryChannel"];
+  }
+
+  return schema.map((field) => field.key);
+}
+
+function mergeAgentProposalFields(proposal, rawFields = {}) {
+  if (!proposal || proposal.type === "scheduled-message") {
+    return false;
+  }
+
+  const allowedKeys = new Set(getAgentProposalFieldSchema(proposal).map((field) => field.key));
+  const currentFields = { ...getAgentProposalFieldMap(proposal) };
+  let didChange = false;
+
+  for (const [rawKey, rawValue] of Object.entries(rawFields || {})) {
+    const key = getAgentProposalFieldKeyForSchema(rawKey, allowedKeys);
+    if (!key) {
+      continue;
+    }
+    const value = formatAgentProposalFieldValue(key, rawValue);
+    if (!value || currentFields[key] === value) {
+      continue;
+    }
+    currentFields[key] = value;
+    didChange = true;
+  }
+
+  proposal.fields = currentFields;
+  proposal.answers = getAgentProposalAnswersFromFields(proposal);
+  return didChange;
+}
+
+function mergeAgentProposalAnswers(proposal, rawAnswers = []) {
+  const answers = Array.isArray(rawAnswers)
+    ? rawAnswers.map((answer) => String(answer || "").trim()).filter(Boolean)
+    : [];
+  if (!proposal || proposal.type === "scheduled-message" || !answers.length) {
+    return false;
+  }
+
+  const keys = getAgentProposalFieldKeysForAnswers(proposal, answers.length);
+  const fields = {};
+  answers.forEach((answer, index) => {
+    const key = keys[index];
+    if (key) {
+      fields[key] = answer;
+    }
+  });
+  return mergeAgentProposalFields(proposal, fields);
+}
+
+function getAgentProposalAnswersFromFields(proposal) {
+  if (proposal?.type === "scheduled-message") {
+    return Array.isArray(proposal.answers) ? proposal.answers : [];
+  }
+  const fields = getAgentProposalFieldMap(proposal);
+  return getAgentProposalFieldSchema(proposal)
+    .map((field) => String(fields[field.key] || "").trim())
+    .filter(Boolean);
+}
+
+function syncAgentProposalFieldCompatibility(proposal) {
+  if (!proposal || proposal.type === "scheduled-message") {
+    return proposal;
+  }
+  proposal.fields = normalizeAgentFieldValues(proposal.fields);
+  if (!Object.keys(proposal.fields).length && Array.isArray(proposal.answers) && proposal.answers.length) {
+    mergeAgentProposalAnswers(proposal, proposal.answers);
+  } else {
+    proposal.answers = getAgentProposalAnswersFromFields(proposal);
+  }
+  return proposal;
+}
+
+function extractAgentFrequencyField(text) {
+  const value = String(text || "");
+  const everyMatch = value.match(/\bevery\s+(\d+)\s*(minutes?|mins?|hours?|days?|weeks?|months?)\b/i);
+  if (everyMatch) {
+    const amount = everyMatch[1];
+    const unit = everyMatch[2].toLowerCase().replace(/^mins?$/, "minutes");
+    return `every ${amount} ${unit}`;
+  }
+  const namedMatch = value.match(/\b(hourly|daily|weekly|monthly|every day|every week|every month)\b/i);
+  return namedMatch ? namedMatch[0] : "";
+}
+
+function extractAgentWebMonitorTimeWindow(text) {
+  const value = String(text || "");
+  const monthMatch = value.match(/\b(in|during|for)\s+((?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*)(?:\s+(\d{4}))?\b/i);
+  if (monthMatch) {
+    return `${monthMatch[2]}${monthMatch[3] ? ` ${monthMatch[3]}` : ""}`;
+  }
+  const rangeMatch = value.match(/\b(next|this)\s+(week|month|quarter|year)\b/i);
+  return rangeMatch ? rangeMatch[0] : "";
+}
+
+function extractAgentWebMonitorWatchQuery(text) {
+  const original = String(text || "").trim();
+  let value = original
+    .replace(/^\s*(please\s+)?(check|search|monitor|watch|look for|find)\s+(the\s+)?(web|internet|online)?\s*/i, "")
+    .replace(/\bwhen you (have|find|get) results?[\s\S]*$/i, "")
+    .replace(/\bevery\s+\d+\s*(minutes?|mins?|hours?|days?|weeks?|months?)\b/ig, "")
+    .replace(/\b(hourly|daily|weekly|monthly|every day|every week|every month)\b/ig, "")
+    .replace(/\b(send|email|message|notify)\s+me[\s\S]*$/i, "")
+    .replace(/^\s*(for|about|on)\s+/i, "")
+    .replace(/\s+(and|to|with)\s*$/i, "")
+    .trim();
+  value = value.replace(/\s+/g, " ");
+  return value || original;
+}
+
+function inferAgentProposalFieldsFromText(text, proposalType) {
+  const value = String(text || "").trim();
+  const fields = {};
+  const deliveryChannel = normalizeAgentDeliveryChannel(value);
+  const frequency = extractAgentFrequencyField(value);
+
+  if (proposalType === "web-monitor") {
+    fields.watchQuery = extractAgentWebMonitorWatchQuery(value);
+    if (frequency) {
+      fields.frequency = frequency;
+    }
+    if (deliveryChannel) {
+      fields.deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannel);
+    }
+    const timeWindow = extractAgentWebMonitorTimeWindow(value);
+    if (timeWindow) {
+      fields.timeWindow = timeWindow;
+    }
+    return fields;
+  }
+
+  if (proposalType === "email-digest") {
+    if (/\b(gmail|google mail)\b/i.test(value)) {
+      fields.mailbox = "Gmail";
+    } else if (/\b(outlook|office 365|microsoft mail)\b/i.test(value)) {
+      fields.mailbox = "Outlook";
+    }
+    if (frequency) {
+      fields.schedule = frequency;
+    }
+    if (deliveryChannel) {
+      fields.deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannel);
+    }
+    return fields;
+  }
+
+  if (proposalType === "reengagement") {
+    const inactivityMatch = value.match(/\b(\d+)\s*(days?|weeks?|months?)\b/i);
+    if (inactivityMatch) {
+      fields.inactivityPeriod = `${inactivityMatch[1]} ${inactivityMatch[2].toLowerCase()}`;
+    }
+    if (frequency) {
+      fields.frequency = frequency;
+    }
+    if (deliveryChannel) {
+      fields.deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannel);
+    }
+    return fields;
+  }
+
+  if (proposalType === "whatsapp-replies") {
+    if (/\bwhatsapp\b/i.test(value)) {
+      fields.whatsappNumber = "connected WhatsApp number";
+    }
+    return fields;
+  }
+
+  if (/\b(calendar|schedule|agenda|appointments?)\b/i.test(value)) {
+    return {};
+  }
+
+  fields.result = value;
+  if (frequency) {
+    fields.frequency = frequency;
+  }
+  if (deliveryChannel) {
+    fields.deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannel);
+  }
+  return fields;
+}
+
+function updateAgentProposalSummaryFromFields(proposal) {
+  if (!proposal || proposal.type === "scheduled-message") {
+    return;
+  }
+  const fields = getAgentProposalFieldMap(proposal);
+  if (proposal.type === "web-monitor" && fields.watchQuery) {
+    const location = fields.location ? ` around ${fields.location}` : "";
+    const frequency = fields.frequency ? ` ${fields.frequency}` : "";
+    proposal.summary = `Monitor ${fields.watchQuery}${location}${frequency} and send source-backed alerts.`;
+  } else if (proposal.type === "email-digest" && (fields.mailbox || fields.schedule)) {
+    const mailbox = fields.mailbox || "the selected mailbox";
+    const schedule = fields.schedule ? ` on ${fields.schedule}` : "";
+    proposal.summary = `Summarize important messages from ${mailbox}${schedule}.`;
+  } else if (proposal.type === "reengagement" && (fields.inactivityPeriod || fields.frequency)) {
+    const inactivity = fields.inactivityPeriod || "the chosen quiet period";
+    const frequency = fields.frequency ? ` ${fields.frequency}` : "";
+    proposal.summary = `Find conversations quiet for ${inactivity}${frequency} and draft follow-ups.`;
+  }
+}
+
+function applyAgentFieldProposalRevision(proposal, changes = {}, options = {}) {
+  if (!proposal || proposal.type === "scheduled-message") {
+    return false;
+  }
+
+  const patch = changes && typeof changes === "object" ? changes : {};
+  let didChange = false;
+  if (patch.fields && typeof patch.fields === "object" && !Array.isArray(patch.fields)) {
+    didChange = mergeAgentProposalFields(proposal, patch.fields) || didChange;
+  }
+  if (Array.isArray(patch.answers)) {
+    didChange = mergeAgentProposalAnswers(proposal, patch.answers) || didChange;
+  }
+
+  syncAgentProposalFieldCompatibility(proposal);
+  updateAgentProposalSummaryFromFields(proposal);
+  if (didChange && options.bumpRevision !== false) {
+    proposal.revision = Math.max(1, Number(proposal.revision || 1)) + 1;
+    proposal.updatedAt = new Date().toISOString();
+    proposal.status = "needs-approval";
+    proposal.approved = false;
+  }
+  return didChange;
+}
+
+function shouldUseAgentReplyAsQuestion(reply) {
+  const value = String(reply || "").trim();
+  return Boolean(value && value.length <= 240 && /\?\s*$/.test(value));
+}
+
+function pushAgentProposalNextStep(proposal, reply = "") {
+  const missingIndex = getAgentNextMissingQuestionIndex(proposal);
+  if (missingIndex >= 0) {
+    if (shouldUseAgentReplyAsQuestion(reply)) {
+      pushAgentQuestion(proposal, missingIndex, reply);
+    } else {
+      if (reply) {
+        pushAgentMessage("assistant", reply);
+      }
+      pushAgentQuestion(proposal, missingIndex);
+    }
+    return;
+  }
+  pushAgentApprovalPrompt(proposal, reply);
+}
+
 function getAgentConversationQuestion(proposal, questionIndex = 0) {
   const index = Math.max(0, Number(questionIndex || 0));
   const requestText = String(proposal?.requestText || "").toLowerCase();
@@ -9592,36 +10138,9 @@ function getAgentConversationQuestion(proposal, questionIndex = 0) {
     return proposal.questions?.[index] || "What should I schedule?";
   }
 
-  if (proposal?.type === "email-digest") {
-    return [
-      "Which mailbox should I summarize?",
-      "What time should I send the summary?",
-      "Where should I send it?",
-    ][index] || "Where should I send it?";
-  }
-
-  if (proposal?.type === "web-monitor") {
-    return [
-      "What should I watch for?",
-      "How often should I check?",
-      "Where should I send alerts?",
-    ][index] || "Where should I send alerts?";
-  }
-
-  if (proposal?.type === "whatsapp-replies") {
-    return [
-      "Which WhatsApp number should I use?",
-      "Who should approve reply drafts?",
-      "What should I never promise without you?",
-    ][index] || "Who should approve reply drafts?";
-  }
-
-  if (proposal?.type === "reengagement") {
-    return [
-      "How long should a conversation be quiet before I suggest a follow-up?",
-      "How often should I check?",
-      "Where should I send drafts for review?",
-    ][index] || "Where should I send drafts for review?";
+  const field = getAgentProposalFieldSchema(proposal)[index];
+  if (field?.question) {
+    return field.question;
   }
 
   if (/\b(calendar|schedule|agenda|appointments?)\b/.test(requestText)) {
@@ -9656,72 +10175,14 @@ function getAgentQuestionActions(proposal, questionIndex = 0) {
     return [];
   }
 
-  if (proposal?.type === "email-digest") {
-    if (index === 0) {
-      return [
-        createAgentAction("choose", "Gmail"),
-        createAgentAction("choose", "Outlook"),
-      ];
-    }
-    if (index === 1) {
-      return [
-        createAgentAction("choose", "8:00 AM"),
-        createAgentAction("choose", "9:00 AM"),
-      ];
-    }
-    return [
-      createAgentAction("choose", "Email"),
-      createAgentAction("choose", "Telegram"),
-      createAgentAction("choose", "WhatsApp"),
-    ];
-  }
-
-  if (proposal?.type === "web-monitor") {
-    if (index === 1) {
-      return [
-        createAgentAction("choose", "Daily"),
-        createAgentAction("choose", "Weekly"),
-        createAgentAction("choose", "Monthly"),
-      ];
-    }
-    if (index === 2) {
-      return [
-        createAgentAction("choose", "Email"),
-        createAgentAction("choose", "Telegram"),
-        createAgentAction("choose", "WhatsApp"),
-      ];
-    }
-  }
-
-  if (proposal?.type === "reengagement") {
-    if (index === 0) {
-      return [
-        createAgentAction("choose", "1 month"),
-        createAgentAction("choose", "3 months"),
-        createAgentAction("choose", "6 months"),
-      ];
-    }
-    if (index === 1) {
-      return [
-        createAgentAction("choose", "Daily"),
-        createAgentAction("choose", "Weekly"),
-      ];
-    }
-    return [
-      createAgentAction("choose", "WhatsApp"),
-      createAgentAction("choose", "Email"),
-      createAgentAction("choose", "Telegram"),
-    ];
-  }
-
-  if (/\b(calendar|schedule|agenda|appointments?)\b/.test(String(proposal?.requestText || "").toLowerCase())) {
-    return [
-      createAgentAction("choose", "Google Calendar"),
-      createAgentAction("choose", "Outlook Calendar"),
-    ];
-  }
-
-  return [];
+  const field = getAgentProposalFieldSchema(proposal)[index];
+  return Array.isArray(field?.actions)
+    ? field.actions.map((action) => (
+      typeof action === "string"
+        ? createAgentAction("choose", action)
+        : createAgentAction("choose", action.label, action.value || action.label, action.tone || "secondary")
+    ))
+    : [];
 }
 
 function formatAgentScheduledMessageMoment(details = {}) {
@@ -9754,32 +10215,35 @@ function getAgentScheduledMessageApprovalCopy(proposal) {
 }
 
 function getAgentApprovalCopy(proposal) {
-  const answers = Array.isArray(proposal?.answers) ? proposal.answers : [];
+  const fields = getAgentProposalFieldMap(proposal);
   if (proposal?.type === "scheduled-message") {
     return getAgentScheduledMessageApprovalCopy(proposal);
   }
 
   if (proposal?.type === "email-digest") {
-    const mailbox = answers[0] || "your mailbox";
-    const time = answers[1] || "your chosen time";
-    const channel = answers[2] || "this workspace";
+    const mailbox = fields.mailbox || "your mailbox";
+    const time = fields.schedule || "your chosen time";
+    const channel = fields.deliveryChannel || "this workspace";
     return `I’m ready to send a daily summary of important messages from ${mailbox} at ${time}, delivered to ${channel}. Should I set it up?`;
   }
 
   if (proposal?.type === "web-monitor") {
-    const topic = answers[0] || "the topics you care about";
-    const frequency = answers[1] || "your chosen schedule";
-    const channel = answers[2] || "this workspace";
-    return `I’m ready to watch ${topic} ${frequency.toLowerCase()} and send meaningful matches to ${channel}. Should I set it up?`;
+    const topic = fields.watchQuery || "the topics you care about";
+    const location = fields.location ? ` around ${fields.location}` : "";
+    const timeWindow = fields.timeWindow ? ` during ${fields.timeWindow}` : "";
+    const frequency = fields.frequency || "your chosen schedule";
+    const channel = fields.deliveryChannel || "this workspace";
+    return `I’m ready to watch ${topic}${location}${timeWindow} ${frequency.toLowerCase()} and send meaningful matches to ${channel}. Should I set it up?`;
   }
 
   if (proposal?.type === "whatsapp-replies") {
-    return "I’m ready to draft WhatsApp replies for review before anything is sent. Should I set it up?";
+    const approver = fields.approver ? ` for ${fields.approver}` : "";
+    return `I’m ready to draft WhatsApp replies${approver} before anything is sent. Should I set it up?`;
   }
 
   if (proposal?.type === "reengagement") {
-    const inactivity = answers[0] || "your chosen quiet period";
-    const frequency = answers[1] || "your chosen schedule";
+    const inactivity = fields.inactivityPeriod || "your chosen quiet period";
+    const frequency = fields.frequency || "your chosen schedule";
     return `I’m ready to check for conversations quiet for ${inactivity} ${frequency.toLowerCase()} and prepare follow-up drafts for you. Should I set it up?`;
   }
 
@@ -9793,13 +10257,17 @@ function getAgentApprovalActions(proposal) {
   ];
 }
 
-function pushAgentQuestion(proposal, questionIndex = 0) {
+function pushAgentQuestion(proposal, questionIndex = 0, questionOverride = "") {
   const index = Math.max(0, Number(questionIndex || 0));
   proposal.questionIndex = index;
-  pushAgentMessage("assistant", getAgentConversationQuestion(proposal, index), {
+  const field = proposal?.type === "scheduled-message"
+    ? null
+    : getAgentProposalFieldSchema(proposal)[index] || null;
+  pushAgentMessage("assistant", questionOverride || getAgentConversationQuestion(proposal, index), {
     kind: "question",
     proposalId: proposal.id,
     questionIndex: index,
+    fieldKey: field?.key || "",
     actions: getAgentQuestionActions(proposal, index),
   });
 }
@@ -10578,10 +11046,9 @@ function getAgentQuestionTotal(proposal) {
   if (proposal?.type === "scheduled-message") {
     return Array.isArray(proposal.questions) ? proposal.questions.length : 0;
   }
-  if (/\b(calendar|schedule|agenda|appointments?)\b/i.test(proposal?.requestText || "")) {
-    return 1;
-  }
-  return 3;
+  return getAgentProposalFieldSchema(proposal)
+    .filter((field) => isAgentProposalFieldRequired(proposal, field))
+    .length;
 }
 
 function applyAgentScheduledMessageAnswer(proposal, answer) {
@@ -10782,13 +11249,17 @@ function handleAgentQuestionAnswer(proposal, answer) {
 
   proposal.answers = Array.isArray(proposal.answers) ? proposal.answers : [];
   proposal.answers.push(cleanAnswer);
-  applyAgentScheduledMessageAnswer(proposal, cleanAnswer);
-  const nextIndex = proposal.answers.length;
-  const totalQuestions = getAgentQuestionTotal(proposal);
-  if (nextIndex < totalQuestions) {
-    pushAgentQuestion(proposal, nextIndex);
+  if (proposal.type === "scheduled-message") {
+    applyAgentScheduledMessageAnswer(proposal, cleanAnswer);
+    const nextIndex = getAgentNextMissingQuestionIndex(proposal);
+    if (nextIndex >= 0) {
+      pushAgentQuestion(proposal, nextIndex);
+    } else {
+      pushAgentApprovalPrompt(proposal);
+    }
   } else {
-    pushAgentApprovalPrompt(proposal);
+    mergeAgentProposalAnswers(proposal, [cleanAnswer]);
+    pushAgentProposalNextStep(proposal);
   }
   return true;
 }
@@ -10933,6 +11404,7 @@ function buildAgentTurnActiveProposal(proposal) {
     requestText: proposal.requestText,
     summary: proposal.summary,
     details: proposal.details,
+    fields: proposal.fields,
     questions: proposal.questions,
     answers: proposal.answers,
   };
@@ -10946,8 +11418,8 @@ function createAgentProposalFromTurn(requestText, turn = {}) {
     proposal.revision = 1;
     proposal.createdAt = new Date().toISOString();
     proposal.updatedAt = proposal.createdAt;
-  } else if (Array.isArray(turn.changes?.answers)) {
-    proposal.answers = turn.changes.answers.map((answer) => String(answer || "").trim()).filter(Boolean);
+  } else {
+    applyAgentFieldProposalRevision(proposal, turn.changes, { bumpRevision: false });
   }
   return proposal;
 }
@@ -10956,14 +11428,9 @@ function applyAgentTurnProposalRevision(proposal, changes = {}) {
   if (proposal?.type === "scheduled-message") {
     return applyAgentScheduledMessageRevision(proposal, changes);
   }
-  if (!proposal || !Array.isArray(changes?.answers)) {
+  if (!proposal || !applyAgentFieldProposalRevision(proposal, changes)) {
     return false;
   }
-  proposal.answers = changes.answers.map((answer) => String(answer || "").trim()).filter(Boolean);
-  proposal.revision = Math.max(1, Number(proposal.revision || 1)) + 1;
-  proposal.updatedAt = new Date().toISOString();
-  proposal.status = "needs-approval";
-  proposal.approved = false;
   return true;
 }
 
@@ -11010,31 +11477,15 @@ async function applyAgentTurnResponse(turn, userText) {
     && activeProposal
     && applyAgentTurnProposalRevision(activeProposal, turn.changes)
   ) {
-    const answeredQuestions = Array.isArray(activeProposal.answers) ? activeProposal.answers.length : 0;
-    const totalQuestions = getAgentQuestionTotal(activeProposal);
-    if (answeredQuestions < totalQuestions) {
-      if (reply) {
-        pushAgentMessage("assistant", reply);
-      }
-      pushAgentQuestion(activeProposal, answeredQuestions);
-    } else {
-      pushAgentApprovalPrompt(activeProposal, reply || "Of course — I updated the plan.");
-    }
+    pushAgentProposalNextStep(activeProposal, reply || "Of course — I updated the plan.");
     return true;
   }
 
-  if (outcome === "proposal") {
+  if (outcome === "proposal" || (outcome === "question" && turn?.proposalType)) {
     const proposal = createAgentProposalFromTurn(userText, turn);
     agent.proposals.push(proposal);
     agent.activeProposalId = proposal.id;
-    if (getAgentQuestionTotal(proposal) > 0) {
-      if (reply) {
-        pushAgentMessage("assistant", reply);
-      }
-      pushAgentQuestion(proposal, 0);
-    } else {
-      pushAgentApprovalPrompt(proposal, reply);
-    }
+    pushAgentProposalNextStep(proposal, reply);
     return true;
   }
 
