@@ -2325,132 +2325,155 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-panel {
-  gap: 1rem;
+  gap: 0;
+  min-height: calc(100dvh - 11.5rem);
 }
 
 .agent-workspace {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(19rem, 0.65fr);
-  gap: 0.85rem;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 17rem);
+  gap: clamp(1rem, 3vw, 3.25rem);
+  min-height: calc(100dvh - 11.5rem);
 }
 
 .agent-chat-column {
+  position: relative;
   display: grid;
-  grid-template-rows: auto minmax(22rem, 1fr) auto auto;
-  gap: 0.85rem;
-  min-height: min(74svh, 48rem);
-  padding: 1rem;
-  border-radius: var(--radius-xl);
-}
-
-.agent-chat-header,
-.agent-section-heading,
-.agent-proposal-head,
-.agent-helper-row {
-  display: flex;
-  justify-content: space-between;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 1rem;
-  align-items: flex-start;
+  min-width: 0;
+  min-height: calc(100dvh - 11.5rem);
+  padding: 0.8rem 0 0.4rem;
 }
 
-.agent-chat-header h1,
-.agent-section-heading h2,
-.agent-proposal-head h2,
-.agent-empty-panel h2 {
+.agent-empty-state {
+  position: absolute;
+  z-index: 3;
+  inset: 50% auto auto 50%;
+  display: grid;
+  gap: 1.25rem;
+  width: min(100% - 2rem, 46rem);
+  transform: translate(-50%, -54%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.agent-empty-state h1 {
   margin: 0;
+  color: var(--text);
   font-family: var(--font-display);
-  line-height: 1.08;
-  letter-spacing: -0.035em;
+  font-size: clamp(2.4rem, 5vw, 4.5rem);
+  line-height: 0.98;
+  letter-spacing: -0.065em;
 }
 
-.agent-chat-header h1 {
-  max-width: 18ch;
-  font-size: clamp(1.9rem, 3vw, 3.1rem);
+.agent-empty-state .agent-quick-actions {
+  justify-content: center;
+  pointer-events: auto;
 }
 
 .agent-message-list {
+  position: relative;
+  z-index: 1;
   display: grid;
   align-content: end;
-  gap: 0.75rem;
-  min-height: 22rem;
-  max-height: calc(100svh - 23rem);
+  gap: 1.1rem;
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
-  padding: 0.8rem;
-  border: 1px solid rgba(20, 28, 38, 0.07);
-  border-radius: var(--radius-lg);
-  background:
-    linear-gradient(180deg, rgba(248, 250, 252, 0.8), rgba(255, 255, 255, 0.92));
+  padding: 2rem max(0.25rem, calc((100% - 52rem) / 2)) 1rem;
   scrollbar-width: thin;
 }
 
 .agent-message {
-  display: grid;
-  gap: 0.24rem;
-  max-width: min(88%, 38rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  width: 100%;
+  max-width: 54rem;
+  margin-inline: auto;
 }
 
 .agent-message.is-user {
-  justify-self: end;
-}
-
-.agent-message-label {
-  color: var(--muted-strong);
-  font-size: 0.73rem;
-  font-weight: 750;
-}
-
-.agent-message.is-user .agent-message-label {
-  justify-self: end;
+  align-items: flex-end;
 }
 
 .agent-message-bubble {
+  max-width: min(90%, 48rem);
   margin: 0;
-  padding: 0.86rem 0.98rem;
-  border-radius: 18px;
+  padding: 0.2rem 0;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(20, 28, 38, 0.07);
-  box-shadow: 0 10px 22px rgba(25, 38, 54, 0.05);
-  font-size: 0.96rem;
-  line-height: 1.56;
+  font-size: 1rem;
+  line-height: 1.65;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .agent-message.is-user .agent-message-bubble {
+  padding: 0.78rem 1rem;
   color: #fff;
   background: linear-gradient(180deg, #128078, var(--accent));
-  border-color: rgba(15, 118, 110, 0.22);
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 18px 18px 5px 18px;
+  box-shadow: 0 8px 18px rgba(15, 118, 110, 0.12);
 }
 
-.agent-quick-actions,
-.agent-proposal-actions {
+.agent-message.is-question .agent-message-bubble,
+.agent-message.is-approval .agent-message-bubble,
+.agent-message.is-credential .agent-message-bubble,
+.agent-message.is-result .agent-message-bubble {
+  max-width: min(100%, 50rem);
+}
+
+.agent-message.is-status .agent-message-bubble {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.agent-message-actions {
   display: flex;
-  gap: 0.55rem;
   flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.agent-message.is-user .agent-message-actions {
+  display: none;
+}
+
+.agent-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
   align-items: center;
 }
 
 .agent-composer {
+  position: relative;
+  z-index: 2;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.65rem;
   align-items: end;
+  width: min(100%, 54rem);
+  margin-inline: auto;
   padding: 0.55rem;
-  border: 1px solid rgba(20, 28, 38, 0.08);
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 12px 28px rgba(25, 38, 54, 0.05);
+  border: 1px solid rgba(20, 28, 38, 0.11);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.93);
+  box-shadow: 0 16px 38px rgba(25, 38, 54, 0.1);
+  backdrop-filter: blur(14px) saturate(135%);
 }
 
 .agent-composer textarea {
-  min-height: 3.35rem;
-  max-height: 9rem;
-  resize: vertical;
+  min-height: 2.8rem;
+  max-height: 10rem;
+  resize: none;
   border: 0;
   background: transparent;
   box-shadow: none;
+  line-height: 1.45;
 }
 
 .agent-composer textarea:focus {
@@ -2458,108 +2481,112 @@ body[data-modal="billing"] .app-shell {
   box-shadow: none;
 }
 
-.agent-side-panel {
+.agent-tools-panel {
   display: grid;
   gap: 0.85rem;
   align-items: start;
+  align-content: start;
+  min-width: 0;
+  padding: 1rem 0 0;
 }
 
-.agent-proposal-card,
-.agent-helper-card,
-.agent-skill-section {
+.agent-tools-head {
   display: grid;
-  gap: 0.85rem;
-  padding: 1rem;
-  border-radius: var(--radius-xl);
+  gap: 0.15rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid rgba(20, 28, 38, 0.08);
 }
 
-.agent-proposal-head h2,
-.agent-section-heading h2,
-.agent-empty-panel h2 {
-  font-size: clamp(1.25rem, 1.8vw, 1.7rem);
-}
-
-.agent-proposal-head p,
-.agent-empty-panel p,
-.agent-section-note,
-.agent-helper-empty,
-.agent-helper-row p,
-.agent-mini-row p,
-.agent-credential-callout p {
+.agent-tools-head h2 {
   margin: 0;
-  color: var(--muted);
-  line-height: 1.55;
+  font-family: var(--font-display);
+  font-size: 1.55rem;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
 }
 
-.agent-proposal-card h3 {
-  margin: 0.1rem 0 -0.35rem;
-  font-size: 0.88rem;
-  letter-spacing: -0.01em;
-}
-
-.agent-mini-list,
-.agent-helper-list {
+.agent-tool-shelf {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.4rem;
 }
 
-.agent-mini-row,
-.agent-helper-row,
-.agent-credential-callout {
-  padding: 0.78rem;
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(20, 28, 38, 0.07);
-  background: rgba(248, 250, 252, 0.72);
-}
-
-.agent-mini-row strong,
-.agent-helper-row h3 {
-  margin: 0;
-  font-size: 0.94rem;
-  letter-spacing: -0.015em;
-}
-
-.agent-question-block {
+.agent-tool-item {
   display: grid;
-  gap: 0.55rem;
-  padding: 0.82rem;
-  border-radius: var(--radius-md);
-  background: rgba(15, 118, 110, 0.07);
-  border: 1px solid rgba(15, 118, 110, 0.1);
-}
-
-.agent-question-block h3 {
-  margin: 0;
-}
-
-.agent-question-block ul {
-  margin: 0;
-  padding-left: 1.1rem;
-  color: var(--muted);
-  line-height: 1.55;
-}
-
-.agent-credential-callout {
-  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.7rem;
-  background: rgba(212, 154, 58, 0.11);
-  border-color: rgba(212, 154, 58, 0.2);
+  align-items: center;
+  width: 100%;
+  min-height: 3.3rem;
+  padding: 0.65rem 0.2rem;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border-bottom: 1px solid rgba(20, 28, 38, 0.06);
+  transition: background 160ms ease, color 160ms ease;
 }
 
-.agent-credential-callout .ghost-button {
-  justify-self: start;
+.agent-tool-item:hover,
+.agent-tool-item:focus-visible {
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.06);
+  outline: 0;
+  border-radius: 12px;
 }
 
-.agent-skill-section {
-  width: min(100%, 72rem);
-  background: rgba(255, 255, 255, 0.62);
-  border: 1px solid rgba(20, 28, 38, 0.06);
+.agent-tool-icon {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 10px;
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.1);
+  font-size: 0.84rem;
+  font-weight: 800;
 }
 
-.agent-section-note {
-  max-width: 22rem;
-  text-align: right;
-  font-size: 0.9rem;
+.agent-tool-copy {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.agent-tool-copy strong,
+.agent-tool-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-tool-copy strong {
+  font-size: 0.92rem;
+}
+
+.agent-tool-copy span,
+.agent-tools-empty {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.agent-tool-arrow {
+  color: var(--muted-strong);
+  font-size: 1rem;
+  transition: transform 160ms ease;
+}
+
+.agent-tool-item:hover .agent-tool-arrow,
+.agent-tool-item:focus-visible .agent-tool-arrow {
+  transform: translateX(0.15rem);
+}
+
+.agent-tools-empty {
+  margin: 0;
+  padding: 0.5rem 0;
+}
+
+.agent-tools-toggle {
+  display: none;
+  justify-self: center;
 }
 
 .primary-button:disabled,
@@ -7093,5 +7120,94 @@ body[data-modal="billing"] .app-shell {
   .auth-alert-actions .primary-button.small {
     width: 100%;
     min-width: 0;
+  }
+}
+
+@media (max-width: 1080px) {
+  .agent-panel,
+  .agent-workspace,
+  .agent-chat-column {
+    min-height: calc(100dvh - 11.5rem);
+  }
+
+  .agent-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-tools-panel {
+    display: none;
+    width: min(100%, 28rem);
+    justify-self: end;
+    padding: 1rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .agent-tools-panel.is-open {
+    display: grid;
+  }
+
+  .agent-tools-toggle {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 560px) {
+  .agent-panel,
+  .agent-workspace,
+  .agent-chat-column {
+    min-height: calc(100svh - 6rem);
+  }
+
+  .agent-chat-column {
+    gap: 0.75rem;
+    padding: 0.35rem 0 0.2rem;
+  }
+
+  .agent-empty-state {
+    width: min(100% - 1.5rem, 30rem);
+  }
+
+  .agent-empty-state h1 {
+    font-size: clamp(2.25rem, 12vw, 3.2rem);
+  }
+
+  .agent-empty-state .agent-quick-actions {
+    display: grid;
+    width: 100%;
+  }
+
+  .agent-empty-state .agent-quick-actions .ghost-button {
+    width: 100%;
+  }
+
+  .agent-message-list {
+    padding: 1.25rem 0.1rem 0.5rem;
+  }
+
+  .agent-message-bubble {
+    max-width: 94%;
+    font-size: 1rem;
+  }
+
+  .agent-composer {
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+    border-radius: 17px;
+  }
+
+  .agent-composer textarea {
+    min-height: 2.75rem;
+  }
+
+  .agent-tools-panel {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .agent-tools-toggle {
+    margin-bottom: 0.2rem;
   }
 }

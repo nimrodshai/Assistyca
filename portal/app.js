@@ -390,8 +390,7 @@ const DEFAULT_SIMULATOR = {
   selectedApprovalId: "",
 };
 
-const AGENT_INITIAL_MESSAGE =
-  "Tell me what you want handled. I will map it to the right skills and helper agents, show you the plan, and wait for approval before creating anything.";
+const AGENT_INITIAL_MESSAGE = "";
 const AGENT_MAX_MESSAGES = 40;
 const AGENT_BLUEPRINTS = {
   emailDigest: {
@@ -870,6 +869,7 @@ const elements = {
   saveState: document.querySelector("#saveState"),
   appBar: document.querySelector("#appBar"),
   agentWorkspaceStatus: document.querySelector("#agentWorkspaceStatus"),
+  agentEmptyState: document.querySelector("#agentEmptyState"),
   agentMessageList: document.querySelector("#agentMessageList"),
   agentComposerForm: document.querySelector("#agentComposerForm"),
   agentComposerInput: document.querySelector("#agentComposerInput"),
@@ -879,6 +879,10 @@ const elements = {
   agentHelperList: document.querySelector("#agentHelperList"),
   agentPromptButtons: Array.from(document.querySelectorAll("[data-agent-prompt]")),
   featureList: document.querySelector("#featureList"),
+  agentToolShelf: document.querySelector("#agentToolShelf"),
+  agentToolsToggleButton: document.querySelector("#agentToolsToggleButton"),
+  agentToolsCloseButton: document.querySelector("#agentToolsCloseButton"),
+  agentToolsPanel: document.querySelector(".agent-tools-panel"),
   featureStudioPanel: document.querySelector("#featureStudioPanel"),
   backToFeaturesButton: document.querySelector("#backToFeaturesButton"),
   featureStudioHeaderLabel: document.querySelector("#featureStudioHeaderLabel"),
@@ -2535,12 +2539,17 @@ function createAgentId(prefix) {
 }
 
 function createAgentMessage(role, text, metadata = {}) {
+  const messageMetadata = metadata && typeof metadata === "object" ? { ...metadata } : {};
+  messageMetadata.kind = String(messageMetadata.kind || (role === "user" ? "user" : "text"));
+  messageMetadata.actions = Array.isArray(messageMetadata.actions)
+    ? messageMetadata.actions.map((action) => ({ ...action }))
+    : [];
   return {
     id: createAgentId("agent-message"),
     role: role === "user" ? "user" : "assistant",
     text: String(text || "").trim(),
     createdAt: new Date().toISOString(),
-    metadata: metadata && typeof metadata === "object" ? { ...metadata } : {},
+    metadata: messageMetadata,
   };
 }
 
@@ -2572,12 +2581,26 @@ function normalizeAgentMessage(value = {}) {
     return null;
   }
 
+  const metadata = source.metadata && typeof source.metadata === "object" ? { ...source.metadata } : {};
+  metadata.kind = String(metadata.kind || (source.role === "user" ? "user" : "text"));
+  metadata.actions = Array.isArray(metadata.actions)
+    ? metadata.actions
+      .filter((action) => action && typeof action === "object")
+      .map((action) => ({
+        id: String(action.id || "").trim(),
+        label: String(action.label || "").trim(),
+        value: String(action.value || action.label || "").trim(),
+        tone: String(action.tone || "secondary").trim(),
+      }))
+      .filter((action) => action.id && action.label)
+    : [];
+
   return {
     id: normalizeAgentTextItem(source.id, createAgentId("agent-message")),
     role: source.role === "user" ? "user" : "assistant",
     text,
     createdAt: normalizeAgentTextItem(source.createdAt || source.created_at, new Date().toISOString()),
-    metadata: source.metadata && typeof source.metadata === "object" ? { ...source.metadata } : {},
+    metadata,
   };
 }
 
@@ -2592,6 +2615,7 @@ function normalizeAgentProposal(value = {}) {
   return {
     id: normalizeAgentTextItem(source.id, createAgentId("agent-proposal")),
     type: normalizeAgentTextItem(source.type, "custom"),
+    requestText: normalizeAgentTextItem(source.requestText || source.request_text, ""),
     title,
     summary,
     response: normalizeAgentTextItem(source.response, ""),
@@ -2608,6 +2632,10 @@ function normalizeAgentProposal(value = {}) {
     questions: Array.isArray(source.questions)
       ? source.questions.map((question) => normalizeAgentTextItem(question, "")).filter(Boolean)
       : [],
+    answers: Array.isArray(source.answers)
+      ? source.answers.map((answer) => normalizeAgentTextItem(answer, "")).filter(Boolean)
+      : [],
+    questionIndex: Math.max(0, Number(source.questionIndex || source.question_index || 0)),
     alternatives: Array.isArray(source.alternatives)
       ? source.alternatives.map((alternative) => normalizeAgentTextItem(alternative, "")).filter(Boolean)
       : [],
@@ -2629,7 +2657,7 @@ function normalizeAgentHelper(value = {}) {
 
 function createDefaultAgentWorkspace() {
   return {
-    messages: [createAgentMessage("assistant", AGENT_INITIAL_MESSAGE, { kind: "welcome" })],
+    messages: [],
     proposals: [],
     helpers: [],
     activeProposalId: "",
@@ -2640,7 +2668,10 @@ function normalizeAgentWorkspace(agent = {}) {
   const source = agent && typeof agent === "object" ? agent : {};
   const fallback = createDefaultAgentWorkspace();
   const messages = Array.isArray(source.messages)
-    ? source.messages.map(normalizeAgentMessage).filter(Boolean).slice(-AGENT_MAX_MESSAGES)
+    ? source.messages
+      .map(normalizeAgentMessage)
+      .filter((message) => message && message.metadata?.kind !== "welcome")
+      .slice(-AGENT_MAX_MESSAGES)
     : [];
   const proposals = Array.isArray(source.proposals)
     ? source.proposals.map(normalizeAgentProposal).filter(Boolean)
@@ -9103,6 +9134,7 @@ function createAgentProposalFromRequest(text) {
   const proposal = normalizeAgentProposal({
     id: createAgentId("agent-proposal"),
     type: blueprint.type,
+    requestText: String(text || "").trim(),
     title: blueprint.title,
     summary: blueprint.summary,
     response: blueprint.response,
@@ -9150,6 +9182,183 @@ function pushAgentMessage(role, text, metadata = {}) {
   return message;
 }
 
+function createAgentAction(id, label, value = label, tone = "secondary") {
+  return { id, label, value, tone };
+}
+
+function getAgentConversationQuestion(proposal, questionIndex = 0) {
+  const index = Math.max(0, Number(questionIndex || 0));
+  const requestText = String(proposal?.requestText || "").toLowerCase();
+
+  if (proposal?.type === "email-digest") {
+    return [
+      "Which mailbox should I summarize?",
+      "What time should I send the summary?",
+      "Where should I send it?",
+    ][index] || "Where should I send it?";
+  }
+
+  if (proposal?.type === "web-monitor") {
+    return [
+      "What should I watch for?",
+      "How often should I check?",
+      "Where should I send alerts?",
+    ][index] || "Where should I send alerts?";
+  }
+
+  if (proposal?.type === "whatsapp-replies") {
+    return [
+      "Which WhatsApp number should I use?",
+      "Who should approve reply drafts?",
+      "What should I never promise without you?",
+    ][index] || "Who should approve reply drafts?";
+  }
+
+  if (proposal?.type === "reengagement") {
+    return [
+      "How long should a conversation be quiet before I suggest a follow-up?",
+      "How often should I check?",
+      "Where should I send drafts for review?",
+    ][index] || "Where should I send drafts for review?";
+  }
+
+  if (/\b(calendar|schedule|agenda|appointments?)\b/.test(requestText)) {
+    return "Which calendar should I use?";
+  }
+
+  return [
+    "What should the finished result look like?",
+    "How often should this happen?",
+    "How should I let you know when it is done?",
+  ][index] || "How should I let you know when it is done?";
+}
+
+function getAgentQuestionActions(proposal, questionIndex = 0) {
+  const index = Math.max(0, Number(questionIndex || 0));
+
+  if (proposal?.type === "email-digest") {
+    if (index === 0) {
+      return [
+        createAgentAction("choose", "Gmail"),
+        createAgentAction("choose", "Outlook"),
+      ];
+    }
+    if (index === 1) {
+      return [
+        createAgentAction("choose", "8:00 AM"),
+        createAgentAction("choose", "9:00 AM"),
+      ];
+    }
+    return [
+      createAgentAction("choose", "Email"),
+      createAgentAction("choose", "Telegram"),
+      createAgentAction("choose", "WhatsApp"),
+    ];
+  }
+
+  if (proposal?.type === "web-monitor") {
+    if (index === 1) {
+      return [
+        createAgentAction("choose", "Daily"),
+        createAgentAction("choose", "Weekly"),
+        createAgentAction("choose", "Monthly"),
+      ];
+    }
+    if (index === 2) {
+      return [
+        createAgentAction("choose", "Email"),
+        createAgentAction("choose", "Telegram"),
+        createAgentAction("choose", "WhatsApp"),
+      ];
+    }
+  }
+
+  if (proposal?.type === "reengagement") {
+    if (index === 0) {
+      return [
+        createAgentAction("choose", "1 month"),
+        createAgentAction("choose", "3 months"),
+        createAgentAction("choose", "6 months"),
+      ];
+    }
+    if (index === 1) {
+      return [
+        createAgentAction("choose", "Daily"),
+        createAgentAction("choose", "Weekly"),
+      ];
+    }
+    return [
+      createAgentAction("choose", "WhatsApp"),
+      createAgentAction("choose", "Email"),
+      createAgentAction("choose", "Telegram"),
+    ];
+  }
+
+  if (/\b(calendar|schedule|agenda|appointments?)\b/.test(String(proposal?.requestText || "").toLowerCase())) {
+    return [
+      createAgentAction("choose", "Google Calendar"),
+      createAgentAction("choose", "Outlook Calendar"),
+    ];
+  }
+
+  return [];
+}
+
+function getAgentApprovalCopy(proposal) {
+  const answers = Array.isArray(proposal?.answers) ? proposal.answers : [];
+  if (proposal?.type === "email-digest") {
+    const mailbox = answers[0] || "your mailbox";
+    const time = answers[1] || "your chosen time";
+    const channel = answers[2] || "this workspace";
+    return `I’m ready to send a daily summary of important messages from ${mailbox} at ${time}, delivered to ${channel}. Should I set it up?`;
+  }
+
+  if (proposal?.type === "web-monitor") {
+    const topic = answers[0] || "the topics you care about";
+    const frequency = answers[1] || "your chosen schedule";
+    const channel = answers[2] || "this workspace";
+    return `I’m ready to watch ${topic} ${frequency.toLowerCase()} and send meaningful matches to ${channel}. Should I set it up?`;
+  }
+
+  if (proposal?.type === "whatsapp-replies") {
+    return "I’m ready to draft WhatsApp replies for review before anything is sent. Should I set it up?";
+  }
+
+  if (proposal?.type === "reengagement") {
+    const inactivity = answers[0] || "your chosen quiet period";
+    const frequency = answers[1] || "your chosen schedule";
+    return `I’m ready to check for conversations quiet for ${inactivity} ${frequency.toLowerCase()} and prepare follow-up drafts for you. Should I set it up?`;
+  }
+
+  return `I’m ready to set up help for this request. Should I set it up?`;
+}
+
+function getAgentApprovalActions(proposal) {
+  return [
+    createAgentAction("approve-proposal", "Set it up", proposal?.id || "", "primary"),
+    createAgentAction("request-change", "Change something", proposal?.id || ""),
+  ];
+}
+
+function pushAgentQuestion(proposal, questionIndex = 0) {
+  const index = Math.max(0, Number(questionIndex || 0));
+  proposal.questionIndex = index;
+  pushAgentMessage("assistant", getAgentConversationQuestion(proposal, index), {
+    kind: "question",
+    proposalId: proposal.id,
+    questionIndex: index,
+    actions: getAgentQuestionActions(proposal, index),
+  });
+}
+
+function pushAgentApprovalPrompt(proposal) {
+  pushAgentMessage("assistant", getAgentApprovalCopy(proposal), {
+    kind: "approval",
+    proposalId: proposal.id,
+    actions: getAgentApprovalActions(proposal),
+  });
+}
+
 function persistAgentWorkspace(status = "Agent workspace saved.") {
   persistClientState();
   setStatus(status);
@@ -9195,17 +9404,32 @@ function getProposalSetupLabel(proposal) {
 
 function renderAgentMessage(message) {
   const row = document.createElement("article");
-  row.className = `agent-message is-${message.role}`;
+  const kind = String(message.metadata?.kind || (message.role === "user" ? "user" : "text"));
+  row.className = `agent-message is-${message.role} is-${kind}`;
 
-  const label = document.createElement("span");
-  label.className = "agent-message-label";
-  label.textContent = message.role === "user" ? "You" : "Assistyca";
-
-  const bubble = document.createElement("p");
+  const bubble = document.createElement("div");
   bubble.className = "agent-message-bubble";
   bubble.textContent = message.text;
 
-  row.append(label, bubble);
+  row.append(bubble);
+
+  const actions = Array.isArray(message.metadata?.actions) ? message.metadata.actions : [];
+  if (actions.length && message.role !== "user") {
+    const actionRow = document.createElement("div");
+    actionRow.className = "agent-message-actions";
+    for (const action of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = action.tone === "primary" ? "primary-button small" : "ghost-button small";
+      button.dataset.agentMessageAction = action.id;
+      button.dataset.agentActionValue = action.value || action.label;
+      button.dataset.agentActionProposal = message.metadata?.proposalId || "";
+      button.textContent = action.label;
+      actionRow.append(button);
+    }
+    row.append(actionRow);
+  }
+
   return row;
 }
 
@@ -9215,6 +9439,7 @@ function renderAgentMessages() {
   }
 
   const agent = getAgentWorkspace();
+  elements.agentEmptyState?.classList.toggle("is-hidden", agent.messages.length > 0);
   elements.agentMessageList.replaceChildren(...agent.messages.map(renderAgentMessage));
   elements.agentMessageList.scrollTop = elements.agentMessageList.scrollHeight;
 }
@@ -9391,14 +9616,43 @@ function updateAgentWorkspace() {
     return;
   }
 
+  renderAgentMessages();
+}
+
+function getPendingAgentQuestion() {
+  const agent = getAgentWorkspace();
   const proposal = getActiveAgentProposal();
-  if (elements.agentWorkspaceStatus) {
-    elements.agentWorkspaceStatus.textContent = proposal ? getProposalReadinessLabel(proposal) : "Ready";
+  if (!proposal || proposal.approved) {
+    return null;
   }
 
-  renderAgentMessages();
-  renderAgentProposalCard();
-  renderAgentHelpers();
+  const lastMessage = [...agent.messages].reverse().find((message) => message.role === "assistant");
+  if (!lastMessage || lastMessage.metadata?.kind !== "question" || lastMessage.metadata?.proposalId !== proposal.id) {
+    return null;
+  }
+
+  return proposal;
+}
+
+function handleAgentQuestionAnswer(proposal, answer) {
+  if (!proposal) {
+    return false;
+  }
+
+  const cleanAnswer = String(answer || "").trim();
+  if (!cleanAnswer) {
+    return false;
+  }
+
+  proposal.answers = Array.isArray(proposal.answers) ? proposal.answers : [];
+  proposal.answers.push(cleanAnswer);
+  const nextIndex = proposal.answers.length;
+  if (nextIndex < 3 && !/\b(calendar|schedule|agenda|appointments?)\b/i.test(proposal.requestText || "")) {
+    pushAgentQuestion(proposal, nextIndex);
+  } else {
+    pushAgentApprovalPrompt(proposal);
+  }
+  return true;
 }
 
 function maybeHandleAgentNotificationDecision(text) {
@@ -9421,29 +9675,103 @@ function maybeHandleAgentNotificationDecision(text) {
   if (/\bwhatsapp\b/.test(value)) {
     const whatsappFeature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
     if (whatsappFeature && isFeatureSetupComplete(whatsappFeature)) {
-      pushAgentMessage("assistant", "Great. I will use WhatsApp delivery for this helper and keep the approved task visible here.");
+      pushAgentMessage("assistant", "Got it. I’ll send the results to WhatsApp.");
       return true;
     }
 
     pushAgentMessage(
       "assistant",
-      "WhatsApp delivery is possible, but first I need the WhatsApp Business API setup. If you have the API details, open setup. If you do not know how to get them, use Help me get it and I will guide you. Email or Telegram can be used sooner.",
+      "I can use WhatsApp, but it needs to be connected first. If you don’t know where to find the setup details, I can help you get them. Email or Telegram are available sooner.",
+      {
+        kind: "credential",
+        actions: [
+          createAgentAction("open-setup", "Connect WhatsApp", proposal.id, "primary"),
+          createAgentAction("credential-help", "Help me get it", proposal.id),
+          createAgentAction("choose", "Use email instead", "Email"),
+        ],
+      },
     );
     return true;
   }
 
   if (/\btelegram\b/.test(value)) {
-    pushAgentMessage("assistant", "Telegram works as an alternative. I will need the bot chat id before delivery can run.");
+    pushAgentMessage("assistant", "Telegram works. I’ll need the chat ID before I can send results there.", {
+      kind: "question",
+    });
     return true;
   }
 
   if (/\b(email|mail)\b/.test(value)) {
-    pushAgentMessage("assistant", "Email is the fastest path. I will send results to the workspace email unless you give me a different address.");
+    pushAgentMessage("assistant", "Email works. I’ll send results to the email on your account.");
     return true;
   }
 
-  pushAgentMessage("assistant", "Portal-only delivery works too. I will keep the results inside this workspace until another channel is connected.");
+  pushAgentMessage("assistant", "I’ll keep the results here in this conversation.");
   return true;
+}
+
+function handleAgentMessageAction(event) {
+  const target = getEventTargetElement(event);
+  const button = target?.closest("[data-agent-message-action]");
+  if (!button) {
+    return false;
+  }
+
+  const action = button.dataset.agentMessageAction || "";
+  const proposalId = button.dataset.agentActionProposal || "";
+  const value = button.dataset.agentActionValue || button.textContent || "";
+
+  if (action === "approve-proposal") {
+    approveAgentProposal(proposalId);
+    return true;
+  }
+
+  if (action === "request-change") {
+    requestAgentProposalChanges(proposalId);
+    return true;
+  }
+
+  if (action === "open-setup") {
+    openAgentProposalSetup(proposalId);
+    return true;
+  }
+
+  if (action === "credential-help") {
+    openAgentCredentialHelp(proposalId);
+    return true;
+  }
+
+  if (action === "choose") {
+    handleAgentUserText(value);
+    return true;
+  }
+
+  return false;
+}
+
+function handleAgentUserText(text) {
+  const cleanText = String(text || "").trim();
+  if (!cleanText) {
+    return;
+  }
+
+  pushAgentMessage("user", cleanText);
+  const pendingQuestion = getPendingAgentQuestion();
+  if (pendingQuestion) {
+    handleAgentQuestionAnswer(pendingQuestion, cleanText);
+    return;
+  }
+
+  const handledDecision = maybeHandleAgentNotificationDecision(cleanText);
+  if (handledDecision) {
+    return;
+  }
+
+  const proposal = createAgentProposalFromRequest(cleanText);
+  const agent = getAgentWorkspace();
+  agent.proposals.push(proposal);
+  agent.activeProposalId = proposal.id;
+  pushAgentQuestion(proposal, 0);
 }
 
 function handleAgentComposerSubmit(event = null) {
@@ -9459,16 +9787,7 @@ function handleAgentComposerSubmit(event = null) {
     input.value = "";
   }
 
-  pushAgentMessage("user", text);
-  const handledDecision = maybeHandleAgentNotificationDecision(text);
-
-  if (!handledDecision) {
-    const proposal = createAgentProposalFromRequest(text);
-    const agent = getAgentWorkspace();
-    agent.proposals.push(proposal);
-    agent.activeProposalId = proposal.id;
-    pushAgentMessage("assistant", proposal.response, { proposalId: proposal.id });
-  }
+  handleAgentUserText(text);
 
   persistAgentWorkspace("Agent updated.");
   renderApp({ preserveStatus: true });
@@ -9504,14 +9823,26 @@ function approveAgentProposal(proposalId) {
     }));
   }
 
-  const helperNames = proposal.helpers.map((helper) => helper.name).join(", ");
-  const question = proposal.questions[proposal.questions.length - 1] || "How should I notify you when it is done?";
-  pushAgentMessage(
-    "assistant",
-    `Approved. I created ${helperNames || "the helper agent"} and started preparing the task. One thing is still unclear: ${question}`,
-    { proposalId: proposal.id },
-  );
-  persistAgentWorkspace("Helper agent created.");
+  if (proposal.missingCredential) {
+    pushAgentMessage(
+      "assistant",
+      `I’m ready to set this up, but I still need ${proposal.missingCredential}. You can connect it now, or I can help you find the details.`,
+      {
+        kind: "credential",
+        proposalId: proposal.id,
+        actions: [
+          createAgentAction("open-setup", "Connect it", proposal.id, "primary"),
+          createAgentAction("credential-help", "Help me get it", proposal.id),
+        ],
+      },
+    );
+  } else {
+    pushAgentMessage("assistant", "All set. I’ll use the details you gave me and keep the results here.", {
+      kind: "result",
+      proposalId: proposal.id,
+    });
+  }
+  persistAgentWorkspace("Agent updated.");
   renderApp({ preserveStatus: true });
 }
 
@@ -9523,7 +9854,10 @@ function requestAgentProposalChanges(proposalId) {
   }
 
   agent.activeProposalId = proposal.id;
-  pushAgentMessage("assistant", "Tell me what you want changed in the plan, and I will revise the skills, helpers, or notification path before approval.");
+  pushAgentMessage("assistant", "Sure. What would you like to change?", {
+    kind: "question",
+    proposalId: proposal.id,
+  });
   persistAgentWorkspace("Agent waiting for changes.");
   renderApp({ preserveStatus: true });
 }
@@ -9551,27 +9885,36 @@ function openAgentProposalSetup(proposalId) {
 function openAgentCredentialHelp(proposalId) {
   const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
   const credential = proposal?.missingCredential || "API credentials";
-  openAuthAlert(
-    "I can help you get it",
-    `This task may need ${credential}. If you do not know where to find it, I can contact you and walk you through the setup.`,
+  pushAgentMessage(
+    "assistant",
+    `I can help you find ${credential}. Tell me which screen you’re on, or what you see, and I’ll walk you through it step by step.`,
     {
-      eyebrow: "Credential help",
-      buttonLabel: "Got it",
-      secondaryButtonLabel: proposal?.relatedFeatureId ? "Open setup" : "",
-      onSecondary: () => {
-        if (proposal?.relatedFeatureId) {
-          openAgentProposalSetup(proposal.id);
-        }
-      },
-      tone: "progress",
-      icon: "i",
-      returnFocus: elements.agentComposerInput,
+      kind: "help",
+      proposalId: proposal?.id || "",
+      actions: proposal?.relatedFeatureId
+        ? [createAgentAction("open-setup", "Open setup", proposal.id, "primary")]
+        : [],
     },
   );
+  persistAgentWorkspace("Agent updated.");
+  renderApp({ preserveStatus: true });
+  elements.agentComposerInput?.focus();
 }
 
 function handleAgentWorkspaceClick(event) {
+  if (handleAgentMessageAction(event)) {
+    return;
+  }
+
   const target = getEventTargetElement(event);
+  const toolButton = target?.closest("[data-agent-tool-prompt]");
+  if (toolButton) {
+    handleAgentUserText(toolButton.dataset.agentToolPrompt || "");
+    persistAgentWorkspace("Agent updated.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
   const approveButton = target?.closest("[data-agent-approve-proposal]");
   if (approveButton) {
     approveAgentProposal(approveButton.dataset.agentApproveProposal || "");
@@ -9593,6 +9936,15 @@ function handleAgentWorkspaceClick(event) {
   const helpButton = target?.closest("[data-agent-credential-help]");
   if (helpButton) {
     openAgentCredentialHelp(helpButton.dataset.agentCredentialHelp || "");
+  }
+}
+
+function setAgentToolsOpen(open) {
+  const isOpen = Boolean(open);
+  elements.agentToolsPanel?.classList.toggle("is-open", isOpen);
+  elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
+  if (elements.agentToolsToggleButton) {
+    elements.agentToolsToggleButton.textContent = isOpen ? "Hide tools" : "Show tools";
   }
 }
 
@@ -9626,25 +9978,76 @@ function createFeatureCard(feature) {
   return card;
 }
 
+function getAgentToolLabel(feature) {
+  if (isWhatsAppFeature(feature)) {
+    return "WhatsApp";
+  }
+  if (isMonitorFeature(feature)) {
+    return "Web monitoring";
+  }
+  if (isReengagementFeature(feature)) {
+    return "Customer follow-up";
+  }
+  return feature?.name || "Tool";
+}
+
+function createAgentToolItem(feature) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "agent-tool-item";
+  item.dataset.agentToolPrompt = `Help me use ${getAgentToolLabel(feature)}.`;
+  item.setAttribute("aria-label", `Ask Assistyca about ${getAgentToolLabel(feature)}`);
+
+  const icon = document.createElement("span");
+  icon.className = "agent-tool-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = getAgentToolLabel(feature).slice(0, 1).toUpperCase();
+
+  const copy = document.createElement("span");
+  copy.className = "agent-tool-copy";
+  const title = document.createElement("strong");
+  title.textContent = getAgentToolLabel(feature);
+  const detail = document.createElement("span");
+  detail.textContent = isFeatureSetupComplete(feature) ? "Connected" : "Available";
+  copy.append(title, detail);
+
+  const arrow = document.createElement("span");
+  arrow.className = "agent-tool-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "→";
+
+  item.append(icon, copy, arrow);
+  return item;
+}
+
 function updateFeatureList() {
   const features = clientState.features.length ? clientState.features : [];
-
-  if (!features.length) {
-    const emptyState = document.createElement("article");
-    emptyState.className = "glass-card empty-state";
-
-    const title = document.createElement("h3");
-    title.textContent = "No tools assigned";
-
-    const copy = document.createElement("p");
-    copy.textContent = "Add a tool to this account before editing a prompt.";
-
-    emptyState.append(title, copy);
-    elements.featureList.replaceChildren(emptyState);
+  const target = elements.agentToolShelf || elements.featureList;
+  if (!target) {
     return;
   }
 
-  elements.featureList.replaceChildren(...features.map((feature) => createFeatureCard(feature)));
+  if (!features.length) {
+    const emptyState = document.createElement("p");
+    emptyState.className = "agent-tools-empty";
+
+    emptyState.textContent = "No tools are available yet.";
+    target.replaceChildren(emptyState);
+    return;
+  }
+
+  const visibleFeatures = [];
+  const seenLabels = new Set();
+  for (const feature of features) {
+    const label = getAgentToolLabel(feature);
+    if (seenLabels.has(label)) {
+      continue;
+    }
+    seenLabels.add(label);
+    visibleFeatures.push(feature);
+  }
+
+  target.replaceChildren(...visibleFeatures.map((feature) => createAgentToolItem(feature)));
 }
 
 function createOpportunityMetric(label, value, detail = "") {
@@ -14359,6 +14762,13 @@ function bindEvents() {
 
   if (elements.featuresPanel) {
     elements.featuresPanel.addEventListener("click", handleAgentWorkspaceClick);
+  }
+
+  if (elements.agentToolsToggleButton) {
+    elements.agentToolsToggleButton.addEventListener("click", () => {
+      const isOpen = elements.agentToolsPanel?.classList.contains("is-open");
+      setAgentToolsOpen(!isOpen);
+    });
   }
 
   if (elements.opportunitiesRefreshButton) {
