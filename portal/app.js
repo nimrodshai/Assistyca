@@ -21,6 +21,7 @@ const ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS = 500;
 const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
 const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "You replied here - but the WhatsApp API doesn't let us read the content";
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
+const SCHEDULED_ACTIONS_POLL_MS = 5 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
 const OPPORTUNITIES_OWNER_EMAIL = "nimrod.shai@gmail.com";
@@ -814,6 +815,11 @@ const state = {
   whatsappHistorySelectedConversationId: "",
   whatsappHistoryLoadedAt: 0,
   whatsappHistoryEmail: "",
+  scheduledActions: [],
+  scheduledActionsLoading: false,
+  scheduledActionsError: "",
+  scheduledActionsLoadedAt: 0,
+  selectedScheduledActionId: "",
   paymentStatus: null,
   selectedSimulatorId: null,
   billingReport: null,
@@ -877,6 +883,8 @@ let whatsappConnectionPollTimer = null;
 let whatsappConnectionPollInFlight = false;
 let whatsappConnectionPollActive = false;
 let whatsappConnectionPollFeatureId = "";
+let scheduledActionsPollTimer = null;
+let scheduledActionsRefreshPromise = null;
 
 const elements = {
   loadingView: document.querySelector("#loadingView"),
@@ -915,6 +923,17 @@ const elements = {
   agentPromptButtons: Array.from(document.querySelectorAll("[data-agent-prompt]")),
   featureList: document.querySelector("#featureList"),
   agentToolShelf: document.querySelector("#agentToolShelf"),
+  agentActionsPanelBody: document.querySelector("#agentActionsPanelBody"),
+  agentActionsListView: document.querySelector("#agentActionsListView"),
+  agentActionsStatus: document.querySelector("#agentActionsStatus"),
+  agentActionsRefreshButton: document.querySelector("#agentActionsRefreshButton"),
+  agentPendingActionsCount: document.querySelector("#agentPendingActionsCount"),
+  agentCompletedActionsCount: document.querySelector("#agentCompletedActionsCount"),
+  agentPendingActionList: document.querySelector("#agentPendingActionList"),
+  agentCompletedActionList: document.querySelector("#agentCompletedActionList"),
+  agentActionDetailView: document.querySelector("#agentActionDetailView"),
+  agentActionDetailContent: document.querySelector("#agentActionDetailContent"),
+  agentActionDetailBackButton: document.querySelector("#agentActionDetailBackButton"),
   agentToolsToggleButton: document.querySelector("#agentToolsToggleButton"),
   agentToolsCloseButton: document.querySelector("#agentToolsCloseButton"),
   agentToolsPanel: document.querySelector(".agent-tools-panel"),
@@ -1319,6 +1338,15 @@ function canManageClients() {
 function clearAuthSession() {
   authSession = null;
   persistJson(AUTH_SESSION_KEY, null);
+  state.scheduledActions = [];
+  state.scheduledActionsLoading = false;
+  state.scheduledActionsError = "";
+  state.scheduledActionsLoadedAt = 0;
+  state.selectedScheduledActionId = "";
+  if (scheduledActionsPollTimer !== null) {
+    window.clearInterval(scheduledActionsPollTimer);
+    scheduledActionsPollTimer = null;
+  }
 }
 
 function clearAuthChallenge() {
@@ -6336,6 +6364,7 @@ function setView(view) {
   elements.authView.classList.toggle("is-hidden", nextView !== "auth");
   elements.appView.classList.toggle("is-hidden", nextView !== "app");
   syncWhatsAppConnectionPolling();
+  syncScheduledActionsPolling();
 }
 
 function setStatus(message) {
@@ -10016,12 +10045,354 @@ function renderAgentHelpers() {
   elements.agentHelperList.replaceChildren(...rows);
 }
 
+function normalizeScheduledAction(action = {}) {
+  const payload = action?.payload && typeof action.payload === "object" ? action.payload : {};
+  return {
+    id: Math.max(0, Number(action.id || 0)),
+    actionType: String(action.actionType || "").trim(),
+    channel: String(action.channel || "").trim().toLowerCase(),
+    recipientRef: String(action.recipientRef || "").trim(),
+    runAt: String(action.runAt || "").trim(),
+    timezone: String(action.timezone || "").trim(),
+    status: String(action.status || "pending").trim().toLowerCase() || "pending",
+    attemptCount: Math.max(0, Number(action.attemptCount || 0)),
+    providerMessageId: String(action.providerMessageId || "").trim(),
+    payload: { ...payload },
+    lastError: String(action.lastError || "").trim(),
+    claimedAt: String(action.claimedAt || "").trim(),
+    completedAt: String(action.completedAt || "").trim(),
+    createdAt: String(action.createdAt || "").trim(),
+    updatedAt: String(action.updatedAt || "").trim(),
+  };
+}
+
+function getScheduledActionStatusLabel(status) {
+  const labels = {
+    pending: "Scheduled",
+    running: "Sending",
+    sent: "Sent",
+    delivered: "Delivered",
+    read: "Read",
+    failed: "Failed",
+    cancelled: "Cancelled",
+  };
+  const normalized = String(status || "pending").trim().toLowerCase();
+  return labels[normalized] || capitalizeWords(normalized.replace(/[_-]+/g, " ")) || "Unknown";
+}
+
+function getScheduledActionStatusClass(status) {
+  const normalized = String(status || "pending").trim().toLowerCase();
+  return ["pending", "running", "sent", "delivered", "read", "failed", "cancelled"].includes(normalized)
+    ? normalized
+    : "unknown";
+}
+
+function getScheduledActionTitle(action) {
+  const channel = formatAgentScheduledMessageChannel(action?.channel);
+  if (String(action?.actionType || "").trim() === "send_message") {
+    return `${channel} message`;
+  }
+  return "Scheduled action";
+}
+
+function formatScheduledActionDate(value, timeZone = "") {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "Not available";
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+  const normalizedTimeZone = normalizeMonitorScheduleTimezone(timeZone, getWorkspaceTimeZone()) || undefined;
+  const options = {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: normalizedTimeZone,
+  };
+  if (parsed.getFullYear() !== new Date().getFullYear()) {
+    options.year = "numeric";
+  }
+  return new Intl.DateTimeFormat(undefined, options).format(parsed);
+}
+
+function createScheduledActionStatus(action) {
+  const status = document.createElement("span");
+  const statusClass = getScheduledActionStatusClass(action.status);
+  status.className = `agent-action-status is-${statusClass}`;
+  status.textContent = getScheduledActionStatusLabel(action.status);
+  return status;
+}
+
+function createScheduledActionItem(action) {
+  const item = document.createElement("button");
+  const statusClass = getScheduledActionStatusClass(action.status);
+  item.type = "button";
+  item.className = `agent-action-item is-${statusClass}`;
+  item.dataset.agentScheduledActionId = String(action.id || "");
+  item.setAttribute("aria-label", `Open ${getScheduledActionTitle(action)}, ${getScheduledActionStatusLabel(action.status)}`);
+
+  const head = document.createElement("span");
+  head.className = "agent-action-item-head";
+  const title = document.createElement("strong");
+  title.textContent = getScheduledActionTitle(action);
+  head.append(title, createScheduledActionStatus(action));
+
+  const time = document.createElement("span");
+  time.className = "agent-action-item-time";
+  time.textContent = formatScheduledActionDate(
+    ["pending", "running"].includes(action.status) ? action.runAt : (action.completedAt || action.updatedAt),
+    action.timezone,
+  );
+
+  const previewText = String(action.payload?.messageText || action.payload?.text || action.lastError || "").trim();
+  item.append(head, time);
+  if (previewText) {
+    const preview = document.createElement("span");
+    preview.className = "agent-action-item-preview";
+    preview.textContent = previewText;
+    item.append(preview);
+  }
+  return item;
+}
+
+function createScheduledActionEmpty(message) {
+  const empty = document.createElement("p");
+  empty.className = "agent-action-empty";
+  empty.textContent = message;
+  return empty;
+}
+
+function createScheduledActionDetailRow(label, value) {
+  const row = document.createElement("div");
+  row.className = "agent-action-detail-row";
+  const term = document.createElement("dt");
+  term.textContent = label;
+  const description = document.createElement("dd");
+  description.textContent = value || "Not available";
+  row.append(term, description);
+  return row;
+}
+
+function createScheduledActionDetail(action) {
+  const card = document.createElement("article");
+  card.className = "agent-action-detail-card";
+
+  const head = document.createElement("div");
+  head.className = "agent-action-detail-head";
+  const copy = document.createElement("div");
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = `Action ${action.id}`;
+  const title = document.createElement("h3");
+  title.textContent = getScheduledActionTitle(action);
+  copy.append(eyebrow, title);
+  head.append(copy, createScheduledActionStatus(action));
+  card.append(head);
+
+  const messageText = String(action.payload?.messageText || action.payload?.text || "").trim();
+  if (messageText) {
+    const message = document.createElement("p");
+    message.className = "agent-action-message";
+    message.textContent = `“${messageText}”`;
+    card.append(message);
+  }
+
+  const details = document.createElement("dl");
+  details.className = "agent-action-detail-grid";
+  details.append(
+    createScheduledActionDetailRow("Scheduled for", formatScheduledActionDate(action.runAt, action.timezone)),
+    createScheduledActionDetailRow("Timezone", action.timezone || getWorkspaceTimeZone()),
+    createScheduledActionDetailRow("Channel", formatAgentScheduledMessageChannel(action.channel)),
+    createScheduledActionDetailRow("Attempts", String(action.attemptCount)),
+    createScheduledActionDetailRow("Created", formatScheduledActionDate(action.createdAt, action.timezone)),
+  );
+  if (action.completedAt) {
+    details.append(createScheduledActionDetailRow("Completed", formatScheduledActionDate(action.completedAt, action.timezone)));
+  }
+  if (action.providerMessageId) {
+    details.append(createScheduledActionDetailRow("Provider reference", action.providerMessageId));
+  }
+  card.append(details);
+
+  if (action.lastError) {
+    const error = document.createElement("div");
+    error.className = "agent-action-error";
+    const errorTitle = document.createElement("strong");
+    errorTitle.textContent = "What went wrong";
+    const errorMessage = document.createElement("p");
+    errorMessage.textContent = action.lastError;
+    error.append(errorTitle, errorMessage);
+    card.append(error);
+  } else {
+    const notes = {
+      pending: ["Waiting to run", "This action is queued and will run automatically at the scheduled time."],
+      running: ["Sending now", "The action has started and is waiting for WhatsApp to respond."],
+      sent: ["Accepted by WhatsApp", "WhatsApp accepted the message. Waiting for a delivery update."],
+      delivered: ["Delivered", "WhatsApp confirmed that the message reached the recipient."],
+      read: ["Read", "WhatsApp confirmed that the message was opened."],
+      cancelled: ["Cancelled", "This action will not run."],
+    };
+    const noteCopy = notes[action.status];
+    if (noteCopy) {
+      const note = document.createElement("div");
+      note.className = "agent-action-note";
+      const noteTitle = document.createElement("strong");
+      noteTitle.textContent = noteCopy[0];
+      const noteMessage = document.createElement("p");
+      noteMessage.textContent = noteCopy[1];
+      note.append(noteTitle, noteMessage);
+      card.append(note);
+    }
+  }
+  return card;
+}
+
+function renderAgentActions() {
+  if (!elements.agentPendingActionList || !elements.agentCompletedActionList) {
+    return;
+  }
+
+  const actions = Array.isArray(state.scheduledActions) ? state.scheduledActions : [];
+  const upcoming = actions
+    .filter((action) => ["pending", "running"].includes(action.status))
+    .sort((left, right) => new Date(left.runAt).getTime() - new Date(right.runAt).getTime());
+  const completed = actions
+    .filter((action) => !["pending", "running"].includes(action.status))
+    .sort((left, right) => (
+      new Date(right.completedAt || right.updatedAt || right.createdAt).getTime()
+      - new Date(left.completedAt || left.updatedAt || left.createdAt).getTime()
+    ));
+
+  elements.agentPendingActionsCount.textContent = String(upcoming.length);
+  elements.agentCompletedActionsCount.textContent = String(completed.length);
+  elements.agentPendingActionList.replaceChildren(
+    ...(upcoming.length
+      ? upcoming.map(createScheduledActionItem)
+      : [createScheduledActionEmpty("No upcoming actions.")]),
+  );
+  elements.agentCompletedActionList.replaceChildren(
+    ...(completed.length
+      ? completed.map(createScheduledActionItem)
+      : [createScheduledActionEmpty("Action results and errors will appear here.")]),
+  );
+
+  const statusRow = elements.agentActionsStatus?.closest(".agent-actions-sync-row");
+  statusRow?.classList.toggle("is-error", Boolean(state.scheduledActionsError));
+  if (elements.agentActionsStatus) {
+    if (state.scheduledActionsLoading && !state.scheduledActionsLoadedAt) {
+      elements.agentActionsStatus.textContent = "Checking actions…";
+    } else if (state.scheduledActionsError) {
+      elements.agentActionsStatus.textContent = "Couldn’t refresh actions";
+    } else if (state.scheduledActionsLoadedAt) {
+      elements.agentActionsStatus.textContent = `Updated ${new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+      }).format(new Date(state.scheduledActionsLoadedAt))}`;
+    } else {
+      elements.agentActionsStatus.textContent = "Waiting to check";
+    }
+  }
+  elements.agentActionsRefreshButton?.classList.toggle("is-loading", state.scheduledActionsLoading);
+  if (elements.agentActionsRefreshButton) {
+    elements.agentActionsRefreshButton.disabled = state.scheduledActionsLoading;
+  }
+
+  const selectedAction = actions.find((action) => String(action.id) === String(state.selectedScheduledActionId));
+  if (state.selectedScheduledActionId && !selectedAction) {
+    state.selectedScheduledActionId = "";
+  }
+  const showDetail = Boolean(selectedAction);
+  elements.agentActionsListView?.classList.toggle("is-hidden", showDetail);
+  elements.agentActionDetailView?.classList.toggle("is-hidden", !showDetail);
+  if (selectedAction && elements.agentActionDetailContent) {
+    elements.agentActionDetailContent.replaceChildren(createScheduledActionDetail(selectedAction));
+  } else {
+    elements.agentActionDetailContent?.replaceChildren();
+  }
+
+  const panelOpen = elements.agentToolsPanel?.classList.contains("is-open");
+  setAgentToolsOpen(Boolean(panelOpen));
+}
+
+async function refreshScheduledActions() {
+  if (!isSignedIn()) {
+    return null;
+  }
+  if (scheduledActionsRefreshPromise) {
+    return scheduledActionsRefreshPromise;
+  }
+
+  const requestToken = String(authSession?.token || "");
+  state.scheduledActionsLoading = true;
+  state.scheduledActionsError = "";
+  renderAgentActions();
+  scheduledActionsRefreshPromise = (async () => {
+    try {
+      const response = await apiRequest("/api/scheduled-actions?limit=100", {
+        headers: getSessionAuthHeaders(),
+      });
+      if (requestToken !== String(authSession?.token || "")) {
+        return null;
+      }
+      state.scheduledActions = Array.isArray(response.actions)
+        ? response.actions.map(normalizeScheduledAction).filter((action) => action.id > 0)
+        : [];
+      state.scheduledActionsLoadedAt = Date.now();
+      state.scheduledActionsError = "";
+      return state.scheduledActions;
+    } catch (error) {
+      if (requestToken === String(authSession?.token || "")) {
+        state.scheduledActionsError = formatApiErrorMessage(error, "Couldn’t refresh actions.");
+      }
+      return null;
+    } finally {
+      if (requestToken === String(authSession?.token || "")) {
+        state.scheduledActionsLoading = false;
+        renderAgentActions();
+      }
+      scheduledActionsRefreshPromise = null;
+    }
+  })();
+  return scheduledActionsRefreshPromise;
+}
+
+function syncScheduledActionsPolling() {
+  const shouldPoll = Boolean(
+    isSignedIn()
+    && document.body.dataset.view === "app"
+    && document.visibilityState !== "hidden"
+    && state.activeTab === "features"
+    && !state.selectedFeatureId
+  );
+  if (!shouldPoll) {
+    if (scheduledActionsPollTimer !== null) {
+      window.clearInterval(scheduledActionsPollTimer);
+      scheduledActionsPollTimer = null;
+    }
+    return;
+  }
+
+  if (!state.scheduledActionsLoadedAt && !scheduledActionsRefreshPromise) {
+    void refreshScheduledActions();
+  }
+  if (scheduledActionsPollTimer === null) {
+    scheduledActionsPollTimer = window.setInterval(() => {
+      void refreshScheduledActions();
+    }, SCHEDULED_ACTIONS_POLL_MS);
+  }
+}
+
 function updateAgentWorkspace() {
   if (!elements.agentMessageList) {
     return;
   }
 
   renderAgentMessages();
+  renderAgentActions();
   if (elements.agentComposerInput) {
     elements.agentComposerInput.disabled = agentTurnBusy;
     elements.agentComposerInput.setAttribute("aria-busy", String(agentTurnBusy));
@@ -10692,6 +11063,16 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
         backendActionId: scheduledAction?.id || "",
         backendStatus: scheduledAction?.status || "",
       };
+      if (scheduledAction?.id) {
+        const normalizedAction = normalizeScheduledAction(scheduledAction);
+        state.scheduledActions = [
+          normalizedAction,
+          ...state.scheduledActions.filter((action) => action.id !== normalizedAction.id),
+        ];
+        state.scheduledActionsLoadedAt = Date.now();
+        state.scheduledActionsError = "";
+        renderAgentActions();
+      }
     } catch (error) {
       proposal.status = "needs-approval";
       const payload = error?.payload || {};
@@ -10849,6 +11230,14 @@ function handleAgentWorkspaceClick(event) {
   }
 
   const target = getEventTargetElement(event);
+  const scheduledActionButton = target?.closest("[data-agent-scheduled-action-id]");
+  if (scheduledActionButton) {
+    state.selectedScheduledActionId = String(scheduledActionButton.dataset.agentScheduledActionId || "");
+    renderAgentActions();
+    elements.agentActionsPanelBody?.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+
   const toolButton = target?.closest("[data-agent-tool-prompt]");
   if (toolButton) {
     handleAgentUserText(toolButton.dataset.agentToolPrompt || "");
@@ -10886,7 +11275,10 @@ function setAgentToolsOpen(open) {
   elements.agentToolsPanel?.classList.toggle("is-open", isOpen);
   elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
   if (elements.agentToolsToggleButton) {
-    elements.agentToolsToggleButton.textContent = isOpen ? "Hide tools" : "Show tools";
+    const upcomingCount = state.scheduledActions.filter((action) => ["pending", "running"].includes(action.status)).length;
+    elements.agentToolsToggleButton.textContent = isOpen
+      ? "Close actions"
+      : (upcomingCount ? `Actions (${upcomingCount})` : "View actions");
   }
 }
 
@@ -13960,6 +14352,7 @@ function renderApp(options = {}) {
   updateSettingsFields();
   updatePersonalDetailsFields();
   syncWhatsAppConnectionPolling();
+  syncScheduledActionsPolling();
   if (options.preserveStatus !== true) {
     setStatus("Saved");
   }
@@ -15156,6 +15549,11 @@ async function bootstrapAuthState() {
     state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
     activeEmail = normalizeEmail(authSession?.email || "");
     clientState = loadClientState(activeEmail);
+    state.scheduledActions = [];
+    state.scheduledActionsLoading = false;
+    state.scheduledActionsError = "";
+    state.scheduledActionsLoadedAt = 0;
+    state.selectedScheduledActionId = "";
     applyRemoteAccountProfile(response);
     state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
     clearAuthChallenge();
@@ -15715,6 +16113,32 @@ function bindEvents() {
       setAgentToolsOpen(!isOpen);
     });
   }
+
+  if (elements.agentToolsCloseButton) {
+    elements.agentToolsCloseButton.addEventListener("click", () => {
+      setAgentToolsOpen(false);
+    });
+  }
+
+  if (elements.agentActionsRefreshButton) {
+    elements.agentActionsRefreshButton.addEventListener("click", () => {
+      void refreshScheduledActions();
+    });
+  }
+
+  if (elements.agentActionDetailBackButton) {
+    elements.agentActionDetailBackButton.addEventListener("click", () => {
+      state.selectedScheduledActionId = "";
+      renderAgentActions();
+    });
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    syncScheduledActionsPolling();
+    if (document.visibilityState === "visible" && isSignedIn()) {
+      void refreshScheduledActions();
+    }
+  });
 
   if (elements.opportunitiesRefreshButton) {
     elements.opportunitiesRefreshButton.addEventListener("click", () => {

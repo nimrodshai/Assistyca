@@ -8,7 +8,7 @@
       name="description"
       content="Tell Assistyca what you need and get help through a simple conversation."
     />
-    <link rel="stylesheet" href="./styles.css?v=96" />
+    <link rel="stylesheet" href="./styles.css?v=97" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -213,18 +213,58 @@
             </form>
           </section>
 
-          <aside class="agent-tools-panel" aria-labelledby="agentToolsTitle">
-            <div class="agent-tools-head">
+          <aside id="agentActionsPanel" class="agent-tools-panel agent-actions-panel" aria-labelledby="agentActionsTitle">
+            <div class="agent-tools-head agent-actions-head">
               <div>
-                <h2 id="agentToolsTitle">Available tools</h2>
+                <p class="eyebrow">Run history</p>
+                <h2 id="agentActionsTitle">Actions</h2>
               </div>
-              <button id="agentToolsCloseButton" class="agent-tools-close" type="button" aria-label="Close tools" hidden>×</button>
+              <div class="agent-actions-head-buttons">
+                <button id="agentActionsRefreshButton" class="agent-actions-icon-button" type="button" aria-label="Refresh actions">↻</button>
+                <button id="agentToolsCloseButton" class="agent-actions-icon-button agent-tools-close" type="button" aria-label="Close actions">×</button>
+              </div>
             </div>
-            <div id="agentToolShelf" class="agent-tool-shelf"></div>
+
+            <div id="agentActionsPanelBody" class="agent-actions-panel-body">
+              <div id="agentActionsListView" class="agent-actions-list-view">
+                <div class="agent-actions-sync-row">
+                  <span class="agent-actions-live-dot" aria-hidden="true"></span>
+                  <span id="agentActionsStatus" role="status">Checking actions…</span>
+                </div>
+
+                <section class="agent-actions-section" aria-labelledby="agentPendingActionsTitle">
+                  <div class="agent-actions-section-head">
+                    <h3 id="agentPendingActionsTitle">Upcoming</h3>
+                    <span id="agentPendingActionsCount" class="agent-actions-count">0</span>
+                  </div>
+                  <div id="agentPendingActionList" class="agent-action-list"></div>
+                </section>
+
+                <section class="agent-actions-section" aria-labelledby="agentCompletedActionsTitle">
+                  <div class="agent-actions-section-head">
+                    <h3 id="agentCompletedActionsTitle">History</h3>
+                    <span id="agentCompletedActionsCount" class="agent-actions-count">0</span>
+                  </div>
+                  <div id="agentCompletedActionList" class="agent-action-list"></div>
+                </section>
+
+                <section class="agent-tools-secondary" aria-labelledby="agentToolsTitle">
+                  <div class="agent-actions-section-head">
+                    <h3 id="agentToolsTitle">Available tools</h3>
+                  </div>
+                  <div id="agentToolShelf" class="agent-tool-shelf"></div>
+                </section>
+              </div>
+
+              <div id="agentActionDetailView" class="agent-action-detail-view is-hidden" aria-live="polite">
+                <button id="agentActionDetailBackButton" class="agent-action-back" type="button">← All actions</button>
+                <div id="agentActionDetailContent"></div>
+              </div>
+            </div>
           </aside>
         </div>
-        <button id="agentToolsToggleButton" class="ghost-button small agent-tools-toggle" type="button" aria-expanded="false" aria-controls="agentToolShelf">
-          Show tools
+        <button id="agentToolsToggleButton" class="ghost-button small agent-tools-toggle" type="button" aria-expanded="false" aria-controls="agentActionsPanel">
+          View actions
         </button>
       </section>
 
@@ -1400,6 +1440,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=112"></script>
+    <script src="./app.js?v=113"></script>
   </body>
 </html>

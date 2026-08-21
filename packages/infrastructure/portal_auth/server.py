@@ -2056,6 +2056,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_account_profile_get()
             return
 
+        if path == "/api/scheduled-actions":
+            self._handle_scheduled_actions_get(parsed)
+            return
+
         if path.startswith("/api/billing"):
             session = self._get_authenticated_session()
             if session is None:
@@ -2927,6 +2931,38 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         lines.extend(["", "Message:", message])
         return "\n".join(lines).strip()
+
+    def _handle_scheduled_actions_get(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _session, user = authenticated
+        query = urllib_parse.parse_qs(parsed.query)
+        try:
+            limit = int(normalize_text(query.get("limit", ["100"])[0]) or 100)
+        except ValueError:
+            limit = 100
+        actions = self.database.list_scheduled_actions_for_user(
+            int(user.get("id") or 0),
+            limit=max(1, min(250, limit)),
+        )
+        client_actions: list[dict[str, Any]] = []
+        for action in actions:
+            action_payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+            client_actions.append({
+                **action,
+                "payload": {
+                    key: value
+                    for key, value in action_payload.items()
+                    if key not in {"recipientWaId", "recipient_wa_id"}
+                },
+            })
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "actions": client_actions,
+        })
 
     def _handle_scheduled_actions_post(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -5420,9 +5456,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 continue
 
             routed_user_ids.add(int(connection.get("userId") or 0))
+            event_message_id = normalize_text(status_event.get("message_id"))
+            scheduled_action = self.database.update_scheduled_action_delivery_status(
+                provider_message_id=event_message_id,
+                status=normalize_text(status_event.get("status")).lower(),
+                last_error=normalize_text(status_event.get("error_message")),
+                event_at=self._parse_whatsapp_message_timestamp(status_event.get("timestamp")),
+            )
+            if scheduled_action:
+                results.append({
+                    "type": "scheduled_action_status",
+                    "action_id": int(scheduled_action.get("id") or 0),
+                    "message_id": event_message_id,
+                    "phone_number_id": phone_number_id,
+                    "status": normalize_text(scheduled_action.get("status")).lower(),
+                    "recipient_wa_id": normalize_text(status_event.get("recipient_wa_id")),
+                    "error": normalize_text(scheduled_action.get("lastError")),
+                    "route": route_source,
+                })
+                continue
+
             connection_metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
             latest_owner_message_id = normalize_text(connection_metadata.get("lastOwnerNotificationMessageId"))
-            event_message_id = normalize_text(status_event.get("message_id"))
             if not latest_owner_message_id or latest_owner_message_id != event_message_id:
                 if route_source == "platform_owner_alert":
                     self._record_whatsapp_owner_delivery_event(connection, status_event)

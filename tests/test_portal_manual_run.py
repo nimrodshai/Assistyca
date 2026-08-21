@@ -2199,6 +2199,70 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertNotIn("Latest webhook was an owner command", diagnostic_titles)
         self.assertNotIn("Latest approval alert failed", diagnostic_titles)
 
+    def test_whatsapp_status_webhook_updates_scheduled_action(self) -> None:
+        user = self.server.database.get_user("owner@example.com") or {}
+        action = self.server.database.create_scheduled_action(
+            user_id=int(user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Track me"},
+        )
+        self.server.database.claim_scheduled_action(int(action["id"]))
+        self.server.database.finish_scheduled_action(
+            action_id=int(action["id"]),
+            status="sent",
+            provider_message_id="wamid.scheduled-webhook-1",
+        )
+
+        scheduled_request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(
+                {
+                    "entry": [
+                        {
+                            "changes": [
+                                {
+                                    "value": {
+                                        "metadata": {"phone_number_id": "12345"},
+                                        "statuses": [
+                                            {
+                                                "id": "wamid.scheduled-webhook-1",
+                                                "status": "failed",
+                                                "recipient_id": "15551234567",
+                                                "timestamp": "1720861200",
+                                                "errors": [
+                                                    {
+                                                        "code": 131047,
+                                                        "title": "Re-engagement message",
+                                                        "error_data": {
+                                                            "details": "Message failed outside the customer service window.",
+                                                        },
+                                                    }
+                                                ],
+                                            }
+                                        ],
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urllib_request.urlopen(scheduled_request, timeout=5) as response:
+            scheduled_body = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(scheduled_body["results"][0]["type"], "scheduled_action_status")
+        saved_action = self.server.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(saved_action["status"], "failed")
+        self.assertIn("131047", saved_action["lastError"])
+
     def test_whatsapp_status_webhook_records_external_business_send_placeholder(self) -> None:
         request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import json
 import tempfile
+import threading
 import unittest
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 from unittest import mock
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.portal_auth.server import PortalConfig
+from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.scheduled_actions import ScheduledActionConfig
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 
@@ -80,6 +86,134 @@ class ScheduledActionTests(unittest.TestCase):
             recipient_wa_id="972507322341",
             message_text="It's 12:40.",
         )
+
+    def test_delivery_status_updates_saved_action_and_does_not_regress(self) -> None:
+        action = self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Status check"},
+        )
+        self.database.claim_scheduled_action(int(action["id"]))
+        self.database.finish_scheduled_action(
+            action_id=int(action["id"]),
+            status="sent",
+            provider_message_id="wamid.scheduled-status-1",
+        )
+
+        delivered = self.database.update_scheduled_action_delivery_status(
+            provider_message_id="wamid.scheduled-status-1",
+            status="delivered",
+            event_at="2026-08-21T11:00:00+00:00",
+        )
+        regressed = self.database.update_scheduled_action_delivery_status(
+            provider_message_id="wamid.scheduled-status-1",
+            status="sent",
+            event_at="2026-08-21T10:59:00+00:00",
+        )
+
+        self.assertIsNotNone(delivered)
+        self.assertEqual(delivered["status"], "delivered")
+        self.assertEqual(delivered["payload"]["deliveryStatus"], "delivered")
+        self.assertEqual(regressed["status"], "delivered")
+
+    def test_delivery_failure_keeps_provider_error_for_action_details(self) -> None:
+        action = self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Failure check"},
+        )
+        self.database.claim_scheduled_action(int(action["id"]))
+        self.database.finish_scheduled_action(
+            action_id=int(action["id"]),
+            status="sent",
+            provider_message_id="wamid.scheduled-failure-1",
+        )
+
+        failed = self.database.update_scheduled_action_delivery_status(
+            provider_message_id="wamid.scheduled-failure-1",
+            status="failed",
+            last_error="131047 Message failed outside the customer service window.",
+        )
+
+        self.assertIsNotNone(failed)
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("131047", failed["lastError"])
+        self.assertEqual(failed["payload"]["deliveryStatus"], "failed")
+
+
+class ScheduledActionApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db"),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.server.database.register_user("owner@example.com")
+        code, _ = self.server.store.issue_challenge("owner@example.com")
+        ok, error, result = self.server.store.verify_code("owner@example.com", code)
+        self.assertTrue(ok, error)
+        self.session_token = str((result or {}).get("token") or "")
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def test_action_history_requires_authentication(self) -> None:
+        request = urllib_request.Request(f"{self.base_url}/api/scheduled-actions", method="GET")
+        with self.assertRaises(urllib_error.HTTPError) as raised:
+            urllib_request.urlopen(request, timeout=5)
+        self.assertEqual(raised.exception.code, 401)
+
+    def test_action_history_returns_only_signed_in_users_actions(self) -> None:
+        user = self.server.database.get_user("owner@example.com") or {}
+        other_user = self.server.database.register_user("other@example.com")
+        expected = self.server.database.create_scheduled_action(
+            user_id=int(user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Visible", "recipientWaId": "972500000000"},
+        )
+        self.server.database.create_scheduled_action(
+            user_id=int(other_user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            timezone_name="UTC",
+            payload={"messageText": "Hidden"},
+        )
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/scheduled-actions?limit=25",
+            method="GET",
+            headers={"Authorization": f"Bearer {self.session_token}"},
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual([action["id"] for action in payload["actions"]], [expected["id"]])
+        self.assertEqual(payload["actions"][0]["payload"]["messageText"], "Visible")
+        self.assertNotIn("recipientWaId", payload["actions"][0]["payload"])
 
 
 if __name__ == "__main__":

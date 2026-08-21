@@ -113,7 +113,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".delivery-platform-row", styles)
 
     def test_agent_scheduled_whatsapp_request_uses_scheduled_action_flow(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
         self.assertIn('type: "scheduled-message"', script)
         self.assertIn("function isAgentScheduledMessageRequest", script)
@@ -124,6 +126,16 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function shouldTreatAgentInputAsNewRequest", script)
         self.assertIn("function maybeHandleAgentNotificationDecision(text) {\n  if (isAgentScheduledMessageRequest(text))", script)
         self.assertIn('apiRequest("/api/scheduled-actions"', script)
+        self.assertIn('apiRequest("/api/scheduled-actions?limit=100"', script)
+        self.assertIn("function renderAgentActions", script)
+        self.assertIn("function createScheduledActionDetail", script)
+        self.assertIn("SCHEDULED_ACTIONS_POLL_MS", script)
+        self.assertIn('id="agentActionsPanel"', html)
+        self.assertIn('id="agentPendingActionList"', html)
+        self.assertIn('id="agentCompletedActionList"', html)
+        self.assertIn('id="agentActionDetailView"', html)
+        self.assertIn(".agent-action-error", styles)
+        self.assertIn(".agent-action-item.is-failed::before", styles)
         self.assertIn("getAgentQuestionTotal(proposal)", script)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 

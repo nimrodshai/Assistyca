@@ -4521,6 +4521,36 @@ class PortalDatabase:
             ).fetchone()
         return self._load_scheduled_action_row(row)
 
+    def list_scheduled_actions_for_user(
+        self,
+        user_id: int,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if int(user_id or 0) <= 0:
+            return []
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM scheduled_actions
+                WHERE user_id = ?
+                ORDER BY
+                    CASE WHEN status IN ('pending', 'running') THEN 0 ELSE 1 END ASC,
+                    CASE WHEN status IN ('pending', 'running') THEN run_at END ASC,
+                    CASE WHEN status NOT IN ('pending', 'running') THEN COALESCE(completed_at, updated_at) END DESC,
+                    id DESC
+                LIMIT ?
+                """,
+                (int(user_id), max(1, min(250, int(limit or 100)))),
+            ).fetchall()
+        return [
+            action
+            for action in (self._load_scheduled_action_row(row) for row in rows)
+            if action is not None
+        ]
+
     def list_due_scheduled_actions(
         self,
         *,
@@ -4621,6 +4651,74 @@ class PortalDatabase:
                 (int(action_id),),
             ).fetchone()
         return self._load_scheduled_action_row(row)
+
+    def update_scheduled_action_delivery_status(
+        self,
+        *,
+        provider_message_id: str,
+        status: str,
+        last_error: str = "",
+        event_at: str | datetime | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_message_id = normalize_text(provider_message_id)
+        normalized_status = normalize_text(status).lower()
+        if not normalized_message_id or normalized_status not in {"sent", "delivered", "read", "failed"}:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM scheduled_actions
+                WHERE provider_message_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_message_id,),
+            ).fetchone()
+            action = self._load_scheduled_action_row(row)
+            if action is None:
+                return None
+
+            current_status = normalize_text(action.get("status")).lower()
+            status_rank = {"sent": 1, "delivered": 2, "read": 3, "failed": 4, "cancelled": 5}
+            if status_rank.get(current_status, 0) > status_rank.get(normalized_status, 0):
+                return action
+
+            try:
+                delivery_event_at = parse_datetime(event_at or now_iso()).astimezone(timezone.utc).isoformat()
+            except (TypeError, ValueError):
+                delivery_event_at = now_iso()
+            action_payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+            next_payload = {
+                **action_payload,
+                "deliveryStatus": normalized_status,
+                "deliveryUpdatedAt": delivery_event_at,
+            }
+            next_payload[f"{normalized_status}At"] = delivery_event_at
+            updated_at = now_iso()
+            conn.execute(
+                """
+                UPDATE scheduled_actions
+                SET status = ?,
+                    last_error = ?,
+                    payload_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    normalized_status,
+                    normalize_text(last_error)[:2000] if normalized_status == "failed" else "",
+                    json.dumps(next_payload, ensure_ascii=True, sort_keys=True),
+                    updated_at,
+                    int(action.get("id") or 0),
+                ),
+            )
+            updated_row = conn.execute(
+                "SELECT * FROM scheduled_actions WHERE id = ? LIMIT 1",
+                (int(action.get("id") or 0),),
+            ).fetchone()
+        return self._load_scheduled_action_row(updated_row)
 
     def get_feature_monitor_run(
         self,
