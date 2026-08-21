@@ -10126,6 +10126,34 @@ function createScheduledActionStatus(action) {
   return status;
 }
 
+function getScheduledActionPreviewText(action) {
+  return String(action?.payload?.messageText || action?.payload?.text || action?.lastError || "").trim();
+}
+
+function getScheduledActionItemTimeValue(action) {
+  return ["pending", "running"].includes(action.status)
+    ? action.runAt
+    : (action.completedAt || action.updatedAt);
+}
+
+function getScheduledActionItemSignature(action) {
+  return JSON.stringify([
+    action.id,
+    getScheduledActionTitle(action),
+    getScheduledActionStatusClass(action.status),
+    getScheduledActionStatusLabel(action.status),
+    formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
+    getScheduledActionPreviewText(action),
+  ]);
+}
+
+function getScheduledActionListSignature(actions, emptyMessage) {
+  if (!actions.length) {
+    return JSON.stringify(["empty", emptyMessage]);
+  }
+  return JSON.stringify(actions.map(getScheduledActionItemSignature));
+}
+
 function createScheduledActionItem(action) {
   const item = document.createElement("button");
   const statusClass = getScheduledActionStatusClass(action.status);
@@ -10143,11 +10171,11 @@ function createScheduledActionItem(action) {
   const time = document.createElement("span");
   time.className = "agent-action-item-time";
   time.textContent = formatScheduledActionDate(
-    ["pending", "running"].includes(action.status) ? action.runAt : (action.completedAt || action.updatedAt),
+    getScheduledActionItemTimeValue(action),
     action.timezone,
   );
 
-  const previewText = String(action.payload?.messageText || action.payload?.text || action.lastError || "").trim();
+  const previewText = getScheduledActionPreviewText(action);
   item.append(head, time);
   if (previewText) {
     const preview = document.createElement("span");
@@ -10165,6 +10193,20 @@ function createScheduledActionEmpty(message) {
   return empty;
 }
 
+function renderScheduledActionList(container, actions, emptyMessage) {
+  const signature = getScheduledActionListSignature(actions, emptyMessage);
+  if (container.dataset.agentActionListSignature === signature) {
+    return;
+  }
+
+  container.dataset.agentActionListSignature = signature;
+  container.replaceChildren(
+    ...(actions.length
+      ? actions.map(createScheduledActionItem)
+      : [createScheduledActionEmpty(emptyMessage)]),
+  );
+}
+
 function createScheduledActionDetailRow(label, value) {
   const row = document.createElement("div");
   row.className = "agent-action-detail-row";
@@ -10174,6 +10216,25 @@ function createScheduledActionDetailRow(label, value) {
   description.textContent = value || "Not available";
   row.append(term, description);
   return row;
+}
+
+function getScheduledActionDetailSignature(action) {
+  const messageText = String(action.payload?.messageText || action.payload?.text || "").trim();
+  return JSON.stringify([
+    action.id,
+    getScheduledActionTitle(action),
+    getScheduledActionStatusClass(action.status),
+    getScheduledActionStatusLabel(action.status),
+    messageText,
+    formatScheduledActionDate(action.runAt, action.timezone),
+    action.timezone || getWorkspaceTimeZone(),
+    formatAgentScheduledMessageChannel(action.channel),
+    String(action.attemptCount),
+    formatScheduledActionDate(action.createdAt, action.timezone),
+    action.completedAt ? formatScheduledActionDate(action.completedAt, action.timezone) : "",
+    action.providerMessageId,
+    action.lastError,
+  ]);
 }
 
 function createScheduledActionDetail(action) {
@@ -10265,16 +10326,8 @@ function renderAgentActions() {
 
   elements.agentPendingActionsCount.textContent = String(upcoming.length);
   elements.agentCompletedActionsCount.textContent = String(completed.length);
-  elements.agentPendingActionList.replaceChildren(
-    ...(upcoming.length
-      ? upcoming.map(createScheduledActionItem)
-      : [createScheduledActionEmpty("No upcoming actions.")]),
-  );
-  elements.agentCompletedActionList.replaceChildren(
-    ...(completed.length
-      ? completed.map(createScheduledActionItem)
-      : [createScheduledActionEmpty("Action results and errors will appear here.")]),
-  );
+  renderScheduledActionList(elements.agentPendingActionList, upcoming, "No upcoming actions.");
+  renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
 
   const statusRow = elements.agentActionsStatus?.closest(".agent-actions-sync-row");
   statusRow?.classList.toggle("is-error", Boolean(state.scheduledActionsError));
@@ -10306,9 +10359,22 @@ function renderAgentActions() {
   elements.agentActionsListView?.classList.toggle("is-hidden", showDetail);
   elements.agentActionDetailView?.classList.toggle("is-hidden", !showDetail);
   if (selectedAction && elements.agentActionDetailContent) {
-    elements.agentActionDetailContent.replaceChildren(createScheduledActionDetail(selectedAction));
+    const detailSignature = getScheduledActionDetailSignature(selectedAction);
+    if (elements.agentActionDetailContent.dataset.agentActionDetailSignature !== detailSignature) {
+      elements.agentActionDetailContent.dataset.agentActionDetailSignature = detailSignature;
+      elements.agentActionDetailContent.replaceChildren(createScheduledActionDetail(selectedAction));
+    }
   } else {
-    elements.agentActionDetailContent?.replaceChildren();
+    if (
+      elements.agentActionDetailContent
+      && (
+        elements.agentActionDetailContent.dataset.agentActionDetailSignature
+        || elements.agentActionDetailContent.childElementCount
+      )
+    ) {
+      delete elements.agentActionDetailContent.dataset.agentActionDetailSignature;
+      elements.agentActionDetailContent.replaceChildren();
+    }
   }
 
   const panelOpen = elements.agentToolsPanel?.classList.contains("is-open");
