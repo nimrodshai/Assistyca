@@ -1,0 +1,86 @@
+# Cinema City Runtime Image Sources
+
+- `brand/cinema-city-logo.png`
+  - Source: https://www.cinema-city.co.il/img/cinema-logo.png
+  - Research date: 2026-08-21
+- `posters/spider-man-brand-new-day.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%A4%D7%99%D7%99%D7%93%D7%A8%D7%9E%D7%9F%20%D7%99%D7%95%D7%9D%20%D7%97%D7%93%D7%A9%20%D7%A1%D7%95%D7%A4%D7%99%281%29.jpg
+  - Research date: 2026-08-21
+- `heroes/spider-man-brand-new-day.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/SPIDERMAN_BRAND-NEW-DAY_CC.jpg
+  - Research date: 2026-08-21
+- `posters/spa-weekend.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%A4%D7%90%20%D7%95%D7%95%D7%99%D7%A7%D7%A0%D7%93.jpg
+  - Research date: 2026-08-21
+- `heroes/spa-weekend.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%A4%D7%90%20%D7%95%D7%95%D7%99%D7%A7%D7%A0%D7%93%20%D7%91%D7%90%D7%A0%D7%A8%20%D7%90%D7%AA%D7%A8.jpg
+  - Research date: 2026-08-21
+- `posters/mutiny.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A0%D7%A7%D7%9E%D7%94%20%D7%91%D7%9C%D7%91%20%D7%99%D7%9D.jpg
+  - Research date: 2026-08-21
+- `heroes/mutiny.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A0%D7%A7%D7%9E%D7%94%20%D7%91%D7%9C%D7%91%20%D7%99%D7%9D%20%D7%91%D7%90%D7%A0%D7%A8%20%D7%90%D7%AA%D7%A8.jpg
+  - Research date: 2026-08-21
+- `posters/coyote-vs-acme-he.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A7%D7%99%D7%95%D7%98%D7%99_%D7%A0%D7%92%D7%93_%D7%90%D7%A7%D7%9E%D7%99-%D7%A1%D7%99%D7%A0%D7%9E%D7%94_%D7%A1%D7%99%D7%98%D7%99-kit02.jpg
+  - Research date: 2026-08-21
+- `heroes/coyote-vs-acme-he.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A7%D7%99%D7%95%D7%98%D7%99_%D7%A0%D7%92%D7%93_%D7%90%D7%A7%D7%9E%D7%99-cinema_city.jpg
+  - Research date: 2026-08-21
+- `posters/insidious-out-of-the-further.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%A8%D7%95%D7%A2%20%D7%A9%D7%91%D7%A4%D7%A0%D7%99%D7%9D%284%29.jpg
+  - Research date: 2026-08-21
+- `heroes/insidious-out-of-the-further.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%A8%D7%95%D7%A2%20%D7%A9%D7%91%D7%A4%D7%A0%D7%99%D7%9D%284%29.jpg
+  - Research date: 2026-08-21
+- `posters/la-la-land-10.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%9C%D7%94%20%D7%9C%D7%94%20%D7%9C%D7%A0%D7%93%20%D7%97%D7%92%D7%99%D7%92%D7%95%D7%AA%20%D7%94%D7%A2%D7%A9%D7%95%D7%A8.jpg
+  - Research date: 2026-08-21
+- `heroes/la-la-land-10.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%9C%D7%94%20%D7%9C%D7%94%20%D7%9C%D7%A0%D7%93%20%D7%91%D7%90%D7%A0%D7%A8%20%D7%90%D7%AA%D7%A8.jpg
+  - Research date: 2026-08-21
+- `posters/pout-pout-fish-he.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%93%D7%92%20%D7%95%D7%A9%D7%9E%D7%95%20%D7%91%D7%90%D7%A1%D7%94%20%284%29%20%281%29.jpg
+  - Research date: 2026-08-21
+- `heroes/pout-pout-fish-he.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%93%D7%92%20%D7%95%D7%A9%D7%9E%D7%95%20%D7%91%D7%90%D7%A1%D7%94%20%284%29%20%281%29.jpg
+  - Research date: 2026-08-21
+- `posters/the-odyssey.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_127,h_181,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%90%D7%95%D7%93%D7%99%D7%A1%D7%90%D7%94-%D7%A1%D7%99%D7%A0%D7%9E%D7%94_%D7%A1%D7%99%D7%98%D7%99-kit02-onyx%281%29.jpg
+  - Research date: 2026-08-21
+- `heroes/the-odyssey.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_127,h_181,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%90%D7%95%D7%93%D7%99%D7%A1%D7%90%D7%94-%D7%A1%D7%99%D7%A0%D7%9E%D7%94_%D7%A1%D7%99%D7%98%D7%99-kit02-onyx%281%29.jpg
+  - Research date: 2026-08-21
+- `locations/glilot.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/DSC_7436_FIX%282%29.jpg
+  - Research date: 2026-08-21
+- `locations/rishon-lezion.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A8%D7%90%D7%A9%D7%9C%D7%A6-min.jpg
+  - Research date: 2026-08-21
+- `locations/jerusalem.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%99%D7%A8%D7%95%D7%A9%D7%9C%D7%99%D7%9D.jpg
+  - Research date: 2026-08-21
+- `locations/kfar-saba.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%9B%D7%A4%D7%A1.jpg
+  - Research date: 2026-08-21
+- `locations/netanya.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/1-min.jpg
+  - Research date: 2026-08-21
+- `locations/hadera.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%99%D7%A0%D7%9E%D7%94%20%D7%A1%D7%99%D7%98%D7%99%20%D7%97%D7%93%D7%A8%D7%94%281%29.jpg
+  - Research date: 2026-08-21
+- `locations/beer-sheva.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/DJI_0042.jpg
+  - Research date: 2026-08-21
+- `locations/ashdod.jpg`
+  - Source: https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%90%D7%A9%D7%93%D7%95%D7%93%20%2811%29.jpeg
+  - Research date: 2026-08-21
+- `experiences/vip.jpg`
+  - Uses `locations/glilot.jpg` as an auditorium-adjacent local visual fallback.
+  - Research date: 2026-08-21
+- `experiences/prime.jpg`
+  - Uses `locations/netanya.jpg` as a PRIME-capable local visual fallback.
+  - Research date: 2026-08-21
+- `experiences/onyx.jpg`
+  - Uses `locations/glilot.jpg` because ONYX is a Glilot fixture experience.
+  - Research date: 2026-08-21

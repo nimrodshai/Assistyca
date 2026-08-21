@@ -1,0 +1,944 @@
+{
+  "meta": {
+    "schemaVersion": 1,
+    "fixtureDate": "2026-08-21",
+    "timezone": "Asia/Jerusalem",
+    "currency": "ILS",
+    "locale": "he-IL",
+    "noticeHe": "כל המחירים, המושבים וזמני ההקרנה בקובץ זה הם נתוני הדגמה."
+  },
+  "brand": {
+    "nameHe": "סינמה סיטי",
+    "taglineHe": "עיר הסרטים של ישראל",
+    "logoSourceUrl": "https://www.cinema-city.co.il/img/cinema-logo.png"
+  },
+  "home": {
+    "featuredMovieId": "movie-spider-man-brand-new-day",
+    "nowShowingMovieIds": [
+      "movie-spider-man-brand-new-day",
+      "movie-spa-weekend",
+      "movie-mutiny",
+      "movie-coyote-vs-acme-he",
+      "movie-insidious-out-of-the-further",
+      "movie-la-la-land-10",
+      "movie-pout-pout-fish-he",
+      "movie-the-odyssey"
+    ],
+    "popularMovieIds": [
+      "movie-spider-man-brand-new-day",
+      "movie-the-odyssey",
+      "movie-coyote-vs-acme-he",
+      "movie-spa-weekend",
+      "movie-pout-pout-fish-he"
+    ]
+  },
+  "experiences": [
+    {
+      "id": "vip",
+      "nameHe": "VIP",
+      "headingHe": "ערב שלם, בכרטיס אחד",
+      "descriptionHe": "מתחם VIP משלב טרקלין אירוח, תפריט חלבי, משקאות, פופקורן וכורסאות צפייה רחבות. מומלץ להגיע 45 דקות לפני הסרט. הכניסה מגיל 18 ובהצגת תעודה מזהה.",
+      "accent": "gold",
+      "cinemaIds": [
+        "cinema-glilot",
+        "cinema-rishon-lezion",
+        "cinema-jerusalem",
+        "cinema-beer-sheva"
+      ],
+      "imageSourceUrl": "https://www.cinema-city.co.il/Page/10/"
+    },
+    {
+      "id": "prime",
+      "nameHe": "CINEMA PRIME",
+      "headingHe": "נוחות של VIP במחיר קולנוע רגיל",
+      "descriptionHe": "אולמות PRIME מציעים כורסאות רחבות ונוחות עם חוויית ישיבה משודרגת. האוכל והשתייה אינם כלולים בכרטיס ההדגמה.",
+      "accent": "teal",
+      "cinemaIds": [
+        "cinema-kfar-saba",
+        "cinema-netanya",
+        "cinema-hadera"
+      ],
+      "imageSourceUrl": "https://www.cinema-city.co.il/Page/10/"
+    },
+    {
+      "id": "onyx",
+      "nameHe": "ONYX 4K LED",
+      "headingHe": "כל פרט נשאר חד",
+      "descriptionHe": "אולם ONYX בגלילות מציג סרטים נבחרים על מסך LED ברזולוציית 4K. המפרט בקובץ זה משמש להצגת ממשק בלבד.",
+      "accent": "sky",
+      "cinemaIds": [
+        "cinema-glilot"
+      ],
+      "imageSourceUrl": "https://www.cinema-city.co.il/onyx"
+    }
+  ],
+  "cinemas": [
+    {
+      "id": "cinema-glilot",
+      "slug": "glilot",
+      "nameHe": "סינמה סיטי גלילות",
+      "cityHe": "גלילות",
+      "addressHe": "בניין הרב מכר, צומת גלילות, רמת השרון",
+      "descriptionHe": "מתחם קולנוע גדול בצפון גוש דן עם אולמות רגילים, VIP ו-ONYX, מסעדות ומקומות בילוי.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/DSC_7436_FIX%282%29.jpg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Glilot",
+      "weeklyHours": {
+        "sunday": { "open": "13:30", "close": "23:00" },
+        "monday": { "open": "13:30", "close": "23:00" },
+        "tuesday": { "open": "09:30", "close": "23:00" },
+        "wednesday": { "open": "13:30", "close": "23:00" },
+        "thursday": { "open": "13:30", "close": "23:00" },
+        "friday": { "open": "09:30", "close": "23:30" },
+        "saturday": { "open": "09:30", "close": "23:00" }
+      },
+      "parkingHe": "חניה במתחם ובחניונים הסמוכים. יש לבדוק שילוט ותעריפים במקום.",
+      "publicTransportHe": "קווי אוטובוס מאזור תל אביב, הרצליה, רעננה ונתניה עוצרים בקרבת צומת גלילות.",
+      "accessibilityHe": "כניסה נגישה, מעליות ומקומות ישיבה מסומנים. זמינות מושבים משתנה לפי אולם.",
+      "amenities": ["מסעדות", "פופקורן", "חניה", "נגישות", "טרקלין VIP"],
+      "experiences": ["standard", "vip", "onyx"]
+    },
+    {
+      "id": "cinema-rishon-lezion",
+      "slug": "rishon-lezion",
+      "nameHe": "סינמה סיטי ראשון לציון",
+      "cityHe": "ראשון לציון",
+      "addressHe": "שדרות משה דיין 32, ראשון לציון",
+      "descriptionHe": "מתחם קולנוע ומסחר גדול במערב ראשון לציון עם אולמות רגילים ו-VIP.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A8%D7%90%D7%A9%D7%9C%D7%A6-min.jpg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Rishon+LeZion",
+      "weeklyHours": {
+        "sunday": { "open": "13:00", "close": "23:30" },
+        "monday": { "open": "13:00", "close": "23:30" },
+        "tuesday": { "open": "09:30", "close": "23:30" },
+        "wednesday": { "open": "13:00", "close": "23:30" },
+        "thursday": { "open": "13:00", "close": "00:00" },
+        "friday": { "open": "09:30", "close": "00:00" },
+        "saturday": { "open": "09:30", "close": "23:30" }
+      },
+      "parkingHe": "חניה במתחם המסחרי. תנאי החניה מופיעים בשילוט המקומי.",
+      "publicTransportHe": "קווי אוטובוס רבים מגיעים לשדרות משה דיין ולרחובות הסמוכים.",
+      "accessibilityHe": "המתחם כולל דרכי גישה ומקומות ישיבה נגישים. יש לבחור מושב מסומן במפת האולם.",
+      "amenities": ["מסעדות", "חנויות", "חניה", "נגישות", "טרקלין VIP"],
+      "experiences": ["standard", "vip"]
+    },
+    {
+      "id": "cinema-jerusalem",
+      "slug": "jerusalem",
+      "nameHe": "סינמה סיטי ירושלים",
+      "cityHe": "ירושלים",
+      "addressHe": "שדרות יצחק רבין 10, ירושלים",
+      "descriptionHe": "מתחם קולנוע ותרבות בירושלים עם אולמות רגילים, VIP, מסעדות ואירועים.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%99%D7%A8%D7%95%D7%A9%D7%9C%D7%99%D7%9D.jpg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Jerusalem",
+      "weeklyHours": {
+        "sunday": { "open": "13:00", "close": "23:00" },
+        "monday": { "open": "13:00", "close": "23:00" },
+        "tuesday": { "open": "10:00", "close": "23:00" },
+        "wednesday": { "open": "13:00", "close": "23:00" },
+        "thursday": { "open": "13:00", "close": "00:00" },
+        "friday": { "open": "09:30", "close": "14:30" },
+        "saturday": { "open": "19:30", "close": "23:30" }
+      },
+      "parkingHe": "חניון תת-קרקעי בתשלום נמצא במתחם.",
+      "publicTransportHe": "תחנות אוטובוס וקווי הרכבת הקלה נמצאים במרחק הליכה משתנה.",
+      "accessibilityHe": "מעליות, כניסות ומושבים נגישים זמינים במתחם.",
+      "amenities": ["מסעדות", "חניה", "נגישות", "טרקלין VIP"],
+      "experiences": ["standard", "vip"]
+    },
+    {
+      "id": "cinema-kfar-saba",
+      "slug": "kfar-saba",
+      "nameHe": "סינמה סיטי כפר סבא",
+      "cityHe": "כפר סבא",
+      "addressHe": "ויצמן 207, מתחם G, כפר סבא",
+      "descriptionHe": "קולנוע במתחם G כפר סבא עם אולמות רגילים וכורסאות PRIME.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%9B%D7%A4%D7%A1.jpg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Kfar+Saba",
+      "weeklyHours": {
+        "sunday": { "open": "13:00", "close": "22:30" },
+        "monday": { "open": "13:00", "close": "22:30" },
+        "tuesday": { "open": "09:00", "close": "22:30" },
+        "wednesday": { "open": "13:00", "close": "22:30" },
+        "thursday": { "open": "13:00", "close": "22:30" },
+        "friday": { "open": "13:00", "close": "22:30" },
+        "saturday": { "open": "09:00", "close": "22:30" }
+      },
+      "parkingHe": "חניה זמינה בחניוני מתחם G.",
+      "publicTransportHe": "קווי אוטובוס עירוניים ובין-עירוניים מגיעים לאזור ויצמן ומתחם G.",
+      "accessibilityHe": "הגישה למתחם ולאולמות כוללת מסלולים ומושבים נגישים.",
+      "amenities": ["מסעדות", "חנויות", "חניה", "נגישות", "כורסאות PRIME"],
+      "experiences": ["standard", "prime"]
+    },
+    {
+      "id": "cinema-netanya",
+      "slug": "netanya",
+      "nameHe": "סינמה סיטי נתניה",
+      "cityHe": "נתניה",
+      "addressHe": "המחקר 3, מתחם רוגובין, נתניה",
+      "descriptionHe": "קולנוע באזור התעשייה של נתניה עם אולמות רגילים וכורסאות PRIME.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/1-min.jpg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Netanya",
+      "weeklyHours": {
+        "sunday": { "open": "12:00", "close": "23:00" },
+        "monday": { "open": "12:00", "close": "23:00" },
+        "tuesday": { "open": "09:00", "close": "23:00" },
+        "wednesday": { "open": "12:00", "close": "23:00" },
+        "thursday": { "open": "12:00", "close": "00:00" },
+        "friday": { "open": "11:00", "close": "00:00" },
+        "saturday": { "open": "09:00", "close": "23:00" }
+      },
+      "parkingHe": "חניה זמינה במתחם רוגובין.",
+      "publicTransportHe": "קווי אוטובוס אזוריים עוצרים בקרבת אזור התעשייה והאצטדיון.",
+      "accessibilityHe": "המתחם כולל גישה ומושבים מסומנים לאנשים עם מוגבלות.",
+      "amenities": ["מסעדות", "חניה", "נגישות", "כורסאות PRIME"],
+      "experiences": ["standard", "prime"]
+    },
+    {
+      "id": "cinema-hadera",
+      "slug": "hadera",
+      "nameHe": "סינמה סיטי חדרה",
+      "cityHe": "חדרה",
+      "addressHe": "צה״ל 35, חדרה",
+      "descriptionHe": "קולנוע בחדרה עם הקרנות רגילות ואולמות PRIME.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%99%D7%A0%D7%9E%D7%94%20%D7%A1%D7%99%D7%98%D7%99%20%D7%97%D7%93%D7%A8%D7%94%281%29.jpg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Hadera",
+      "weeklyHours": {
+        "sunday": { "open": "13:00", "close": "23:00" },
+        "monday": { "open": "13:00", "close": "23:00" },
+        "tuesday": { "open": "09:30", "close": "23:00" },
+        "wednesday": { "open": "13:00", "close": "23:00" },
+        "thursday": { "open": "13:00", "close": "23:30" },
+        "friday": { "open": "10:00", "close": "23:30" },
+        "saturday": { "open": "09:30", "close": "23:00" }
+      },
+      "parkingHe": "חניה זמינה במתחם ובסביבתו.",
+      "publicTransportHe": "קווים מחדרה, פרדס חנה-כרכור, גן שמואל והיישובים הסמוכים מגיעים לאזור.",
+      "accessibilityHe": "המתחם כולל כניסה ומושבים נגישים.",
+      "amenities": ["חניה", "נגישות", "כורסאות PRIME"],
+      "experiences": ["standard", "prime"]
+    },
+    {
+      "id": "cinema-beer-sheva",
+      "slug": "beer-sheva",
+      "nameHe": "סינמה סיטי באר שבע",
+      "cityHe": "באר שבע",
+      "addressHe": "החיטה 1, באר שבע",
+      "descriptionHe": "מתחם קולנוע ובילוי בבאר שבע עם אולמות רגילים ו-VIP.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/DJI_0042.jpg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Beer+Sheva",
+      "weeklyHours": {
+        "sunday": { "open": "13:00", "close": "23:00" },
+        "monday": { "open": "13:00", "close": "23:00" },
+        "tuesday": { "open": "09:30", "close": "23:00" },
+        "wednesday": { "open": "13:00", "close": "23:00" },
+        "thursday": { "open": "13:00", "close": "00:00" },
+        "friday": { "open": "10:00", "close": "00:00" },
+        "saturday": { "open": "10:00", "close": "23:30" }
+      },
+      "parkingHe": "חניית חוץ, חניון תת-קרקעי וחניון נוסף מעבר לכביש.",
+      "publicTransportHe": "קווים עירוניים ובין-עירוניים מגיעים למתחם ולאזור רחוב החיטה.",
+      "accessibilityHe": "דרכי הגישה והאולמות כוללים התאמות ומושבים מסומנים.",
+      "amenities": ["מסעדות", "חנויות", "חניה", "נגישות", "טרקלין VIP"],
+      "experiences": ["standard", "vip"]
+    },
+    {
+      "id": "cinema-ashdod",
+      "slug": "ashdod",
+      "nameHe": "סינמה סיטי אשדוד",
+      "cityHe": "אשדוד",
+      "addressHe": "הרכבת 1, אשדוד",
+      "descriptionHe": "מתחם קולנוע וקניות באשדוד ליד תחנת הרכבת עד הלום.",
+      "imageSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_295,h_200,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%90%D7%A9%D7%93%D7%95%D7%93%20%2811%29.jpeg",
+      "mapUrl": "https://www.google.com/maps/search/?api=1&query=Cinema+City+Ashdod",
+      "weeklyHours": {
+        "sunday": { "open": "13:00", "close": "23:00" },
+        "monday": { "open": "13:00", "close": "23:00" },
+        "tuesday": { "open": "09:30", "close": "23:00" },
+        "wednesday": { "open": "13:00", "close": "23:00" },
+        "thursday": { "open": "13:00", "close": "00:00" },
+        "friday": { "open": "10:00", "close": "00:00" },
+        "saturday": { "open": "10:00", "close": "23:30" }
+      },
+      "parkingHe": "חניה חינם זמינה במתחם לפי המידע באתר המקור ביום המחקר.",
+      "publicTransportHe": "קווי אוטובוס מגיעים למתחם ותחנת אשדוד עד הלום נמצאת בקרבתו.",
+      "accessibilityHe": "המתחם כולל דרכי גישה ומושבים מסומנים.",
+      "amenities": ["מסעדות", "חנויות", "חניה", "רכבת סמוכה", "נגישות"],
+      "experiences": ["standard"]
+    }
+  ],
+  "movies": [
+    {
+      "id": "movie-spider-man-brand-new-day",
+      "slug": "spider-man-brand-new-day",
+      "titleHe": "ספיידרמן: יום חדש",
+      "titleOriginal": "SPIDER-MAN: BRAND NEW DAY",
+      "synopsisHe": "ארבע שנים אחרי שהעולם שכח את פיטר פארקר, הוא מגן על ניו יורק לבדו. שרשרת פשעים חדשה וכוח שמשנה את גופו מעמידים אותו מול איום שלא הכיר.",
+      "genres": ["פנטזיה", "אקשן"],
+      "runtimeMinutes": 150,
+      "releaseDate": "2026-07-29",
+      "ageRestriction": "מותר לכל",
+      "status": "now-showing",
+      "audience": "general",
+      "spokenLanguages": ["אנגלית"],
+      "subtitleLanguages": ["עברית"],
+      "badges": ["הסרט הגדול של השבוע"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%A4%D7%99%D7%99%D7%93%D7%A8%D7%9E%D7%9F%20%D7%99%D7%95%D7%9D%20%D7%97%D7%93%D7%A9%20%D7%A1%D7%95%D7%A4%D7%99%281%29.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/SPIDERMAN_BRAND-NEW-DAY_CC.jpg",
+      "trailerUrl": "https://www.youtube.com/embed/aqz-KE-bpKQ"
+    },
+    {
+      "id": "movie-spa-weekend",
+      "slug": "spa-weekend",
+      "titleHe": "ספא וויקנד",
+      "titleOriginal": "SPA WEEKEND",
+      "synopsisHe": "שלוש חברות יוצאות לסוף שבוע רגוע בספא. חברה רביעית מצטרפת והופכת את החופשה לרצף פרוע של צחוק והחלטות גרועות.",
+      "genres": ["קומדיה"],
+      "runtimeMinutes": 97,
+      "releaseDate": "2026-08-20",
+      "ageRestriction": "מגיל 14",
+      "status": "now-showing",
+      "audience": "general",
+      "spokenLanguages": ["אנגלית"],
+      "subtitleLanguages": ["עברית"],
+      "badges": ["חדש"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%A4%D7%90%20%D7%95%D7%95%D7%99%D7%A7%D7%A0%D7%93.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A1%D7%A4%D7%90%20%D7%95%D7%95%D7%99%D7%A7%D7%A0%D7%93%20%D7%91%D7%90%D7%A0%D7%A8%20%D7%90%D7%AA%D7%A8.jpg"
+    },
+    {
+      "id": "movie-mutiny",
+      "slug": "mutiny",
+      "titleHe": "נקמה בלב ים",
+      "titleOriginal": "MUTINY",
+      "synopsisHe": "לוחם לשעבר יוצא לחפש את האחראים לרצח חברו ומגלה מזימה שמובילה אותו הרחק אל מים בינלאומיים.",
+      "genres": ["אקשן", "מותחן"],
+      "runtimeMinutes": 95,
+      "releaseDate": "2026-08-20",
+      "ageRestriction": "מגיל 14",
+      "status": "now-showing",
+      "audience": "general",
+      "spokenLanguages": ["אנגלית"],
+      "subtitleLanguages": ["עברית"],
+      "badges": ["חדש"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A0%D7%A7%D7%9E%D7%94%20%D7%91%D7%9C%D7%91%20%D7%99%D7%9D.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A0%D7%A7%D7%9E%D7%94%20%D7%91%D7%9C%D7%91%20%D7%99%D7%9D%20%D7%91%D7%90%D7%A0%D7%A8%20%D7%90%D7%AA%D7%A8.jpg"
+    },
+    {
+      "id": "movie-coyote-vs-acme-he",
+      "slug": "coyote-vs-acme-hebrew",
+      "titleHe": "לוני טונס: קיוטי נגד אקמי",
+      "titleOriginal": "COYOTE VS. ACME",
+      "synopsisHe": "ויילי קיוטי תובע את תאגיד אקמי על שנים של מוצרים כושלים. המשפט הופך לעימות קומי שבו באגס באני וגיבורים מוכרים מסבכים את התמונה.",
+      "genres": ["קומדיה", "משפחה"],
+      "runtimeMinutes": 101,
+      "releaseDate": "2026-08-20",
+      "ageRestriction": "מותר לכל",
+      "status": "now-showing",
+      "audience": "children",
+      "spokenLanguages": ["עברית"],
+      "subtitleLanguages": [],
+      "badges": ["מדובב"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A7%D7%99%D7%95%D7%98%D7%99_%D7%A0%D7%92%D7%93_%D7%90%D7%A7%D7%9E%D7%99-%D7%A1%D7%99%D7%A0%D7%9E%D7%94_%D7%A1%D7%99%D7%98%D7%99-kit02.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%A7%D7%99%D7%95%D7%98%D7%99_%D7%A0%D7%92%D7%93_%D7%90%D7%A7%D7%9E%D7%99-cinema_city.jpg"
+    },
+    {
+      "id": "movie-insidious-out-of-the-further",
+      "slug": "insidious-out-of-the-further",
+      "titleHe": "הרוע שבפנים: מחוץ למעבר",
+      "titleOriginal": "INSIDIOUS: OUT OF THE FURTHER",
+      "synopsisHe": "אם צעירה חוזרת לבית ילדותה ומגלה שהיא יכולה להיכנס לממד אפל. היכולת מושכת ישויות שמאיימות לעבור בעקבותיה אל העולם שלנו.",
+      "genres": ["אימה"],
+      "runtimeMinutes": 106,
+      "releaseDate": "2026-08-20",
+      "ageRestriction": "מגיל 14",
+      "status": "now-showing",
+      "audience": "general",
+      "spokenLanguages": ["אנגלית"],
+      "subtitleLanguages": ["עברית"],
+      "badges": ["חדש"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%A8%D7%95%D7%A2%20%D7%A9%D7%91%D7%A4%D7%A0%D7%99%D7%9D%284%29.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%A8%D7%95%D7%A2%20%D7%A9%D7%91%D7%A4%D7%A0%D7%99%D7%9D%284%29.jpg"
+    },
+    {
+      "id": "movie-la-la-land-10",
+      "slug": "la-la-land-10th-anniversary",
+      "titleHe": "לה לה לנד: חגיגות העשור",
+      "titleOriginal": "LA LA LAND 10TH ANNIVERSARY",
+      "synopsisHe": "המחזמר עטור הפרסים חוזר למסך הגדול. מיה וסבסטיאן רודפים אחרי חלומותיהם בלוס אנג'לס ומגלים את המחיר של הצלחה ואהבה.",
+      "genres": ["מיוזיקל", "רומנטיקה"],
+      "runtimeMinutes": 128,
+      "releaseDate": "2026-08-25",
+      "ageRestriction": "מותר לכל",
+      "status": "coming-soon",
+      "audience": "general",
+      "spokenLanguages": ["אנגלית"],
+      "subtitleLanguages": ["עברית"],
+      "badges": ["25.8 בלבד"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%9C%D7%94%20%D7%9C%D7%94%20%D7%9C%D7%A0%D7%93%20%D7%97%D7%92%D7%99%D7%92%D7%95%D7%AA%20%D7%94%D7%A2%D7%A9%D7%95%D7%A8.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_1920,h_0,mode_crop,quality_60,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%9C%D7%94%20%D7%9C%D7%94%20%D7%9C%D7%A0%D7%93%20%D7%91%D7%90%D7%A0%D7%A8%20%D7%90%D7%AA%D7%A8.jpg"
+    },
+    {
+      "id": "movie-pout-pout-fish-he",
+      "slug": "pout-pout-fish-hebrew",
+      "titleHe": "דג ושמו באסה",
+      "titleOriginal": "THE POUT-POUT FISH",
+      "synopsisHe": "דג צעיר וזעפן יוצא עם סוסת ים אמיצה לחפש יצור מיתולוגי שיוכל לעזור להם לבנות בית חדש.",
+      "genres": ["קומדיה", "משפחה"],
+      "runtimeMinutes": 93,
+      "releaseDate": "2026-08-20",
+      "ageRestriction": "טרם נקבע",
+      "status": "now-showing",
+      "audience": "children",
+      "spokenLanguages": ["עברית"],
+      "subtitleLanguages": [],
+      "badges": ["מדובב"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%93%D7%92%20%D7%95%D7%A9%D7%9E%D7%95%20%D7%91%D7%90%D7%A1%D7%94%20%284%29%20%281%29.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_236,h_350,mode_,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%93%D7%92%20%D7%95%D7%A9%D7%9E%D7%95%20%D7%91%D7%90%D7%A1%D7%94%20%284%29%20%281%29.jpg"
+    },
+    {
+      "id": "movie-the-odyssey",
+      "slug": "the-odyssey",
+      "titleHe": "האודיסאה",
+      "titleOriginal": "THE ODYSSEY",
+      "synopsisHe": "אודיסאוס יוצא מטרויה בדרכו לאיתקה. המסע מפגיש אותו עם יצורים, פיתויים וסכנות שמעמידים את מנהיגותו ואת רצונו לשוב הביתה במבחן.",
+      "genres": ["אקשן", "הרפתקה"],
+      "runtimeMinutes": 172,
+      "releaseDate": "2026-07-16",
+      "ageRestriction": "מגיל 14",
+      "status": "now-showing",
+      "audience": "general",
+      "spokenLanguages": ["אנגלית"],
+      "subtitleLanguages": ["עברית"],
+      "badges": ["ONYX"],
+      "posterSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_127,h_181,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%90%D7%95%D7%93%D7%99%D7%A1%D7%90%D7%94-%D7%A1%D7%99%D7%A0%D7%9E%D7%94_%D7%A1%D7%99%D7%98%D7%99-kit02-onyx%281%29.jpg",
+      "backdropSourceUrl": "https://cdn.modulus.co.il/fetch/cinemacity/w_127,h_181,mode_crop,quality_95,v_4f7026f8-2419-4c0e-a835-774fecc120bf41/http://80.178.112.171/images/%D7%94%D7%90%D7%95%D7%93%D7%99%D7%A1%D7%90%D7%94-%D7%A1%D7%99%D7%A0%D7%9E%D7%94_%D7%A1%D7%99%D7%98%D7%99-kit02-onyx%281%29.jpg",
+      "photosensitivityWarning": "הסרט מכיל רצפים עם אורות מהבהבים שעלולים להשפיע על צופים עם רגישות לאור או אפילפסיה רגישה לאור."
+    }
+  ],
+  "seatMaps": [
+    {
+      "id": "seat-map-standard",
+      "rowLabels": ["A", "B", "C", "D", "E", "F", "G", "H"],
+      "seatsPerRow": 10,
+      "aislesAfterSeatNumbers": [5],
+      "premiumSeatIds": ["G3", "G4", "G5", "G6", "G7", "G8", "H3", "H4", "H5", "H6", "H7", "H8"],
+      "accessibleSeatIds": ["H1", "H10"],
+      "companionSeatIds": ["H2", "H9"],
+      "occupiedSeatIds": ["A4", "A5", "B5", "B6", "C2", "C3", "C7", "D7", "D8", "E4", "E5", "E6", "G9"]
+    },
+    {
+      "id": "seat-map-premium",
+      "rowLabels": ["A", "B", "C", "D", "E", "F"],
+      "seatsPerRow": 8,
+      "aislesAfterSeatNumbers": [4],
+      "premiumSeatIds": ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"],
+      "accessibleSeatIds": ["F1", "F8"],
+      "companionSeatIds": ["F2", "F7"],
+      "occupiedSeatIds": ["A3", "A4", "B4", "B5", "C1", "C7", "D4", "D5", "E2"]
+    },
+    {
+      "id": "seat-map-onyx",
+      "rowLabels": ["A", "B", "C", "D", "E", "F", "G", "H"],
+      "seatsPerRow": 12,
+      "aislesAfterSeatNumbers": [3, 9],
+      "premiumSeatIds": ["F4", "F5", "F6", "F7", "F8", "F9", "G4", "G5", "G6", "G7", "G8", "G9", "H4", "H5", "H6", "H7", "H8", "H9"],
+      "accessibleSeatIds": ["H1", "H12"],
+      "companionSeatIds": ["H2", "H11"],
+      "occupiedSeatIds": ["A6", "A7", "B5", "B6", "B7", "C3", "C4", "C9", "C10", "D6", "D7", "E1", "E12", "F5", "G10"]
+    }
+  ],
+  "screenings": [
+    {
+      "id": "scr-spider-glilot-20260821-2030",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T20:30:00+03:00",
+      "hallNameHe": "אולם 7",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 },
+        { "id": "senior", "labelHe": "אזרח ותיק", "noteHe": "בהצגת תעודה", "price": 34 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-spider-glilot-20260821-2200-vip",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T22:00:00+03:00",
+      "hallNameHe": "VIP 2",
+      "experience": "vip",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "low",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "vip", "labelHe": "כרטיס VIP", "noteHe": "מגיל 18", "price": 159 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-spa-glilot-20260821-1810",
+      "movieId": "movie-spa-weekend",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T18:10:00+03:00",
+      "hallNameHe": "אולם 4",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "senior", "labelHe": "אזרח ותיק", "noteHe": "בהצגת תעודה", "price": 34 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-mutiny-glilot-20260821-2100",
+      "movieId": "movie-mutiny",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T21:00:00+03:00",
+      "hallNameHe": "אולם 5",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "low",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-coyote-glilot-20260821-1600",
+      "movieId": "movie-coyote-vs-acme-he",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T16:00:00+03:00",
+      "hallNameHe": "אולם 2",
+      "experience": "standard",
+      "spokenLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-fish-glilot-20260821-1500",
+      "movieId": "movie-pout-pout-fish-he",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T15:00:00+03:00",
+      "hallNameHe": "אולם 3",
+      "experience": "standard",
+      "spokenLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-insidious-glilot-20260821-2310",
+      "movieId": "movie-insidious-out-of-the-further",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T23:10:00+03:00",
+      "hallNameHe": "אולם 6",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "sold-out",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-odyssey-glilot-20260821-2045-onyx",
+      "movieId": "movie-the-odyssey",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-21T20:45:00+03:00",
+      "hallNameHe": "ONYX",
+      "experience": "onyx",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "low",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "onyx-adult", "labelHe": "ONYX מבוגר", "price": 69 },
+        { "id": "onyx-child", "labelHe": "ONYX ילד", "price": 59 }
+      ],
+      "seatMapId": "seat-map-onyx"
+    },
+    {
+      "id": "scr-spider-rishon-20260821-1915",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-rishon-lezion",
+      "startsAt": "2026-08-21T19:15:00+03:00",
+      "hallNameHe": "אולם 12",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-spider-jerusalem-20260821-2130-vip",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-jerusalem",
+      "startsAt": "2026-08-21T21:30:00+03:00",
+      "hallNameHe": "VIP 1",
+      "experience": "vip",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "vip", "labelHe": "כרטיס VIP", "noteHe": "מגיל 18", "price": 159 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-coyote-kfar-saba-20260821-1730-prime",
+      "movieId": "movie-coyote-vs-acme-he",
+      "cinemaId": "cinema-kfar-saba",
+      "startsAt": "2026-08-21T17:30:00+03:00",
+      "hallNameHe": "PRIME 3",
+      "experience": "prime",
+      "spokenLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "prime", "labelHe": "כרטיס PRIME", "price": 49.9 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-spa-netanya-20260821-2020-prime",
+      "movieId": "movie-spa-weekend",
+      "cinemaId": "cinema-netanya",
+      "startsAt": "2026-08-21T20:20:00+03:00",
+      "hallNameHe": "PRIME 2",
+      "experience": "prime",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "prime", "labelHe": "כרטיס PRIME", "price": 49.9 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-fish-hadera-20260821-1615-prime",
+      "movieId": "movie-pout-pout-fish-he",
+      "cinemaId": "cinema-hadera",
+      "startsAt": "2026-08-21T16:15:00+03:00",
+      "hallNameHe": "PRIME 1",
+      "experience": "prime",
+      "spokenLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "prime-adult", "labelHe": "PRIME מבוגר", "price": 49.9 },
+        { "id": "prime-child", "labelHe": "PRIME ילד", "price": 39.9 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-mutiny-beer-sheva-20260821-2240-vip",
+      "movieId": "movie-mutiny",
+      "cinemaId": "cinema-beer-sheva",
+      "startsAt": "2026-08-21T22:40:00+03:00",
+      "hallNameHe": "VIP 1",
+      "experience": "vip",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "low",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "vip", "labelHe": "כרטיס VIP", "noteHe": "מגיל 18", "price": 159 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-spider-ashdod-20260821-2110",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-ashdod",
+      "startsAt": "2026-08-21T21:10:00+03:00",
+      "hallNameHe": "אולם 8",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-spider-glilot-20260822-1800",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-22T18:00:00+03:00",
+      "hallNameHe": "אולם 7",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-coyote-glilot-20260822-1530",
+      "movieId": "movie-coyote-vs-acme-he",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-22T15:30:00+03:00",
+      "hallNameHe": "אולם 2",
+      "experience": "standard",
+      "spokenLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-spa-glilot-20260822-2000-vip",
+      "movieId": "movie-spa-weekend",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-22T20:00:00+03:00",
+      "hallNameHe": "VIP 2",
+      "experience": "vip",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "low",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "vip", "labelHe": "כרטיס VIP", "noteHe": "מגיל 18", "price": 159 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-odyssey-glilot-20260822-2115-onyx",
+      "movieId": "movie-the-odyssey",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-22T21:15:00+03:00",
+      "hallNameHe": "ONYX",
+      "experience": "onyx",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "onyx-adult", "labelHe": "ONYX מבוגר", "price": 69 },
+        { "id": "onyx-child", "labelHe": "ONYX ילד", "price": 59 }
+      ],
+      "seatMapId": "seat-map-onyx"
+    },
+    {
+      "id": "scr-fish-glilot-20260823-1430",
+      "movieId": "movie-pout-pout-fish-he",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-23T14:30:00+03:00",
+      "hallNameHe": "אולם 3",
+      "experience": "standard",
+      "spokenLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-mutiny-glilot-20260823-1945",
+      "movieId": "movie-mutiny",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-23T19:45:00+03:00",
+      "hallNameHe": "אולם 5",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-insidious-glilot-20260823-2230",
+      "movieId": "movie-insidious-out-of-the-further",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-23T22:30:00+03:00",
+      "hallNameHe": "אולם 6",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "low",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-spider-glilot-20260824-2015",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-24T20:15:00+03:00",
+      "hallNameHe": "אולם 7",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-lala-glilot-20260825-2000-onyx",
+      "movieId": "movie-la-la-land-10",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-25T20:00:00+03:00",
+      "hallNameHe": "ONYX",
+      "experience": "onyx",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "onyx-adult", "labelHe": "ONYX מבוגר", "price": 69 },
+        { "id": "onyx-child", "labelHe": "ONYX ילד", "price": 59 }
+      ],
+      "seatMapId": "seat-map-onyx"
+    },
+    {
+      "id": "scr-coyote-glilot-20260825-1600",
+      "movieId": "movie-coyote-vs-acme-he",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-25T16:00:00+03:00",
+      "hallNameHe": "אולם 2",
+      "experience": "standard",
+      "spokenLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "child", "labelHe": "ילד עד גיל 12", "price": 36 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-spider-glilot-20260826-2100-vip",
+      "movieId": "movie-spider-man-brand-new-day",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-26T21:00:00+03:00",
+      "hallNameHe": "VIP 2",
+      "experience": "vip",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "vip", "labelHe": "כרטיס VIP", "noteHe": "מגיל 18", "price": 159 }
+      ],
+      "seatMapId": "seat-map-premium"
+    },
+    {
+      "id": "scr-odyssey-glilot-20260826-1930-onyx",
+      "movieId": "movie-the-odyssey",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-26T19:30:00+03:00",
+      "hallNameHe": "ONYX",
+      "experience": "onyx",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "low",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "onyx-adult", "labelHe": "ONYX מבוגר", "price": 69 },
+        { "id": "onyx-child", "labelHe": "ONYX ילד", "price": 59 }
+      ],
+      "seatMapId": "seat-map-onyx"
+    },
+    {
+      "id": "scr-spa-glilot-20260827-2020",
+      "movieId": "movie-spa-weekend",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-27T20:20:00+03:00",
+      "hallNameHe": "אולם 4",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 },
+        { "id": "senior", "labelHe": "אזרח ותיק", "noteHe": "בהצגת תעודה", "price": 34 }
+      ],
+      "seatMapId": "seat-map-standard"
+    },
+    {
+      "id": "scr-mutiny-glilot-20260827-2240",
+      "movieId": "movie-mutiny",
+      "cinemaId": "cinema-glilot",
+      "startsAt": "2026-08-27T22:40:00+03:00",
+      "hallNameHe": "אולם 5",
+      "experience": "standard",
+      "spokenLanguage": "אנגלית",
+      "subtitleLanguage": "עברית",
+      "availability": "available",
+      "serviceFee": 4.9,
+      "ticketTypes": [
+        { "id": "adult", "labelHe": "מבוגר", "price": 44 }
+      ],
+      "seatMapId": "seat-map-standard"
+    }
+  ],
+  "orders": [
+    {
+      "reference": "CC-482731",
+      "email": "demo@cinemacity.co.il",
+      "fullName": "לקוח הדגמה",
+      "phone": "050-555-0182",
+      "screeningId": "scr-spider-glilot-20260821-2030",
+      "ticketLines": [
+        { "ticketTypeId": "adult", "quantity": 2, "unitPrice": 44 }
+      ],
+      "seatIds": ["F6", "F7"],
+      "serviceFee": 4.9,
+      "discount": 0,
+      "total": 92.9,
+      "status": "confirmed",
+      "createdAt": "2026-08-20T18:42:00+03:00"
+    }
+  ]
+}
