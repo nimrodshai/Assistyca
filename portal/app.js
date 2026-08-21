@@ -848,6 +848,7 @@ let billingRefreshPromise = null;
 let billingLastRefreshCompletedAt = 0;
 let pricingRefreshPromise = null;
 let pricingLastRefreshCompletedAt = 0;
+let agentTurnBusy = false;
 let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
@@ -9390,12 +9391,20 @@ function getAgentBlueprintForText(text) {
   return AGENT_BLUEPRINTS.custom;
 }
 
+function getAgentBlueprintForType(type) {
+  const normalizedType = String(type || "").trim();
+  return Object.values(AGENT_BLUEPRINTS).find((blueprint) => blueprint.type === normalizedType)
+    || AGENT_BLUEPRINTS.custom;
+}
+
 function cloneAgentItems(items = []) {
   return Array.isArray(items) ? items.map((item) => ({ ...item })) : [];
 }
 
-function createAgentProposalFromRequest(text) {
-  const blueprint = getAgentBlueprintForText(text);
+function createAgentProposalFromRequest(text, blueprintOverride = null) {
+  const blueprint = blueprintOverride && typeof blueprintOverride === "object"
+    ? blueprintOverride
+    : getAgentBlueprintForText(text);
   const scheduledDetails = blueprint.type === "scheduled-message" ? buildAgentScheduledMessageDetails(text) : {};
   const scheduledQuestionPlan = blueprint.type === "scheduled-message"
     ? buildAgentScheduledMessageQuestionPlan(scheduledDetails)
@@ -9624,7 +9633,7 @@ function getAgentApprovalCopy(proposal) {
       : "the chosen time";
     const timezone = String(details.timezone || "").trim() || "your workspace timezone";
     const messageText = String(details.messageText || "").trim() || "the approved message";
-    return `I’m ready to send you a ${channel} message saying "${messageText}" at ${timeLabel} (${timezone}). Should I set it up?`;
+    return `I’ll send “${messageText}” on ${channel} at ${timeLabel} (${timezone}). Would you like me to schedule it?`;
   }
 
   if (proposal?.type === "email-digest") {
@@ -9672,8 +9681,10 @@ function pushAgentQuestion(proposal, questionIndex = 0) {
   });
 }
 
-function pushAgentApprovalPrompt(proposal) {
-  pushAgentMessage("assistant", getAgentApprovalCopy(proposal), {
+function pushAgentApprovalPrompt(proposal, introduction = "") {
+  const naturalIntroduction = String(introduction || "").trim();
+  const approvalCopy = getAgentApprovalCopy(proposal);
+  pushAgentMessage("assistant", naturalIntroduction ? `${naturalIntroduction}\n\n${approvalCopy}` : approvalCopy, {
     kind: "approval",
     proposalId: proposal.id,
     proposalRevision: Math.max(1, Number(proposal.revision || 1)),
@@ -9739,7 +9750,19 @@ function renderAgentMessage(message) {
 
   const bubble = document.createElement("div");
   bubble.className = "agent-message-bubble";
-  bubble.textContent = message.text;
+  if (kind === "thinking") {
+    bubble.setAttribute("aria-label", "Assistyca is thinking");
+    bubble.append(document.createTextNode("Thinking"));
+    const dots = document.createElement("span");
+    dots.className = "agent-thinking-dots";
+    dots.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < 3; index += 1) {
+      dots.append(document.createElement("span"));
+    }
+    bubble.append(dots);
+  } else {
+    bubble.textContent = message.text;
+  }
 
   row.append(bubble);
 
@@ -9780,7 +9803,18 @@ function renderAgentMessages() {
 
   const agent = getAgentWorkspace();
   elements.agentEmptyState?.classList.toggle("is-hidden", agent.messages.length > 0);
-  elements.agentMessageList.replaceChildren(...agent.messages.map(renderAgentMessage));
+  const visibleMessages = agentTurnBusy
+    ? [
+      ...agent.messages,
+      {
+        id: "agent-thinking",
+        role: "assistant",
+        text: "Thinking",
+        metadata: { kind: "thinking", actions: [] },
+      },
+    ]
+    : agent.messages;
+  elements.agentMessageList.replaceChildren(...visibleMessages.map(renderAgentMessage));
   elements.agentMessageList.scrollTop = elements.agentMessageList.scrollHeight;
 }
 
@@ -9963,6 +9997,13 @@ function updateAgentWorkspace() {
   }
 
   renderAgentMessages();
+  if (elements.agentComposerInput) {
+    elements.agentComposerInput.disabled = agentTurnBusy;
+    elements.agentComposerInput.setAttribute("aria-busy", String(agentTurnBusy));
+  }
+  if (elements.agentComposerButton) {
+    elements.agentComposerButton.disabled = agentTurnBusy;
+  }
 }
 
 function getPendingAgentQuestion() {
@@ -10339,43 +10380,183 @@ function handleAgentMessageAction(event) {
   return false;
 }
 
-function handleAgentUserText(text) {
+function buildAgentTurnActiveProposal(proposal) {
+  if (!proposal || proposal.approved || proposal.status === "rejected") {
+    return null;
+  }
+  return {
+    id: proposal.id,
+    type: proposal.type,
+    revision: Math.max(1, Number(proposal.revision || 1)),
+    requestText: proposal.requestText,
+    summary: proposal.summary,
+    details: proposal.details,
+    questions: proposal.questions,
+    answers: proposal.answers,
+  };
+}
+
+function createAgentProposalFromTurn(requestText, turn = {}) {
+  const blueprint = getAgentBlueprintForType(turn.proposalType);
+  const proposal = createAgentProposalFromRequest(requestText, blueprint);
+  if (proposal.type === "scheduled-message" && turn.changes && typeof turn.changes === "object") {
+    applyAgentScheduledMessageRevision(proposal, turn.changes);
+    proposal.revision = 1;
+    proposal.createdAt = new Date().toISOString();
+    proposal.updatedAt = proposal.createdAt;
+  } else if (Array.isArray(turn.changes?.answers)) {
+    proposal.answers = turn.changes.answers.map((answer) => String(answer || "").trim()).filter(Boolean);
+  }
+  return proposal;
+}
+
+function applyAgentTurnProposalRevision(proposal, changes = {}) {
+  if (proposal?.type === "scheduled-message") {
+    return applyAgentScheduledMessageRevision(proposal, changes);
+  }
+  if (!proposal || !Array.isArray(changes?.answers)) {
+    return false;
+  }
+  proposal.answers = changes.answers.map((answer) => String(answer || "").trim()).filter(Boolean);
+  proposal.revision = Math.max(1, Number(proposal.revision || 1)) + 1;
+  proposal.updatedAt = new Date().toISOString();
+  proposal.status = "needs-approval";
+  proposal.approved = false;
+  return true;
+}
+
+async function applyAgentTurnResponse(turn, userText) {
+  const agent = getAgentWorkspace();
+  const activeProposal = agent.proposals.find((proposal) => proposal.id === agent.activeProposalId)
+    || agent.proposals[agent.proposals.length - 1]
+    || null;
+  const lastAssistantMessage = [...agent.messages].reverse().find((message) => message.role === "assistant");
+  const currentRevision = Math.max(1, Number(activeProposal?.revision || 1));
+  const hasCurrentApprovalPrompt = Boolean(
+    activeProposal
+    && lastAssistantMessage?.metadata?.kind === "approval"
+    && lastAssistantMessage.metadata?.proposalId === activeProposal.id
+    && Math.max(1, Number(lastAssistantMessage.metadata?.proposalRevision || 1)) === currentRevision
+  );
+  const outcome = String(turn?.outcome || "").trim();
+  const reply = String(turn?.reply || "").trim();
+
+  if (outcome === "approve_proposal" && activeProposal && !activeProposal.approved && hasCurrentApprovalPrompt) {
+    await approveAgentProposal(activeProposal.id, currentRevision);
+    return true;
+  }
+
+  if (outcome === "approve_proposal") {
+    pushAgentMessage("assistant", "I’m not sure which plan you want to approve. Please use the latest plan’s Set it up button.", {
+      kind: "question",
+    });
+    return true;
+  }
+
+  if (outcome === "reject_proposal" && activeProposal && !activeProposal.approved) {
+    activeProposal.status = "rejected";
+    activeProposal.updatedAt = new Date().toISOString();
+    pushAgentMessage("assistant", reply || "No problem — I won’t set it up.", {
+      kind: "result",
+      proposalId: activeProposal.id,
+    });
+    return true;
+  }
+
+  if (
+    outcome === "revise_proposal"
+    && activeProposal
+    && applyAgentTurnProposalRevision(activeProposal, turn.changes)
+  ) {
+    const answeredQuestions = Array.isArray(activeProposal.answers) ? activeProposal.answers.length : 0;
+    const totalQuestions = getAgentQuestionTotal(activeProposal);
+    if (answeredQuestions < totalQuestions) {
+      if (reply) {
+        pushAgentMessage("assistant", reply);
+      }
+      pushAgentQuestion(activeProposal, answeredQuestions);
+    } else {
+      pushAgentApprovalPrompt(activeProposal, reply || "Of course — I updated the plan.");
+    }
+    return true;
+  }
+
+  if (outcome === "proposal") {
+    const proposal = createAgentProposalFromTurn(userText, turn);
+    agent.proposals.push(proposal);
+    agent.activeProposalId = proposal.id;
+    if (getAgentQuestionTotal(proposal) > 0) {
+      if (reply) {
+        pushAgentMessage("assistant", reply);
+      }
+      pushAgentQuestion(proposal, 0);
+    } else {
+      pushAgentApprovalPrompt(proposal, reply);
+    }
+    return true;
+  }
+
+  pushAgentMessage(
+    "assistant",
+    reply || "Could you tell me a little more about what you want me to do?",
+    { kind: outcome === "question" ? "question" : "text" },
+  );
+  return true;
+}
+
+async function handleAgentUserText(text) {
   const cleanText = String(text || "").trim();
-  if (!cleanText) {
+  if (!cleanText || agentTurnBusy) {
     return;
   }
 
   pushAgentMessage("user", cleanText);
-  const pendingProposalChange = getPendingAgentProposalChange();
-  if (pendingProposalChange) {
-    void reviseAgentProposal(pendingProposalChange, cleanText);
-    return;
-  }
-
-  const pendingQuestion = getPendingAgentQuestion();
-  if (pendingQuestion && !shouldTreatAgentInputAsNewRequest(cleanText, pendingQuestion)) {
-    handleAgentQuestionAnswer(pendingQuestion, cleanText);
-    return;
-  }
-
-  const handledDecision = maybeHandleAgentNotificationDecision(cleanText);
-  if (handledDecision) {
-    return;
-  }
-
-  const proposal = createAgentProposalFromRequest(cleanText);
   const agent = getAgentWorkspace();
-  agent.proposals.push(proposal);
-  agent.activeProposalId = proposal.id;
-  if (getAgentQuestionTotal(proposal) > 0) {
-    pushAgentQuestion(proposal, 0);
-  } else {
-    pushAgentApprovalPrompt(proposal);
+  const activeProposal = getActiveAgentProposal();
+  const conversation = agent.messages.slice(-12).map((message) => ({
+    role: message.role,
+    text: message.text,
+  }));
+  const activeProposalPayload = buildAgentTurnActiveProposal(activeProposal);
+  agentTurnBusy = true;
+  persistAgentWorkspace("Assistyca is thinking...");
+  renderApp({ preserveStatus: true });
+
+  try {
+    const turn = await apiRequest("/api/agent/turn", {
+      method: "POST",
+      timeoutMs: 30000,
+      body: {
+        userMessage: cleanText,
+        timezone: normalizeMonitorScheduleTimezone(
+          clientState?.settings?.timezone || defaultTimeZone(),
+          "UTC",
+        ) || "UTC",
+        conversation,
+        activeProposal: activeProposalPayload,
+      },
+    });
+    agentTurnBusy = false;
+    await applyAgentTurnResponse(turn, cleanText);
+    persistAgentWorkspace("Agent updated.");
+    renderApp({ preserveStatus: true });
+  } catch (error) {
+    agentTurnBusy = false;
+    pushAgentMessage(
+      "assistant",
+      formatApiErrorMessage(error, "I’m having trouble thinking through that right now. Please try again."),
+      { kind: "result" },
+    );
+    persistAgentWorkspace("Agent response failed.");
+    renderApp({ preserveStatus: true });
   }
 }
 
 function handleAgentComposerSubmit(event = null) {
   event?.preventDefault();
+  if (agentTurnBusy) {
+    return;
+  }
   const input = elements.agentComposerInput;
   const text = String(input?.value || "").trim();
   if (!text) {
@@ -10387,10 +10568,7 @@ function handleAgentComposerSubmit(event = null) {
     input.value = "";
   }
 
-  handleAgentUserText(text);
-
-  persistAgentWorkspace("Agent updated.");
-  renderApp({ preserveStatus: true });
+  void handleAgentUserText(text);
 }
 
 async function scheduleAgentScheduledMessageProposal(proposal) {

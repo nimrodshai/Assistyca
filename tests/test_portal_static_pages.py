@@ -129,6 +129,7 @@ class PortalStaticPageTests(unittest.TestCase):
 
     def test_agent_proposal_changes_use_contextual_structured_revision(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
         self.assertIn('kind: "proposal-change"', script)
         self.assertIn('apiRequest("/api/agent/proposals/revise"', script)
@@ -137,6 +138,16 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("patch.preserveMessageText !== true", script)
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
+        self.assertIn('apiRequest("/api/agent/turn"', script)
+        self.assertIn("agentTurnBusy = true", script)
+        self.assertIn('kind: "thinking"', script)
+        self.assertIn(".agent-thinking-dots", styles)
+        handler = script[
+            script.index("async function handleAgentUserText"):
+            script.index("function handleAgentComposerSubmit")
+        ]
+        self.assertIn('apiRequest("/api/agent/turn"', handler)
+        self.assertNotIn("createAgentProposalFromRequest(cleanText)", handler)
 
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:

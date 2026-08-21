@@ -11,8 +11,10 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
+from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
+from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 
@@ -67,6 +69,38 @@ class AgentProposalRevisionTests(unittest.TestCase):
                 "changes": {"timeLocal": "25:90"},
             })
 
+    def test_conversational_turn_treats_natural_followup_as_revision(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "revise_proposal",
+            "reply": "Sure — I changed the time to 13:50.",
+            "proposalType": "",
+            "changes": {"timeLocal": "13:50"},
+        }, has_active_proposal=True)
+
+        self.assertEqual(turn["outcome"], "revise_proposal")
+        self.assertEqual(turn["changes"], {"timeLocal": "13:50"})
+        self.assertIn("changed the time", turn["reply"])
+
+    def test_conversational_turn_prompt_preserves_pending_proposal_context(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="No, let's change it to 13:50",
+            conversation=[
+                {"role": "assistant", "text": "Would you like me to schedule it?"},
+                {"role": "user", "text": "No, let's change it to 13:50"},
+            ],
+            timezone_name="Asia/Jerusalem",
+            active_proposal={
+                "id": "proposal-1",
+                "type": "scheduled-message",
+                "revision": 1,
+                "details": {"timeLocal": "12:40"},
+            },
+        )
+
+        self.assertIn('"activeProposal":{"id":"proposal-1"', prompt)
+        self.assertIn('"latestUserMessage":"No, let\'s change it to 13:50"', prompt)
+        self.assertIn("not a new request", prompt)
+
 
 class AgentProposalRevisionApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -101,6 +135,22 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
             headers["Authorization"] = f"Bearer {token}"
         request = urllib_request.Request(
             f"{self.base_url}/api/agent/proposals/revise",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _post_agent_turn(self, payload: dict[str, object], *, token: str = "") -> tuple[int, dict[str, object]]:
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/turn",
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
@@ -159,6 +209,80 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertIn('"timeLocal":"12:40"', kwargs["prompt"])
         self.assertIn('"latestUserMessage":"Let\'s change it to 13:30"', kwargs["prompt"])
         self.assertFalse(kwargs["config"].include_prompt_in_metadata)
+
+    def test_normal_conversation_turn_uses_openai_and_pending_proposal(self) -> None:
+        token = self._session_token_for("owner@example.com")
+        model_response = {
+            "outcome": "revise_proposal",
+            "reply": "Sure — I changed the time to 13:50.",
+            "proposalType": "",
+            "changes": {"timeLocal": "13:50"},
+        }
+        with patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=SimpleNamespace(output_text=json.dumps(model_response)),
+        ) as call_openai:
+            status, payload = self._post_agent_turn({
+                "activeProposal": {
+                    "id": "proposal-1",
+                    "type": "scheduled-message",
+                    "revision": 1,
+                    "requestText": "Send me a WhatsApp message when it's 12:40",
+                    "details": {
+                        "channel": "whatsapp",
+                        "timeLocal": "12:40",
+                        "datePolicy": "next_occurrence",
+                        "timezone": "Asia/Jerusalem",
+                        "messageText": "It's 12:40.",
+                        "messageSource": "generated",
+                    },
+                },
+                "userMessage": "No, let's change it to 13:50",
+                "timezone": "Asia/Jerusalem",
+                "conversation": [
+                    {"role": "assistant", "text": "Would you like me to schedule it?"},
+                    {"role": "user", "text": "No, let's change it to 13:50"},
+                ],
+            }, token=token)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["outcome"], "revise_proposal")
+        self.assertEqual(payload["changes"], {"timeLocal": "13:50"})
+        kwargs = call_openai.call_args.kwargs
+        self.assertEqual(kwargs["tool_name"], "portal_conversational_agent")
+        self.assertIn('"activeProposal":{"id":"proposal-1"', kwargs["prompt"])
+        self.assertIn("not a new request", kwargs["prompt"])
+
+    def test_initial_scheduled_message_turn_uses_openai_proposal(self) -> None:
+        token = self._session_token_for("owner@example.com")
+        model_response = {
+            "outcome": "proposal",
+            "reply": "Yes — I can do that.",
+            "proposalType": "scheduled-message",
+            "changes": {
+                "channel": "whatsapp",
+                "timeLocal": "12:40",
+                "datePolicy": "next_occurrence",
+            },
+        }
+        with patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=SimpleNamespace(output_text=json.dumps(model_response)),
+        ) as call_openai:
+            status, payload = self._post_agent_turn({
+                "userMessage": "Can you send me a WhatsApp message when it's 12:40?",
+                "timezone": "Asia/Jerusalem",
+                "conversation": [
+                    {"role": "user", "text": "Can you send me a WhatsApp message when it's 12:40?"},
+                ],
+            }, token=token)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["outcome"], "proposal")
+        self.assertEqual(payload["proposalType"], "scheduled-message")
+        self.assertEqual(payload["changes"]["timeLocal"], "12:40")
+        self.assertEqual(call_openai.call_args.kwargs["tool_name"], "portal_conversational_agent")
 
 
 if __name__ == "__main__":
