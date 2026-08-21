@@ -2477,6 +2477,7 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-composer textarea:focus {
+  outline: none;
   background: transparent;
   box-shadow: none;
 }
