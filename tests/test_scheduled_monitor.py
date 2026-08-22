@@ -302,6 +302,82 @@ class ScheduledMonitorTests(unittest.TestCase):
 
         self.assertEqual(next_slot.isoformat(), "2026-07-06T06:15:00+00:00")
 
+    def test_minute_interval_monitor_runs_after_requested_minutes(self) -> None:
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            MONITOR_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "watchItems": ["Kid-friendly events in August around HaSharon and central Israel"],
+                    "intervalMinutes": 5,
+                    "intervalDays": 1,
+                    "deliveryChannel": "email",
+                }
+            },
+        )
+        self.database.set_feature_activation(
+            "owner@example.com",
+            feature_id=MONITOR_FEATURE_ID,
+            feature_name="Scheduled Web Monitor",
+            is_active=True,
+            activated_at="2026-08-22T20:00:00+00:00",
+        )
+        scheduler = ScheduledMonitorScheduler(
+            self.database,
+            config=ScheduledMonitorConfig(
+                enabled=True,
+                poll_seconds=60,
+                model="gpt-5.5",
+                search_context_size="medium",
+                max_output_tokens=1200,
+                max_items_per_run=5,
+            ),
+        )
+
+        fake_response = SimpleNamespace(
+            output_text=json.dumps({
+                "summary": "No relevant events found yet.",
+                "items": [],
+            }),
+            request_id="req_minutes",
+            response_id="resp_minutes",
+            model="gpt-5.5",
+        )
+        delivered_messages: list[dict[str, str]] = []
+
+        def fake_send_email_notification(**kwargs) -> None:
+            delivered_messages.append({
+                "to": str(kwargs.get("to_email") or ""),
+                "subject": str(kwargs.get("subject") or ""),
+                "text": str(kwargs.get("text_body") or ""),
+            })
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.call_openai_response",
+            return_value=fake_response,
+        ), mock.patch(
+            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            side_effect=fake_send_email_notification,
+        ):
+            too_early = scheduler.run_pending(now=datetime(2026, 8, 22, 20, 4, tzinfo=timezone.utc))
+            due = scheduler.run_pending(now=datetime(2026, 8, 22, 20, 5, tzinfo=timezone.utc))
+
+        self.assertFalse(too_early["ran"])
+        self.assertEqual(too_early["runs"][0]["reason"], "not_due")
+        self.assertTrue(due["ran"])
+        self.assertEqual(due["runs"][0]["scheduledFor"], "2026-08-22T20:05:00+00:00")
+        self.assertEqual(due["runs"][0]["status"], "no_matches")
+        self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
+        self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: nothing new yet")
+
     def test_selected_schedule_time_stays_on_same_local_hour_across_dst(self) -> None:
         next_slot = resolve_next_monitor_slot(
             now=datetime(2026, 3, 9, 13, 30, tzinfo=timezone.utc),

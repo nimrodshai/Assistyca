@@ -48,6 +48,7 @@ DEFAULT_MONITOR_SETTINGS = {
     "model": DEFAULT_MONITOR_MODEL,
     "watchItems": [],
     "intervalDays": 7,
+    "intervalMinutes": 0,
     "scheduleTimeLocal": "",
     "scheduleTimezone": "",
     "deliveryChannel": "email",
@@ -156,6 +157,49 @@ def normalize_interval_days(value: Any, default: int = DEFAULT_MONITOR_SETTINGS[
     return max(1, min(365, candidate))
 
 
+def normalize_interval_minutes(value: Any, default: int = DEFAULT_MONITOR_SETTINGS["intervalMinutes"]) -> int:
+    candidate = safe_int(value, default)
+    if candidate <= 0:
+        return 0
+    return max(5, min(60 * 24, candidate))
+
+
+def extract_interval_minutes_from_frequency(value: Any) -> int:
+    text = normalize_text(value).lower()
+    if not text:
+        return 0
+    match = re.search(r"\bevery\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b", text)
+    if not match:
+        return 0
+    amount = max(1, safe_int(match.group(1), 0))
+    unit = match.group(2)
+    if unit.startswith(("hour", "hr")):
+        return normalize_interval_minutes(amount * 60)
+    return normalize_interval_minutes(amount)
+
+
+def extract_interval_days_from_frequency(value: Any) -> int:
+    text = normalize_text(value).lower()
+    if not text:
+        return DEFAULT_MONITOR_SETTINGS["intervalDays"]
+    match = re.search(r"\bevery\s+(\d+)\s*(days?|weeks?|months?)\b", text)
+    if match:
+        amount = max(1, safe_int(match.group(1), 0))
+        unit = match.group(2)
+        if unit.startswith("week"):
+            return normalize_interval_days(amount * 7)
+        if unit.startswith("month"):
+            return normalize_interval_days(amount * 30)
+        return normalize_interval_days(amount)
+    if text in {"daily", "every day"}:
+        return 1
+    if text in {"weekly", "every week"}:
+        return 7
+    if text in {"monthly", "every month"}:
+        return 30
+    return DEFAULT_MONITOR_SETTINGS["intervalDays"]
+
+
 def normalize_schedule_time_local(value: Any) -> str:
     text = normalize_text(value)
     if not text:
@@ -203,20 +247,29 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
     if delivery_channel not in SUPPORTED_DELIVERY_CHANNELS:
         delivery_channel = DEFAULT_MONITOR_SETTINGS["deliveryChannel"]
 
+    frequency = source.get("frequency") or source.get("cadence") or source.get("schedule")
+    interval_minutes = normalize_interval_minutes(
+        source.get("intervalMinutes")
+        or source.get("interval_minutes")
+        or extract_interval_minutes_from_frequency(frequency),
+    )
+    schedule_time_local = "" if interval_minutes else normalize_schedule_time_local(
+        source.get("scheduleTimeLocal") or source.get("scheduleTime")
+    )
+    schedule_timezone = "" if interval_minutes else normalize_schedule_timezone(
+        source.get("scheduleTimezone") or source.get("scheduleTimeZone")
+    )
+
     return {
         "model": resolve_tool_model(source, default=DEFAULT_MONITOR_MODEL),
         "watchItems": normalize_watch_items(source.get("watchItems") or source.get("searchPrompt")),
+        "intervalMinutes": interval_minutes,
         "intervalDays": normalize_interval_days(
             source.get("intervalDays")
-            or (
-                1 if normalize_text(source.get("cadence")).lower() == "daily"
-                else 7 if normalize_text(source.get("cadence")).lower() == "weekly"
-                else 30 if normalize_text(source.get("cadence")).lower() == "monthly"
-                else DEFAULT_MONITOR_SETTINGS["intervalDays"]
-            )
+            or extract_interval_days_from_frequency(frequency)
         ),
-        "scheduleTimeLocal": normalize_schedule_time_local(source.get("scheduleTimeLocal") or source.get("scheduleTime")),
-        "scheduleTimezone": normalize_schedule_timezone(source.get("scheduleTimezone") or source.get("scheduleTimeZone")),
+        "scheduleTimeLocal": schedule_time_local,
+        "scheduleTimezone": schedule_timezone,
         "deliveryChannel": delivery_channel,
         "telegramChatId": normalize_text(source.get("telegramChatId")),
     }
@@ -348,10 +401,11 @@ def resolve_next_monitor_slot(
 ) -> datetime | None:
     current_time = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     current_time = current_time.astimezone(timezone.utc)
+    interval_minutes = normalize_interval_minutes(settings.get("intervalMinutes"))
     interval_days = normalize_interval_days(settings.get("intervalDays"))
-    interval = timedelta(days=interval_days)
-    schedule_time_local = parse_schedule_time_local(settings.get("scheduleTimeLocal"))
-    schedule_timezone = normalize_schedule_timezone(settings.get("scheduleTimezone"))
+    interval = timedelta(minutes=interval_minutes) if interval_minutes else timedelta(days=interval_days)
+    schedule_time_local = None if interval_minutes else parse_schedule_time_local(settings.get("scheduleTimeLocal"))
+    schedule_timezone = "" if interval_minutes else normalize_schedule_timezone(settings.get("scheduleTimezone"))
 
     anchor_candidates = []
     if normalize_text(activated_at):
@@ -1383,6 +1437,7 @@ class ScheduledMonitorScheduler:
                 "items": items,
                 "newItemIds": [normalize_text(item.get("id")) for item in new_items],
                 "watchItems": settings.get("watchItems"),
+                "intervalMinutes": settings.get("intervalMinutes"),
                 "intervalDays": settings.get("intervalDays"),
                 "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
                 "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
@@ -1435,6 +1490,7 @@ class ScheduledMonitorScheduler:
                 "items": items,
                 "newItemIds": [],
                 "watchItems": settings.get("watchItems"),
+                "intervalMinutes": settings.get("intervalMinutes"),
                 "intervalDays": settings.get("intervalDays"),
                 "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
                 "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
@@ -1523,6 +1579,7 @@ class ScheduledMonitorScheduler:
             metadata={
                 "claimedAt": self._normalize_now().isoformat(),
                 "watchItems": settings.get("watchItems"),
+                "intervalMinutes": settings.get("intervalMinutes"),
                 "intervalDays": settings.get("intervalDays"),
                 "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
                 "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),

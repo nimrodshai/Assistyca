@@ -135,6 +135,7 @@ const DEFAULT_MONITOR_SETTINGS = {
   model: "gpt-5.5",
   watchItems: [],
   intervalDays: 7,
+  intervalMinutes: 0,
   scheduleTimeLocal: "",
   scheduleTimezone: "",
   deliveryChannel: "email",
@@ -3154,6 +3155,18 @@ function normalizeMonitorIntervalDays(value, fallback = DEFAULT_MONITOR_SETTINGS
     : safeFallback;
 }
 
+function normalizeMonitorIntervalMinutes(value, fallback = DEFAULT_MONITOR_SETTINGS.intervalMinutes) {
+  const parsedFallback = Number.parseInt(fallback, 10);
+  const safeFallback = Number.isFinite(parsedFallback) && parsedFallback > 0
+    ? Math.min(60 * 24, Math.max(5, parsedFallback))
+    : 0;
+  const intervalMinutes = Number.parseInt(value, 10);
+
+  return Number.isFinite(intervalMinutes) && intervalMinutes > 0
+    ? Math.min(60 * 24, Math.max(5, intervalMinutes))
+    : safeFallback;
+}
+
 function coerceMonitorScheduleTime(value) {
   const text = String(value || "").trim();
   const match = text.match(/^(\d{1,2})(?::(\d{1,2}))?$/);
@@ -3354,16 +3367,22 @@ function getWhatsAppDeliverySelection(settings = {}) {
 function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
+  const intervalMinutes = normalizeMonitorIntervalMinutes(source.intervalMinutes || source.interval_minutes);
   const intervalDays = Number.parseInt(source.intervalDays, 10);
   const legacyCadence = String(source.cadence || "").trim().toLowerCase();
-  const scheduleTimeLocal = normalizeMonitorScheduleTime(source.scheduleTimeLocal || source.scheduleTime || "");
+  const scheduleTimeLocal = intervalMinutes
+    ? ""
+    : normalizeMonitorScheduleTime(source.scheduleTimeLocal || source.scheduleTime || "");
   const scheduleTimezone = scheduleTimeLocal
     ? normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", defaultTimeZone())
-    : normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", "");
+    : intervalMinutes
+      ? ""
+      : normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", "");
 
   return {
     ...normalizeFeatureSettings(source),
     watchItems: normalizeMonitorWatchItems(source.watchItems || source.searchPrompt || ""),
+    intervalMinutes,
     intervalDays: Number.isFinite(intervalDays)
       ? normalizeMonitorIntervalDays(intervalDays)
       : legacyCadence === "daily"
@@ -5822,6 +5841,8 @@ function hasMonitorScheduleConfigChanges(feature = getSelectedFeature()) {
 
   const currentSettings = getSelectedFeatureSettings(feature);
   const savedSettings = getSavedFeatureSettings(feature);
+  const currentIntervalMinutes = normalizeMonitorIntervalMinutes(currentSettings.intervalMinutes);
+  const savedIntervalMinutes = normalizeMonitorIntervalMinutes(savedSettings.intervalMinutes);
   const currentScheduleTime = normalizeMonitorScheduleTime(currentSettings.scheduleTimeLocal, "");
   const savedScheduleTime = normalizeMonitorScheduleTime(savedSettings.scheduleTimeLocal, "");
   const currentScheduleTimezone = currentScheduleTime
@@ -5832,6 +5853,8 @@ function hasMonitorScheduleConfigChanges(feature = getSelectedFeature()) {
     : "";
 
   return (
+    currentIntervalMinutes !== savedIntervalMinutes
+    ||
     normalizeMonitorIntervalDays(currentSettings.intervalDays) !== normalizeMonitorIntervalDays(savedSettings.intervalDays)
     || currentScheduleTime !== savedScheduleTime
     || currentScheduleTimezone !== savedScheduleTimezone
@@ -5854,8 +5877,11 @@ function resolveMonitorNextRunAt(feature, now = new Date()) {
   }
 
   const settings = getSelectedFeatureSettings(feature);
+  const intervalMinutes = normalizeMonitorIntervalMinutes(settings.intervalMinutes);
   const intervalDays = normalizeMonitorIntervalDays(settings.intervalDays);
-  const scheduleTimeLocal = normalizeMonitorScheduleTime(settings.scheduleTimeLocal, getMonitorScheduleTime(feature));
+  const scheduleTimeLocal = intervalMinutes
+    ? ""
+    : normalizeMonitorScheduleTime(settings.scheduleTimeLocal, getMonitorScheduleTime(feature));
   const scheduleTimezone = normalizeMonitorScheduleTimezone(
     settings.scheduleTimezone,
     getMonitorScheduleTimezone(feature),
@@ -5863,6 +5889,20 @@ function resolveMonitorNextRunAt(feature, now = new Date()) {
   const anchorDate = resolveMonitorAnchorDate(feature, currentTime);
   if (!anchorDate) {
     return "";
+  }
+
+  if (intervalMinutes) {
+    const intervalMs = intervalMinutes * 60 * 1000;
+    const firstSlot = new Date(anchorDate.getTime() + intervalMs);
+    if (firstSlot.getTime() > currentTime.getTime()) {
+      return firstSlot.toISOString();
+    }
+
+    const elapsedCycles = Math.floor((currentTime.getTime() - firstSlot.getTime()) / intervalMs);
+    const candidate = new Date(firstSlot.getTime() + elapsedCycles * intervalMs);
+    return candidate.getTime() <= currentTime.getTime()
+      ? new Date(candidate.getTime() + intervalMs).toISOString()
+      : candidate.toISOString();
   }
 
   if (!scheduleTimeLocal) {
@@ -9968,6 +10008,45 @@ function extractAgentFrequencyField(text) {
   return namedMatch ? namedMatch[0] : "";
 }
 
+function buildAgentMonitorIntervalFromFrequency(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  const everyMatch = text.match(/\bevery\s+(\d+)\s*(minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b/i);
+  if (everyMatch) {
+    const amount = Math.max(1, Number.parseInt(everyMatch[1], 10) || 1);
+    const unit = everyMatch[2].toLowerCase();
+    if (unit.startsWith("minute") || unit.startsWith("min")) {
+      return { intervalMinutes: normalizeMonitorIntervalMinutes(amount), intervalDays: 1 };
+    }
+    if (unit.startsWith("hour") || unit.startsWith("hr")) {
+      return { intervalMinutes: normalizeMonitorIntervalMinutes(amount * 60), intervalDays: 1 };
+    }
+    if (unit.startsWith("week")) {
+      return { intervalMinutes: 0, intervalDays: normalizeMonitorIntervalDays(amount * 7) };
+    }
+    if (unit.startsWith("month")) {
+      return { intervalMinutes: 0, intervalDays: normalizeMonitorIntervalDays(amount * 30) };
+    }
+    return { intervalMinutes: 0, intervalDays: normalizeMonitorIntervalDays(amount) };
+  }
+
+  if (["hourly", "every hour"].includes(text)) {
+    return { intervalMinutes: 60, intervalDays: 1 };
+  }
+  if (["daily", "every day"].includes(text)) {
+    return { intervalMinutes: 0, intervalDays: 1 };
+  }
+  if (["weekly", "every week"].includes(text)) {
+    return { intervalMinutes: 0, intervalDays: 7 };
+  }
+  if (["monthly", "every month"].includes(text)) {
+    return { intervalMinutes: 0, intervalDays: 30 };
+  }
+  return {
+    intervalMinutes: DEFAULT_MONITOR_SETTINGS.intervalMinutes,
+    intervalDays: DEFAULT_MONITOR_SETTINGS.intervalDays,
+  };
+}
+
 function extractAgentWebMonitorTimeWindow(text) {
   const value = String(text || "");
   const monthMatch = value.match(/\b(in|during|for)\s+((?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*)(?:\s+(\d{4}))?\b/i);
@@ -10626,6 +10705,12 @@ function createAgentProposalLocalAction(proposal) {
 
   const deliveryChannel = getAgentProposalFieldValue(proposal, "deliveryChannel");
   const approvedAt = String(proposal.approvedAt || proposal.updatedAt || proposal.createdAt || new Date().toISOString());
+  const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || "").trim();
+  const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
+  const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
+  const status = backendFeatureId
+    ? (backendFeatureActive ? "running" : "cancelled")
+    : (proposal.missingCredential ? "pending" : "running");
   return {
     id: `proposal:${proposal.id}`,
     actionType: `agent_${String(proposal.type || "helper").replace(/[^a-zA-Z0-9]+/g, "_")}`,
@@ -10633,13 +10718,15 @@ function createAgentProposalLocalAction(proposal) {
     recipientRef: deliveryChannel,
     runAt: approvedAt,
     timezone: normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC",
-    status: proposal.missingCredential ? "pending" : "running",
+    status,
     attemptCount: 0,
     providerMessageId: "",
     payload: {
       source: "agent_proposal",
       proposalId: proposal.id,
       proposalType: proposal.type,
+      backendFeatureId,
+      backendFeatureActive,
       title: getAgentProposalLocalActionTitle(proposal),
       preview: getAgentProposalLocalActionPreview(proposal),
       summary: proposal.summary,
@@ -10648,11 +10735,14 @@ function createAgentProposalLocalAction(proposal) {
       timeWindow: getAgentProposalFieldValue(proposal, "timeWindow"),
       frequency: getAgentProposalFieldValue(proposal, "frequency"),
       deliveryChannel,
+      initialRunStatus: String(proposal.executionPlan?.initialRunStatus || "").trim(),
+      initialRunMessage: String(proposal.executionPlan?.initialRunMessage || "").trim(),
+      initialRunError: String(proposal.executionPlan?.initialRunError || "").trim(),
     },
     local: true,
-    lastError: "",
+    lastError: backendFeatureId && !backendFeatureActive ? "The connected tool is turned off." : "",
     claimedAt: "",
-    completedAt: "",
+    completedAt: backendFeatureId && !backendFeatureActive ? String(backendFeature?.deactivatedAt || proposal.updatedAt || approvedAt) : "",
     createdAt: approvedAt,
     updatedAt: String(proposal.updatedAt || approvedAt),
   };
@@ -10689,8 +10779,9 @@ function createAgentActionDetailActions(action) {
 
   if (isAgentProposalLocalAction(action)) {
     button.dataset.agentRemoveLocalAction = String(action.id || "");
-    button.textContent = "Remove action";
-    button.setAttribute("aria-label", `Remove ${getScheduledActionTitle(action)}`);
+    const hasBackendFeature = Boolean(String(action.payload?.backendFeatureId || "").trim());
+    button.textContent = hasBackendFeature ? "Turn off action" : "Remove action";
+    button.setAttribute("aria-label", `${hasBackendFeature ? "Turn off" : "Remove"} ${getScheduledActionTitle(action)}`);
   } else {
     button.dataset.agentCancelScheduledAction = String(action.id || "");
     button.textContent = "Cancel action";
@@ -10896,6 +10987,10 @@ function getScheduledActionDetailSignature(action) {
     action.completedAt ? formatScheduledActionDate(action.completedAt, action.timezone) : "",
     action.providerMessageId,
     action.lastError,
+    String(action.payload?.backendFeatureActive ?? ""),
+    String(action.payload?.initialRunStatus || ""),
+    String(action.payload?.initialRunMessage || ""),
+    String(action.payload?.initialRunError || ""),
   ]);
 }
 
@@ -10937,12 +11032,35 @@ function createScheduledActionDetail(action) {
     }
     card.append(details);
 
+    if (payload.initialRunError) {
+      const error = document.createElement("div");
+      error.className = "agent-action-error";
+      const errorTitle = document.createElement("strong");
+      errorTitle.textContent = "First check failed";
+      const errorMessage = document.createElement("p");
+      errorMessage.textContent = String(payload.initialRunError);
+      error.append(errorTitle, errorMessage);
+      card.append(error);
+    } else if (payload.initialRunMessage) {
+      const runNote = document.createElement("div");
+      runNote.className = "agent-action-note";
+      const runTitle = document.createElement("strong");
+      runTitle.textContent = "First check";
+      const runMessage = document.createElement("p");
+      runMessage.textContent = String(payload.initialRunMessage);
+      runNote.append(runTitle, runMessage);
+      card.append(runNote);
+    }
+
     const note = document.createElement("div");
     note.className = "agent-action-note";
     const noteTitle = document.createElement("strong");
-    noteTitle.textContent = "Approved from chat";
+    const hasBackendFeature = Boolean(String(payload.backendFeatureId || "").trim());
+    noteTitle.textContent = hasBackendFeature ? "Connected tool" : "Approved from chat";
     const noteMessage = document.createElement("p");
-    noteMessage.textContent = "This helper was created from the approved chat plan. Open the connected tool to adjust the concrete schedule, delivery, or credentials.";
+    noteMessage.textContent = hasBackendFeature
+      ? "This helper is backed by the connected scheduled monitor tool. Turn it off here, or open the tool editor to adjust schedule, delivery, or credentials."
+      : "This helper was created from the approved chat plan. Open the connected tool to adjust the concrete schedule, delivery, or credentials.";
     note.append(noteTitle, noteMessage);
     card.append(note);
     const localActions = createAgentActionDetailActions(action);
@@ -11526,6 +11644,209 @@ async function scheduleAgentScheduledMessageProposal(proposal) {
   });
 }
 
+function buildAgentWebMonitorWatchItem(proposal) {
+  const watchQuery = getAgentProposalFieldValue(proposal, "watchQuery") || proposal?.requestText || "";
+  const location = getAgentProposalFieldValue(proposal, "location");
+  const timeWindow = getAgentProposalFieldValue(proposal, "timeWindow");
+  const pieces = [watchQuery];
+  if (location) {
+    pieces.push(`Location: ${location}`);
+  }
+  if (timeWindow) {
+    pieces.push(`Date range: ${timeWindow}`);
+  }
+  return pieces
+    .map((piece) => String(piece || "").trim())
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function buildAgentWebMonitorSettings(proposal) {
+  const frequency = getAgentProposalFieldValue(proposal, "frequency")
+    || extractAgentFrequencyField(proposal?.requestText || "");
+  const interval = buildAgentMonitorIntervalFromFrequency(frequency);
+  const deliveryChannel = normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
+    || normalizeAgentDeliveryChannel(proposal?.requestText || "")
+    || DEFAULT_MONITOR_SETTINGS.deliveryChannel;
+  const settings = normalizeFeatureMonitorSettings({
+    ...DEFAULT_MONITOR_SETTINGS,
+    watchItems: [buildAgentWebMonitorWatchItem(proposal)],
+    intervalMinutes: interval.intervalMinutes,
+    intervalDays: interval.intervalDays,
+    scheduleTimezone: getWorkspaceTimeZone(),
+    deliveryChannel,
+  });
+
+  if (!settings.watchItems.length) {
+    throw new Error("I need a topic to watch before I can activate the web monitor.");
+  }
+  return settings;
+}
+
+function formatAgentWebMonitorFrequency(settings = {}) {
+  const intervalMinutes = normalizeMonitorIntervalMinutes(settings.intervalMinutes);
+  if (intervalMinutes) {
+    if (intervalMinutes < 60) {
+      return `every ${intervalMinutes} minutes`;
+    }
+    if (intervalMinutes % 60 === 0) {
+      const hours = intervalMinutes / 60;
+      return hours === 1 ? "hourly" : `every ${hours} hours`;
+    }
+    return `every ${intervalMinutes} minutes`;
+  }
+
+  const intervalDays = normalizeMonitorIntervalDays(settings.intervalDays);
+  if (intervalDays === 1) {
+    return "daily";
+  }
+  if (intervalDays % 30 === 0) {
+    const months = intervalDays / 30;
+    return months === 1 ? "monthly" : `every ${months} months`;
+  }
+  if (intervalDays % 7 === 0) {
+    const weeks = intervalDays / 7;
+    return weeks === 1 ? "weekly" : `every ${weeks} weeks`;
+  }
+  return `every ${intervalDays} days`;
+}
+
+async function runAgentWebMonitorInitialCheck() {
+  const response = await apiRequest(`/api/features/${encodeURIComponent(MONITOR_FEATURE_ID)}/run`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      runRequestId: createManualMonitorRunRequestId(),
+    },
+    timeoutMs: 90000,
+  });
+  const run = response.run || {};
+  return {
+    response,
+    status: String(run.status || "").trim(),
+    message: getManualMonitorRunAlertMessage(run, response.message || "First monitor check finished."),
+  };
+}
+
+async function saveAndActivateAgentWebMonitorProposal(proposal) {
+  if (!isSignedIn()) {
+    throw new Error("Sign in before activating a web monitor.");
+  }
+
+  const feature = getFeatureById(MONITOR_FEATURE_ID);
+  if (!feature) {
+    throw new Error("Scheduled Web Monitor is not available for this account.");
+  }
+
+  const settings = buildAgentWebMonitorSettings(proposal);
+  const prompt = feature.prompt && typeof feature.prompt === "object" ? { ...feature.prompt } : {};
+  const configResponse = await apiRequest(`/api/features/${encodeURIComponent(MONITOR_FEATURE_ID)}/config`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      prompt,
+      settings,
+    },
+  });
+  applyServerFeatureStates([configResponse.feature || {}], { persist: true });
+  state.paymentStatus = configResponse.paymentStatus || state.paymentStatus;
+
+  const updatedFeature = getFeatureById(MONITOR_FEATURE_ID) || feature;
+  const activationResponse = await apiRequest(`/api/features/${encodeURIComponent(MONITOR_FEATURE_ID)}/activation`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      action: "activate",
+      featureName: updatedFeature.name,
+      channel: updatedFeature.channel,
+    },
+  });
+  applyServerFeatureStates([activationResponse.feature || {}], { persist: true });
+  state.paymentStatus = activationResponse.paymentStatus || state.paymentStatus;
+
+  let initialRun = null;
+  let initialRunError = "";
+  try {
+    initialRun = await runAgentWebMonitorInitialCheck();
+  } catch (error) {
+    initialRunError = formatApiErrorMessage(error, "The monitor was activated, but the first check could not run yet.");
+  }
+
+  proposal.relatedFeatureId = MONITOR_FEATURE_ID;
+  proposal.executionPlan = {
+    ...proposal.executionPlan,
+    backendFeatureId: MONITOR_FEATURE_ID,
+    backendStatus: "active",
+    settings,
+    frequency: formatAgentWebMonitorFrequency(settings),
+    initialRunStatus: initialRun?.status || "",
+    initialRunMessage: initialRun?.message || "",
+    initialRunError,
+  };
+  proposal.summary = `Monitor ${settings.watchItems[0]} ${formatAgentWebMonitorFrequency(settings)} and send source-backed alerts by ${formatAgentScheduledMessageChannel(settings.deliveryChannel)}.`;
+  return {
+    configResponse,
+    activationResponse,
+    initialRun,
+    initialRunError,
+    settings,
+  };
+}
+
+function handleAgentWebMonitorActivationError(error, proposal) {
+  const payload = error?.payload || {};
+  proposal.status = "needs-approval";
+  proposal.updatedAt = new Date().toISOString();
+  if (payload.feature) {
+    applyServerFeatureStates([payload.feature], { persist: true });
+  }
+  state.paymentStatus = payload.paymentStatus || state.paymentStatus;
+
+  if (payload.error === "payment_required") {
+    const checkoutUrl = payload.paymentStatus?.checkoutUrl || payload.checkoutUrl || "";
+    const checkoutOpened = openPaymentCheckout(checkoutUrl);
+    openFeatureActivationAlert(
+      "Payment needed",
+      payload.message || "Add payment details before activating this monitor.",
+      {
+        eyebrow: "Billing required",
+        returnFocus: elements.agentComposerInput,
+      },
+    );
+    persistAgentWorkspace(checkoutOpened ? "Opening checkout..." : "Payment is required before activation.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  if (payload.error === "setup_required") {
+    const setupStatus = payload.setupStatus || {};
+    const message = String(
+      payload.message
+      || setupStatus.message
+      || "Finish the web monitor setup before activating it.",
+    ).trim();
+    openFeatureActivationAlert(
+      "Finish setup first",
+      message,
+      {
+        eyebrow: "One thing left",
+        returnFocus: elements.agentComposerInput,
+      },
+    );
+    persistAgentWorkspace(message);
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  const message = formatApiErrorMessage(error, "I couldn’t activate the web monitor yet.");
+  openFeatureActivationAlert("Couldn’t activate the monitor", message, {
+    eyebrow: "Try again",
+    returnFocus: elements.agentComposerInput,
+  });
+  persistAgentWorkspace(message);
+  renderApp({ preserveStatus: true });
+}
+
 async function approveAgentProposal(proposalId, expectedRevision = 0) {
   const agent = getAgentWorkspace();
   const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
@@ -11557,6 +11878,7 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
   }
 
   let scheduledAction = null;
+  let monitorActivation = null;
   if (proposal.type === "scheduled-message" && !proposal.missingCredential) {
     proposal.status = "scheduling";
     persistAgentWorkspace("Scheduling message...");
@@ -11596,6 +11918,18 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     }
   }
 
+  if (proposal.type === "web-monitor") {
+    proposal.status = "activating";
+    persistAgentWorkspace("Activating web monitor...");
+    renderApp({ preserveStatus: true });
+    try {
+      monitorActivation = await saveAndActivateAgentWebMonitorProposal(proposal);
+    } catch (error) {
+      handleAgentWebMonitorActivationError(error, proposal);
+      return;
+    }
+  }
+
   proposal.approved = true;
   proposal.status = "approved";
   proposal.approvedAt = new Date().toISOString();
@@ -11624,6 +11958,10 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     openAgentProposalSetup(proposal.id);
   } else if (proposal.type === "scheduled-message") {
     persistAgentWorkspace("Scheduled message created.");
+  } else if (proposal.type === "web-monitor") {
+    const runMessage = monitorActivation?.initialRun?.message || "";
+    const runError = monitorActivation?.initialRunError || "";
+    persistAgentWorkspace(runMessage || runError || "Web monitor activated.");
   } else {
     persistAgentWorkspace("Agent helper created.");
   }
@@ -11685,7 +12023,32 @@ function getAgentProposalIdFromLocalActionId(actionId) {
   return String(actionId || "").replace(/^proposal:/, "").trim();
 }
 
-function removeAgentProposalLocalAction(actionId) {
+async function deactivateAgentProposalBackendFeature(proposal) {
+  const backendFeatureId = String(proposal?.executionPlan?.backendFeatureId || "").trim();
+  if (!backendFeatureId) {
+    return null;
+  }
+
+  const feature = getFeatureById(backendFeatureId);
+  if (!feature || !isFeatureActivated(feature)) {
+    return null;
+  }
+
+  const response = await apiRequest(`/api/features/${encodeURIComponent(backendFeatureId)}/activation`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      action: "deactivate",
+      featureName: feature.name,
+      channel: feature.channel,
+    },
+  });
+  applyServerFeatureStates([response.feature || {}], { persist: true });
+  state.paymentStatus = response.paymentStatus || state.paymentStatus;
+  return response;
+}
+
+async function removeAgentProposalLocalAction(actionId) {
   const proposalId = getAgentProposalIdFromLocalActionId(actionId);
   if (!proposalId) {
     return false;
@@ -11694,6 +12057,16 @@ function removeAgentProposalLocalAction(actionId) {
   const agent = getAgentWorkspace();
   const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
   if (!proposal || !proposal.approved || proposal.type === "scheduled-message") {
+    return false;
+  }
+
+  persistAgentWorkspace("Turning off action...");
+  renderApp({ preserveStatus: true });
+  try {
+    await deactivateAgentProposalBackendFeature(proposal);
+  } catch (error) {
+    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t turn off that action."));
+    renderApp({ preserveStatus: true });
     return false;
   }
 
@@ -11753,7 +12126,7 @@ function handleAgentWorkspaceClick(event) {
   const target = getEventTargetElement(event);
   const removeLocalActionButton = target?.closest("[data-agent-remove-local-action]");
   if (removeLocalActionButton) {
-    removeAgentProposalLocalAction(removeLocalActionButton.dataset.agentRemoveLocalAction || "");
+    void removeAgentProposalLocalAction(removeLocalActionButton.dataset.agentRemoveLocalAction || "");
     return;
   }
 
