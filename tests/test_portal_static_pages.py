@@ -124,7 +124,9 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index('return AGENT_BLUEPRINTS.whatsappReplies;'),
         )
         self.assertIn("function shouldTreatAgentInputAsNewRequest", script)
-        self.assertIn("function maybeHandleAgentNotificationDecision(text) {\n  if (isAgentScheduledMessageRequest(text))", script)
+        self.assertIn("function buildAgentScheduledMessageDetails", script)
+        self.assertIn("function scheduleAgentScheduledMessageProposal", script)
+        self.assertIn("if (isAgentScheduledMessageRequest(value)) {\n    return true;", script)
         self.assertIn('apiRequest("/api/scheduled-actions"', script)
         self.assertIn('apiRequest("/api/scheduled-actions?limit=100"', script)
         self.assertIn("function renderAgentActions", script)
@@ -144,6 +146,26 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-action-item.is-failed::before", styles)
         self.assertIn(".agent-add-tool-button", styles)
         self.assertIn(".agent-add-tool-menu", styles)
+        self.assertIn("function getAgentMessageRenderSignature", script)
+        self.assertIn("function shouldPinAgentMessagesToBottom", script)
+        self.assertIn("dataset.agentMessageRenderSignature", script)
+        self.assertIn("dataset.agentMessageLastId", script)
+        render_messages = script[
+            script.index("function renderAgentMessages"):
+            script.index("function createAgentList")
+        ]
+        self.assertNotIn(
+            "replaceChildren(...visibleMessages.map(renderAgentMessage));\n"
+            "  elements.agentMessageList.scrollTop = elements.agentMessageList.scrollHeight;",
+            render_messages,
+        )
+        self.assertIn(".agent-message-list::before", styles)
+        self.assertIn("margin-top: auto;", styles)
+        self.assertIn(".app-shell.is-chat-workspace .agent-actions-panel-body", styles)
+        self.assertIn("scroll-padding-bottom: clamp(2rem, 5vh, 3.5rem);", styles)
+        self.assertIn(".app-shell.is-chat-workspace .agent-tool-shelf", styles)
+        self.assertIn("overflow: visible;", styles)
+        self.assertNotIn(".app-shell.is-chat-workspace .agent-tool-shelf {\n  min-height: 0;\n  overflow-y: auto;", styles)
         self.assertIn("AGENT_ADD_TOOL_OPTIONS", script)
         self.assertIn('label: "Email"', script)
         self.assertIn('label: "Calendar"', script)
@@ -171,8 +193,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("agentTurnBusy = true", script)
         self.assertIn('kind: "thinking"', script)
         self.assertIn(".agent-thinking-dots", styles)
-        self.assertIn("function getAgentScheduledMessageApprovalCopy", script)
-        self.assertIn("function formatAgentScheduledMessageMoment", script)
+        self.assertIn("function pushAgentApprovalPrompt(proposal, reply = \"\")", script)
+        self.assertIn("pushAgentApprovalPrompt(currentProposal, response.reply)", script)
         self.assertIn("function resolveAgentMessageActions", script)
         self.assertIn("function resolvePendingAgentMessageActions", script)
         self.assertIn("function areAgentMessageActionsResolved", script)
@@ -184,8 +206,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("button.dataset.agentActionMessage = message.id", script)
         self.assertIn("button.disabled = Boolean(isStaleApproval || actionsResolved)", script)
         self.assertIn('resolveAgentMessageActions(messageId, action)', script)
-        self.assertIn("`Got it — ${channel} ${moment} instead. Want me to schedule it?`", script)
-        self.assertIn("`Done — I’ll send it on ${channel} ${moment}.`", script)
+        self.assertIn("return pushAgentMessage(\"assistant\", messageText", script)
+        self.assertNotIn("function getAgentApprovalCopy", script)
+        self.assertNotIn("naturalIntroduction", script)
+        self.assertNotIn("Want me to schedule it?", script)
+        self.assertNotIn("Should I set it up?", script)
         self.assertNotIn("Action #${scheduledAction.id}", script)
         self.assertNotIn("Would you like me to schedule it?", script)
         handler = script[

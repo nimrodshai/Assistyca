@@ -10109,22 +10109,10 @@ function applyAgentFieldProposalRevision(proposal, changes = {}, options = {}) {
   return didChange;
 }
 
-function shouldUseAgentReplyAsQuestion(reply) {
-  const value = String(reply || "").trim();
-  return Boolean(value && value.length <= 240 && /\?\s*$/.test(value));
-}
-
 function pushAgentProposalNextStep(proposal, reply = "") {
   const missingIndex = getAgentNextMissingQuestionIndex(proposal);
   if (missingIndex >= 0) {
-    if (shouldUseAgentReplyAsQuestion(reply)) {
-      pushAgentQuestion(proposal, missingIndex, reply);
-    } else {
-      if (reply) {
-        pushAgentMessage("assistant", reply);
-      }
-      pushAgentQuestion(proposal, missingIndex);
-    }
+    pushAgentQuestion(proposal, missingIndex, reply);
     return;
   }
   pushAgentApprovalPrompt(proposal, reply);
@@ -10185,71 +10173,6 @@ function getAgentQuestionActions(proposal, questionIndex = 0) {
     : [];
 }
 
-function formatAgentScheduledMessageMoment(details = {}) {
-  const time = String(details.timeLocal || "").trim() || "the chosen time";
-  const datePolicy = String(details.datePolicy || "next_occurrence").trim();
-  if (datePolicy === "today") {
-    return `today at ${time}`;
-  }
-  if (datePolicy === "tomorrow") {
-    return `tomorrow at ${time}`;
-  }
-  return `at ${time}`;
-}
-
-function getAgentScheduledMessageApprovalCopy(proposal) {
-  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
-  const channel = formatAgentScheduledMessageChannel(details.channel);
-  const moment = formatAgentScheduledMessageMoment(details);
-  const isRevision = Math.max(1, Number(proposal?.revision || 1)) > 1;
-  const messageText = String(details.messageText || "").trim();
-  const hasCustomMessage = details.messageSource === "user" && messageText;
-
-  if (isRevision) {
-    return `Got it — ${channel} ${moment} instead. Want me to schedule it?`;
-  }
-  if (hasCustomMessage) {
-    return `Sure — I’ll send “${messageText}” on ${channel} ${moment}. Want me to schedule it?`;
-  }
-  return `Sure — I can message you on ${channel} ${moment}. Want me to schedule it?`;
-}
-
-function getAgentApprovalCopy(proposal) {
-  const fields = getAgentProposalFieldMap(proposal);
-  if (proposal?.type === "scheduled-message") {
-    return getAgentScheduledMessageApprovalCopy(proposal);
-  }
-
-  if (proposal?.type === "email-digest") {
-    const mailbox = fields.mailbox || "your mailbox";
-    const time = fields.schedule || "your chosen time";
-    const channel = fields.deliveryChannel || "this workspace";
-    return `I’m ready to send a daily summary of important messages from ${mailbox} at ${time}, delivered to ${channel}. Should I set it up?`;
-  }
-
-  if (proposal?.type === "web-monitor") {
-    const topic = fields.watchQuery || "the topics you care about";
-    const location = fields.location ? ` around ${fields.location}` : "";
-    const timeWindow = fields.timeWindow ? ` during ${fields.timeWindow}` : "";
-    const frequency = fields.frequency || "your chosen schedule";
-    const channel = fields.deliveryChannel || "this workspace";
-    return `I’m ready to watch ${topic}${location}${timeWindow} ${frequency.toLowerCase()} and send meaningful matches to ${channel}. Should I set it up?`;
-  }
-
-  if (proposal?.type === "whatsapp-replies") {
-    const approver = fields.approver ? ` for ${fields.approver}` : "";
-    return `I’m ready to draft WhatsApp replies${approver} before anything is sent. Should I set it up?`;
-  }
-
-  if (proposal?.type === "reengagement") {
-    const inactivity = fields.inactivityPeriod || "your chosen quiet period";
-    const frequency = fields.frequency || "your chosen schedule";
-    return `I’m ready to check for conversations quiet for ${inactivity} ${frequency.toLowerCase()} and prepare follow-up drafts for you. Should I set it up?`;
-  }
-
-  return `I’m ready to set up help for this request. Should I set it up?`;
-}
-
 function getAgentApprovalActions(proposal) {
   return [
     createAgentAction("approve-proposal", "Set it up", proposal?.id || "", "primary"),
@@ -10260,10 +10183,14 @@ function getAgentApprovalActions(proposal) {
 function pushAgentQuestion(proposal, questionIndex = 0, questionOverride = "") {
   const index = Math.max(0, Number(questionIndex || 0));
   proposal.questionIndex = index;
+  const messageText = String(questionOverride || "").trim();
+  if (!messageText) {
+    return null;
+  }
   const field = proposal?.type === "scheduled-message"
     ? null
     : getAgentProposalFieldSchema(proposal)[index] || null;
-  pushAgentMessage("assistant", questionOverride || getAgentConversationQuestion(proposal, index), {
+  return pushAgentMessage("assistant", messageText, {
     kind: "question",
     proposalId: proposal.id,
     questionIndex: index,
@@ -10272,13 +10199,12 @@ function pushAgentQuestion(proposal, questionIndex = 0, questionOverride = "") {
   });
 }
 
-function pushAgentApprovalPrompt(proposal, introduction = "") {
-  const naturalIntroduction = String(introduction || "").trim();
-  const approvalCopy = getAgentApprovalCopy(proposal);
-  const messageText = proposal?.type === "scheduled-message"
-    ? approvalCopy
-    : (naturalIntroduction ? `${naturalIntroduction}\n\n${approvalCopy}` : approvalCopy);
-  pushAgentMessage("assistant", messageText, {
+function pushAgentApprovalPrompt(proposal, reply = "") {
+  const messageText = String(reply || "").trim();
+  if (!messageText) {
+    return null;
+  }
+  return pushAgentMessage("assistant", messageText, {
     kind: "approval",
     proposalId: proposal.id,
     proposalRevision: Math.max(1, Number(proposal.revision || 1)),
@@ -10393,6 +10319,55 @@ function renderAgentMessage(message) {
   return row;
 }
 
+function getAgentMessageRenderSignature(messages) {
+  return JSON.stringify(messages.map((message) => [
+    message.id,
+    message.role,
+    message.text,
+    message.metadata?.kind || "",
+    message.metadata?.proposalId || "",
+    message.metadata?.proposalRevision || "",
+    message.metadata?.actionsResolvedAt || "",
+    message.metadata?.actionsResolvedBy || "",
+    Array.isArray(message.metadata?.actions)
+      ? message.metadata.actions.map((action) => [
+        action.id || "",
+        action.label || "",
+        action.value || "",
+        action.tone || "",
+      ])
+      : [],
+  ]));
+}
+
+function isAgentMessageListNearBottom(container) {
+  return container.scrollHeight - container.scrollTop - container.clientHeight < 96;
+}
+
+function scrollAgentMessagesToBottom() {
+  if (!elements.agentMessageList) {
+    return;
+  }
+
+  elements.agentMessageList.scrollTop = elements.agentMessageList.scrollHeight;
+}
+
+function shouldPinAgentMessagesToBottom(container, messages) {
+  if (!container.dataset.agentMessageRenderSignature) {
+    return true;
+  }
+  if (isAgentMessageListNearBottom(container)) {
+    return true;
+  }
+
+  const nextLastMessage = messages.at(-1);
+  return Boolean(
+    nextLastMessage
+    && nextLastMessage.id !== container.dataset.agentMessageLastId
+    && nextLastMessage.role === "user"
+  );
+}
+
 function renderAgentMessages() {
   if (!elements.agentMessageList) {
     return;
@@ -10411,8 +10386,19 @@ function renderAgentMessages() {
       },
     ]
     : agent.messages;
+  const signature = getAgentMessageRenderSignature(visibleMessages);
+  if (elements.agentMessageList.dataset.agentMessageRenderSignature === signature) {
+    return;
+  }
+
+  const shouldPinToBottom = shouldPinAgentMessagesToBottom(elements.agentMessageList, visibleMessages);
+  const lastMessage = visibleMessages.at(-1);
+  elements.agentMessageList.dataset.agentMessageRenderSignature = signature;
+  elements.agentMessageList.dataset.agentMessageLastId = lastMessage?.id || "";
   elements.agentMessageList.replaceChildren(...visibleMessages.map(renderAgentMessage));
-  elements.agentMessageList.scrollTop = elements.agentMessageList.scrollHeight;
+  if (shouldPinToBottom) {
+    window.requestAnimationFrame(scrollAgentMessagesToBottom);
+  }
 }
 
 function createAgentList(items, className, itemClassName) {
@@ -11202,13 +11188,15 @@ async function reviseAgentProposal(proposal, userMessage) {
 
     if (response.outcome === "needs_clarification") {
       currentProposal.status = "needs-approval";
-      pushAgentMessage("assistant", response.reply || "What would you like me to change?", {
-        kind: "proposal-change",
-        proposalId: currentProposal.id,
-        proposalRevision: expectedRevision,
-      });
+      if (response.reply) {
+        pushAgentMessage("assistant", response.reply, {
+          kind: "proposal-change",
+          proposalId: currentProposal.id,
+          proposalRevision: expectedRevision,
+        });
+      }
     } else if (applyAgentScheduledMessageRevision(currentProposal, response.changes)) {
-      pushAgentApprovalPrompt(currentProposal);
+      pushAgentApprovalPrompt(currentProposal, response.reply);
     } else {
       throw new Error("This proposal type cannot be revised yet.");
     }
@@ -11222,16 +11210,7 @@ async function reviseAgentProposal(proposal, userMessage) {
     if (currentProposal) {
       currentProposal.status = "needs-approval";
     }
-    pushAgentMessage(
-      "assistant",
-      formatApiErrorMessage(error, "I could not apply that change safely. Please describe it another way."),
-      {
-        kind: "proposal-change",
-        proposalId,
-        proposalRevision: expectedRevision,
-      },
-    );
-    persistAgentWorkspace("Plan change needs another try.");
+    persistAgentWorkspace(formatApiErrorMessage(error, "Plan change needs another try."));
     renderApp({ preserveStatus: true });
     return false;
   }
@@ -11261,65 +11240,6 @@ function handleAgentQuestionAnswer(proposal, answer) {
     mergeAgentProposalAnswers(proposal, [cleanAnswer]);
     pushAgentProposalNextStep(proposal);
   }
-  return true;
-}
-
-function maybeHandleAgentNotificationDecision(text) {
-  if (isAgentScheduledMessageRequest(text)) {
-    return false;
-  }
-
-  const proposal = getLatestApprovedAgentProposal();
-  if (!proposal) {
-    return false;
-  }
-
-  const value = String(text || "").toLowerCase();
-  const mentionsChannel = /\b(whatsapp|telegram|email|mail|portal)\b/.test(value);
-  const looksLikeDeliveryAnswer = (
-    /^\s*(send|notify|deliver|use|whatsapp|telegram|email|mail|portal)\b/.test(value)
-    || /\b(notification|delivery|results? to|message me)\b/.test(value)
-  );
-  const looksLikeNewTask = /\b(summari[sz]e|summary|digest|watch|monitor|reply|create|set up|setup|help me)\b/.test(value);
-  if (!mentionsChannel || (looksLikeNewTask && !looksLikeDeliveryAnswer)) {
-    return false;
-  }
-
-  if (/\bwhatsapp\b/.test(value)) {
-    const whatsappFeature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
-    if (whatsappFeature && isFeatureSetupComplete(whatsappFeature)) {
-      pushAgentMessage("assistant", "Got it. I’ll send the results to WhatsApp.");
-      return true;
-    }
-
-    pushAgentMessage(
-      "assistant",
-      "I can use WhatsApp, but it needs to be connected first. If you don’t know where to find the setup details, I can help you get them. Email or Telegram are available sooner.",
-      {
-        kind: "credential",
-        actions: [
-          createAgentAction("open-setup", "Connect WhatsApp", proposal.id, "primary"),
-          createAgentAction("credential-help", "Help me get it", proposal.id),
-          createAgentAction("choose", "Use email instead", "Email"),
-        ],
-      },
-    );
-    return true;
-  }
-
-  if (/\btelegram\b/.test(value)) {
-    pushAgentMessage("assistant", "Telegram works. I’ll need the chat ID before I can send results there.", {
-      kind: "question",
-    });
-    return true;
-  }
-
-  if (/\b(email|mail)\b/.test(value)) {
-    pushAgentMessage("assistant", "Email works. I’ll send results to the email on your account.");
-    return true;
-  }
-
-  pushAgentMessage("assistant", "I’ll keep the results here in this conversation.");
   return true;
 }
 
@@ -11456,19 +11376,23 @@ async function applyAgentTurnResponse(turn, userText) {
   }
 
   if (outcome === "approve_proposal") {
-    pushAgentMessage("assistant", "I’m not sure which plan you want to approve. Please use the latest plan’s Set it up button.", {
-      kind: "question",
-    });
+    if (reply) {
+      pushAgentMessage("assistant", reply, { kind: "text" });
+    } else {
+      setStatus("Use the latest Set it up button to approve a plan.");
+    }
     return true;
   }
 
   if (outcome === "reject_proposal" && activeProposal && !activeProposal.approved) {
     activeProposal.status = "rejected";
     activeProposal.updatedAt = new Date().toISOString();
-    pushAgentMessage("assistant", reply || "No problem — I won’t set it up.", {
-      kind: "result",
-      proposalId: activeProposal.id,
-    });
+    if (reply) {
+      pushAgentMessage("assistant", reply, {
+        kind: "result",
+        proposalId: activeProposal.id,
+      });
+    }
     return true;
   }
 
@@ -11477,7 +11401,7 @@ async function applyAgentTurnResponse(turn, userText) {
     && activeProposal
     && applyAgentTurnProposalRevision(activeProposal, turn.changes)
   ) {
-    pushAgentProposalNextStep(activeProposal, reply || "Of course — I updated the plan.");
+    pushAgentProposalNextStep(activeProposal, reply);
     return true;
   }
 
@@ -11489,11 +11413,13 @@ async function applyAgentTurnResponse(turn, userText) {
     return true;
   }
 
-  pushAgentMessage(
-    "assistant",
-    reply || "Could you tell me a little more about what you want me to do?",
-    { kind: outcome === "question" ? "question" : "text" },
-  );
+  if (reply) {
+    pushAgentMessage(
+      "assistant",
+      reply,
+      { kind: outcome === "question" ? "question" : "text" },
+    );
+  }
   return true;
 }
 
@@ -11536,12 +11462,7 @@ async function handleAgentUserText(text) {
     renderApp({ preserveStatus: true });
   } catch (error) {
     agentTurnBusy = false;
-    pushAgentMessage(
-      "assistant",
-      formatApiErrorMessage(error, "I’m having trouble thinking through that right now. Please try again."),
-      { kind: "result" },
-    );
-    persistAgentWorkspace("Agent response failed.");
+    persistAgentWorkspace(formatApiErrorMessage(error, "Agent response failed."));
     renderApp({ preserveStatus: true });
   }
 }
@@ -11612,10 +11533,6 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
 
   const currentRevision = Math.max(1, Number(proposal.revision || 1));
   if (expectedRevision > 0 && expectedRevision !== currentRevision) {
-    pushAgentMessage("assistant", "This plan changed. Please review and approve the latest version.", {
-      kind: "result",
-      proposalId: proposal.id,
-    });
     persistAgentWorkspace("Latest plan approval required.");
     renderApp({ preserveStatus: true });
     return;
@@ -11631,19 +11548,8 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
   }
 
   if (proposal.type === "scheduled-message" && proposal.missingCredential) {
-    pushAgentMessage(
-      "assistant",
-      `I can schedule this, but I still need ${proposal.missingCredential}. Connect WhatsApp and then approve this plan again.`,
-      {
-        kind: "credential",
-        proposalId: proposal.id,
-        actions: [
-          createAgentAction("open-setup", "Connect WhatsApp", proposal.id, "primary"),
-          createAgentAction("credential-help", "Help me get it", proposal.id),
-        ],
-      },
-    );
     persistAgentWorkspace("WhatsApp setup required.");
+    openAgentProposalSetup(proposal.id);
     renderApp({ preserveStatus: true });
     return;
   }
@@ -11674,27 +11580,15 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     } catch (error) {
       proposal.status = "needs-approval";
       const payload = error?.payload || {};
+      let statusMessage = "Scheduling failed.";
       if (payload.error === "missing_whatsapp_connection") {
         proposal.missingCredential = "WhatsApp Business API access token";
-        pushAgentMessage(
-          "assistant",
-          "I can schedule this, but WhatsApp needs to be connected first. Connect it and then approve the plan again.",
-          {
-            kind: "credential",
-            proposalId: proposal.id,
-            actions: [
-              createAgentAction("open-setup", "Connect WhatsApp", proposal.id, "primary"),
-              createAgentAction("credential-help", "Help me get it", proposal.id),
-            ],
-          },
-        );
+        statusMessage = "WhatsApp setup required.";
+        openAgentProposalSetup(proposal.id);
       } else {
-        pushAgentMessage("assistant", formatApiErrorMessage(error, "I could not schedule that message yet."), {
-          kind: "result",
-          proposalId: proposal.id,
-        });
+        statusMessage = formatApiErrorMessage(error, "I could not schedule that message yet.");
       }
-      persistAgentWorkspace("Scheduling failed.");
+      persistAgentWorkspace(statusMessage);
       renderApp({ preserveStatus: true });
       return;
     }
@@ -11724,33 +11618,13 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
   }
 
   if (proposal.missingCredential) {
-    pushAgentMessage(
-      "assistant",
-      `I’m ready to set this up, but I still need ${proposal.missingCredential}. You can connect it now, or I can help you find the details.`,
-      {
-        kind: "credential",
-        proposalId: proposal.id,
-        actions: [
-          createAgentAction("open-setup", "Connect it", proposal.id, "primary"),
-          createAgentAction("credential-help", "Help me get it", proposal.id),
-        ],
-      },
-    );
+    persistAgentWorkspace(`${proposal.missingCredential} setup required.`);
+    openAgentProposalSetup(proposal.id);
   } else if (proposal.type === "scheduled-message") {
-    const details = proposal.details && typeof proposal.details === "object" ? proposal.details : {};
-    const channel = formatAgentScheduledMessageChannel(details.channel);
-    const moment = formatAgentScheduledMessageMoment(details);
-    pushAgentMessage("assistant", `Done — I’ll send it on ${channel} ${moment}.`, {
-      kind: "result",
-      proposalId: proposal.id,
-    });
+    persistAgentWorkspace("Scheduled message created.");
   } else {
-    pushAgentMessage("assistant", "All set. I’ll use the details you gave me and keep the results here.", {
-      kind: "result",
-      proposalId: proposal.id,
-    });
+    persistAgentWorkspace("Agent helper created.");
   }
-  persistAgentWorkspace("Agent updated.");
   renderApp({ preserveStatus: true });
 }
 
@@ -11763,32 +11637,23 @@ function requestAgentProposalChanges(proposalId, expectedRevision = 0) {
 
   const currentRevision = Math.max(1, Number(proposal.revision || 1));
   if (expectedRevision > 0 && expectedRevision !== currentRevision) {
-    pushAgentMessage("assistant", "That plan has already changed. Tell me what you want to change in the latest version.", {
-      kind: "proposal-change",
-      proposalId: proposal.id,
-      proposalRevision: currentRevision,
-    });
-    persistAgentWorkspace("Agent waiting for changes.");
+    persistAgentWorkspace("That plan has already changed. Review the latest version before editing.");
     renderApp({ preserveStatus: true });
     return;
   }
 
   agent.activeProposalId = proposal.id;
-  pushAgentMessage("assistant", "Sure. What would you like to change?", {
-    kind: "proposal-change",
-    proposalId: proposal.id,
-    proposalRevision: currentRevision,
-  });
-  persistAgentWorkspace("Agent waiting for changes.");
+  persistAgentWorkspace("Tell Assistyca what you want to change.");
   renderApp({ preserveStatus: true });
+  elements.agentComposerInput?.focus();
 }
 
 function openAgentProposalSetup(proposalId) {
   const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
   if (!proposal?.relatedFeatureId) {
-    pushAgentMessage("assistant", "This plan needs a custom setup path. Tell me which app, account, or API it should connect to first.");
-    persistAgentWorkspace("Agent updated.");
+    persistAgentWorkspace("This plan needs a custom setup path.");
     renderApp({ preserveStatus: true });
+    elements.agentComposerInput?.focus();
     return;
   }
 
@@ -11806,18 +11671,10 @@ function openAgentProposalSetup(proposalId) {
 function openAgentCredentialHelp(proposalId) {
   const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
   const credential = proposal?.missingCredential || "API credentials";
-  pushAgentMessage(
-    "assistant",
-    `I can help you find ${credential}. Tell me which screen you’re on, or what you see, and I’ll walk you through it step by step.`,
-    {
-      kind: "help",
-      proposalId: proposal?.id || "",
-      actions: proposal?.relatedFeatureId
-        ? [createAgentAction("open-setup", "Open setup", proposal.id, "primary")]
-        : [],
-    },
-  );
-  persistAgentWorkspace("Agent updated.");
+  if (elements.agentComposerInput) {
+    elements.agentComposerInput.placeholder = `Ask Assistyca about ${credential}`;
+  }
+  persistAgentWorkspace(`Ask Assistyca about ${credential}.`);
   renderApp({ preserveStatus: true });
   elements.agentComposerInput?.focus();
 }
