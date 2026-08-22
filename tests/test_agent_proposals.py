@@ -155,6 +155,22 @@ class AgentProposalRevisionTests(unittest.TestCase):
             "deliveryChannel": "Email",
         })
 
+    def test_conversational_turn_requires_llm_reply(self) -> None:
+        with self.assertRaisesRegex(ValueError, "missing reply"):
+            normalize_agent_turn_response({
+                "outcome": "proposal",
+                "reply": "",
+                "proposalType": "web-monitor",
+                "changes": {
+                    "fields": {
+                        "watchQuery": "kid-friendly events",
+                        "location": "HaSharon and central Israel",
+                        "frequency": "every 5 minutes",
+                        "deliveryChannel": "Email",
+                    },
+                },
+            }, has_active_proposal=False)
+
     def test_active_non_scheduled_proposal_keeps_fields_for_turns(self) -> None:
         proposal = normalize_agent_proposal_for_turn({
             "id": "proposal-1",
@@ -327,6 +343,7 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertIn('"activeProposal":{"id":"proposal-1"', kwargs["prompt"])
         self.assertIn("not a new request", kwargs["prompt"])
         self.assertIn("reply field is the only assistant text", kwargs["prompt"])
+        self.assertIn("reply is required for every outcome", kwargs["prompt"])
         self.assertIn("the reply should include the natural approval question", kwargs["prompt"])
 
     def test_initial_scheduled_message_turn_uses_openai_proposal(self) -> None:

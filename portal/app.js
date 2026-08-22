@@ -10571,7 +10571,108 @@ function normalizeScheduledAction(action = {}) {
   };
 }
 
-function getScheduledActionStatusLabel(status) {
+function normalizeAgentActionTypeLabel(value) {
+  return capitalizeWords(String(value || "")
+    .replace(/^agent[_-]+/, "")
+    .replace(/[_-]+/g, " ")
+    .trim());
+}
+
+function isAgentProposalLocalAction(action) {
+  return Boolean(
+    action?.local === true
+    || String(action?.id || "").startsWith("proposal:")
+    || String(action?.actionType || "").startsWith("agent_")
+  );
+}
+
+function getAgentProposalFieldValue(proposal, key) {
+  const fields = proposal?.fields && typeof proposal.fields === "object" ? proposal.fields : {};
+  return String(fields[key] || "").trim();
+}
+
+function getAgentProposalLocalActionTitle(proposal) {
+  if (proposal?.type === "web-monitor") {
+    return "Web monitor";
+  }
+  if (proposal?.type === "email-digest") {
+    return "Email digest";
+  }
+  if (proposal?.type === "whatsapp-replies") {
+    return "WhatsApp helper";
+  }
+  if (proposal?.type === "reengagement") {
+    return "Customer follow-up";
+  }
+  return proposal?.title || proposal?.helpers?.[0]?.name || "Agent helper";
+}
+
+function getAgentProposalLocalActionPreview(proposal) {
+  if (proposal?.type === "web-monitor") {
+    const pieces = [
+      getAgentProposalFieldValue(proposal, "watchQuery"),
+      getAgentProposalFieldValue(proposal, "location"),
+      getAgentProposalFieldValue(proposal, "timeWindow"),
+    ].filter(Boolean);
+    return pieces.length ? pieces.join(" · ") : proposal.summary;
+  }
+  return proposal?.summary || proposal?.helpers?.[0]?.purpose || "";
+}
+
+function createAgentProposalLocalAction(proposal) {
+  if (!proposal || !proposal.approved || proposal.type === "scheduled-message") {
+    return null;
+  }
+
+  const deliveryChannel = getAgentProposalFieldValue(proposal, "deliveryChannel");
+  const approvedAt = String(proposal.approvedAt || proposal.updatedAt || proposal.createdAt || new Date().toISOString());
+  return {
+    id: `proposal:${proposal.id}`,
+    actionType: `agent_${String(proposal.type || "helper").replace(/[^a-zA-Z0-9]+/g, "_")}`,
+    channel: normalizeAgentDeliveryChannel(deliveryChannel) || "agent",
+    recipientRef: deliveryChannel,
+    runAt: approvedAt,
+    timezone: normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC",
+    status: proposal.missingCredential ? "pending" : "running",
+    attemptCount: 0,
+    providerMessageId: "",
+    payload: {
+      source: "agent_proposal",
+      proposalId: proposal.id,
+      proposalType: proposal.type,
+      title: getAgentProposalLocalActionTitle(proposal),
+      preview: getAgentProposalLocalActionPreview(proposal),
+      summary: proposal.summary,
+      watchQuery: getAgentProposalFieldValue(proposal, "watchQuery"),
+      location: getAgentProposalFieldValue(proposal, "location"),
+      timeWindow: getAgentProposalFieldValue(proposal, "timeWindow"),
+      frequency: getAgentProposalFieldValue(proposal, "frequency"),
+      deliveryChannel,
+    },
+    local: true,
+    lastError: "",
+    claimedAt: "",
+    completedAt: "",
+    createdAt: approvedAt,
+    updatedAt: String(proposal.updatedAt || approvedAt),
+  };
+}
+
+function getAgentProposalLocalActions() {
+  return getAgentWorkspace().proposals
+    .map(createAgentProposalLocalAction)
+    .filter(Boolean);
+}
+
+function getRenderableAgentActions() {
+  const backendActions = Array.isArray(state.scheduledActions) ? state.scheduledActions : [];
+  return [
+    ...getAgentProposalLocalActions(),
+    ...backendActions,
+  ];
+}
+
+function getScheduledActionStatusLabel(status, action = null) {
   const labels = {
     pending: "Scheduled",
     running: "Sending",
@@ -10582,6 +10683,14 @@ function getScheduledActionStatusLabel(status) {
     cancelled: "Cancelled",
   };
   const normalized = String(status || "pending").trim().toLowerCase();
+  if (isAgentProposalLocalAction(action)) {
+    if (normalized === "running") {
+      return "Working";
+    }
+    if (normalized === "pending") {
+      return "Ready";
+    }
+  }
   return labels[normalized] || capitalizeWords(normalized.replace(/[_-]+/g, " ")) || "Unknown";
 }
 
@@ -10593,6 +10702,13 @@ function getScheduledActionStatusClass(status) {
 }
 
 function getScheduledActionTitle(action) {
+  const payloadTitle = String(action?.payload?.title || "").trim();
+  if (payloadTitle) {
+    return payloadTitle;
+  }
+  if (isAgentProposalLocalAction(action)) {
+    return normalizeAgentActionTypeLabel(action?.actionType) || "Agent helper";
+  }
   const channel = formatAgentScheduledMessageChannel(action?.channel);
   if (String(action?.actionType || "").trim() === "send_message") {
     return `${channel} message`;
@@ -10627,12 +10743,18 @@ function createScheduledActionStatus(action) {
   const status = document.createElement("span");
   const statusClass = getScheduledActionStatusClass(action.status);
   status.className = `agent-action-status is-${statusClass}`;
-  status.textContent = getScheduledActionStatusLabel(action.status);
+  status.textContent = getScheduledActionStatusLabel(action.status, action);
   return status;
 }
 
 function getScheduledActionPreviewText(action) {
-  return String(action?.payload?.messageText || action?.payload?.text || action?.lastError || "").trim();
+  return String(
+    action?.payload?.preview
+    || action?.payload?.messageText
+    || action?.payload?.text
+    || action?.lastError
+    || "",
+  ).trim();
 }
 
 function getScheduledActionItemTimeValue(action) {
@@ -10646,7 +10768,7 @@ function getScheduledActionItemSignature(action) {
     action.id,
     getScheduledActionTitle(action),
     getScheduledActionStatusClass(action.status),
-    getScheduledActionStatusLabel(action.status),
+    getScheduledActionStatusLabel(action.status, action),
     formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     getScheduledActionPreviewText(action),
   ]);
@@ -10665,7 +10787,7 @@ function createScheduledActionItem(action) {
   item.type = "button";
   item.className = `agent-action-item is-${statusClass}`;
   item.dataset.agentScheduledActionId = String(action.id || "");
-  item.setAttribute("aria-label", `Open ${getScheduledActionTitle(action)}, ${getScheduledActionStatusLabel(action.status)}`);
+  item.setAttribute("aria-label", `Open ${getScheduledActionTitle(action)}, ${getScheduledActionStatusLabel(action.status, action)}`);
 
   const head = document.createElement("span");
   head.className = "agent-action-item-head";
@@ -10724,12 +10846,18 @@ function createScheduledActionDetailRow(label, value) {
 }
 
 function getScheduledActionDetailSignature(action) {
-  const messageText = String(action.payload?.messageText || action.payload?.text || "").trim();
+  const messageText = String(
+    action.payload?.preview
+    || action.payload?.summary
+    || action.payload?.messageText
+    || action.payload?.text
+    || "",
+  ).trim();
   return JSON.stringify([
     action.id,
     getScheduledActionTitle(action),
     getScheduledActionStatusClass(action.status),
-    getScheduledActionStatusLabel(action.status),
+    getScheduledActionStatusLabel(action.status, action),
     messageText,
     formatScheduledActionDate(action.runAt, action.timezone),
     action.timezone || getWorkspaceTimeZone(),
@@ -10761,6 +10889,34 @@ function createScheduledActionDetail(action) {
     message.className = "agent-action-message";
     message.textContent = `“${messageText}”`;
     card.append(message);
+  }
+
+  if (isAgentProposalLocalAction(action)) {
+    const payload = action.payload && typeof action.payload === "object" ? action.payload : {};
+    const details = document.createElement("dl");
+    details.className = "agent-action-detail-grid";
+    details.append(
+      createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
+      createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
+      createScheduledActionDetailRow("Delivery", String(payload.deliveryChannel || action.recipientRef || "As configured").trim()),
+    );
+    if (payload.location) {
+      details.append(createScheduledActionDetailRow("Location", String(payload.location)));
+    }
+    if (payload.timeWindow) {
+      details.append(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
+    }
+    card.append(details);
+
+    const note = document.createElement("div");
+    note.className = "agent-action-note";
+    const noteTitle = document.createElement("strong");
+    noteTitle.textContent = "Approved from chat";
+    const noteMessage = document.createElement("p");
+    noteMessage.textContent = "This helper was created from the approved chat plan. Open the connected tool to adjust the concrete schedule, delivery, or credentials.";
+    note.append(noteTitle, noteMessage);
+    card.append(note);
+    return card;
   }
 
   const details = document.createElement("dl");
@@ -10818,7 +10974,7 @@ function renderAgentActions() {
     return;
   }
 
-  const actions = Array.isArray(state.scheduledActions) ? state.scheduledActions : [];
+  const actions = getRenderableAgentActions();
   const upcoming = actions
     .filter((action) => ["pending", "running"].includes(action.status))
     .sort((left, right) => new Date(left.runAt).getTime() - new Date(right.runAt).getTime());
@@ -11033,6 +11189,35 @@ function applyAgentScheduledMessageRevision(proposal, changes = {}) {
   return true;
 }
 
+function getAgentActionIntentText(action, value = "") {
+  const normalizedAction = String(action || "").trim();
+  if (normalizedAction === "approve-proposal") {
+    return "Set it up please";
+  }
+  if (normalizedAction === "request-change") {
+    return "Change something";
+  }
+  if (normalizedAction === "open-setup") {
+    return "Open setup";
+  }
+  if (normalizedAction === "credential-help") {
+    return "Help me get it";
+  }
+  return String(value || "").trim();
+}
+
+function pushAgentActionIntentMessage(action, value = "", proposalId = "") {
+  const text = getAgentActionIntentText(action, value);
+  if (!text) {
+    return null;
+  }
+  return pushAgentMessage("user", text, {
+    kind: "action-intent",
+    action,
+    proposalId,
+  });
+}
+
 function handleAgentMessageAction(event) {
   const target = getEventTargetElement(event);
   const button = target?.closest("[data-agent-message-action]");
@@ -11054,21 +11239,33 @@ function handleAgentMessageAction(event) {
   renderAgentMessages();
 
   if (action === "approve-proposal") {
+    pushAgentActionIntentMessage(action, value, proposalId);
+    persistClientState();
+    renderAgentMessages();
     void approveAgentProposal(proposalId, proposalRevision);
     return true;
   }
 
   if (action === "request-change") {
+    pushAgentActionIntentMessage(action, value, proposalId);
+    persistClientState();
+    renderAgentMessages();
     requestAgentProposalChanges(proposalId, proposalRevision);
     return true;
   }
 
   if (action === "open-setup") {
+    pushAgentActionIntentMessage(action, value, proposalId);
+    persistClientState();
+    renderAgentMessages();
     openAgentProposalSetup(proposalId);
     return true;
   }
 
   if (action === "credential-help") {
+    pushAgentActionIntentMessage(action, value, proposalId);
+    persistClientState();
+    renderAgentMessages();
     openAgentCredentialHelp(proposalId);
     return true;
   }
@@ -11481,7 +11678,11 @@ function handleAgentWorkspaceClick(event) {
 
   const approveButton = target?.closest("[data-agent-approve-proposal]");
   if (approveButton) {
-    void approveAgentProposal(approveButton.dataset.agentApproveProposal || "");
+    const proposalId = approveButton.dataset.agentApproveProposal || "";
+    pushAgentActionIntentMessage("approve-proposal", "Set it up", proposalId);
+    persistClientState();
+    renderAgentMessages();
+    void approveAgentProposal(proposalId);
     return;
   }
 
@@ -11493,7 +11694,11 @@ function handleAgentWorkspaceClick(event) {
 
   const changesButton = target?.closest("[data-agent-request-changes]");
   if (changesButton) {
-    requestAgentProposalChanges(changesButton.dataset.agentRequestChanges || "");
+    const proposalId = changesButton.dataset.agentRequestChanges || "";
+    pushAgentActionIntentMessage("request-change", "Change something", proposalId);
+    persistClientState();
+    renderAgentMessages();
+    requestAgentProposalChanges(proposalId);
     return;
   }
 
@@ -11508,7 +11713,7 @@ function setAgentToolsOpen(open) {
   elements.agentToolsPanel?.classList.toggle("is-open", isOpen);
   elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
   if (elements.agentToolsToggleButton) {
-    const upcomingCount = state.scheduledActions.filter((action) => ["pending", "running"].includes(action.status)).length;
+    const upcomingCount = getRenderableAgentActions().filter((action) => ["pending", "running"].includes(action.status)).length;
     elements.agentToolsToggleButton.textContent = isOpen
       ? "Close actions"
       : (upcomingCount ? `Actions (${upcomingCount})` : "View actions");

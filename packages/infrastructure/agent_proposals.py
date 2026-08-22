@@ -243,8 +243,9 @@ def build_agent_turn_prompt(
         "- reject_proposal: the user clearly rejects or cancels the active pending proposal.\n"
         "- question: one missing detail is required before a safe proposal can be shown.\n"
         "- message: answer conversationally without creating or executing anything.\n"
-        "Return keys: outcome, reply, proposalType, changes. reply must sound like a natural assistant, "
-        "not a form or system status. proposalType must be one of scheduled-message, email-digest, "
+        "Return keys: outcome, reply, proposalType, changes. reply is required for every outcome and must "
+        "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
+        "of scheduled-message, email-digest, "
         "web-monitor, whatsapp-replies, reengagement, or custom when outcome is proposal or when outcome is "
         "question for a recognizable setup that is missing details.\n"
         "For scheduled-message proposals and revisions, changes may contain only channel, timeLocal, "
@@ -369,6 +370,9 @@ def normalize_agent_turn_response(
     proposal_type = _single_line(response.get("proposalType"), 80).lower()
     changes_proposal_type = proposal_type if proposal_type in _AGENT_PROPOSAL_TYPES else active_proposal_type
     changes = _normalize_agent_turn_changes(response.get("changes"), changes_proposal_type)
+
+    if not reply:
+        raise ValueError("Agent response is missing reply.")
 
     if outcome == "proposal":
         if proposal_type not in _AGENT_PROPOSAL_TYPES:
