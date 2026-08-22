@@ -10672,6 +10672,35 @@ function getRenderableAgentActions() {
   ];
 }
 
+function canCancelAgentAction(action) {
+  return ["pending", "running"].includes(String(action?.status || "").trim().toLowerCase());
+}
+
+function createAgentActionDetailActions(action) {
+  if (!canCancelAgentAction(action)) {
+    return null;
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "agent-action-detail-actions";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost-button small agent-action-danger-button";
+
+  if (isAgentProposalLocalAction(action)) {
+    button.dataset.agentRemoveLocalAction = String(action.id || "");
+    button.textContent = "Remove action";
+    button.setAttribute("aria-label", `Remove ${getScheduledActionTitle(action)}`);
+  } else {
+    button.dataset.agentCancelScheduledAction = String(action.id || "");
+    button.textContent = "Cancel action";
+    button.setAttribute("aria-label", `Cancel ${getScheduledActionTitle(action)}`);
+  }
+
+  actions.append(button);
+  return actions;
+}
+
 function getScheduledActionStatusLabel(status, action = null) {
   const labels = {
     pending: "Scheduled",
@@ -10916,6 +10945,10 @@ function createScheduledActionDetail(action) {
     noteMessage.textContent = "This helper was created from the approved chat plan. Open the connected tool to adjust the concrete schedule, delivery, or credentials.";
     note.append(noteTitle, noteMessage);
     card.append(note);
+    const localActions = createAgentActionDetailActions(action);
+    if (localActions) {
+      card.append(localActions);
+    }
     return card;
   }
 
@@ -10966,6 +10999,10 @@ function createScheduledActionDetail(action) {
       card.append(note);
     }
   }
+  const actionControls = createAgentActionDetailActions(action);
+  if (actionControls) {
+    card.append(actionControls);
+  }
   return card;
 }
 
@@ -10975,7 +11012,7 @@ function renderAgentActions() {
   }
 
   const actions = getRenderableAgentActions();
-  const upcoming = actions
+  const activeActions = actions
     .filter((action) => ["pending", "running"].includes(action.status))
     .sort((left, right) => new Date(left.runAt).getTime() - new Date(right.runAt).getTime());
   const completed = actions
@@ -10985,9 +11022,9 @@ function renderAgentActions() {
       - new Date(left.completedAt || left.updatedAt || left.createdAt).getTime()
     ));
 
-  elements.agentPendingActionsCount.textContent = String(upcoming.length);
+  elements.agentPendingActionsCount.textContent = String(activeActions.length);
   elements.agentCompletedActionsCount.textContent = String(completed.length);
-  renderScheduledActionList(elements.agentPendingActionList, upcoming, "No upcoming actions.");
+  renderScheduledActionList(elements.agentPendingActionList, activeActions, "No active actions.");
   renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
 
   const statusRow = elements.agentActionsStatus?.closest(".agent-actions-sync-row");
@@ -11644,12 +11681,88 @@ function openAgentCredentialHelp(proposalId) {
   elements.agentComposerInput?.focus();
 }
 
+function getAgentProposalIdFromLocalActionId(actionId) {
+  return String(actionId || "").replace(/^proposal:/, "").trim();
+}
+
+function removeAgentProposalLocalAction(actionId) {
+  const proposalId = getAgentProposalIdFromLocalActionId(actionId);
+  if (!proposalId) {
+    return false;
+  }
+
+  const agent = getAgentWorkspace();
+  const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
+  if (!proposal || !proposal.approved || proposal.type === "scheduled-message") {
+    return false;
+  }
+
+  agent.proposals = agent.proposals.filter((candidate) => candidate.id !== proposalId);
+  agent.helpers = agent.helpers.filter((helper) => helper.sourceProposalId !== proposalId);
+  if (agent.activeProposalId === proposalId) {
+    agent.activeProposalId = agent.proposals[agent.proposals.length - 1]?.id || "";
+  }
+  state.selectedScheduledActionId = "";
+  persistAgentWorkspace("Action removed.");
+  renderApp({ preserveStatus: true });
+  return true;
+}
+
+async function cancelScheduledAction(actionId) {
+  const id = Math.max(0, Number(actionId || 0));
+  if (!id) {
+    return false;
+  }
+
+  persistAgentWorkspace("Cancelling action...");
+  renderApp({ preserveStatus: true });
+
+  try {
+    const response = await apiRequest(`/api/scheduled-actions/${encodeURIComponent(String(id))}`, {
+      method: "DELETE",
+      headers: getSessionAuthHeaders(),
+    });
+    if (response.action) {
+      const normalizedAction = normalizeScheduledAction(response.action);
+      state.scheduledActions = [
+        normalizedAction,
+        ...state.scheduledActions.filter((action) => action.id !== normalizedAction.id),
+      ];
+      state.selectedScheduledActionId = String(normalizedAction.id || "");
+    } else {
+      state.scheduledActions = state.scheduledActions.filter((action) => action.id !== id);
+      state.selectedScheduledActionId = "";
+    }
+    state.scheduledActionsLoadedAt = Date.now();
+    state.scheduledActionsError = "";
+    persistAgentWorkspace("Action cancelled.");
+    renderApp({ preserveStatus: true });
+    return true;
+  } catch (error) {
+    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t cancel that action."));
+    renderApp({ preserveStatus: true });
+    return false;
+  }
+}
+
 function handleAgentWorkspaceClick(event) {
   if (handleAgentMessageAction(event)) {
     return;
   }
 
   const target = getEventTargetElement(event);
+  const removeLocalActionButton = target?.closest("[data-agent-remove-local-action]");
+  if (removeLocalActionButton) {
+    removeAgentProposalLocalAction(removeLocalActionButton.dataset.agentRemoveLocalAction || "");
+    return;
+  }
+
+  const cancelScheduledActionButton = target?.closest("[data-agent-cancel-scheduled-action]");
+  if (cancelScheduledActionButton) {
+    void cancelScheduledAction(cancelScheduledActionButton.dataset.agentCancelScheduledAction || "");
+    return;
+  }
+
   const scheduledActionButton = target?.closest("[data-agent-scheduled-action-id]");
   if (scheduledActionButton) {
     state.selectedScheduledActionId = String(scheduledActionButton.dataset.agentScheduledActionId || "");

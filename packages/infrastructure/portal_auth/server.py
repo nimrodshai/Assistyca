@@ -1940,6 +1940,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/api/scheduled-actions"
+            or path.startswith("/api/scheduled-actions/")
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
             or path.startswith("/api/threads")
@@ -2011,6 +2012,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if (
             path.startswith("/api/admin/")
             or path.startswith("/api/features/")
+            or path.startswith("/api/scheduled-actions/")
             or path.startswith("/api/whatsapp/history/")
         ):
             self._handle_api_delete(parsed)
@@ -2242,6 +2244,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         if path.startswith("/api/admin/users/"):
             self._handle_admin_users_delete(parsed)
+            return
+        if path.startswith("/api/scheduled-actions/"):
+            self._handle_scheduled_actions_delete(parsed)
             return
         if path.startswith("/api/whatsapp/history/conversations/"):
             self._handle_whatsapp_history_conversation_delete(parsed)
@@ -2933,6 +2938,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         lines.extend(["", "Message:", message])
         return "\n".join(lines).strip()
 
+    def _serialize_scheduled_action_for_client(self, action: dict[str, Any]) -> dict[str, Any]:
+        action_payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        return {
+            **action,
+            "payload": {
+                key: value
+                for key, value in action_payload.items()
+                if key not in {"recipientWaId", "recipient_wa_id"}
+            },
+        }
+
     def _handle_scheduled_actions_get(self, parsed: urllib_parse.ParseResult) -> None:
         authenticated = self._require_authenticated_user()
         if authenticated is None:
@@ -2948,17 +2964,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             int(user.get("id") or 0),
             limit=max(1, min(250, limit)),
         )
-        client_actions: list[dict[str, Any]] = []
-        for action in actions:
-            action_payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
-            client_actions.append({
-                **action,
-                "payload": {
-                    key: value
-                    for key, value in action_payload.items()
-                    if key not in {"recipientWaId", "recipient_wa_id"}
-                },
-            })
+        client_actions = [self._serialize_scheduled_action_for_client(action) for action in actions]
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
@@ -3077,7 +3083,72 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "message": "Scheduled WhatsApp message saved.",
-            "action": action,
+            "action": self._serialize_scheduled_action_for_client(action),
+        })
+
+    def _handle_scheduled_actions_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _session, user = authenticated
+        parts = [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) != 3 or parts[0] != "api" or parts[1] != "scheduled-actions":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            action_id = int(parts[2])
+        except ValueError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_scheduled_action",
+                "message": "Scheduled action id must be a number.",
+            })
+            return
+
+        action = self.database.get_scheduled_action(action_id)
+        if action is None or int(action.get("userId") or 0) != int(user.get("id") or 0):
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "scheduled_action_not_found",
+                "message": "Scheduled action not found.",
+            })
+            return
+
+        status = normalize_text(action.get("status")).lower()
+        if status not in {"pending", "running"}:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "scheduled_action_not_active",
+                "message": "Only active scheduled actions can be cancelled.",
+                "action": self._serialize_scheduled_action_for_client(action),
+            })
+            return
+
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        updated = self.database.finish_scheduled_action(
+            action_id=action_id,
+            status="cancelled",
+            last_error="Cancelled from the Actions panel.",
+            payload={
+                **payload,
+                "cancelledFrom": "portal_actions_panel",
+                "cancelledAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        if updated is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "scheduled_action_not_found",
+                "message": "Scheduled action not found.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Action cancelled.",
+            "action": self._serialize_scheduled_action_for_client(updated),
         })
 
     def _handle_whatsapp_test(self) -> None:

@@ -2934,6 +2934,24 @@ body[data-modal="billing"] .app-shell {
   overflow-wrap: anywhere;
 }
 
+.agent-action-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.agent-action-danger-button {
+  color: #9e3434;
+  border-color: rgba(189, 79, 79, 0.18);
+}
+
+.agent-action-danger-button:hover,
+.agent-action-danger-button:focus-visible {
+  color: #812c2c;
+  background: rgba(189, 79, 79, 0.08);
+  border-color: rgba(189, 79, 79, 0.26);
+}
+
 .agent-action-detail-grid {
   display: grid;
   gap: 0;

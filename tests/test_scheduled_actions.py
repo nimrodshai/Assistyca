@@ -265,6 +265,64 @@ class ScheduledActionApiTests(unittest.TestCase):
         self.assertEqual(payload["action"]["payload"]["messageText"], "Server-owned credentials")
         stored = self.server.database.get_scheduled_action(int(payload["action"]["id"])) or {}
         self.assertEqual(stored["payload"]["recipientWaId"], "972507322341")
+        self.assertNotIn("recipientWaId", payload["action"]["payload"])
+
+    def test_active_action_can_be_cancelled_from_api(self) -> None:
+        user = self.server.database.get_user("owner@example.com") or {}
+        action = self.server.database.create_scheduled_action(
+            user_id=int(user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Visible", "recipientWaId": "972500000000"},
+        )
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/scheduled-actions/{action['id']}",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {self.session_token}"},
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"]["status"], "cancelled")
+        self.assertEqual(payload["action"]["lastError"], "Cancelled from the Actions panel.")
+        self.assertNotIn("recipientWaId", payload["action"]["payload"])
+        stored = self.server.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["payload"]["recipientWaId"], "972500000000")
+
+    def test_completed_action_cannot_be_cancelled_from_api(self) -> None:
+        user = self.server.database.get_user("owner@example.com") or {}
+        action = self.server.database.create_scheduled_action(
+            user_id=int(user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Done"},
+        )
+        self.server.database.finish_scheduled_action(
+            action_id=int(action["id"]),
+            status="sent",
+            provider_message_id="wamid.done",
+        )
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/scheduled-actions/{action['id']}",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {self.session_token}"},
+        )
+        with self.assertRaises(urllib_error.HTTPError) as raised:
+            urllib_request.urlopen(request, timeout=5)
+
+        self.assertEqual(raised.exception.code, 409)
+        payload = json.loads(raised.exception.read().decode("utf-8"))
+        self.assertEqual(payload["error"], "scheduled_action_not_active")
 
     def test_action_history_returns_only_signed_in_users_actions(self) -> None:
         user = self.server.database.get_user("owner@example.com") or {}
