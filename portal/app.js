@@ -11106,17 +11106,6 @@ function createScheduledActionDetail(action) {
       card.append(runNote);
     }
 
-    const note = document.createElement("div");
-    note.className = "agent-action-note";
-    const noteTitle = document.createElement("strong");
-    const hasBackendFeature = Boolean(String(payload.backendFeatureId || "").trim());
-    noteTitle.textContent = hasBackendFeature ? "Connected tool" : "Approved from chat";
-    const noteMessage = document.createElement("p");
-    noteMessage.textContent = hasBackendFeature
-      ? "This helper is backed by the connected scheduled monitor tool. Turn it off here, or open the tool editor to adjust schedule, delivery, or credentials."
-      : "This helper was created from the approved chat plan. Open the connected tool to adjust the concrete schedule, delivery, or credentials.";
-    note.append(noteTitle, noteMessage);
-    card.append(note);
     const localActions = createAgentActionDetailActions(action);
     if (localActions) {
       card.append(localActions);
@@ -12110,8 +12099,7 @@ async function removeAgentProposalLocalAction(actionId) {
     return false;
   }
 
-  const agent = getAgentWorkspace();
-  const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
+  const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
   if (!proposal || !proposal.approved || proposal.type === "scheduled-message") {
     return false;
   }
@@ -12126,6 +12114,7 @@ async function removeAgentProposalLocalAction(actionId) {
     return false;
   }
 
+  const agent = getAgentWorkspace();
   agent.proposals = agent.proposals.filter((candidate) => candidate.id !== proposalId);
   agent.helpers = agent.helpers.filter((helper) => helper.sourceProposalId !== proposalId);
   if (agent.activeProposalId === proposalId) {

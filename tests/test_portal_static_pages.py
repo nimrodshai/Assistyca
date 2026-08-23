@@ -229,7 +229,18 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("...getAgentProposalLocalActions()", script)
         self.assertIn("const actions = getRenderableAgentActions();", script)
         self.assertIn("isAgentProposalLocalAction(action)", script)
-        self.assertIn("Approved from chat", script)
+        remove_local_action = script[
+            script.index("async function removeAgentProposalLocalAction"):
+            script.index("async function cancelScheduledAction")
+        ]
+        self.assertIn("const proposal = getAgentWorkspace().proposals.find", remove_local_action)
+        self.assertIn("const agent = getAgentWorkspace();\n  agent.proposals = agent.proposals.filter", remove_local_action)
+        self.assertLess(
+            remove_local_action.index("await deactivateAgentProposalBackendFeature(proposal)"),
+            remove_local_action.index("const agent = getAgentWorkspace();"),
+        )
+        self.assertNotIn("Approved from chat", script)
+        self.assertNotIn("This helper was created from the approved chat plan", script)
         self.assertIn("function resolveAgentMessageActions", script)
         self.assertIn("function resolvePendingAgentMessageActions", script)
         self.assertIn("function areAgentMessageActionsResolved", script)
