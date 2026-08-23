@@ -438,7 +438,8 @@ class PortalContactApiTests(unittest.TestCase):
 
         self.assertEqual(status, 503)
         self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"], "contact_agent_unavailable")
+        self.assertEqual(payload["error"], "agent_configuration_error")
+        self.assertIn("not configured correctly", payload["message"])
 
     def test_contact_agent_rejects_malformed_model_json(self) -> None:
         with patch(

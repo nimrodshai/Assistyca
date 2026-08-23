@@ -58,6 +58,7 @@ from packages.infrastructure.credential_vault import credential_hint
 from packages.infrastructure.credential_vault import normalize_platform_connection_metadata
 from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
 from packages.infrastructure.feature_activation import FeatureActivationService
+from packages.infrastructure.openai_api import OpenAIConfigurationError
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
@@ -554,6 +555,86 @@ def normalize_contact_message(value: Any, max_length: int) -> str:
 def looks_like_agent_secret(value: Any) -> bool:
     text = normalize_text(value)
     return bool(text and any(pattern.search(text) for pattern in AGENT_SECRET_PATTERNS))
+
+
+def build_openai_failure_payload(
+    error: OpenAIError,
+    *,
+    default_code: str,
+    default_message: str,
+) -> dict[str, Any]:
+    """Return a safe, actionable error without exposing provider response bodies."""
+    message = normalize_text(getattr(error, "message", ""))
+    details = normalize_text(getattr(error, "details", ""))
+    upstream_status = getattr(error, "status_code", None)
+    if not isinstance(upstream_status, int) or not 100 <= upstream_status <= 599:
+        upstream_status = None
+
+    provider_code = ""
+    provider_type = ""
+    if details:
+        try:
+            parsed = json.loads(details)
+        except (TypeError, json.JSONDecodeError):
+            parsed = {}
+        provider_error = parsed.get("error") if isinstance(parsed, dict) else {}
+        if isinstance(provider_error, dict):
+            provider_code = normalize_text(provider_error.get("code")).lower()
+            provider_type = normalize_text(provider_error.get("type")).lower()
+
+    searchable = " ".join((provider_code, provider_type, message, details)).lower()
+    if (
+        provider_code in {"insufficient_quota", "billing_not_active", "billing_hard_limit_reached"}
+        or provider_type in {"insufficient_quota", "billing_not_active", "billing_hard_limit_reached"}
+        or "insufficient funds" in searchable
+        or "insufficient quota" in searchable
+        or "insufficient_quota" in searchable
+        or "billing is not active" in searchable
+    ):
+        code = "agent_billing_required"
+        user_message = (
+            "The OpenAI account has insufficient funds or inactive billing. "
+            "Add funds or update the billing method, then try again."
+        )
+    elif (
+        isinstance(error, OpenAIConfigurationError)
+        or provider_code in {"missing_api_key"}
+        or "openai_api_key is required" in searchable
+    ):
+        code = "agent_configuration_error"
+        user_message = "OpenAI is not configured correctly. Check the server API key and model settings."
+    elif (
+        upstream_status in {401, 403}
+        or provider_code in {"invalid_api_key", "unauthorized"}
+        or "api key" in searchable and "invalid" in searchable
+    ):
+        code = "agent_authentication_error"
+        user_message = "OpenAI rejected its credentials. Check the server API key, then try again."
+    elif (
+        upstream_status == 429
+        or provider_code in {"rate_limit_exceeded", "too_many_requests"}
+        or "rate limit" in searchable
+    ):
+        code = "agent_rate_limited"
+        user_message = "OpenAI is temporarily rate-limited. Wait a moment, then try again."
+    elif (
+        not upstream_status
+        and any(marker in searchable for marker in ("did not respond", "timed out", "network request failed"))
+    ):
+        code = "agent_network_error"
+        user_message = "OpenAI could not be reached. Check service health and try again in a moment."
+    else:
+        code = default_code
+        user_message = default_message
+
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": code,
+        "message": user_message,
+    }
+    if upstream_status is not None:
+        payload["upstreamStatus"] = upstream_status
+    return payload
 
 
 def normalize_contact_agent_messages(value: Any) -> list[dict[str, str]]:
@@ -2756,11 +2837,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         except OpenAIError as exc:
             print(f"Contact intake agent failed: {exc.message}", flush=True)
-            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
-                "ok": False,
-                "error": "contact_agent_unavailable",
-                "message": "The intake agent is not available right now. Please try again in a moment.",
-            })
+            json_response(
+                self,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                build_openai_failure_payload(
+                    exc,
+                    default_code="contact_agent_unavailable",
+                    default_message="The intake agent is not available right now. Please try again in a moment.",
+                ),
+            )
             return
 
         try:
@@ -2853,11 +2938,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         except OpenAIError as exc:
             print(f"Portal agent proposal revision failed: {exc.message}", flush=True)
-            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
-                "ok": False,
-                "error": "agent_revision_unavailable",
-                "message": "I could not understand that change right now. Please try again in a moment.",
-            })
+            json_response(
+                self,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                build_openai_failure_payload(
+                    exc,
+                    default_code="agent_revision_unavailable",
+                    default_message="I could not understand that change right now. Please try again in a moment.",
+                ),
+            )
             return
 
         try:
@@ -2960,11 +3049,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         except OpenAIError as exc:
             print(f"Portal conversational agent failed: {exc.message}", flush=True)
-            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
-                "ok": False,
-                "error": "agent_unavailable",
-                "message": "I’m having trouble thinking through that right now. Please try again in a moment.",
-            })
+            json_response(
+                self,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                build_openai_failure_payload(
+                    exc,
+                    default_code="agent_unavailable",
+                    default_message="I’m having trouble thinking through that right now. Please try again in a moment.",
+                ),
+            )
             return
 
         try:

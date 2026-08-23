@@ -18,6 +18,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_rev
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.openai_api import OpenAIRequestError
 
 
 class AgentProposalRevisionTests(unittest.TestCase):
@@ -410,6 +411,34 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertEqual(payload["proposalType"], "scheduled-message")
         self.assertEqual(payload["changes"]["timeLocal"], "12:40")
         self.assertEqual(call_openai.call_args.kwargs["tool_name"], "portal_conversational_agent")
+
+    def test_agent_turn_reports_insufficient_openai_funds(self) -> None:
+        token = self._session_token_for("owner@example.com")
+        provider_error = {
+            "error": {
+                "message": "You exceeded your current quota, please check your plan and billing details.",
+                "type": "insufficient_quota",
+                "code": "insufficient_quota",
+            },
+        }
+        with patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=OpenAIRequestError(
+                "You exceeded your current quota.",
+                details=json.dumps(provider_error),
+                status_code=429,
+            ),
+        ):
+            status, payload = self._post_agent_turn({
+                "userMessage": "Hello",
+                "conversation": [],
+            }, token=token)
+
+        self.assertEqual(status, 503)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "agent_billing_required")
+        self.assertIn("insufficient funds", payload["message"])
+        self.assertEqual(payload["upstreamStatus"], 429)
 
 
 if __name__ == "__main__":

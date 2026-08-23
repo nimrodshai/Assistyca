@@ -10610,12 +10610,19 @@ function normalizeAgentErrorTechnicalInfo(technical = {}) {
   const source = technical && typeof technical === "object" ? technical : {};
   const rawStatus = Number(source.status || 0);
   const status = Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599 ? rawStatus : 0;
+  const rawUpstreamStatus = Number(source.upstreamStatus || 0);
+  const upstreamStatus = Number.isInteger(rawUpstreamStatus)
+    && rawUpstreamStatus >= 100
+    && rawUpstreamStatus <= 599
+    ? rawUpstreamStatus
+    : 0;
   const rawCode = String(source.code || "").trim().toLowerCase();
   const code = /^[a-z0-9_-]{1,80}$/.test(rawCode) ? rawCode : "request_failed";
   const occurredAt = String(source.occurredAt || "").trim();
   return {
     endpoint: "/api/agent/turn",
     status,
+    upstreamStatus,
     code,
     occurredAt: /^\d{4}-\d{2}-\d{2}T/.test(occurredAt) ? occurredAt : "",
   };
@@ -10625,6 +10632,7 @@ function getAgentErrorTechnicalInfo(error) {
   const isTimedOut = isAbortError(error);
   return normalizeAgentErrorTechnicalInfo({
     status: error?.status,
+    upstreamStatus: error?.payload?.upstreamStatus,
     code: error?.payload?.error || (isTimedOut ? "client_timeout" : "request_failed"),
     occurredAt: new Date().toISOString(),
   });
@@ -10632,6 +10640,21 @@ function getAgentErrorTechnicalInfo(error) {
 
 function getAgentErrorGuidance(technical) {
   const details = normalizeAgentErrorTechnicalInfo(technical);
+  if (details.code === "agent_billing_required") {
+    return "The OpenAI account has insufficient funds or inactive billing. Add funds or update the billing method, then try again.";
+  }
+  if (details.code === "agent_configuration_error") {
+    return "The server is missing a valid OpenAI configuration. Check the API key, model name, and deployment environment variables.";
+  }
+  if (details.code === "agent_authentication_error") {
+    return "OpenAI rejected its credentials. Check the server API key and permissions.";
+  }
+  if (details.code === "agent_rate_limited") {
+    return "OpenAI is temporarily rate-limited. Wait briefly before retrying.";
+  }
+  if (details.code === "agent_network_error") {
+    return "The server could not reach OpenAI. Check service health and network access, then retry.";
+  }
   if (details.code === "secret_in_chat") {
     return "Use the secure connection form for credentials. Do not paste tokens or API keys into chat.";
   }
@@ -10667,6 +10690,7 @@ function createAgentErrorHelpBody(technical = {}) {
   const rows = [
     ["Endpoint", details.endpoint],
     ["HTTP status", details.status ? String(details.status) : "Not returned"],
+    ...(details.upstreamStatus ? [["Upstream status", String(details.upstreamStatus)]] : []),
     ["Error code", details.code],
     ["Time", details.occurredAt || "Not recorded"],
   ];
