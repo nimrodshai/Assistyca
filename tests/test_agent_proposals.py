@@ -16,6 +16,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_for
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
+from packages.infrastructure.agent_proposals import normalize_agent_tool_context
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.openai_api import OpenAIRequestError
@@ -133,6 +134,35 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("Separate hidden structure from visible conversation", prompt)
         self.assertIn("should not sound like a template", prompt)
         self.assertIn("Do not echo the user's full request", prompt)
+
+    def test_agent_tool_context_is_safe_and_guides_connected_whatsapp_use(self) -> None:
+        context = normalize_agent_tool_context({
+            "whatsapp": {
+                "ready": True,
+                "platformConnected": True,
+                "connectionStatus": "CONNECTED",
+                "missingFields": [{"key": "access_token", "label": "Access token", "value": "secret"}],
+                "accessToken": "secret",
+            },
+        })
+
+        self.assertEqual(context, {
+            "whatsapp": {
+                "ready": True,
+                "platformConnected": True,
+                "connectionStatus": "connected",
+                "missingFields": ["Access token"],
+            },
+        })
+        prompt = build_agent_turn_prompt(
+            user_message="Watch new WhatsApp messages",
+            conversation=[],
+            timezone_name="UTC",
+            tool_context=context,
+        )
+        self.assertIn('"toolContext":{"whatsapp":{"ready":true', prompt)
+        self.assertIn("do not ask which WhatsApp number or account", prompt)
+        self.assertNotIn("secret", prompt)
 
     def test_conversational_turn_prompt_discourages_repeated_plan_summaries(self) -> None:
         prompt = build_agent_turn_prompt(
@@ -367,6 +397,14 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
                     {"role": "assistant", "text": "Would you like me to schedule it?"},
                     {"role": "user", "text": "No, let's change it to 13:50"},
                 ],
+                "toolContext": {
+                    "whatsapp": {
+                        "ready": True,
+                        "platformConnected": True,
+                        "connectionStatus": "connected",
+                        "missingFields": [],
+                    },
+                },
             }, token=token)
 
         self.assertEqual(status, 200)
@@ -381,6 +419,7 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertIn("reply is required for every outcome", kwargs["prompt"])
         self.assertIn("include a natural approval question", kwargs["prompt"])
         self.assertIn("Do not echo the user's full request", kwargs["prompt"])
+        self.assertIn('"toolContext":{"whatsapp":{"ready":true', kwargs["prompt"])
 
     def test_initial_scheduled_message_turn_uses_openai_proposal(self) -> None:
         token = self._session_token_for("owner@example.com")

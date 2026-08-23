@@ -4468,7 +4468,86 @@ function isFeatureActivated(feature = getSelectedFeature()) {
   return Boolean(feature && feature.activated);
 }
 
+function getWhatsAppConnectionSetupState(feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)) {
+  if (!feature || !isWhatsAppFeature(feature)) {
+    return {
+      feature: feature || null,
+      ready: false,
+      genericPlatformConnected: false,
+      connectionStatus: "not_connected",
+      missingFields: [],
+    };
+  }
+
+  const candidates = [
+    normalizeFeatureWhatsApp(feature.whatsapp || {}),
+    normalizeFeatureWhatsApp(feature.savedWhatsApp || {}),
+  ];
+  const tokenConfigured = (config) => Boolean(
+    config.access_token_configured
+    || config.workspace_access_token_configured
+    || config.backend_access_token_configured
+    || config.access_token,
+  );
+  const hasRequiredDetails = (config) => Boolean(
+    config.business_account_id
+    && config.phone_number_id
+    && tokenConfigured(config)
+    && config.owner_wa_id
+    && config.connection_status === "connected",
+  );
+  const readyConfig = candidates.find(hasRequiredDetails) || candidates[0];
+  const hasValue = (key) => candidates.some((config) => String(config[key] || "").trim());
+  const missingFields = [];
+
+  if (!hasValue("business_account_id")) {
+    missingFields.push({ key: "business_account_id", label: "WhatsApp Business Account ID (WABA ID)" });
+  }
+  if (!hasValue("phone_number_id")) {
+    missingFields.push({ key: "phone_number_id", label: "Phone Number ID" });
+  }
+  if (!candidates.some(tokenConfigured)) {
+    missingFields.push({ key: "access_token", label: "WhatsApp access token" });
+  }
+  if (!hasValue("owner_wa_id")) {
+    missingFields.push({ key: "owner_wa_id", label: "Approval phone number" });
+  }
+  if (!candidates.some((config) => config.connection_status === "connected")) {
+    missingFields.push({ key: "connection_status", label: "Verified WhatsApp Business connection" });
+  }
+
+  return {
+    feature,
+    ready: hasRequiredDetails(readyConfig),
+    genericPlatformConnected: Boolean(getPlatformConnectionByPlatform("whatsapp")),
+    connectionStatus: readyConfig.connection_status || "not_connected",
+    missingFields,
+  };
+}
+
+function isWhatsAppConnectionReady(feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)) {
+  return getWhatsAppConnectionSetupState(feature).ready;
+}
+
+function buildAgentToolContext() {
+  const whatsapp = getWhatsAppConnectionSetupState();
+  return {
+    whatsapp: {
+      ready: whatsapp.ready,
+      platformConnected: whatsapp.genericPlatformConnected,
+      connectionStatus: whatsapp.connectionStatus,
+      missingFields: whatsapp.missingFields.map((field) => ({
+        key: field.key,
+        label: field.label,
+      })),
+    },
+  };
+}
+
 function isFeatureSetupComplete(feature = getSelectedFeature()) {
+  if (isWhatsAppFeature(feature)) {
+    return isWhatsAppConnectionReady(feature);
+  }
   return Boolean(feature && (feature.setupComplete || isFeatureActivated(feature)));
 }
 
@@ -10736,6 +10815,62 @@ function openAgentErrorHelp(technical = {}, returnFocus = null) {
   );
 }
 
+function createAgentConnectionSetupCard(message) {
+  const setup = message?.metadata?.connectionSetup && typeof message.metadata.connectionSetup === "object"
+    ? message.metadata.connectionSetup
+    : {};
+  const card = document.createElement("section");
+  card.className = "agent-message-connection-card";
+  card.setAttribute("aria-label", "WhatsApp setup details");
+
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "agent-message-connection-card-eyebrow";
+  eyebrow.textContent = "WhatsApp setup";
+
+  const title = document.createElement("h3");
+  title.className = "agent-message-connection-card-title";
+  title.textContent = setup.platformConnected ? "Finish the Business connection" : "Connect WhatsApp Business";
+
+  const copy = document.createElement("p");
+  copy.className = "agent-message-connection-card-copy";
+  copy.textContent = setup.platformConnected
+    ? "The WhatsApp app is connected, but incoming-message monitoring uses a separate WhatsApp Business connection."
+    : "Add these details in the secure setup form so I can monitor incoming messages.";
+
+  const list = document.createElement("ul");
+  list.className = "agent-message-connection-card-list";
+  const missingFields = Array.isArray(setup.missingFields) ? setup.missingFields : [];
+  for (const field of missingFields) {
+    const item = document.createElement("li");
+    item.className = "agent-message-connection-card-item";
+    item.textContent = String(field?.label || "Required connection detail");
+    list.append(item);
+  }
+  if (!missingFields.length) {
+    const item = document.createElement("li");
+    item.className = "agent-message-connection-card-item";
+    item.textContent = "Verified WhatsApp Business connection";
+    list.append(item);
+  }
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "agent-message-connection-card-button primary-button";
+  button.textContent = "Open WhatsApp setup";
+  button.dataset.agentMessageAction = "open-whatsapp-setup";
+  button.dataset.agentActionValue = "whatsapp";
+  button.dataset.agentActionMessage = message.id;
+  const agent = getAgentWorkspace();
+  button.disabled = Boolean(agentTurnBusy || areAgentMessageActionsResolved(message, agent.messages));
+
+  const note = document.createElement("p");
+  note.className = "agent-message-connection-card-note";
+  note.textContent = "Your access token stays in the secure setup form and is never shown in chat.";
+
+  card.append(eyebrow, title, copy, list, button, note);
+  return card;
+}
+
 function renderAgentMessage(message) {
   const row = document.createElement("article");
   const kind = String(message.metadata?.kind || (message.role === "user" ? "user" : "text"));
@@ -10777,7 +10912,13 @@ function renderAgentMessage(message) {
   }
   row.append(messageLine);
 
-  const rawActions = Array.isArray(message.metadata?.actions) ? message.metadata.actions : [];
+  if (kind === "connection-setup") {
+    row.append(createAgentConnectionSetupCard(message));
+  }
+
+  const rawActions = kind === "connection-setup"
+    ? []
+    : (Array.isArray(message.metadata?.actions) ? message.metadata.actions : []);
   if (rawActions.length && message.role !== "user") {
     const agent = getAgentWorkspace();
     const proposal = message.metadata?.proposalId
@@ -10827,6 +10968,11 @@ function getAgentMessageRenderSignature(messages) {
     message.metadata?.proposalRevision || "",
     message.metadata?.actionsResolvedAt || "",
     message.metadata?.actionsResolvedBy || "",
+    message.metadata?.connectionSetup?.platformConnected ? "connected" : "",
+    message.metadata?.connectionSetup?.connectionStatus || "",
+    Array.isArray(message.metadata?.connectionSetup?.missingFields)
+      ? message.metadata.connectionSetup.missingFields.map((field) => field?.key || field?.label || "")
+      : [],
     Array.isArray(message.metadata?.actions)
       ? message.metadata.actions.map((action) => [
         action.id || "",
@@ -11982,6 +12128,12 @@ function getAgentActionIntentText(action, value = "") {
   if (normalizedAction === "credential-help") {
     return "Help me get it";
   }
+  if (normalizedAction === "show-whatsapp-setup") {
+    return "Set up WhatsApp details";
+  }
+  if (normalizedAction === "open-whatsapp-setup") {
+    return "Open WhatsApp setup";
+  }
   return String(value || "").trim();
 }
 
@@ -12049,6 +12201,22 @@ function handleAgentMessageAction(event) {
     return true;
   }
 
+  if (action === "show-whatsapp-setup") {
+    pushAgentActionIntentMessage(action, value);
+    pushAgentWhatsAppSetupCard();
+    persistAgentWorkspace("WhatsApp setup details are ready.");
+    renderApp({ preserveStatus: true });
+    return true;
+  }
+
+  if (action === "open-whatsapp-setup") {
+    pushAgentActionIntentMessage(action, value);
+    persistAgentWorkspace("Opening WhatsApp setup...");
+    renderApp({ preserveStatus: true });
+    openAgentWhatsAppSetup();
+    return true;
+  }
+
   if (action === "choose") {
     handleAgentUserText(value);
     return true;
@@ -12111,6 +12279,62 @@ function buildAgentTurnActiveProposal(proposal) {
     questions: proposal.questions,
     answers: proposal.answers,
   };
+}
+
+function isAgentWhatsAppMonitoringRequest(text) {
+  const value = String(text || "").trim().toLowerCase();
+  return /\b(?:whatsapp|whats\s*app|wa)\b/.test(value)
+    && /\b(?:watch|monitor|listen|track|incoming|new\s+messages?)\b/.test(value);
+}
+
+function buildAgentWhatsAppSetupMetadata(setup, actionId, actionLabel) {
+  return {
+    connectionSetup: {
+      platformConnected: Boolean(setup?.genericPlatformConnected),
+      connectionStatus: String(setup?.connectionStatus || "not_connected"),
+      missingFields: Array.isArray(setup?.missingFields)
+        ? setup.missingFields.map((field) => ({
+          key: String(field?.key || "").trim(),
+          label: String(field?.label || "").trim(),
+        })).filter((field) => field.key && field.label)
+        : [],
+    },
+    actions: actionId
+      ? [createAgentAction(actionId, actionLabel, "whatsapp", "primary")]
+      : [],
+  };
+}
+
+function pushAgentWhatsAppSetupPrompt() {
+  const setup = getWhatsAppConnectionSetupState();
+  const message = setup.genericPlatformConnected
+    ? "WhatsApp is connected for general use, but monitoring incoming messages needs a few WhatsApp Business details."
+    : "I can set that up, but I need a few WhatsApp Business details first.";
+  return pushAgentMessage("assistant", message, {
+    kind: "question",
+    ...buildAgentWhatsAppSetupMetadata(setup, "show-whatsapp-setup", "Set up WhatsApp details"),
+  });
+}
+
+function pushAgentWhatsAppSetupCard() {
+  const setup = getWhatsAppConnectionSetupState();
+  const message = setup.genericPlatformConnected
+    ? "Here’s what is still needed for WhatsApp message monitoring."
+    : "Here’s what I need to connect WhatsApp message monitoring.";
+  return pushAgentMessage("assistant", message, {
+    kind: "connection-setup",
+    ...buildAgentWhatsAppSetupMetadata(setup, "open-whatsapp-setup", "Open WhatsApp setup"),
+  });
+}
+
+function openAgentWhatsAppSetup() {
+  const feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)
+    || clientState.features.find((candidate) => isWhatsAppFeature(candidate));
+  if (feature) {
+    openFeatureStudio(feature.id, "activation");
+    return;
+  }
+  openPlatformConnection("whatsapp");
 }
 
 function createAgentProposalFromTurn(requestText, turn = {}) {
@@ -12216,6 +12440,17 @@ async function handleAgentUserText(text) {
     return;
   }
 
+  const whatsappSetup = getWhatsAppConnectionSetupState();
+  if (isAgentWhatsAppMonitoringRequest(cleanText) && !whatsappSetup.ready) {
+    resolvePendingAgentMessageActions("user-message");
+    pushAgentMessage("user", cleanText);
+    pushAgentWhatsAppSetupPrompt();
+    persistAgentWorkspace("WhatsApp setup details are needed.");
+    renderApp({ preserveStatus: true });
+    elements.agentComposerInput?.focus();
+    return;
+  }
+
   const platformConnection = getPlatformConnectionIntentFromText(cleanText);
   if (platformConnection) {
     resolvePendingAgentMessageActions("platform-connection");
@@ -12256,6 +12491,7 @@ async function handleAgentUserText(text) {
         ) || "UTC",
         conversation,
         activeProposal: activeProposalPayload,
+        toolContext: buildAgentToolContext(),
       },
     });
     await applyAgentTurnResponse(turn, cleanText);
@@ -13213,10 +13449,16 @@ function createAgentToolItem(feature) {
   const item = document.createElement("button");
   const label = getAgentToolLabel(feature);
   const isConnected = isFeatureSetupComplete(feature);
+  const needsWhatsAppDetails = isWhatsAppFeature(feature) && !isConnected;
   item.type = "button";
   item.className = "agent-tool-item";
   item.dataset.agentToolFeatureId = feature.id;
-  item.setAttribute("aria-label", isConnected ? `Open ${label} details` : `Open ${label} setup`);
+  item.setAttribute(
+    "aria-label",
+    isConnected
+      ? `Open ${label} details`
+      : (needsWhatsAppDetails ? `Finish ${label} setup` : `Open ${label} setup`),
+  );
 
   const icon = document.createElement("span");
   icon.className = "agent-tool-icon";
@@ -13228,7 +13470,9 @@ function createAgentToolItem(feature) {
   const title = document.createElement("strong");
   title.textContent = label;
   const detail = document.createElement("span");
-  detail.textContent = isConnected ? "Connected" : "Available";
+  detail.textContent = isConnected
+    ? "Connected"
+    : (needsWhatsAppDetails ? "Needs details" : "Available");
   copy.append(title, detail);
 
   const arrow = document.createElement("span");

@@ -2709,6 +2709,83 @@ body[data-modal="billing"] .app-shell {
   display: none;
 }
 
+.agent-message-connection-card {
+  width: min(100%, 34rem);
+  padding: 1.05rem 1.15rem 1.1rem;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 12px 28px rgba(25, 38, 54, 0.08);
+}
+
+.agent-message-connection-card-eyebrow {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.agent-message-connection-card-title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 1.14rem;
+  line-height: 1.2;
+}
+
+.agent-message-connection-card-copy,
+.agent-message-connection-card-note {
+  margin: 0.55rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.agent-message-connection-card-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.85rem 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-message-connection-card-item {
+  position: relative;
+  padding-left: 1.15rem;
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.agent-message-connection-card-item::before {
+  content: "";
+  position: absolute;
+  top: 0.52rem;
+  left: 0.18rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.agent-message-connection-card-button {
+  min-height: 2.75rem;
+  min-width: 12rem;
+}
+
+.agent-message-connection-card-note {
+  margin-top: 0.7rem;
+  font-size: 0.78rem;
+}
+
+.agent-message-connection-card-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .agent-quick-actions {
   display: flex;
   flex-wrap: wrap;

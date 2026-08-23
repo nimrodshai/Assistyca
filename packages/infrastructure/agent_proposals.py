@@ -86,6 +86,38 @@ def _single_line(value: Any, max_length: int) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:max_length].strip()
 
 
+def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
+    """Keep only safe, non-secret integration state for the agent prompt."""
+    source = value if isinstance(value, dict) else {}
+    raw_whatsapp = source.get("whatsapp") if isinstance(source.get("whatsapp"), dict) else {}
+    raw_missing = raw_whatsapp.get("missingFields")
+    if not isinstance(raw_missing, list):
+        raw_missing = raw_whatsapp.get("missing_fields")
+    missing_fields = []
+    if isinstance(raw_missing, list):
+        for item in raw_missing[:8]:
+            label = _single_line(item.get("label") if isinstance(item, dict) else item, 120)
+            if label:
+                missing_fields.append(label)
+
+    connection_status = _single_line(
+        raw_whatsapp.get("connectionStatus") or raw_whatsapp.get("connection_status"),
+        40,
+    ).lower() or "not_connected"
+    return {
+        "whatsapp": {
+            "ready": raw_whatsapp.get("ready") is True,
+            "platformConnected": bool(
+                raw_whatsapp.get("platformConnected") is True
+                if "platformConnected" in raw_whatsapp
+                else raw_whatsapp.get("platform_connected") is True
+            ),
+            "connectionStatus": connection_status,
+            "missingFields": missing_fields,
+        },
+    }
+
+
 def _normalize_agent_field_key(value: Any) -> str:
     raw_key = _single_line(value, 80)
     if not raw_key:
@@ -228,11 +260,13 @@ def build_agent_turn_prompt(
     conversation: list[dict[str, str]],
     timezone_name: str,
     active_proposal: dict[str, Any] | None = None,
+    tool_context: dict[str, Any] | None = None,
 ) -> str:
     context = {
         "timezone": _single_line(timezone_name, 120) or "UTC",
         "activeProposal": active_proposal,
         "proposalFieldSchemas": _AGENT_PROPOSAL_FIELD_SCHEMAS,
+        "toolContext": normalize_agent_tool_context(tool_context),
         "recentConversation": conversation,
         "latestUserMessage": _single_line(user_message, AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
     }
@@ -271,6 +305,10 @@ def build_agent_turn_prompt(
         "exactly one missing detail in reply. When activeProposal exists and the user answers or corrects a detail, "
         "return outcome=revise_proposal with changes.fields containing the new or corrected field values. Do not "
         "restart questions whose values are already present in activeProposal.fields.\n"
+        "Use toolContext to understand which integrations are already connected. If toolContext.whatsapp.ready "
+        "is true, use the connected WhatsApp Business connection and do not ask which WhatsApp number or account "
+        "to monitor. If it is false, ask only for the specific WhatsApp details listed in "
+        "toolContext.whatsapp.missingFields; do not invent additional connection fields.\n"
         "Examples:\n"
         '- With no active proposal, "send me a WhatsApp message at 12:40" means outcome=proposal, '
         "proposalType=scheduled-message, and changes includes channel=whatsapp and timeLocal=12:40.\n"
@@ -449,6 +487,7 @@ __all__ = [
     "AGENT_TURN_MAX_OUTPUT_TOKENS",
     "build_agent_turn_prompt",
     "build_agent_proposal_revision_prompt",
+    "normalize_agent_tool_context",
     "normalize_agent_proposal_for_revision",
     "normalize_agent_proposal_for_turn",
     "normalize_agent_proposal_revision_conversation",
