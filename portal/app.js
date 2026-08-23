@@ -11747,6 +11747,43 @@ function handleAgentComposerSubmit(event = null) {
   void handleAgentUserText(text);
 }
 
+function normalizeAgentComposerPastedText(text) {
+  return String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]*\n+[ \t]*/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function insertAgentComposerText(input, text) {
+  const value = String(text || "");
+  if (!input || !value) {
+    return;
+  }
+
+  const start = typeof input.selectionStart === "number" ? input.selectionStart : input.value.length;
+  const end = typeof input.selectionEnd === "number" ? input.selectionEnd : start;
+  if (typeof input.setRangeText === "function") {
+    input.setRangeText(value, start, end, "end");
+  } else {
+    input.value = `${input.value.slice(0, start)}${value}${input.value.slice(end)}`;
+    const caret = start + value.length;
+    input.setSelectionRange?.(caret, caret);
+  }
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function handleAgentComposerPaste(event) {
+  const pastedText = event.clipboardData?.getData("text") || "";
+  const normalizedText = normalizeAgentComposerPastedText(pastedText);
+  if (!normalizedText || normalizedText === pastedText) {
+    return;
+  }
+
+  event.preventDefault();
+  insertAgentComposerText(event.currentTarget, normalizedText);
+}
+
 async function scheduleAgentScheduledMessageProposal(proposal) {
   const details = proposal.details && typeof proposal.details === "object" ? { ...proposal.details } : {};
   details.channel = normalizeAgentDeliveryChannel(details.channel);
@@ -17317,6 +17354,7 @@ function bindEvents() {
         handleAgentComposerSubmit(event);
       }
     });
+    elements.agentComposerInput.addEventListener("paste", handleAgentComposerPaste);
   }
 
   for (const button of elements.agentPromptButtons) {

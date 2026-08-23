@@ -214,6 +214,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 
     def test_agent_proposal_changes_use_contextual_structured_revision(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
@@ -224,6 +225,14 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("agentTurnBusy = true", script)
+        self.assertIn('wrap="off"', html)
+        self.assertIn("function normalizeAgentComposerPastedText", script)
+        self.assertIn("function handleAgentComposerPaste", script)
+        self.assertIn('elements.agentComposerInput.addEventListener("paste", handleAgentComposerPaste);', script)
+        self.assertIn('replace(/[ \\t]*\\n+[ \\t]*/g, " ")', script)
+        self.assertIn("white-space: pre;", styles)
+        self.assertIn("overflow-x: auto;", styles)
+        self.assertIn("overflow-y: hidden;", styles)
         self.assertIn('kind: "thinking"', script)
         self.assertIn(".agent-thinking-dots", styles)
         self.assertIn("function pushAgentApprovalPrompt(proposal, reply = \"\")", script)
