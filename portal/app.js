@@ -10706,9 +10706,23 @@ function normalizeAgentActionTypeLabel(value) {
 
 function isAgentProposalLocalAction(action) {
   return Boolean(
-    action?.local === true
+    action?.payload?.source === "agent_proposal"
     || String(action?.id || "").startsWith("proposal:")
-    || String(action?.actionType || "").startsWith("agent_")
+  );
+}
+
+function isAgentFeatureLiveAction(action) {
+  return Boolean(
+    action?.payload?.source === "feature"
+    || String(action?.id || "").startsWith("feature:")
+  );
+}
+
+function isAgentLocalAction(action) {
+  return Boolean(
+    isAgentProposalLocalAction(action)
+    || isAgentFeatureLiveAction(action)
+    || (action?.local === true && String(action?.actionType || "").startsWith("agent_"))
   );
 }
 
@@ -10844,10 +10858,102 @@ function getAgentProposalLocalActions() {
     .filter(Boolean);
 }
 
+function getMonitorFeatureLiveActionPreview(feature, settings = getSavedFeatureSettings(feature)) {
+  const watchItems = normalizeMonitorWatchItems(settings.watchItems);
+  if (watchItems.length) {
+    return watchItems.join(" · ");
+  }
+  return String(feature?.description || "Saved web monitor").trim();
+}
+
+function getMonitorFeatureDeliveryTarget(settings = {}, deliveryChannel = "") {
+  const explicitTarget = String(settings.deliveryTarget || settings.recipientRef || "").trim();
+  if (explicitTarget && explicitTarget !== "owner") {
+    return explicitTarget;
+  }
+  if (deliveryChannel === "email") {
+    return getSignedInDeliveryEmail();
+  }
+  if (deliveryChannel === "telegram") {
+    return String(settings.telegramChatId || "").trim();
+  }
+  return "";
+}
+
+function createMonitorFeatureLiveAction(feature) {
+  if (!feature || !isMonitorFeature(feature) || !isFeatureActivated(feature)) {
+    return null;
+  }
+
+  const settings = getSavedFeatureSettings(feature);
+  const deliveryChannel = normalizeAgentDeliveryChannel(settings.deliveryChannel) || "email";
+  const deliveryTarget = getMonitorFeatureDeliveryTarget(settings, deliveryChannel);
+  const nextRunAt = (
+    resolveMonitorNextRunAt(feature)
+    || String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim()
+    || String(feature.lastRunAt || feature.setupStatus?.lastRunAt || "").trim()
+    || String(feature.activatedAt || feature.settingsSavedAt || feature.setupStatus?.settingsSavedAt || "").trim()
+    || new Date().toISOString()
+  );
+  const createdAt = String(feature.activatedAt || feature.settingsSavedAt || feature.setupStatus?.settingsSavedAt || nextRunAt).trim();
+  const updatedAt = String(feature.lastRunAt || feature.setupStatus?.lastRunAt || feature.settingsSavedAt || createdAt).trim();
+  const watchItems = normalizeMonitorWatchItems(settings.watchItems);
+  const deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget);
+
+  return {
+    id: `feature:${feature.id}`,
+    actionType: "agent_web_monitor",
+    channel: deliveryChannel,
+    recipientRef: deliveryTarget || deliveryChannel,
+    runAt: nextRunAt,
+    timezone: getMonitorScheduleTimezone(feature),
+    status: "running",
+    attemptCount: 0,
+    providerMessageId: "",
+    payload: {
+      source: "feature",
+      backendFeatureId: feature.id,
+      backendFeatureActive: true,
+      title: "Web monitor",
+      preview: getMonitorFeatureLiveActionPreview(feature, settings),
+      summary: String(feature.description || "").trim(),
+      watchItems,
+      frequency: formatAgentWebMonitorFrequency(settings),
+      deliveryChannel,
+      deliveryTarget,
+      deliveryLabel,
+      lastRunAt: String(feature.lastRunAt || feature.setupStatus?.lastRunAt || "").trim(),
+      lastRunStatus: String(feature.lastRunStatus || feature.setupStatus?.lastRunStatus || "").trim(),
+      nextRunAt,
+    },
+    local: true,
+    lastError: "",
+    claimedAt: "",
+    completedAt: "",
+    createdAt,
+    updatedAt,
+  };
+}
+
+function getAgentFeatureLiveActions() {
+  return clientState.features
+    .map(createMonitorFeatureLiveAction)
+    .filter(Boolean);
+}
+
 function getRenderableAgentActions() {
   const backendActions = Array.isArray(state.scheduledActions) ? state.scheduledActions : [];
+  const proposalActions = getAgentProposalLocalActions();
+  const proposalFeatureIds = new Set(
+    proposalActions
+      .map((action) => String(action.payload?.backendFeatureId || "").trim())
+      .filter(Boolean),
+  );
+  const featureActions = getAgentFeatureLiveActions()
+    .filter((action) => !proposalFeatureIds.has(String(action.payload?.backendFeatureId || "").trim()));
   return [
-    ...getAgentProposalLocalActions(),
+    ...featureActions,
+    ...proposalActions,
     ...backendActions,
   ];
 }
@@ -10867,7 +10973,7 @@ function createAgentActionDetailActions(action) {
   button.type = "button";
   button.className = "ghost-button small agent-action-danger-button";
 
-  if (isAgentProposalLocalAction(action)) {
+  if (isAgentLocalAction(action)) {
     button.dataset.agentRemoveLocalAction = String(action.id || "");
     const hasBackendFeature = Boolean(String(action.payload?.backendFeatureId || "").trim());
     button.textContent = hasBackendFeature ? "Turn off action" : "Remove action";
@@ -10893,7 +10999,7 @@ function getScheduledActionStatusLabel(status, action = null) {
     cancelled: "Cancelled",
   };
   const normalized = String(status || "pending").trim().toLowerCase();
-  if (isAgentProposalLocalAction(action)) {
+  if (isAgentLocalAction(action)) {
     if (normalized === "running") {
       return "Working";
     }
@@ -10916,7 +11022,7 @@ function getScheduledActionTitle(action) {
   if (payloadTitle) {
     return payloadTitle;
   }
-  if (isAgentProposalLocalAction(action)) {
+  if (isAgentLocalAction(action)) {
     return normalizeAgentActionTypeLabel(action?.actionType) || "Agent helper";
   }
   const channel = formatAgentScheduledMessageChannel(action?.channel);
@@ -11083,6 +11189,10 @@ function getScheduledActionDetailSignature(action) {
     String(action.payload?.initialRunError || ""),
     String(action.payload?.deliveryTarget || ""),
     String(action.payload?.deliveryLabel || ""),
+    String(action.payload?.lastRunAt || ""),
+    String(action.payload?.lastRunStatus || ""),
+    String(action.payload?.nextRunAt || ""),
+    Array.isArray(action.payload?.watchItems) ? action.payload.watchItems.join("|") : "",
   ]);
 }
 
@@ -11107,12 +11217,13 @@ function createScheduledActionDetail(action) {
     card.append(message);
   }
 
-  if (isAgentProposalLocalAction(action)) {
+  if (isAgentLocalAction(action)) {
     const payload = action.payload && typeof action.payload === "object" ? action.payload : {};
+    const isFeatureAction = isAgentFeatureLiveAction(action);
     const details = document.createElement("dl");
     details.className = "agent-action-detail-grid";
     details.append(
-      createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
+      createScheduledActionDetailRow(isFeatureAction ? "Active since" : "Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
       createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
       createScheduledActionDetailRow("Delivery", String(
         payload.deliveryLabel
@@ -11125,6 +11236,19 @@ function createScheduledActionDetail(action) {
     }
     if (payload.timeWindow) {
       details.append(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
+    }
+    if (Array.isArray(payload.watchItems) && payload.watchItems.length) {
+      details.append(createScheduledActionDetailRow("Watching", payload.watchItems.join(" · ")));
+    }
+    if (payload.lastRunAt) {
+      const lastRunStatus = String(payload.lastRunStatus || "").trim();
+      const lastRunLabel = lastRunStatus
+        ? `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(lastRunStatus.replace(/[_-]+/g, " "))}`
+        : formatScheduledActionDate(payload.lastRunAt, action.timezone);
+      details.append(createScheduledActionDetailRow("Last check", lastRunLabel));
+    }
+    if (payload.nextRunAt) {
+      details.append(createScheduledActionDetailRow("Next check", formatScheduledActionDate(payload.nextRunAt, action.timezone)));
     }
     card.append(details);
 
@@ -12218,18 +12342,23 @@ function getAgentProposalIdFromLocalActionId(actionId) {
   return String(actionId || "").replace(/^proposal:/, "").trim();
 }
 
-async function deactivateAgentProposalBackendFeature(proposal) {
-  const backendFeatureId = String(proposal?.executionPlan?.backendFeatureId || "").trim();
-  if (!backendFeatureId) {
+function getAgentFeatureIdFromLocalActionId(actionId) {
+  const text = String(actionId || "").trim();
+  return text.startsWith("feature:") ? text.replace(/^feature:/, "").trim() : "";
+}
+
+async function deactivateAgentBackendFeature(backendFeatureId) {
+  const featureId = String(backendFeatureId || "").trim();
+  if (!featureId) {
     return null;
   }
 
-  const feature = getFeatureById(backendFeatureId);
+  const feature = getFeatureById(featureId);
   if (!feature || !isFeatureActivated(feature)) {
     return null;
   }
 
-  const response = await apiRequest(`/api/features/${encodeURIComponent(backendFeatureId)}/activation`, {
+  const response = await apiRequest(`/api/features/${encodeURIComponent(featureId)}/activation`, {
     method: "POST",
     headers: getSessionAuthHeaders(),
     body: {
@@ -12243,7 +12372,39 @@ async function deactivateAgentProposalBackendFeature(proposal) {
   return response;
 }
 
+async function deactivateAgentProposalBackendFeature(proposal) {
+  const backendFeatureId = String(proposal?.executionPlan?.backendFeatureId || "").trim();
+  if (!backendFeatureId) {
+    return null;
+  }
+
+  return deactivateAgentBackendFeature(backendFeatureId);
+}
+
 async function removeAgentProposalLocalAction(actionId) {
+  const featureId = getAgentFeatureIdFromLocalActionId(actionId);
+  if (featureId) {
+    const feature = getFeatureById(featureId);
+    if (!feature || !isFeatureActivated(feature)) {
+      return false;
+    }
+
+    persistAgentWorkspace("Turning off action...");
+    renderApp({ preserveStatus: true });
+    try {
+      await deactivateAgentBackendFeature(featureId);
+    } catch (error) {
+      persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t turn off that action."));
+      renderApp({ preserveStatus: true });
+      return false;
+    }
+
+    state.selectedScheduledActionId = "";
+    persistAgentWorkspace("Action turned off.");
+    renderApp({ preserveStatus: true });
+    return true;
+  }
+
   const proposalId = getAgentProposalIdFromLocalActionId(actionId);
   if (!proposalId) {
     return false;
@@ -12348,11 +12509,9 @@ function handleAgentWorkspaceClick(event) {
     return;
   }
 
-  const toolButton = target?.closest("[data-agent-tool-prompt]");
+  const toolButton = target?.closest("[data-agent-tool-feature-id]");
   if (toolButton) {
-    handleAgentUserText(toolButton.dataset.agentToolPrompt || "");
-    persistAgentWorkspace("Agent updated.");
-    renderApp({ preserveStatus: true });
+    openAgentToolDetails(toolButton.dataset.agentToolFeatureId || "");
     return;
   }
 
@@ -12441,6 +12600,24 @@ function getAgentToolLabel(feature) {
     return "Customer follow-up";
   }
   return feature?.name || "Tool";
+}
+
+function getAgentToolDetailsView(feature) {
+  if (canOpenFeatureWhatsAppDetails(feature)) {
+    return "activation";
+  }
+  return getDefaultFeatureStudioView(feature);
+}
+
+function openAgentToolDetails(featureId) {
+  const feature = getFeatureById(featureId);
+  if (!feature) {
+    return;
+  }
+
+  state.agentAddToolMenuOpen = false;
+  openFeatureStudio(feature.id, getAgentToolDetailsView(feature));
+  setStatus(isWhatsAppFeature(feature) ? "WhatsApp details opened." : `${getAgentToolLabel(feature)} details opened.`);
 }
 
 function getAgentAddToolOption(id) {
@@ -12584,22 +12761,24 @@ function renderAgentAddToolMenu() {
 
 function createAgentToolItem(feature) {
   const item = document.createElement("button");
+  const label = getAgentToolLabel(feature);
+  const isConnected = isFeatureSetupComplete(feature);
   item.type = "button";
   item.className = "agent-tool-item";
-  item.dataset.agentToolPrompt = `Help me use ${getAgentToolLabel(feature)}.`;
-  item.setAttribute("aria-label", `Ask Assistyca about ${getAgentToolLabel(feature)}`);
+  item.dataset.agentToolFeatureId = feature.id;
+  item.setAttribute("aria-label", isConnected ? `Open ${label} details` : `Open ${label} setup`);
 
   const icon = document.createElement("span");
   icon.className = "agent-tool-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = getAgentToolLabel(feature).slice(0, 1).toUpperCase();
+  icon.textContent = label.slice(0, 1).toUpperCase();
 
   const copy = document.createElement("span");
   copy.className = "agent-tool-copy";
   const title = document.createElement("strong");
-  title.textContent = getAgentToolLabel(feature);
+  title.textContent = label;
   const detail = document.createElement("span");
-  detail.textContent = isFeatureSetupComplete(feature) ? "Connected" : "Available";
+  detail.textContent = isConnected ? "Connected" : "Available";
   copy.append(title, detail);
 
   const arrow = document.createElement("span");

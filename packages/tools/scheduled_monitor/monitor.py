@@ -39,7 +39,7 @@ MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier"
 MONITOR_FEATURE_NAME = "Scheduled Web Monitor"
 DEFAULT_MONITOR_MODEL = "gpt-5.5"
 DEFAULT_MONITOR_POLL_SECONDS = 300
-DEFAULT_MONITOR_SEARCH_CONTEXT_SIZE = "medium"
+DEFAULT_MONITOR_SEARCH_CONTEXT_SIZE = "high"
 DEFAULT_MONITOR_MAX_OUTPUT_TOKENS = 1800
 DEFAULT_MONITOR_MAX_ITEMS = 5
 RECENT_SENT_RESULTS_LOOKBACK = timedelta(hours=1)
@@ -535,6 +535,11 @@ def build_monitor_prompt(
         f"Today is {scheduled_for.astimezone(timezone.utc).date().isoformat()} UTC.",
         f"Only include at most {max_items} items.",
         "If nothing relevant is found, return an empty items array.",
+        "Treat \"new\" as new to this monitor: include useful upcoming or currently relevant items that have not already been sent, even if the source page was published earlier.",
+        "Do not require the web page to use the exact saved-watch wording. Break broad watch items into practical searches with synonyms, nearby cities, venues, ticketing pages, municipal pages, and local event-listing terms.",
+        "For local events, search in both English and likely local-language terms. For Israel, HaSharon, or central Israel searches, include Hebrew/local terms such as השרון, מרכז, רעננה, הרצליה, כפר סבא, הוד השרון, תל אביב, יפו, ילדים, משפחות, אירועים, פעילויות, קיץ, and אוגוסט when they fit the watch item.",
+        "If the watch item gives a month or date range without a year, interpret it in the current year from Today unless that would only point to the past; then use the next upcoming occurrence.",
+        "For family, kids, or event searches, accept credible event listings, venue pages, municipal pages, ticketing pages, and reputable local guides as source-backed matches.",
         "Prefer concrete events, deadlines, conference announcements, holiday dates, or changes with a source URL.",
         "Prefer future or upcoming events and deadlines. Avoid past dates unless the update still creates a current decision or action for this client.",
         "Never invent a source, URL, event date, or organization.",
@@ -1393,7 +1398,7 @@ class ScheduledMonitorScheduler:
                     summary=summary,
                     scheduled_for=scheduled_for,
                 )
-            elif status in {"no_matches", "duplicate_matches"}:
+            elif status in {"no_matches", "duplicate_matches"} and not persist_run:
                 self._raise_if_cancelled(cancel_check)
                 no_results_notification_sent, delivery_target, delivery_message_id = self._deliver_no_results_notification(
                     target=target,
@@ -1442,6 +1447,10 @@ class ScheduledMonitorScheduler:
                 "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
                 "deliveryTarget": delivery_target,
                 "noResultsNotificationSent": no_results_notification_sent,
+                "noResultsDeliverySkipped": bool(
+                    persist_run
+                    and live_search_status in {"no_matches", "duplicate_matches"}
+                ),
                 "noResultsReason": live_search_status if live_search_status in {"no_matches", "duplicate_matches"} else "",
                 "recentResultsAlreadySent": recent_results_already_sent if live_search_status == "no_matches" else False,
                 "recentResultsSentAt": recent_results_sent_at if live_search_status == "no_matches" else "",

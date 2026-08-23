@@ -11,9 +11,11 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.tools.scheduled_monitor.monitor import DEFAULT_MONITOR_SEARCH_CONTEXT_SIZE
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorConfig
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
+from packages.tools.scheduled_monitor.monitor import build_monitor_prompt
 from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
 
 
@@ -26,6 +28,29 @@ class ScheduledMonitorTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_default_monitor_search_context_is_high(self) -> None:
+        self.assertEqual(DEFAULT_MONITOR_SEARCH_CONTEXT_SIZE, "high")
+
+    def test_monitor_prompt_guides_broad_local_event_search(self) -> None:
+        prompt = build_monitor_prompt(
+            target={"prompt": {}},
+            settings={
+                "watchItems": [
+                    "fun events to do with kids · Location: HaSharon and central Israel · Date range: August",
+                ],
+            },
+            scheduled_for=datetime(2026, 8, 23, 6, 0, tzinfo=timezone.utc),
+            last_successful_run_at="2026-08-23T05:49:00+00:00",
+            max_items=5,
+        )
+
+        self.assertIn("new to this monitor", prompt)
+        self.assertIn("synonyms", prompt)
+        self.assertIn("local-language terms", prompt)
+        self.assertIn("רעננה", prompt)
+        self.assertIn("תל אביב", prompt)
+        self.assertIn("current year", prompt)
 
     def _configure_monitor(self) -> None:
         self.database.save_feature_assignment_metadata(
@@ -122,22 +147,19 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_summary["targets"], 1)
         self.assertEqual(first_summary["runs"][0]["status"], "completed")
         self.assertEqual(first_summary["runs"][0]["notificationsSent"], 1)
-        self.assertEqual(len(delivered_messages), 2)
+        self.assertEqual(len(delivered_messages), 1)
         self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
         self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: 1 new match")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
 
         self.assertFalse(second_summary["ran"])
         self.assertEqual(second_summary["runs"][0]["reason"], "not_due")
-        self.assertEqual(len(delivered_messages), 2)
+        self.assertEqual(len(delivered_messages), 1)
 
         self.assertTrue(third_summary["ran"])
         self.assertEqual(third_summary["runs"][0]["status"], "duplicate_matches")
         self.assertEqual(third_summary["runs"][0]["notificationsSent"], 0)
-        self.assertEqual(len(delivered_messages), 2)
-        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor update: nothing new yet")
-        self.assertIn("Nothing new to send right now.", delivered_messages[1]["text"])
-        self.assertIn("I already shared the useful matches earlier.", delivered_messages[1]["text"])
+        self.assertEqual(len(delivered_messages), 1)
 
         first_run = self.database.get_feature_monitor_run(
             user_id=1,
@@ -159,7 +181,8 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_run["notificationsSent"], 1)
         self.assertIsNotNone(second_run)
         self.assertEqual(second_run["status"], "duplicate_matches")
-        self.assertTrue(second_run["metadata"]["noResultsNotificationSent"])
+        self.assertFalse(second_run["metadata"]["noResultsNotificationSent"])
+        self.assertTrue(second_run["metadata"]["noResultsDeliverySkipped"])
         self.assertIsNotNone(notification)
         self.assertEqual(notification["deliveryTarget"], "owner@example.com")
 
@@ -253,7 +276,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(manual_result["ok"])
         self.assertEqual(manual_result["run"]["status"], "completed")
         self.assertEqual(manual_result["run"]["notificationsSent"], 1)
-        self.assertEqual(len(delivered_messages), 2)
+        self.assertEqual(len(delivered_messages), 1)
         self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: 1 new match")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4-nano")
@@ -262,9 +285,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(first_scheduled_summary["ran"])
         self.assertEqual(first_scheduled_summary["runs"][0]["status"], "duplicate_matches")
         self.assertEqual(first_scheduled_summary["runs"][0]["scheduledFor"], "2026-07-08T09:00:00+00:00")
-        self.assertEqual(len(delivered_messages), 2)
-        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor update: nothing new yet")
-        self.assertIn("Nothing new to send right now.", delivered_messages[1]["text"])
+        self.assertEqual(len(delivered_messages), 1)
 
         scheduled_run = self.database.get_feature_monitor_run(
             user_id=1,
@@ -274,7 +295,8 @@ class ScheduledMonitorTests(unittest.TestCase):
 
         self.assertIsNotNone(scheduled_run)
         self.assertEqual(scheduled_run["status"], "duplicate_matches")
-        self.assertTrue(scheduled_run["metadata"]["noResultsNotificationSent"])
+        self.assertFalse(scheduled_run["metadata"]["noResultsNotificationSent"])
+        self.assertTrue(scheduled_run["metadata"]["noResultsDeliverySkipped"])
 
     def test_saved_settings_timestamp_resets_next_scheduled_run(self) -> None:
         next_slot = resolve_next_monitor_slot(
@@ -375,8 +397,16 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(due["ran"])
         self.assertEqual(due["runs"][0]["scheduledFor"], "2026-08-22T20:05:00+00:00")
         self.assertEqual(due["runs"][0]["status"], "no_matches")
-        self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
-        self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: nothing new yet")
+        self.assertEqual(delivered_messages, [])
+
+        run = self.database.get_feature_monitor_run(
+            user_id=1,
+            feature_id=MONITOR_FEATURE_ID,
+            scheduled_for="2026-08-22T20:05:00+00:00",
+        )
+        self.assertIsNotNone(run)
+        self.assertFalse(run["metadata"]["noResultsNotificationSent"])
+        self.assertTrue(run["metadata"]["noResultsDeliverySkipped"])
 
     def test_selected_schedule_time_stays_on_same_local_hour_across_dst(self) -> None:
         next_slot = resolve_next_monitor_slot(
@@ -411,7 +441,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_claim["status"], "running")
         self.assertIsNone(second_claim)
 
-    def test_scheduler_sends_no_results_update_when_nothing_new_is_found(self) -> None:
+    def test_scheduler_records_no_results_without_emailing_empty_updates(self) -> None:
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
@@ -468,12 +498,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(summary["ran"])
         self.assertEqual(summary["runs"][0]["status"], "no_matches")
         self.assertEqual(summary["runs"][0]["notificationsSent"], 0)
-        self.assertEqual(len(delivered_messages), 1)
-        self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
-        self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: nothing new yet")
-        self.assertIn("Here's what I checked:", delivered_messages[0]["text"])
-        self.assertIn("Criminal defense law conferences", delivered_messages[0]["text"])
-        self.assertIn("Nothing new worth sending right now.", delivered_messages[0]["text"])
+        self.assertEqual(delivered_messages, [])
 
         run = self.database.get_feature_monitor_run(
             user_id=1,
@@ -482,7 +507,8 @@ class ScheduledMonitorTests(unittest.TestCase):
         )
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "no_matches")
-        self.assertTrue(run["metadata"]["noResultsNotificationSent"])
+        self.assertFalse(run["metadata"]["noResultsNotificationSent"])
+        self.assertTrue(run["metadata"]["noResultsDeliverySkipped"])
 
     def test_manual_rerun_marks_empty_search_as_inconsistent_when_recent_results_exist(self) -> None:
         self._configure_monitor()
