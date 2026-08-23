@@ -11622,19 +11622,13 @@ async function applyAgentTurnResponse(turn, userText) {
   const activeProposal = agent.proposals.find((proposal) => proposal.id === agent.activeProposalId)
     || agent.proposals[agent.proposals.length - 1]
     || null;
-  const lastAssistantMessage = [...agent.messages].reverse().find((message) => message.role === "assistant");
   const currentRevision = Math.max(1, Number(activeProposal?.revision || 1));
-  const hasCurrentApprovalPrompt = Boolean(
-    activeProposal
-    && lastAssistantMessage?.metadata?.kind === "approval"
-    && lastAssistantMessage.metadata?.proposalId === activeProposal.id
-    && Math.max(1, Number(lastAssistantMessage.metadata?.proposalRevision || 1)) === currentRevision
-  );
   const outcome = String(turn?.outcome || "").trim();
   const reply = String(turn?.reply || "").trim();
 
-  if (outcome === "approve_proposal" && activeProposal && !activeProposal.approved && hasCurrentApprovalPrompt) {
+  if (outcome === "approve_proposal" && activeProposal && !activeProposal.approved) {
     agentTurnProgressText = "Setting it up";
+    renderApp({ preserveStatus: true });
     await approveAgentProposal(activeProposal.id, currentRevision);
     return true;
   }

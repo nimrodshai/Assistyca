@@ -237,6 +237,14 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function startAgentProposalApproval", script)
         self.assertIn('agentTurnProgressText = "Setting it up"', script)
         self.assertIn("function pushAgentProposalResult", script)
+        approval_turn = script[
+            script.index('if (outcome === "approve_proposal" && activeProposal && !activeProposal.approved)'):
+            script.index('if (outcome === "approve_proposal")')
+        ]
+        self.assertNotIn("hasCurrentApprovalPrompt", approval_turn)
+        self.assertIn('agentTurnProgressText = "Setting it up"', approval_turn)
+        self.assertIn("renderApp({ preserveStatus: true });", approval_turn)
+        self.assertIn("await approveAgentProposal(activeProposal.id, currentRevision);", approval_turn)
         self.assertIn('return "Set it up please";', script)
         self.assertIn('pushAgentMessage("user", text, {', script)
         self.assertIn("function getAgentProposalLocalActions", script)
