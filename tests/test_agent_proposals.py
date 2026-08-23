@@ -129,6 +129,38 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn('"watchQuery":"fun events to do with kids"', prompt)
         self.assertIn("changes.fields", prompt)
         self.assertIn("Do not restart questions", prompt)
+        self.assertIn("Separate hidden structure from visible conversation", prompt)
+        self.assertIn("should not sound like a template", prompt)
+        self.assertIn("Do not echo the user's full request", prompt)
+
+    def test_conversational_turn_prompt_discourages_repeated_plan_summaries(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Please check the web every 5 minutes for fun events to do with kids in August. When you have the results send me an email with the top most relevant results",
+            conversation=[
+                {"role": "user", "text": "Please check the web every 5 minutes for fun events to do with kids in August. When you have the results send me an email with the top most relevant results"},
+                {"role": "assistant", "text": "Got it — I can watch the web every 5 minutes for fun kid-friendly events in August around HaSharon and central Israel, then email you the top relevant results. Should I set it up?"},
+                {"role": "user", "text": "Please check the web every 5 minutes for fun events to do with kids in August. When you have the results send me an email with the top most relevant results"},
+            ],
+            timezone_name="Asia/Jerusalem",
+            active_proposal={
+                "id": "proposal-1",
+                "type": "web-monitor",
+                "revision": 1,
+                "requestText": "Please check the web every 5 minutes for fun events to do with kids in August and email me",
+                "fields": {
+                    "watchQuery": "fun events to do with kids",
+                    "location": "HaSharon and central Israel",
+                    "timeWindow": "August",
+                    "frequency": "every 5 minutes",
+                    "deliveryChannel": "Email",
+                },
+            },
+        )
+
+        self.assertIn("avoid repeating a recent assistant reply", prompt)
+        self.assertIn("repeats an already pending activeProposal", prompt)
+        self.assertIn("plan is already ready", prompt)
+        self.assertIn("instead of restating the plan", prompt)
 
     def test_question_turn_can_preserve_known_draft_fields(self) -> None:
         turn = normalize_agent_turn_response({
@@ -344,7 +376,8 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertIn("not a new request", kwargs["prompt"])
         self.assertIn("reply field is the only assistant text", kwargs["prompt"])
         self.assertIn("reply is required for every outcome", kwargs["prompt"])
-        self.assertIn("the reply should include the natural approval question", kwargs["prompt"])
+        self.assertIn("include a natural approval question", kwargs["prompt"])
+        self.assertIn("Do not echo the user's full request", kwargs["prompt"])
 
     def test_initial_scheduled_message_turn_uses_openai_proposal(self) -> None:
         token = self._session_token_for("owner@example.com")
