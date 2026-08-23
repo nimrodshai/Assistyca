@@ -2724,6 +2724,14 @@ body[data-modal="billing"] .app-shell {
   border-left: 1px solid rgba(20, 28, 38, 0.08);
 }
 
+.agent-actions-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: stretch;
+  align-content: stretch;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .agent-tools-head {
   display: grid;
   gap: 0.15rem;
@@ -2790,6 +2798,7 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-actions-panel-body {
+  height: 100%;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
