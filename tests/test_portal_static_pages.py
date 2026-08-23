@@ -190,8 +190,8 @@ class PortalStaticPageTests(unittest.TestCase):
             html.index('<div id="agentToolShelf"', html.index('<div class="agent-add-tool-control">'))
         ]
         self.assertIn('id="agentAddToolButton"', add_tool_control)
-        self.assertIn('id="agentAddToolMenu"', add_tool_control)
-        self.assertLess(add_tool_control.index('id="agentAddToolButton"'), add_tool_control.index('id="agentAddToolMenu"'))
+        self.assertNotIn('id="agentAddToolMenu"', add_tool_control)
+        self.assertIn('</section>\n\n      <div id="agentAddToolMenu"', html)
         self.assertIn(".agent-action-error", styles)
         self.assertIn(".agent-action-detail-actions", styles)
         self.assertIn(".agent-action-danger-button", styles)
@@ -245,8 +245,12 @@ class PortalStaticPageTests(unittest.TestCase):
             styles.index(".agent-add-tool-menu {"):
             styles.index(".agent-add-tool-option {")
         ]
-        self.assertIn("position: absolute;", add_tool_menu_styles)
-        self.assertIn("right: 0;", add_tool_menu_styles)
+        self.assertIn("position: fixed;", add_tool_menu_styles)
+        self.assertIn("z-index: 30;", add_tool_menu_styles)
+        self.assertIn("top: 50%;", add_tool_menu_styles)
+        self.assertIn("left: 50%;", add_tool_menu_styles)
+        self.assertIn("transform: translate(-50%, -50%);", add_tool_menu_styles)
+        self.assertIn("0 0 0 100vmax rgba(15, 23, 42, 0.16)", add_tool_menu_styles)
         self.assertIn("overflow-y: auto;", add_tool_menu_styles)
         self.assertIn(".agent-add-tool-icon svg", styles)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
