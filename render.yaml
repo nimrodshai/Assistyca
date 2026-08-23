@@ -67,6 +67,10 @@ services:
         value: gpt-5.5
       - key: OPENAI_API_KEY
         sync: false
+      - key: PORTAL_CREDENTIALS_KEY
+        sync: false
+      - key: PORTAL_CREDENTIALS_KEY_VERSION
+        value: "1"
       - key: PORTAL_RESEND_API_KEY
         sync: false
       - key: PORTAL_RESEND_FROM_EMAIL

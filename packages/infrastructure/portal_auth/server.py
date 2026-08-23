@@ -52,6 +52,10 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_rev
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.agent_proposals import parse_agent_proposal_revision_json
 from packages.infrastructure.billing_ledger import load_billing_report
+from packages.infrastructure.credential_vault import CredentialVault
+from packages.infrastructure.credential_vault import CredentialVaultError
+from packages.infrastructure.credential_vault import credential_hint
+from packages.infrastructure.credential_vault import normalize_platform_connection_metadata
 from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
 from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.openai_api import OpenAIError
@@ -136,6 +140,35 @@ CONTACT_AGENT_DONE_REPLY = (
     "ומה שראית עכשיו, הסוכן ששוחח איתך, הבנת הצרכים, הסיכום האוטומטי "
     "והשליחה המסודרת, הוא דוגמה קטנה לאיך אוטומציה עסקית יכולה לחסוך זמן "
     "ולעשות סדר בעבודה 🙂"
+)
+PLATFORM_CONNECTIONS = {
+    "slack": {
+        "label": "Slack",
+        "authTypes": {"api_token", "bot_token"},
+    },
+    "email": {
+        "label": "Email",
+        "authTypes": {"api_token", "oauth"},
+    },
+    "calendar": {
+        "label": "Calendar",
+        "authTypes": {"api_token", "oauth"},
+    },
+    "telegram": {
+        "label": "Telegram",
+        "authTypes": {"api_token", "bot_token"},
+    },
+    "whatsapp": {
+        "label": "WhatsApp",
+        "authTypes": {"api_token"},
+    },
+}
+PLATFORM_CONNECTION_PLATFORM_RE = re.compile(r"^[a-z][a-z0-9_-]{1,48}$")
+PLATFORM_CONNECTION_SECRET_MAX_LENGTH = 4096
+AGENT_SECRET_PATTERNS = (
+    re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._-]{24,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:api[_ -]?key|access[_ -]?token|bot[_ -]?token|secret|password)\s*[:=]\s*[^\s]{24,}", re.IGNORECASE),
 )
 CONTACT_AGENT_SCOPE_REDIRECT_INTRO = (
     "אני כאן כדי להבין את העסק שלך, את הכאבים בעבודה היומיומית, "
@@ -292,6 +325,8 @@ class PortalConfig:
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     session_secret: str = ""
+    credential_encryption_key: str = ""
+    credential_key_version: str = "1"
     db_path: Path = DEFAULT_DB_PATH
     seed_registered_emails: frozenset[str] = field(default_factory=frozenset)
     seed_admin_emails: frozenset[str] = field(default_factory=frozenset)
@@ -514,6 +549,11 @@ def normalize_contact_message(value: Any, max_length: int) -> str:
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in normalized.split("\n")]
     normalized = "\n".join(line for line in lines if line)
     return normalized[:max_length].strip()
+
+
+def looks_like_agent_secret(value: Any) -> bool:
+    text = normalize_text(value)
+    return bool(text and any(pattern.search(text) for pattern in AGENT_SECRET_PATTERNS))
 
 
 def normalize_contact_agent_messages(value: Any) -> list[dict[str, str]]:
@@ -1010,6 +1050,11 @@ def load_config() -> PortalConfig:
         session_ttl_seconds=read_int_env("PORTAL_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS),
         max_attempts=read_int_env("PORTAL_OTP_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS),
         session_secret=session_secret,
+        credential_encryption_key=(
+            os.getenv("PORTAL_CREDENTIALS_KEY", "").strip()
+            or os.getenv("PORTAL_CREDENTIAL_ENCRYPTION_KEY", "").strip()
+        ),
+        credential_key_version=os.getenv("PORTAL_CREDENTIALS_KEY_VERSION", "1").strip() or "1",
         db_path=db_path,
         seed_registered_emails=seed_registered_emails,
         seed_admin_emails=seed_admin_emails,
@@ -1859,6 +1904,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return self.server.database  # type: ignore[attr-defined]
 
     @property
+    def credential_vault(self) -> CredentialVault | None:
+        return self.server.credential_vault  # type: ignore[attr-defined]
+
+    @property
     def root(self) -> Path:
         return self.server.root  # type: ignore[attr-defined]
 
@@ -1936,6 +1985,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/contact/agent"
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
+            or path == "/api/platform-connections"
+            or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -1964,6 +2015,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/pricing/")
             or path == "/api/contact"
             or path.startswith("/api/admin/")
+            or path == "/api/platform-connections"
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/api/scheduled-actions"
@@ -1992,6 +2044,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/contact/agent"
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
+            or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -2012,6 +2065,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if (
             path.startswith("/api/admin/")
             or path.startswith("/api/features/")
+            or path.startswith("/api/platform-connections/")
             or path.startswith("/api/scheduled-actions/")
             or path.startswith("/api/whatsapp/history/")
         ):
@@ -2134,6 +2188,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        if path == "/api/platform-connections":
+            session = self._require_authenticated_session()
+            if session is None:
+                return
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "connections": self.database.list_platform_connections(session.email),
+            })
+            return
+
         if path == "/api/admin/opportunities":
             self._handle_admin_opportunities_get(parsed)
             return
@@ -2202,6 +2266,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_agent_proposal_revision()
             return
 
+        if path == "/api/platform-connections":
+            self._handle_platform_connection_post()
+            return
+
         if path == "/api/whatsapp/test":
             self._handle_whatsapp_test()
             return
@@ -2245,6 +2313,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/admin/users/"):
             self._handle_admin_users_delete(parsed)
             return
+        if path.startswith("/api/platform-connections/"):
+            self._handle_platform_connection_delete(parsed)
+            return
         if path.startswith("/api/scheduled-actions/"):
             self._handle_scheduled_actions_delete(parsed)
             return
@@ -2256,6 +2327,121 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_platform_connection_post(self) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        platform = normalize_text(payload.get("platform")).lower()
+        descriptor = PLATFORM_CONNECTIONS.get(platform)
+        if not descriptor or not PLATFORM_CONNECTION_PLATFORM_RE.fullmatch(platform):
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "unsupported_platform",
+                "message": "That app is not available here yet.",
+            })
+            return
+
+        auth_type = normalize_text(payload.get("authType")).lower() or "api_token"
+        if auth_type not in descriptor["authTypes"]:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "unsupported_auth_type",
+                "message": "Choose a supported sign-in method for this app.",
+            })
+            return
+
+        secret = normalize_text(payload.get("credential"))
+        if not secret or len(secret) > PLATFORM_CONNECTION_SECRET_MAX_LENGTH:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_credential",
+                "message": "Enter the app credential and try again.",
+            })
+            return
+
+        vault = self.credential_vault
+        if vault is None:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "credential_storage_unavailable",
+                "message": "Secure connection storage is not available yet. Contact me and I’ll finish setting it up.",
+            })
+            return
+
+        try:
+            encrypted_secret = vault.encrypt(secret)
+            connection = self.database.save_platform_connection(
+                session.email,
+                platform=platform,
+                auth_type=auth_type,
+                secret_ciphertext=encrypted_secret,
+                secret_hint=credential_hint(secret),
+                key_version=vault.key_version,
+                secret_fingerprint=vault.fingerprint(secret),
+                metadata=normalize_platform_connection_metadata(payload.get("metadata")),
+            )
+        except (CredentialVaultError, ValueError, KeyError):
+            # Never include credential contents or encryption details in a response.
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "credential_storage_unavailable",
+                "message": "I couldn’t save that connection securely. Please try again or contact me for help.",
+            })
+            return
+
+        # The secret is intentionally absent from this response and from every
+        # agent turn; only connection metadata is returned to the browser.
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": f"{descriptor['label']} is connected.",
+            "connection": connection,
+        })
+
+    def _handle_platform_connection_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        prefix = "/api/platform-connections/"
+        connection_id = urllib_parse.unquote(parsed.path[len(prefix):].strip())
+        if not connection_id or len(connection_id) > 100:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_connection",
+                "message": "That connection could not be found.",
+            })
+            return
+
+        deleted = self.database.delete_platform_connection(
+            session.email,
+            connection_id=connection_id,
+        )
+        if not deleted:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "connection_not_found",
+                "message": "That connection could not be found.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Connection removed.",
+        })
 
     def _manual_feature_run_key(
         self,
@@ -2717,6 +2903,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": False,
                 "error": "invalid_agent_turn",
                 "message": "Tell me what you want help with.",
+            })
+            return
+        if looks_like_agent_secret(user_message):
+            # Reject before prompt construction so a pasted credential cannot
+            # reach the model, usage metadata, logs, or persisted transcript.
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "secret_in_chat",
+                "message": "I removed a value that looked like a secret. Rotate it with the provider, then use the secure connection card instead.",
             })
             return
 
@@ -5814,6 +6009,16 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     server.manual_feature_run_lock = threading.RLock()  # type: ignore[attr-defined]
     server.manual_monitor_run_events = server.manual_feature_run_events  # type: ignore[attr-defined]
     server.manual_monitor_run_lock = server.manual_feature_run_lock  # type: ignore[attr-defined]
+    server.credential_vault = None  # type: ignore[attr-defined]
+    if config.credential_encryption_key:
+        try:
+            server.credential_vault = CredentialVault(  # type: ignore[attr-defined]
+                config.credential_encryption_key,
+                key_version=config.credential_key_version,
+            )
+        except CredentialVaultError:
+            # Keep the server online but fail closed for credential writes.
+            server.credential_vault = None  # type: ignore[attr-defined]
     return server
 
 

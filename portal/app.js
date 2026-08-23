@@ -399,32 +399,49 @@ const AGENT_ADD_TOOL_OPTIONS = [
   {
     id: "email",
     label: "Email",
-    detail: "Digests, alerts, and summaries",
+    detail: "Connect your email account",
     icon: "email",
-    prompt: "Help me add Email as a tool.",
+    platformId: "email",
   },
   {
     id: "calendar",
     label: "Calendar",
-    detail: "Availability, reminders, and scheduling",
+    detail: "Connect your calendar",
     icon: "calendar",
-    prompt: "Help me add Calendar as a tool.",
+    platformId: "calendar",
   },
   {
     id: "telegram",
     label: "Telegram",
-    detail: "Fast alerts and action buttons",
+    detail: "Connect Telegram",
     icon: "telegram",
-    prompt: "Help me add Telegram as a tool.",
+    platformId: "telegram",
+  },
+  {
+    id: "slack",
+    label: "Slack",
+    detail: "Connect Slack",
+    icon: "slack",
+    platformId: "slack",
   },
   {
     id: "custom",
-    label: "Custom tool",
-    detail: "Connect another app or workflow",
+    label: "Another app",
+    detail: "Connect an app not listed here",
     icon: "custom",
-    prompt: "Help me add a custom tool.",
+    prompt: "Help me connect another app.",
   },
 ];
+const PLATFORM_CONNECTION_OPTIONS = AGENT_ADD_TOOL_OPTIONS
+  .filter((option) => option.platformId)
+  .map((option) => ({
+    id: option.platformId,
+    label: option.label,
+    detail: option.detail,
+    icon: option.icon,
+    authType: option.id === "telegram" ? "bot_token" : "api_token",
+    credentialLabel: option.id === "slack" ? "Slack bot token" : `${option.label} token`,
+  }));
 const AGENT_BLUEPRINTS = {
   emailDigest: {
     type: "email-digest",
@@ -1002,6 +1019,7 @@ const state = {
   scheduledActionsLoadedAt: 0,
   selectedScheduledActionId: "",
   agentAddToolMenuOpen: false,
+  platformConnections: [],
   paymentStatus: null,
   selectedSimulatorId: null,
   billingReport: null,
@@ -1532,6 +1550,7 @@ function clearAuthSession() {
   state.scheduledActionsLoadedAt = 0;
   state.selectedScheduledActionId = "";
   state.agentAddToolMenuOpen = false;
+  state.platformConnections = [];
   if (scheduledActionsPollTimer !== null) {
     window.clearInterval(scheduledActionsPollTimer);
     scheduledActionsPollTimer = null;
@@ -2530,6 +2549,11 @@ function closeAuthAlert() {
     return;
   }
 
+  // Credential forms are ephemeral. Clear password fields before the dialog
+  // leaves the screen so a token cannot linger in the DOM after dismissal.
+  elements.authAlertBody?.querySelectorAll('input[type="password"], input[name="credential"]').forEach((input) => {
+    input.value = "";
+  });
   state.authAlertOpen = false;
   syncAuthAlertState();
 
@@ -3786,6 +3810,231 @@ async function refreshFeatureActivationStates(options = {}) {
     renderApp();
   }
   return response;
+}
+
+function normalizePlatformConnection(source = {}) {
+  const platform = String(source.platform || "").trim().toLowerCase();
+  const option = getPlatformConnectionOption(platform);
+  return {
+    id: String(source.id || "").trim(),
+    platform,
+    label: option?.label || platform || "Connected app",
+    authType: String(source.authType || source.auth_type || "api_token").trim().toLowerCase(),
+    secretHint: String(source.secretHint || "").trim(),
+    connectionStatus: String(source.connectionStatus || source.connection_status || "connected").trim().toLowerCase(),
+    connectedAt: String(source.connectedAt || source.connected_at || "").trim(),
+    updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
+  };
+}
+
+function getPlatformConnectionOption(platform) {
+  const normalized = String(platform || "").trim().toLowerCase();
+  return PLATFORM_CONNECTION_OPTIONS.find((option) => option.id === normalized) || null;
+}
+
+function getPlatformConnectionByPlatform(platform) {
+  const normalized = String(platform || "").trim().toLowerCase();
+  return state.platformConnections.find((connection) => connection.platform === normalized) || null;
+}
+
+async function refreshPlatformConnections(options = {}) {
+  if (!isSignedIn()) {
+    state.platformConnections = [];
+    return [];
+  }
+
+  const response = await apiRequest("/api/platform-connections", {
+    headers: getSessionAuthHeaders(),
+    timeoutMs: options.timeoutMs || 15000,
+  });
+  state.platformConnections = Array.isArray(response.connections)
+    ? response.connections.map(normalizePlatformConnection).filter((connection) => connection.platform)
+    : [];
+  if (options.render !== false && document.body.dataset.view === "app") {
+    renderApp({ preserveStatus: true });
+  }
+  return state.platformConnections;
+}
+
+function createPlatformConnectionForm(option) {
+  const connection = getPlatformConnectionByPlatform(option.id);
+  const form = document.createElement("form");
+  form.className = "platform-connection-form";
+
+  const intro = document.createElement("p");
+  intro.className = "platform-connection-intro";
+  intro.textContent = connection
+    ? `${option.label} is connected. Enter a new token to replace it.`
+    : `Once connected, you can ask me to use ${option.label} for whatever you need.`;
+
+  const field = document.createElement("label");
+  field.className = "field platform-connection-field";
+  const label = document.createElement("span");
+  label.textContent = option.credentialLabel || `${option.label} token`;
+  const inputRow = document.createElement("span");
+  inputRow.className = "platform-connection-input-row";
+  const input = document.createElement("input");
+  input.type = "password";
+  input.name = "credential";
+  input.autocomplete = "new-password";
+  input.spellcheck = false;
+  input.required = true;
+  input.maxLength = 4096;
+  input.placeholder = "Paste it here";
+  input.setAttribute("aria-describedby", "platformConnectionHelp platformConnectionError");
+  const reveal = document.createElement("button");
+  reveal.type = "button";
+  reveal.className = "ghost-button small platform-connection-reveal";
+  reveal.textContent = "Show";
+  reveal.setAttribute("aria-label", `Show ${option.label} token`);
+  reveal.addEventListener("click", () => {
+    const showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    reveal.textContent = showing ? "Show" : "Hide";
+    reveal.setAttribute("aria-label", `${showing ? "Show" : "Hide"} ${option.label} token`);
+  });
+  inputRow.append(input, reveal);
+  const help = document.createElement("small");
+  help.id = "platformConnectionHelp";
+  help.className = "field-help";
+  help.textContent = "Use the smallest set of permissions you need. This token is not saved in this browser or sent to the assistant.";
+  const error = document.createElement("span");
+  error.id = "platformConnectionError";
+  error.className = "field-error";
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+  field.append(label, inputRow, help, error);
+
+  const securityNote = document.createElement("div");
+  securityNote.className = "platform-connection-security-note";
+  securityNote.textContent = "Your token is encrypted before it is stored. You can replace it here or revoke it with the provider at any time.";
+
+  const helpButton = document.createElement("button");
+  helpButton.type = "button";
+  helpButton.className = "ghost-button small platform-connection-help";
+  helpButton.textContent = "Help me get it";
+  helpButton.addEventListener("click", () => {
+    closeAuthAlert();
+    pushAgentMessage("assistant", `I can help you get a ${option.label} token. Tell me what screen you’re on and I’ll walk you through it. Please don’t paste the token into chat.`);
+    persistAgentWorkspace(`I can help you get a ${option.label} token.`);
+    renderApp({ preserveStatus: true });
+    elements.agentComposerInput?.focus();
+  });
+
+  form.append(intro, field, securityNote, helpButton);
+  return { form, input, error };
+}
+
+function openPlatformConnection(optionId) {
+  const option = getPlatformConnectionOption(optionId);
+  if (!option) {
+    return;
+  }
+
+  const { form, input, error } = createPlatformConnectionForm(option);
+  let saving = false;
+  const saveConnection = async () => {
+    if (saving) {
+      return;
+    }
+    const credential = String(input.value || "").trim();
+    if (!credential) {
+      error.textContent = "Paste the token to continue.";
+      error.hidden = false;
+      input.focus();
+      return;
+    }
+
+    saving = true;
+    elements.authAlertDismissButton.disabled = true;
+    elements.authAlertDismissButton.textContent = "Saving…";
+    error.hidden = true;
+    try {
+      const response = await apiRequest("/api/platform-connections", {
+        method: "POST",
+        headers: getSessionAuthHeaders(),
+        timeoutMs: 20000,
+        body: {
+          platform: option.id,
+          authType: option.authType || "api_token",
+          credential,
+        },
+      });
+      input.value = "";
+      closeAuthAlert();
+      const connection = response.connection ? normalizePlatformConnection(response.connection) : null;
+      if (connection) {
+        state.platformConnections = [
+          connection,
+          ...state.platformConnections.filter((candidate) => candidate.platform !== connection.platform),
+        ];
+      } else {
+        await refreshPlatformConnections({ render: false });
+      }
+      pushAgentMessage("assistant", `${option.label} is connected. You can ask me to use it whenever you need it.`);
+      persistAgentWorkspace(`${option.label} is connected.`);
+      renderApp({ preserveStatus: true });
+    } catch (requestError) {
+      const message = formatApiErrorMessage(requestError, "I couldn’t save that connection securely. Please try again.");
+      error.textContent = message;
+      error.hidden = false;
+      elements.authAlertDismissButton.disabled = false;
+      elements.authAlertDismissButton.textContent = "Save securely";
+      input.focus();
+    } finally {
+      saving = false;
+    }
+  };
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void saveConnection();
+  });
+
+  openAuthAlert(
+    `Connect ${option.label}`,
+    "Add this connection once, then use it across your requests.",
+    {
+      eyebrow: "Connect an app",
+      icon: "↗",
+      tone: "progress",
+      variant: "platform-connection",
+      bodyNode: form,
+      buttonLabel: "Save securely",
+      secondaryButtonLabel: "Cancel",
+      closeOnPrimary: false,
+      returnFocus: elements.agentAddToolButton,
+      onPrimary: saveConnection,
+    },
+  );
+  window.requestAnimationFrame(() => input.focus());
+}
+
+function looksLikeCredential(text) {
+  const value = String(text || "").trim();
+  return /\b(?:xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+[A-Za-z0-9._-]{24,})\b/i.test(value)
+    || /\b(?:api[_ -]?key|access[_ -]?token|bot[_ -]?token|secret|password)\s*[:=]\s*[^\s]{24,}/i.test(value);
+}
+
+function getPlatformConnectionIntentFromText(text) {
+  const value = String(text || "").trim().toLowerCase();
+  const option = PLATFORM_CONNECTION_OPTIONS.find((candidate) => {
+    const platformPattern = candidate.id === "calendar" ? /\bcalendar\b/ : new RegExp(`\\b${candidate.id}\\b`);
+    return platformPattern.test(value);
+  });
+  if (!option) {
+    return null;
+  }
+
+  const agent = getAgentWorkspace();
+  const latestUserIntent = [...agent.messages].reverse().find((message) => message.role === "user");
+  const hasConnectionContext = Boolean(
+    latestUserIntent
+    && /\b(help me|add|connect|link|set\s*up|setup)\b/i.test(String(latestUserIntent.text || ""))
+    && /\b(?:custom|another|platform|tool|app)\b/i.test(String(latestUserIntent.text || "")),
+  );
+  const directConnectionRequest = /\b(connect|link|add|set\s*up|setup)\b/i.test(value);
+  return hasConnectionContext || directConnectionRequest ? option : null;
 }
 
 function clearFeatureConfigAutosaveTimer(featureId) {
@@ -11811,6 +12060,26 @@ async function handleAgentUserText(text) {
     return;
   }
 
+  // Never put a likely credential into the transcript or the LLM request.
+  // Ask the user to use the dedicated secure connection form instead.
+  if (looksLikeCredential(cleanText)) {
+    pushAgentMessage("assistant", "Please don’t paste access tokens into chat. Choose the app from Available tools and use its secure connection form instead.", { kind: "credential" });
+    persistAgentWorkspace("Use the secure connection form for access tokens.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  const platformConnection = getPlatformConnectionIntentFromText(cleanText);
+  if (platformConnection) {
+    resolvePendingAgentMessageActions("platform-connection");
+    pushAgentMessage("user", cleanText);
+    pushAgentMessage("assistant", `Let’s connect ${platformConnection.label}.`);
+    persistAgentWorkspace(`Connecting ${platformConnection.label}...`);
+    renderApp({ preserveStatus: true });
+    openPlatformConnection(platformConnection.id);
+    return;
+  }
+
   resolvePendingAgentMessageActions("user-message");
   pushAgentMessage("user", cleanText);
   const agent = getAgentWorkspace();
@@ -12502,10 +12771,20 @@ function handleAgentWorkspaceClick(event) {
   const addToolButton = target?.closest("[data-agent-add-tool]");
   if (addToolButton) {
     const option = getAgentAddToolOption(addToolButton.dataset.agentAddTool || "");
-    if (option?.prompt) {
+    if (option) {
       setAgentAddToolMenuOpen(false);
-      void handleAgentUserText(option.prompt);
+      if (option.platformId) {
+        openPlatformConnection(option.platformId);
+      } else if (option.prompt) {
+        void handleAgentUserText(option.prompt);
+      }
     }
+    return;
+  }
+
+  const platformConnectionButton = target?.closest("[data-agent-platform-connection]");
+  if (platformConnectionButton) {
+    openPlatformConnection(platformConnectionButton.dataset.agentPlatformConnection || "");
     return;
   }
 
@@ -12709,6 +12988,16 @@ function createAgentAddToolLogo(option) {
     return svg;
   }
 
+  if (iconType === "slack") {
+    svg.append(
+      createSvgElement("path", {
+        d: "M8.1 3.3a2 2 0 1 0 0 4h1.2V3.3a2 2 0 0 0-1.2 0Zm-4.8 4.8a2 2 0 1 0 4 0V6.9H3.3a2 2 0 0 0 0 1.2Zm4.8 4.8a2 2 0 1 0 0-4H6.9v4.8a2 2 0 0 0 1.2 0Zm4.8-4.8a2 2 0 1 0-4 0v1.2h4.8a2 2 0 0 0 0-1.2Zm-1.8 8.6a2 2 0 1 0 0-4H9.9v4.8a2 2 0 0 0 1.2 0Zm4.8-4.8a2 2 0 1 0-4 0v1.2h4.8a2 2 0 0 0 0-1.2Zm-4.8 4.8a2 2 0 1 0 0-4H9.9v4.8a2 2 0 0 0 1.2 0Zm4.8-4.8a2 2 0 1 0-4 0v1.2h4.8a2 2 0 0 0 0-1.2Z",
+        fill: "currentColor",
+      }),
+    );
+    return svg;
+  }
+
   svg.append(
     createSvgElement("path", {
       d: "M12 5v14M5 12h14",
@@ -12790,15 +13079,45 @@ function createAgentToolItem(feature) {
   return item;
 }
 
+function createAgentPlatformConnectionItem(connection) {
+  const item = document.createElement("button");
+  const label = connection.label || "Connected app";
+  item.type = "button";
+  item.className = "agent-tool-item agent-platform-connection-item";
+  item.dataset.agentPlatformConnection = connection.platform;
+  item.setAttribute("aria-label", `Replace ${label} connection`);
+
+  const icon = document.createElement("span");
+  icon.className = "agent-tool-icon agent-platform-connection-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = label.slice(0, 1).toUpperCase();
+
+  const copy = document.createElement("span");
+  copy.className = "agent-tool-copy";
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const detail = document.createElement("span");
+  detail.textContent = connection.secretHint ? `Connected ${connection.secretHint}` : "Connected";
+  copy.append(title, detail);
+
+  const arrow = document.createElement("span");
+  arrow.className = "agent-tool-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "→";
+  item.append(icon, copy, arrow);
+  return item;
+}
+
 function updateFeatureList() {
   const features = clientState.features.length ? clientState.features : [];
+  const connections = Array.isArray(state.platformConnections) ? state.platformConnections : [];
   const target = elements.agentToolShelf || elements.featureList;
   renderAgentAddToolMenu();
   if (!target) {
     return;
   }
 
-  if (!features.length) {
+  if (!features.length && !connections.length) {
     const emptyState = document.createElement("p");
     emptyState.className = "agent-tools-empty";
 
@@ -12818,7 +13137,10 @@ function updateFeatureList() {
     visibleFeatures.push(feature);
   }
 
-  target.replaceChildren(...visibleFeatures.map((feature) => createAgentToolItem(feature)));
+  target.replaceChildren(
+    ...visibleFeatures.map((feature) => createAgentToolItem(feature)),
+    ...connections.map((connection) => createAgentPlatformConnectionItem(connection)),
+  );
 }
 
 function createOpportunityMetric(label, value, detail = "") {
@@ -16181,6 +16503,7 @@ function completeSignIn(session) {
   state.pricingLoading = false;
   state.pricingError = "";
   state.paymentStatus = null;
+  state.platformConnections = [];
   resetAdminState();
   setHashForTab("features");
   setView("app");
@@ -16188,6 +16511,7 @@ function completeSignIn(session) {
   void refreshBillingReport();
   void refreshWhatsAppConnection();
   void refreshFeatureActivationStates();
+  void refreshPlatformConnections({ render: false });
   if (canManageClients()) {
     void refreshAdminUsers({ render: false });
   }
@@ -16302,6 +16626,7 @@ async function signOut() {
   state.pricingLoading = false;
   state.pricingError = "";
   state.paymentStatus = null;
+  state.platformConnections = [];
   state.requestCountryCode = "";
   state.settingsOpen = false;
   state.settingsMode = "account";
@@ -17006,11 +17331,13 @@ async function bootstrapAuthState() {
     state.pricingLoading = false;
     state.pricingError = "";
     state.paymentStatus = null;
+    state.platformConnections = [];
     resetAdminState();
     refreshView();
     void refreshBillingReport();
     void refreshWhatsAppConnection();
     void refreshFeatureActivationStates();
+    void refreshPlatformConnections({ render: false });
     if (canManageClients()) {
       void refreshAdminUsers({ render: false });
     }

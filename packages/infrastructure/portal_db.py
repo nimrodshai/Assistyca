@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -60,6 +61,7 @@ USER_OWNED_TABLES = (
     "feature_monitor_notifications",
     "feature_monitor_runs",
     "scheduled_actions",
+    "platform_connections",
     "feature_assignments",
     "billing_customers",
     "whatsapp_reengagement_notifications",
@@ -181,6 +183,26 @@ CREATE TABLE IF NOT EXISTS whatsapp_connections (
     last_tested_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Generic app connections intentionally store only encrypted credential
+-- ciphertext. The encryption key lives outside SQLite in the deployment
+-- secret manager; this table is never serialized into agent prompts.
+CREATE TABLE IF NOT EXISTS platform_connections (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    auth_type TEXT NOT NULL DEFAULT 'api_token',
+    secret_ciphertext TEXT NOT NULL,
+    key_version TEXT NOT NULL DEFAULT '1',
+    secret_fingerprint TEXT NOT NULL DEFAULT '',
+    secret_hint TEXT NOT NULL DEFAULT '',
+    connection_status TEXT NOT NULL DEFAULT 'connected',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    connected_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, platform),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -420,6 +442,8 @@ WHERE phone_number_id <> '';
 CREATE INDEX IF NOT EXISTS idx_whatsapp_connections_owner_wa_id
 ON whatsapp_connections(owner_wa_id)
 WHERE owner_wa_id <> '';
+CREATE INDEX IF NOT EXISTS idx_platform_connections_user_status
+ON platform_connections(user_id, connection_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_approval_index_user_id
 ON whatsapp_approval_index(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_user_updated
@@ -695,6 +719,7 @@ class PortalDatabase:
                 self._migrate_user_billing_table(conn)
                 self._migrate_usage_events_table(conn)
                 self._migrate_whatsapp_connections_table(conn)
+                self._migrate_platform_connections_table(conn)
                 self._ensure_usage_events_tool_indexes(conn)
                 self._ensure_contact_opportunities_indexes(conn)
                 self._seed_default_model_prices(conn)
@@ -815,6 +840,16 @@ class PortalDatabase:
         }
         if "access_token" not in columns:
             conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_platform_connections_table(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(platform_connections)").fetchall()
+        }
+        if "key_version" not in columns:
+            conn.execute("ALTER TABLE platform_connections ADD COLUMN key_version TEXT NOT NULL DEFAULT '1'")
+        if "secret_fingerprint" not in columns:
+            conn.execute("ALTER TABLE platform_connections ADD COLUMN secret_fingerprint TEXT NOT NULL DEFAULT ''")
 
     def _ensure_usage_events_tool_indexes(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -1449,6 +1484,55 @@ class PortalDatabase:
             "lastTestedAt": payload.get("last_tested_at"),
             "createdAt": payload.get("created_at"),
             "updatedAt": payload.get("updated_at"),
+        }
+
+    def _load_platform_connection_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+        connection_id: str | None = None,
+        platform: str | None = None,
+    ) -> dict[str, Any] | None:
+        if user_id <= 0:
+            return None
+
+        where = ["user_id = ?"]
+        params: list[Any] = [int(user_id)]
+        if connection_id:
+            where.append("id = ?")
+            params.append(normalize_text(connection_id))
+        elif platform:
+            where.append("platform = ?")
+            params.append(normalize_text(platform).lower())
+        else:
+            return None
+
+        row = conn.execute(
+            f"""
+            SELECT id, user_id, platform, auth_type, secret_hint,
+                   connection_status, metadata_json, connected_at, updated_at
+            FROM platform_connections
+            WHERE {" AND ".join(where)}
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return None
+
+        payload = _row_to_dict(row) or {}
+        return {
+            "id": normalize_text(payload.get("id")),
+            "userId": int(payload.get("user_id") or 0),
+            "platform": normalize_text(payload.get("platform")),
+            "authType": normalize_text(payload.get("auth_type")) or "api_token",
+            "secretHint": normalize_text(payload.get("secret_hint")),
+            "connectionStatus": normalize_text(payload.get("connection_status")) or "connected",
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+            "connectedAt": normalize_text(payload.get("connected_at")),
+            "updatedAt": normalize_text(payload.get("updated_at")),
+            "hasCredential": True,
         }
 
     def _load_whatsapp_conversation_row(
@@ -2595,6 +2679,171 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, email=normalized_email)
+
+    def list_platform_connections(self, email: str) -> list[dict[str, Any]]:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return []
+
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                user_id = 0
+            if user_id <= 0:
+                return []
+            rows = conn.execute(
+                """
+                SELECT id, user_id, platform, auth_type, secret_hint,
+                       connection_status, metadata_json, connected_at, updated_at
+                FROM platform_connections
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, platform ASC
+                """,
+                (user_id,),
+            ).fetchall()
+            return [
+                item
+                for item in (
+                    self._load_platform_connection_row(
+                        conn,
+                        user_id=user_id,
+                        connection_id=normalize_text(row["id"]),
+                    )
+                    for row in rows
+                )
+                if item
+            ]
+
+    def get_platform_connection_ciphertext(self, email: str, platform: str) -> str | None:
+        """Return ciphertext for server-side tools; never serialize this to the portal."""
+
+        normalized_email = normalize_email(email)
+        normalized_platform = normalize_text(platform).lower()
+        if not normalized_email or not normalized_platform:
+            return None
+
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                return None
+            row = conn.execute(
+                """
+                SELECT secret_ciphertext
+                FROM platform_connections
+                WHERE user_id = ? AND platform = ? AND connection_status = 'connected'
+                LIMIT 1
+                """,
+                (user_id, normalized_platform),
+            ).fetchone()
+            return normalize_text(row["secret_ciphertext"]) if row else None
+
+    def save_platform_connection(
+        self,
+        email: str,
+        *,
+        platform: str,
+        auth_type: str,
+        secret_ciphertext: str,
+        secret_hint: str,
+        key_version: str = "1",
+        secret_fingerprint: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        normalized_platform = normalize_text(platform).lower()
+        normalized_auth_type = normalize_text(auth_type).lower() or "api_token"
+        normalized_ciphertext = normalize_text(secret_ciphertext)
+        normalized_hint = normalize_text(secret_hint)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if not normalized_platform:
+            raise ValueError("Platform is required.")
+        if not normalized_ciphertext:
+            raise ValueError("Encrypted credential is required.")
+
+        metadata_payload = _load_json_dict(metadata)
+        metadata_json = json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            existing = conn.execute(
+                """
+                SELECT id, connected_at
+                FROM platform_connections
+                WHERE user_id = ? AND platform = ?
+                LIMIT 1
+                """,
+                (user_id, normalized_platform),
+            ).fetchone()
+            connection_id = normalize_text(existing["id"]) if existing else ""
+            connected_at = normalize_text(existing["connected_at"]) if existing else ""
+            if not connection_id:
+                # Public ids must not reveal row counts or be guessable.
+                connection_id = f"pc_{secrets.token_urlsafe(18)}"
+            if not connected_at:
+                connected_at = now
+
+            conn.execute(
+                """
+                INSERT INTO platform_connections (
+                    id, user_id, platform, auth_type, secret_ciphertext,
+                    key_version, secret_fingerprint,
+                    secret_hint, connection_status, metadata_json,
+                    connected_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?, ?, ?)
+                ON CONFLICT(user_id, platform) DO UPDATE SET
+                    auth_type = excluded.auth_type,
+                    secret_ciphertext = excluded.secret_ciphertext,
+                    key_version = excluded.key_version,
+                    secret_fingerprint = excluded.secret_fingerprint,
+                    secret_hint = excluded.secret_hint,
+                    connection_status = 'connected',
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    connection_id,
+                    user_id,
+                    normalized_platform,
+                    normalized_auth_type,
+                    normalized_ciphertext,
+                    normalize_text(key_version) or "1",
+                    normalize_text(secret_fingerprint),
+                    normalized_hint,
+                    metadata_json,
+                    connected_at,
+                    now,
+                ),
+            )
+            return self._load_platform_connection_row(
+                conn,
+                user_id=user_id,
+                connection_id=connection_id,
+            ) or {}
+
+    def delete_platform_connection(self, email: str, *, connection_id: str = "", platform: str = "") -> bool:
+        normalized_email = normalize_email(email)
+        normalized_id = normalize_text(connection_id)
+        normalized_platform = normalize_text(platform).lower()
+        if not normalized_email or not normalized_id and not normalized_platform:
+            return False
+
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                user_id = 0
+            if user_id <= 0:
+                return False
+            where = "id = ?" if normalized_id else "platform = ?"
+            value = normalized_id or normalized_platform
+            cursor = conn.execute(
+                f"DELETE FROM platform_connections WHERE user_id = ? AND {where}",
+                (user_id, value),
+            )
+            return cursor.rowcount > 0
 
     def get_user(self, email: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)
