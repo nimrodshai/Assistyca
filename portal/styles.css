@@ -2574,45 +2574,93 @@ body[data-modal="billing"] .app-shell {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 2.75rem;
-  min-width: 2.75rem;
-  height: 2.75rem;
-  margin-top: -0.1rem;
+  width: 2.5rem;
+  min-width: 2.5rem;
+  height: 2.5rem;
+  margin-top: 0;
   padding: 0;
-  border: 0;
-  border-radius: 10px;
-  color: var(--muted);
-  background: transparent;
+  border: 1px solid rgba(95, 107, 122, 0.16);
+  border-radius: 999px;
+  color: #607080;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.7)),
+    rgba(255, 255, 255, 0.58);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 10px 26px rgba(25, 38, 54, 0.08);
   cursor: pointer;
-  transition: color 180ms ease, background-color 180ms ease;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
 }
 
 .agent-message-help-button:hover {
+  border-color: rgba(15, 118, 110, 0.28);
   color: var(--accent);
-  background: rgba(15, 118, 110, 0.08);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.95) inset,
+    0 14px 32px rgba(15, 118, 110, 0.14);
+  transform: translateY(-1px);
+}
+
+.agent-message-help-button:active {
+  transform: translateY(0) scale(0.98);
 }
 
 .agent-message-help-button:focus-visible {
-  outline: 3px solid rgba(15, 118, 110, 0.24);
-  outline-offset: 2px;
+  outline: 0;
+  border-color: rgba(15, 118, 110, 0.55);
+  box-shadow:
+    0 0 0 4px rgba(15, 118, 110, 0.14),
+    0 1px 0 rgba(255, 255, 255, 0.95) inset,
+    0 14px 32px rgba(15, 118, 110, 0.14);
 }
 
 .agent-message-help-icon {
-  display: grid;
-  place-items: center;
-  width: 1.65rem;
-  height: 1.65rem;
-  border: 1px solid currentcolor;
+  position: relative;
+  display: block;
+  width: 0.9rem;
+  height: 1rem;
+  font-size: 0;
+  line-height: 0;
+}
+
+.agent-message-help-icon::before,
+.agent-message-help-icon::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  display: block;
+  background: currentcolor;
+  transform: translateX(-50%);
+}
+
+.agent-message-help-icon::before {
+  top: 0.43rem;
+  width: 0.16rem;
+  height: 0.5rem;
   border-radius: 999px;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 1rem;
-  font-weight: 700;
-  line-height: 1;
+}
+
+.agent-message-help-icon::after {
+  top: 0.08rem;
+  width: 0.24rem;
+  height: 0.24rem;
+  border-radius: 999px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .agent-message-help-button {
     transition: none;
+  }
+
+  .agent-message-help-button:hover,
+  .agent-message-help-button:active {
+    transform: none;
   }
 }
 
