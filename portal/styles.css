@@ -2238,6 +2238,72 @@ body[data-modal="billing"] .app-shell {
   min-width: 0;
 }
 
+.agent-error-help {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.agent-error-help-intro,
+.agent-error-help-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.agent-error-help-details {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  background: rgba(15, 118, 110, 0.045);
+  border: 1px solid rgba(15, 118, 110, 0.13);
+  border-radius: 14px;
+}
+
+.agent-error-help-detail {
+  display: grid;
+  grid-template-columns: minmax(5.8rem, 0.35fr) minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: baseline;
+}
+
+.agent-error-help-detail dt {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-error-help-detail dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.agent-error-help-guidance {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.75rem 0.85rem;
+  background: rgba(25, 38, 54, 0.035);
+  border-radius: 14px;
+}
+
+.agent-error-help-guidance strong {
+  font-size: 0.86rem;
+}
+
+.agent-error-help-guidance p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
 .platform-connection-form {
   display: grid;
   gap: 0.9rem;
@@ -2511,21 +2577,19 @@ body[data-modal="billing"] .app-shell {
   width: 2.75rem;
   min-width: 2.75rem;
   height: 2.75rem;
-  margin-top: 0.05rem;
+  margin-top: -0.1rem;
   padding: 0;
-  border: 1px solid rgba(204, 92, 49, 0.35);
-  border-radius: 999px;
-  color: var(--warn);
-  background: rgba(204, 92, 49, 0.08);
-  font-size: 1rem;
-  font-weight: 800;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
   cursor: pointer;
-  transition: background-color 180ms ease, border-color 180ms ease, transform 180ms ease;
+  transition: color 180ms ease, background-color 180ms ease;
 }
 
 .agent-message-help-button:hover {
-  background: rgba(204, 92, 49, 0.15);
-  border-color: rgba(204, 92, 49, 0.55);
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.08);
 }
 
 .agent-message-help-button:focus-visible {
@@ -2533,8 +2597,17 @@ body[data-modal="billing"] .app-shell {
   outline-offset: 2px;
 }
 
-.agent-message-help-button:active {
-  transform: scale(0.96);
+.agent-message-help-icon {
+  display: grid;
+  place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {

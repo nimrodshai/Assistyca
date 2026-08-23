@@ -10606,14 +10606,102 @@ function getProposalSetupLabel(proposal) {
   return proposal.setupActionLabel || "Open setup";
 }
 
-function openAgentErrorHelp(returnFocus = null) {
+function normalizeAgentErrorTechnicalInfo(technical = {}) {
+  const source = technical && typeof technical === "object" ? technical : {};
+  const rawStatus = Number(source.status || 0);
+  const status = Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599 ? rawStatus : 0;
+  const rawCode = String(source.code || "").trim().toLowerCase();
+  const code = /^[a-z0-9_-]{1,80}$/.test(rawCode) ? rawCode : "request_failed";
+  const occurredAt = String(source.occurredAt || "").trim();
+  return {
+    endpoint: "/api/agent/turn",
+    status,
+    code,
+    occurredAt: /^\d{4}-\d{2}-\d{2}T/.test(occurredAt) ? occurredAt : "",
+  };
+}
+
+function getAgentErrorTechnicalInfo(error) {
+  return normalizeAgentErrorTechnicalInfo({
+    status: error?.status,
+    code: error?.payload?.error,
+    occurredAt: new Date().toISOString(),
+  });
+}
+
+function getAgentErrorGuidance(technical) {
+  const details = normalizeAgentErrorTechnicalInfo(technical);
+  if (details.code === "secret_in_chat") {
+    return "Use the secure connection form for credentials. Do not paste tokens or API keys into chat.";
+  }
+  if (details.status === 401 || details.status === 403) {
+    return "The session may have expired or may not have permission to use this endpoint. Sign in again, then retry.";
+  }
+  if (details.status === 503 || details.code === "agent_unavailable") {
+    return "The server could not reach the model service or its configuration is unavailable. Check the server logs and the model/API configuration, then retry.";
+  }
+  if (details.status === 502 || details.code === "invalid_agent_turn") {
+    return "The model returned a response the portal could not validate. Check the server response logs and the agent-turn response schema.";
+  }
+  if (!details.status || details.code === "request_failed") {
+    return "The request may have timed out or the network may have dropped. Check connectivity and service health, then retry.";
+  }
+  return "Retry once. If it keeps failing, inspect the server logs for this endpoint, status, and error code.";
+}
+
+function createAgentErrorHelpBody(technical = {}) {
+  const details = normalizeAgentErrorTechnicalInfo(technical);
+  const body = document.createElement("div");
+  body.className = "agent-error-help";
+
+  const intro = document.createElement("p");
+  intro.className = "agent-error-help-intro";
+  intro.textContent = "The request failed before any task was created or sent. These safe diagnostics can help locate the problem.";
+
+  const detailList = document.createElement("dl");
+  detailList.className = "agent-error-help-details";
+  const rows = [
+    ["Endpoint", details.endpoint],
+    ["HTTP status", details.status ? String(details.status) : "Not returned"],
+    ["Error code", details.code],
+    ["Time", details.occurredAt || "Not recorded"],
+  ];
+  for (const [label, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "agent-error-help-detail";
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    row.append(term, description);
+    detailList.append(row);
+  }
+
+  const guidance = document.createElement("div");
+  guidance.className = "agent-error-help-guidance";
+  const guidanceTitle = document.createElement("strong");
+  guidanceTitle.textContent = "What to check";
+  const guidanceText = document.createElement("p");
+  guidanceText.textContent = getAgentErrorGuidance(details);
+  guidance.append(guidanceTitle, guidanceText);
+
+  const note = document.createElement("p");
+  note.className = "agent-error-help-note";
+  note.textContent = "No credentials or raw server response are shown here.";
+
+  body.append(intro, detailList, guidance, note);
+  return body;
+}
+
+function openAgentErrorHelp(technical = {}, returnFocus = null) {
   openAuthAlert(
-    "Why did this happen?",
-    "Your request reached Assistyca, but the assistant could not finish processing it. Nothing was created, sent, or turned on.",
+    "Request details",
+    "Use the diagnostics below to understand why this request stopped.",
     {
-      eyebrow: "Agent help",
-      icon: "?",
-      tone: "warning",
+      eyebrow: "Technical details",
+      icon: "i",
+      tone: "progress",
+      bodyNode: createAgentErrorHelpBody(technical),
       buttonLabel: "Close",
       returnFocus,
     },
@@ -10649,10 +10737,14 @@ function renderAgentMessage(message) {
     const helpButton = document.createElement("button");
     helpButton.type = "button";
     helpButton.className = "agent-message-help-button";
-    helpButton.textContent = "?";
-    helpButton.setAttribute("aria-label", "Why did this request fail?");
-    helpButton.title = "Why did this request fail?";
-    helpButton.addEventListener("click", () => openAgentErrorHelp(helpButton));
+    const helpIcon = document.createElement("span");
+    helpIcon.className = "agent-message-help-icon";
+    helpIcon.textContent = "i";
+    helpIcon.setAttribute("aria-hidden", "true");
+    helpButton.append(helpIcon);
+    helpButton.setAttribute("aria-label", "Show technical details for this failure");
+    helpButton.title = "Show technical details";
+    helpButton.addEventListener("click", () => openAgentErrorHelp(message.metadata?.technical, helpButton));
     messageLine.append(helpButton);
   }
   row.append(messageLine);
@@ -12149,7 +12241,10 @@ async function handleAgentUserText(text) {
     );
     // Keep failures in the conversation. A status-only update made the
     // thinking indicator disappear and left the user with no explanation.
-    pushAgentMessage("assistant", message, { kind: "error" });
+    pushAgentMessage("assistant", message, {
+      kind: "error",
+      technical: getAgentErrorTechnicalInfo(error),
+    });
     persistAgentWorkspace(message);
     renderApp({ preserveStatus: true });
     elements.agentComposerInput?.focus();
