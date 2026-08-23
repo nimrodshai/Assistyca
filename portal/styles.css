@@ -2574,36 +2574,28 @@ body[data-modal="billing"] .app-shell {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 2.5rem;
-  min-width: 2.5rem;
-  height: 2.5rem;
-  margin-top: 0;
+  width: 1.45rem;
+  min-width: 1.45rem;
+  height: 1.45rem;
+  margin-top: 0.48rem;
   padding: 0;
-  border: 1px solid rgba(95, 107, 122, 0.16);
+  border: 1px solid rgba(95, 107, 122, 0.24);
   border-radius: 999px;
-  color: #607080;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.7)),
-    rgba(255, 255, 255, 0.58);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 10px 26px rgba(25, 38, 54, 0.08);
+  color: #6c7887;
+  background: rgba(255, 255, 255, 0.28);
+  box-shadow: none;
   cursor: pointer;
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
   transition:
+    background-color 160ms ease,
     border-color 180ms ease,
-    box-shadow 180ms ease,
     color 180ms ease,
     transform 180ms ease;
 }
 
 .agent-message-help-button:hover {
-  border-color: rgba(15, 118, 110, 0.28);
+  border-color: rgba(15, 118, 110, 0.34);
   color: var(--accent);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.95) inset,
-    0 14px 32px rgba(15, 118, 110, 0.14);
+  background: rgba(15, 118, 110, 0.065);
   transform: translateY(-1px);
 }
 
@@ -2615,16 +2607,15 @@ body[data-modal="billing"] .app-shell {
   outline: 0;
   border-color: rgba(15, 118, 110, 0.55);
   box-shadow:
-    0 0 0 4px rgba(15, 118, 110, 0.14),
-    0 1px 0 rgba(255, 255, 255, 0.95) inset,
-    0 14px 32px rgba(15, 118, 110, 0.14);
+    0 0 0 3px rgba(15, 118, 110, 0.13),
+    0 0 0 1px rgba(255, 255, 255, 0.86) inset;
 }
 
 .agent-message-help-icon {
   position: relative;
   display: block;
-  width: 0.9rem;
-  height: 1rem;
+  width: 0.48rem;
+  height: 0.72rem;
   font-size: 0;
   line-height: 0;
 }
@@ -2640,16 +2631,16 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-message-help-icon::before {
-  top: 0.43rem;
-  width: 0.16rem;
-  height: 0.5rem;
+  top: 0.3rem;
+  width: 0.12rem;
+  height: 0.36rem;
   border-radius: 999px;
 }
 
 .agent-message-help-icon::after {
-  top: 0.08rem;
-  width: 0.24rem;
-  height: 0.24rem;
+  top: 0.02rem;
+  width: 0.16rem;
+  height: 0.16rem;
   border-radius: 999px;
 }
 
