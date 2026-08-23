@@ -10151,7 +10151,12 @@ function updateAgentProposalSummaryFromFields(proposal) {
   if (proposal.type === "web-monitor" && fields.watchQuery) {
     const location = fields.location ? ` around ${fields.location}` : "";
     const frequency = fields.frequency ? ` ${fields.frequency}` : "";
-    proposal.summary = `Monitor ${fields.watchQuery}${location}${frequency} and send source-backed alerts.`;
+    const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
+    const deliveryTarget = getAgentProposalDeliveryTarget(proposal, deliveryChannel);
+    const deliveryText = deliveryChannel
+      ? ` and send source-backed alerts ${formatAgentDeliveryTargetSentence(deliveryChannel, deliveryTarget)}`
+      : " and send source-backed alerts";
+    proposal.summary = `Monitor ${fields.watchQuery}${location}${frequency}${deliveryText}.`;
   } else if (proposal.type === "email-digest" && (fields.mailbox || fields.schedule)) {
     const mailbox = fields.mailbox || "the selected mailbox";
     const schedule = fields.schedule ? ` on ${fields.schedule}` : "";
@@ -10698,12 +10703,53 @@ function getAgentProposalLocalActionPreview(proposal) {
   return proposal?.summary || proposal?.helpers?.[0]?.purpose || "";
 }
 
+function getSignedInDeliveryEmail() {
+  return normalizeEmail(authSession?.email || activeEmail || "");
+}
+
+function getAgentProposalDeliveryChannel(proposal) {
+  const settings = proposal?.executionPlan?.settings && typeof proposal.executionPlan.settings === "object"
+    ? proposal.executionPlan.settings
+    : {};
+  return normalizeAgentDeliveryChannel(settings.deliveryChannel)
+    || normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
+    || normalizeAgentDeliveryChannel(proposal?.requestText || "");
+}
+
+function getAgentProposalDeliveryTarget(proposal, deliveryChannel = "") {
+  const explicitTarget = String(
+    proposal?.executionPlan?.deliveryTarget
+    || proposal?.executionPlan?.settings?.deliveryTarget
+    || proposal?.executionPlan?.action?.recipientRef
+    || "",
+  ).trim();
+  const normalizedChannel = normalizeAgentDeliveryChannel(deliveryChannel);
+  if (normalizedChannel === "email") {
+    return validateEmail(explicitTarget) ? normalizeEmail(explicitTarget) : getSignedInDeliveryEmail();
+  }
+  return explicitTarget && explicitTarget !== "owner" ? explicitTarget : "";
+}
+
+function formatAgentDeliveryTargetDetail(deliveryChannel = "", deliveryTarget = "") {
+  const channelLabel = formatAgentScheduledMessageChannel(deliveryChannel);
+  const targetLabel = String(deliveryTarget || "").trim();
+  return targetLabel ? `${channelLabel} → ${targetLabel}` : channelLabel;
+}
+
+function formatAgentDeliveryTargetSentence(deliveryChannel = "", deliveryTarget = "") {
+  const channelLabel = formatAgentScheduledMessageChannel(deliveryChannel);
+  const targetLabel = String(deliveryTarget || "").trim();
+  return targetLabel ? `by ${channelLabel} to ${targetLabel}` : `by ${channelLabel}`;
+}
+
 function createAgentProposalLocalAction(proposal) {
   if (!proposal || !proposal.approved || proposal.type === "scheduled-message") {
     return null;
   }
 
-  const deliveryChannel = getAgentProposalFieldValue(proposal, "deliveryChannel");
+  const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
+  const deliveryTarget = getAgentProposalDeliveryTarget(proposal, deliveryChannel);
+  const deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget);
   const approvedAt = String(proposal.approvedAt || proposal.updatedAt || proposal.createdAt || new Date().toISOString());
   const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || "").trim();
   const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
@@ -10714,8 +10760,8 @@ function createAgentProposalLocalAction(proposal) {
   return {
     id: `proposal:${proposal.id}`,
     actionType: `agent_${String(proposal.type || "helper").replace(/[^a-zA-Z0-9]+/g, "_")}`,
-    channel: normalizeAgentDeliveryChannel(deliveryChannel) || "agent",
-    recipientRef: deliveryChannel,
+    channel: deliveryChannel || "agent",
+    recipientRef: deliveryTarget || deliveryChannel,
     runAt: approvedAt,
     timezone: normalizeMonitorScheduleTimezone(clientState?.settings?.timezone || defaultTimeZone(), "UTC") || "UTC",
     status,
@@ -10735,6 +10781,8 @@ function createAgentProposalLocalAction(proposal) {
       timeWindow: getAgentProposalFieldValue(proposal, "timeWindow"),
       frequency: getAgentProposalFieldValue(proposal, "frequency"),
       deliveryChannel,
+      deliveryTarget,
+      deliveryLabel,
       initialRunStatus: String(proposal.executionPlan?.initialRunStatus || "").trim(),
       initialRunMessage: String(proposal.executionPlan?.initialRunMessage || "").trim(),
       initialRunError: String(proposal.executionPlan?.initialRunError || "").trim(),
@@ -10991,6 +11039,8 @@ function getScheduledActionDetailSignature(action) {
     String(action.payload?.initialRunStatus || ""),
     String(action.payload?.initialRunMessage || ""),
     String(action.payload?.initialRunError || ""),
+    String(action.payload?.deliveryTarget || ""),
+    String(action.payload?.deliveryLabel || ""),
   ]);
 }
 
@@ -11022,7 +11072,11 @@ function createScheduledActionDetail(action) {
     details.append(
       createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
       createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
-      createScheduledActionDetailRow("Delivery", String(payload.deliveryChannel || action.recipientRef || "As configured").trim()),
+      createScheduledActionDetailRow("Delivery", String(
+        payload.deliveryLabel
+        || formatAgentDeliveryTargetDetail(payload.deliveryChannel || action.channel, payload.deliveryTarget || action.recipientRef)
+        || "As configured",
+      ).trim()),
     );
     if (payload.location) {
       details.append(createScheduledActionDetailRow("Location", String(payload.location)));
@@ -11783,7 +11837,9 @@ async function saveAndActivateAgentWebMonitorProposal(proposal) {
     initialRunMessage: initialRun?.message || "",
     initialRunError,
   };
-  proposal.summary = `Monitor ${settings.watchItems[0]} ${formatAgentWebMonitorFrequency(settings)} and send source-backed alerts by ${formatAgentScheduledMessageChannel(settings.deliveryChannel)}.`;
+  const deliveryTarget = getAgentProposalDeliveryTarget(proposal, settings.deliveryChannel);
+  proposal.executionPlan.deliveryTarget = deliveryTarget;
+  proposal.summary = `Monitor ${settings.watchItems[0]} ${formatAgentWebMonitorFrequency(settings)} and send source-backed alerts ${formatAgentDeliveryTargetSentence(settings.deliveryChannel, deliveryTarget)}.`;
   return {
     configResponse,
     activationResponse,
