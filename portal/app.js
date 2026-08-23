@@ -22,6 +22,7 @@ const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
 const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "You replied here - but the WhatsApp API doesn't let us read the content";
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const SCHEDULED_ACTIONS_POLL_MS = 5 * 1000;
+const SCHEDULED_ACTIONS_REFRESH_ERROR_THRESHOLD = 3;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
 const OPPORTUNITIES_OWNER_EMAIL = "nimrod.shai@gmail.com";
@@ -995,6 +996,9 @@ const state = {
   scheduledActions: [],
   scheduledActionsLoading: false,
   scheduledActionsError: "",
+  scheduledActionsFailureCount: 0,
+  scheduledActionsLastError: "",
+  scheduledActionsLastErrorAt: 0,
   scheduledActionsLoadedAt: 0,
   selectedScheduledActionId: "",
   agentAddToolMenuOpen: false,
@@ -1521,6 +1525,9 @@ function clearAuthSession() {
   state.scheduledActions = [];
   state.scheduledActionsLoading = false;
   state.scheduledActionsError = "";
+  state.scheduledActionsFailureCount = 0;
+  state.scheduledActionsLastError = "";
+  state.scheduledActionsLastErrorAt = 0;
   state.scheduledActionsLoadedAt = 0;
   state.selectedScheduledActionId = "";
   state.agentAddToolMenuOpen = false;
@@ -11167,6 +11174,24 @@ function createScheduledActionDetail(action) {
   return card;
 }
 
+function markScheduledActionsRefreshSuccess(loadedAt = Date.now()) {
+  state.scheduledActionsLoadedAt = loadedAt;
+  state.scheduledActionsError = "";
+  state.scheduledActionsFailureCount = 0;
+  state.scheduledActionsLastError = "";
+  state.scheduledActionsLastErrorAt = 0;
+}
+
+function markScheduledActionsRefreshFailure(error, options = {}) {
+  const message = formatApiErrorMessage(error, "Couldn’t refresh actions.");
+  state.scheduledActionsFailureCount = Math.max(0, Number(state.scheduledActionsFailureCount || 0)) + 1;
+  state.scheduledActionsLastError = message;
+  state.scheduledActionsLastErrorAt = Date.now();
+  state.scheduledActionsError = (options.userInitiated || state.scheduledActionsFailureCount >= SCHEDULED_ACTIONS_REFRESH_ERROR_THRESHOLD)
+    ? message
+    : "";
+}
+
 function renderAgentActions() {
   if (!elements.agentPendingActionList || !elements.agentCompletedActionList) {
     return;
@@ -11190,11 +11215,14 @@ function renderAgentActions() {
 
   const statusRow = elements.agentActionsStatus?.closest(".agent-actions-sync-row");
   statusRow?.classList.toggle("is-error", Boolean(state.scheduledActionsError));
+  statusRow?.classList.toggle("is-syncing", Boolean(state.scheduledActionsLoading && state.scheduledActionsLoadedAt));
   if (elements.agentActionsStatus) {
     if (state.scheduledActionsLoading && !state.scheduledActionsLoadedAt) {
       elements.agentActionsStatus.textContent = "Checking actions…";
     } else if (state.scheduledActionsError) {
       elements.agentActionsStatus.textContent = "Couldn’t refresh actions";
+    } else if (state.scheduledActionsLastError && !state.scheduledActionsLoadedAt) {
+      elements.agentActionsStatus.textContent = "Retrying actions refresh…";
     } else if (state.scheduledActionsLoadedAt) {
       elements.agentActionsStatus.textContent = `Updated ${new Intl.DateTimeFormat(undefined, {
         hour: "numeric",
@@ -11240,7 +11268,7 @@ function renderAgentActions() {
   setAgentToolsOpen(Boolean(panelOpen));
 }
 
-async function refreshScheduledActions() {
+async function refreshScheduledActions(options = {}) {
   if (!isSignedIn()) {
     return null;
   }
@@ -11250,7 +11278,6 @@ async function refreshScheduledActions() {
 
   const requestToken = String(authSession?.token || "");
   state.scheduledActionsLoading = true;
-  state.scheduledActionsError = "";
   renderAgentActions();
   scheduledActionsRefreshPromise = (async () => {
     try {
@@ -11263,12 +11290,11 @@ async function refreshScheduledActions() {
       state.scheduledActions = Array.isArray(response.actions)
         ? response.actions.map(normalizeScheduledAction).filter((action) => action.id > 0)
         : [];
-      state.scheduledActionsLoadedAt = Date.now();
-      state.scheduledActionsError = "";
+      markScheduledActionsRefreshSuccess();
       return state.scheduledActions;
     } catch (error) {
       if (requestToken === String(authSession?.token || "")) {
-        state.scheduledActionsError = formatApiErrorMessage(error, "Couldn’t refresh actions.");
+        markScheduledActionsRefreshFailure(error, options);
       }
       return null;
     } finally {
@@ -11942,8 +11968,7 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
           normalizedAction,
           ...state.scheduledActions.filter((action) => action.id !== normalizedAction.id),
         ];
-        state.scheduledActionsLoadedAt = Date.now();
-        state.scheduledActionsError = "";
+        markScheduledActionsRefreshSuccess();
         renderAgentActions();
       }
     } catch (error) {
@@ -12151,8 +12176,7 @@ async function cancelScheduledAction(actionId) {
       state.scheduledActions = state.scheduledActions.filter((action) => action.id !== id);
       state.selectedScheduledActionId = "";
     }
-    state.scheduledActionsLoadedAt = Date.now();
-    state.scheduledActionsError = "";
+    markScheduledActionsRefreshSuccess();
     persistAgentWorkspace("Action cancelled.");
     renderApp({ preserveStatus: true });
     return true;
@@ -16661,6 +16685,9 @@ async function bootstrapAuthState() {
     state.scheduledActions = [];
     state.scheduledActionsLoading = false;
     state.scheduledActionsError = "";
+    state.scheduledActionsFailureCount = 0;
+    state.scheduledActionsLastError = "";
+    state.scheduledActionsLastErrorAt = 0;
     state.scheduledActionsLoadedAt = 0;
     state.selectedScheduledActionId = "";
     state.agentAddToolMenuOpen = false;
@@ -17238,7 +17265,7 @@ function bindEvents() {
 
   if (elements.agentActionsRefreshButton) {
     elements.agentActionsRefreshButton.addEventListener("click", () => {
-      void refreshScheduledActions();
+      void refreshScheduledActions({ userInitiated: true });
     });
   }
 
