@@ -2449,8 +2449,19 @@ body[data-modal="billing"] .app-shell {
   margin-inline: auto;
 }
 
+.agent-message-line {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  width: 100%;
+}
+
 .agent-message.is-user {
   align-items: flex-end;
+}
+
+.agent-message.is-user .agent-message-line {
+  justify-content: flex-end;
 }
 
 .agent-message-bubble {
@@ -2491,6 +2502,45 @@ body[data-modal="billing"] .app-shell {
   align-items: center;
   color: var(--muted);
   font-size: 0.94rem;
+}
+
+.agent-message-help-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  height: 2.75rem;
+  margin-top: 0.05rem;
+  padding: 0;
+  border: 1px solid rgba(204, 92, 49, 0.35);
+  border-radius: 999px;
+  color: var(--warn);
+  background: rgba(204, 92, 49, 0.08);
+  font-size: 1rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background-color 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.agent-message-help-button:hover {
+  background: rgba(204, 92, 49, 0.15);
+  border-color: rgba(204, 92, 49, 0.55);
+}
+
+.agent-message-help-button:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.24);
+  outline-offset: 2px;
+}
+
+.agent-message-help-button:active {
+  transform: scale(0.96);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-message-help-button {
+    transition: none;
+  }
 }
 
 .agent-thinking-dots {

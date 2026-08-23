@@ -10606,6 +10606,20 @@ function getProposalSetupLabel(proposal) {
   return proposal.setupActionLabel || "Open setup";
 }
 
+function openAgentErrorHelp(returnFocus = null) {
+  openAuthAlert(
+    "Why did this happen?",
+    "Your request reached Assistyca, but the assistant could not finish processing it. Nothing was created, sent, or turned on.",
+    {
+      eyebrow: "Agent help",
+      icon: "?",
+      tone: "warning",
+      buttonLabel: "Close",
+      returnFocus,
+    },
+  );
+}
+
 function renderAgentMessage(message) {
   const row = document.createElement("article");
   const kind = String(message.metadata?.kind || (message.role === "user" ? "user" : "text"));
@@ -10628,7 +10642,20 @@ function renderAgentMessage(message) {
     bubble.textContent = message.text;
   }
 
-  row.append(bubble);
+  const messageLine = document.createElement("div");
+  messageLine.className = "agent-message-line";
+  messageLine.append(bubble);
+  if (kind === "error") {
+    const helpButton = document.createElement("button");
+    helpButton.type = "button";
+    helpButton.className = "agent-message-help-button";
+    helpButton.textContent = "?";
+    helpButton.setAttribute("aria-label", "Why did this request fail?");
+    helpButton.title = "Why did this request fail?";
+    helpButton.addEventListener("click", () => openAgentErrorHelp(helpButton));
+    messageLine.append(helpButton);
+  }
+  row.append(messageLine);
 
   const rawActions = Array.isArray(message.metadata?.actions) ? message.metadata.actions : [];
   if (rawActions.length && message.role !== "user") {
