@@ -10697,12 +10697,15 @@ function normalizeAgentErrorTechnicalInfo(technical = {}) {
     : 0;
   const rawCode = String(source.code || "").trim().toLowerCase();
   const code = /^[a-z0-9_-]{1,80}$/.test(rawCode) ? rawCode : "request_failed";
+  const rawProviderCode = String(source.providerCode || "").trim().toLowerCase();
+  const providerCode = /^[a-z0-9_-]{1,80}$/.test(rawProviderCode) ? rawProviderCode : "";
   const occurredAt = String(source.occurredAt || "").trim();
   return {
     endpoint: "/api/agent/turn",
     status,
     upstreamStatus,
     code,
+    providerCode,
     occurredAt: /^\d{4}-\d{2}-\d{2}T/.test(occurredAt) ? occurredAt : "",
   };
 }
@@ -10712,6 +10715,7 @@ function getAgentErrorTechnicalInfo(error) {
   return normalizeAgentErrorTechnicalInfo({
     status: error?.status,
     upstreamStatus: error?.payload?.upstreamStatus,
+    providerCode: error?.payload?.providerCode,
     code: error?.payload?.error || (isTimedOut ? "client_timeout" : "request_failed"),
     occurredAt: new Date().toISOString(),
   });
@@ -10720,7 +10724,22 @@ function getAgentErrorTechnicalInfo(error) {
 function getAgentErrorGuidance(technical) {
   const details = normalizeAgentErrorTechnicalInfo(technical);
   if (details.code === "agent_billing_required") {
-    return "The OpenAI account has insufficient funds or inactive billing. Add funds or update the billing method, then try again.";
+    if (details.providerCode === "credit_balance_exhausted") {
+      return "OpenAI reported that this project’s prepaid credit balance is exhausted. If you just added funds, refresh billing and confirm the server is using the same project before retrying.";
+    }
+    if (["organization_spend_limit_exceeded", "project_spend_limit_exceeded"].includes(details.providerCode)) {
+      return "OpenAI reported a spend limit, not necessarily an empty balance. Check the project and organization limits, then retry.";
+    }
+    if (details.providerCode === "organization_usage_limit_exceeded") {
+      return "OpenAI reported that the organization usage limit was reached. Check the organization limit or request an increase, then retry.";
+    }
+    if (details.providerCode === "insufficient_quota") {
+      return "OpenAI returned a legacy quota or billing rejection. This does not prove a recent payment failed to apply; refresh billing and retry, then check the project and API key if it persists.";
+    }
+    return "OpenAI reported a billing restriction for this project. Refresh billing and retry; this message does not by itself prove that your funds are missing.";
+  }
+  if (details.code === "agent_quota_unclear") {
+    return "OpenAI returned a quota or usage-limit response, but the exact cause was not identified. This does not prove that your funds are missing. Refresh billing and retry; if it continues, check credits, spend limits, and rate limits.";
   }
   if (details.code === "agent_configuration_error") {
     return "The server is missing a valid OpenAI configuration. Check the API key, model name, and deployment environment variables.";
@@ -10770,6 +10789,7 @@ function createAgentErrorHelpBody(technical = {}) {
     ["Endpoint", details.endpoint],
     ["HTTP status", details.status ? String(details.status) : "Not returned"],
     ...(details.upstreamStatus ? [["Upstream status", String(details.upstreamStatus)]] : []),
+    ...(details.providerCode ? [["Provider code", details.providerCode]] : []),
     ["Error code", details.code],
     ["Time", details.occurredAt || "Not recorded"],
   ];

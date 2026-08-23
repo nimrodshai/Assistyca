@@ -584,20 +584,16 @@ def build_openai_failure_payload(
             provider_type = normalize_text(provider_error.get("type")).lower()
 
     searchable = " ".join((provider_code, provider_type, message, details)).lower()
+    explicit_billing_codes = {
+        "credit_balance_exhausted",
+        "insufficient_quota",  # Legacy provider code still returned by some API paths.
+        "billing_not_active",
+        "billing_hard_limit_reached",
+        "organization_spend_limit_exceeded",
+        "project_spend_limit_exceeded",
+        "organization_usage_limit_exceeded",
+    }
     if (
-        provider_code in {"insufficient_quota", "billing_not_active", "billing_hard_limit_reached"}
-        or provider_type in {"insufficient_quota", "billing_not_active", "billing_hard_limit_reached"}
-        or "insufficient funds" in searchable
-        or "insufficient quota" in searchable
-        or "insufficient_quota" in searchable
-        or "billing is not active" in searchable
-    ):
-        code = "agent_billing_required"
-        user_message = (
-            "The OpenAI account has insufficient funds or inactive billing. "
-            "Add funds or update the billing method, then try again."
-        )
-    elif (
         isinstance(error, OpenAIConfigurationError)
         or provider_code in {"missing_api_key"}
         or "openai_api_key is required" in searchable
@@ -611,13 +607,44 @@ def build_openai_failure_payload(
     ):
         code = "agent_authentication_error"
         user_message = "OpenAI rejected its credentials. Check the server API key, then try again."
+    elif provider_code in explicit_billing_codes:
+        code = "agent_billing_required"
+        if provider_code == "credit_balance_exhausted":
+            user_message = (
+                "OpenAI reported that the prepaid credit balance for this project is exhausted. "
+                "If you just added funds, refresh the billing page and retry; also confirm this server uses the "
+                "same project that received the payment."
+            )
+        elif provider_code in {"organization_spend_limit_exceeded", "project_spend_limit_exceeded"}:
+            user_message = (
+                "OpenAI reported that a spend limit was reached. This is different from an empty balance; "
+                "check the project and organization spend limits, then retry."
+            )
+        elif provider_code == "organization_usage_limit_exceeded":
+            user_message = (
+                "OpenAI reported that the organization usage limit was reached. "
+                "Check the organization limit or request a higher limit, then retry."
+            )
+        elif provider_code == "insufficient_quota":
+            user_message = (
+                "OpenAI returned a legacy quota or billing rejection. This does not by itself prove that a recent "
+                "payment failed to apply; refresh billing and retry, then check the project and API key if it persists."
+            )
+        else:
+            user_message = "OpenAI reported a billing restriction. Check the billing status for this project, then retry."
     elif (
-        upstream_status == 429
-        or provider_code in {"rate_limit_exceeded", "too_many_requests"}
+        provider_code in {"rate_limit_exceeded", "too_many_requests"}
         or "rate limit" in searchable
     ):
         code = "agent_rate_limited"
         user_message = "OpenAI is temporarily rate-limited. Wait a moment, then try again."
+    elif upstream_status == 429 or provider_type == "insufficient_quota" or "insufficient quota" in searchable:
+        code = "agent_quota_unclear"
+        user_message = (
+            "OpenAI returned a quota or usage-limit response, but it did not identify the exact cause. "
+            "This does not prove that your funds are missing. Refresh billing and retry; if it continues, check "
+            "the project’s credits, spend limits, and rate limits."
+        )
     elif (
         not upstream_status
         and any(marker in searchable for marker in ("did not respond", "timed out", "network request failed"))
@@ -635,6 +662,8 @@ def build_openai_failure_payload(
     }
     if upstream_status is not None:
         payload["upstreamStatus"] = upstream_status
+    if provider_code and re.fullmatch(r"[a-z0-9_-]{1,80}", provider_code):
+        payload["providerCode"] = provider_code
     return payload
 
 

@@ -476,8 +476,38 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"], "agent_billing_required")
-        self.assertIn("insufficient funds", payload["message"])
+        self.assertIn("legacy quota", payload["message"])
+        self.assertNotIn("insufficient funds", payload["message"])
         self.assertEqual(payload["upstreamStatus"], 429)
+        self.assertEqual(payload["providerCode"], "insufficient_quota")
+
+    def test_agent_turn_does_not_call_quota_type_a_funding_error_when_rate_code_is_present(self) -> None:
+        token = self._session_token_for("owner@example.com")
+        provider_error = {
+            "error": {
+                "message": "Rate limit reached for requests.",
+                "type": "insufficient_quota",
+                "code": "rate_limit_exceeded",
+            },
+        }
+        with patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=OpenAIRequestError(
+                "Rate limit reached for requests.",
+                details=json.dumps(provider_error),
+                status_code=429,
+            ),
+        ):
+            status, payload = self._post_agent_turn({
+                "userMessage": "Hello",
+                "conversation": [],
+            }, token=token)
+
+        self.assertEqual(status, 503)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "agent_rate_limited")
+        self.assertNotIn("insufficient funds", payload["message"])
+        self.assertEqual(payload["providerCode"], "rate_limit_exceeded")
 
 
 if __name__ == "__main__":
