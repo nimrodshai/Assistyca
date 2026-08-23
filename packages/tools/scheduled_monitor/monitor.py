@@ -1159,7 +1159,6 @@ class ScheduledMonitorScheduler:
             prompt=prompt,
             model=selected_model,
             max_output_tokens=self.config.max_output_tokens,
-            temperature=0,
             usage_recorder=self.database,
             price_resolver=self.database.get_model_price,
             config=load_openai_config(strict_tracking=False),

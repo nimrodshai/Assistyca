@@ -257,7 +257,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: 1 new match")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4-nano")
-        self.assertEqual(mock_openai_response.call_args.kwargs["temperature"], 0)
+        self.assertNotIn("temperature", mock_openai_response.call_args.kwargs)
 
         self.assertTrue(first_scheduled_summary["ran"])
         self.assertEqual(first_scheduled_summary["runs"][0]["status"], "duplicate_matches")
