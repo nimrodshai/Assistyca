@@ -206,7 +206,16 @@ class PortalStaticPageTests(unittest.TestCase):
         )
         self.assertIn(".agent-message-list::before", styles)
         self.assertIn("margin-top: auto;", styles)
+        action_panel_styles = styles[
+            styles.index(".agent-actions-panel {"):
+            styles.index(".agent-tools-head {")
+        ]
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr);", action_panel_styles)
+        self.assertIn("align-items: stretch;", action_panel_styles)
+        self.assertIn("align-content: stretch;", action_panel_styles)
+        self.assertIn("overflow: hidden;", action_panel_styles)
         self.assertIn(".app-shell.is-chat-workspace .agent-actions-panel-body", styles)
+        self.assertIn(".agent-actions-panel-body {\n  height: 100%;", styles)
         self.assertIn("scroll-padding-bottom: clamp(2rem, 5vh, 3.5rem);", styles)
         self.assertIn(".app-shell.is-chat-workspace .agent-tool-shelf", styles)
         self.assertIn("overflow: visible;", styles)
@@ -240,6 +249,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
+        agent_turn_request = script[
+            script.index('const turn = await apiRequest("/api/agent/turn"'):
+            script.index('await applyAgentTurnResponse(turn, cleanText);')
+        ]
+        self.assertIn("timeoutMs: 90000", agent_turn_request)
         self.assertIn("agentTurnBusy = true", script)
         self.assertIn('pushAgentMessage("assistant", message, {', script)
         self.assertIn('technical: getAgentErrorTechnicalInfo(error)', script)
@@ -257,6 +271,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function openAgentErrorHelp", script)
         self.assertIn("function createAgentErrorHelpBody", script)
         self.assertIn("getAgentErrorTechnicalInfo(error)", script)
+        self.assertIn('"client_timeout"', script)
         self.assertIn('eyebrow: "Technical details"', script)
         self.assertIn("agent-message-help-icon", script)
         self.assertIn("agent-message-help-button", script)

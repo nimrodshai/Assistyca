@@ -10622,9 +10622,10 @@ function normalizeAgentErrorTechnicalInfo(technical = {}) {
 }
 
 function getAgentErrorTechnicalInfo(error) {
+  const isTimedOut = isAbortError(error);
   return normalizeAgentErrorTechnicalInfo({
     status: error?.status,
-    code: error?.payload?.error,
+    code: error?.payload?.error || (isTimedOut ? "client_timeout" : "request_failed"),
     occurredAt: new Date().toISOString(),
   });
 }
@@ -10642,6 +10643,9 @@ function getAgentErrorGuidance(technical) {
   }
   if (details.status === 502 || details.code === "invalid_agent_turn") {
     return "The model returned a response the portal could not validate. Check the server response logs and the agent-turn response schema.";
+  }
+  if (details.code === "client_timeout") {
+    return "The browser waited too long for a response. The server may still be processing the request; check service health and server logs before retrying.";
   }
   if (!details.status || details.code === "request_failed") {
     return "The request may have timed out or the network may have dropped. Check connectivity and service health, then retry.";
@@ -12216,7 +12220,10 @@ async function handleAgentUserText(text) {
   try {
     const turn = await apiRequest("/api/agent/turn", {
       method: "POST",
-      timeoutMs: 30000,
+      // Keep this longer than the backend OpenAI gateway timeout so a slow
+      // model response becomes a useful 503/502 diagnostic instead of an
+      // opaque browser-side AbortError.
+      timeoutMs: 90000,
       body: {
         userMessage: cleanText,
         timezone: normalizeMonitorScheduleTimezone(
