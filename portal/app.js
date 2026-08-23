@@ -1037,6 +1037,7 @@ let billingLastRefreshCompletedAt = 0;
 let pricingRefreshPromise = null;
 let pricingLastRefreshCompletedAt = 0;
 let agentTurnBusy = false;
+let agentTurnProgressText = "Thinking";
 let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
@@ -10338,8 +10339,9 @@ function renderAgentMessage(message) {
   const bubble = document.createElement("div");
   bubble.className = "agent-message-bubble";
   if (kind === "thinking") {
-    bubble.setAttribute("aria-label", "Assistyca is thinking");
-    bubble.append(document.createTextNode("Thinking"));
+    const progressText = agentTurnProgressText || "Thinking";
+    bubble.setAttribute("aria-label", `Assistyca is ${progressText.toLowerCase()}`);
+    bubble.append(document.createTextNode(progressText));
     const dots = document.createElement("span");
     dots.className = "agent-thinking-dots";
     dots.setAttribute("aria-hidden", "true");
@@ -10376,7 +10378,7 @@ function renderAgentMessage(message) {
       button.dataset.agentActionProposal = message.metadata?.proposalId || "";
       button.dataset.agentActionRevision = String(messageRevision || "");
       button.dataset.agentActionMessage = message.id;
-      button.disabled = Boolean(isStaleApproval || actionsResolved);
+      button.disabled = Boolean(isStaleApproval || actionsResolved || agentTurnBusy);
       button.textContent = action.label;
       actionRow.append(button);
     }
@@ -10392,6 +10394,7 @@ function getAgentMessageRenderSignature(messages) {
     message.role,
     message.text,
     message.metadata?.kind || "",
+    message.metadata?.kind === "thinking" ? agentTurnProgressText : "",
     message.metadata?.proposalId || "",
     message.metadata?.proposalRevision || "",
     message.metadata?.actionsResolvedAt || "",
@@ -11466,7 +11469,7 @@ function handleAgentMessageAction(event) {
     pushAgentActionIntentMessage(action, value, proposalId);
     persistClientState();
     renderAgentMessages();
-    void approveAgentProposal(proposalId, proposalRevision);
+    startAgentProposalApproval(proposalId, proposalRevision);
     return true;
   }
 
@@ -11500,6 +11503,45 @@ function handleAgentMessageAction(event) {
   }
 
   return false;
+}
+
+function startAgentProposalApproval(proposalId, expectedRevision = 0) {
+  if (agentTurnBusy) {
+    return;
+  }
+
+  agentTurnBusy = true;
+  agentTurnProgressText = "Setting it up";
+  persistAgentWorkspace("Setting it up...");
+  renderApp({ preserveStatus: true });
+
+  void approveAgentProposal(proposalId, expectedRevision)
+    .catch((error) => {
+      const message = formatApiErrorMessage(error, "I couldn’t finish setting that up yet.");
+      pushAgentMessage("assistant", message, {
+        kind: "result",
+        proposalId,
+      });
+      persistAgentWorkspace(message);
+      renderApp({ preserveStatus: true });
+    })
+    .finally(() => {
+      agentTurnBusy = false;
+      agentTurnProgressText = "Thinking";
+      renderApp({ preserveStatus: true });
+    });
+}
+
+function pushAgentProposalResult(proposalId, text, kind = "result") {
+  const message = String(text || "").trim();
+  if (!message) {
+    return null;
+  }
+
+  return pushAgentMessage("assistant", message, {
+    kind,
+    ...(proposalId ? { proposalId } : {}),
+  });
 }
 
 function buildAgentTurnActiveProposal(proposal) {
@@ -11560,6 +11602,7 @@ async function applyAgentTurnResponse(turn, userText) {
   const reply = String(turn?.reply || "").trim();
 
   if (outcome === "approve_proposal" && activeProposal && !activeProposal.approved && hasCurrentApprovalPrompt) {
+    agentTurnProgressText = "Setting it up";
     await approveAgentProposal(activeProposal.id, currentRevision);
     return true;
   }
@@ -11628,6 +11671,7 @@ async function handleAgentUserText(text) {
   }));
   const activeProposalPayload = buildAgentTurnActiveProposal(activeProposal);
   agentTurnBusy = true;
+  agentTurnProgressText = "Thinking";
   persistAgentWorkspace("Assistyca is thinking...");
   renderApp({ preserveStatus: true });
 
@@ -11645,12 +11689,14 @@ async function handleAgentUserText(text) {
         activeProposal: activeProposalPayload,
       },
     });
-    agentTurnBusy = false;
     await applyAgentTurnResponse(turn, cleanText);
+    agentTurnBusy = false;
+    agentTurnProgressText = "Thinking";
     persistAgentWorkspace("Agent updated.");
     renderApp({ preserveStatus: true });
   } catch (error) {
     agentTurnBusy = false;
+    agentTurnProgressText = "Thinking";
     persistAgentWorkspace(formatApiErrorMessage(error, "Agent response failed."));
     renderApp({ preserveStatus: true });
   }
@@ -11696,6 +11742,7 @@ async function scheduleAgentScheduledMessageProposal(proposal) {
   proposal.executionPlan = buildAgentScheduledMessageExecutionPlan(details);
   return apiRequest("/api/scheduled-actions", {
     method: "POST",
+    headers: getSessionAuthHeaders(),
     body: {
       actionType: "send_message",
       channel: details.channel,
@@ -11876,9 +11923,11 @@ function handleAgentWebMonitorActivationError(error, proposal) {
   if (payload.error === "payment_required") {
     const checkoutUrl = payload.paymentStatus?.checkoutUrl || payload.checkoutUrl || "";
     const checkoutOpened = openPaymentCheckout(checkoutUrl);
+    const message = payload.message || "Add payment details before activating this monitor.";
+    pushAgentProposalResult(proposal.id, message);
     openFeatureActivationAlert(
       "Payment needed",
-      payload.message || "Add payment details before activating this monitor.",
+      message,
       {
         eyebrow: "Billing required",
         returnFocus: elements.agentComposerInput,
@@ -11896,6 +11945,7 @@ function handleAgentWebMonitorActivationError(error, proposal) {
       || setupStatus.message
       || "Finish the web monitor setup before activating it.",
     ).trim();
+    pushAgentProposalResult(proposal.id, message, "credential");
     openFeatureActivationAlert(
       "Finish setup first",
       message,
@@ -11910,6 +11960,7 @@ function handleAgentWebMonitorActivationError(error, proposal) {
   }
 
   const message = formatApiErrorMessage(error, "I couldn’t activate the web monitor yet.");
+  pushAgentProposalResult(proposal.id, message);
   openFeatureActivationAlert("Couldn’t activate the monitor", message, {
     eyebrow: "Try again",
     returnFocus: elements.agentComposerInput,
@@ -11942,7 +11993,9 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
   }
 
   if (proposal.type === "scheduled-message" && proposal.missingCredential) {
-    persistAgentWorkspace("WhatsApp setup required.");
+    const message = `${proposal.missingCredential} setup is required before I can finish this.`;
+    pushAgentProposalResult(proposal.id, message, "credential");
+    persistAgentWorkspace(message);
     openAgentProposalSetup(proposal.id);
     renderApp({ preserveStatus: true });
     return;
@@ -11982,6 +12035,7 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
       } else {
         statusMessage = formatApiErrorMessage(error, "I could not schedule that message yet.");
       }
+      pushAgentProposalResult(proposal.id, statusMessage, payload.error === "missing_whatsapp_connection" ? "credential" : "result");
       persistAgentWorkspace(statusMessage);
       renderApp({ preserveStatus: true });
       return;
@@ -12024,16 +12078,24 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
   }
 
   if (proposal.missingCredential) {
-    persistAgentWorkspace(`${proposal.missingCredential} setup required.`);
+    const message = `${proposal.missingCredential} setup is required before I can finish this.`;
+    pushAgentProposalResult(proposal.id, message, "credential");
+    persistAgentWorkspace(message);
     openAgentProposalSetup(proposal.id);
   } else if (proposal.type === "scheduled-message") {
-    persistAgentWorkspace("Scheduled message created.");
+    const message = "Scheduled message created.";
+    pushAgentProposalResult(proposal.id, message);
+    persistAgentWorkspace(message);
   } else if (proposal.type === "web-monitor") {
     const runMessage = monitorActivation?.initialRun?.message || "";
     const runError = monitorActivation?.initialRunError || "";
-    persistAgentWorkspace(runMessage || runError || "Web monitor activated.");
+    const message = runMessage || runError || "Web monitor activated.";
+    pushAgentProposalResult(proposal.id, message);
+    persistAgentWorkspace(message);
   } else {
-    persistAgentWorkspace("Agent helper created.");
+    const message = "Agent helper created.";
+    pushAgentProposalResult(proposal.id, message);
+    persistAgentWorkspace(message);
   }
   renderApp({ preserveStatus: true });
 }
@@ -12237,7 +12299,7 @@ function handleAgentWorkspaceClick(event) {
     pushAgentActionIntentMessage("approve-proposal", "Set it up", proposalId);
     persistClientState();
     renderAgentMessages();
-    void approveAgentProposal(proposalId);
+    startAgentProposalApproval(proposalId);
     return;
   }
 

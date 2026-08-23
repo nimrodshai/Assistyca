@@ -230,6 +230,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function pushAgentProposalNextStep(proposal, reply = \"\")", script)
         self.assertIn("pushAgentApprovalPrompt(proposal, reply)", script)
         self.assertIn("function pushAgentActionIntentMessage", script)
+        self.assertIn("function startAgentProposalApproval", script)
+        self.assertIn('agentTurnProgressText = "Setting it up"', script)
+        self.assertIn("function pushAgentProposalResult", script)
         self.assertIn('return "Set it up please";', script)
         self.assertIn('pushAgentMessage("user", text, {', script)
         self.assertIn("function getAgentProposalLocalActions", script)
@@ -258,7 +261,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("fields: proposal.fields", script)
         self.assertIn('outcome === "proposal" || (outcome === "question" && turn?.proposalType)', script)
         self.assertIn("button.dataset.agentActionMessage = message.id", script)
-        self.assertIn("button.disabled = Boolean(isStaleApproval || actionsResolved)", script)
+        self.assertIn("button.disabled = Boolean(isStaleApproval || actionsResolved || agentTurnBusy)", script)
         self.assertIn('resolveAgentMessageActions(messageId, action)', script)
         self.assertIn("return pushAgentMessage(\"assistant\", messageText", script)
         self.assertNotIn("function getAgentConversationQuestion", script)
@@ -274,6 +277,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn("Should I set it up?", script)
         self.assertNotIn("Action #${scheduledAction.id}", script)
         self.assertNotIn("Would you like me to schedule it?", script)
+        self.assertIn(
+            'apiRequest("/api/scheduled-actions", {\n'
+            '    method: "POST",\n'
+            '    headers: getSessionAuthHeaders(),',
+            script,
+        )
         handler = script[
             script.index("async function handleAgentUserText"):
             script.index("function handleAgentComposerSubmit")
