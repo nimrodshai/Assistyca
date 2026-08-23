@@ -10248,6 +10248,32 @@ function getAgentApprovalActions(proposal) {
   ];
 }
 
+function shouldAttachAgentApprovalActions(proposal, messageText = "") {
+  if (!proposal) {
+    return false;
+  }
+  const text = String(messageText || "").toLowerCase();
+  const asksToConfirmSetup = (
+    /\bconfirm\b/.test(text)
+    || /\bgo ahead\b/.test(text)
+    || /\bproceed\b/.test(text)
+    || /\bset\s+(?:it|this|that|the setup)\s+up\b/.test(text)
+  );
+  const offersChangePath = (
+    /\bchange\b/.test(text)
+    || /\badjust\b/.test(text)
+    || /\bedit\b/.test(text)
+    || /\bmodify\b/.test(text)
+  );
+  return !(asksToConfirmSetup && offersChangePath);
+}
+
+function getAgentApprovalPromptActions(proposal, messageText = "") {
+  return shouldAttachAgentApprovalActions(proposal, messageText)
+    ? getAgentApprovalActions(proposal)
+    : [];
+}
+
 function pushAgentQuestion(proposal, questionIndex = 0, questionOverride = "") {
   const index = Math.max(0, Number(questionIndex || 0));
   proposal.questionIndex = index;
@@ -10276,7 +10302,7 @@ function pushAgentApprovalPrompt(proposal, reply = "") {
     kind: "approval",
     proposalId: proposal.id,
     proposalRevision: Math.max(1, Number(proposal.revision || 1)),
-    actions: getAgentApprovalActions(proposal),
+    actions: getAgentApprovalPromptActions(proposal, messageText),
   });
 }
 
@@ -10355,12 +10381,18 @@ function renderAgentMessage(message) {
 
   row.append(bubble);
 
-  const actions = Array.isArray(message.metadata?.actions) ? message.metadata.actions : [];
-  if (actions.length && message.role !== "user") {
+  const rawActions = Array.isArray(message.metadata?.actions) ? message.metadata.actions : [];
+  if (rawActions.length && message.role !== "user") {
     const agent = getAgentWorkspace();
     const proposal = message.metadata?.proposalId
       ? agent.proposals.find((candidate) => candidate.id === message.metadata.proposalId)
       : null;
+    const actions = kind === "approval" && !shouldAttachAgentApprovalActions(proposal, message.text)
+      ? []
+      : rawActions;
+    if (!actions.length) {
+      return row;
+    }
     const messageRevision = Math.max(0, Number(message.metadata?.proposalRevision || 0));
     const isStaleApproval = kind === "approval"
       && proposal

@@ -161,6 +161,8 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("repeats an already pending activeProposal", prompt)
         self.assertIn("plan is already ready", prompt)
         self.assertIn("instead of restating the plan", prompt)
+        self.assertIn("may omit them when the reply already gives the user a clear", prompt)
+        self.assertNotIn("may attach Set it up and Change something buttons", prompt)
 
     def test_question_turn_can_preserve_known_draft_fields(self) -> None:
         turn = normalize_agent_turn_response({
