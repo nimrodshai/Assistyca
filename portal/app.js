@@ -12116,8 +12116,16 @@ async function handleAgentUserText(text) {
   } catch (error) {
     agentTurnBusy = false;
     agentTurnProgressText = "Thinking";
-    persistAgentWorkspace(formatApiErrorMessage(error, "Agent response failed."));
+    const message = formatApiErrorMessage(
+      error,
+      "I couldn’t get a response right now. Please try again in a moment.",
+    );
+    // Keep failures in the conversation. A status-only update made the
+    // thinking indicator disappear and left the user with no explanation.
+    pushAgentMessage("assistant", message, { kind: "error" });
+    persistAgentWorkspace(message);
     renderApp({ preserveStatus: true });
+    elements.agentComposerInput?.focus();
   }
 }
 

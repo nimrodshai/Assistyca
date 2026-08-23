@@ -241,6 +241,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("agentTurnBusy = true", script)
+        self.assertIn('pushAgentMessage("assistant", message, { kind: "error" })', script)
+        self.assertIn("I couldn’t get a response right now", script)
         self.assertIn('wrap="off"', html)
         self.assertIn("function normalizeAgentComposerPastedText", script)
         self.assertIn("function handleAgentComposerPaste", script)
