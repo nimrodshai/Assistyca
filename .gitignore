@@ -9,4 +9,5 @@ portal/*.db
 portal/*.db-*
 portal/*.sqlite
 portal/*.sqlite3
+portal/portal-whatsapp/
 scripts/run_portal_server.local.sh

@@ -4237,7 +4237,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         assignment = self.database.get_feature_assignment(email, feature_id) or {}
         metadata = assignment.get("metadata") if isinstance(assignment.get("metadata"), dict) else {}
         settings = metadata.get("settings") if isinstance(metadata.get("settings"), dict) else {}
-        return settings if isinstance(settings, dict) else {}
+        if isinstance(settings, dict) and settings:
+            if feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID and not any(
+                key in settings
+                for key in ("deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel")
+            ):
+                return {**settings, "deliveryChannels": ["portal"]}
+            return settings
+        # Existing workspaces created before portal delivery was available
+        # should receive new review cards in this chat by default.
+        if feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
+            return {"deliveryChannels": ["portal"]}
+        return {}
 
     def _build_whatsapp_service(self, connection: dict[str, Any]) -> PortalWhatsAppService:
         service_connection = {
@@ -5123,10 +5134,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, {"ok": True, "approval": approval})
             return
 
-        status = urllib_parse.parse_qs(parsed.query).get("status", [None])[0]
+        query = urllib_parse.parse_qs(parsed.query)
+        status = query.get("status", [None])[0]
+        delivery = normalize_text(query.get("delivery", [""])[0]).lower()
+        approvals = service.list_approvals(status=status)
+        if delivery == "portal":
+            if not service.owner_portal_delivery_enabled():
+                approvals = []
+            else:
+                approvals = [
+                    approval
+                    for approval in approvals
+                    if not approval.get("owner_notification_delivery_channels")
+                    or "portal" in approval.get("owner_notification_delivery_channels", [])
+                ]
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "approvals": service.list_approvals(status=status),
+            "approvals": approvals,
         })
 
     def _handle_whatsapp_threads_get(self, parsed: urllib_parse.ParseResult) -> None:
@@ -5563,10 +5587,74 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def _handle_whatsapp_approval_api_submit(self, parsed: urllib_parse.ParseResult) -> None:
         parts = [part for part in parsed.path.rstrip("/").split("/") if part]
-        if len(parts) != 4 or parts[0] != "api" or parts[1] != "approvals" or parts[3] != "send":
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "approvals" or parts[3] not in {"send", "skip"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
+        if parts[3] == "skip":
+            self._skip_whatsapp_approval(urllib_parse.unquote(parts[2]))
+            return
         self._send_whatsapp_approval(urllib_parse.unquote(parts[2]), as_json=True)
+
+    def _skip_whatsapp_approval(self, approval_id: str) -> None:
+        resolved = self._resolve_whatsapp_service_for_approval(approval_id)
+        if resolved is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": "Approval not found.",
+            })
+            return
+
+        owner, service, connection = resolved
+        session = self._get_authenticated_session()
+        if session is None:
+            json_response(self, HTTPStatus.UNAUTHORIZED, {
+                "ok": False,
+                "error": "unauthorized",
+                "message": "Sign in again to continue.",
+            })
+            return
+        if normalize_email(session.email) != normalize_email(connection.get("email")):
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "forbidden",
+                "message": "This approval belongs to another workspace.",
+            })
+            return
+
+        approval = service.get_approval(approval_id)
+        if approval is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": "Approval not found.",
+            })
+            return
+
+        try:
+            updated = service.skip_approval(approval_id)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_request",
+                "message": str(exc),
+            })
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to the UI
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "skip_failed",
+                "message": str(exc),
+            })
+            return
+
+        if owner:
+            self.database.map_whatsapp_approval(
+                approval_id,
+                user_id=int(owner.get("userId") or 0),
+                phone_number_id=normalize_text(owner.get("phoneNumberId")),
+            )
+        json_response(self, HTTPStatus.OK, {"ok": True, "approval": updated})
 
     def _handle_whatsapp_approval_page(self, parsed: urllib_parse.ParseResult) -> None:
         parts = [part for part in parsed.path.split("/") if part]

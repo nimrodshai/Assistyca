@@ -101,6 +101,7 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
             },
             "metadata": {
                 "catalogSource": "default_feature_catalog",
+                "deliveryChannels": ["portal", "whatsapp", "telegram"],
             },
         },
         {

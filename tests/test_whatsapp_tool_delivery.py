@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_portal
 
 
 class WhatsAppToolDeliveryTests(unittest.TestCase):
@@ -48,6 +49,12 @@ class WhatsAppToolDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(settings["deliveryChannels"], [])
+
+    def test_portal_is_a_supported_owner_delivery_channel(self) -> None:
+        settings = normalize_whatsapp_tool_delivery_settings({"deliveryChannels": ["portal"]})
+
+        self.assertEqual(settings["deliveryChannels"], ["portal"])
+        self.assertTrue(whatsapp_tool_delivery_uses_portal(settings))
 
 
 if __name__ == "__main__":

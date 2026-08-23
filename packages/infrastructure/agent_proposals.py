@@ -40,7 +40,7 @@ _AGENT_PROPOSAL_TYPES = {
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "email-digest": ["mailbox", "schedule", "deliveryChannel"],
     "web-monitor": ["watchQuery", "location", "timeWindow", "frequency", "deliveryChannel"],
-    "whatsapp-replies": ["whatsappNumber", "approver", "guardrails"],
+    "whatsapp-replies": ["whatsappNumber", "approver", "guardrails", "deliveryChannel"],
     "reengagement": ["inactivityPeriod", "frequency", "deliveryChannel"],
     "custom": ["result", "frequency", "deliveryChannel", "calendar"],
 }
@@ -309,6 +309,11 @@ def build_agent_turn_prompt(
         "is true, use the connected WhatsApp Business connection and do not ask which WhatsApp number or account "
         "to monitor. If it is false, ask only for the specific WhatsApp details listed in "
         "toolContext.whatsapp.missingFields; do not invent additional connection fields.\n"
+        "For whatsapp-replies, keep the WhatsApp Business connection (the inbound source) separate from the "
+        "deliveryChannel (where the owner reviews generated replies). Prefer deliveryChannel=portal when the "
+        "user has not chosen another channel, because the Assistyca chat is the review inbox. Ask for missing "
+        "setup details in this conversation, one detail at a time, and never ask the user to paste an access token "
+        "into chat.\n"
         "Examples:\n"
         '- With no active proposal, "send me a WhatsApp message at 12:40" means outcome=proposal, '
         "proposalType=scheduled-message, and changes includes channel=whatsapp and timeLocal=12:40.\n"

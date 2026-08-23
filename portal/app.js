@@ -22,6 +22,7 @@ const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
 const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "You replied here - but the WhatsApp API doesn't let us read the content";
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const SCHEDULED_ACTIONS_POLL_MS = 5 * 1000;
+const WHATSAPP_APPROVALS_POLL_MS = 5 * 1000;
 const SCHEDULED_ACTIONS_REFRESH_ERROR_THRESHOLD = 3;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
@@ -236,6 +237,12 @@ const WHATSAPP_TOOL_PLATFORM_OPTIONS = [
     label: "Telegram",
     shortLabel: "TG",
     caption: "Bot chat delivery",
+  },
+  {
+    id: "portal",
+    label: "This chat",
+    shortLabel: "CHAT",
+    caption: "Review drafts in Assistyca",
   },
 ];
 const DEFAULT_TOOL_MODEL_OPTIONS = MANUAL_PRICING_SNAPSHOT.cards.map((card) => ({
@@ -734,6 +741,11 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
       key: "guardrails",
       question: "What should I never promise without you?",
     },
+    {
+      key: "deliveryChannel",
+      question: "Where should I bring reply drafts for your review?",
+      actions: ["This chat", "WhatsApp", "Telegram"],
+    },
   ],
   reengagement: [
     {
@@ -1086,6 +1098,8 @@ let whatsappConnectionPollActive = false;
 let whatsappConnectionPollFeatureId = "";
 let scheduledActionsPollTimer = null;
 let scheduledActionsRefreshPromise = null;
+let whatsappApprovalsPollTimer = null;
+let whatsappApprovalsRefreshPromise = null;
 
 const elements = {
   loadingView: document.querySelector("#loadingView"),
@@ -1554,6 +1568,10 @@ function clearAuthSession() {
   if (scheduledActionsPollTimer !== null) {
     window.clearInterval(scheduledActionsPollTimer);
     scheduledActionsPollTimer = null;
+  }
+  if (whatsappApprovalsPollTimer !== null) {
+    window.clearInterval(whatsappApprovalsPollTimer);
+    whatsappApprovalsPollTimer = null;
   }
 }
 
@@ -3340,7 +3358,7 @@ function normalizeWhatsAppToolDeliveryChannels(value, fallback = DEFAULT_WHATSAP
   const channels = [];
   for (const channel of rawChannels) {
     const normalized = String(channel || "").trim().toLowerCase();
-    if (["whatsapp", "telegram"].includes(normalized) && !channels.includes(normalized)) {
+    if (["whatsapp", "telegram", "portal"].includes(normalized) && !channels.includes(normalized)) {
       channels.push(normalized);
     }
   }
@@ -3351,7 +3369,7 @@ function normalizeWhatsAppToolDeliveryChannels(value, fallback = DEFAULT_WHATSAP
   if (channels.length) {
     return channels;
   }
-  const normalizedFallback = fallbackChannels.filter((channel) => ["whatsapp", "telegram"].includes(channel));
+  const normalizedFallback = fallbackChannels.filter((channel) => ["whatsapp", "telegram", "portal"].includes(channel));
   return normalizedFallback.length ? normalizedFallback : hasArrayFallback ? [] : ["whatsapp"];
 }
 
@@ -3376,10 +3394,12 @@ function normalizeFeatureWhatsAppToolSettings(settings = {}) {
 
 function normalizeFeatureWhatsAppReplyAssistantSettings(settings = {}) {
   const normalized = normalizeFeatureWhatsAppToolSettings(settings);
+  const source = settings && typeof settings === "object" ? settings : {};
+  const hasExplicitDelivery = ["deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel"]
+    .some((key) => Object.prototype.hasOwnProperty.call(source, key));
   return {
     ...normalized,
-    deliveryChannels: normalized.deliveryChannels.filter((channel) => channel === "whatsapp"),
-    telegramChatId: "",
+    deliveryChannels: hasExplicitDelivery ? normalized.deliveryChannels : ["portal"],
   };
 }
 
@@ -10010,6 +10030,10 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   const inferredFields = blueprint.type === "scheduled-message"
     ? {}
     : inferAgentProposalFieldsFromText(text, blueprint.type);
+  if (blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
+    inferredFields.whatsappNumber = inferredFields.whatsappNumber || "connected WhatsApp number";
+    inferredFields.deliveryChannel = inferredFields.deliveryChannel || "portal";
+  }
   const scheduledQuestionPlan = blueprint.type === "scheduled-message"
     ? buildAgentScheduledMessageQuestionPlan(scheduledDetails)
     : { questions: [...blueprint.questions], questionKeys: [] };
@@ -10019,7 +10043,9 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     : blueprint.relatedFeatureId;
   const missingCredential = blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp"
     ? (isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)) ? "" : "WhatsApp Business API access token")
-    : blueprint.missingCredential;
+    : blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()
+      ? ""
+      : blueprint.missingCredential;
   const proposal = normalizeAgentProposal({
     id: createAgentId("agent-proposal"),
     type: blueprint.type,
@@ -10253,7 +10279,7 @@ function getAgentProposalFieldKeysForAnswers(proposal, answerCount = 0) {
   }
 
   if (proposal?.type === "whatsapp-replies") {
-    return ["whatsappNumber", "approver", "guardrails"];
+    return ["whatsappNumber", "approver", "guardrails", "deliveryChannel"];
   }
 
   if (proposal?.type === "reengagement") {
@@ -10461,6 +10487,11 @@ function inferAgentProposalFieldsFromText(text, proposalType) {
   if (proposalType === "whatsapp-replies") {
     if (/\bwhatsapp\b/i.test(value)) {
       fields.whatsappNumber = "connected WhatsApp number";
+    }
+    const deliveryMatch = value.match(/\b(?:send|deliver|bring|notify|alert|review)\b[\s\S]{0,40}\b(whatsapp|telegram|portal|chat|workspace)\b/i);
+    const requestedDeliveryChannel = normalizeAgentDeliveryChannel(deliveryMatch?.[1] || "");
+    if (requestedDeliveryChannel) {
+      fields.deliveryChannel = formatAgentScheduledMessageChannel(requestedDeliveryChannel);
     }
     return fields;
   }
@@ -10891,6 +10922,159 @@ function createAgentConnectionSetupCard(message) {
   return card;
 }
 
+function getAgentWhatsAppApprovalForMessage(message) {
+  return message?.metadata?.approval && typeof message.metadata.approval === "object"
+    ? message.metadata.approval
+    : {};
+}
+
+function createAgentWhatsAppReplyCard(message) {
+  const approval = getAgentWhatsAppApprovalForMessage(message);
+  const status = String(approval.status || message.metadata?.approvalStatus || "pending").trim().toLowerCase();
+  const senderName = String(approval.sender_name || approval.senderName || approval.sender_wa_id || "WhatsApp contact").trim();
+  const incomingText = String(approval.latest_message || approval.incoming_text || approval.message || "").trim();
+  const suggestedReply = String(approval.suggested_reply || approval.suggestedReply || "").trim();
+
+  const card = document.createElement("section");
+  card.className = `agent-message-whatsapp-card is-${status || "pending"}`;
+  card.setAttribute("aria-label", `WhatsApp reply from ${senderName}`);
+
+  const header = document.createElement("div");
+  header.className = "agent-message-whatsapp-card-head";
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "agent-message-whatsapp-card-eyebrow";
+  eyebrow.textContent = "WhatsApp reply";
+  const title = document.createElement("h3");
+  title.className = "agent-message-whatsapp-card-title";
+  title.textContent = senderName;
+  const statusLabel = document.createElement("span");
+  statusLabel.className = "agent-message-whatsapp-card-status";
+  statusLabel.setAttribute("role", "status");
+  statusLabel.textContent = status === "sent" ? "Sent" : status === "skipped" ? "Skipped" : "Needs review";
+  header.append(eyebrow, title, statusLabel);
+
+  const incomingLabel = document.createElement("span");
+  incomingLabel.className = "agent-message-whatsapp-card-label";
+  incomingLabel.textContent = "They wrote";
+  const incoming = document.createElement("p");
+  incoming.className = "agent-message-whatsapp-card-incoming";
+  incoming.textContent = incomingText || "New WhatsApp message received.";
+
+  const replyLabel = document.createElement("label");
+  replyLabel.className = "agent-message-whatsapp-card-label";
+  replyLabel.textContent = "Suggested reply";
+  const textarea = document.createElement("textarea");
+  textarea.className = "agent-message-whatsapp-card-textarea";
+  textarea.id = `agent-whatsapp-reply-${message.id}`;
+  replyLabel.htmlFor = textarea.id;
+  textarea.rows = 3;
+  textarea.value = suggestedReply;
+  textarea.setAttribute("aria-label", `Suggested reply to ${senderName}`);
+  textarea.disabled = status !== "pending";
+
+  card.append(header, incomingLabel, incoming, replyLabel, textarea);
+
+  if (status === "pending") {
+    if (message.metadata?.approvalError) {
+      const error = document.createElement("p");
+      error.className = "agent-message-whatsapp-card-error";
+      error.setAttribute("role", "alert");
+      error.textContent = String(message.metadata.approvalError);
+      card.append(error);
+    }
+    const note = document.createElement("p");
+    note.className = "agent-message-whatsapp-card-note";
+    note.textContent = "Review or edit it here. Nothing is sent until you choose Send reply.";
+    const actions = document.createElement("div");
+    actions.className = "agent-message-whatsapp-card-actions";
+
+    const sendButton = document.createElement("button");
+    sendButton.type = "button";
+    sendButton.className = "primary-button small";
+    sendButton.textContent = "Send reply";
+    sendButton.dataset.agentWhatsAppAction = "send";
+    sendButton.dataset.agentWhatsAppApproval = String(approval.approval_id || approval.approvalId || "");
+    sendButton.dataset.agentWhatsAppMessage = message.id;
+
+    const skipButton = document.createElement("button");
+    skipButton.type = "button";
+    skipButton.className = "ghost-button small";
+    skipButton.textContent = "Skip";
+    skipButton.dataset.agentWhatsAppAction = "skip";
+    skipButton.dataset.agentWhatsAppApproval = String(approval.approval_id || approval.approvalId || "");
+    skipButton.dataset.agentWhatsAppMessage = message.id;
+    actions.append(sendButton, skipButton);
+    card.append(note, actions);
+  } else if (message.metadata?.approvalError) {
+    const error = document.createElement("p");
+    error.className = "agent-message-whatsapp-card-error";
+    error.setAttribute("role", "alert");
+    error.textContent = String(message.metadata.approvalError);
+    card.append(error);
+  } else {
+    const outcome = document.createElement("p");
+    outcome.className = "agent-message-whatsapp-card-note";
+    outcome.textContent = status === "sent"
+      ? "The approved reply was sent to this WhatsApp contact."
+      : "This suggestion was skipped and will not be sent.";
+    card.append(outcome);
+  }
+
+  return card;
+}
+
+async function handleAgentWhatsAppApprovalAction(button) {
+  const approvalId = String(button?.dataset.agentWhatsAppApproval || "").trim();
+  const messageId = String(button?.dataset.agentWhatsAppMessage || "").trim();
+  const action = String(button?.dataset.agentWhatsAppAction || "").trim().toLowerCase();
+  if (!approvalId || !messageId || !["send", "skip"].includes(action)) {
+    return;
+  }
+
+  const agent = getAgentWorkspace();
+  const message = agent.messages.find((candidate) => candidate.id === messageId);
+  if (!message) {
+    return;
+  }
+  const approval = getAgentWhatsAppApprovalForMessage(message);
+  if (String(approval.status || "pending").toLowerCase() !== "pending") {
+    return;
+  }
+
+  const card = button.closest(".agent-message-whatsapp-card");
+  const textarea = card?.querySelector(".agent-message-whatsapp-card-textarea");
+  const buttons = card ? Array.from(card.querySelectorAll("button")) : [button];
+  buttons.forEach((candidate) => {
+    candidate.disabled = true;
+  });
+  if (card) {
+    card.classList.add("is-busy");
+  }
+
+  try {
+    const response = await apiRequest(`/api/approvals/${encodeURIComponent(approvalId)}/${action}`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: action === "send" ? { reply_text: String(textarea?.value || "").trim() } : {},
+    });
+    message.metadata.approval = response.approval || {
+      ...approval,
+      status: action === "send" ? "sent" : "skipped",
+    };
+    message.metadata.approvalStatus = action === "send" ? "sent" : "skipped";
+    message.metadata.approvalError = "";
+    persistAgentWorkspace(action === "send" ? "Reply sent." : "Reply skipped.");
+    renderAgentMessages();
+  } catch (error) {
+    message.metadata.approvalError = formatApiErrorMessage(
+      error,
+      action === "send" ? "I couldn’t send that reply. Check the WhatsApp connection and try again." : "I couldn’t skip that reply. Try again.",
+    );
+    persistClientState();
+    renderAgentMessages();
+  }
+}
+
 function renderAgentMessage(message) {
   const row = document.createElement("article");
   const kind = String(message.metadata?.kind || (message.role === "user" ? "user" : "text"));
@@ -10934,6 +11118,9 @@ function renderAgentMessage(message) {
 
   if (kind === "connection-setup") {
     row.append(createAgentConnectionSetupCard(message));
+  }
+  if (kind === "whatsapp-reply-suggestion") {
+    row.append(createAgentWhatsAppReplyCard(message));
   }
 
   const rawActions = kind === "connection-setup"
@@ -10984,6 +11171,9 @@ function getAgentMessageRenderSignature(messages) {
     message.text,
     message.metadata?.kind || "",
     message.metadata?.kind === "thinking" ? agentTurnProgressText : "",
+    message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.status || message.metadata?.approvalStatus || "") : "",
+    message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approvalError || "") : "",
+    message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.suggested_reply || "") : "",
     message.metadata?.proposalId || "",
     message.metadata?.proposalRevision || "",
     message.metadata?.actionsResolvedAt || "",
@@ -11326,6 +11516,9 @@ function getSignedInDeliveryEmail() {
 }
 
 function getAgentProposalDeliveryChannel(proposal) {
+  if (proposal?.type === "whatsapp-replies") {
+    return normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel")) || "portal";
+  }
   const settings = proposal?.executionPlan?.settings && typeof proposal.executionPlan.settings === "object"
     ? proposal.executionPlan.settings
     : {};
@@ -12029,6 +12222,87 @@ async function refreshScheduledActions(options = {}) {
   return scheduledActionsRefreshPromise;
 }
 
+async function refreshWhatsAppApprovals() {
+  if (!isSignedIn() || whatsappApprovalsRefreshPromise) {
+    return null;
+  }
+
+  const requestToken = String(authSession?.token || "");
+  whatsappApprovalsRefreshPromise = (async () => {
+    try {
+      const response = await apiRequest("/api/approvals?status=pending&delivery=portal", {
+        headers: getSessionAuthHeaders(),
+      });
+      if (requestToken !== String(authSession?.token || "")) {
+        return null;
+      }
+
+      const approvals = Array.isArray(response.approvals) ? response.approvals : [];
+      const agent = getAgentWorkspace();
+      const knownApprovalIds = new Set(
+        agent.messages
+          .filter((message) => message.metadata?.kind === "whatsapp-reply-suggestion")
+          .map((message) => String(message.metadata?.approvalId || "").trim())
+          .filter(Boolean),
+      );
+      let didAddMessage = false;
+      for (const approval of approvals) {
+        const approvalId = String(approval?.approval_id || approval?.approvalId || "").trim();
+        if (!approvalId || knownApprovalIds.has(approvalId)) {
+          continue;
+        }
+        const senderName = String(approval.sender_name || approval.sender_wa_id || "WhatsApp contact").trim();
+        pushAgentMessage("assistant", `A new WhatsApp message arrived from ${senderName}.`, {
+          kind: "whatsapp-reply-suggestion",
+          approvalId,
+          approval,
+          excludeFromModel: true,
+        });
+        knownApprovalIds.add(approvalId);
+        didAddMessage = true;
+      }
+      if (didAddMessage) {
+        persistClientState();
+        renderAgentMessages();
+      }
+      return approvals;
+    } catch {
+      // The chat remains usable when an inbox refresh is temporarily offline;
+      // the next poll will retry without interrupting the user's conversation.
+      return null;
+    } finally {
+      whatsappApprovalsRefreshPromise = null;
+    }
+  })();
+  return whatsappApprovalsRefreshPromise;
+}
+
+function syncWhatsAppApprovalsPolling() {
+  const shouldPoll = Boolean(
+    isSignedIn()
+    && document.body.dataset.view === "app"
+    && document.visibilityState !== "hidden"
+    && state.activeTab === "features"
+    && !state.selectedFeatureId
+  );
+  if (!shouldPoll) {
+    if (whatsappApprovalsPollTimer !== null) {
+      window.clearInterval(whatsappApprovalsPollTimer);
+      whatsappApprovalsPollTimer = null;
+    }
+    return;
+  }
+
+  if (!whatsappApprovalsRefreshPromise) {
+    void refreshWhatsAppApprovals();
+  }
+  if (whatsappApprovalsPollTimer === null) {
+    whatsappApprovalsPollTimer = window.setInterval(() => {
+      void refreshWhatsAppApprovals();
+    }, WHATSAPP_APPROVALS_POLL_MS);
+  }
+}
+
 function syncScheduledActionsPolling() {
   const shouldPoll = Boolean(
     isSignedIn()
@@ -12042,6 +12316,7 @@ function syncScheduledActionsPolling() {
       window.clearInterval(scheduledActionsPollTimer);
       scheduledActionsPollTimer = null;
     }
+    syncWhatsAppApprovalsPolling();
     return;
   }
 
@@ -12053,6 +12328,7 @@ function syncScheduledActionsPolling() {
       void refreshScheduledActions();
     }, SCHEDULED_ACTIONS_POLL_MS);
   }
+  syncWhatsAppApprovalsPolling();
 }
 
 function updateAgentWorkspace() {
@@ -12327,9 +12603,10 @@ function buildAgentWhatsAppSetupMetadata(setup, actionId, actionLabel) {
 
 function pushAgentWhatsAppSetupPrompt() {
   const setup = getWhatsAppConnectionSetupState();
+  const firstMissing = setup.missingFields?.[0]?.label || "WhatsApp Business connection details";
   const message = setup.genericPlatformConnected
-    ? "WhatsApp is connected for general use, but monitoring incoming messages needs a few WhatsApp Business details."
-    : "I can set that up, but I need a few WhatsApp Business details first.";
+    ? `WhatsApp is connected for general use. To monitor incoming messages, I need your ${firstMissing} first.`
+    : `I can set that up. I need your ${firstMissing} first.`;
   return pushAgentMessage("assistant", message, {
     kind: "question",
     ...buildAgentWhatsAppSetupMetadata(setup, "show-whatsapp-setup", "Set up WhatsApp details"),
@@ -12486,7 +12763,7 @@ async function handleAgentUserText(text) {
   pushAgentMessage("user", cleanText);
   const agent = getAgentWorkspace();
   const activeProposal = getActiveAgentProposal();
-  const conversation = agent.messages.slice(-12).map((message) => ({
+  const conversation = agent.messages.slice(-12).filter((message) => !message.metadata?.excludeFromModel).map((message) => ({
     role: message.role,
     text: message.text,
   }));
@@ -12784,6 +13061,88 @@ async function saveAndActivateAgentWebMonitorProposal(proposal) {
   };
 }
 
+function buildAgentWhatsAppReplySettings(proposal, feature) {
+  const requestedChannel = getAgentProposalDeliveryChannel(proposal) || "portal";
+  const currentSettings = getSelectedFeatureSettings(feature);
+  return buildSettingsForSave(feature, {
+    ...currentSettings,
+    deliveryChannels: [requestedChannel],
+  });
+}
+
+async function saveAndActivateAgentWhatsAppProposal(proposal) {
+  if (!isSignedIn()) {
+    throw new Error("Sign in before activating the WhatsApp reply assistant.");
+  }
+
+  const feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
+  if (!feature) {
+    throw new Error("WhatsApp Reply Assistant is not available for this account.");
+  }
+
+  const settings = buildAgentWhatsAppReplySettings(proposal, feature);
+  const prompt = feature.prompt && typeof feature.prompt === "object" ? { ...feature.prompt } : {};
+  const configResponse = await apiRequest(`/api/features/${encodeURIComponent(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)}/config`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: { prompt, settings },
+  });
+  applyServerFeatureStates([configResponse.feature || {}], { persist: true });
+  state.paymentStatus = configResponse.paymentStatus || state.paymentStatus;
+
+  const updatedFeature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID) || feature;
+  const activationResponse = await apiRequest(`/api/features/${encodeURIComponent(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)}/activation`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      action: "activate",
+      featureName: updatedFeature.name,
+      channel: updatedFeature.channel,
+    },
+  });
+  applyServerFeatureStates([activationResponse.feature || {}], { persist: true });
+  state.paymentStatus = activationResponse.paymentStatus || state.paymentStatus;
+  return { configResponse, activationResponse, settings };
+}
+
+function handleAgentWhatsAppActivationError(error, proposal) {
+  proposal.status = "needs-approval";
+  proposal.updatedAt = new Date().toISOString();
+  const payload = error?.payload || {};
+  if (payload.feature) {
+    applyServerFeatureStates([payload.feature], { persist: true });
+  }
+  state.paymentStatus = payload.paymentStatus || state.paymentStatus;
+
+  if (payload.error === "payment_required") {
+    const checkoutUrl = payload.paymentStatus?.checkoutUrl || payload.checkoutUrl || "";
+    const checkoutOpened = openPaymentCheckout(checkoutUrl);
+    const message = payload.message || "Add payment details before activating the WhatsApp reply assistant.";
+    pushAgentProposalResult(proposal.id, message, "credential");
+    persistAgentWorkspace(checkoutOpened ? "Opening checkout..." : "Payment is required before activation.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  if (payload.error === "setup_required") {
+    const message = String(
+      payload.message
+      || payload.setupStatus?.message
+      || "I need the WhatsApp Business connection details before I can start this.",
+    ).trim();
+    pushAgentProposalResult(proposal.id, message, "credential");
+    pushAgentWhatsAppSetupPrompt();
+    persistAgentWorkspace(message);
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  const message = formatApiErrorMessage(error, "I couldn’t activate the WhatsApp reply assistant yet.");
+  pushAgentProposalResult(proposal.id, message);
+  persistAgentWorkspace(message);
+  renderApp({ preserveStatus: true });
+}
+
 function handleAgentWebMonitorActivationError(error, proposal) {
   const payload = error?.payload || {};
   proposal.status = "needs-approval";
@@ -12865,6 +13224,11 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
   }
 
+  if (proposal.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
+    proposal.missingCredential = "";
+    proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
+  }
+
   if (proposal.type === "scheduled-message" && proposal.missingCredential) {
     const message = `${proposal.missingCredential} setup is required before I can finish this.`;
     pushAgentProposalResult(proposal.id, message, "credential");
@@ -12874,8 +13238,17 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     return;
   }
 
+  if (proposal.type === "whatsapp-replies" && proposal.missingCredential) {
+    proposal.status = "needs-approval";
+    pushAgentWhatsAppSetupPrompt();
+    persistAgentWorkspace("WhatsApp setup is required before I can start this.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
   let scheduledAction = null;
   let monitorActivation = null;
+  let whatsappActivation = null;
   if (proposal.type === "scheduled-message" && !proposal.missingCredential) {
     proposal.status = "scheduling";
     persistAgentWorkspace("Scheduling message...");
@@ -12927,6 +13300,18 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     }
   }
 
+  if (proposal.type === "whatsapp-replies") {
+    proposal.status = "activating";
+    persistAgentWorkspace("Starting WhatsApp reply assistant...");
+    renderApp({ preserveStatus: true });
+    try {
+      whatsappActivation = await saveAndActivateAgentWhatsAppProposal(proposal);
+    } catch (error) {
+      handleAgentWhatsAppActivationError(error, proposal);
+      return;
+    }
+  }
+
   proposal.approved = true;
   proposal.status = "approved";
   proposal.approvedAt = new Date().toISOString();
@@ -12963,6 +13348,15 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     const runMessage = monitorActivation?.initialRun?.message || "";
     const runError = monitorActivation?.initialRunError || "";
     const message = runMessage || runError || "Web monitor activated.";
+    pushAgentProposalResult(proposal.id, message);
+    persistAgentWorkspace(message);
+  } else if (proposal.type === "whatsapp-replies") {
+    const deliveryChannel = formatAgentScheduledMessageChannel(
+      getAgentProposalDeliveryChannel(proposal) || whatsappActivation?.settings?.deliveryChannels?.[0] || "portal",
+    );
+    const message = deliveryChannel === "this workspace"
+      ? "WhatsApp reply assistant is active. New drafts will appear here for review."
+      : `WhatsApp reply assistant is active. New drafts will be brought to you by ${deliveryChannel}.`;
     pushAgentProposalResult(proposal.id, message);
     persistAgentWorkspace(message);
   } else {
@@ -13160,6 +13554,12 @@ async function cancelScheduledAction(actionId) {
 }
 
 function handleAgentWorkspaceClick(event) {
+  const whatsappApprovalButton = getEventTargetElement(event)?.closest("[data-agent-whatsapp-action]");
+  if (whatsappApprovalButton) {
+    void handleAgentWhatsAppApprovalAction(whatsappApprovalButton);
+    return;
+  }
+
   if (handleAgentMessageAction(event)) {
     return;
   }
@@ -15994,9 +16394,9 @@ function getWhatsAppToolPlatformOption(platformId) {
 
 function getWhatsAppToolPlatformOptions(feature = getSelectedFeature()) {
   if (isWhatsAppReplyAssistantFeature(feature)) {
-    return WHATSAPP_TOOL_PLATFORM_OPTIONS.filter((option) => option.id === "whatsapp");
+    return WHATSAPP_TOOL_PLATFORM_OPTIONS.filter((option) => ["whatsapp", "telegram", "portal"].includes(option.id));
   }
-  return WHATSAPP_TOOL_PLATFORM_OPTIONS;
+  return WHATSAPP_TOOL_PLATFORM_OPTIONS.filter((option) => option.id !== "portal");
 }
 
 function normalizeWhatsAppToolDeliveryChannelsForFeature(feature, value, fallback = DEFAULT_WHATSAPP_TOOL_SETTINGS.deliveryChannels) {

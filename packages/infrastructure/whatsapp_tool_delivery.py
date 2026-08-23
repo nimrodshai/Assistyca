@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SUPPORTED_WHATSAPP_TOOL_DELIVERY_CHANNELS = ("whatsapp", "telegram")
+SUPPORTED_WHATSAPP_TOOL_DELIVERY_CHANNELS = ("whatsapp", "telegram", "portal")
 DEFAULT_WHATSAPP_TOOL_DELIVERY_CHANNELS: tuple[str, ...] = ()
 
 
@@ -67,11 +67,17 @@ def whatsapp_tool_delivery_uses_telegram(settings: dict[str, Any] | None = None)
     return "telegram" in normalize_whatsapp_tool_delivery_settings(settings)["deliveryChannels"]
 
 
+def whatsapp_tool_delivery_uses_portal(settings: dict[str, Any] | None = None) -> bool:
+    """Return whether owner-facing results should be delivered in the portal chat."""
+    return "portal" in normalize_whatsapp_tool_delivery_settings(settings)["deliveryChannels"]
+
+
 __all__ = [
     "DEFAULT_WHATSAPP_TOOL_DELIVERY_CHANNELS",
     "SUPPORTED_WHATSAPP_TOOL_DELIVERY_CHANNELS",
     "normalize_whatsapp_tool_delivery_channels",
     "normalize_whatsapp_tool_delivery_settings",
+    "whatsapp_tool_delivery_uses_portal",
     "whatsapp_tool_delivery_uses_telegram",
     "whatsapp_tool_delivery_uses_whatsapp",
 ]

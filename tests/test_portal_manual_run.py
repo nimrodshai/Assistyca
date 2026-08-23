@@ -21,6 +21,7 @@ from packages.infrastructure.portal_auth.server import parse_whatsapp_export_mes
 from packages.infrastructure.portal_auth.server import parse_whatsapp_export_timestamp
 from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
+from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
 from packages.infrastructure.whatsapp_portal_service import build_portal_runtime_config
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.whatsapp_reply_approval.server import BackendStore
@@ -176,6 +177,48 @@ class PortalManualRunTests(unittest.TestCase):
         self.assertEqual(post_result["status"], 200)
         self.assertEqual(post_result["body"]["run"]["status"], "cancelled")
         self.assertIn("cancelled", str(post_result["body"]["message"]).lower())
+
+    def test_portal_approval_skip_endpoint_is_account_scoped(self) -> None:
+        connection = self.server.database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="12345",
+            phone_number_id="12345",
+            owner_wa_id="15551234567",
+            access_token="test-token",
+            connection_status="connected",
+        )
+        service = build_portal_service_from_connection(
+            root=self.root,
+            connection=connection,
+            base_url=self.base_url,
+            store_cache=self.server.whatsapp_stores,
+            store_lock=self.server.whatsapp_store_lock,
+        )
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="Maya Cohen",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.portal-skip",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+        self.server.database.map_whatsapp_approval(
+            approval["approval_id"],
+            user_id=int(connection["userId"]),
+            phone_number_id="12345",
+        )
+
+        status, body = self._request(
+            "POST",
+            f"/api/approvals/{approval['approval_id']}/skip",
+            {},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["approval"]["status"], "skipped")
 
     def test_delete_reengagement_demo_run_marks_active_run_cancelled(self) -> None:
         request_started = threading.Event()
@@ -592,6 +635,30 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertFalse(stored_approval.get("owner_notification_message_id"))
         self.assertFalse(stored_approval.get("owner_notification_telegram_message_id"))
         self.assertEqual(stored_approval.get("owner_notification_delivery_channels", []), [])
+
+    def test_owner_notification_records_portal_delivery_without_external_send(self) -> None:
+        service = self._build_service(delivery_settings={"deliveryChannels": ["portal"]})
+        approval = service.store.record_inbound_message(
+            thread_id="15551230000",
+            sender_name="John Doe",
+            sender_wa_id="15551230000",
+            message_text="Can you help tomorrow?",
+            source_message_id="wamid.inbound-portal",
+            message_type="text",
+            raw_payload={"object": "whatsapp_business_account"},
+            config=service.config,
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+        ) as mocked_whatsapp:
+            message_id = service.notify_owner_about_approval(approval)
+
+        self.assertEqual(message_id, "")
+        mocked_whatsapp.assert_not_called()
+        stored_approval = service.store.get_approval(approval["approval_id"])
+        self.assertEqual(stored_approval.get("owner_notification_delivery_channels"), ["portal"])
+        self.assertEqual(stored_approval.get("owner_state"), "pending")
 
     def test_owner_notification_uses_quick_reply_template_when_configured(self) -> None:
         service = self._build_service(
@@ -1255,17 +1322,17 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(body["connection"]["metadata"]["lastOwnerNotificationMessageId"], "wamid.sample-1")
         self.assertIn("confirms delivery", str(body["message"]).lower())
 
-    def test_feature_sample_endpoint_requires_live_send_configuration(self) -> None:
+    def test_feature_sample_endpoint_accepts_portal_delivery_without_live_send(self) -> None:
         status, body = self._request(
             "POST",
             f"/api/features/{WHATSAPP_REPLY_ASSISTANT_FEATURE_ID}/sample",
             {},
         )
 
-        self.assertEqual(status, 409)
-        self.assertFalse(body["ok"])
-        self.assertEqual(body["error"], "setup_required")
-        self.assertIn("saved access token", str(body["message"]).lower())
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertTrue(str(body["ownerMessageId"]).startswith("portal-sample-"))
+        self.assertEqual(body["connection"]["metadata"]["lastOwnerNotificationStatus"], "requested")
 
     def test_whatsapp_connection_endpoint_requires_client_token_even_with_sender_token(self) -> None:
         with mock.patch.dict(os.environ, {"WHATSAPP_ACCESS_TOKEN": "sender-token"}, clear=False):

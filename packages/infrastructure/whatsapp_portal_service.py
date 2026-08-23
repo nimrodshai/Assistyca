@@ -12,6 +12,7 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp_store_root
 from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
+from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_portal
 from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_whatsapp
 from packages.tools.whatsapp_reply_approval.server import DEFAULT_ASSISTANT_CONFIG
 from packages.tools.whatsapp_reply_approval.server import BackendStore
@@ -389,8 +390,11 @@ class PortalWhatsAppService:
     def owner_whatsapp_send_enabled(self) -> bool:
         return bool(whatsapp_tool_delivery_uses_whatsapp(self.delivery_settings) and self.owner_send_enabled())
 
+    def owner_portal_delivery_enabled(self) -> bool:
+        return whatsapp_tool_delivery_uses_portal(self.delivery_settings)
+
     def owner_notification_enabled(self) -> bool:
-        return self.owner_whatsapp_send_enabled()
+        return bool(self.owner_whatsapp_send_enabled() or self.owner_portal_delivery_enabled())
 
     def verify_signature(self, body: bytes, signature_header: str | None) -> bool:
         return verify_whatsapp_signature(self.config.app_secret, body, signature_header)
@@ -819,8 +823,15 @@ class PortalWhatsAppService:
             except Exception as exc:  # noqa: BLE001 - keep alternate owner channels available
                 delivery_errors.append(f"WhatsApp: {exc}")
 
+        if self.owner_portal_delivery_enabled():
+            # Portal delivery is intentionally recorded server-side only. The
+            # signed-in chat polls the approval API and renders the suggestion
+            # there, so no credential or customer content is sent to a second
+            # external channel.
+            delivery_channels.append("portal")
+
         message_id = whatsapp_message_id
-        if not message_id:
+        if not message_id and not delivery_channels:
             raise RuntimeError("; ".join(delivery_errors) or "No owner delivery channel is configured.")
 
         self.store.mark_owner_notification_sent(
@@ -838,6 +849,10 @@ class PortalWhatsAppService:
             },
         )
         return message_id
+
+    def skip_approval(self, approval_id: str) -> dict[str, Any]:
+        """Skip a pending reply from the authenticated portal workspace."""
+        return self.store.mark_skipped(approval_id)
 
     def notify_owner_edit_prompt(self, approval: dict[str, Any]) -> str:
         prompt_text = build_owner_edit_prompt_text(approval)
@@ -899,6 +914,9 @@ class PortalWhatsAppService:
                 )
             except Exception as exc:  # noqa: BLE001 - report a setup/send failure cleanly
                 errors.append(f"WhatsApp: {exc}")
+
+        if self.owner_portal_delivery_enabled() and not message_ids:
+            return f"portal-sample-{uuid.uuid4().hex}", message_text
 
         if not message_ids:
             raise RuntimeError("; ".join(errors) or "No owner delivery channel is configured.")
@@ -1097,7 +1115,7 @@ class PortalWhatsAppService:
         )
         owner_notification_id = ""
         owner_notification_error = ""
-        if self.config.owner_wa_id:
+        if self.config.owner_wa_id or self.owner_portal_delivery_enabled():
             try:
                 owner_notification_id = self.notify_owner_about_approval(approval)
             except Exception as exc:  # noqa: BLE001

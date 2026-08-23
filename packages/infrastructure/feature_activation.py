@@ -230,10 +230,16 @@ class FeatureActivationService:
         elif normalized_feature_id == REENGAGEMENT_FEATURE_ID:
             settings_payload = normalize_reengagement_settings(settings_payload)
         elif normalized_feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
+            had_delivery_setting = any(
+                key in settings_payload
+                for key in ("deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel")
+            )
             settings_payload = {
                 **settings_payload,
                 **normalize_whatsapp_tool_delivery_settings(settings_payload),
             }
+            if not had_delivery_setting:
+                settings_payload["deliveryChannels"] = ["portal"]
 
         metadata_payload = {
             **existing_metadata,
@@ -478,10 +484,16 @@ class FeatureActivationService:
         if feature_id == REENGAGEMENT_FEATURE_ID:
             resolved_settings = normalize_reengagement_settings(resolved_settings)
         elif feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
+            had_delivery_setting = any(
+                key in resolved_settings
+                for key in ("deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel")
+            )
             resolved_settings = {
                 **resolved_settings,
                 **normalize_whatsapp_tool_delivery_settings(resolved_settings),
             }
+            if not had_delivery_setting:
+                resolved_settings["deliveryChannels"] = ["portal"]
         resolved_setup_status = setup_status or self._resolve_setup_status(email, feature=feature)
         resolved_payment_status = payment_status or self._resolve_payment_status(
             email,
