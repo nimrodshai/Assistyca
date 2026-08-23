@@ -6019,6 +6019,14 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
         except CredentialVaultError:
             # Keep the server online but fail closed for credential writes.
             server.credential_vault = None  # type: ignore[attr-defined]
+    server.database.set_credential_vault(server.credential_vault)  # type: ignore[attr-defined]
+    if server.credential_vault is not None:
+        try:
+            server.database.migrate_whatsapp_access_tokens()  # type: ignore[attr-defined]
+        except (CredentialVaultError, ValueError):
+            # Leave legacy values untouched and keep the service available; a
+            # later restart can retry after the vault configuration is fixed.
+            pass
     return server
 
 

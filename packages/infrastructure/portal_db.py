@@ -174,6 +174,9 @@ CREATE TABLE IF NOT EXISTS whatsapp_connections (
     business_account_id TEXT NOT NULL DEFAULT '',
     phone_number_id TEXT NOT NULL DEFAULT '',
     access_token TEXT NOT NULL DEFAULT '',
+    access_token_ciphertext TEXT NOT NULL DEFAULT '',
+    access_token_key_version TEXT NOT NULL DEFAULT '1',
+    access_token_fingerprint TEXT NOT NULL DEFAULT '',
     owner_wa_id TEXT NOT NULL DEFAULT '',
     display_phone_number TEXT NOT NULL DEFAULT '',
     verified_name TEXT NOT NULL DEFAULT '',
@@ -697,7 +700,13 @@ class PortalDatabase:
             sorted({email for email in (normalize_email(value) for value in bootstrap_paid_emails) if email})
         )
         self._init_lock = threading.Lock()
+        self.credential_vault: Any = None
         self._initialize()
+
+    def set_credential_vault(self, vault: Any) -> None:
+        """Attach the process-local credential vault used by provider adapters."""
+
+        self.credential_vault = vault
 
     @contextmanager
     def _connection(self):
@@ -840,6 +849,12 @@ class PortalDatabase:
         }
         if "access_token" not in columns:
             conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token TEXT NOT NULL DEFAULT ''")
+        if "access_token_ciphertext" not in columns:
+            conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token_ciphertext TEXT NOT NULL DEFAULT ''")
+        if "access_token_key_version" not in columns:
+            conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token_key_version TEXT NOT NULL DEFAULT '1'")
+        if "access_token_fingerprint" not in columns:
+            conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token_fingerprint TEXT NOT NULL DEFAULT ''")
 
     def _migrate_platform_connections_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -1440,6 +1455,7 @@ class PortalDatabase:
                 w.business_account_id,
                 w.phone_number_id,
                 w.access_token,
+                w.access_token_ciphertext,
                 w.owner_wa_id,
                 w.display_phone_number,
                 w.verified_name,
@@ -1461,6 +1477,14 @@ class PortalDatabase:
             return None
 
         payload = _row_to_dict(row) or {}
+        access_token = normalize_text(payload.get("access_token"))
+        if not access_token and self.credential_vault is not None:
+            ciphertext = normalize_text(payload.get("access_token_ciphertext"))
+            if ciphertext:
+                try:
+                    access_token = normalize_text(self.credential_vault.decrypt(ciphertext))
+                except Exception:
+                    access_token = ""
         metadata = payload.get("metadata_json")
         try:
             metadata_payload = json.loads(metadata) if metadata else {}
@@ -1473,8 +1497,8 @@ class PortalDatabase:
             "displayName": normalize_text(payload.get("display_name")),
             "businessAccountId": normalize_text(payload.get("business_account_id")),
             "phoneNumberId": normalize_text(payload.get("phone_number_id")),
-            "accessToken": normalize_text(payload.get("access_token")),
-            "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
+            "accessToken": access_token,
+            "accessTokenConfigured": bool(access_token),
             "ownerWaId": normalize_text(payload.get("owner_wa_id")),
             "displayPhoneNumber": normalize_text(payload.get("display_phone_number")),
             "verifiedName": normalize_text(payload.get("verified_name")),
@@ -2679,6 +2703,48 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, email=normalized_email)
+
+    def migrate_whatsapp_access_tokens(self) -> int:
+        """Move legacy plaintext WhatsApp tokens into the configured vault."""
+
+        vault = self.credential_vault
+        if vault is None:
+            return 0
+
+        migrated = 0
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT user_id, access_token FROM whatsapp_connections WHERE access_token <> ''"
+            ).fetchall()
+            for row in rows:
+                token = normalize_text(row["access_token"])
+                if not token:
+                    continue
+                encrypted = vault.encrypt(token)
+                # Verify the envelope before clearing the compatibility field.
+                if vault.decrypt(encrypted) != token:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE whatsapp_connections
+                    SET access_token = '',
+                        access_token_ciphertext = ?,
+                        access_token_key_version = ?,
+                        access_token_fingerprint = ?,
+                        updated_at = ?
+                    WHERE user_id = ? AND access_token = ?
+                    """,
+                    (
+                        encrypted,
+                        vault.key_version,
+                        vault.fingerprint(token),
+                        now_iso(),
+                        int(row["user_id"]),
+                        token,
+                    ),
+                )
+                migrated += 1
+        return migrated
 
     def list_platform_connections(self, email: str) -> list[dict[str, Any]]:
         normalized_email = normalize_email(email)
@@ -5678,7 +5744,7 @@ class PortalDatabase:
 
             user_id = int(user_row["id"])
             existing = conn.execute(
-                "SELECT created_at, connected_at, access_token FROM whatsapp_connections WHERE user_id = ?",
+                "SELECT created_at, connected_at, access_token, access_token_ciphertext FROM whatsapp_connections WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
 
@@ -5688,11 +5754,26 @@ class PortalDatabase:
                 or (existing["connected_at"] if existing and existing["connected_at"] else None)
                 or now
             )
-            resolved_access_token = (
-                normalize_text(existing["access_token"])
-                if access_token is None and existing is not None
-                else normalize_text(access_token)
-            )
+            resolved_access_token = normalize_text(access_token)
+            if access_token is None and existing is not None:
+                resolved_access_token = normalize_text(existing["access_token"])
+                if not resolved_access_token and self.credential_vault is not None:
+                    ciphertext = normalize_text(existing["access_token_ciphertext"])
+                    if ciphertext:
+                        try:
+                            resolved_access_token = normalize_text(self.credential_vault.decrypt(ciphertext))
+                        except Exception:
+                            resolved_access_token = ""
+
+            stored_access_token = resolved_access_token
+            stored_access_token_ciphertext = ""
+            stored_access_token_key_version = "1"
+            stored_access_token_fingerprint = ""
+            if self.credential_vault is not None and resolved_access_token:
+                stored_access_token_ciphertext = self.credential_vault.encrypt(resolved_access_token)
+                stored_access_token_key_version = self.credential_vault.key_version
+                stored_access_token_fingerprint = self.credential_vault.fingerprint(resolved_access_token)
+                stored_access_token = ""
 
             conn.execute(
                 """
@@ -5701,6 +5782,9 @@ class PortalDatabase:
                     business_account_id,
                     phone_number_id,
                     access_token,
+                    access_token_ciphertext,
+                    access_token_key_version,
+                    access_token_fingerprint,
                     owner_wa_id,
                     display_phone_number,
                     verified_name,
@@ -5710,11 +5794,14 @@ class PortalDatabase:
                     last_tested_at,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     business_account_id = excluded.business_account_id,
                     phone_number_id = excluded.phone_number_id,
                     access_token = excluded.access_token,
+                    access_token_ciphertext = excluded.access_token_ciphertext,
+                    access_token_key_version = excluded.access_token_key_version,
+                    access_token_fingerprint = excluded.access_token_fingerprint,
                     owner_wa_id = excluded.owner_wa_id,
                     display_phone_number = excluded.display_phone_number,
                     verified_name = excluded.verified_name,
@@ -5728,7 +5815,10 @@ class PortalDatabase:
                     user_id,
                     normalize_text(business_account_id),
                     normalize_text(phone_number_id),
-                    resolved_access_token,
+                    stored_access_token,
+                    stored_access_token_ciphertext,
+                    stored_access_token_key_version,
+                    stored_access_token_fingerprint,
                     normalize_whatsapp_lookup_id(owner_wa_id),
                     normalize_text(display_phone_number),
                     normalize_text(verified_name),

@@ -37,5 +37,10 @@ OAuth with narrowly scoped permissions is preferred for providers that support
 it. API-token entry remains available for providers where OAuth is not wired up
 yet, with the same encrypted-at-rest path.
 
+The existing WhatsApp-specific setup is migrated into the same vault when the
+portal starts with `PORTAL_CREDENTIALS_KEY` configured. The legacy database
+column remains only as an empty, one-release compatibility field after a
+successful encrypt-and-read-back migration.
+
 `PORTAL_CREDENTIAL_ENCRYPTION_KEY` remains accepted as a local-development alias,
 but new deployments should use `PORTAL_CREDENTIALS_KEY`.

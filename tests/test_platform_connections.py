@@ -116,6 +116,45 @@ class PlatformConnectionTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(raw, "v1:nonce:encrypted-value")
 
+    def test_legacy_whatsapp_token_uses_vault_when_attached(self) -> None:
+        class FakeVault:
+            key_version = "7"
+
+            @staticmethod
+            def encrypt(value: str) -> str:
+                return f"enc:{value}"
+
+            @staticmethod
+            def decrypt(value: str) -> str:
+                return value.removeprefix("enc:")
+
+            @staticmethod
+            def fingerprint(_value: str) -> str:
+                return "fingerprint"
+
+        database = PortalDatabase(self.db_path)
+        database.register_user("whatsapp@example.com")
+        database.set_credential_vault(FakeVault())
+        saved = database.save_whatsapp_connection(
+            "whatsapp@example.com",
+            business_account_id="123",
+            phone_number_id="456",
+            access_token="legacy-secret",
+            owner_wa_id="972501234567",
+        )
+        self.assertEqual(saved["accessToken"], "legacy-secret")
+        with sqlite3.connect(str(self.db_path)) as connection:
+            raw = connection.execute(
+                """
+                SELECT w.access_token, w.access_token_ciphertext
+                FROM whatsapp_connections AS w
+                INNER JOIN users AS u ON u.id = w.user_id
+                WHERE u.email = ?
+                """,
+                ("whatsapp@example.com",),
+            ).fetchone()
+        self.assertEqual(raw, ("", "enc:legacy-secret"))
+
     def test_credential_vault_round_trip_when_cryptography_is_installed(self) -> None:
         try:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
