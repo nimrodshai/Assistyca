@@ -185,6 +185,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('id="agentActionDetailView"', html)
         self.assertIn('id="agentAddToolButton"', html)
         self.assertIn('id="agentAddToolMenu"', html)
+        add_tool_control = html[
+            html.index('<div class="agent-add-tool-control">'):
+            html.index('<div id="agentToolShelf"', html.index('<div class="agent-add-tool-control">'))
+        ]
+        self.assertIn('id="agentAddToolButton"', add_tool_control)
+        self.assertIn('id="agentAddToolMenu"', add_tool_control)
+        self.assertLess(add_tool_control.index('id="agentAddToolButton"'), add_tool_control.index('id="agentAddToolMenu"'))
         self.assertIn(".agent-action-error", styles)
         self.assertIn(".agent-action-detail-actions", styles)
         self.assertIn(".agent-action-danger-button", styles)
@@ -234,7 +241,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('openFeatureStudio(feature.id, getAgentToolDetailsView(feature));', script)
         self.assertNotIn("dataset.agentToolPrompt", script)
         self.assertNotIn("Help me use ${getAgentToolLabel(feature)}", script)
-        self.assertNotIn(".agent-add-tool-menu {\n  position: absolute;", styles)
+        add_tool_menu_styles = styles[
+            styles.index(".agent-add-tool-menu {"):
+            styles.index(".agent-add-tool-option {")
+        ]
+        self.assertIn("position: absolute;", add_tool_menu_styles)
+        self.assertIn("right: 0;", add_tool_menu_styles)
+        self.assertIn("overflow-y: auto;", add_tool_menu_styles)
         self.assertIn(".agent-add-tool-icon svg", styles)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 
