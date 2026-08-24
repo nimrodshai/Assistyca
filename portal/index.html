@@ -241,12 +241,22 @@
                   <div id="agentPendingActionList" class="agent-action-list"></div>
                 </section>
 
-                <section class="agent-actions-section" aria-labelledby="agentCompletedActionsTitle">
-                  <div class="agent-actions-section-head">
-                    <h3 id="agentCompletedActionsTitle">History</h3>
-                    <span id="agentCompletedActionsCount" class="agent-actions-count">0</span>
-                  </div>
-                  <div id="agentCompletedActionList" class="agent-action-list"></div>
+                <section class="agent-actions-section agent-history-section" aria-label="Action history">
+                  <button
+                    id="agentHistoryToggleButton"
+                    class="agent-history-toggle"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="agentCompletedActionList"
+                    aria-label="Show action history"
+                  >
+                    <span class="agent-history-title">History</span>
+                    <span class="agent-history-toggle-meta">
+                      <span id="agentCompletedActionsCount" class="agent-actions-count">0</span>
+                      <span class="agent-history-chevron" aria-hidden="true"></span>
+                    </span>
+                  </button>
+                  <div id="agentCompletedActionList" class="agent-action-list" hidden></div>
                 </section>
 
                 <section class="agent-tools-secondary" aria-labelledby="agentToolsTitle">

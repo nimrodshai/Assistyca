@@ -3117,6 +3117,64 @@ body[data-modal="billing"] .app-shell {
   font-variant-numeric: tabular-nums;
 }
 
+.agent-history-toggle {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.35rem 0.05rem;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.agent-history-toggle:hover {
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.045);
+}
+
+.agent-history-toggle:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.55);
+  outline-offset: 3px;
+}
+
+.agent-history-title {
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.agent-history-toggle-meta {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.agent-history-chevron {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-0.12rem) rotate(45deg);
+  transition: transform 180ms ease;
+}
+
+.agent-history-section.is-expanded .agent-history-chevron {
+  transform: translateY(0.12rem) rotate(225deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-history-toggle,
+  .agent-history-chevron {
+    transition: none;
+  }
+}
+
 .agent-action-list {
   display: grid;
   gap: 0.48rem;

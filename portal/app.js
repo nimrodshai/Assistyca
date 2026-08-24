@@ -1031,6 +1031,7 @@ const state = {
   scheduledActionsLastErrorAt: 0,
   scheduledActionsLoadedAt: 0,
   selectedScheduledActionId: "",
+  agentHistoryExpanded: false,
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
   platformConnections: [],
@@ -1152,6 +1153,8 @@ const elements = {
   agentActionsRefreshButton: document.querySelector("#agentActionsRefreshButton"),
   agentPendingActionsCount: document.querySelector("#agentPendingActionsCount"),
   agentCompletedActionsCount: document.querySelector("#agentCompletedActionsCount"),
+  agentHistoryToggleButton: document.querySelector("#agentHistoryToggleButton"),
+  agentHistorySection: document.querySelector(".agent-history-section"),
   agentPendingActionList: document.querySelector("#agentPendingActionList"),
   agentCompletedActionList: document.querySelector("#agentCompletedActionList"),
   agentActionDetailView: document.querySelector("#agentActionDetailView"),
@@ -12281,6 +12284,18 @@ function renderAgentActions() {
 
   elements.agentPendingActionsCount.textContent = String(activeActions.length);
   elements.agentCompletedActionsCount.textContent = String(completed.length);
+  const historyExpanded = Boolean(state.agentHistoryExpanded);
+  elements.agentHistoryToggleButton?.setAttribute("aria-expanded", String(historyExpanded));
+  elements.agentHistoryToggleButton?.setAttribute(
+    "aria-label",
+    historyExpanded ? "Hide action history" : "Show action history",
+  );
+  if (elements.agentHistorySection) {
+    elements.agentHistorySection.classList.toggle("is-expanded", historyExpanded);
+  }
+  if (elements.agentCompletedActionList) {
+    elements.agentCompletedActionList.hidden = !historyExpanded;
+  }
   renderScheduledActionList(elements.agentPendingActionList, activeActions, "No active actions.");
   renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
 
@@ -19120,6 +19135,13 @@ function bindEvents() {
   if (elements.agentActionsRefreshButton) {
     elements.agentActionsRefreshButton.addEventListener("click", () => {
       void refreshScheduledActions({ userInitiated: true });
+    });
+  }
+
+  if (elements.agentHistoryToggleButton) {
+    elements.agentHistoryToggleButton.addEventListener("click", () => {
+      state.agentHistoryExpanded = !state.agentHistoryExpanded;
+      renderAgentActions();
     });
   }
 
