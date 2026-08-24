@@ -175,6 +175,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function createAgentMonitorEditor", script)
         self.assertIn("agentMonitorEditForm", script)
         self.assertIn('subtitle.textContent = "Changes save automatically.";', script)
+        self.assertIn('button.textContent = removeAction ? "Remove action" : "Turn off action";', script)
+        self.assertIn("const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(action.payload?.manualOnly, false);", script)
         self.assertNotIn('createScheduledActionDetailRow("Watching"', script)
         self.assertIn("function createScheduledActionMoreDetails", script)
         self.assertIn('summary.textContent = "More details";', script)

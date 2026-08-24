@@ -14217,8 +14217,9 @@ async function deactivateAgentProposalBackendFeature(proposal) {
 async function removeAgentProposalLocalAction(actionId) {
   const localAction = getRenderableAgentActions()
     .find((action) => String(action?.id || "") === String(actionId || ""));
-  const isManualOnly = normalizeMonitorManualOnly(localAction?.payload?.manualOnly, false);
-  const actionVerb = isManualOnly ? "remove" : "turn off";
+  const hasBackendFeature = Boolean(String(localAction?.payload?.backendFeatureId || "").trim());
+  const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(localAction?.payload?.manualOnly, false);
+  const actionVerb = !hasBackendFeature || isManualOnly ? "remove" : "turn off";
   const featureId = getAgentFeatureIdFromLocalActionId(actionId);
   if (featureId) {
     const feature = getFeatureById(featureId);
@@ -14252,12 +14253,12 @@ async function removeAgentProposalLocalAction(actionId) {
     return false;
   }
 
-  persistAgentWorkspace("Turning off action...");
+  persistAgentWorkspace(`${capitalizeWords(actionVerb)} action...`);
   renderApp({ preserveStatus: true });
   try {
     await deactivateAgentProposalBackendFeature(proposal);
   } catch (error) {
-    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t turn off that action."));
+    persistAgentWorkspace(formatApiErrorMessage(error, `Couldn’t ${actionVerb} that action.`));
     renderApp({ preserveStatus: true });
     return false;
   }
