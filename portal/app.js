@@ -11648,7 +11648,7 @@ function createAgentProposalLocalAction(proposal) {
   const deliveryTarget = getAgentProposalDeliveryTarget(proposal, deliveryChannel);
   const deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget);
   const approvedAt = String(proposal.approvedAt || proposal.updatedAt || proposal.createdAt || new Date().toISOString());
-  const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || "").trim();
+  const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || proposal.relatedFeatureId || "").trim();
   const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
   const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
   const manualOnly = getAgentProposalWebMonitorManualOnly(proposal, backendFeature);
@@ -11979,6 +11979,11 @@ function createScheduledActionItem(action) {
   item.className = `agent-action-item is-${statusClass}`;
   item.dataset.agentScheduledActionId = String(action.id || "");
   item.setAttribute("aria-label", `Open ${getScheduledActionTitle(action)}, ${getScheduledActionStatusLabel(action.status, action)}`);
+  item.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    selectScheduledAction(action.id);
+  });
 
   const head = document.createElement("span");
   head.className = "agent-action-item-head";
@@ -12025,6 +12030,12 @@ function renderScheduledActionList(container, actions, emptyMessage) {
       ? actions.map(createScheduledActionItem)
       : [createScheduledActionEmpty(emptyMessage)]),
   );
+}
+
+function selectScheduledAction(actionId) {
+  state.selectedScheduledActionId = String(actionId || "");
+  renderAgentActions();
+  elements.agentActionsPanelBody?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function createScheduledActionDetailRow(label, value) {
@@ -13739,9 +13750,7 @@ function handleAgentWorkspaceClick(event) {
   if (scheduledActionButton) {
     event.preventDefault();
     event.stopPropagation();
-    state.selectedScheduledActionId = String(scheduledActionButton.dataset.agentScheduledActionId || "");
-    renderAgentActions();
-    elements.agentActionsPanelBody?.scrollTo({ top: 0, behavior: "smooth" });
+    selectScheduledAction(scheduledActionButton.dataset.agentScheduledActionId || "");
     return;
   }
 
