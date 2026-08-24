@@ -251,7 +251,15 @@ class PortalStaticPageTests(unittest.TestCase):
         ]
         self.assertIn('id="agentAddToolButton"', add_tool_control)
         self.assertNotIn('id="agentAddToolMenu"', add_tool_control)
-        self.assertIn('</section>\n\n      <div id="agentAddToolBackdrop"', html)
+        app_view_start = html.index('<section id="appView"')
+        tool_overlay_start = html.index('<div id="agentAddToolBackdrop"')
+        billing_overlay_start = html.index('<div\n      id="billingHelpPopover"')
+        app_view_markup = html[app_view_start:tool_overlay_start]
+        self.assertLess(app_view_start, tool_overlay_start)
+        self.assertLess(tool_overlay_start, billing_overlay_start)
+        self.assertNotIn('id="agentAddToolBackdrop"', app_view_markup)
+        self.assertNotIn('id="agentAddToolMenu"', app_view_markup)
+        self.assertIn('\n    </section>\n\n    <div id="agentAddToolBackdrop"', html)
         self.assertIn('<div id="agentAddToolBackdrop" class="agent-add-tool-backdrop is-hidden"', html)
         self.assertIn('<div id="agentAddToolMenu" class="agent-add-tool-menu is-hidden"', html)
         self.assertIn(".agent-action-error", styles)
