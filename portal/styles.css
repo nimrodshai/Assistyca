@@ -2214,6 +2214,12 @@ body[data-modal="billing"] .app-shell {
   color: var(--accent);
 }
 
+.auth-alert-icon svg {
+  display: block;
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
 .auth-alert-icon.is-spinner::before {
   content: "";
   width: 1.15rem;
@@ -2334,6 +2340,10 @@ body[data-modal="billing"] .app-shell {
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.42;
+}
+
+.platform-connection-status[hidden] {
+  display: none;
 }
 
 .platform-connection-status strong {

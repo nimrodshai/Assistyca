@@ -2476,7 +2476,15 @@ function openAuthAlert(title, message, options = {}) {
   if (elements.authAlertIcon) {
     elements.authAlertIcon.dataset.tone = String(options.tone || "warning");
     elements.authAlertIcon.classList.toggle("is-spinner", iconMode === "spinner");
-    elements.authAlertIcon.textContent = iconMode === "spinner" ? "" : String(options.icon || "!");
+    elements.authAlertIcon.replaceChildren();
+    const iconNode = options.iconNode;
+    if (iconMode === "spinner") {
+      elements.authAlertIcon.textContent = "";
+    } else if (iconNode && typeof iconNode.nodeType === "number") {
+      elements.authAlertIcon.append(iconNode);
+    } else {
+      elements.authAlertIcon.textContent = String(options.icon || "!");
+    }
   }
   if (elements.authAlertEyebrow) {
     elements.authAlertEyebrow.textContent = String(options.eyebrow || "Sign-in help");
@@ -4184,7 +4192,7 @@ function openPlatformConnection(optionId) {
     "Add this connection once, then use it across your requests.",
     {
       eyebrow: "Connect an app",
-      icon: "↗",
+      iconNode: createAgentAddToolLogo(option),
       tone: "progress",
       variant: "platform-connection",
       bodyNode: form,
