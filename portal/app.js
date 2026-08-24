@@ -499,6 +499,48 @@ const AGENT_BLUEPRINTS = {
     ],
     alternatives: ["Email", "Telegram", "WhatsApp after setup", "Portal inbox"],
   },
+  calendarSummary: {
+    type: "calendar-summary",
+    title: "Meeting summary",
+    summary:
+      "Create a manual action that reads the selected calendar, summarizes the meetings in a date range, and delivers the brief where you choose.",
+    response:
+      "I’ll use your calendar for the meeting details. Calendar access and delivery are separate, so I won’t ask for mailbox access unless you also want email summarized.",
+    relatedFeatureId: "",
+    primaryActionLabel: "Create meeting summary",
+    setupActionLabel: "Review calendar setup",
+    missingCredential: "Calendar access",
+    skills: [
+      {
+        label: "Calendar reader",
+        detail: "Reads meeting details from the calendar you connect.",
+      },
+      {
+        label: "Meeting summarizer",
+        detail: "Turns the selected meetings into a concise, useful brief.",
+      },
+      {
+        label: "Notification delivery",
+        detail: "Delivers the summary through your chosen channel without requiring mailbox access.",
+      },
+    ],
+    helpers: [
+      {
+        name: "Meeting Summary Agent",
+        purpose: "Read the selected calendar range and prepare a meeting summary.",
+      },
+      {
+        name: "Delivery Agent",
+        purpose: "Send or store the summary through the approved channel.",
+      },
+    ],
+    questions: [
+      "Which calendar should I use?",
+      "Which date range should I summarize?",
+      "Where should I deliver the summary?",
+    ],
+    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Portal inbox"],
+  },
   webMonitor: {
     type: "web-monitor",
     title: "Scheduled web monitor",
@@ -724,6 +766,23 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
       key: "deliveryChannel",
       question: "Where should I send it?",
       actions: ["Email", "Telegram", "WhatsApp"],
+    },
+  ],
+  "calendar-summary": [
+    {
+      key: "calendar",
+      question: "Which calendar should I use?",
+      actions: ["Connected calendar", "Google Calendar", "Outlook Calendar"],
+    },
+    {
+      key: "timeWindow",
+      question: "Which date range should I summarize?",
+      actions: ["Today", "This week", "Next week"],
+    },
+    {
+      key: "deliveryChannel",
+      question: "Where should I deliver the summary?",
+      actions: ["Email", "Telegram", "WhatsApp", "This chat"],
     },
   ],
   "web-monitor": [
@@ -10288,6 +10347,11 @@ function getAgentBlueprintForText(text) {
     return AGENT_BLUEPRINTS.sourceAction;
   }
 
+  if (/\b(?:calendar|meeting|meetings|agenda|appointment|appointments)\b/i.test(value)
+    && /\b(?:summar(?:y|ize|ise)|brief|overview|review|list|show)\b/i.test(value)) {
+    return AGENT_BLUEPRINTS.calendarSummary;
+  }
+
   if (/\b(gmail|inbox|email|mailbox|digest|summari[sz]e|summary)\b/.test(value)) {
     return AGENT_BLUEPRINTS.emailDigest;
   }
@@ -10336,11 +10400,17 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   const relatedFeatureId = blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp"
     ? WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
     : blueprint.relatedFeatureId;
-  const missingCredential = blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp"
-    ? (isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)) ? "" : "WhatsApp Business API access token")
-    : blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()
+  const calendarConnected = getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected";
+  let missingCredential = blueprint.missingCredential;
+  if (blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp") {
+    missingCredential = isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
       ? ""
-      : blueprint.missingCredential;
+      : "WhatsApp Business API access token";
+  } else if (blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
+    missingCredential = "";
+  } else if (blueprint.type === "calendar-summary" && calendarConnected) {
+    missingCredential = "";
+  }
   const proposal = normalizeAgentProposal({
     id: createAgentId("agent-proposal"),
     type: blueprint.type,
@@ -10393,6 +10463,43 @@ function getActiveAgentProposal() {
   return agent.proposals.find((proposal) => proposal.id === agent.activeProposalId)
     || agent.proposals[agent.proposals.length - 1]
     || null;
+}
+
+function isAgentCalendarSummaryRequest(text) {
+  const value = String(text || "").trim().toLowerCase();
+  return /\b(?:meeting|meetings|calendar|agenda|appointment|appointments)\b/.test(value)
+    && /\b(?:summar(?:y|ize|ise)|brief|overview|review|list|show)\b/.test(value);
+}
+
+function switchAgentProposalToCalendarSummary(proposal, requestText) {
+  if (!proposal || proposal.type !== "email-digest" || !isAgentCalendarSummaryRequest(requestText)) {
+    return false;
+  }
+
+  const previousId = proposal.id;
+  const previousCreatedAt = proposal.createdAt;
+  const previousRevision = Math.max(1, Number(proposal.revision || 1));
+  const previousDeliveryChannel = getAgentProposalFieldValue(proposal, "deliveryChannel");
+  const replacement = createAgentProposalFromRequest(requestText, AGENT_BLUEPRINTS.calendarSummary);
+  if (previousDeliveryChannel && !replacement.fields.deliveryChannel) {
+    replacement.fields.deliveryChannel = previousDeliveryChannel;
+  }
+  if (getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected") {
+    replacement.fields.calendar = "Connected calendar";
+  }
+  syncAgentProposalFieldCompatibility(replacement);
+  updateAgentProposalSummaryFromFields(replacement);
+
+  Object.assign(proposal, replacement, {
+    id: previousId,
+    createdAt: previousCreatedAt || replacement.createdAt,
+    revision: previousRevision + 1,
+    approved: false,
+    approvedAt: "",
+    status: "needs-approval",
+    updatedAt: new Date().toISOString(),
+  });
+  return true;
 }
 
 function getLatestApprovedAgentProposal() {
@@ -10582,6 +10689,10 @@ function getAgentProposalFieldKeysForAnswers(proposal, answerCount = 0) {
 
   if (proposal?.type === "email-digest") {
     return ["mailbox", "schedule", "deliveryChannel"];
+  }
+
+  if (proposal?.type === "calendar-summary") {
+    return ["calendar", "timeWindow", "deliveryChannel"];
   }
 
   if (proposal?.type === "whatsapp-replies") {
@@ -10798,6 +10909,22 @@ function inferAgentProposalFieldsFromText(text, proposalType) {
     return fields;
   }
 
+  if (proposalType === "calendar-summary") {
+    if (/\b(calendar|meeting|meetings|agenda|appointment|appointments)\b/i.test(value)) {
+      fields.calendar = "Connected calendar";
+    }
+    const meetingWindow = value.match(/\b(next|this|last)\s+(week|month|quarter|year)\b/i);
+    if (meetingWindow) {
+      fields.timeWindow = meetingWindow[0];
+    } else if (/\b(today|tomorrow)\b/i.test(value)) {
+      fields.timeWindow = value.match(/\b(today|tomorrow)\b/i)[0];
+    }
+    if (deliveryChannel) {
+      fields.deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannel);
+    }
+    return fields;
+  }
+
   if (proposalType === "reengagement") {
     const inactivityMatch = value.match(/\b(\d+)\s*(days?|weeks?|months?)\b/i);
     if (inactivityMatch) {
@@ -10856,6 +10983,14 @@ function updateAgentProposalSummaryFromFields(proposal) {
     const mailbox = fields.mailbox || "the selected mailbox";
     const schedule = fields.schedule ? ` on ${fields.schedule}` : "";
     proposal.summary = `Summarize important messages from ${mailbox}${schedule}.`;
+  } else if (proposal.type === "calendar-summary" && (fields.calendar || fields.timeWindow)) {
+    const calendar = fields.calendar || "the selected calendar";
+    const timeWindow = fields.timeWindow ? ` for ${fields.timeWindow}` : "";
+    const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
+    const deliveryText = deliveryChannel
+      ? ` and deliver it by ${formatAgentScheduledMessageChannel(deliveryChannel)}`
+      : "";
+    proposal.summary = `Summarize meetings from ${calendar}${timeWindow}${deliveryText}.`;
   } else if (proposal.type === "reengagement" && (fields.inactivityPeriod || fields.frequency)) {
     const inactivity = fields.inactivityPeriod || "the chosen quiet period";
     const frequency = fields.frequency ? ` ${fields.frequency}` : "";
@@ -11941,6 +12076,9 @@ function getAgentProposalLocalActionTitle(proposal) {
   }
   if (proposal?.type === "email-digest") {
     return "Email digest";
+  }
+  if (proposal?.type === "calendar-summary") {
+    return "Meeting summary";
   }
   if (proposal?.type === "whatsapp-replies") {
     return "WhatsApp helper";
@@ -13685,6 +13823,12 @@ async function applyAgentTurnResponse(turn, userText) {
   const outcome = String(turn?.outcome || "").trim();
   const reply = String(turn?.reply || "").trim();
 
+  if (activeProposal && switchAgentProposalToCalendarSummary(activeProposal, userText)) {
+    applyAgentFieldProposalRevision(activeProposal, turn?.changes, { bumpRevision: false });
+    pushAgentProposalNextStep(activeProposal, reply);
+    return true;
+  }
+
   if (outcome === "approve_proposal" && activeProposal && !activeProposal.approved) {
     agentTurnProgressText = "Setting it up";
     renderApp({ preserveStatus: true });
@@ -14604,6 +14748,10 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     const message = `Source action is active. I’ll check ${sourceLabel} ${details.frequency || "on its schedule"} and record each run. I’m not interpreting the content yet.`;
     pushAgentProposalResult(proposal.id, message);
     persistAgentWorkspace(message);
+  } else if (proposal.type === "calendar-summary") {
+    const message = "Meeting summary action is active. I’ll use your calendar for the selected date range and deliver the summary through the chosen channel.";
+    pushAgentProposalResult(proposal.id, message);
+    persistAgentWorkspace(message);
   } else {
     const message = "Agent helper created.";
     pushAgentProposalResult(proposal.id, message);
@@ -14634,6 +14782,10 @@ function requestAgentProposalChanges(proposalId, expectedRevision = 0) {
 
 function openAgentProposalSetup(proposalId) {
   const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
+  if (proposal?.type === "calendar-summary" && proposal.missingCredential) {
+    openPlatformConnection("calendar");
+    return;
+  }
   if (!proposal?.relatedFeatureId) {
     persistAgentWorkspace("This plan needs a custom setup path.");
     renderApp({ preserveStatus: true });

@@ -255,6 +255,30 @@ class AgentProposalRevisionTests(unittest.TestCase):
             "deliveryChannel": "Email",
         })
 
+    def test_calendar_summary_uses_calendar_not_mailbox(self) -> None:
+        proposal = normalize_agent_proposal_for_turn({
+            "id": "proposal-calendar",
+            "type": "calendar-summary",
+            "revision": 1,
+            "requestText": "Summarize my meetings next week and email me the brief",
+            "fields": {
+                "calendar": "Connected calendar",
+                "timeWindow": "next week",
+                "deliveryChannel": "Email",
+            },
+        })
+
+        self.assertEqual(proposal["type"], "calendar-summary")
+        self.assertEqual(proposal["fields"]["calendar"], "Connected calendar")
+        prompt = build_agent_turn_prompt(
+            user_message="Yes, set up the meeting summary",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            active_proposal=proposal,
+        )
+        self.assertIn("calendar-summary", prompt)
+        self.assertIn("Never ask for Gmail or mailbox access", prompt)
+
 
 class AgentProposalRevisionApiTests(unittest.TestCase):
     def setUp(self) -> None:

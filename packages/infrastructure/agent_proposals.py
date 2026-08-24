@@ -32,6 +32,7 @@ _SCHEDULED_MESSAGE_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _AGENT_PROPOSAL_TYPES = {
     "scheduled-message",
     "email-digest",
+    "calendar-summary",
     "web-monitor",
     "whatsapp-replies",
     "reengagement",
@@ -40,6 +41,7 @@ _AGENT_PROPOSAL_TYPES = {
 }
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "email-digest": ["mailbox", "schedule", "deliveryChannel"],
+    "calendar-summary": ["calendar", "timeWindow", "deliveryChannel"],
     "web-monitor": ["watchQuery", "location", "timeWindow", "frequency", "deliveryChannel"],
     "whatsapp-replies": ["whatsappNumber", "approver", "guardrails", "deliveryChannel"],
     "reengagement": ["inactivityPeriod", "frequency", "deliveryChannel"],
@@ -91,6 +93,8 @@ _AGENT_PROPOSAL_FIELD_ALIASES = {
     "mime_type": "sourceMimeType",
     "sourcetype": "sourceType",
     "source_type": "sourceType",
+    "cal": "calendar",
+    "calendar_name": "calendar",
 }
 
 
@@ -314,7 +318,7 @@ def build_agent_turn_prompt(
         "- message: answer conversationally without creating or executing anything.\n"
         "Return keys: outcome, reply, proposalType, changes. reply is required for every outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
-        "of scheduled-message, email-digest, "
+        "of scheduled-message, email-digest, calendar-summary, "
         "web-monitor, source-action, whatsapp-replies, reengagement, or custom when outcome is proposal or when outcome is "
         "question for a recognizable setup that is missing details.\n"
         "For scheduled-message proposals and revisions, changes may contain only channel, timeLocal, "
@@ -342,6 +346,9 @@ def build_agent_turn_prompt(
         "snapshot on a recurring schedule; it does not understand, summarize, or interpret source content yet. "
         "Ask only for a missing source or frequency. Use sourceType=url or sourceType=file, and never request file "
         "bytes or credentials in chat.\n"
+        "For calendar-summary, use the connected calendar as the meeting source. Never ask for Gmail or mailbox "
+        "access for this proposal. Delivery (such as email) is separate from calendar access. Ask only for a missing "
+        "calendar, date range, or delivery channel.\n"
         "Use toolContext to understand which integrations are already connected. If toolContext.whatsapp.ready "
         "is true, use the connected WhatsApp Business connection and do not ask which WhatsApp number or account "
         "to monitor. If it is false, ask only for the specific WhatsApp details listed in "
