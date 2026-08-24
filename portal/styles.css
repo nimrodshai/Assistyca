@@ -3146,6 +3146,10 @@ body[data-modal="billing"] .app-shell {
   background: #d49a3a;
 }
 
+.agent-action-item.is-manual_only::before {
+  background: #607080;
+}
+
 .agent-action-item.is-delivered::before,
 .agent-action-item.is-read::before {
   background: #2c9c72;
@@ -3196,6 +3200,11 @@ body[data-modal="billing"] .app-shell {
 .agent-action-status.is-running {
   color: #946118;
   background: rgba(212, 154, 58, 0.14);
+}
+
+.agent-action-status.is-manual_only {
+  color: #4f6275;
+  background: rgba(96, 112, 128, 0.12);
 }
 
 .agent-action-status.is-delivered,
@@ -3285,10 +3294,79 @@ body[data-modal="billing"] .app-shell {
   border-radius: 20px;
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.8) inset,
-    0 0 0 100vmax rgba(15, 23, 42, 0.16),
     0 24px 70px rgba(25, 38, 54, 0.22);
   backdrop-filter: blur(18px) saturate(130%);
   scrollbar-width: thin;
+  opacity: 0;
+  transform: translate(-50%, -46%) scale(0.96);
+  pointer-events: none;
+  will-change: opacity, transform;
+}
+
+.agent-add-tool-menu.is-open {
+  animation: agent-tool-menu-enter 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: auto;
+}
+
+.agent-add-tool-menu.is-closing {
+  animation: agent-tool-menu-exit 160ms cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+.agent-add-tool-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(20, 28, 38, 0.08);
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: blur(0) saturate(100%);
+  transition:
+    opacity 180ms ease,
+    background-color 220ms ease,
+    backdrop-filter 240ms ease;
+  will-change: opacity, backdrop-filter, background-color;
+}
+
+.agent-add-tool-backdrop.is-open {
+  background: rgba(20, 28, 38, 0.2);
+  opacity: 1;
+  pointer-events: auto;
+  backdrop-filter: blur(8px) saturate(118%);
+}
+
+.agent-add-tool-backdrop.is-closing {
+  pointer-events: none;
+}
+
+@keyframes agent-tool-menu-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -46%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes agent-tool-menu-exit {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -47%) scale(0.975);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-add-tool-menu,
+  .agent-add-tool-backdrop {
+    animation: none;
+    transition: none;
+  }
 }
 
 .agent-add-tool-option {

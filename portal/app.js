@@ -1032,6 +1032,7 @@ const state = {
   scheduledActionsLoadedAt: 0,
   selectedScheduledActionId: "",
   agentAddToolMenuOpen: false,
+  agentAddToolMenuClosing: false,
   platformConnections: [],
   paymentStatus: null,
   selectedSimulatorId: null,
@@ -1087,6 +1088,8 @@ let reengagementDemoRunCancelling = false;
 let reengagementDemoRunCancellationError = "";
 let reengagementDemoRunOverlayVisible = false;
 let whatsappSampleMessageBusy = false;
+let agentAddToolMenuOpenFrame = null;
+let agentAddToolMenuCloseTimer = null;
 let whatsappSampleMessageTargetId = "";
 let whatsappHistoryRefreshPromise = null;
 let featureConfigBusy = false;
@@ -1141,6 +1144,7 @@ const elements = {
   featureList: document.querySelector("#featureList"),
   agentToolShelf: document.querySelector("#agentToolShelf"),
   agentAddToolButton: document.querySelector("#agentAddToolButton"),
+  agentAddToolBackdrop: document.querySelector("#agentAddToolBackdrop"),
   agentAddToolMenu: document.querySelector("#agentAddToolMenu"),
   agentActionsPanelBody: document.querySelector("#agentActionsPanelBody"),
   agentActionsListView: document.querySelector("#agentActionsListView"),
@@ -11593,6 +11597,11 @@ function createAgentProposalLocalAction(proposal) {
     return null;
   }
 
+  const executionSettings = proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object"
+    ? proposal.executionPlan.settings
+    : {};
+  const manualOnly = proposal.type === "web-monitor"
+    && normalizeMonitorManualOnly(executionSettings.manualOnly);
   const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
   const deliveryTarget = getAgentProposalDeliveryTarget(proposal, deliveryChannel);
   const deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget);
@@ -11601,8 +11610,8 @@ function createAgentProposalLocalAction(proposal) {
   const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
   const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
   const status = backendFeatureId
-    ? (backendFeatureActive ? "running" : "cancelled")
-    : (proposal.missingCredential ? "pending" : "running");
+    ? (backendFeatureActive ? (manualOnly ? "manual_only" : "running") : "cancelled")
+    : (proposal.missingCredential ? "pending" : (manualOnly ? "manual_only" : "running"));
   return {
     id: `proposal:${proposal.id}`,
     actionType: `agent_${String(proposal.type || "helper").replace(/[^a-zA-Z0-9]+/g, "_")}`,
@@ -11625,7 +11634,10 @@ function createAgentProposalLocalAction(proposal) {
       watchQuery: getAgentProposalFieldValue(proposal, "watchQuery"),
       location: getAgentProposalFieldValue(proposal, "location"),
       timeWindow: getAgentProposalFieldValue(proposal, "timeWindow"),
-      frequency: getAgentProposalFieldValue(proposal, "frequency"),
+      frequency: manualOnly
+        ? "manual only"
+        : (proposal.executionPlan?.frequency || getAgentProposalFieldValue(proposal, "frequency")),
+      manualOnly,
       deliveryChannel,
       deliveryTarget,
       deliveryLabel,
@@ -11700,7 +11712,7 @@ function createMonitorFeatureLiveAction(feature) {
     recipientRef: deliveryTarget || deliveryChannel,
     runAt: nextRunAt,
     timezone: getMonitorScheduleTimezone(feature),
-    status: manualOnly ? "pending" : "running",
+    status: manualOnly ? "manual_only" : "running",
     attemptCount: 0,
     providerMessageId: "",
     payload: {
@@ -11752,8 +11764,12 @@ function getRenderableAgentActions() {
   ];
 }
 
+function isActiveAgentActionStatus(status) {
+  return ["pending", "running", "manual_only"].includes(String(status || "").trim().toLowerCase());
+}
+
 function canCancelAgentAction(action) {
-  return ["pending", "running"].includes(String(action?.status || "").trim().toLowerCase());
+  return isActiveAgentActionStatus(action?.status);
 }
 
 function createAgentActionDetailActions(action) {
@@ -11807,6 +11823,9 @@ function getScheduledActionStatusLabel(status, action = null) {
   };
   const normalized = String(status || "pending").trim().toLowerCase();
   if (isAgentLocalAction(action)) {
+    if (normalized === "manual_only") {
+      return "Manual";
+    }
     if (normalized === "running") {
       return "Working";
     }
@@ -11819,7 +11838,7 @@ function getScheduledActionStatusLabel(status, action = null) {
 
 function getScheduledActionStatusClass(status) {
   const normalized = String(status || "pending").trim().toLowerCase();
-  return ["pending", "running", "sent", "delivered", "read", "failed", "cancelled"].includes(normalized)
+  return ["pending", "running", "manual_only", "sent", "delivered", "read", "failed", "cancelled"].includes(normalized)
     ? normalized
     : "unknown";
 }
@@ -11881,9 +11900,15 @@ function getScheduledActionPreviewText(action) {
 }
 
 function getScheduledActionItemTimeValue(action) {
-  return ["pending", "running"].includes(action.status)
+  return isActiveAgentActionStatus(action.status)
     ? action.runAt
     : (action.completedAt || action.updatedAt);
+}
+
+function getScheduledActionSortTime(action, fallback = Number.MAX_SAFE_INTEGER) {
+  const value = getScheduledActionItemTimeValue(action) || action.updatedAt || action.createdAt;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? fallback : parsed;
 }
 
 function getScheduledActionItemSignature(action) {
@@ -12081,6 +12106,15 @@ function createScheduledActionDetail(action) {
       runMessage.textContent = String(payload.initialRunMessage);
       runNote.append(runTitle, runMessage);
       card.append(runNote);
+    } else if (payload.manualOnly) {
+      const runNote = document.createElement("div");
+      runNote.className = "agent-action-note";
+      const runTitle = document.createElement("strong");
+      runTitle.textContent = "Manual mode";
+      const runMessage = document.createElement("p");
+      runMessage.textContent = "No background checks. Use Run now whenever you want a fresh top-five summary.";
+      runNote.append(runTitle, runMessage);
+      card.append(runNote);
     }
 
     const localActions = createAgentActionDetailActions(action);
@@ -12169,14 +12203,11 @@ function renderAgentActions() {
 
   const actions = getRenderableAgentActions();
   const activeActions = actions
-    .filter((action) => ["pending", "running"].includes(action.status))
-    .sort((left, right) => new Date(left.runAt).getTime() - new Date(right.runAt).getTime());
+    .filter((action) => isActiveAgentActionStatus(action.status))
+    .sort((left, right) => getScheduledActionSortTime(left) - getScheduledActionSortTime(right));
   const completed = actions
-    .filter((action) => !["pending", "running"].includes(action.status))
-    .sort((left, right) => (
-      new Date(right.completedAt || right.updatedAt || right.createdAt).getTime()
-      - new Date(left.completedAt || left.updatedAt || left.createdAt).getTime()
-    ));
+    .filter((action) => !isActiveAgentActionStatus(action.status))
+    .sort((left, right) => getScheduledActionSortTime(right, 0) - getScheduledActionSortTime(left, 0));
 
   elements.agentPendingActionsCount.textContent = String(activeActions.length);
   elements.agentCompletedActionsCount.textContent = String(completed.length);
@@ -13639,12 +13670,16 @@ function handleAgentWorkspaceClick(event) {
   const target = getEventTargetElement(event);
   const removeLocalActionButton = target?.closest("[data-agent-remove-local-action]");
   if (removeLocalActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
     void removeAgentProposalLocalAction(removeLocalActionButton.dataset.agentRemoveLocalAction || "");
     return;
   }
 
   const cancelScheduledActionButton = target?.closest("[data-agent-cancel-scheduled-action]");
   if (cancelScheduledActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
     void cancelScheduledAction(cancelScheduledActionButton.dataset.agentCancelScheduledAction || "");
     return;
   }
@@ -13659,6 +13694,8 @@ function handleAgentWorkspaceClick(event) {
 
   const scheduledActionButton = target?.closest("[data-agent-scheduled-action-id]");
   if (scheduledActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
     state.selectedScheduledActionId = String(scheduledActionButton.dataset.agentScheduledActionId || "");
     renderAgentActions();
     elements.agentActionsPanelBody?.scrollTo({ top: 0, behavior: "smooth" });
@@ -13667,6 +13704,8 @@ function handleAgentWorkspaceClick(event) {
 
   const addToolButton = target?.closest("[data-agent-add-tool]");
   if (addToolButton) {
+    event.preventDefault();
+    event.stopPropagation();
     const option = getAgentAddToolOption(addToolButton.dataset.agentAddTool || "");
     if (option) {
       setAgentAddToolMenuOpen(false);
@@ -13681,12 +13720,16 @@ function handleAgentWorkspaceClick(event) {
 
   const platformConnectionButton = target?.closest("[data-agent-platform-connection]");
   if (platformConnectionButton) {
+    event.preventDefault();
+    event.stopPropagation();
     openPlatformConnection(platformConnectionButton.dataset.agentPlatformConnection || "");
     return;
   }
 
   const toolButton = target?.closest("[data-agent-tool-feature-id]");
   if (toolButton) {
+    event.preventDefault();
+    event.stopPropagation();
     openAgentToolDetails(toolButton.dataset.agentToolFeatureId || "");
     return;
   }
@@ -13728,7 +13771,7 @@ function setAgentToolsOpen(open) {
   elements.agentToolsPanel?.classList.toggle("is-open", isOpen);
   elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
   if (elements.agentToolsToggleButton) {
-    const upcomingCount = getRenderableAgentActions().filter((action) => ["pending", "running"].includes(action.status)).length;
+    const upcomingCount = getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status)).length;
     elements.agentToolsToggleButton.textContent = isOpen
       ? "Close actions"
       : (upcomingCount ? `Actions (${upcomingCount})` : "View actions");
@@ -13801,7 +13844,20 @@ function getAgentAddToolOption(id) {
 }
 
 function setAgentAddToolMenuOpen(open) {
-  state.agentAddToolMenuOpen = Boolean(open);
+  const nextOpen = Boolean(open);
+  if (agentAddToolMenuOpenFrame !== null) {
+    window.cancelAnimationFrame(agentAddToolMenuOpenFrame);
+    agentAddToolMenuOpenFrame = null;
+  }
+  if (agentAddToolMenuCloseTimer !== null) {
+    window.clearTimeout(agentAddToolMenuCloseTimer);
+    agentAddToolMenuCloseTimer = null;
+  }
+  state.agentAddToolMenuOpen = nextOpen;
+  state.agentAddToolMenuClosing = !nextOpen && (
+    !elements.agentAddToolMenu?.hidden
+    || !elements.agentAddToolBackdrop?.hidden
+  );
   renderAgentAddToolMenu();
 }
 
@@ -13936,13 +13992,49 @@ function renderAgentAddToolMenu() {
   }
 
   const isOpen = Boolean(state.agentAddToolMenuOpen);
+  const isClosing = Boolean(state.agentAddToolMenuClosing) && !isOpen;
+  const isVisible = isOpen || isClosing;
   elements.agentAddToolButton.setAttribute("aria-expanded", String(isOpen));
-  elements.agentAddToolMenu.hidden = !isOpen;
-  elements.agentAddToolMenu.classList.toggle("is-hidden", !isOpen);
-  if (!isOpen) {
+  elements.agentAddToolMenu.hidden = !isVisible;
+  elements.agentAddToolMenu.classList.toggle("is-hidden", !isVisible);
+  elements.agentAddToolMenu.classList.toggle("is-closing", isClosing);
+  if (elements.agentAddToolBackdrop) {
+    elements.agentAddToolBackdrop.hidden = !isVisible;
+    elements.agentAddToolBackdrop.classList.toggle("is-hidden", !isVisible);
+    elements.agentAddToolBackdrop.classList.toggle("is-closing", isClosing);
+  }
+
+  if (!isVisible) {
+    elements.agentAddToolMenu.classList.remove("is-open");
+    elements.agentAddToolBackdrop?.classList.remove("is-open");
     return;
   }
-  elements.agentAddToolMenu.replaceChildren(...AGENT_ADD_TOOL_OPTIONS.map(createAgentAddToolOption));
+
+  if (isOpen) {
+    elements.agentAddToolMenu.classList.remove("is-closing");
+    elements.agentAddToolBackdrop?.classList.remove("is-closing");
+    elements.agentAddToolMenu.replaceChildren(...AGENT_ADD_TOOL_OPTIONS.map(createAgentAddToolOption));
+    if (!elements.agentAddToolMenu.classList.contains("is-open") && agentAddToolMenuOpenFrame === null) {
+      agentAddToolMenuOpenFrame = window.requestAnimationFrame(() => {
+        if (state.agentAddToolMenuOpen) {
+          elements.agentAddToolMenu.classList.add("is-open");
+          elements.agentAddToolBackdrop?.classList.add("is-open");
+        }
+        agentAddToolMenuOpenFrame = null;
+      });
+    }
+    return;
+  }
+
+  elements.agentAddToolMenu.classList.remove("is-open");
+  elements.agentAddToolBackdrop?.classList.remove("is-open");
+  if (agentAddToolMenuCloseTimer === null) {
+    agentAddToolMenuCloseTimer = window.setTimeout(() => {
+      state.agentAddToolMenuClosing = false;
+      agentAddToolMenuCloseTimer = null;
+      renderAgentAddToolMenu();
+    }, 190);
+  }
 }
 
 function createAgentToolItem(feature) {
@@ -18924,6 +19016,14 @@ function bindEvents() {
     elements.featuresPanel.addEventListener("click", handleAgentWorkspaceClick);
   }
 
+  if (elements.agentToolsPanel) {
+    elements.agentToolsPanel.addEventListener("click", handleAgentWorkspaceClick);
+  }
+
+  if (elements.agentAddToolMenu) {
+    elements.agentAddToolMenu.addEventListener("click", handleAgentWorkspaceClick);
+  }
+
   if (elements.agentToolsToggleButton) {
     elements.agentToolsToggleButton.addEventListener("click", () => {
       const isOpen = elements.agentToolsPanel?.classList.contains("is-open");
@@ -18940,6 +19040,11 @@ function bindEvents() {
   if (elements.agentAddToolButton) {
     elements.agentAddToolButton.addEventListener("click", () => {
       setAgentAddToolMenuOpen(!state.agentAddToolMenuOpen);
+    });
+  }
+  if (elements.agentAddToolBackdrop) {
+    elements.agentAddToolBackdrop.addEventListener("click", () => {
+      setAgentAddToolMenuOpen(false);
     });
   }
 
