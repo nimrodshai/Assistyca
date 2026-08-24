@@ -11995,7 +11995,6 @@ function getScheduledActionItemSignature(action) {
     getScheduledActionStatusLabel(action.status, action),
     action.payload?.manualOnly ? "Run when you choose" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     getScheduledActionPreviewText(action),
-    String(state.selectedScheduledActionId === String(action.id)),
   ]);
 }
 
@@ -12087,19 +12086,67 @@ function renderScheduledActionList(container, actions, emptyMessage) {
   );
 }
 
+function setScheduledActionItemExpandedState(item, isExpanded) {
+  if (!item) {
+    return;
+  }
+
+  item.classList.toggle("is-expanded", isExpanded);
+  const trigger = item.querySelector("[data-agent-scheduled-action-trigger]");
+  const expansion = item.querySelector(".agent-action-item-expansion");
+  const actionTitle = item.querySelector(".agent-action-item-head strong")?.textContent || "Action";
+  trigger?.setAttribute("aria-expanded", String(isExpanded));
+  trigger?.setAttribute("aria-label", `${isExpanded ? "Collapse" : "Open"} ${actionTitle}`);
+  expansion?.setAttribute("aria-hidden", String(!isExpanded));
+  if (expansion) {
+    expansion.inert = !isExpanded;
+  }
+}
+
+function syncScheduledActionSelection() {
+  const selectedActionId = String(state.selectedScheduledActionId || "");
+  for (const item of document.querySelectorAll("[data-agent-scheduled-action-id]")) {
+    setScheduledActionItemExpandedState(
+      item,
+      Boolean(selectedActionId) && item.dataset.agentScheduledActionId === selectedActionId,
+    );
+  }
+}
+
+function preserveAgentActionsScrollPosition(scrollTop) {
+  const scrollContainer = elements.agentActionsPanelBody;
+  if (!scrollContainer || !Number.isFinite(scrollTop)) {
+    return;
+  }
+
+  scrollContainer.scrollTop = scrollTop;
+  window.requestAnimationFrame(() => {
+    scrollContainer.scrollTop = scrollTop;
+  });
+}
+
 function selectScheduledAction(actionId) {
   const normalizedActionId = String(actionId || "");
+  const scrollContainer = elements.agentActionsPanelBody;
+  const scrollTop = scrollContainer?.scrollTop;
   state.selectedScheduledActionId = state.selectedScheduledActionId === normalizedActionId
     ? ""
     : normalizedActionId;
-  renderAgentActions();
-  if (state.selectedScheduledActionId) {
-    window.requestAnimationFrame(() => {
-      const expandedItem = Array.from(document.querySelectorAll("[data-agent-scheduled-action-id]"))
-        .find((item) => item.dataset.agentScheduledActionId === state.selectedScheduledActionId);
-      expandedItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    });
+
+  const selectedItem = Array.from(document.querySelectorAll("[data-agent-scheduled-action-id]"))
+    .find((item) => item.dataset.agentScheduledActionId === state.selectedScheduledActionId);
+  const previousItem = Array.from(document.querySelectorAll(".agent-action-item.is-expanded"))[0];
+  if (selectedItem || previousItem) {
+    // Keep the existing DOM nodes so the card can animate from its current
+    // height. Replacing the list here would make the new card appear already
+    // open and would also invite the browser to re-anchor the scroll view.
+    syncScheduledActionSelection();
+    preserveAgentActionsScrollPosition(scrollTop);
+    return;
   }
+
+  renderAgentActions();
+  preserveAgentActionsScrollPosition(scrollTop);
 }
 
 function handleScheduledActionListClick(event) {
@@ -12640,6 +12687,7 @@ function renderAgentActions() {
   if (state.selectedScheduledActionId && !selectedAction) {
     state.selectedScheduledActionId = "";
   }
+  syncScheduledActionSelection();
   // Action details now live inside the selected card. Keep the legacy detail
   // container hidden so older persisted markup cannot create a second panel.
   elements.agentActionDetailView?.classList.add("is-hidden");
