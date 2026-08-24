@@ -1115,6 +1115,8 @@ let pricingLastRefreshCompletedAt = 0;
 let agentTurnBusy = false;
 let agentTurnProgressText = "Thinking";
 let agentSourceAttachment = null;
+let agentAttachSourceMenuOpen = false;
+let agentAttachSourceMenuMode = "options";
 let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
@@ -1184,7 +1186,16 @@ const elements = {
   agentComposerInput: document.querySelector("#agentComposerInput"),
   agentComposerButton: document.querySelector("#agentComposerButton"),
   agentSourceFileInput: document.querySelector("#agentSourceFileInput"),
+  agentAttachSourceControl: document.querySelector("#agentAttachSourceControl"),
   agentAttachSourceButton: document.querySelector("#agentAttachSourceButton"),
+  agentAttachSourceMenu: document.querySelector("#agentAttachSourceMenu"),
+  agentAttachSourceOptions: document.querySelector("#agentAttachSourceOptions"),
+  agentAttachSourceFileOption: document.querySelector("#agentAttachSourceFileOption"),
+  agentAttachSourceUrlOption: document.querySelector("#agentAttachSourceUrlOption"),
+  agentSourceUrlForm: document.querySelector("#agentSourceUrlForm"),
+  agentSourceUrlInput: document.querySelector("#agentSourceUrlInput"),
+  agentSourceUrlAttachButton: document.querySelector("#agentSourceUrlAttachButton"),
+  agentSourceUrlError: document.querySelector("#agentSourceUrlError"),
   agentSourceAttachment: document.querySelector("#agentSourceAttachment"),
   agentProposalCard: document.querySelector("#agentProposalCard"),
   agentHelperCount: document.querySelector("#agentHelperCount"),
@@ -10191,8 +10202,16 @@ function buildAgentScheduledMessageDetails(text) {
 function buildAgentSourceActionDetails(text, proposal = null) {
   const requestText = String(text || "");
   const fields = proposal?.fields && typeof proposal.fields === "object" ? proposal.fields : {};
-  const sourceType = String(fields.sourceType || (agentSourceAttachment ? "file" : "url")).trim().toLowerCase();
-  const sourceUrl = String(fields.sourceUrl || requestText.match(/https?:\/\/[^\s<>)\]}]+/i)?.[0] || "").replace(/[.,!?]+$/, "");
+  const attachedSourceType = ["file", "url"].includes(agentSourceAttachment?.sourceType)
+    ? agentSourceAttachment.sourceType
+    : "";
+  const sourceType = String(fields.sourceType || attachedSourceType || "url").trim().toLowerCase();
+  const sourceUrl = String(
+    fields.sourceUrl
+    || (sourceType === "url" ? agentSourceAttachment?.sourceUrl : "")
+    || requestText.match(/https?:\/\/[^\s<>)\]}]+/i)?.[0]
+    || "",
+  ).replace(/[.,!?]+$/, "");
   const frequency = String(fields.frequency || extractAgentFrequencyField(requestText) || "daily").trim();
   const interval = buildAgentMonitorIntervalFromFrequency(frequency);
   return {
@@ -13768,14 +13787,18 @@ async function handleAgentUserText(text) {
   }));
   const activeProposalPayload = buildAgentTurnActiveProposal(activeProposal);
   const sourceUrlMatch = cleanText.match(/https?:\/\/[^\s<>)\]}]+/i);
-  const sourceContext = agentSourceAttachment
+  const sourceContext = agentSourceAttachment?.sourceType === "file"
     ? {
       sourceType: "file",
       fileName: agentSourceAttachment.fileName,
       mimeType: agentSourceAttachment.mimeType,
       size: agentSourceAttachment.size,
     }
-    : (sourceUrlMatch ? { sourceType: "url", sourceUrl: sourceUrlMatch[0].replace(/[.,!?]+$/, "") } : {});
+    : (
+      agentSourceAttachment?.sourceType === "url"
+        ? { sourceType: "url", sourceUrl: agentSourceAttachment.sourceUrl }
+        : (sourceUrlMatch ? { sourceType: "url", sourceUrl: sourceUrlMatch[0].replace(/[.,!?]+$/, "") } : {})
+    );
   agentTurnBusy = true;
   agentTurnProgressText = "Thinking";
   persistAgentWorkspace("Assistyca is thinking...");
@@ -13840,7 +13863,10 @@ function handleAgentComposerSubmit(event = null) {
     input.value = "";
   }
 
-  void handleAgentUserText(text || "Please check the attached file on a recurring schedule.");
+  const defaultSourceText = agentSourceAttachment?.sourceType === "url"
+    ? "Please check the attached URL on a recurring schedule."
+    : "Please check the attached file on a recurring schedule.";
+  void handleAgentUserText(text || defaultSourceText);
 }
 
 function normalizeAgentComposerPastedText(text) {
@@ -13880,18 +13906,89 @@ function handleAgentComposerPaste(event) {
   insertAgentComposerText(event.currentTarget, normalizedText);
 }
 
+function normalizeAgentSourceUrl(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) {
+    return "";
+  }
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue) ? rawValue : `https://${rawValue}`;
+  try {
+    const url = new URL(candidate);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function setAgentAttachSourceMenuOpen(open, mode = "options") {
+  agentAttachSourceMenuOpen = Boolean(open);
+  agentAttachSourceMenuMode = mode === "url" ? "url" : "options";
+  if (elements.agentAttachSourceMenu) {
+    elements.agentAttachSourceMenu.hidden = !agentAttachSourceMenuOpen;
+    elements.agentAttachSourceMenu.dataset.mode = agentAttachSourceMenuMode;
+  }
+  elements.agentAttachSourceButton?.setAttribute("aria-expanded", String(agentAttachSourceMenuOpen));
+  elements.agentAttachSourceButton?.classList.toggle("is-open", agentAttachSourceMenuOpen);
+  if (elements.agentAttachSourceOptions) {
+    elements.agentAttachSourceOptions.hidden = !agentAttachSourceMenuOpen || agentAttachSourceMenuMode !== "options";
+  }
+  if (elements.agentSourceUrlForm) {
+    elements.agentSourceUrlForm.hidden = !agentAttachSourceMenuOpen || agentAttachSourceMenuMode !== "url";
+  }
+  if (elements.agentSourceUrlError) {
+    elements.agentSourceUrlError.hidden = true;
+    elements.agentSourceUrlError.textContent = "";
+  }
+  if (agentAttachSourceMenuOpen && agentAttachSourceMenuMode === "url") {
+    if (elements.agentSourceUrlInput && agentSourceAttachment?.sourceType === "url") {
+      elements.agentSourceUrlInput.value = agentSourceAttachment.sourceUrl || "";
+    }
+    window.requestAnimationFrame(() => elements.agentSourceUrlInput?.focus());
+  }
+}
+
+function attachAgentSourceUrl() {
+  const normalizedUrl = normalizeAgentSourceUrl(elements.agentSourceUrlInput?.value || "");
+  if (!normalizedUrl) {
+    if (elements.agentSourceUrlError) {
+      elements.agentSourceUrlError.textContent = "Paste a valid http or https URL.";
+      elements.agentSourceUrlError.hidden = false;
+    }
+    elements.agentSourceUrlInput?.focus();
+    return;
+  }
+  agentSourceAttachment = {
+    sourceType: "url",
+    sourceUrl: normalizedUrl,
+  };
+  if (elements.agentSourceFileInput) {
+    elements.agentSourceFileInput.value = "";
+  }
+  renderAgentSourceAttachment();
+  setAgentAttachSourceMenuOpen(false);
+  if (elements.agentSourceUrlInput) {
+    elements.agentSourceUrlInput.value = "";
+  }
+  elements.agentComposerInput?.focus();
+}
+
 function renderAgentSourceAttachment() {
   const attachment = agentSourceAttachment;
   if (!elements.agentSourceAttachment) {
     return;
   }
+  const sourceType = String(attachment?.sourceType || "").trim().toLowerCase();
   elements.agentSourceAttachment.hidden = !attachment;
   elements.agentSourceAttachment.textContent = attachment
-    ? `Attached source: ${attachment.fileName} · ${Math.ceil(attachment.size / 1024)} KB`
+    ? (
+      sourceType === "file"
+        ? `Attached file: ${attachment.fileName} · ${Math.ceil(attachment.size / 1024)} KB`
+        : (sourceType === "url" ? `Attached URL: ${attachment.sourceUrl}` : "")
+    )
     : "";
-  elements.agentAttachSourceButton?.setAttribute("aria-label", attachment ? "Replace attached source file" : "Attach a file as a recurring source");
   if (elements.agentAttachSourceButton) {
-    elements.agentAttachSourceButton.textContent = attachment ? "Replace file" : "Attach file";
+    elements.agentAttachSourceButton.setAttribute("aria-label", attachment ? "Replace attached source" : "Add source");
+    elements.agentAttachSourceButton.title = attachment ? "Replace attached source" : "Add source";
   }
 }
 
@@ -13899,6 +13996,9 @@ function clearAgentSourceAttachment() {
   agentSourceAttachment = null;
   if (elements.agentSourceFileInput) {
     elements.agentSourceFileInput.value = "";
+  }
+  if (elements.agentSourceUrlInput) {
+    elements.agentSourceUrlInput.value = "";
   }
   renderAgentSourceAttachment();
 }
@@ -13923,6 +14023,7 @@ function handleAgentSourceFileChange(event) {
       return;
     }
     agentSourceAttachment = {
+      sourceType: "file",
       fileName: file.name,
       mimeType: file.type || "application/octet-stream",
       size: file.size,
@@ -20196,8 +20297,39 @@ function bindEvents() {
     elements.agentComposerInput.addEventListener("paste", handleAgentComposerPaste);
   }
 
-  if (elements.agentAttachSourceButton && elements.agentSourceFileInput) {
-    elements.agentAttachSourceButton.addEventListener("click", () => elements.agentSourceFileInput.click());
+  if (elements.agentAttachSourceButton) {
+    elements.agentAttachSourceButton.addEventListener("click", () => {
+      setAgentAttachSourceMenuOpen(!agentAttachSourceMenuOpen, "options");
+    });
+  }
+
+  if (elements.agentAttachSourceFileOption && elements.agentSourceFileInput) {
+    elements.agentAttachSourceFileOption.addEventListener("click", () => {
+      setAgentAttachSourceMenuOpen(false);
+      elements.agentSourceFileInput.click();
+    });
+  }
+
+  if (elements.agentAttachSourceUrlOption) {
+    elements.agentAttachSourceUrlOption.addEventListener("click", () => {
+      setAgentAttachSourceMenuOpen(true, "url");
+    });
+  }
+
+  if (elements.agentSourceUrlAttachButton) {
+    elements.agentSourceUrlAttachButton.addEventListener("click", attachAgentSourceUrl);
+  }
+
+  if (elements.agentSourceUrlInput) {
+    elements.agentSourceUrlInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        attachAgentSourceUrl();
+      }
+    });
+  }
+
+  if (elements.agentSourceFileInput) {
     elements.agentSourceFileInput.addEventListener("change", handleAgentSourceFileChange);
   }
 
@@ -20327,6 +20459,14 @@ function bindEvents() {
     }
 
     if (
+      agentAttachSourceMenuOpen
+      && elements.agentAttachSourceControl
+      && !elements.agentAttachSourceControl.contains(event.target)
+    ) {
+      setAgentAttachSourceMenuOpen(false);
+    }
+
+    if (
       elements.deliveryPlatformMenu
       && elements.deliveryPlatformManager
       && !elements.deliveryPlatformMenu.hidden
@@ -20356,6 +20496,11 @@ function bindEvents() {
 
       if (state.agentAddToolMenuOpen) {
         setAgentAddToolMenuOpen(false);
+        return;
+      }
+
+      if (agentAttachSourceMenuOpen) {
+        setAgentAttachSourceMenuOpen(false);
         return;
       }
 

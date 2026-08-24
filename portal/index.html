@@ -203,7 +203,39 @@
             <form id="agentComposerForm" class="agent-composer">
               <label class="sr-only" for="agentComposerInput">Message Assistyca</label>
               <input id="agentSourceFileInput" class="sr-only" type="file" accept="text/*,application/json,application/xml,application/pdf,.csv,.txt,.md,.json,.xml,.pdf" />
-              <button id="agentAttachSourceButton" class="ghost-button small agent-attach-source-button" type="button" aria-label="Attach a file as a recurring source">Attach file</button>
+              <div id="agentAttachSourceControl" class="agent-attach-source-control">
+                <button
+                  id="agentAttachSourceButton"
+                  class="ghost-button small agent-attach-source-button"
+                  type="button"
+                  aria-label="Add source"
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  aria-controls="agentAttachSourceMenu"
+                >
+                  <span aria-hidden="true">+</span>
+                </button>
+                <div id="agentAttachSourceMenu" class="agent-attach-source-menu" hidden>
+                  <div id="agentAttachSourceOptions" class="agent-attach-source-options" role="menu">
+                    <button id="agentAttachSourceFileOption" type="button" role="menuitem">
+                      <span class="agent-attach-source-option-icon" aria-hidden="true">↑</span>
+                      <span>Attach file</span>
+                    </button>
+                    <button id="agentAttachSourceUrlOption" type="button" role="menuitem">
+                      <span class="agent-attach-source-option-icon" aria-hidden="true">↗</span>
+                      <span>Attach URL</span>
+                    </button>
+                  </div>
+                  <div id="agentSourceUrlForm" class="agent-source-url-form" hidden>
+                    <label for="agentSourceUrlInput">Source URL</label>
+                    <div class="agent-source-url-row">
+                      <input id="agentSourceUrlInput" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com" />
+                      <button id="agentSourceUrlAttachButton" class="primary-button small" type="button">Add</button>
+                    </div>
+                    <span id="agentSourceUrlError" class="field-error" role="alert" hidden></span>
+                  </div>
+                </div>
+              </div>
               <textarea
                 id="agentComposerInput"
                 rows="1"
