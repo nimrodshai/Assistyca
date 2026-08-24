@@ -2323,6 +2323,42 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.55;
 }
 
+.platform-connection-status {
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.72rem 0.82rem;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  background: rgba(15, 118, 110, 0.055);
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.42;
+}
+
+.platform-connection-status strong {
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.platform-connection-status[data-tone="success"] {
+  border-color: rgba(22, 163, 74, 0.18);
+  border-left-color: #16a34a;
+  background: rgba(22, 163, 74, 0.075);
+}
+
+.platform-connection-status[data-tone="warning"] {
+  border-color: rgba(180, 118, 26, 0.2);
+  border-left-color: #b6761a;
+  background: rgba(180, 118, 26, 0.085);
+}
+
+.platform-connection-status[data-tone="error"] {
+  border-color: rgba(180, 35, 24, 0.2);
+  border-left-color: #b42318;
+  background: rgba(180, 35, 24, 0.075);
+}
+
 .platform-connection-field {
   gap: 0.42rem;
 }
@@ -2336,6 +2372,12 @@ body[data-modal="billing"] .app-shell {
 .platform-connection-input-row input {
   min-width: 0;
   flex: 1 1 auto;
+}
+
+.platform-connection-field.is-disabled input {
+  color: var(--muted-strong);
+  background: rgba(236, 242, 244, 0.7);
+  border-color: rgba(25, 38, 54, 0.08);
 }
 
 .platform-connection-reveal {
@@ -2352,6 +2394,11 @@ body[data-modal="billing"] .app-shell {
   border-radius: 14px;
   font-size: 0.8rem;
   line-height: 1.45;
+}
+
+.platform-connection-security-note.is-warning {
+  background: rgba(180, 35, 24, 0.055);
+  border-color: rgba(180, 35, 24, 0.15);
 }
 
 .platform-connection-help {

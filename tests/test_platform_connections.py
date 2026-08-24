@@ -39,22 +39,38 @@ class PlatformConnectionTests(unittest.TestCase):
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
 
-    def _cookie(self) -> str:
-        code, _ = self.server.store.issue_challenge("owner@example.com")
+    def _cookie_for(self, server, base_url: str, email: str = "owner@example.com") -> str:
+        code, _ = server.store.issue_challenge(email)
         request = urllib_request.Request(
-            f"{self.base_url}/api/auth/otp/verify",
-            data=json.dumps({"email": "owner@example.com", "code": code}).encode("utf-8"),
+            f"{base_url}/api/auth/otp/verify",
+            data=json.dumps({"email": email, "code": code}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib_request.urlopen(request) as response:
             return response.headers.get("Set-Cookie", "").split(";", 1)[0]
 
+    def _cookie(self) -> str:
+        return self._cookie_for(self.server, self.base_url)
+
     def test_platform_connection_list_requires_authentication(self) -> None:
         request = urllib_request.Request(f"{self.base_url}/api/platform-connections")
         with self.assertRaises(urllib_error.HTTPError) as context:
             urllib_request.urlopen(request)
         self.assertEqual(context.exception.code, 401)
+
+    def test_platform_connection_list_reports_storage_availability(self) -> None:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/platform-connections",
+            headers={"Cookie": self._cookie()},
+        )
+        with urllib_request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["credentialStorageAvailable"])
+        self.assertIn("no token was saved", payload["credentialStorageMessage"])
+        self.assertEqual(payload["connections"], [])
 
     def test_platform_connection_write_fails_closed_without_encryption_key(self) -> None:
         request = urllib_request.Request(
@@ -74,7 +90,69 @@ class PlatformConnectionTests(unittest.TestCase):
             urllib_request.urlopen(request)
         body = context.exception.read().decode("utf-8")
         self.assertEqual(context.exception.code, 503)
+        self.assertIn("no token was saved", body)
         self.assertNotIn("xoxb-test-secret-value", body)
+
+    def test_calendar_connection_appears_after_encrypted_save(self) -> None:
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
+        except ImportError:
+            self.skipTest("cryptography is installed in deployment, not this minimal test environment")
+
+        db_path = Path(self.temp_dir.name) / "vault-backed.db"
+        key = base64.urlsafe_b64encode(b"0123456789abcdef0123456789abcdef").decode("ascii")
+        server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(db_path=db_path, credential_encryption_key=key),
+        )
+        server.database.register_user("owner@example.com")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            cookie = self._cookie_for(server, base_url)
+            request = urllib_request.Request(
+                f"{base_url}/api/platform-connections",
+                data=json.dumps({
+                    "platform": "calendar",
+                    "authType": "api_token",
+                    "credential": "calendar-secret-value-that-stays-server-side",
+                }).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Cookie": cookie,
+                },
+                method="POST",
+            )
+            with urllib_request.urlopen(request) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            body = json.dumps(payload)
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["credentialStorageAvailable"])
+            self.assertEqual(payload["connection"]["platform"], "calendar")
+            self.assertEqual(payload["connection"]["authType"], "api_token")
+            self.assertIn("secretHint", payload["connection"])
+            self.assertNotIn("calendar-secret-value-that-stays-server-side", body)
+
+            list_request = urllib_request.Request(
+                f"{base_url}/api/platform-connections",
+                headers={"Cookie": cookie},
+            )
+            with urllib_request.urlopen(list_request) as response:
+                list_payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertTrue(list_payload["credentialStorageAvailable"])
+            self.assertEqual(
+                [connection["platform"] for connection in list_payload["connections"]],
+                ["calendar"],
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_agent_turn_rejects_a_pasted_secret_before_model_call(self) -> None:
         request = urllib_request.Request(

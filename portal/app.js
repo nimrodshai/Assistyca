@@ -451,6 +451,7 @@ const PLATFORM_CONNECTION_OPTIONS = AGENT_ADD_TOOL_OPTIONS
     authType: option.id === "telegram" ? "bot_token" : "api_token",
     credentialLabel: option.id === "slack" ? "Slack bot token" : `${option.label} token`,
   }));
+const PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is not available yet, so no token was saved.";
 const AGENT_BLUEPRINTS = {
   emailDigest: {
     type: "email-digest",
@@ -1036,6 +1037,8 @@ const state = {
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
   platformConnections: [],
+  platformConnectionStorageAvailable: true,
+  platformConnectionStorageMessage: "",
   paymentStatus: null,
   selectedSimulatorId: null,
   billingReport: null,
@@ -1576,6 +1579,8 @@ function clearAuthSession() {
   state.selectedScheduledActionId = "";
   state.agentAddToolMenuOpen = false;
   state.platformConnections = [];
+  state.platformConnectionStorageAvailable = true;
+  state.platformConnectionStorageMessage = "";
   if (scheduledActionsPollTimer !== null) {
     window.clearInterval(scheduledActionsPollTimer);
     scheduledActionsPollTimer = null;
@@ -3909,6 +3914,8 @@ function getPlatformConnectionByPlatform(platform) {
 async function refreshPlatformConnections(options = {}) {
   if (!isSignedIn()) {
     state.platformConnections = [];
+    state.platformConnectionStorageAvailable = true;
+    state.platformConnectionStorageMessage = "";
     return [];
   }
 
@@ -3916,6 +3923,10 @@ async function refreshPlatformConnections(options = {}) {
     headers: getSessionAuthHeaders(),
     timeoutMs: options.timeoutMs || 15000,
   });
+  state.platformConnectionStorageAvailable = response.credentialStorageAvailable !== false;
+  state.platformConnectionStorageMessage = normalizeText(
+    response.credentialStorageMessage || response.storageMessage || "",
+  );
   state.platformConnections = Array.isArray(response.connections)
     ? response.connections.map(normalizePlatformConnection).filter((connection) => connection.platform)
     : [];
@@ -3927,17 +3938,58 @@ async function refreshPlatformConnections(options = {}) {
 
 function createPlatformConnectionForm(option) {
   const connection = getPlatformConnectionByPlatform(option.id);
+  const storageAvailable = state.platformConnectionStorageAvailable !== false;
+  const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const form = document.createElement("form");
   form.className = "platform-connection-form";
 
   const intro = document.createElement("p");
   intro.className = "platform-connection-intro";
   intro.textContent = connection
-    ? `${option.label} is connected. Enter a new token to replace it.`
+    ? storageAvailable
+      ? `${option.label} is connected. Enter a new token to replace it.`
+      : `${option.label} has saved connection details, but secure storage is unavailable right now.`
     : `Once connected, you can ask me to use ${option.label} for whatever you need.`;
+
+  const status = document.createElement("div");
+  status.id = "platformConnectionStatus";
+  status.className = "platform-connection-status";
+  status.hidden = true;
+  const statusTitle = document.createElement("strong");
+  const statusCopy = document.createElement("span");
+  status.append(statusTitle, statusCopy);
+  const setStatus = (tone, title, copy) => {
+    status.dataset.tone = tone;
+    statusTitle.textContent = title;
+    statusCopy.textContent = copy;
+    status.hidden = false;
+  };
+
+  if (connection && storageAvailable) {
+    setStatus(
+      "success",
+      `${option.label} is connected`,
+      connection.secretHint
+        ? `Saved securely as ${connection.secretHint}.`
+        : "Saved securely and ready under Available tools.",
+    );
+  } else if (connection) {
+    setStatus(
+      "warning",
+      `${option.label} needs storage restored`,
+      "The saved connection cannot be used or replaced until secure storage is available again.",
+    );
+  } else if (!storageAvailable) {
+    setStatus(
+      "error",
+      `${option.label} was not saved`,
+      storageMessage,
+    );
+  }
 
   const field = document.createElement("label");
   field.className = "field platform-connection-field";
+  field.classList.toggle("is-disabled", !storageAvailable);
   const label = document.createElement("span");
   label.textContent = option.credentialLabel || `${option.label} token`;
   const inputRow = document.createElement("span");
@@ -3950,11 +4002,17 @@ function createPlatformConnectionForm(option) {
   input.required = true;
   input.maxLength = 4096;
   input.placeholder = "Paste it here";
-  input.setAttribute("aria-describedby", "platformConnectionHelp platformConnectionError");
+  input.disabled = !storageAvailable;
+  input.setAttribute("aria-describedby", "platformConnectionHelp platformConnectionStatus platformConnectionError");
+  if (!storageAvailable) {
+    input.placeholder = "Storage unavailable";
+  }
   const reveal = document.createElement("button");
   reveal.type = "button";
   reveal.className = "ghost-button small platform-connection-reveal";
   reveal.textContent = "Show";
+  reveal.disabled = !storageAvailable;
+  reveal.classList.toggle("is-hidden", !storageAvailable);
   reveal.setAttribute("aria-label", `Show ${option.label} token`);
   reveal.addEventListener("click", () => {
     const showing = input.type === "text";
@@ -3966,7 +4024,9 @@ function createPlatformConnectionForm(option) {
   const help = document.createElement("small");
   help.id = "platformConnectionHelp";
   help.className = "field-help";
-  help.textContent = "Use the smallest set of permissions you need. This token is not saved in this browser or sent to the assistant.";
+  help.textContent = storageAvailable
+    ? "Use the smallest set of permissions you need. This token is not saved in this browser or sent to the assistant."
+    : "No token has been saved. Secure storage must be configured before this app can be connected.";
   const error = document.createElement("span");
   error.id = "platformConnectionError";
   error.className = "field-error";
@@ -3976,7 +4036,10 @@ function createPlatformConnectionForm(option) {
 
   const securityNote = document.createElement("div");
   securityNote.className = "platform-connection-security-note";
-  securityNote.textContent = "Your token is encrypted before it is stored. You can replace it here or revoke it with the provider at any time.";
+  securityNote.classList.toggle("is-warning", !storageAvailable);
+  securityNote.textContent = storageAvailable
+    ? "Your token is encrypted before it is stored. You can replace it here or revoke it with the provider at any time."
+    : "Nothing was stored. Ask me to configure secure connection storage, then add this app again.";
 
   const helpButton = document.createElement("button");
   helpButton.type = "button";
@@ -3990,8 +4053,8 @@ function createPlatformConnectionForm(option) {
     elements.agentComposerInput?.focus();
   });
 
-  form.append(intro, field, securityNote, helpButton);
-  return { form, input, error };
+  form.append(intro, status, field, securityNote, helpButton);
+  return { form, input, error, field, reveal, securityNote, help, setStatus, storageAvailable, connection };
 }
 
 function openPlatformConnection(optionId) {
@@ -4000,14 +4063,37 @@ function openPlatformConnection(optionId) {
     return;
   }
 
-  const { form, input, error } = createPlatformConnectionForm(option);
+  const {
+    form,
+    input,
+    error,
+    field,
+    reveal,
+    securityNote,
+    help,
+    setStatus,
+    storageAvailable,
+    connection: existingConnection,
+  } = createPlatformConnectionForm(option);
   let saving = false;
   const saveConnection = async () => {
     if (saving) {
       return;
     }
+    if (!storageAvailable) {
+      field.classList.add("has-error");
+      error.textContent = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
+      error.hidden = false;
+      setStatus(
+        "error",
+        `${option.label} was not saved`,
+        state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE,
+      );
+      return;
+    }
     const credential = String(input.value || "").trim();
     if (!credential) {
+      field.classList.add("has-error");
       error.textContent = "Paste the token to continue.";
       error.hidden = false;
       input.focus();
@@ -4017,6 +4103,7 @@ function openPlatformConnection(optionId) {
     saving = true;
     elements.authAlertDismissButton.disabled = true;
     elements.authAlertDismissButton.textContent = "Saving…";
+    field.classList.remove("has-error");
     error.hidden = true;
     try {
       const response = await apiRequest("/api/platform-connections", {
@@ -4029,6 +4116,8 @@ function openPlatformConnection(optionId) {
           credential,
         },
       });
+      state.platformConnectionStorageAvailable = true;
+      state.platformConnectionStorageMessage = "";
       input.value = "";
       closeAuthAlert();
       const connection = response.connection ? normalizePlatformConnection(response.connection) : null;
@@ -4043,13 +4132,43 @@ function openPlatformConnection(optionId) {
       pushAgentMessage("assistant", `${option.label} is connected. You can ask me to use it whenever you need it.`);
       persistAgentWorkspace(`${option.label} is connected.`);
       renderApp({ preserveStatus: true });
+      openAuthAlert(
+        `${option.label} connected`,
+        `${option.label} now appears under Available tools and is ready to use from chat.`,
+        {
+          eyebrow: "Connection saved",
+          icon: "✓",
+          tone: "success",
+          buttonLabel: "Done",
+          returnFocus: elements.agentAddToolButton,
+        },
+      );
     } catch (requestError) {
       const message = formatApiErrorMessage(requestError, "I couldn’t save that connection securely. Please try again.");
+      field.classList.add("has-error");
+      if (requestError?.payload?.error === "credential_storage_unavailable") {
+        state.platformConnectionStorageAvailable = false;
+        state.platformConnectionStorageMessage = message || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
+        input.value = "";
+        input.disabled = true;
+        reveal.disabled = true;
+        reveal.classList.add("is-hidden");
+        field.classList.add("is-disabled");
+        help.textContent = "No token has been saved. Secure storage must be configured before this app can be connected.";
+        securityNote.classList.add("is-warning");
+        securityNote.textContent = "Nothing was stored. Ask me to configure secure connection storage, then add this app again.";
+        elements.authAlertDismissButton.disabled = true;
+        elements.authAlertDismissButton.textContent = "Storage unavailable";
+        setStatus("error", `${option.label} was not saved`, state.platformConnectionStorageMessage);
+      } else {
+        elements.authAlertDismissButton.disabled = false;
+        elements.authAlertDismissButton.textContent = existingConnection ? "Replace token" : "Save securely";
+      }
       error.textContent = message;
       error.hidden = false;
-      elements.authAlertDismissButton.disabled = false;
-      elements.authAlertDismissButton.textContent = "Save securely";
-      input.focus();
+      if (!input.disabled) {
+        input.focus();
+      }
     } finally {
       saving = false;
     }
@@ -4069,14 +4188,23 @@ function openPlatformConnection(optionId) {
       tone: "progress",
       variant: "platform-connection",
       bodyNode: form,
-      buttonLabel: "Save securely",
+      buttonLabel: storageAvailable
+        ? existingConnection
+          ? "Replace token"
+          : "Save securely"
+        : "Storage unavailable",
       secondaryButtonLabel: "Cancel",
+      primaryDisabled: !storageAvailable,
       closeOnPrimary: false,
       returnFocus: elements.agentAddToolButton,
       onPrimary: saveConnection,
     },
   );
-  window.requestAnimationFrame(() => input.focus());
+  window.requestAnimationFrame(() => {
+    if (storageAvailable) {
+      input.focus();
+    }
+  });
 }
 
 function looksLikeCredential(text) {
@@ -11875,8 +12003,10 @@ function createAgentActionDetailActions(action) {
   if (isAgentLocalAction(action)) {
     button.dataset.agentRemoveLocalAction = String(action.id || "");
     const hasBackendFeature = Boolean(String(action.payload?.backendFeatureId || "").trim());
-    button.textContent = hasBackendFeature ? "Turn off action" : "Remove action";
-    button.setAttribute("aria-label", `${hasBackendFeature ? "Turn off" : "Remove"} ${getScheduledActionTitle(action)}`);
+    const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(action.payload?.manualOnly, false);
+    const removeAction = !hasBackendFeature || isManualOnly;
+    button.textContent = removeAction ? "Remove action" : "Turn off action";
+    button.setAttribute("aria-label", `${removeAction ? "Remove" : "Turn off"} ${getScheduledActionTitle(action)}`);
   } else {
     button.dataset.agentCancelScheduledAction = String(action.id || "");
     button.textContent = "Cancel action";
@@ -14085,6 +14215,10 @@ async function deactivateAgentProposalBackendFeature(proposal) {
 }
 
 async function removeAgentProposalLocalAction(actionId) {
+  const localAction = getRenderableAgentActions()
+    .find((action) => String(action?.id || "") === String(actionId || ""));
+  const isManualOnly = normalizeMonitorManualOnly(localAction?.payload?.manualOnly, false);
+  const actionVerb = isManualOnly ? "remove" : "turn off";
   const featureId = getAgentFeatureIdFromLocalActionId(actionId);
   if (featureId) {
     const feature = getFeatureById(featureId);
@@ -14092,18 +14226,18 @@ async function removeAgentProposalLocalAction(actionId) {
       return false;
     }
 
-    persistAgentWorkspace("Turning off action...");
+    persistAgentWorkspace(`${capitalizeWords(actionVerb)} action...`);
     renderApp({ preserveStatus: true });
     try {
       await deactivateAgentBackendFeature(featureId);
     } catch (error) {
-      persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t turn off that action."));
+      persistAgentWorkspace(formatApiErrorMessage(error, `Couldn’t ${actionVerb} that action.`));
       renderApp({ preserveStatus: true });
       return false;
     }
 
     state.selectedScheduledActionId = "";
-    persistAgentWorkspace("Action turned off.");
+    persistAgentWorkspace(isManualOnly ? "Action removed." : "Action turned off.");
     renderApp({ preserveStatus: true });
     return true;
   }
@@ -18151,6 +18285,8 @@ function completeSignIn(session) {
   state.pricingError = "";
   state.paymentStatus = null;
   state.platformConnections = [];
+  state.platformConnectionStorageAvailable = true;
+  state.platformConnectionStorageMessage = "";
   resetAdminState();
   setHashForTab("features");
   setView("app");
@@ -18158,7 +18294,7 @@ function completeSignIn(session) {
   void refreshBillingReport();
   void refreshWhatsAppConnection();
   void refreshFeatureActivationStates();
-  void refreshPlatformConnections({ render: false });
+  void refreshPlatformConnections();
   if (canManageClients()) {
     void refreshAdminUsers({ render: false });
   }
@@ -18274,6 +18410,8 @@ async function signOut() {
   state.pricingError = "";
   state.paymentStatus = null;
   state.platformConnections = [];
+  state.platformConnectionStorageAvailable = true;
+  state.platformConnectionStorageMessage = "";
   state.requestCountryCode = "";
   state.settingsOpen = false;
   state.settingsMode = "account";
@@ -19006,12 +19144,14 @@ async function bootstrapAuthState() {
     state.pricingError = "";
     state.paymentStatus = null;
     state.platformConnections = [];
+    state.platformConnectionStorageAvailable = true;
+    state.platformConnectionStorageMessage = "";
     resetAdminState();
     refreshView();
     void refreshBillingReport();
     void refreshWhatsAppConnection();
     void refreshFeatureActivationStates();
-    void refreshPlatformConnections({ render: false });
+    void refreshPlatformConnections();
     if (canManageClients()) {
       void refreshAdminUsers({ render: false });
     }

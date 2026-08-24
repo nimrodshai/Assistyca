@@ -167,6 +167,7 @@ PLATFORM_CONNECTIONS = {
 }
 PLATFORM_CONNECTION_PLATFORM_RE = re.compile(r"^[a-z][a-z0-9_-]{1,48}$")
 PLATFORM_CONNECTION_SECRET_MAX_LENGTH = 4096
+PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is not available yet, so no token was saved."
 AGENT_SECRET_PATTERNS = (
     re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._-]{24,}\b", re.IGNORECASE),
@@ -2309,8 +2310,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             session = self._require_authenticated_session()
             if session is None:
                 return
+            credential_storage_available = self.credential_vault is not None
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
+                "credentialStorageAvailable": credential_storage_available,
+                "credentialStorageMessage": ""
+                if credential_storage_available
+                else PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE,
                 "connections": self.database.list_platform_connections(session.email),
             })
             return
@@ -2494,7 +2500,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
                 "ok": False,
                 "error": "credential_storage_unavailable",
-                "message": "Secure connection storage is not available yet. Contact me and I’ll finish setting it up.",
+                "message": PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE,
             })
             return
 
@@ -2523,6 +2529,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # agent turn; only connection metadata is returned to the browser.
         json_response(self, HTTPStatus.OK, {
             "ok": True,
+            "credentialStorageAvailable": True,
             "message": f"{descriptor['label']} is connected.",
             "connection": connection,
         })
