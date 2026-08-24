@@ -3318,6 +3318,11 @@ body[data-modal="billing"] .app-shell {
   background: rgba(212, 154, 58, 0.14);
 }
 
+.agent-action-status.is-run-busy {
+  color: #946118;
+  background: rgba(212, 154, 58, 0.16);
+}
+
 .agent-action-status.is-manual_only {
   color: #4f6275;
   background: rgba(96, 112, 128, 0.12);

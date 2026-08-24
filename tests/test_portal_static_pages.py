@@ -159,6 +159,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('id="agentAddToolBackdrop"', html)
         self.assertIn('data-agent-run-monitor-action', script)
         self.assertIn('runButton.textContent = isBusy ? "Running…" : "Run now";', script)
+        self.assertIn('String(monitorActionRunBusy.has(featureId))', script)
+        self.assertIn('status.className = `agent-action-status is-${isRunBusy ? "run-busy" : statusClass}`;', script)
         self.assertIn("async function runMonitorActionNow", script)
         self.assertIn('status: "manual_only"', script)
         self.assertIn('return "Manual";', script)

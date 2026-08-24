@@ -11960,8 +11960,13 @@ function formatScheduledActionDate(value, timeZone = "") {
 function createScheduledActionStatus(action) {
   const status = document.createElement("span");
   const statusClass = getScheduledActionStatusClass(action.status);
-  status.className = `agent-action-status is-${statusClass}`;
-  status.textContent = getScheduledActionStatusLabel(action.status, action);
+  const featureId = String(action?.payload?.backendFeatureId || "").trim();
+  const isRunBusy = isAgentFeatureLiveAction(action)
+    && action.actionType === "agent_web_monitor"
+    && featureId
+    && monitorActionRunBusy.has(featureId);
+  status.className = `agent-action-status is-${isRunBusy ? "run-busy" : statusClass}`;
+  status.textContent = isRunBusy ? "Running" : getScheduledActionStatusLabel(action.status, action);
   return status;
 }
 
@@ -11978,12 +11983,19 @@ function getScheduledActionSortTime(action, fallback = Number.MAX_SAFE_INTEGER) 
 }
 
 function getScheduledActionItemSignature(action) {
+  const featureId = String(action?.payload?.backendFeatureId || "").trim();
   return JSON.stringify([
     action.id,
     getScheduledActionTitle(action),
     getScheduledActionStatusClass(action.status),
     getScheduledActionStatusLabel(action.status, action),
     action.payload?.manualOnly ? "Run when you choose" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
+    String(action.payload?.frequency || ""),
+    String(action.payload?.lastRunAt || ""),
+    String(action.payload?.lastRunStatus || ""),
+    String(action.payload?.nextRunAt || ""),
+    Array.isArray(action.payload?.watchItems) ? action.payload.watchItems.join("|") : "",
+    String(monitorActionRunBusy.has(featureId)),
   ]);
 }
 
