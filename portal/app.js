@@ -15281,7 +15281,7 @@ function createAgentPlatformConnectionItem(connection) {
   const title = document.createElement("strong");
   title.textContent = label;
   const detail = document.createElement("span");
-  detail.textContent = connection.secretHint ? `Connected ${connection.secretHint}` : "Connected";
+  detail.textContent = "Connected";
   copy.append(title, detail);
 
   const arrow = document.createElement("span");
