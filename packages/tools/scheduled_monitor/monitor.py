@@ -47,6 +47,7 @@ RECENT_SENT_RESULTS_LOOKBACK = timedelta(hours=1)
 DEFAULT_MONITOR_SETTINGS = {
     "model": DEFAULT_MONITOR_MODEL,
     "watchItems": [],
+    "manualOnly": False,
     "intervalDays": 7,
     "intervalMinutes": 0,
     "scheduleTimeLocal": "",
@@ -248,6 +249,11 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
         delivery_channel = DEFAULT_MONITOR_SETTINGS["deliveryChannel"]
 
     frequency = source.get("frequency") or source.get("cadence") or source.get("schedule")
+    run_mode = normalize_text(source.get("runMode") or source.get("run_mode") or source.get("mode")).lower()
+    manual_only = parse_bool(
+        source.get("manualOnly") if "manualOnly" in source else source.get("manual_only"),
+        default=run_mode in {"manual", "manual_only", "on_demand", "on-demand"},
+    )
     interval_minutes = normalize_interval_minutes(
         source.get("intervalMinutes")
         or source.get("interval_minutes")
@@ -263,6 +269,7 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
     return {
         "model": resolve_tool_model(source, default=DEFAULT_MONITOR_MODEL),
         "watchItems": normalize_watch_items(source.get("watchItems") or source.get("searchPrompt")),
+        "manualOnly": manual_only,
         "intervalMinutes": interval_minutes,
         "intervalDays": normalize_interval_days(
             source.get("intervalDays")
@@ -399,6 +406,9 @@ def resolve_next_monitor_slot(
     settings_saved_at: str = "",
     last_scheduled_for: str = "",
 ) -> datetime | None:
+    if parse_bool(settings.get("manualOnly"), default=False):
+        return None
+
     current_time = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
     current_time = current_time.astimezone(timezone.utc)
     interval_minutes = normalize_interval_minutes(settings.get("intervalMinutes"))
@@ -506,6 +516,7 @@ def build_monitor_prompt(
     scheduled_for: datetime,
     last_successful_run_at: str,
     max_items: int,
+    manual_run: bool = False,
 ) -> str:
     prompt = target.get("prompt") if isinstance(target.get("prompt"), dict) else {}
     watch_items = normalize_watch_items(settings.get("watchItems"))
@@ -535,7 +546,6 @@ def build_monitor_prompt(
         f"Today is {scheduled_for.astimezone(timezone.utc).date().isoformat()} UTC.",
         f"Only include at most {max_items} items.",
         "If nothing relevant is found, return an empty items array.",
-        "Treat \"new\" as new to this monitor: include useful upcoming or currently relevant items that have not already been sent, even if the source page was published earlier.",
         "Do not require the web page to use the exact saved-watch wording. Break broad watch items into practical searches with synonyms, nearby cities, venues, ticketing pages, municipal pages, and local event-listing terms.",
         "For local events, search in both English and likely local-language terms. For Israel, HaSharon, or central Israel searches, include Hebrew/local terms such as השרון, מרכז, רעננה, הרצליה, כפר סבא, הוד השרון, תל אביב, יפו, ילדים, משפחות, אירועים, פעילויות, קיץ, and אוגוסט when they fit the watch item.",
         "If the watch item gives a month or date range without a year, interpret it in the current year from Today unless that would only point to the past; then use the next upcoming occurrence.",
@@ -550,6 +560,15 @@ def build_monitor_prompt(
         f"Tone guidance: {normalize_text(prompt.get('toneGuidance')) or 'Clear, useful, and concise.'}",
         f"Prioritization rules: {normalize_text(prompt.get('replyRules')) or 'Only alert when there is a concrete, useful match.'}",
     ]
+    if manual_run:
+        policy_line = (
+            "This is a user-requested manual run. Return the best matches for the saved watch list, ranked by relevance and usefulness, even if they were sent before. Do not filter results by whether they are new."
+        )
+    else:
+        policy_line = (
+            "Treat \"new\" as new to this monitor: include useful upcoming or currently relevant items that have not already been sent, even if the source page was published earlier."
+        )
+    lines.insert(lines.index("If nothing relevant is found, return an empty items array.") + 1, policy_line)
     if shared_profile_notes:
         lines.append("Shared client context:")
         lines.extend(f"- {item}" for item in shared_profile_notes)
@@ -572,13 +591,16 @@ def build_monitor_prompt(
     return "\n".join(lines).strip()
 
 
-def build_notification_subject(target: dict[str, Any], item_count: int) -> str:
+def build_notification_subject(target: dict[str, Any], item_count: int, *, manual_run: bool = False) -> str:
+    if manual_run:
+        count_label = "1 best match" if item_count == 1 else f"best {item_count} matches"
+        return f"Monitor summary: {count_label}"
     count_label = "1 new match" if item_count == 1 else f"{item_count} new matches"
     return f"Quick monitor update: {count_label}"
 
 
-def build_no_results_subject(target: dict[str, Any]) -> str:
-    return "Quick monitor update: nothing new yet"
+def build_no_results_subject(target: dict[str, Any], *, manual_run: bool = False) -> str:
+    return "Monitor summary: no relevant matches" if manual_run else "Quick monitor update: nothing new yet"
 
 
 def parse_event_date(value: Any) -> date | None:
@@ -687,18 +709,25 @@ def build_notification_overview(
     target: dict[str, Any],
     items: list[dict[str, Any]],
     scheduled_for: datetime,
+    manual_run: bool = False,
 ) -> str:
     item_count = len(items)
     if item_count <= 0:
         return "Nothing new worth sending right now."
 
-    parts = [
-        (
+    if manual_run:
+        opening = (
+            "Here is the best match for your watch list."
+            if item_count == 1
+            else f"Here are the best {item_count} matches for your watch list."
+        )
+    else:
+        opening = (
             "Found 1 relevant future event or deadline."
             if item_count == 1
             else f"Found {item_count} relevant future events and deadlines."
         )
-    ]
+    parts = [opening]
     time_sensitive_count = count_time_sensitive_items(items, scheduled_for=scheduled_for)
     if time_sensitive_count:
         if time_sensitive_count == item_count and item_count > 1:
@@ -713,15 +742,24 @@ def build_notification_overview(
         build_shared_profile_notes(target.get("profile"))
         or normalize_text(prompt.get("businessNotes"))
     )
-    parts.append(
-        "Prioritized using your saved watch list and business context."
-        if has_business_context
-        else "Prioritized using your saved watch list."
-    )
+    if manual_run:
+        parts.append(
+            "Ranked using your saved watch list and business context."
+            if has_business_context
+            else "Ranked using your saved watch list."
+        )
+    else:
+        parts.append(
+            "Prioritized using your saved watch list and business context."
+            if has_business_context
+            else "Prioritized using your saved watch list."
+        )
     return " ".join(parts)
 
 
-def build_notification_heading(item_count: int) -> str:
+def build_notification_heading(item_count: int, *, manual_run: bool = False) -> str:
+    if manual_run:
+        return "1 best match for your monitor" if item_count == 1 else f"Top {item_count} matches for your monitor"
     return (
         "1 upcoming update worth tracking"
         if item_count == 1
@@ -877,13 +915,14 @@ def build_notification_text(
     summary: str,
     items: list[dict[str, Any]],
     scheduled_for: datetime,
+    manual_run: bool = False,
 ) -> str:
     sorted_items = sort_alert_items(items, scheduled_for=scheduled_for)
     lines = [
-        "Quick monitor update",
+        "Monitor summary" if manual_run else "Quick monitor update",
         "",
         f"Checked {format_checked_timestamp(scheduled_for)}.",
-        build_notification_overview(target=target, items=sorted_items, scheduled_for=scheduled_for),
+        build_notification_overview(target=target, items=sorted_items, scheduled_for=scheduled_for, manual_run=manual_run),
     ]
     for index, item in enumerate(sorted_items, start=1):
         lines.extend(
@@ -913,7 +952,25 @@ def build_no_results_text(
     scheduled_for: datetime,
     status: str = "no_matches",
     recent_results_already_sent: bool = False,
+    manual_run: bool = False,
 ) -> str:
+    if manual_run:
+        lines = [
+            "Monitor summary",
+            "",
+            f"Checked {format_checked_timestamp(scheduled_for)}.",
+            "I did not find a relevant match in this run.",
+            "",
+            "Here's what I checked:",
+        ]
+        watch_items = normalize_watch_items(settings.get("watchItems"))
+        if watch_items:
+            lines.extend(f"- {item}" for item in watch_items)
+        else:
+            brief = resolve_monitor_brief(settings)
+            lines.append(f"- {brief or 'Your saved watch list'}")
+        return "\n".join(lines)
+
     watch_items = normalize_watch_items(settings.get("watchItems"))
     follow_up_message = (
         "I already sent the latest results earlier."
@@ -947,6 +1004,7 @@ def build_notification_html(
     summary: str,
     items: list[dict[str, Any]],
     scheduled_for: datetime,
+    manual_run: bool = False,
 ) -> str:
     sorted_items = sort_alert_items(items, scheduled_for=scheduled_for)
     sections: list[str] = []
@@ -1003,10 +1061,10 @@ def build_notification_html(
         section_parts.extend(["</div>", "</div>"])
         sections.append("".join(section_parts))
 
-    overview = build_notification_overview(target=target, items=sorted_items, scheduled_for=scheduled_for)
+    overview = build_notification_overview(target=target, items=sorted_items, scheduled_for=scheduled_for, manual_run=manual_run)
     return build_email_shell(
         eyebrow="Scheduled Web Monitor",
-        title=build_notification_heading(len(sorted_items)),
+        title=build_notification_heading(len(sorted_items), manual_run=manual_run),
         checked_label=format_checked_timestamp(scheduled_for),
         overview=overview,
         supporting_note=build_results_supporting_note(summary, overview),
@@ -1023,12 +1081,16 @@ def build_no_results_html(
     scheduled_for: datetime,
     status: str = "no_matches",
     recent_results_already_sent: bool = False,
+    manual_run: bool = False,
 ) -> str:
     watch_items = normalize_watch_items(settings.get("watchItems"))
     if not watch_items:
         watch_items = [resolve_monitor_brief(settings) or "Your saved watch list"]
 
     supporting_note = (
+        "This was a manual run; the next click will search again and return the best available matches."
+        if manual_run
+        else
         "The latest useful results were already shared earlier."
         if normalize_text(status) != "no_matches" or recent_results_already_sent
         else ""
@@ -1045,9 +1107,13 @@ def build_no_results_html(
     )
     return build_email_shell(
         eyebrow="Scheduled Web Monitor",
-        title="Nothing new worth sending yet",
+        title="No relevant matches found" if manual_run else "Nothing new worth sending yet",
         checked_label=format_checked_timestamp(scheduled_for),
-        overview="I checked your saved watch list and did not find a new source-backed update worth sending right now.",
+        overview=(
+            "I checked your saved watch list and did not find a relevant source-backed match in this run."
+            if manual_run
+            else "I checked your saved watch list and did not find a new source-backed update worth sending right now."
+        ),
         supporting_note=supporting_note,
         body_html=body_html,
         button_label="Open tool editor",
@@ -1141,6 +1207,7 @@ class ScheduledMonitorScheduler:
         target: dict[str, Any],
         settings: dict[str, Any],
         scheduled_for: datetime,
+        manual_run: bool = False,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         self._raise_if_cancelled(cancel_check)
@@ -1150,12 +1217,14 @@ class ScheduledMonitorScheduler:
             before_scheduled_for=scheduled_for,
         )
         selected_model = resolve_tool_model(settings, default=self.config.model)
+        result_limit = min(DEFAULT_MONITOR_MAX_ITEMS, self.config.max_items_per_run) if manual_run else self.config.max_items_per_run
         prompt = build_monitor_prompt(
             target=target,
             settings=settings,
             scheduled_for=scheduled_for,
             last_successful_run_at=normalize_text(last_run.get("scheduledFor")) if last_run else "",
-            max_items=self.config.max_items_per_run,
+            max_items=result_limit,
+            manual_run=manual_run,
         )
         result = call_openai_response(
             tool_name=MONITOR_FEATURE_NAME,
@@ -1187,13 +1256,13 @@ class ScheduledMonitorScheduler:
             items.append(normalized_item)
         return (
             normalize_text(payload.get("summary")),
-            items[: self.config.max_items_per_run],
+            items[: result_limit],
             {
                 "requestId": result.request_id,
                 "responseId": result.response_id,
                 "model": normalize_text(result.model),
                 "promptHash": sha256(prompt.encode("utf-8")).hexdigest()[:24],
-                "rawItems": raw_items[: self.config.max_items_per_run],
+                "rawItems": raw_items[: result_limit],
                 "rawItemsCount": len(raw_items),
             },
         )
@@ -1242,6 +1311,7 @@ class ScheduledMonitorScheduler:
         items: list[dict[str, Any]],
         summary: str,
         scheduled_for: datetime,
+        manual_run: bool = False,
     ) -> tuple[int, str, str]:
         if not items:
             return 0, "", ""
@@ -1251,19 +1321,21 @@ class ScheduledMonitorScheduler:
             summary=summary,
             items=items,
             scheduled_for=scheduled_for,
+            manual_run=manual_run,
         )
         html_body = build_notification_html(
             target=target,
             summary=summary,
             items=items,
             scheduled_for=scheduled_for,
+            manual_run=manual_run,
         )
         delivery_target, delivery_message_id = self._deliver_message(
             target={
                 **target,
                 "telegramChatId": settings.get("telegramChatId"),
             },
-            subject=build_notification_subject(target, len(items)),
+            subject=build_notification_subject(target, len(items), manual_run=manual_run),
             message_text=message_text,
             html_body=html_body,
             channel=normalize_text(settings.get("deliveryChannel")),
@@ -1279,12 +1351,14 @@ class ScheduledMonitorScheduler:
         scheduled_for: datetime,
         status: str,
         recent_results_already_sent: bool = False,
+        manual_run: bool = False,
     ) -> tuple[bool, str, str]:
         message_text = build_no_results_text(
             settings=settings,
             scheduled_for=scheduled_for,
             status=status,
             recent_results_already_sent=recent_results_already_sent,
+            manual_run=manual_run,
         )
         html_body = build_no_results_html(
             target=target,
@@ -1292,13 +1366,14 @@ class ScheduledMonitorScheduler:
             scheduled_for=scheduled_for,
             status=status,
             recent_results_already_sent=recent_results_already_sent,
+            manual_run=manual_run,
         )
         delivery_target, delivery_message_id = self._deliver_message(
             target={
                 **target,
                 "telegramChatId": settings.get("telegramChatId"),
             },
-            subject=build_no_results_subject(target),
+            subject=build_no_results_subject(target, manual_run=manual_run),
             message_text=message_text,
             html_body=html_body,
             channel=normalize_text(settings.get("deliveryChannel")),
@@ -1312,6 +1387,7 @@ class ScheduledMonitorScheduler:
         settings: dict[str, Any],
         scheduled_for: datetime,
         persist_run: bool,
+        manual_run: bool = False,
         cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         summary = ""
@@ -1323,6 +1399,7 @@ class ScheduledMonitorScheduler:
                 target=target,
                 settings=settings,
                 scheduled_for=scheduled_for,
+                manual_run=manual_run,
                 cancel_check=cancel_check,
             )
             self._raise_if_cancelled(cancel_check)
@@ -1362,14 +1439,19 @@ class ScheduledMonitorScheduler:
                 )
 
             new_items: list[dict[str, Any]] = []
-            for item in items:
-                if self.database.get_feature_monitor_notification(
-                    user_id=int(target.get("userId") or 0),
-                    feature_id=MONITOR_FEATURE_ID,
-                    item_key=normalize_text(item.get("id")),
-                ):
-                    continue
-                new_items.append(item)
+            if manual_run:
+                # A manual run is an explicit request for the current best
+                # matches, not an incremental "what changed" alert.
+                new_items = items
+            else:
+                for item in items:
+                    if self.database.get_feature_monitor_notification(
+                        user_id=int(target.get("userId") or 0),
+                        feature_id=MONITOR_FEATURE_ID,
+                        item_key=normalize_text(item.get("id")),
+                    ):
+                        continue
+                    new_items.append(item)
 
             notifications_sent = 0
             delivery_target = ""
@@ -1378,12 +1460,13 @@ class ScheduledMonitorScheduler:
             status = "completed"
             if not items:
                 status = "no_matches"
-            elif items and not new_items:
+            elif not manual_run and items and not new_items:
                 status = "duplicate_matches"
 
             live_search_status = status
             if (
-                not persist_run
+                not manual_run
+                and not persist_run
                 and live_search_status == "no_matches"
                 and recent_results_count > 0
             ):
@@ -1397,6 +1480,7 @@ class ScheduledMonitorScheduler:
                     items=new_items,
                     summary=summary,
                     scheduled_for=scheduled_for,
+                    manual_run=manual_run,
                 )
             elif status in {"no_matches", "duplicate_matches"} and not persist_run:
                 self._raise_if_cancelled(cancel_check)
@@ -1406,6 +1490,7 @@ class ScheduledMonitorScheduler:
                     scheduled_for=scheduled_for,
                     status=status,
                     recent_results_already_sent=recent_results_already_sent if status == "no_matches" else False,
+                    manual_run=manual_run,
                 )
 
             for item in new_items:
@@ -1425,6 +1510,7 @@ class ScheduledMonitorScheduler:
                         summary=summary,
                         items=[item],
                         scheduled_for=scheduled_for,
+                        manual_run=manual_run,
                     ),
                     metadata={
                         "summary": normalize_text(item.get("summary")),
@@ -1443,6 +1529,9 @@ class ScheduledMonitorScheduler:
                 "watchItems": settings.get("watchItems"),
                 "intervalMinutes": settings.get("intervalMinutes"),
                 "intervalDays": settings.get("intervalDays"),
+                "manualOnly": parse_bool(settings.get("manualOnly"), default=False),
+                "manualRun": manual_run,
+                "resultPolicy": "best_matches" if manual_run else "unseen_matches",
                 "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
                 "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
                 "deliveryTarget": delivery_target,
@@ -1500,6 +1589,9 @@ class ScheduledMonitorScheduler:
                 "watchItems": settings.get("watchItems"),
                 "intervalMinutes": settings.get("intervalMinutes"),
                 "intervalDays": settings.get("intervalDays"),
+                "manualOnly": parse_bool(settings.get("manualOnly"), default=False),
+                "manualRun": manual_run,
+                "resultPolicy": "best_matches" if manual_run else "unseen_matches",
                 "deliveryChannel": normalize_text(settings.get("deliveryChannel")),
                 "settingsSavedAt": normalize_text(target.get("settingsSavedAt")),
                 "deliveryTarget": "",
@@ -1531,6 +1623,14 @@ class ScheduledMonitorScheduler:
 
     def _process_target(self, *, target: dict[str, Any], now: datetime) -> dict[str, Any]:
         settings = normalize_monitor_settings(target.get("settings"))
+        if parse_bool(settings.get("manualOnly"), default=False):
+            return {
+                "userId": int(target.get("userId") or 0),
+                "email": normalize_email(target.get("email")),
+                "status": "skipped",
+                "reason": "manual_only",
+                "notificationsSent": 0,
+            }
         setup_status = build_monitor_setup_status(
             settings,
             user_email=normalize_email(target.get("email")),
@@ -1707,6 +1807,7 @@ class ScheduledMonitorScheduler:
             settings=settings,
             scheduled_for=self._normalize_now(now),
             persist_run=False,
+            manual_run=True,
             cancel_check=cancel_check,
         )
         return {

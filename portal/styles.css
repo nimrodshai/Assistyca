@@ -5541,6 +5541,21 @@ body[data-modal="billing"] .app-shell {
   white-space: nowrap;
 }
 
+.monitor-manual-only-toggle {
+  gap: 0.62rem;
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.monitor-manual-only-help {
+  max-width: 34rem;
+  margin: -0.25rem 0 0;
+}
+
+.monitor-schedule-controls[data-manual-only="true"] .monitor-schedule-inline-field {
+  opacity: 0.52;
+}
+
 .reengagement-demo-results-card {
   gap: 1rem;
 }

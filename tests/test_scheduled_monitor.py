@@ -16,6 +16,7 @@ from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorConfig
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
 from packages.tools.scheduled_monitor.monitor import build_monitor_prompt
+from packages.tools.scheduled_monitor.monitor import normalize_monitor_settings
 from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
 
 
@@ -51,6 +52,20 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertIn("רעננה", prompt)
         self.assertIn("תל אביב", prompt)
         self.assertIn("current year", prompt)
+
+    def test_manual_prompt_requests_best_matches_without_new_filter(self) -> None:
+        prompt = build_monitor_prompt(
+            target={"prompt": {}},
+            settings={"watchItems": ["family events in September"]},
+            scheduled_for=datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc),
+            last_successful_run_at="2026-08-23T06:00:00+00:00",
+            max_items=5,
+            manual_run=True,
+        )
+
+        self.assertIn("user-requested manual run", prompt)
+        self.assertIn("even if they were sent before", prompt)
+        self.assertIn("Do not filter results by whether they are new", prompt)
 
     def _configure_monitor(self) -> None:
         self.database.save_feature_assignment_metadata(
@@ -277,7 +292,7 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(manual_result["run"]["status"], "completed")
         self.assertEqual(manual_result["run"]["notificationsSent"], 1)
         self.assertEqual(len(delivered_messages), 1)
-        self.assertEqual(delivered_messages[0]["subject"], "Quick monitor update: 1 new match")
+        self.assertEqual(delivered_messages[0]["subject"], "Monitor summary: 1 best match")
         self.assertIn("Criminal Defense Summit 2026 registration opened", delivered_messages[0]["text"])
         self.assertEqual(mock_openai_response.call_args.kwargs["model"], "gpt-5.4-nano")
         self.assertNotIn("temperature", mock_openai_response.call_args.kwargs)
@@ -590,10 +605,10 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(first_run["ok"])
         self.assertEqual(first_run["run"]["status"], "completed")
         self.assertTrue(second_run["ok"])
-        self.assertEqual(second_run["run"]["status"], "inconsistent_results")
+        self.assertEqual(second_run["run"]["status"], "no_matches")
         self.assertEqual(second_run["run"]["notificationsSent"], 0)
-        self.assertEqual(len(delivered_messages), 1)
-        self.assertFalse(second_run["run"]["run"]["metadata"]["noResultsNotificationSent"])
+        self.assertEqual(len(delivered_messages), 2)
+        self.assertTrue(second_run["run"]["run"]["metadata"]["noResultsNotificationSent"])
         self.assertEqual(second_run["run"]["run"]["metadata"]["recentResultsCount"], 1)
         self.assertEqual(second_run["run"]["run"]["metadata"]["recentResultsMinutesAgo"], 30)
         self.assertEqual(second_run["run"]["run"]["metadata"]["liveSearchStatus"], "no_matches")
@@ -667,13 +682,52 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertTrue(first_run["ok"])
         self.assertEqual(first_run["run"]["status"], "completed")
         self.assertTrue(second_run["ok"])
-        self.assertEqual(second_run["run"]["status"], "duplicate_matches")
-        self.assertEqual(second_run["run"]["notificationsSent"], 0)
+        self.assertEqual(second_run["run"]["status"], "completed")
+        self.assertEqual(second_run["run"]["notificationsSent"], 1)
         self.assertEqual(len(delivered_messages), 2)
-        self.assertEqual(delivered_messages[1]["subject"], "Quick monitor update: nothing new yet")
-        self.assertIn("Nothing new to send right now.", delivered_messages[1]["text"])
-        self.assertTrue(second_run["run"]["run"]["metadata"]["noResultsNotificationSent"])
-        self.assertEqual(second_run["run"]["run"]["metadata"]["liveSearchStatus"], "duplicate_matches")
+        self.assertEqual(delivered_messages[1]["subject"], "Monitor summary: 1 best match")
+        self.assertIn("Here is the best match for your watch list.", delivered_messages[1]["text"])
+        self.assertFalse(second_run["run"]["run"]["metadata"]["noResultsNotificationSent"])
+        self.assertEqual(second_run["run"]["run"]["metadata"]["resultPolicy"], "best_matches")
+
+    def test_manual_only_monitor_never_runs_from_background_scheduler(self) -> None:
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            MONITOR_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "watchItems": ["family events"],
+                    "manualOnly": True,
+                    "intervalDays": 1,
+                    "deliveryChannel": "email",
+                }
+            },
+        )
+        self.database.set_feature_activation(
+            "owner@example.com",
+            feature_id=MONITOR_FEATURE_ID,
+            feature_name="Scheduled Web Monitor",
+            is_active=True,
+            activated_at="2026-07-09T09:00:00+00:00",
+        )
+
+        self.assertTrue(normalize_monitor_settings({"manualOnly": True})["manualOnly"])
+        self.assertIsNone(
+            resolve_next_monitor_slot(
+                now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),
+                settings={"manualOnly": True, "intervalDays": 1},
+                activated_at="2026-07-09T09:00:00+00:00",
+                last_scheduled_for="",
+            )
+        )
+
+        scheduler = ScheduledMonitorScheduler(self.database)
+        with mock.patch("packages.tools.scheduled_monitor.monitor.call_openai_response") as mock_openai_response:
+            summary = scheduler.run_pending(now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
+
+        self.assertFalse(summary["ran"])
+        self.assertEqual(summary["runs"][0]["reason"], "manual_only")
+        mock_openai_response.assert_not_called()
 
     def test_manual_run_cancellation_skips_delivery(self) -> None:
         self._configure_monitor()

@@ -148,6 +148,22 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/scheduled-actions?limit=100"', script)
         self.assertIn("function renderAgentActions", script)
         self.assertIn("function renderScheduledActionList", script)
+
+    def test_monitor_actions_support_manual_runs_and_manual_only_mode(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="monitorManualOnly"', html)
+        self.assertIn("Run manually only", html)
+        self.assertIn('data-agent-run-monitor-action', script)
+        self.assertIn('runButton.textContent = isBusy ? "Running…" : "Run now";', script)
+        self.assertIn("async function runMonitorActionNow", script)
+        self.assertIn('status: "manual_only"', script)
+        self.assertIn('pushAgentMessage("assistant", completionMessage, { kind: "result" });', script)
+        self.assertIn('manualOnly: false', script)
+        self.assertIn('return "manual only";', script)
+        self.assertIn(".monitor-manual-only-toggle", styles)
         self.assertIn("SCHEDULED_ACTIONS_REFRESH_ERROR_THRESHOLD", script)
         self.assertIn("function markScheduledActionsRefreshSuccess", script)
         self.assertIn("function markScheduledActionsRefreshFailure", script)

@@ -1883,6 +1883,7 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     recent_results_already_sent = bool(metadata.get("recentResultsAlreadySent"))
     recent_results_count = max(0, int(metadata.get("recentResultsCount") or 0))
     recent_results_minutes_ago = max(0, int(metadata.get("recentResultsMinutesAgo") or 0))
+    manual_run = bool(metadata.get("manualRun"))
 
     if status == "inconsistent_results":
         count_label = "1 result" if recent_results_count == 1 else f"{recent_results_count} results"
@@ -1897,6 +1898,8 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
         )
 
     if status == "no_matches":
+        if manual_run:
+            return "Manual run finished. I checked the saved topics and did not find a relevant match in this run."
         if recent_results_already_sent:
             if no_results_notification_sent:
                 return "Manual run finished. Nothing new was found right now, the latest results had already been sent earlier, and a no-results update was sent."
@@ -1911,6 +1914,9 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
     if status == "cancelled":
         return "Manual test cancelled before any new update was sent."
     if notifications_sent > 0:
+        if manual_run:
+            count_label = "the best match" if findings_count == 1 else f"the best {findings_count} matches"
+            return f"Manual run finished. I ranked {count_label} for your saved topics and sent the summary."
         return "Manual run finished. Sent the results."
     if findings_count > 0:
         label = "match" if findings_count == 1 else "matches"

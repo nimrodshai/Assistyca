@@ -5,6 +5,7 @@ python3 scripts/check_package_layout.py
 node --check portal/app.js
 python3 -m unittest \
   tests.test_agent_proposals \
+  tests.test_scheduled_monitor \
   tests.test_whatsapp_tool_delivery \
   tests.test_portal_manual_run \
   tests.test_scheduled_actions \

@@ -136,6 +136,7 @@ const DEFAULT_FEATURE_WHATSAPP = {
 const DEFAULT_MONITOR_SETTINGS = {
   model: "gpt-5.5",
   watchItems: [],
+  manualOnly: false,
   intervalDays: 7,
   intervalMinutes: 0,
   scheduleTimeLocal: "",
@@ -1078,6 +1079,7 @@ let monitorManualRunRequestId = "";
 let monitorManualRunCancelling = false;
 let monitorManualRunCancellationError = "";
 let monitorManualRunOverlayVisible = false;
+const monitorActionRunBusy = new Set();
 let reengagementDemoRunBusy = false;
 let reengagementDemoRunTargetId = "";
 let reengagementDemoRunRequestId = "";
@@ -1204,6 +1206,7 @@ const elements = {
   monitorWatchItemsList: document.querySelector("#monitorWatchItemsList"),
   monitorWatchItemInput: document.querySelector("#monitorWatchItemInput"),
   monitorWatchItemAddButton: document.querySelector("#monitorWatchItemAddButton"),
+  monitorManualOnly: document.querySelector("#monitorManualOnly"),
   monitorIntervalDays: document.querySelector("#monitorIntervalDays"),
   monitorScheduleTime: document.querySelector("#monitorScheduleTime"),
   monitorScheduleTimezoneLabel: document.querySelector("#monitorScheduleTimezoneLabel"),
@@ -3193,6 +3196,20 @@ function normalizeMonitorWatchItems(value) {
   return normalizedItems;
 }
 
+function normalizeMonitorManualOnly(value, fallback = DEFAULT_MONITOR_SETTINGS.manualOnly) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const text = String(value ?? "").trim().toLowerCase();
+  if (["1", "true", "yes", "on", "manual", "manual_only", "on_demand", "on-demand"].includes(text)) {
+    return true;
+  }
+  if (["0", "false", "no", "off", "scheduled", "recurring"].includes(text)) {
+    return false;
+  }
+  return Boolean(fallback);
+}
+
 function normalizeMonitorIntervalDays(value, fallback = DEFAULT_MONITOR_SETTINGS.intervalDays) {
   const parsedFallback = Number.parseInt(fallback, 10);
   const safeFallback = Number.isFinite(parsedFallback)
@@ -3290,6 +3307,9 @@ function getMonitorScheduleTime(feature = getSelectedFeature()) {
   }
 
   const settings = getSelectedFeatureSettings(feature);
+  if (settings.manualOnly) {
+    return "";
+  }
   const explicitTime = normalizeMonitorScheduleTime(settings.scheduleTimeLocal);
   if (explicitTime) {
     return explicitTime;
@@ -3304,16 +3324,18 @@ function getMonitorScheduleTime(feature = getSelectedFeature()) {
 
 function buildMonitorSettingsForSave(feature = getSelectedFeature(), settings = getSelectedFeatureSettings(feature)) {
   const source = settings && typeof settings === "object" ? settings : {};
+  const manualOnly = normalizeMonitorManualOnly(source.manualOnly);
   const scheduleTimeLocal = normalizeMonitorScheduleTime(
-    source.scheduleTimeLocal,
-    getMonitorScheduleTime(feature),
+    manualOnly ? "" : source.scheduleTimeLocal,
+    manualOnly ? "" : getMonitorScheduleTime(feature),
   );
-  const scheduleTimezone = scheduleTimeLocal
+  const scheduleTimezone = !manualOnly && scheduleTimeLocal
     ? normalizeMonitorScheduleTimezone(source.scheduleTimezone, getMonitorScheduleTimezone(feature))
     : "";
 
   return normalizeFeatureMonitorSettings({
     ...source,
+    manualOnly,
     scheduleTimeLocal,
     scheduleTimezone,
   });
@@ -3419,13 +3441,18 @@ function getWhatsAppDeliverySelection(settings = {}) {
 function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
+  const runMode = String(source.runMode || source.run_mode || source.mode || "").trim().toLowerCase();
+  const manualOnly = normalizeMonitorManualOnly(
+    Object.prototype.hasOwnProperty.call(source, "manualOnly") ? source.manualOnly : source.manual_only,
+    ["manual", "manual_only", "on_demand", "on-demand"].includes(runMode),
+  );
   const intervalMinutes = normalizeMonitorIntervalMinutes(source.intervalMinutes || source.interval_minutes);
   const intervalDays = Number.parseInt(source.intervalDays, 10);
   const legacyCadence = String(source.cadence || "").trim().toLowerCase();
-  const scheduleTimeLocal = intervalMinutes
+  const scheduleTimeLocal = manualOnly || intervalMinutes
     ? ""
     : normalizeMonitorScheduleTime(source.scheduleTimeLocal || source.scheduleTime || "");
-  const scheduleTimezone = scheduleTimeLocal
+  const scheduleTimezone = !manualOnly && scheduleTimeLocal
     ? normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", defaultTimeZone())
     : intervalMinutes
       ? ""
@@ -3434,6 +3461,7 @@ function normalizeFeatureMonitorSettings(settings = {}) {
   return {
     ...normalizeFeatureSettings(source),
     watchItems: normalizeMonitorWatchItems(source.watchItems || source.searchPrompt || ""),
+    manualOnly,
     intervalMinutes,
     intervalDays: Number.isFinite(intervalDays)
       ? normalizeMonitorIntervalDays(intervalDays)
@@ -5698,6 +5726,8 @@ function hasFeatureConfigChanges(feature = getSelectedFeature()) {
 
   const currentSettings = getSelectedFeatureSettings(feature);
   const savedSettings = getSavedFeatureSettings(feature);
+  const currentManualOnly = normalizeMonitorManualOnly(currentSettings.manualOnly);
+  const savedManualOnly = normalizeMonitorManualOnly(savedSettings.manualOnly);
   const defaultSettings = isMonitorFeature(feature)
     ? DEFAULT_MONITOR_SETTINGS
     : isReengagementFeature(feature)
@@ -6209,6 +6239,8 @@ function hasMonitorScheduleConfigChanges(feature = getSelectedFeature()) {
     : "";
 
   return (
+    currentManualOnly !== savedManualOnly
+    ||
     currentIntervalMinutes !== savedIntervalMinutes
     ||
     normalizeMonitorIntervalDays(currentSettings.intervalDays) !== normalizeMonitorIntervalDays(savedSettings.intervalDays)
@@ -6233,6 +6265,9 @@ function resolveMonitorNextRunAt(feature, now = new Date()) {
   }
 
   const settings = getSelectedFeatureSettings(feature);
+  if (normalizeMonitorManualOnly(settings.manualOnly)) {
+    return "";
+  }
   const intervalMinutes = normalizeMonitorIntervalMinutes(settings.intervalMinutes);
   const intervalDays = normalizeMonitorIntervalDays(settings.intervalDays);
   const scheduleTimeLocal = intervalMinutes
@@ -11641,15 +11676,18 @@ function createMonitorFeatureLiveAction(feature) {
   }
 
   const settings = getSavedFeatureSettings(feature);
+  const manualOnly = normalizeMonitorManualOnly(settings.manualOnly);
   const deliveryChannel = normalizeAgentDeliveryChannel(settings.deliveryChannel) || "email";
   const deliveryTarget = getMonitorFeatureDeliveryTarget(settings, deliveryChannel);
-  const nextRunAt = (
-    resolveMonitorNextRunAt(feature)
-    || String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim()
-    || String(feature.lastRunAt || feature.setupStatus?.lastRunAt || "").trim()
-    || String(feature.activatedAt || feature.settingsSavedAt || feature.setupStatus?.settingsSavedAt || "").trim()
-    || new Date().toISOString()
-  );
+  const nextRunAt = manualOnly
+    ? ""
+    : (
+      resolveMonitorNextRunAt(feature)
+      || String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim()
+      || String(feature.lastRunAt || feature.setupStatus?.lastRunAt || "").trim()
+      || String(feature.activatedAt || feature.settingsSavedAt || feature.setupStatus?.settingsSavedAt || "").trim()
+      || new Date().toISOString()
+    );
   const createdAt = String(feature.activatedAt || feature.settingsSavedAt || feature.setupStatus?.settingsSavedAt || nextRunAt).trim();
   const updatedAt = String(feature.lastRunAt || feature.setupStatus?.lastRunAt || feature.settingsSavedAt || createdAt).trim();
   const watchItems = normalizeMonitorWatchItems(settings.watchItems);
@@ -11662,7 +11700,7 @@ function createMonitorFeatureLiveAction(feature) {
     recipientRef: deliveryTarget || deliveryChannel,
     runAt: nextRunAt,
     timezone: getMonitorScheduleTimezone(feature),
-    status: "running",
+    status: manualOnly ? "pending" : "running",
     attemptCount: 0,
     providerMessageId: "",
     payload: {
@@ -11674,6 +11712,7 @@ function createMonitorFeatureLiveAction(feature) {
       summary: String(feature.description || "").trim(),
       watchItems,
       frequency: formatAgentWebMonitorFrequency(settings),
+      manualOnly,
       deliveryChannel,
       deliveryTarget,
       deliveryLabel,
@@ -11724,6 +11763,19 @@ function createAgentActionDetailActions(action) {
 
   const actions = document.createElement("div");
   actions.className = "agent-action-detail-actions";
+  const featureId = String(action?.payload?.backendFeatureId || "").trim();
+  if (isAgentFeatureLiveAction(action) && action.actionType === "agent_web_monitor" && featureId) {
+    const runButton = document.createElement("button");
+    runButton.type = "button";
+    runButton.className = "primary-button small agent-action-run-button";
+    runButton.dataset.agentRunMonitorAction = featureId;
+    const isBusy = monitorActionRunBusy.has(featureId);
+    runButton.textContent = isBusy ? "Running…" : "Run now";
+    runButton.disabled = isBusy;
+    runButton.setAttribute("aria-busy", String(isBusy));
+    runButton.setAttribute("aria-label", `${isBusy ? "Running" : "Run"} ${getScheduledActionTitle(action)} now`);
+    actions.append(runButton);
+  }
   const button = document.createElement("button");
   button.type = "button";
   button.className = "ghost-button small agent-action-danger-button";
@@ -11840,7 +11892,7 @@ function getScheduledActionItemSignature(action) {
     getScheduledActionTitle(action),
     getScheduledActionStatusClass(action.status),
     getScheduledActionStatusLabel(action.status, action),
-    formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
+    action.payload?.manualOnly ? "Run when you choose" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     getScheduledActionPreviewText(action),
   ]);
 }
@@ -11868,10 +11920,12 @@ function createScheduledActionItem(action) {
 
   const time = document.createElement("span");
   time.className = "agent-action-item-time";
-  time.textContent = formatScheduledActionDate(
-    getScheduledActionItemTimeValue(action),
-    action.timezone,
-  );
+  time.textContent = action.payload?.manualOnly
+    ? "Run when you choose"
+    : formatScheduledActionDate(
+      getScheduledActionItemTimeValue(action),
+      action.timezone,
+    );
 
   const previewText = getScheduledActionPreviewText(action);
   item.append(head, time);
@@ -11939,6 +11993,8 @@ function getScheduledActionDetailSignature(action) {
     action.providerMessageId,
     action.lastError,
     String(action.payload?.backendFeatureActive ?? ""),
+    String(action.payload?.manualOnly ?? ""),
+    monitorActionRunBusy.has(String(action.payload?.backendFeatureId || "").trim()),
     String(action.payload?.initialRunStatus || ""),
     String(action.payload?.initialRunMessage || ""),
     String(action.payload?.initialRunError || ""),
@@ -12011,7 +12067,7 @@ function createScheduledActionDetail(action) {
       const error = document.createElement("div");
       error.className = "agent-action-error";
       const errorTitle = document.createElement("strong");
-      errorTitle.textContent = "First check failed";
+      errorTitle.textContent = payload.manualOnly ? "Setup needs attention" : "First check failed";
       const errorMessage = document.createElement("p");
       errorMessage.textContent = String(payload.initialRunError);
       error.append(errorTitle, errorMessage);
@@ -12020,7 +12076,7 @@ function createScheduledActionDetail(action) {
       const runNote = document.createElement("div");
       runNote.className = "agent-action-note";
       const runTitle = document.createElement("strong");
-      runTitle.textContent = "First check";
+      runTitle.textContent = payload.manualOnly ? "Ready to run" : "First check";
       const runMessage = document.createElement("p");
       runMessage.textContent = String(payload.initialRunMessage);
       runNote.append(runTitle, runMessage);
@@ -12928,15 +12984,21 @@ function buildAgentWebMonitorWatchItem(proposal) {
 }
 
 function buildAgentWebMonitorSettings(proposal) {
-  const frequency = getAgentProposalFieldValue(proposal, "frequency")
-    || extractAgentFrequencyField(proposal?.requestText || "");
+  const requestText = String(proposal?.requestText || "");
+  const requestedFrequency = extractAgentFrequencyField(requestText);
+  const frequency = requestedFrequency || getAgentProposalFieldValue(proposal, "frequency");
   const interval = buildAgentMonitorIntervalFromFrequency(frequency);
+  const requestsManualRuns = /\b(manual(?:ly)?|on[ -]?demand|when i want|when i ask|turn(?:ed)? on manually)\b/i.test(requestText);
+  // A model-derived cadence must not override an explicit manual-only request.
+  // Only a cadence stated in the user's request opts back into recurring runs.
+  const manualOnly = requestsManualRuns && !requestedFrequency;
   const deliveryChannel = normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
     || normalizeAgentDeliveryChannel(proposal?.requestText || "")
     || DEFAULT_MONITOR_SETTINGS.deliveryChannel;
   const settings = normalizeFeatureMonitorSettings({
     ...DEFAULT_MONITOR_SETTINGS,
     watchItems: [buildAgentWebMonitorWatchItem(proposal)],
+    manualOnly,
     intervalMinutes: interval.intervalMinutes,
     intervalDays: interval.intervalDays,
     scheduleTimezone: getWorkspaceTimeZone(),
@@ -12950,6 +13012,9 @@ function buildAgentWebMonitorSettings(proposal) {
 }
 
 function formatAgentWebMonitorFrequency(settings = {}) {
+  if (normalizeMonitorManualOnly(settings.manualOnly)) {
+    return "manual only";
+  }
   const intervalMinutes = normalizeMonitorIntervalMinutes(settings.intervalMinutes);
   if (intervalMinutes) {
     if (intervalMinutes < 60) {
@@ -13032,10 +13097,17 @@ async function saveAndActivateAgentWebMonitorProposal(proposal) {
 
   let initialRun = null;
   let initialRunError = "";
-  try {
-    initialRun = await runAgentWebMonitorInitialCheck();
-  } catch (error) {
-    initialRunError = formatApiErrorMessage(error, "The monitor was activated, but the first check could not run yet.");
+  if (settings.manualOnly) {
+    initialRun = {
+      status: "manual_only",
+      message: "Ready when you are. Use Run now for a fresh top-five summary.",
+    };
+  } else {
+    try {
+      initialRun = await runAgentWebMonitorInitialCheck();
+    } catch (error) {
+      initialRunError = formatApiErrorMessage(error, "The monitor was activated, but the first check could not run yet.");
+    }
   }
 
   proposal.relatedFeatureId = MONITOR_FEATURE_ID;
@@ -13574,6 +13646,14 @@ function handleAgentWorkspaceClick(event) {
   const cancelScheduledActionButton = target?.closest("[data-agent-cancel-scheduled-action]");
   if (cancelScheduledActionButton) {
     void cancelScheduledAction(cancelScheduledActionButton.dataset.agentCancelScheduledAction || "");
+    return;
+  }
+
+  const runMonitorActionButton = target?.closest("[data-agent-run-monitor-action]");
+  if (runMonitorActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void runMonitorActionNow(runMonitorActionButton.dataset.agentRunMonitorAction || "");
     return;
   }
 
@@ -14470,15 +14550,16 @@ function getManualMonitorRunAlertTitle(run = {}) {
       ? run.metadata
       : {};
   const recentResultsAlreadySent = Boolean(metadata.recentResultsAlreadySent);
+  const manualRun = Boolean(metadata.manualRun);
 
   if (status === "cancelled") {
-    return "Test cancelled";
+    return "Run cancelled";
   }
   if (status === "inconsistent_results") {
     return "Results changed unexpectedly";
   }
   if (status === "no_matches") {
-    return recentResultsAlreadySent ? "Nothing new right now" : "No matches found";
+    return manualRun ? "No relevant matches" : recentResultsAlreadySent ? "Nothing new right now" : "No matches found";
   }
   if (status === "duplicate_matches") {
     return "Nothing new to send";
@@ -14486,7 +14567,7 @@ function getManualMonitorRunAlertTitle(run = {}) {
   if (notificationsSent > 0) {
     return "Results sent";
   }
-  return "Test finished";
+  return "Run finished";
 }
 
 function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run finished.") {
@@ -14504,9 +14585,10 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
   const recentResultsAlreadySent = Boolean(metadata.recentResultsAlreadySent);
   const recentResultsCount = Math.max(0, Number(metadata.recentResultsCount || 0));
   const recentResultsMinutesAgo = Math.max(0, Number(metadata.recentResultsMinutesAgo || 0));
+  const manualRun = Boolean(metadata.manualRun);
 
   if (status === "cancelled") {
-    return "The monitor test was cancelled before any new update was delivered.";
+    return "The monitor run was cancelled before any update was delivered.";
   }
 
   if (status === "inconsistent_results") {
@@ -14516,11 +14598,16 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
       : "earlier";
     const pronoun = recentResultsCount === 1 ? "it" : "them";
     return deliveryChannel === "email" && deliveryTarget
-      ? `This test came back empty, but the previous run found ${countLabel} ${recencyLabel} and sent ${pronoun} to ${deliveryTarget}. We didn’t send a no-results update because that mismatch may be a search bug.`
-      : `This test came back empty, but the previous run found ${countLabel} ${recencyLabel}. We didn’t send a no-results update because that mismatch may be a search bug.`;
+      ? `This run came back empty, but the previous run found ${countLabel} ${recencyLabel} and sent ${pronoun} to ${deliveryTarget}. We didn’t send a no-results update because that mismatch may be a search bug.`
+      : `This run came back empty, but the previous run found ${countLabel} ${recencyLabel}. We didn’t send a no-results update because that mismatch may be a search bug.`;
   }
 
   if (status === "no_matches") {
+    if (manualRun) {
+      return deliveryChannel === "email" && deliveryTarget
+        ? `I checked the saved topics and didn’t find a relevant match in this run. Nothing was sent to ${deliveryTarget}.`
+        : "I checked the saved topics and didn’t find a relevant match in this run.";
+    }
     if (noResultsNotificationSent) {
       if (recentResultsAlreadySent) {
         return deliveryChannel === "email" && deliveryTarget
@@ -14547,6 +14634,13 @@ function getManualMonitorRunAlertMessage(run = {}, fallbackMessage = "Manual run
   }
 
   if (notificationsSent > 0) {
+    if (manualRun) {
+      const countLabel = findingsCount === 1 ? "the best match" : `the best ${findingsCount} matches`;
+      if (deliveryChannel === "email" && deliveryTarget) {
+        return `I ranked ${countLabel} for your saved topics and sent the summary to ${deliveryTarget}.`;
+      }
+      return `I ranked ${countLabel} for your saved topics and sent the summary.`;
+    }
     if (deliveryChannel === "email" && deliveryTarget) {
       return `The monitor completed successfully and sent the results to ${deliveryTarget}.`;
     }
@@ -14575,23 +14669,23 @@ function syncMonitorManualRunOverlay() {
   }
 
   const returnFocus = elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton;
-  let eyebrow = "Test in progress";
-  let title = "Testing your monitor";
-  let message = "We’re running a quick test now. You can cancel it anytime if needed.";
-  let buttonLabel = "Cancel test";
+  let eyebrow = "Run in progress";
+  let title = "Running your monitor";
+  let message = "We’re preparing the summary now. You can cancel it anytime if needed.";
+  let buttonLabel = "Cancel run";
   let buttonDisabled = false;
 
   if (monitorManualRunCancelling) {
     eyebrow = "Stopping now";
-    title = "Cancelling this test";
-    message = "We’re stopping the current test before anything new is sent.";
+    title = "Cancelling this run";
+    message = "We’re stopping the current run before anything is sent.";
     buttonLabel = "Cancelling...";
     buttonDisabled = true;
   } else if (monitorManualRunCancellationError) {
     eyebrow = "Still running";
     title = "Couldn’t cancel yet";
-    message = `${monitorManualRunCancellationError} The test is still running, so you can try cancelling again or wait for it to finish.`;
-    buttonLabel = "Try cancel again";
+    message = `${monitorManualRunCancellationError} The run is still active, so you can try cancelling again or wait for it to finish.`;
+    buttonLabel = "Try again";
   }
 
   openAuthAlert(title, message, {
@@ -14635,7 +14729,7 @@ async function requestMonitorManualRunCancellation() {
   monitorManualRunCancellationError = "";
   updateFeatureStudioHeader();
   syncMonitorManualRunOverlay();
-  setStatus("Cancelling the monitor test. We’ll stop before sending anything new.");
+  setStatus("Cancelling the monitor run. We’ll stop before sending anything.");
 
   try {
     await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
@@ -14660,20 +14754,104 @@ async function requestMonitorManualRunCancellation() {
   }
 }
 
+async function runMonitorActionNow(featureId) {
+  const normalizedFeatureId = String(featureId || "").trim();
+  if (!normalizedFeatureId) {
+    return;
+  }
+  if (monitorActionRunBusy.has(normalizedFeatureId)) {
+    setStatus("This monitor is already running.");
+    return;
+  }
+
+  let feature = getFeatureById(normalizedFeatureId);
+  if (!feature || !isMonitorFeature(feature) || !isFeatureActivated(feature)) {
+    setStatus("Activate the monitor before running it.");
+    return;
+  }
+
+  if (feature.setupStatus?.ready === false) {
+    try {
+      await refreshFeatureActivationStates({ render: false });
+      feature = getFeatureById(normalizedFeatureId) || feature;
+    } catch {
+      feature = getFeatureById(normalizedFeatureId) || feature;
+    }
+  }
+
+  if (feature.setupStatus?.ready === false) {
+    const setupStatus = feature.setupStatus || {};
+    const firstIssue = Array.isArray(setupStatus.issues) ? setupStatus.issues[0] || {} : {};
+    const message = String(
+      setupStatus.message
+      || firstIssue.message
+      || "Finish the monitor setup before running it.",
+    ).trim();
+    openFeatureActivationAlert("Finish setup first", message, {
+      eyebrow: "One thing left",
+      returnFocus: elements.agentActionDetailContent,
+    });
+    return;
+  }
+
+  const requestId = createManualMonitorRunRequestId();
+  monitorActionRunBusy.add(normalizedFeatureId);
+  renderAgentActions();
+  persistAgentWorkspace("Running the monitor now...");
+  renderApp({ preserveStatus: true });
+
+  try {
+    const response = await apiRequest(`/api/features/${encodeURIComponent(normalizedFeatureId)}/run`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: { runRequestId: requestId },
+      timeoutMs: 90000,
+    });
+    const completionMessage = String(response.message || "The monitor finished.");
+    await refreshFeatureActivationStates({ render: false });
+    pushAgentMessage("assistant", completionMessage, { kind: "result" });
+    persistAgentWorkspace(completionMessage);
+    renderApp({ preserveStatus: true });
+    openAuthAlert(
+      getManualMonitorRunAlertTitle(response.run),
+      getManualMonitorRunAlertMessage(response.run, completionMessage),
+      {
+        eyebrow: "Manual run",
+        buttonLabel: "OK",
+        icon: getManualMonitorRunAlertIcon(response.run),
+        tone: getManualMonitorRunAlertTone(response.run),
+        returnFocus: elements.agentActionDetailContent,
+      },
+    );
+  } catch (error) {
+    const message = formatApiErrorMessage(error, "We couldn’t run the monitor right now.");
+    pushAgentMessage("assistant", message, { kind: "error" });
+    persistAgentWorkspace(message);
+    renderApp({ preserveStatus: true });
+    openFeatureActivationAlert("Couldn’t run the monitor", message, {
+      eyebrow: "Try again",
+      returnFocus: elements.agentActionDetailContent,
+    });
+  } finally {
+    monitorActionRunBusy.delete(normalizedFeatureId);
+    renderAgentActions();
+  }
+}
+
 async function runSelectedMonitorNow() {
   if (monitorManualRunBusy) {
     if (monitorManualRunTargetId && getSelectedFeature()?.id === monitorManualRunTargetId) {
       syncMonitorManualRunOverlay();
-      setStatus("A monitor test is already running.");
+      setStatus("A monitor run is already running.");
     } else {
-      setStatus("A monitor test is already running. Refresh if this does not clear in a moment.");
+      setStatus("A monitor run is already running. Refresh if this does not clear in a moment.");
     }
     return;
   }
 
   const initialFeature = getSelectedFeature();
   if (!initialFeature || !isMonitorFeature(initialFeature) || !isFeatureActivated(initialFeature)) {
-    setStatus("Refresh the tool and try the monitor test again.");
+    setStatus("Refresh the tool and try the monitor run again.");
     return;
   }
 
@@ -14732,7 +14910,7 @@ async function runSelectedMonitorNow() {
   try {
     updateFeatureStudioHeader();
     syncMonitorManualRunOverlay();
-    setStatus("Testing the monitor now. Cancel it if you need to stop before anything new is sent.");
+    setStatus("Running the monitor now. Cancel it if you need to stop before anything is sent.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),
@@ -14744,12 +14922,13 @@ async function runSelectedMonitorNow() {
 
     const completionMessage = String(response.message || "Manual run finished.");
     monitorManualRunOverlayVisible = false;
+    pushAgentMessage("assistant", completionMessage, { kind: "result" });
     setStatus(completionMessage);
     openAuthAlert(
       getManualMonitorRunAlertTitle(response.run),
       getManualMonitorRunAlertMessage(response.run, completionMessage),
       {
-        eyebrow: String(response.run?.status || "").trim().toLowerCase() === "cancelled" ? "Test cancelled" : "Test finished",
+        eyebrow: String(response.run?.status || "").trim().toLowerCase() === "cancelled" ? "Run cancelled" : "Run finished",
         buttonLabel: "OK",
         icon: getManualMonitorRunAlertIcon(response.run),
         tone: getManualMonitorRunAlertTone(response.run),
@@ -16322,10 +16501,10 @@ function updateFeatureStudioHeader() {
       : manualRunBusy
         ? monitorManualRunCancelling
           ? "Cancelling..."
-          : "Testing..."
+          : "Running..."
         : showReengagementDemo
           ? "Demo run"
-          : "Test now";
+          : "Run now";
     elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || manualRunBusy;
     elements.featureStudioMonitorRunButton.classList.toggle("is-loading", false);
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
@@ -16337,12 +16516,12 @@ function updateFeatureStudioHeader() {
         ? "Find inactive conversations and preview follow-up drafts without sending anything"
         : manualRunBusy
       ? monitorManualRunCancelling
-        ? "The current monitor test is being cancelled"
-        : "A monitor test is currently running"
-      : manualRunReady
+        ? "The current monitor run is being cancelled"
+        : "A monitor run is currently running"
+        : manualRunReady
         ? feature.setupStatus?.ready === false
-          ? "Run a test now. We'll check the latest setup first."
-          : "Run a test without changing the schedule"
+          ? "Run a summary now. We'll check the latest setup first."
+          : "Run a summary without changing the schedule"
         : String(feature.setupStatus?.message || "");
   }
   renderReengagementDemoResults(feature);
@@ -16558,6 +16737,10 @@ function getMonitorNextRunLabel(feature) {
   if (!feature || !isMonitorFeature(feature)) {
     return "";
   }
+
+  if (normalizeMonitorManualOnly(getSelectedFeatureSettings(feature).manualOnly)) {
+    return "Manual only · use Run now when you want a summary";
+  }
   const nextRunAt = resolveMonitorNextRunAt(feature);
   if (!nextRunAt) {
     if (!isFeatureActivated(feature)) {
@@ -16611,6 +16794,19 @@ function updateMonitorFields() {
   if (isMonitor) {
     state.monitorWatchItemDraft = loadMonitorWatchDraft(feature.id);
     renderMonitorWatchItems(monitorSettings.watchItems);
+    const manualOnly = normalizeMonitorManualOnly(monitorSettings.manualOnly);
+    if (elements.monitorManualOnly) {
+      elements.monitorManualOnly.checked = manualOnly;
+      elements.monitorManualOnly.setAttribute("aria-checked", String(manualOnly));
+    }
+    const scheduleControls = elements.monitorManualOnly?.closest(".monitor-schedule-controls");
+    scheduleControls?.setAttribute("data-manual-only", String(manualOnly));
+    if (elements.monitorIntervalDays) {
+      elements.monitorIntervalDays.disabled = manualOnly;
+    }
+    if (elements.monitorScheduleTime) {
+      elements.monitorScheduleTime.disabled = manualOnly;
+    }
     if (elements.monitorWatchItemInput) {
       elements.monitorWatchItemInput.value = state.monitorWatchItemDraft;
     }
@@ -17643,6 +17839,32 @@ function syncMonitorIntervalDaysField(event) {
   scheduleSelectedFeatureConfigAutosave(feature);
 }
 
+function syncMonitorManualOnlyField(event) {
+  const feature = getSelectedFeature();
+  if (!feature || !isMonitorFeature(feature)) {
+    return;
+  }
+
+  const manualOnly = Boolean(event.target.checked);
+  const currentSettings = getSelectedFeatureSettings(feature);
+  if (normalizeMonitorManualOnly(currentSettings.manualOnly) === manualOnly) {
+    updateMonitorFields();
+    return;
+  }
+
+  feature.settings = buildMonitorSettingsForSave(feature, {
+    ...currentSettings,
+    manualOnly,
+    scheduleTimeLocal: manualOnly ? "" : currentSettings.scheduleTimeLocal,
+    scheduleTimezone: manualOnly ? "" : currentSettings.scheduleTimezone,
+  });
+  persistClientState();
+  updateMonitorFields();
+  updateFeatureStudioHeader();
+  scheduleSelectedFeatureConfigAutosave(feature);
+  setStatus(manualOnly ? "Manual runs enabled." : "Recurring schedule enabled.");
+}
+
 function syncMonitorScheduleTimeField(event) {
   const feature = getSelectedFeature();
   if (!feature || !isMonitorFeature(feature)) {
@@ -18054,6 +18276,7 @@ function removeMonitorWatchItem(index) {
 function getMonitorFieldElement(field) {
   const fieldMap = {
     watchItems: elements.monitorWatchItemInput,
+    manualOnly: elements.monitorManualOnly,
     intervalDays: elements.monitorIntervalDays,
     scheduleTimeLocal: elements.monitorScheduleTime,
     scheduleTimezone: elements.monitorScheduleTime,
@@ -18974,6 +19197,9 @@ function bindEvents() {
       event.preventDefault();
       removeMonitorWatchItem(removeButton.dataset.monitorRemoveWatchItemIndex || "");
     });
+  }
+  if (elements.monitorManualOnly) {
+    elements.monitorManualOnly.addEventListener("change", syncMonitorManualOnlyField);
   }
   if (elements.monitorIntervalDays) {
     elements.monitorIntervalDays.addEventListener("input", syncMonitorIntervalDaysField);
