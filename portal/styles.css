@@ -3661,7 +3661,9 @@ body[data-modal="billing"] .app-shell {
 @media (prefers-reduced-motion: reduce) {
   .agent-action-item,
   .agent-action-item-expansion,
-  .agent-action-item-expansion-inner {
+  .agent-action-item-expansion-inner,
+  .agent-action-more-details-summary,
+  .agent-action-more-details-summary::after {
     transition: none;
   }
 }
@@ -3706,6 +3708,61 @@ body[data-modal="billing"] .app-shell {
   display: grid;
   gap: 0;
   margin: 0;
+}
+
+.agent-action-primary-details {
+  padding-top: 0.05rem;
+}
+
+.agent-action-more-details {
+  border-top: 1px solid rgba(20, 28, 38, 0.065);
+}
+
+.agent-action-more-details-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.65rem;
+  padding: 0.45rem 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  cursor: pointer;
+  list-style: none;
+  transition: color 160ms ease;
+}
+
+.agent-action-more-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-action-more-details-summary::after {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-0.12rem) rotate(45deg);
+  transition: transform 180ms ease;
+  content: "";
+}
+
+.agent-action-more-details[open] .agent-action-more-details-summary::after {
+  transform: translateY(0.12rem) rotate(225deg);
+}
+
+.agent-action-more-details-summary:hover,
+.agent-action-more-details-summary:focus-visible {
+  color: var(--accent);
+}
+
+.agent-action-more-details-summary:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.45);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.agent-action-more-details-content {
+  overflow: hidden;
 }
 
 .agent-action-detail-row {

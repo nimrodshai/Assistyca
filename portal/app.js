@@ -12169,6 +12169,29 @@ function createScheduledActionDetailRow(label, value) {
   return row;
 }
 
+function createScheduledActionMoreDetails(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return null;
+  }
+
+  const disclosure = document.createElement("details");
+  disclosure.className = "agent-action-more-details";
+
+  const summary = document.createElement("summary");
+  summary.className = "agent-action-more-details-summary";
+  summary.textContent = "More details";
+
+  const content = document.createElement("div");
+  content.className = "agent-action-more-details-content";
+  const details = document.createElement("dl");
+  details.className = "agent-action-detail-grid";
+  details.append(...rows);
+  content.append(details);
+
+  disclosure.append(summary, content);
+  return disclosure;
+}
+
 function getScheduledActionDetailSignature(action) {
   const messageText = String(
     action.payload?.preview
@@ -12538,34 +12561,57 @@ function createScheduledActionDetail(action) {
   if (isAgentLocalAction(action)) {
     const payload = action.payload && typeof action.payload === "object" ? action.payload : {};
     const isFeatureAction = isAgentFeatureLiveAction(action);
-    const details = document.createElement("dl");
-    details.className = "agent-action-detail-grid";
-    details.append(
-      createScheduledActionDetailRow(isFeatureAction ? "Active since" : "Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
-      createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
-      createScheduledActionDetailRow("Delivery", String(
-        payload.deliveryLabel
-        || formatAgentDeliveryTargetDetail(payload.deliveryChannel || action.channel, payload.deliveryTarget || action.recipientRef)
-        || "As configured",
-      ).trim()),
-    );
-    if (payload.location) {
-      details.append(createScheduledActionDetailRow("Location", String(payload.location)));
+    const deliveryRow = createScheduledActionDetailRow("Delivery", String(
+      payload.deliveryLabel
+      || formatAgentDeliveryTargetDetail(payload.deliveryChannel || action.channel, payload.deliveryTarget || action.recipientRef)
+      || "As configured",
+    ).trim());
+
+    if (isFeatureAction) {
+      const primaryDetails = document.createElement("dl");
+      primaryDetails.className = "agent-action-detail-grid agent-action-primary-details";
+      primaryDetails.append(deliveryRow);
+      card.append(primaryDetails);
+
+      const moreRows = [
+        createScheduledActionDetailRow("Active since", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
+      ];
+      if (payload.location) {
+        moreRows.push(createScheduledActionDetailRow("Location", String(payload.location)));
+      }
+      if (payload.timeWindow) {
+        moreRows.push(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
+      }
+      if (payload.lastRunAt) {
+        const lastRunStatus = String(payload.lastRunStatus || "").trim();
+        const lastRunLabel = lastRunStatus
+          ? `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(lastRunStatus.replace(/[_-]+/g, " "))}`
+          : formatScheduledActionDate(payload.lastRunAt, action.timezone);
+        moreRows.push(createScheduledActionDetailRow("Last check", lastRunLabel));
+      }
+      if (payload.nextRunAt) {
+        moreRows.push(createScheduledActionDetailRow("Next check", formatScheduledActionDate(payload.nextRunAt, action.timezone)));
+      }
+      const moreDetails = createScheduledActionMoreDetails(moreRows);
+      if (moreDetails) {
+        card.append(moreDetails);
+      }
+    } else {
+      const details = document.createElement("dl");
+      details.className = "agent-action-detail-grid";
+      details.append(
+        createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
+        createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
+        deliveryRow,
+      );
+      if (payload.location) {
+        details.append(createScheduledActionDetailRow("Location", String(payload.location)));
+      }
+      if (payload.timeWindow) {
+        details.append(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
+      }
+      card.append(details);
     }
-    if (payload.timeWindow) {
-      details.append(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
-    }
-    if (payload.lastRunAt) {
-      const lastRunStatus = String(payload.lastRunStatus || "").trim();
-      const lastRunLabel = lastRunStatus
-        ? `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(lastRunStatus.replace(/[_-]+/g, " "))}`
-        : formatScheduledActionDate(payload.lastRunAt, action.timezone);
-      details.append(createScheduledActionDetailRow("Last check", lastRunLabel));
-    }
-    if (payload.nextRunAt) {
-      details.append(createScheduledActionDetailRow("Next check", formatScheduledActionDate(payload.nextRunAt, action.timezone)));
-    }
-    card.append(details);
 
     if (payload.initialRunError) {
       const error = document.createElement("div");
