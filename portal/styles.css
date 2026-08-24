@@ -3189,19 +3189,21 @@ body[data-modal="billing"] .app-shell {
 .agent-action-item {
   position: relative;
   display: grid;
-  gap: 0.34rem;
+  grid-template-rows: auto 0fr;
   width: 100%;
-  padding: 0.78rem 0.78rem 0.72rem 0.9rem;
   overflow: hidden;
   color: var(--text);
   text-align: left;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(20, 28, 38, 0.075);
   border-radius: 14px;
-  cursor: pointer;
   box-shadow: 0 5px 14px rgba(25, 38, 54, 0.025);
   animation: rise 320ms ease both;
-  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+  transition: grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1), transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.agent-action-item.is-expanded {
+  grid-template-rows: auto 1fr;
 }
 
 .agent-action-item::before {
@@ -3237,6 +3239,46 @@ body[data-modal="billing"] .app-shell {
   border-color: rgba(15, 118, 110, 0.2);
   box-shadow: 0 9px 22px rgba(25, 38, 54, 0.065);
   outline: 0;
+}
+
+.agent-action-item-trigger {
+  display: grid;
+  gap: 0.34rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.78rem 0.78rem 0.72rem 0.9rem;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+  cursor: pointer;
+}
+
+.agent-action-item-trigger:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.55);
+  outline-offset: -3px;
+}
+
+.agent-action-item-expansion {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-height: 0;
+  transition: grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-action-item.is-expanded .agent-action-item-expansion {
+  grid-template-rows: 1fr;
+}
+
+.agent-action-item-expansion-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 0.78rem 0 0.9rem;
+}
+
+.agent-action-item.is-expanded .agent-action-item-expansion-inner {
+  padding-bottom: 0.82rem;
 }
 
 .agent-action-item-head,
@@ -3494,6 +3536,133 @@ body[data-modal="billing"] .app-shell {
   border: 1px solid rgba(20, 28, 38, 0.08);
   border-radius: 17px;
   box-shadow: var(--shadow-soft);
+}
+
+.agent-action-editor {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.78rem;
+  background: rgba(15, 118, 110, 0.045);
+  border: 1px solid rgba(15, 118, 110, 0.11);
+  border-radius: 14px;
+}
+
+.agent-action-editor-heading {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.agent-action-editor-heading strong {
+  font-size: 0.78rem;
+}
+
+.agent-action-editor-heading span,
+.agent-action-editor-delivery,
+.agent-action-editor-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.agent-action-editor-field {
+  display: grid;
+  gap: 0.34rem;
+}
+
+.agent-action-editor-label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.agent-action-editor-topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  min-height: 1.8rem;
+}
+
+.agent-action-editor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  padding: 0.28rem 0.38rem 0.28rem 0.55rem;
+  color: #24584f;
+  background: rgba(15, 118, 110, 0.1);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+}
+
+.agent-action-editor-chip-remove {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  color: currentColor;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.agent-action-editor-chip-remove:hover,
+.agent-action-editor-chip-remove:focus-visible {
+  background: rgba(15, 118, 110, 0.14);
+  outline: 0;
+}
+
+.agent-action-editor-empty {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-style: italic;
+}
+
+.agent-action-editor-topic-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+}
+
+.agent-action-editor-input,
+.agent-action-editor-select {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0.5rem 0.62rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(20, 28, 38, 0.11);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.73rem;
+}
+
+.agent-action-editor-input:focus,
+.agent-action-editor-select:focus {
+  border-color: rgba(15, 118, 110, 0.45);
+  outline: 2px solid rgba(15, 118, 110, 0.15);
+  outline-offset: 1px;
+}
+
+.agent-action-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.agent-action-editor-status.is-error {
+  color: #9e3434;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-action-item,
+  .agent-action-item-expansion {
+    transition: none;
+  }
 }
 
 .agent-action-detail-head h3 {

@@ -11995,6 +11995,7 @@ function getScheduledActionItemSignature(action) {
     getScheduledActionStatusLabel(action.status, action),
     action.payload?.manualOnly ? "Run when you choose" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     getScheduledActionPreviewText(action),
+    String(state.selectedScheduledActionId === String(action.id)),
   ]);
 }
 
@@ -12006,17 +12007,23 @@ function getScheduledActionListSignature(actions, emptyMessage) {
 }
 
 function createScheduledActionItem(action) {
-  const item = document.createElement("button");
+  const item = document.createElement("article");
   const statusClass = getScheduledActionStatusClass(action.status);
-  item.type = "button";
   item.className = `agent-action-item is-${statusClass}`;
   item.dataset.agentScheduledActionId = String(action.id || "");
-  item.setAttribute("aria-label", `Open ${getScheduledActionTitle(action)}, ${getScheduledActionStatusLabel(action.status, action)}`);
-  item.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    selectScheduledAction(action.id);
-  });
+
+  const isExpanded = state.selectedScheduledActionId === String(action.id);
+  if (isExpanded) {
+    item.classList.add("is-expanded");
+  }
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "agent-action-item-trigger";
+  trigger.dataset.agentScheduledActionTrigger = String(action.id || "");
+  trigger.setAttribute("aria-expanded", String(isExpanded));
+  trigger.setAttribute("aria-controls", `agent-action-expansion-${String(action.id || "")}`);
+  trigger.setAttribute("aria-label", `${isExpanded ? "Collapse" : "Open"} ${getScheduledActionTitle(action)}, ${getScheduledActionStatusLabel(action.status, action)}`);
 
   const head = document.createElement("span");
   head.className = "agent-action-item-head";
@@ -12034,13 +12041,28 @@ function createScheduledActionItem(action) {
     );
 
   const previewText = getScheduledActionPreviewText(action);
-  item.append(head, time);
+  trigger.append(head, time);
   if (previewText) {
     const preview = document.createElement("span");
     preview.className = "agent-action-item-preview";
     preview.textContent = previewText;
-    item.append(preview);
+    trigger.append(preview);
   }
+
+  const expansion = document.createElement("div");
+  expansion.id = `agent-action-expansion-${String(action.id || "")}`;
+  expansion.className = "agent-action-item-expansion";
+  expansion.setAttribute("role", "region");
+  expansion.setAttribute("aria-label", `${getScheduledActionTitle(action)} details`);
+  expansion.setAttribute("aria-hidden", String(!isExpanded));
+  expansion.inert = !isExpanded;
+
+  const expansionInner = document.createElement("div");
+  expansionInner.className = "agent-action-item-expansion-inner";
+  expansionInner.append(createScheduledActionDetail(action));
+  expansion.append(expansionInner);
+
+  item.append(trigger, expansion);
   return item;
 }
 
@@ -12066,18 +12088,27 @@ function renderScheduledActionList(container, actions, emptyMessage) {
 }
 
 function selectScheduledAction(actionId) {
-  state.selectedScheduledActionId = String(actionId || "");
+  const normalizedActionId = String(actionId || "");
+  state.selectedScheduledActionId = state.selectedScheduledActionId === normalizedActionId
+    ? ""
+    : normalizedActionId;
   renderAgentActions();
-  elements.agentActionsPanelBody?.scrollTo({ top: 0, behavior: "smooth" });
+  if (state.selectedScheduledActionId) {
+    window.requestAnimationFrame(() => {
+      const expandedItem = Array.from(document.querySelectorAll("[data-agent-scheduled-action-id]"))
+        .find((item) => item.dataset.agentScheduledActionId === state.selectedScheduledActionId);
+      expandedItem?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
 }
 
 function handleScheduledActionListClick(event) {
   const target = getEventTargetElement(event);
-  const scheduledActionButton = target?.closest("[data-agent-scheduled-action-id]");
-  if (!scheduledActionButton) {
+  const scheduledActionTrigger = target?.closest("[data-agent-scheduled-action-trigger]");
+  if (!scheduledActionTrigger) {
     return;
   }
-  const actionId = scheduledActionButton.dataset.agentScheduledActionId || "";
+  const actionId = scheduledActionTrigger.dataset.agentScheduledActionTrigger || "";
   if (!actionId) {
     return;
   }
@@ -12134,18 +12165,272 @@ function getScheduledActionDetailSignature(action) {
   ]);
 }
 
-function createScheduledActionDetail(action) {
-  const card = document.createElement("article");
-  card.className = "agent-action-detail-card";
+function getAgentMonitorEditorFrequencyValue(settings = {}) {
+  const normalized = normalizeFeatureMonitorSettings(settings);
+  if (normalized.manualOnly) {
+    return "manual";
+  }
+  if (normalized.intervalMinutes) {
+    return `minutes:${normalized.intervalMinutes}`;
+  }
+  return `days:${normalized.intervalDays}`;
+}
 
-  const head = document.createElement("div");
-  head.className = "agent-action-detail-head";
-  const copy = document.createElement("div");
-  const title = document.createElement("h3");
-  title.textContent = getScheduledActionTitle(action);
-  copy.append(title);
-  head.append(copy, createScheduledActionStatus(action));
-  card.append(head);
+function getAgentMonitorEditorFrequencyOptions(settings = {}) {
+  const options = [
+    { value: "manual", label: "Run manually" },
+    { value: "minutes:5", label: "Every 5 minutes" },
+    { value: "minutes:15", label: "Every 15 minutes" },
+    { value: "minutes:60", label: "Hourly" },
+    { value: "days:1", label: "Daily" },
+    { value: "days:7", label: "Weekly" },
+    { value: "days:30", label: "Monthly" },
+  ];
+  const currentValue = getAgentMonitorEditorFrequencyValue(settings);
+  if (!options.some((option) => option.value === currentValue)) {
+    options.push({ value: currentValue, label: formatAgentWebMonitorFrequency(settings) });
+  }
+  return options;
+}
+
+function getAgentMonitorEditorFrequencySettings(value, currentSettings = {}) {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  if (normalizedValue === "manual") {
+    return {
+      manualOnly: true,
+      runMode: "manual",
+      intervalMinutes: 0,
+    };
+  }
+
+  const [unit, rawAmount] = normalizedValue.split(":");
+  const amount = Math.max(1, Number.parseInt(rawAmount, 10) || 1);
+  return {
+    manualOnly: false,
+    runMode: "recurring",
+    intervalMinutes: unit === "minutes" ? amount : 0,
+    intervalDays: unit === "days" ? amount : currentSettings.intervalDays,
+  };
+}
+
+function createAgentMonitorEditor(action) {
+  const featureId = String(action?.payload?.backendFeatureId || "").trim();
+  const feature = getFeatureById(featureId);
+  if (!feature || !isMonitorFeature(feature)) {
+    return null;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const draft = {
+    watchItems: normalizeMonitorWatchItems(
+      currentSettings.watchItems.length
+        ? currentSettings.watchItems
+        : (action?.payload?.watchItems || []),
+    ),
+    frequency: getAgentMonitorEditorFrequencyValue(currentSettings),
+  };
+
+  const form = document.createElement("form");
+  form.className = "agent-action-editor";
+  form.dataset.agentMonitorEditForm = featureId;
+
+  const heading = document.createElement("div");
+  heading.className = "agent-action-editor-heading";
+  const title = document.createElement("strong");
+  title.textContent = "Edit monitor";
+  const subtitle = document.createElement("span");
+  subtitle.textContent = "Change what it watches or when it runs.";
+  heading.append(title, subtitle);
+
+  const topicsField = document.createElement("div");
+  topicsField.className = "agent-action-editor-field";
+  const topicsLabel = document.createElement("span");
+  topicsLabel.className = "agent-action-editor-label";
+  topicsLabel.textContent = "Topics to watch";
+  const topicsList = document.createElement("div");
+  topicsList.className = "agent-action-editor-topics";
+  topicsList.setAttribute("role", "list");
+  const topicEntry = document.createElement("div");
+  topicEntry.className = "agent-action-editor-topic-entry";
+  const topicInput = document.createElement("input");
+  topicInput.type = "text";
+  topicInput.className = "agent-action-editor-input";
+  topicInput.placeholder = "Add a topic or tag";
+  topicInput.setAttribute("aria-label", "Add a topic or tag");
+  const addTopicButton = document.createElement("button");
+  addTopicButton.type = "button";
+  addTopicButton.className = "ghost-button small agent-action-editor-add";
+  addTopicButton.textContent = "Add";
+  topicEntry.append(topicInput, addTopicButton);
+  topicsField.append(topicsLabel, topicsList, topicEntry);
+
+  const frequencyField = document.createElement("label");
+  frequencyField.className = "agent-action-editor-field";
+  const frequencyLabel = document.createElement("span");
+  frequencyLabel.className = "agent-action-editor-label";
+  frequencyLabel.textContent = "Frequency";
+  const frequencySelect = document.createElement("select");
+  frequencySelect.className = "agent-action-editor-select";
+  frequencySelect.setAttribute("aria-label", "Monitor frequency");
+  for (const option of getAgentMonitorEditorFrequencyOptions(currentSettings)) {
+    const optionElement = document.createElement("option");
+    optionElement.value = option.value;
+    optionElement.textContent = option.label;
+    frequencySelect.append(optionElement);
+  }
+  frequencySelect.value = draft.frequency;
+  frequencyField.append(frequencyLabel, frequencySelect);
+
+  const delivery = document.createElement("p");
+  delivery.className = "agent-action-editor-delivery";
+  delivery.textContent = `Results go to ${String(action.payload?.deliveryLabel || formatAgentDeliveryTargetDetail(action.payload?.deliveryChannel || action.channel, action.payload?.deliveryTarget || action.recipientRef) || "your configured delivery" )}.`;
+
+  const status = document.createElement("p");
+  status.className = "agent-action-editor-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+
+  const controls = document.createElement("div");
+  controls.className = "agent-action-editor-actions";
+  const saveButton = document.createElement("button");
+  saveButton.type = "submit";
+  saveButton.className = "primary-button small";
+  saveButton.textContent = "Save changes";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "ghost-button small";
+  cancelButton.textContent = "Cancel";
+  controls.append(saveButton, cancelButton);
+
+  const renderTopics = () => {
+    topicsList.replaceChildren();
+    if (!draft.watchItems.length) {
+      const empty = document.createElement("span");
+      empty.className = "agent-action-editor-empty";
+      empty.textContent = "Add at least one topic.";
+      topicsList.append(empty);
+      return;
+    }
+    draft.watchItems.forEach((item, index) => {
+      const chip = document.createElement("span");
+      chip.className = "agent-action-editor-chip";
+      chip.setAttribute("role", "listitem");
+      const label = document.createElement("span");
+      label.textContent = item;
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "agent-action-editor-chip-remove";
+      removeButton.dataset.agentMonitorEditorRemove = String(index);
+      removeButton.setAttribute("aria-label", `Remove ${item}`);
+      removeButton.textContent = "×";
+      chip.append(label, removeButton);
+      topicsList.append(chip);
+    });
+  };
+
+  const addTopics = () => {
+    const nextItems = normalizeMonitorWatchItems(topicInput.value);
+    if (!nextItems.length) {
+      topicInput.focus();
+      return;
+    }
+    draft.watchItems = normalizeMonitorWatchItems([...draft.watchItems, ...nextItems]);
+    topicInput.value = "";
+    renderTopics();
+    topicInput.focus();
+  };
+
+  addTopicButton.addEventListener("click", addTopics);
+  topicInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addTopics();
+    }
+  });
+  topicsList.addEventListener("click", (event) => {
+    const removeButton = getEventTargetElement(event)?.closest("[data-agent-monitor-editor-remove]");
+    if (!removeButton) {
+      return;
+    }
+    const index = Number.parseInt(removeButton.dataset.agentMonitorEditorRemove, 10);
+    if (Number.isInteger(index)) {
+      draft.watchItems.splice(index, 1);
+      renderTopics();
+    }
+  });
+  cancelButton.addEventListener("click", () => {
+    state.selectedScheduledActionId = "";
+    renderAgentActions();
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void saveAgentMonitorActionSettings(action, draft, form);
+  });
+
+  form.append(heading, topicsField, frequencyField, delivery, status, controls);
+  form._agentMonitorEditor = { draft, frequencySelect, status, saveButton };
+  renderTopics();
+  return form;
+}
+
+async function saveAgentMonitorActionSettings(action, draft, form) {
+  const editor = form?._agentMonitorEditor;
+  const featureId = String(action?.payload?.backendFeatureId || "").trim();
+  const feature = getFeatureById(featureId);
+  if (!editor || !feature || !isMonitorFeature(feature)) {
+    return;
+  }
+  if (featureConfigBusy) {
+    return;
+  }
+
+  const setEditorStatus = (message, isError = false) => {
+    if (!editor.status) {
+      return;
+    }
+    editor.status.hidden = !message;
+    editor.status.textContent = message;
+    editor.status.classList.toggle("is-error", isError);
+  };
+  const watchItems = normalizeMonitorWatchItems(draft.watchItems);
+  if (!watchItems.length) {
+    setEditorStatus("Add at least one topic before saving.", true);
+    return;
+  }
+
+  const currentSettings = getSelectedFeatureSettings(feature);
+  const nextSettings = buildMonitorSettingsForSave(feature, {
+    ...currentSettings,
+    watchItems,
+    ...getAgentMonitorEditorFrequencySettings(editor.frequencySelect?.value, currentSettings),
+  });
+
+  editor.saveButton.disabled = true;
+  editor.saveButton.textContent = "Saving…";
+  setEditorStatus("Saving changes…");
+  try {
+    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        prompt: { ...feature.prompt },
+        settings: nextSettings,
+      },
+    });
+    applyServerFeatureStates([response.feature || {}], { persist: true });
+    state.paymentStatus = response.paymentStatus || state.paymentStatus;
+    setStatus("Monitor settings saved.");
+    renderAgentActions();
+  } catch (error) {
+    editor.saveButton.disabled = false;
+    editor.saveButton.textContent = "Save changes";
+    setEditorStatus(formatApiErrorMessage(error, "We couldn’t save the monitor settings."), true);
+  }
+}
+
+function createScheduledActionDetail(action) {
+  const card = document.createElement("div");
+  card.className = "agent-action-detail-card";
 
   const messageText = String(action.payload?.messageText || action.payload?.text || "").trim();
   if (messageText) {
@@ -12208,15 +12493,13 @@ function createScheduledActionDetail(action) {
       runMessage.textContent = String(payload.initialRunMessage);
       runNote.append(runTitle, runMessage);
       card.append(runNote);
-    } else if (payload.manualOnly) {
-      const runNote = document.createElement("div");
-      runNote.className = "agent-action-note";
-      const runTitle = document.createElement("strong");
-      runTitle.textContent = "Manual mode";
-      const runMessage = document.createElement("p");
-      runMessage.textContent = "No background checks. Use Run now whenever you want a fresh top-five summary.";
-      runNote.append(runTitle, runMessage);
-      card.append(runNote);
+    }
+
+    if (isFeatureAction) {
+      const editor = createAgentMonitorEditor(action);
+      if (editor) {
+        card.append(editor);
+      }
     }
 
     const localActions = createAgentActionDetailActions(action);
@@ -12357,27 +12640,10 @@ function renderAgentActions() {
   if (state.selectedScheduledActionId && !selectedAction) {
     state.selectedScheduledActionId = "";
   }
-  const showDetail = Boolean(selectedAction);
-  elements.agentActionsListView?.classList.toggle("is-hidden", showDetail);
-  elements.agentActionDetailView?.classList.toggle("is-hidden", !showDetail);
-  if (selectedAction && elements.agentActionDetailContent) {
-    const detailSignature = getScheduledActionDetailSignature(selectedAction);
-    if (elements.agentActionDetailContent.dataset.agentActionDetailSignature !== detailSignature) {
-      elements.agentActionDetailContent.dataset.agentActionDetailSignature = detailSignature;
-      elements.agentActionDetailContent.replaceChildren(createScheduledActionDetail(selectedAction));
-    }
-  } else {
-    if (
-      elements.agentActionDetailContent
-      && (
-        elements.agentActionDetailContent.dataset.agentActionDetailSignature
-        || elements.agentActionDetailContent.childElementCount
-      )
-    ) {
-      delete elements.agentActionDetailContent.dataset.agentActionDetailSignature;
-      elements.agentActionDetailContent.replaceChildren();
-    }
-  }
+  // Action details now live inside the selected card. Keep the legacy detail
+  // container hidden so older persisted markup cannot create a second panel.
+  elements.agentActionDetailView?.classList.add("is-hidden");
+  elements.agentActionDetailContent?.replaceChildren();
 
   const panelOpen = elements.agentToolsPanel?.classList.contains("is-open");
   setAgentToolsOpen(Boolean(panelOpen));
@@ -13807,11 +14073,11 @@ function handleAgentWorkspaceClick(event) {
     return;
   }
 
-  const scheduledActionButton = target?.closest("[data-agent-scheduled-action-id]");
-  if (scheduledActionButton) {
+  const scheduledActionTrigger = target?.closest("[data-agent-scheduled-action-trigger]");
+  if (scheduledActionTrigger) {
     event.preventDefault();
     event.stopPropagation();
-    selectScheduledAction(scheduledActionButton.dataset.agentScheduledActionId || "");
+    selectScheduledAction(scheduledActionTrigger.dataset.agentScheduledActionTrigger || "");
     return;
   }
 
