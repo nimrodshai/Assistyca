@@ -78,6 +78,8 @@ class ScheduledMonitorTests(unittest.TestCase):
                         "Criminal defense law conferences",
                         "Nearby holiday reminders",
                     ],
+                    "manualOnly": False,
+                    "runMode": "recurring",
                     "intervalDays": 1,
                     "deliveryChannel": "email",
                 }
@@ -211,6 +213,8 @@ class ScheduledMonitorTests(unittest.TestCase):
                     "watchItems": [
                         "Criminal defense law conferences",
                     ],
+                    "manualOnly": False,
+                    "runMode": "recurring",
                     "intervalDays": 7,
                     "deliveryChannel": "email",
                 }
@@ -346,6 +350,8 @@ class ScheduledMonitorTests(unittest.TestCase):
             metadata={
                 "settings": {
                     "watchItems": ["Kid-friendly events in August around HaSharon and central Israel"],
+                    "manualOnly": False,
+                    "runMode": "recurring",
                     "intervalMinutes": 5,
                     "intervalDays": 1,
                     "deliveryChannel": "email",
@@ -698,6 +704,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                 "settings": {
                     "watchItems": ["family events"],
                     "manualOnly": True,
+                    "runMode": "manual",
                     "intervalDays": 1,
                     "deliveryChannel": "email",
                 }
@@ -712,6 +719,8 @@ class ScheduledMonitorTests(unittest.TestCase):
         )
 
         self.assertTrue(normalize_monitor_settings({"manualOnly": True})["manualOnly"])
+        self.assertTrue(normalize_monitor_settings({"manualOnly": False})["manualOnly"])
+        self.assertFalse(normalize_monitor_settings({"manualOnly": False, "runMode": "recurring"})["manualOnly"])
         self.assertIsNone(
             resolve_next_monitor_slot(
                 now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),

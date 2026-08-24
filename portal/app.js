@@ -136,7 +136,8 @@ const DEFAULT_FEATURE_WHATSAPP = {
 const DEFAULT_MONITOR_SETTINGS = {
   model: "gpt-5.5",
   watchItems: [],
-  manualOnly: false,
+  manualOnly: true,
+  runMode: "manual",
   intervalDays: 7,
   intervalMinutes: 0,
   scheduleTimeLocal: "",
@@ -3343,6 +3344,7 @@ function buildMonitorSettingsForSave(feature = getSelectedFeature(), settings = 
   return normalizeFeatureMonitorSettings({
     ...source,
     manualOnly,
+    runMode: manualOnly ? "manual" : "recurring",
     scheduleTimeLocal,
     scheduleTimezone,
   });
@@ -3449,10 +3451,21 @@ function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
   const runMode = String(source.runMode || source.run_mode || source.mode || "").trim().toLowerCase();
-  const manualOnly = normalizeMonitorManualOnly(
-    Object.prototype.hasOwnProperty.call(source, "manualOnly") ? source.manualOnly : source.manual_only,
-    ["manual", "manual_only", "on_demand", "on-demand"].includes(runMode),
-  );
+  const manualRunMode = ["manual", "manual_only", "on_demand", "on-demand"].includes(runMode);
+  const recurringRunMode = ["scheduled", "recurring", "auto", "automatic", "background"].includes(runMode);
+  const hasManualOnlySetting = Object.prototype.hasOwnProperty.call(source, "manualOnly")
+    || Object.prototype.hasOwnProperty.call(source, "manual_only");
+  const manualOnlyValue = Object.prototype.hasOwnProperty.call(source, "manualOnly")
+    ? source.manualOnly
+    : source.manual_only;
+  const manualOnly = manualRunMode
+    ? true
+    : recurringRunMode
+      ? false
+      : normalizeMonitorManualOnly(
+        hasManualOnlySetting && normalizeMonitorManualOnly(manualOnlyValue, false) ? manualOnlyValue : true,
+        true,
+      );
   const intervalMinutes = normalizeMonitorIntervalMinutes(source.intervalMinutes || source.interval_minutes);
   const intervalDays = Number.parseInt(source.intervalDays, 10);
   const legacyCadence = String(source.cadence || "").trim().toLowerCase();
@@ -3469,6 +3482,7 @@ function normalizeFeatureMonitorSettings(settings = {}) {
     ...normalizeFeatureSettings(source),
     watchItems: normalizeMonitorWatchItems(source.watchItems || source.searchPrompt || ""),
     manualOnly,
+    runMode: manualOnly ? "manual" : "recurring",
     intervalMinutes,
     intervalDays: Number.isFinite(intervalDays)
       ? normalizeMonitorIntervalDays(intervalDays)
@@ -12057,6 +12071,21 @@ function selectScheduledAction(actionId) {
   elements.agentActionsPanelBody?.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function handleScheduledActionListClick(event) {
+  const target = getEventTargetElement(event);
+  const scheduledActionButton = target?.closest("[data-agent-scheduled-action-id]");
+  if (!scheduledActionButton) {
+    return;
+  }
+  const actionId = scheduledActionButton.dataset.agentScheduledActionId || "";
+  if (!actionId) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  selectScheduledAction(actionId);
+}
+
 function createScheduledActionDetailRow(label, value) {
   const row = document.createElement("div");
   row.className = "agent-action-detail-row";
@@ -13115,6 +13144,7 @@ function buildAgentWebMonitorSettings(proposal) {
     ...DEFAULT_MONITOR_SETTINGS,
     watchItems: [buildAgentWebMonitorWatchItem(proposal)],
     manualOnly,
+    runMode: manualOnly ? "manual" : "recurring",
     intervalMinutes: interval.intervalMinutes,
     intervalDays: interval.intervalDays,
     scheduleTimezone: getWorkspaceTimeZone(),
@@ -19136,6 +19166,10 @@ function bindEvents() {
     elements.agentActionsRefreshButton.addEventListener("click", () => {
       void refreshScheduledActions({ userInitiated: true });
     });
+  }
+
+  for (const actionList of [elements.agentPendingActionList, elements.agentCompletedActionList]) {
+    actionList?.addEventListener("click", handleScheduledActionListClick, { capture: true });
   }
 
   if (elements.agentHistoryToggleButton) {

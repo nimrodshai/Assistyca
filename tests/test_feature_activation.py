@@ -125,6 +125,8 @@ class FeatureActivationTests(unittest.TestCase):
                         "Criminal defense law conferences in Israel",
                         "Court holidays that affect legal work",
                     ],
+                    "manualOnly": False,
+                    "runMode": "recurring",
                     "intervalDays": 7,
                     "scheduleTimeLocal": "09:15",
                     "scheduleTimezone": "Asia/Jerusalem",
@@ -140,6 +142,8 @@ class FeatureActivationTests(unittest.TestCase):
             ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
         )
         self.assertEqual(result["feature"]["settings"]["model"], "gpt-5.4")
+        self.assertFalse(result["feature"]["settings"]["manualOnly"])
+        self.assertEqual(result["feature"]["settings"]["runMode"], "recurring")
         self.assertEqual(result["feature"]["settings"]["intervalDays"], 7)
         self.assertEqual(result["feature"]["settings"]["scheduleTimeLocal"], "09:15")
         self.assertEqual(result["feature"]["settings"]["scheduleTimezone"], "Asia/Jerusalem")
@@ -149,12 +153,61 @@ class FeatureActivationTests(unittest.TestCase):
         assignment = self.database.get_feature_assignment("owner@example.com", MONITOR_FEATURE_ID)
         self.assertTrue(assignment["metadata"]["settingsSavedAt"])
         self.assertEqual(assignment["metadata"]["settings"]["model"], "gpt-5.4")
+        self.assertFalse(assignment["metadata"]["settings"]["manualOnly"])
+        self.assertEqual(assignment["metadata"]["settings"]["runMode"], "recurring")
         self.assertEqual(
             assignment["metadata"]["settings"]["watchItems"],
             ["Criminal defense law conferences in Israel", "Court holidays that affect legal work"],
         )
         self.assertEqual(assignment["metadata"]["settings"]["scheduleTimeLocal"], "09:15")
         self.assertEqual(assignment["metadata"]["settings"]["scheduleTimezone"], "Asia/Jerusalem")
+
+    def test_legacy_monitor_settings_without_run_mode_display_as_manual(self) -> None:
+        service = FeatureActivationService(self.database, config=FeatureActivationConfig())
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            MONITOR_FEATURE_ID,
+            metadata={
+                "settings": {
+                    "watchItems": ["family events in central Israel"],
+                    "manualOnly": False,
+                    "intervalDays": 7,
+                    "scheduleTimeLocal": "09:00",
+                    "scheduleTimezone": "Asia/Jerusalem",
+                    "deliveryChannel": "email",
+                },
+                "settingsSavedAt": "2026-08-23T09:25:00+00:00",
+            },
+        )
+        self.database.set_feature_activation(
+            "owner@example.com",
+            feature_id=MONITOR_FEATURE_ID,
+            feature_name="Scheduled Web Monitor",
+            is_active=True,
+            activated_at="2026-08-23T09:25:00+00:00",
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PORTAL_SMTP_HOST": "smtp.example.com",
+                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+                "OPENAI_API_KEY": "test-key",
+            },
+            clear=False,
+        ):
+            result = service.list_feature_states("owner@example.com")
+
+        monitor = {
+            feature["featureId"]: feature
+            for feature in result["features"]
+        }[MONITOR_FEATURE_ID]
+        self.assertTrue(monitor["settings"]["manualOnly"])
+        self.assertEqual(monitor["settings"]["runMode"], "manual")
+        self.assertEqual(monitor["settings"]["scheduleTimeLocal"], "")
+        self.assertEqual(monitor["settings"]["scheduleTimezone"], "")
+        self.assertEqual(monitor["nextRunAt"], "")
+        self.assertEqual(monitor["setupStatus"]["nextRunAt"], "")
 
     def test_save_non_monitor_feature_config_persists_selected_model(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())

@@ -12,6 +12,7 @@ from packages.infrastructure.lemon_squeezy_api import LemonSqueezyClient
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyConfigurationError
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyRequestError
 from packages.infrastructure.lemon_squeezy_api import load_lemon_squeezy_config
+from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import build_monitor_setup_status
 from packages.tools.scheduled_monitor.monitor import normalize_monitor_settings
 from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
@@ -225,7 +226,7 @@ class FeatureActivationService:
         settings_payload = settings if isinstance(settings, dict) else (
             existing_metadata.get("settings") if isinstance(existing_metadata.get("settings"), dict) else {}
         )
-        if normalized_feature_id == "scheduled-web-monitor-notifier":
+        if normalized_feature_id == MONITOR_FEATURE_ID:
             settings_payload = normalize_monitor_settings(settings_payload)
         elif normalized_feature_id == REENGAGEMENT_FEATURE_ID:
             settings_payload = normalize_reengagement_settings(settings_payload)
@@ -481,7 +482,9 @@ class FeatureActivationService:
             **saved_prompt,
         }
         resolved_settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
-        if feature_id == REENGAGEMENT_FEATURE_ID:
+        if feature_id == MONITOR_FEATURE_ID:
+            resolved_settings = normalize_monitor_settings(resolved_settings)
+        elif feature_id == REENGAGEMENT_FEATURE_ID:
             resolved_settings = normalize_reengagement_settings(resolved_settings)
         elif feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
             had_delivery_setting = any(
@@ -504,7 +507,7 @@ class FeatureActivationService:
 
         is_active = bool(activation.get("isActive"))
         schedule_state = {}
-        if feature_id == "scheduled-web-monitor-notifier":
+        if feature_id == MONITOR_FEATURE_ID:
             settings_saved_at = normalize_text(assignment_metadata.get("settingsSavedAt"))
             last_run = self.database.get_latest_feature_monitor_run(
                 user_id=int(assignment.get("userId") or activation.get("userId") or 0),
@@ -615,7 +618,7 @@ class FeatureActivationService:
             and normalize_text(connection.get("connectionStatus")) == "connected"
             and access_token_ready
         )
-        if feature_id == "scheduled-web-monitor-notifier" or requires_monitor_config:
+        if feature_id == MONITOR_FEATURE_ID or requires_monitor_config:
             return build_monitor_setup_status(
                 settings,
                 user_email=email,

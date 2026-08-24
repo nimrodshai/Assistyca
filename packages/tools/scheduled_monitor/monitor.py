@@ -47,7 +47,8 @@ RECENT_SENT_RESULTS_LOOKBACK = timedelta(hours=1)
 DEFAULT_MONITOR_SETTINGS = {
     "model": DEFAULT_MONITOR_MODEL,
     "watchItems": [],
-    "manualOnly": False,
+    "manualOnly": True,
+    "runMode": "manual",
     "intervalDays": 7,
     "intervalMinutes": 0,
     "scheduleTimeLocal": "",
@@ -250,19 +251,22 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
 
     frequency = source.get("frequency") or source.get("cadence") or source.get("schedule")
     run_mode = normalize_text(source.get("runMode") or source.get("run_mode") or source.get("mode")).lower()
-    manual_only = parse_bool(
-        source.get("manualOnly") if "manualOnly" in source else source.get("manual_only"),
-        default=run_mode in {"manual", "manual_only", "on_demand", "on-demand"},
-    )
+    manual_run_mode = run_mode in {"manual", "manual_only", "on_demand", "on-demand"}
+    recurring_run_mode = run_mode in {"scheduled", "recurring", "auto", "automatic", "background"}
+    manual_only = True
+    if recurring_run_mode:
+        manual_only = False
+    if manual_run_mode:
+        manual_only = True
     interval_minutes = normalize_interval_minutes(
         source.get("intervalMinutes")
         or source.get("interval_minutes")
         or extract_interval_minutes_from_frequency(frequency),
     )
-    schedule_time_local = "" if interval_minutes else normalize_schedule_time_local(
+    schedule_time_local = "" if manual_only or interval_minutes else normalize_schedule_time_local(
         source.get("scheduleTimeLocal") or source.get("scheduleTime")
     )
-    schedule_timezone = "" if interval_minutes else normalize_schedule_timezone(
+    schedule_timezone = "" if manual_only or interval_minutes else normalize_schedule_timezone(
         source.get("scheduleTimezone") or source.get("scheduleTimeZone")
     )
 
@@ -270,6 +274,7 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
         "model": resolve_tool_model(source, default=DEFAULT_MONITOR_MODEL),
         "watchItems": normalize_watch_items(source.get("watchItems") or source.get("searchPrompt")),
         "manualOnly": manual_only,
+        "runMode": "manual" if manual_only else "recurring",
         "intervalMinutes": interval_minutes,
         "intervalDays": normalize_interval_days(
             source.get("intervalDays")
