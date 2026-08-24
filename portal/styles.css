@@ -2984,7 +2984,7 @@ body[data-modal="billing"] .app-shell {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.65rem;
   align-items: end;
   width: min(100%, 54rem);
@@ -2995,6 +2995,23 @@ body[data-modal="billing"] .app-shell {
   background: rgba(255, 255, 255, 0.93);
   box-shadow: 0 16px 38px rgba(25, 38, 54, 0.1);
   backdrop-filter: blur(14px) saturate(135%);
+}
+
+.agent-attach-source-button {
+  white-space: nowrap;
+  align-self: center;
+}
+
+.agent-source-attachment {
+  position: absolute;
+  left: 0.85rem;
+  bottom: 0.25rem;
+  max-width: min(34rem, calc(100% - 9rem));
+  overflow: hidden;
+  color: var(--muted-strong);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-composer textarea {
@@ -8592,9 +8609,14 @@ body[data-modal="billing"] .app-shell {
   }
 
   .agent-composer {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     width: 100%;
     border-radius: 17px;
+  }
+
+  .agent-attach-source-button {
+    padding-inline: 0.55rem;
+    font-size: 0.78rem;
   }
 
   .agent-composer textarea {

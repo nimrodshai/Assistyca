@@ -50,6 +50,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_for
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
+from packages.infrastructure.agent_proposals import normalize_agent_source_context
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.agent_proposals import parse_agent_proposal_revision_json
 from packages.infrastructure.billing_ledger import load_billing_report
@@ -79,6 +80,12 @@ from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
+from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
+from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_INTERVAL_MINUTES
+from packages.infrastructure.source_actions import SOURCE_ACTION_MIN_INTERVAL_MINUTES
+from packages.infrastructure.source_actions import SourceActionScheduler
+from packages.infrastructure.source_actions import load_source_action_config
+from packages.infrastructure.source_actions import validate_source_url
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
 from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_numbers
 from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
@@ -2110,6 +2117,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/features/")
             or path == "/api/scheduled-actions"
             or path.startswith("/api/scheduled-actions/")
+            or path == "/api/source-actions"
+            or path.startswith("/api/source-actions/")
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
             or path.startswith("/api/threads")
@@ -2137,6 +2146,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/api/scheduled-actions"
+            or path == "/api/source-actions"
             or path == "/webhooks/whatsapp"
             or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
@@ -2167,6 +2177,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/api/scheduled-actions"
+            or path == "/api/source-actions"
+            or path.startswith("/api/source-actions/")
             or path == "/webhooks/whatsapp"
             or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
@@ -2185,6 +2197,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/features/")
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/scheduled-actions/")
+            or path.startswith("/api/source-actions/")
             or path.startswith("/api/whatsapp/history/")
         ):
             self._handle_api_delete(parsed)
@@ -2232,6 +2245,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_get(parsed)
+            return
+
+        if path == "/api/source-actions":
+            self._handle_source_actions_get(parsed)
             return
 
         if path.startswith("/api/billing"):
@@ -2409,6 +2426,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_scheduled_actions_post()
             return
 
+        if path == "/api/source-actions" or path.startswith("/api/source-actions/"):
+            self._handle_source_actions_post(parsed)
+            return
+
         if path == "/api/admin/users" or path.startswith("/api/admin/users/"):
             self._handle_admin_users_post(parsed)
             return
@@ -2441,6 +2462,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/scheduled-actions/"):
             self._handle_scheduled_actions_delete(parsed)
+            return
+        if path.startswith("/api/source-actions/"):
+            self._handle_source_actions_delete(parsed)
             return
         if path.startswith("/api/whatsapp/history/conversations/"):
             self._handle_whatsapp_history_conversation_delete(parsed)
@@ -3058,12 +3082,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         tool_context = normalize_agent_tool_context(payload.get("toolContext"))
+        source_context = normalize_agent_source_context(payload.get("sourceContext"))
         prompt = build_agent_turn_prompt(
             user_message=user_message,
             conversation=conversation,
             timezone_name=timezone_name,
             active_proposal=active_proposal,
             tool_context=tool_context,
+            source_context=source_context,
         )
         model = (
             normalize_text(os.getenv("PORTAL_ASSISTANT_MODEL"))
@@ -3281,6 +3307,150 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 if key not in {"recipientWaId", "recipient_wa_id"}
             },
         }
+
+    def _serialize_source_action_for_client(self, action: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in (action or {}).items()
+            if key not in {"fileBytes", "fileSha256"}
+        }
+
+    def _source_action_id_from_path(self, parsed: urllib_parse.ParseResult) -> int | None:
+        parts = [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) < 3 or parts[0] != "api" or parts[1] != "source-actions":
+            return None
+        try:
+            return int(parts[2])
+        except ValueError:
+            return None
+
+    def _handle_source_actions_get(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        query = urllib_parse.parse_qs(parsed.query)
+        try:
+            limit = int(normalize_text(query.get("limit", ["100"])[0]) or 100)
+        except ValueError:
+            limit = 100
+        actions = self.database.list_source_actions_for_user(int(user.get("id") or 0), limit=max(1, min(250, limit)))
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "actions": [self._serialize_source_action_for_client(action) for action in actions],
+        })
+
+    def _handle_source_actions_post(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        action_id = self._source_action_id_from_path(parsed)
+        if action_id is not None:
+            if parsed.path.rstrip("/").endswith("/run"):
+                action = self.database.get_source_action(action_id)
+                if action is None or int(action.get("userId") or 0) != int(user.get("id") or 0):
+                    json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "source_action_not_found", "message": "Source action not found."})
+                    return
+                try:
+                    result = SourceActionScheduler(self.database).run_one(action_id)
+                except Exception as exc:  # noqa: BLE001 - report the stored run failure without exposing bytes
+                    updated = self.database.get_source_action(action_id)
+                    json_response(self, HTTPStatus.BAD_GATEWAY, {
+                        "ok": False,
+                        "error": "source_action_run_failed",
+                        "message": str(exc),
+                        "action": self._serialize_source_action_for_client(updated or action),
+                    })
+                    return
+                updated = self.database.get_source_action(action_id)
+                json_response(self, HTTPStatus.OK, {
+                    "ok": True,
+                    "message": "Source checked successfully.",
+                    "result": result,
+                    "action": self._serialize_source_action_for_client(updated or action),
+                })
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        content_length = int(self.headers.get("Content-Length", "0") or 0)
+        if content_length > 8 * 1024 * 1024:
+            json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "source_action_too_large", "message": "The source upload is too large."})
+            return
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        source_type = normalize_text(payload.get("sourceType") or payload.get("source_type")).lower()
+        source_url = normalize_text(payload.get("sourceUrl") or payload.get("source_url"))
+        file_name = normalize_text(payload.get("fileName") or payload.get("file_name"))[:240]
+        mime_type = normalize_text(payload.get("mimeType") or payload.get("mime_type"))[:160]
+        label = normalize_text(payload.get("label"))[:240]
+        try:
+            interval_minutes = int(payload.get("intervalMinutes") or payload.get("interval_minutes") or 1440)
+        except (TypeError, ValueError):
+            interval_minutes = 0
+        if not SOURCE_ACTION_MIN_INTERVAL_MINUTES <= interval_minutes <= SOURCE_ACTION_MAX_INTERVAL_MINUTES:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_interval", "message": "Choose a frequency between every 5 minutes and every 30 days."})
+            return
+
+        raw_file = b""
+        if source_type == "url":
+            try:
+                source_url = validate_source_url(source_url)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_source_url", "message": str(exc)})
+                return
+        elif source_type == "file":
+            encoded = normalize_text(payload.get("fileContentBase64") or payload.get("file_content_base64"))
+            if not encoded or not file_name:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing_source_file", "message": "Choose a file before creating the action."})
+                return
+            try:
+                raw_file = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_source_file", "message": "The file upload could not be read."})
+                return
+            if not raw_file or len(raw_file) > SOURCE_ACTION_MAX_BYTES:
+                json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "source_action_too_large", "message": "Files must be 5 MB or smaller."})
+                return
+        else:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_source_type", "message": "Source type must be url or file."})
+            return
+
+        try:
+            action = self.database.create_source_action(
+                user_id=int(user.get("id") or 0), source_type=source_type, source_url=source_url,
+                file_name=file_name, mime_type=mime_type, file_bytes=raw_file, label=label,
+                interval_minutes=interval_minutes,
+                timezone_name=normalize_text(payload.get("timezone") or payload.get("timeZone")) or "UTC",
+            )
+        except (KeyError, ValueError) as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_source_action", "message": str(exc)})
+            return
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Source action saved. It will run on the selected schedule.",
+            "action": self._serialize_source_action_for_client(action),
+        })
+
+    def _handle_source_actions_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        action_id = self._source_action_id_from_path(parsed)
+        if action_id is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        action = self.database.cancel_source_action(action_id, user_id=int(user.get("id") or 0))
+        if action is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "source_action_not_found", "message": "Source action not found."})
+            return
+        json_response(self, HTTPStatus.OK, {"ok": True, "message": "Source action removed.", "action": self._serialize_source_action_for_client(action)})
 
     def _handle_scheduled_actions_get(self, parsed: urllib_parse.ParseResult) -> None:
         authenticated = self._require_authenticated_user()
@@ -6494,6 +6664,30 @@ def main() -> int:
     else:
         print("Scheduled actions are disabled.", flush=True)
 
+    source_action_config = load_source_action_config()
+    source_action_stop_event = threading.Event()
+    source_action_thread: threading.Thread | None = None
+    if source_action_config.enabled:
+        source_actions = SourceActionScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=source_action_config,
+        )
+        source_action_thread = threading.Thread(
+            target=source_actions.serve_forever,
+            args=(source_action_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="source-actions-scheduler",
+        )
+        source_action_thread.start()
+        print(
+            "Source actions enabled. "
+            f"Polls every {source_action_config.poll_seconds} seconds.",
+            flush=True,
+        )
+    else:
+        print("Source actions are disabled.", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -6508,6 +6702,9 @@ def main() -> int:
         scheduled_action_stop_event.set()
         if scheduled_action_thread is not None:
             scheduled_action_thread.join(timeout=1.0)
+        source_action_stop_event.set()
+        if source_action_thread is not None:
+            source_action_thread.join(timeout=1.0)
         server.server_close()
 
     return 0

@@ -202,12 +202,15 @@
 
             <form id="agentComposerForm" class="agent-composer">
               <label class="sr-only" for="agentComposerInput">Message Assistyca</label>
+              <input id="agentSourceFileInput" class="sr-only" type="file" accept="text/*,application/json,application/xml,application/pdf,.csv,.txt,.md,.json,.xml,.pdf" />
+              <button id="agentAttachSourceButton" class="ghost-button small agent-attach-source-button" type="button" aria-label="Attach a file as a recurring source">Attach file</button>
               <textarea
                 id="agentComposerInput"
                 rows="1"
                 wrap="off"
                 placeholder="Message Assistyca…"
               ></textarea>
+              <span id="agentSourceAttachment" class="agent-source-attachment" hidden></span>
               <button id="agentComposerButton" class="primary-button" type="submit">
                 Send
               </button>

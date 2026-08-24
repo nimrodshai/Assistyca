@@ -609,6 +609,27 @@ const AGENT_BLUEPRINTS = {
     questions: [],
     alternatives: ["WhatsApp", "Email", "Telegram", "Portal inbox"],
   },
+  sourceAction: {
+    type: "source-action",
+    title: "Recurring source action",
+    summary: "Save a URL or file and check it on the schedule you choose.",
+    response:
+      "I can keep a URL or file on a schedule and record each check. I won’t interpret the contents yet, but I can make sure the source is available for the next phase.",
+    relatedFeatureId: "",
+    primaryActionLabel: "Create source action",
+    setupActionLabel: "Review source action",
+    missingCredential: "",
+    skills: [
+      { label: "Source fetcher", detail: "Safely fetches the URL or verifies the saved file without exposing it in chat." },
+      { label: "Recurring scheduler", detail: "Runs the source check at the interval you choose." },
+      { label: "Run history", detail: "Records the last result, size, hash, and any safe error details." },
+    ],
+    helpers: [
+      { name: "Source Action Agent", purpose: "Keep the selected URL or file available on a recurring schedule." },
+    ],
+    questions: ["What should I check?", "How often should I check it?"],
+    alternatives: [],
+  },
   reengagement: {
     type: "reengagement",
     title: "Customer re-engagement",
@@ -731,6 +752,12 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
       actions: ["Email", "Telegram", "WhatsApp"],
     },
   ],
+  "source-action": [
+    { key: "sourceType", question: "What should I check?" },
+    { key: "sourceUrl", question: "What URL should I check?", requiredWhen: "source-url" },
+    { key: "sourceFileName", question: "Which file should I use?", requiredWhen: "source-file" },
+    { key: "frequency", question: "How often should I check?", actions: ["Every 15 minutes", "Hourly", "Daily", "Weekly"] },
+  ],
   "whatsapp-replies": [
     {
       key: "whatsappNumber",
@@ -835,6 +862,16 @@ const AGENT_PROPOSAL_FIELD_ALIASES = {
   quietperiod: "inactivityPeriod",
   result: "result",
   output: "result",
+  url: "sourceUrl",
+  source_url: "sourceUrl",
+  sourceurl: "sourceUrl",
+  file: "sourceFileName",
+  filename: "sourceFileName",
+  file_name: "sourceFileName",
+  mime_type: "sourceMimeType",
+  mimetype: "sourceMimeType",
+  source_type: "sourceType",
+  sourcetype: "sourceType",
   calendar: "calendar",
 };
 
@@ -1026,6 +1063,8 @@ const state = {
   whatsappHistoryLoadedAt: 0,
   whatsappHistoryEmail: "",
   scheduledActions: [],
+  sourceActions: [],
+  sourceActionsLoading: false,
   scheduledActionsLoading: false,
   scheduledActionsError: "",
   scheduledActionsFailureCount: 0,
@@ -1075,6 +1114,7 @@ let pricingRefreshPromise = null;
 let pricingLastRefreshCompletedAt = 0;
 let agentTurnBusy = false;
 let agentTurnProgressText = "Thinking";
+let agentSourceAttachment = null;
 let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
@@ -1108,6 +1148,7 @@ let whatsappConnectionPollActive = false;
 let whatsappConnectionPollFeatureId = "";
 let scheduledActionsPollTimer = null;
 let scheduledActionsRefreshPromise = null;
+let sourceActionsRefreshPromise = null;
 let whatsappApprovalsPollTimer = null;
 let whatsappApprovalsRefreshPromise = null;
 
@@ -1142,6 +1183,9 @@ const elements = {
   agentComposerForm: document.querySelector("#agentComposerForm"),
   agentComposerInput: document.querySelector("#agentComposerInput"),
   agentComposerButton: document.querySelector("#agentComposerButton"),
+  agentSourceFileInput: document.querySelector("#agentSourceFileInput"),
+  agentAttachSourceButton: document.querySelector("#agentAttachSourceButton"),
+  agentSourceAttachment: document.querySelector("#agentSourceAttachment"),
   agentProposalCard: document.querySelector("#agentProposalCard"),
   agentHelperCount: document.querySelector("#agentHelperCount"),
   agentHelperList: document.querySelector("#agentHelperList"),
@@ -10144,6 +10188,41 @@ function buildAgentScheduledMessageDetails(text) {
   return details;
 }
 
+function buildAgentSourceActionDetails(text, proposal = null) {
+  const requestText = String(text || "");
+  const fields = proposal?.fields && typeof proposal.fields === "object" ? proposal.fields : {};
+  const sourceType = String(fields.sourceType || (agentSourceAttachment ? "file" : "url")).trim().toLowerCase();
+  const sourceUrl = String(fields.sourceUrl || requestText.match(/https?:\/\/[^\s<>)\]}]+/i)?.[0] || "").replace(/[.,!?]+$/, "");
+  const frequency = String(fields.frequency || extractAgentFrequencyField(requestText) || "daily").trim();
+  const interval = buildAgentMonitorIntervalFromFrequency(frequency);
+  return {
+    sourceType: sourceType === "file" ? "file" : "url",
+    sourceUrl: sourceType === "file" ? "" : sourceUrl,
+    fileName: sourceType === "file" ? String(fields.sourceFileName || agentSourceAttachment?.fileName || "").trim() : "",
+    mimeType: sourceType === "file" ? String(fields.sourceMimeType || agentSourceAttachment?.mimeType || "").trim() : "",
+    frequency,
+    intervalMinutes: interval.intervalMinutes || Math.max(1, interval.intervalDays * 24 * 60),
+    timezone: getWorkspaceTimeZone(),
+  };
+}
+
+function buildAgentSourceActionExecutionPlan(details = {}) {
+  return {
+    trigger: {
+      type: "interval",
+      frequency: String(details.frequency || "daily"),
+      intervalMinutes: Number(details.intervalMinutes || 1440),
+      timezone: String(details.timezone || getWorkspaceTimeZone()),
+    },
+    action: {
+      type: "source_snapshot",
+      sourceType: String(details.sourceType || ""),
+      sourceUrl: String(details.sourceUrl || ""),
+      fileName: String(details.fileName || ""),
+    },
+  };
+}
+
 function buildAgentScheduledMessageExecutionPlan(details = {}) {
   return {
     trigger: {
@@ -10183,6 +10262,11 @@ function getAgentBlueprintForText(text) {
   const value = String(text || "").toLowerCase();
   if (isAgentScheduledMessageRequest(value)) {
     return AGENT_BLUEPRINTS.scheduledMessage;
+  }
+
+  if (/(https?:\/\/\S+|\b(?:file|document|spreadsheet|csv|pdf)\b)/i.test(value)
+    && /\b(?:check|watch|monitor|refresh|fetch|run|every|daily|hourly|weekly|schedule|keep)\b/i.test(value)) {
+    return AGENT_BLUEPRINTS.sourceAction;
   }
 
   if (/\b(gmail|inbox|email|mailbox|digest|summari[sz]e|summary)\b/.test(value)) {
@@ -10273,6 +10357,11 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     const channelLabel = formatAgentScheduledMessageChannel(scheduledDetails.channel);
     const timeLabel = scheduledDetails.timeLocal ? ` at ${scheduledDetails.timeLocal}` : "";
     proposal.summary = `Schedule a one-shot ${channelLabel} message${timeLabel}.`;
+  } else if (proposal.type === "source-action") {
+    const sourceDetails = buildAgentSourceActionDetails(text, proposal);
+    proposal.details = sourceDetails;
+    proposal.executionPlan = buildAgentSourceActionExecutionPlan(sourceDetails);
+    updateAgentProposalSummaryFromFields(proposal);
   } else {
     updateAgentProposalSummaryFromFields(proposal);
   }
@@ -10415,6 +10504,12 @@ function isAgentProposalFieldRequired(proposal, field) {
   if (field.requiredWhen === "web-monitor-location-sensitive") {
     return isAgentWebMonitorLocationSensitive(proposal);
   }
+  if (field.requiredWhen === "source-url") {
+    return String(getAgentProposalFieldMap(proposal).sourceType || "").trim().toLowerCase() === "url";
+  }
+  if (field.requiredWhen === "source-file") {
+    return String(getAgentProposalFieldMap(proposal).sourceType || "").trim().toLowerCase() === "file";
+  }
   return true;
 }
 
@@ -10476,6 +10571,10 @@ function getAgentProposalFieldKeysForAnswers(proposal, answerCount = 0) {
 
   if (proposal?.type === "reengagement") {
     return ["inactivityPeriod", "frequency", "deliveryChannel"];
+  }
+
+  if (proposal?.type === "source-action") {
+    return ["sourceType", "sourceUrl", "sourceFileName", "frequency"];
   }
 
   return schema.map((field) => field.key);
@@ -10632,6 +10731,24 @@ function inferAgentProposalFieldsFromText(text, proposalType) {
   const deliveryChannel = normalizeAgentDeliveryChannel(value);
   const frequency = extractAgentFrequencyField(value);
 
+  if (proposalType === "source-action") {
+    const urlMatch = value.match(/https?:\/\/[^\s<>)\]}]+/i);
+    if (urlMatch) {
+      fields.sourceType = "url";
+      fields.sourceUrl = urlMatch[0].replace(/[.,!?]+$/, "");
+    } else if (/\b(?:file|document|spreadsheet|csv|pdf)\b/i.test(value)) {
+      fields.sourceType = "file";
+      if (agentSourceAttachment?.fileName) {
+        fields.sourceFileName = agentSourceAttachment.fileName;
+        fields.sourceMimeType = agentSourceAttachment.mimeType || "";
+      }
+    }
+    if (frequency) {
+      fields.frequency = frequency;
+    }
+    return fields;
+  }
+
   if (proposalType === "web-monitor") {
     fields.watchQuery = extractAgentWebMonitorWatchQuery(value);
     if (frequency) {
@@ -10724,6 +10841,10 @@ function updateAgentProposalSummaryFromFields(proposal) {
     const inactivity = fields.inactivityPeriod || "the chosen quiet period";
     const frequency = fields.frequency ? ` ${fields.frequency}` : "";
     proposal.summary = `Find conversations quiet for ${inactivity}${frequency} and draft follow-ups.`;
+  } else if (proposal.type === "source-action") {
+    const source = fields.sourceType === "file" ? (fields.sourceFileName || "the attached file") : (fields.sourceUrl || "the selected URL");
+    const frequency = fields.frequency ? ` ${fields.frequency}` : "";
+    proposal.summary = `Check ${source}${frequency} and record each source snapshot.`;
   }
 }
 
@@ -11641,6 +11762,61 @@ function normalizeScheduledAction(action = {}) {
   };
 }
 
+function normalizeSourceAction(action = {}) {
+  const sourceType = String(action.sourceType || "").trim().toLowerCase();
+  const id = Math.max(0, Number(action.id || 0));
+  const payload = {
+    source: "source_action",
+    sourceActionId: id,
+    title: "Source action",
+    preview: sourceType === "file" ? String(action.fileName || "Attached file") : String(action.sourceUrl || "Source URL"),
+    sourceType,
+    sourceUrl: String(action.sourceUrl || "").trim(),
+    fileName: String(action.fileName || "").trim(),
+    mimeType: String(action.mimeType || "").trim(),
+    frequency: formatSourceActionFrequency(action.intervalMinutes),
+    lastRunAt: String(action.lastRunAt || "").trim(),
+    lastRunStatus: String(action.lastRunStatus || "").trim(),
+    nextRunAt: String(action.nextRunAt || "").trim(),
+    lastContentHash: String(action.lastContentHash || "").trim(),
+    lastContentSize: Number(action.lastContentSize || 0),
+    lastHttpStatus: action.lastHttpStatus,
+    runCount: Number(action.runCount || 0),
+  };
+  return {
+    id: `source:${id}`,
+    actionType: "agent_source_action",
+    channel: "source",
+    recipientRef: "",
+    runAt: String(action.nextRunAt || "").trim(),
+    timezone: String(action.timezone || getWorkspaceTimeZone()).trim(),
+    status: String(action.status || "active").trim().toLowerCase() === "cancelled" ? "cancelled" : (String(action.status || "active").trim().toLowerCase() === "running" ? "running" : "pending"),
+    attemptCount: Number(action.runCount || 0),
+    providerMessageId: "",
+    payload,
+    local: true,
+    lastError: String(action.lastError || "").trim(),
+    claimedAt: String(action.claimedAt || "").trim(),
+    completedAt: String(action.status || "").trim().toLowerCase() === "cancelled" ? String(action.updatedAt || "") : "",
+    createdAt: String(action.createdAt || "").trim(),
+    updatedAt: String(action.updatedAt || "").trim(),
+  };
+}
+
+function formatSourceActionFrequency(intervalMinutes) {
+  const amount = Math.max(1, Number(intervalMinutes || 1440));
+  if (amount < 60) return `every ${amount} minutes`;
+  if (amount % (24 * 60) === 0) {
+    const days = amount / (24 * 60);
+    return days === 1 ? "daily" : `every ${days} days`;
+  }
+  if (amount % 60 === 0) {
+    const hours = amount / 60;
+    return hours === 1 ? "hourly" : `every ${hours} hours`;
+  }
+  return `every ${amount} minutes`;
+}
+
 function normalizeAgentActionTypeLabel(value) {
   return capitalizeWords(String(value || "")
     .replace(/^agent[_-]+/, "")
@@ -11752,6 +11928,9 @@ function getAgentProposalLocalActionTitle(proposal) {
   }
   if (proposal?.type === "reengagement") {
     return "Customer follow-up";
+  }
+  if (proposal?.type === "source-action") {
+    return "Source action";
   }
   return proposal?.title || proposal?.helpers?.[0]?.name || "Agent helper";
 }
@@ -11961,6 +12140,7 @@ function getAgentFeatureLiveActions() {
 
 function getRenderableAgentActions() {
   const backendActions = Array.isArray(state.scheduledActions) ? state.scheduledActions : [];
+  const sourceActions = Array.isArray(state.sourceActions) ? state.sourceActions.map(normalizeSourceAction) : [];
   const proposalActions = getAgentProposalLocalActions();
   const proposalFeatureIds = new Set(
     proposalActions
@@ -11972,6 +12152,7 @@ function getRenderableAgentActions() {
   return [
     ...featureActions,
     ...proposalActions,
+    ...sourceActions,
     ...backendActions,
   ];
 }
@@ -11992,6 +12173,16 @@ function createAgentActionDetailActions(action) {
   const actions = document.createElement("div");
   actions.className = "agent-action-detail-actions";
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
+  const sourceActionId = Number(action?.payload?.sourceActionId || 0);
+  if (sourceActionId) {
+    const runButton = document.createElement("button");
+    runButton.type = "button";
+    runButton.className = "primary-button small agent-action-run-button";
+    runButton.dataset.agentRunSourceAction = String(sourceActionId);
+    runButton.textContent = "Run now";
+    runButton.setAttribute("aria-label", "Run source action now");
+    actions.append(runButton);
+  }
   if (isAgentFeatureLiveAction(action) && action.actionType === "agent_web_monitor" && featureId) {
     const runButton = document.createElement("button");
     runButton.type = "button";
@@ -12011,6 +12202,13 @@ function createAgentActionDetailActions(action) {
   if (isAgentLocalAction(action)) {
     button.dataset.agentRemoveLocalAction = String(action.id || "");
     const hasBackendFeature = Boolean(String(action.payload?.backendFeatureId || "").trim());
+    if (sourceActionId) {
+      button.dataset.agentRemoveSourceAction = String(sourceActionId);
+      button.textContent = "Remove action";
+      button.setAttribute("aria-label", "Remove source action");
+      actions.append(button);
+      return actions;
+    }
     const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(action.payload?.manualOnly, false);
     const removeAction = !hasBackendFeature || isManualOnly;
     button.textContent = removeAction ? "Remove action" : "Turn off action";
@@ -12699,6 +12897,37 @@ function createScheduledActionDetail(action) {
   if (isAgentLocalAction(action)) {
     const payload = action.payload && typeof action.payload === "object" ? action.payload : {};
     const isFeatureAction = isAgentFeatureLiveAction(action);
+    const isSourceAction = payload.source === "source_action";
+    if (isSourceAction) {
+      const sourceDetails = document.createElement("dl");
+      sourceDetails.className = "agent-action-detail-grid";
+      sourceDetails.append(
+        createScheduledActionDetailRow("Source", payload.sourceType === "file" ? (payload.fileName || "Attached file") : (payload.sourceUrl || "URL")),
+        createScheduledActionDetailRow("Frequency", payload.frequency || "As configured"),
+        createScheduledActionDetailRow("Next check", formatScheduledActionDate(payload.nextRunAt || action.runAt, action.timezone)),
+      );
+      if (payload.lastRunAt) {
+        sourceDetails.append(createScheduledActionDetailRow("Last check", `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(payload.lastRunStatus || "success")}`));
+      }
+      card.append(sourceDetails);
+      const note = document.createElement("p");
+      note.className = "agent-action-note";
+      note.textContent = "This phase checks and records the source. Content interpretation will be added next.";
+      card.append(note);
+      if (action.lastError) {
+        const error = document.createElement("div");
+        error.className = "agent-action-error";
+        const title = document.createElement("strong");
+        title.textContent = "Last check failed";
+        const message = document.createElement("p");
+        message.textContent = action.lastError;
+        error.append(title, message);
+        card.append(error);
+      }
+      const sourceControls = createAgentActionDetailActions(action);
+      if (sourceControls) card.append(sourceControls);
+      return card;
+    }
     const deliveryRow = createScheduledActionDetailRow("Delivery", String(
       payload.deliveryLabel
       || formatAgentDeliveryTargetDetail(payload.deliveryChannel || action.channel, payload.deliveryTarget || action.recipientRef)
@@ -12966,6 +13195,29 @@ async function refreshScheduledActions(options = {}) {
   return scheduledActionsRefreshPromise;
 }
 
+async function refreshSourceActions() {
+  if (!isSignedIn() || sourceActionsRefreshPromise) {
+    return null;
+  }
+  const requestToken = String(authSession?.token || "");
+  state.sourceActionsLoading = true;
+  sourceActionsRefreshPromise = (async () => {
+    try {
+      const response = await apiRequest("/api/source-actions?limit=100", { headers: getSessionAuthHeaders() });
+      if (requestToken !== String(authSession?.token || "")) return null;
+      state.sourceActions = Array.isArray(response.actions) ? response.actions : [];
+      renderAgentActions();
+      return state.sourceActions;
+    } catch {
+      return null;
+    } finally {
+      if (requestToken === String(authSession?.token || "")) state.sourceActionsLoading = false;
+      sourceActionsRefreshPromise = null;
+    }
+  })();
+  return sourceActionsRefreshPromise;
+}
+
 async function refreshWhatsAppApprovals() {
   if (!isSignedIn() || whatsappApprovalsRefreshPromise) {
     return null;
@@ -13066,6 +13318,9 @@ function syncScheduledActionsPolling() {
 
   if (!state.scheduledActionsLoadedAt && !scheduledActionsRefreshPromise) {
     void refreshScheduledActions();
+  }
+  if (!sourceActionsRefreshPromise) {
+    void refreshSourceActions();
   }
   if (scheduledActionsPollTimer === null) {
     scheduledActionsPollTimer = window.setInterval(() => {
@@ -13512,6 +13767,15 @@ async function handleAgentUserText(text) {
     text: message.text,
   }));
   const activeProposalPayload = buildAgentTurnActiveProposal(activeProposal);
+  const sourceUrlMatch = cleanText.match(/https?:\/\/[^\s<>)\]}]+/i);
+  const sourceContext = agentSourceAttachment
+    ? {
+      sourceType: "file",
+      fileName: agentSourceAttachment.fileName,
+      mimeType: agentSourceAttachment.mimeType,
+      size: agentSourceAttachment.size,
+    }
+    : (sourceUrlMatch ? { sourceType: "url", sourceUrl: sourceUrlMatch[0].replace(/[.,!?]+$/, "") } : {});
   agentTurnBusy = true;
   agentTurnProgressText = "Thinking";
   persistAgentWorkspace("Assistyca is thinking...");
@@ -13533,6 +13797,7 @@ async function handleAgentUserText(text) {
         conversation,
         activeProposal: activeProposalPayload,
         toolContext: buildAgentToolContext(),
+        sourceContext,
       },
     });
     await applyAgentTurnResponse(turn, cleanText);
@@ -13566,7 +13831,7 @@ function handleAgentComposerSubmit(event = null) {
   }
   const input = elements.agentComposerInput;
   const text = String(input?.value || "").trim();
-  if (!text) {
+  if (!text && !agentSourceAttachment) {
     input?.focus();
     return;
   }
@@ -13575,7 +13840,7 @@ function handleAgentComposerSubmit(event = null) {
     input.value = "";
   }
 
-  void handleAgentUserText(text);
+  void handleAgentUserText(text || "Please check the attached file on a recurring schedule.");
 }
 
 function normalizeAgentComposerPastedText(text) {
@@ -13613,6 +13878,64 @@ function handleAgentComposerPaste(event) {
 
   event.preventDefault();
   insertAgentComposerText(event.currentTarget, normalizedText);
+}
+
+function renderAgentSourceAttachment() {
+  const attachment = agentSourceAttachment;
+  if (!elements.agentSourceAttachment) {
+    return;
+  }
+  elements.agentSourceAttachment.hidden = !attachment;
+  elements.agentSourceAttachment.textContent = attachment
+    ? `Attached source: ${attachment.fileName} · ${Math.ceil(attachment.size / 1024)} KB`
+    : "";
+  elements.agentAttachSourceButton?.setAttribute("aria-label", attachment ? "Replace attached source file" : "Attach a file as a recurring source");
+  if (elements.agentAttachSourceButton) {
+    elements.agentAttachSourceButton.textContent = attachment ? "Replace file" : "Attach file";
+  }
+}
+
+function clearAgentSourceAttachment() {
+  agentSourceAttachment = null;
+  if (elements.agentSourceFileInput) {
+    elements.agentSourceFileInput.value = "";
+  }
+  renderAgentSourceAttachment();
+}
+
+function handleAgentSourceFileChange(event) {
+  const file = event.target?.files?.[0];
+  if (!file) {
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    setStatus("Files must be 5 MB or smaller.");
+    clearAgentSourceAttachment();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = String(reader.result || "");
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) {
+      clearAgentSourceAttachment();
+      setStatus("That file could not be read.");
+      return;
+    }
+    agentSourceAttachment = {
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+      dataBase64: dataUrl.slice(comma + 1),
+    };
+    renderAgentSourceAttachment();
+    elements.agentComposerInput?.focus();
+  };
+  reader.onerror = () => {
+    clearAgentSourceAttachment();
+    setStatus("That file could not be read.");
+  };
+  reader.readAsDataURL(file);
 }
 
 async function scheduleAgentScheduledMessageProposal(proposal) {
@@ -13962,6 +14285,43 @@ function handleAgentWebMonitorActivationError(error, proposal) {
   renderApp({ preserveStatus: true });
 }
 
+async function createSourceActionFromProposal(proposal) {
+  const details = buildAgentSourceActionDetails(proposal?.requestText || "", proposal);
+  if (details.sourceType === "url" && !details.sourceUrl) {
+    throw new Error("Tell me which URL to check first.");
+  }
+  if (details.sourceType === "file" && !agentSourceAttachment?.dataBase64) {
+    throw new Error("Please attach the source file again before setting this up.");
+  }
+  const response = await apiRequest("/api/source-actions", {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      sourceType: details.sourceType,
+      sourceUrl: details.sourceUrl,
+      fileName: details.fileName,
+      mimeType: details.mimeType,
+      fileContentBase64: agentSourceAttachment?.dataBase64 || "",
+      intervalMinutes: details.intervalMinutes,
+      timezone: details.timezone,
+      label: details.sourceType === "file" ? details.fileName : details.sourceUrl,
+      source: "portal_agent",
+    },
+    timeoutMs: 90000,
+  });
+  const action = response.action || null;
+  proposal.executionPlan = {
+    ...proposal.executionPlan,
+    backendActionId: action?.id || "",
+    backendStatus: action?.status || "active",
+    source: details,
+  };
+  proposal.summary = `Check ${details.sourceType === "file" ? details.fileName : details.sourceUrl} ${details.frequency} and record each source snapshot.`;
+  clearAgentSourceAttachment();
+  await refreshSourceActions();
+  return action;
+}
+
 async function approveAgentProposal(proposalId, expectedRevision = 0) {
   const agent = getAgentWorkspace();
   const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
@@ -14008,6 +14368,7 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
   }
 
   let scheduledAction = null;
+  let sourceAction = null;
   let monitorActivation = null;
   let whatsappActivation = null;
   if (proposal.type === "scheduled-message" && !proposal.missingCredential) {
@@ -14044,6 +14405,22 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
       }
       pushAgentProposalResult(proposal.id, statusMessage, payload.error === "missing_whatsapp_connection" ? "credential" : "result");
       persistAgentWorkspace(statusMessage);
+      renderApp({ preserveStatus: true });
+      return;
+    }
+  }
+
+  if (proposal.type === "source-action") {
+    proposal.status = "creating";
+    persistAgentWorkspace("Creating source action...");
+    renderApp({ preserveStatus: true });
+    try {
+      sourceAction = await createSourceActionFromProposal(proposal);
+    } catch (error) {
+      proposal.status = "needs-approval";
+      const message = formatApiErrorMessage(error, "I couldn’t create that source action yet.");
+      pushAgentProposalResult(proposal.id, message, "result");
+      persistAgentWorkspace(message);
       renderApp({ preserveStatus: true });
       return;
     }
@@ -14118,6 +14495,12 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     const message = deliveryChannel === "this workspace"
       ? "WhatsApp reply assistant is active. New drafts will appear here for review."
       : `WhatsApp reply assistant is active. New drafts will be brought to you by ${deliveryChannel}.`;
+    pushAgentProposalResult(proposal.id, message);
+    persistAgentWorkspace(message);
+  } else if (proposal.type === "source-action") {
+    const details = proposal.executionPlan?.source || buildAgentSourceActionDetails(proposal.requestText, proposal);
+    const sourceLabel = details.sourceType === "file" ? (details.fileName || "the attached file") : (details.sourceUrl || "the URL");
+    const message = `Source action is active. I’ll check ${sourceLabel} ${details.frequency || "on its schedule"} and record each run. I’m not interpreting the content yet.`;
     pushAgentProposalResult(proposal.id, message);
     persistAgentWorkspace(message);
   } else {
@@ -14319,6 +14702,45 @@ async function cancelScheduledAction(actionId) {
   }
 }
 
+async function runSourceActionNow(actionId) {
+  const id = Math.max(0, Number(actionId || 0));
+  if (!id) return false;
+  setStatus("Checking source…");
+  try {
+    await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}/run`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      timeoutMs: 90000,
+    });
+    await refreshSourceActions();
+    setStatus("Source checked.");
+    return true;
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, "Couldn’t check that source."));
+    await refreshSourceActions();
+    return false;
+  }
+}
+
+async function removeSourceAction(actionId) {
+  const id = Math.max(0, Number(actionId || 0));
+  if (!id) return false;
+  try {
+    await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}`, {
+      method: "DELETE",
+      headers: getSessionAuthHeaders(),
+    });
+    state.sourceActions = state.sourceActions.filter((action) => Number(action.id || 0) !== id);
+    state.selectedScheduledActionId = "";
+    renderAgentActions();
+    setStatus("Source action removed.");
+    return true;
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, "Couldn’t remove that source action."));
+    return false;
+  }
+}
+
 function handleAgentWorkspaceClick(event) {
   const whatsappApprovalButton = getEventTargetElement(event)?.closest("[data-agent-whatsapp-action]");
   if (whatsappApprovalButton) {
@@ -14352,6 +14774,22 @@ function handleAgentWorkspaceClick(event) {
     event.preventDefault();
     event.stopPropagation();
     void runMonitorActionNow(runMonitorActionButton.dataset.agentRunMonitorAction || "");
+    return;
+  }
+
+  const runSourceActionButton = target?.closest("[data-agent-run-source-action]");
+  if (runSourceActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void runSourceActionNow(runSourceActionButton.dataset.agentRunSourceAction || "");
+    return;
+  }
+
+  const removeSourceActionButton = target?.closest("[data-agent-remove-source-action]");
+  if (removeSourceActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void removeSourceAction(removeSourceActionButton.dataset.agentRemoveSourceAction || "");
     return;
   }
 
@@ -19756,6 +20194,11 @@ function bindEvents() {
       }
     });
     elements.agentComposerInput.addEventListener("paste", handleAgentComposerPaste);
+  }
+
+  if (elements.agentAttachSourceButton && elements.agentSourceFileInput) {
+    elements.agentAttachSourceButton.addEventListener("click", () => elements.agentSourceFileInput.click());
+    elements.agentSourceFileInput.addEventListener("change", handleAgentSourceFileChange);
   }
 
   for (const button of elements.agentPromptButtons) {

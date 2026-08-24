@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import secrets
 import sqlite3
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from decimal import Decimal
 from decimal import ROUND_HALF_UP
@@ -61,6 +63,7 @@ USER_OWNED_TABLES = (
     "feature_monitor_notifications",
     "feature_monitor_runs",
     "scheduled_actions",
+    "source_actions",
     "platform_connections",
     "feature_assignments",
     "billing_customers",
@@ -435,6 +438,35 @@ CREATE TABLE IF NOT EXISTS scheduled_actions (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS source_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    source_type TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL DEFAULT '',
+    mime_type TEXT NOT NULL DEFAULT '',
+    file_bytes BLOB,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    file_sha256 TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    interval_minutes INTEGER NOT NULL DEFAULT 1440,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    status TEXT NOT NULL DEFAULT 'active',
+    next_run_at TEXT NOT NULL,
+    last_run_at TEXT,
+    last_run_status TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    last_http_status INTEGER,
+    last_content_type TEXT NOT NULL DEFAULT '',
+    last_content_hash TEXT NOT NULL DEFAULT '',
+    last_content_size INTEGER NOT NULL DEFAULT 0,
+    run_count INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
@@ -466,6 +498,10 @@ CREATE INDEX IF NOT EXISTS idx_billing_customers_provider_status
 ON billing_customers(provider, subscription_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_features_active_sort
 ON features(is_active, sort_order, feature_name);
+CREATE INDEX IF NOT EXISTS idx_source_actions_due
+ON source_actions(status, next_run_at ASC);
+CREATE INDEX IF NOT EXISTS idx_source_actions_user
+ON source_actions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_assignments_user_assigned
 ON feature_assignments(user_id, is_assigned, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_entitlements_user_status
@@ -5034,6 +5070,192 @@ class PortalDatabase:
                 (int(action.get("id") or 0),),
             ).fetchone()
         return self._load_scheduled_action_row(updated_row)
+
+    def _load_source_action_row(self, row: sqlite3.Row | None, *, include_bytes: bool = False) -> dict[str, Any] | None:
+        payload = _row_to_dict(row)
+        if not payload:
+            return None
+        result: dict[str, Any] = {
+            "id": int(payload.get("id") or 0),
+            "userId": int(payload.get("user_id") or 0),
+            "sourceType": normalize_text(payload.get("source_type")),
+            "sourceUrl": normalize_text(payload.get("source_url")),
+            "fileName": normalize_text(payload.get("file_name")),
+            "mimeType": normalize_text(payload.get("mime_type")),
+            "fileSize": int(payload.get("file_size") or 0),
+            "fileSha256": normalize_text(payload.get("file_sha256")),
+            "label": normalize_text(payload.get("label")),
+            "intervalMinutes": max(1, int(payload.get("interval_minutes") or 1440)),
+            "timezone": normalize_text(payload.get("timezone")) or "UTC",
+            "status": normalize_text(payload.get("status")) or "active",
+            "nextRunAt": payload.get("next_run_at"),
+            "lastRunAt": payload.get("last_run_at"),
+            "lastRunStatus": normalize_text(payload.get("last_run_status")),
+            "lastError": normalize_text(payload.get("last_error")),
+            "lastHttpStatus": payload.get("last_http_status"),
+            "lastContentType": normalize_text(payload.get("last_content_type")),
+            "lastContentHash": normalize_text(payload.get("last_content_hash")),
+            "lastContentSize": int(payload.get("last_content_size") or 0),
+            "runCount": int(payload.get("run_count") or 0),
+            "claimedAt": payload.get("claimed_at"),
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+        if include_bytes:
+            result["fileBytes"] = payload.get("file_bytes") or b""
+        return result
+
+    def create_source_action(
+        self,
+        *,
+        user_id: int,
+        source_type: str,
+        source_url: str = "",
+        file_name: str = "",
+        mime_type: str = "",
+        file_bytes: bytes | None = None,
+        label: str = "",
+        interval_minutes: int = 1440,
+        timezone_name: str = "UTC",
+        next_run_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        normalized_type = normalize_text(source_type).lower()
+        if user_id <= 0:
+            raise ValueError("User id is required.")
+        if normalized_type not in {"url", "file"}:
+            raise ValueError("Source type must be url or file.")
+        normalized_url = normalize_text(source_url)
+        normalized_file_name = normalize_text(file_name)
+        raw_bytes = bytes(file_bytes or b"")
+        if normalized_type == "url" and not normalized_url:
+            raise ValueError("Source URL is required.")
+        if normalized_type == "file" and not raw_bytes:
+            raise ValueError("Source file is required.")
+        if not 5 <= int(interval_minutes or 0) <= 30 * 24 * 60:
+            raise ValueError("Interval must be between 5 minutes and 30 days.")
+
+        now = datetime.now(timezone.utc)
+        next_run = parse_datetime(next_run_at or (now + timedelta(minutes=int(interval_minutes)))).astimezone(timezone.utc)
+        created_at = now_iso()
+        digest = hashlib.sha256(raw_bytes).hexdigest() if raw_bytes else ""
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO source_actions (
+                    user_id, source_type, source_url, file_name, mime_type,
+                    file_bytes, file_size, file_sha256, label, interval_minutes,
+                    timezone, status, next_run_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+                """,
+                (
+                    int(user_id), normalized_type, normalized_url, normalized_file_name,
+                    normalize_text(mime_type), sqlite3.Binary(raw_bytes) if raw_bytes else None,
+                    len(raw_bytes), digest, normalize_text(label)[:240], max(5, int(interval_minutes)),
+                    normalize_text(timezone_name) or "UTC", next_run.isoformat(), created_at, created_at,
+                ),
+            )
+            row = conn.execute("SELECT * FROM source_actions WHERE id = ? LIMIT 1", (int(cursor.lastrowid or 0),)).fetchone()
+        action = self._load_source_action_row(row)
+        if action is None:
+            raise RuntimeError("Source action was not saved.")
+        return action
+
+    def get_source_action(self, action_id: int, *, include_bytes: bool = False) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM source_actions WHERE id = ? LIMIT 1", (int(action_id),)).fetchone()
+        return self._load_source_action_row(row, include_bytes=include_bytes)
+
+    def list_source_actions_for_user(self, user_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM source_actions
+                WHERE user_id = ?
+                ORDER BY CASE WHEN status IN ('active', 'running') THEN 0 ELSE 1 END, next_run_at ASC, id DESC
+                LIMIT ?
+                """,
+                (int(user_id), max(1, min(250, int(limit or 100)))),
+            ).fetchall()
+        return [item for item in (self._load_source_action_row(row) for row in rows) if item is not None]
+
+    def list_due_source_actions(self, *, now: str | datetime | None = None, limit: int = 25) -> list[dict[str, Any]]:
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM source_actions
+                WHERE status = 'active' AND next_run_at <= ?
+                ORDER BY next_run_at ASC, id ASC
+                LIMIT ?
+                """,
+                (reference, max(1, min(100, int(limit or 25)))),
+            ).fetchall()
+        return [item for item in (self._load_source_action_row(row) for row in rows) if item is not None]
+
+    def claim_source_action(self, action_id: int, *, force: bool = False) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0:
+            return None
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE source_actions
+                SET status = 'running', claimed_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'active'{'' if force else ' AND next_run_at <= ?'}
+                """,
+                (now, now, int(action_id), *(() if force else (now,))),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            row = conn.execute("SELECT * FROM source_actions WHERE id = ? LIMIT 1", (int(action_id),)).fetchone()
+        return self._load_source_action_row(row)
+
+    def finish_source_action(
+        self,
+        *,
+        action_id: int,
+        status: str,
+        last_run_status: str,
+        last_error: str = "",
+        last_http_status: int | None = None,
+        last_content_type: str = "",
+        last_content_hash: str = "",
+        last_content_size: int = 0,
+        next_run_at: str | datetime | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_status = normalize_text(status).lower()
+        if normalized_status not in {"active", "cancelled"}:
+            raise ValueError("Source action status must be active or cancelled.")
+        now = now_iso()
+        next_run = parse_datetime(next_run_at).astimezone(timezone.utc).isoformat() if next_run_at else None
+        fields = [
+            "status = ?", "last_run_at = ?", "last_run_status = ?", "last_error = ?",
+            "last_http_status = ?", "last_content_type = ?", "last_content_hash = ?",
+            "last_content_size = ?", "run_count = run_count + 1", "claimed_at = NULL", "updated_at = ?",
+        ]
+        params: list[Any] = [normalized_status, now, normalize_text(last_run_status), normalize_text(last_error)[:2000], last_http_status, normalize_text(last_content_type)[:200], normalize_text(last_content_hash), max(0, int(last_content_size or 0)), now]
+        if next_run:
+            fields.insert(1, "next_run_at = ?")
+            params.insert(1, next_run)
+        with self._connection() as conn:
+            conn.execute(f"UPDATE source_actions SET {', '.join(fields)} WHERE id = ?", (*params, int(action_id)))
+            row = conn.execute("SELECT * FROM source_actions WHERE id = ? LIMIT 1", (int(action_id),)).fetchone()
+        return self._load_source_action_row(row)
+
+    def cancel_source_action(self, action_id: int, *, user_id: int) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0 or int(user_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE source_actions SET status = 'cancelled', last_error = '', updated_at = ? WHERE id = ? AND user_id = ? AND status <> 'cancelled'",
+                (now_iso(), int(action_id), int(user_id)),
+            )
+            row = conn.execute("SELECT * FROM source_actions WHERE id = ? AND user_id = ? LIMIT 1", (int(action_id), int(user_id))).fetchone()
+        return self._load_source_action_row(row)
 
     def get_feature_monitor_run(
         self,

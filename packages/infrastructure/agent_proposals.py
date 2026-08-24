@@ -35,6 +35,7 @@ _AGENT_PROPOSAL_TYPES = {
     "web-monitor",
     "whatsapp-replies",
     "reengagement",
+    "source-action",
     "custom",
 }
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
@@ -42,6 +43,7 @@ _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "web-monitor": ["watchQuery", "location", "timeWindow", "frequency", "deliveryChannel"],
     "whatsapp-replies": ["whatsappNumber", "approver", "guardrails", "deliveryChannel"],
     "reengagement": ["inactivityPeriod", "frequency", "deliveryChannel"],
+    "source-action": ["sourceType", "sourceUrl", "sourceFileName", "sourceMimeType", "frequency", "timezone"],
     "custom": ["result", "frequency", "deliveryChannel", "calendar"],
 }
 _AGENT_PROPOSAL_FIELD_ALIASES = {
@@ -79,6 +81,16 @@ _AGENT_PROPOSAL_FIELD_ALIASES = {
     "quiet_period": "inactivityPeriod",
     "quietperiod": "inactivityPeriod",
     "output": "result",
+    "url": "sourceUrl",
+    "source_url": "sourceUrl",
+    "sourceurl": "sourceUrl",
+    "file": "sourceFileName",
+    "filename": "sourceFileName",
+    "file_name": "sourceFileName",
+    "mimetype": "sourceMimeType",
+    "mime_type": "sourceMimeType",
+    "sourcetype": "sourceType",
+    "source_type": "sourceType",
 }
 
 
@@ -116,6 +128,25 @@ def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
             "missingFields": missing_fields,
         },
     }
+
+
+def normalize_agent_source_context(value: Any) -> dict[str, str]:
+    """Keep source metadata useful for planning without accepting file bytes."""
+    source = value if isinstance(value, dict) else {}
+    result = {
+        "sourceType": _single_line(source.get("sourceType") or source.get("source_type"), 20).lower(),
+        "sourceUrl": _single_line(source.get("sourceUrl") or source.get("source_url"), 2000),
+        "fileName": _single_line(source.get("fileName") or source.get("file_name"), 240),
+        "mimeType": _single_line(source.get("mimeType") or source.get("mime_type"), 160),
+        "size": _single_line(source.get("size"), 20),
+    }
+    if result["sourceType"] not in {"url", "file"}:
+        result["sourceType"] = ""
+    if result["sourceType"] == "url":
+        result["fileName"] = ""
+    if result["sourceType"] == "file":
+        result["sourceUrl"] = ""
+    return result
 
 
 def _normalize_agent_field_key(value: Any) -> str:
@@ -261,12 +292,14 @@ def build_agent_turn_prompt(
     timezone_name: str,
     active_proposal: dict[str, Any] | None = None,
     tool_context: dict[str, Any] | None = None,
+    source_context: dict[str, Any] | None = None,
 ) -> str:
     context = {
         "timezone": _single_line(timezone_name, 120) or "UTC",
         "activeProposal": active_proposal,
         "proposalFieldSchemas": _AGENT_PROPOSAL_FIELD_SCHEMAS,
         "toolContext": normalize_agent_tool_context(tool_context),
+        "sourceContext": normalize_agent_source_context(source_context),
         "recentConversation": conversation,
         "latestUserMessage": _single_line(user_message, AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
     }
@@ -282,7 +315,7 @@ def build_agent_turn_prompt(
         "Return keys: outcome, reply, proposalType, changes. reply is required for every outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
         "of scheduled-message, email-digest, "
-        "web-monitor, whatsapp-replies, reengagement, or custom when outcome is proposal or when outcome is "
+        "web-monitor, source-action, whatsapp-replies, reengagement, or custom when outcome is proposal or when outcome is "
         "question for a recognizable setup that is missing details.\n"
         "For scheduled-message proposals and revisions, changes may contain only channel, timeLocal, "
         "datePolicy, messageText, and preserveMessageText. Use 24-hour HH:MM for timeLocal. Use today, "
@@ -305,6 +338,10 @@ def build_agent_turn_prompt(
         "exactly one missing detail in reply. When activeProposal exists and the user answers or corrects a detail, "
         "return outcome=revise_proposal with changes.fields containing the new or corrected field values. Do not "
         "restart questions whose values are already present in activeProposal.fields.\n"
+        "For source-action, use sourceContext when present. This first phase only fetches a URL or stores a file "
+        "snapshot on a recurring schedule; it does not understand, summarize, or interpret source content yet. "
+        "Ask only for a missing source or frequency. Use sourceType=url or sourceType=file, and never request file "
+        "bytes or credentials in chat.\n"
         "Use toolContext to understand which integrations are already connected. If toolContext.whatsapp.ready "
         "is true, use the connected WhatsApp Business connection and do not ask which WhatsApp number or account "
         "to monitor. If it is false, ask only for the specific WhatsApp details listed in "
