@@ -3335,18 +3335,11 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-action-item-time,
-.agent-action-item-preview,
 .agent-action-empty {
   margin: 0;
   color: var(--muted);
   font-size: 0.72rem;
   line-height: 1.45;
-}
-
-.agent-action-item-preview {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .agent-action-empty {
@@ -3588,15 +3581,21 @@ body[data-modal="billing"] .app-shell {
 
 .agent-action-editor-chip {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.3rem;
   max-width: 100%;
-  padding: 0.28rem 0.38rem 0.28rem 0.55rem;
+  padding: 0.4rem 0.48rem 0.4rem 0.65rem;
   color: #24584f;
   background: rgba(15, 118, 110, 0.1);
-  border-radius: 999px;
+  border-radius: 12px;
   font-size: 0.68rem;
+  line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.agent-action-editor-chip-label {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .agent-action-editor-chip-remove {
@@ -3648,13 +3647,6 @@ body[data-modal="billing"] .app-shell {
   border-color: rgba(15, 118, 110, 0.45);
   outline: 2px solid rgba(15, 118, 110, 0.15);
   outline-offset: 1px;
-}
-
-.agent-action-editor-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.45rem;
 }
 
 .agent-action-editor-status.is-error {

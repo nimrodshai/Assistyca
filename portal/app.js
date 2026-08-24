@@ -11965,16 +11965,6 @@ function createScheduledActionStatus(action) {
   return status;
 }
 
-function getScheduledActionPreviewText(action) {
-  return String(
-    action?.payload?.preview
-    || action?.payload?.messageText
-    || action?.payload?.text
-    || action?.lastError
-    || "",
-  ).trim();
-}
-
 function getScheduledActionItemTimeValue(action) {
   return isActiveAgentActionStatus(action.status)
     ? action.runAt
@@ -11994,7 +11984,6 @@ function getScheduledActionItemSignature(action) {
     getScheduledActionStatusClass(action.status),
     getScheduledActionStatusLabel(action.status, action),
     action.payload?.manualOnly ? "Run when you choose" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
-    getScheduledActionPreviewText(action),
   ]);
 }
 
@@ -12039,14 +12028,7 @@ function createScheduledActionItem(action) {
       action.timezone,
     );
 
-  const previewText = getScheduledActionPreviewText(action);
   trigger.append(head, time);
-  if (previewText) {
-    const preview = document.createElement("span");
-    preview.className = "agent-action-item-preview";
-    preview.textContent = previewText;
-    trigger.append(preview);
-  }
 
   const expansion = document.createElement("div");
   expansion.id = `agent-action-expansion-${String(action.id || "")}`;
@@ -12260,6 +12242,47 @@ function getAgentMonitorEditorFrequencySettings(value, currentSettings = {}) {
   };
 }
 
+function setAgentMonitorEditorStatus(editor, message, isError = false) {
+  if (!editor?.status) {
+    return;
+  }
+  editor.status.hidden = !message;
+  editor.status.textContent = message;
+  editor.status.classList.toggle("is-error", isError);
+}
+
+function scheduleAgentMonitorAutoSave(action, draft, form, options = {}) {
+  const editor = form?._agentMonitorEditor;
+  if (!editor) {
+    return;
+  }
+  if (editor.saveTimer) {
+    window.clearTimeout(editor.saveTimer);
+  }
+  if (options.status !== false) {
+    setAgentMonitorEditorStatus(editor, "Saving changes…");
+  }
+  const delayMs = Number.isFinite(options.delayMs) ? Math.max(0, Number(options.delayMs)) : 220;
+  editor.saveTimer = window.setTimeout(() => {
+    editor.saveTimer = null;
+    void saveAgentMonitorActionSettings(action, draft, form).catch(() => {});
+  }, delayMs);
+}
+
+function updateAgentMonitorActionFrequency(action, settings) {
+  const actionId = String(action?.id || "");
+  const item = Array.from(document.querySelectorAll("[data-agent-scheduled-action-id]"))
+    .find((candidate) => candidate.dataset.agentScheduledActionId === actionId);
+  if (!item) {
+    return;
+  }
+  const frequencyTerm = Array.from(item.querySelectorAll("dt"))
+    .find((term) => term.textContent === "Frequency");
+  if (frequencyTerm?.nextElementSibling) {
+    frequencyTerm.nextElementSibling.textContent = formatAgentWebMonitorFrequency(settings);
+  }
+}
+
 function createAgentMonitorEditor(action) {
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
   const feature = getFeatureById(featureId);
@@ -12286,7 +12309,7 @@ function createAgentMonitorEditor(action) {
   const title = document.createElement("strong");
   title.textContent = "Edit monitor";
   const subtitle = document.createElement("span");
-  subtitle.textContent = "Change what it watches or when it runs.";
+  subtitle.textContent = "Changes save automatically.";
   heading.append(title, subtitle);
 
   const topicsField = document.createElement("div");
@@ -12337,18 +12360,6 @@ function createAgentMonitorEditor(action) {
   status.setAttribute("role", "status");
   status.hidden = true;
 
-  const controls = document.createElement("div");
-  controls.className = "agent-action-editor-actions";
-  const saveButton = document.createElement("button");
-  saveButton.type = "submit";
-  saveButton.className = "primary-button small";
-  saveButton.textContent = "Save changes";
-  const cancelButton = document.createElement("button");
-  cancelButton.type = "button";
-  cancelButton.className = "ghost-button small";
-  cancelButton.textContent = "Cancel";
-  controls.append(saveButton, cancelButton);
-
   const renderTopics = () => {
     topicsList.replaceChildren();
     if (!draft.watchItems.length) {
@@ -12363,6 +12374,7 @@ function createAgentMonitorEditor(action) {
       chip.className = "agent-action-editor-chip";
       chip.setAttribute("role", "listitem");
       const label = document.createElement("span");
+      label.className = "agent-action-editor-chip-label";
       label.textContent = item;
       const removeButton = document.createElement("button");
       removeButton.type = "button";
@@ -12385,6 +12397,7 @@ function createAgentMonitorEditor(action) {
     topicInput.value = "";
     renderTopics();
     topicInput.focus();
+    scheduleAgentMonitorAutoSave(action, draft, form);
   };
 
   addTopicButton.addEventListener("click", addTopics);
@@ -12403,19 +12416,23 @@ function createAgentMonitorEditor(action) {
     if (Number.isInteger(index)) {
       draft.watchItems.splice(index, 1);
       renderTopics();
+      scheduleAgentMonitorAutoSave(action, draft, form);
     }
   });
-  cancelButton.addEventListener("click", () => {
-    state.selectedScheduledActionId = "";
-    renderAgentActions();
-  });
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void saveAgentMonitorActionSettings(action, draft, form);
+  frequencySelect.addEventListener("change", () => {
+    draft.frequency = frequencySelect.value;
+    scheduleAgentMonitorAutoSave(action, draft, form);
   });
 
-  form.append(heading, topicsField, frequencyField, delivery, status, controls);
-  form._agentMonitorEditor = { draft, frequencySelect, status, saveButton };
+  form._agentMonitorEditor = {
+    draft,
+    frequencySelect,
+    status,
+    saveTimer: null,
+    savePromise: null,
+    saveQueued: false,
+  };
+  form.append(heading, topicsField, frequencyField, delivery, status);
   renderTopics();
   return form;
 }
@@ -12425,24 +12442,24 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
   const feature = getFeatureById(featureId);
   if (!editor || !feature || !isMonitorFeature(feature)) {
-    return;
+    return null;
   }
-  if (featureConfigBusy) {
-    return;
+  if (editor.savePromise) {
+    editor.saveQueued = true;
+    return editor.savePromise;
+  }
+  if (featureConfigBusy && featureConfigSavePromise) {
+    try {
+      await featureConfigSavePromise;
+    } catch {
+      // Continue with the latest monitor edit after the other save settles.
+    }
   }
 
-  const setEditorStatus = (message, isError = false) => {
-    if (!editor.status) {
-      return;
-    }
-    editor.status.hidden = !message;
-    editor.status.textContent = message;
-    editor.status.classList.toggle("is-error", isError);
-  };
   const watchItems = normalizeMonitorWatchItems(draft.watchItems);
   if (!watchItems.length) {
-    setEditorStatus("Add at least one topic before saving.", true);
-    return;
+    setAgentMonitorEditorStatus(editor, "Add at least one topic before saving.", true);
+    return null;
   }
 
   const currentSettings = getSelectedFeatureSettings(feature);
@@ -12451,28 +12468,47 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
     watchItems,
     ...getAgentMonitorEditorFrequencySettings(editor.frequencySelect?.value, currentSettings),
   });
+  setAgentMonitorEditorStatus(editor, "Saving changes…");
 
-  editor.saveButton.disabled = true;
-  editor.saveButton.textContent = "Saving…";
-  setEditorStatus("Saving changes…");
-  try {
-    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
-      method: "POST",
-      headers: getSessionAuthHeaders(),
-      body: {
-        prompt: { ...feature.prompt },
-        settings: nextSettings,
-      },
-    });
-    applyServerFeatureStates([response.feature || {}], { persist: true });
-    state.paymentStatus = response.paymentStatus || state.paymentStatus;
-    setStatus("Monitor settings saved.");
-    renderAgentActions();
-  } catch (error) {
-    editor.saveButton.disabled = false;
-    editor.saveButton.textContent = "Save changes";
-    setEditorStatus(formatApiErrorMessage(error, "We couldn’t save the monitor settings."), true);
-  }
+  let currentSavePromise = null;
+  currentSavePromise = (async () => {
+    featureConfigBusy = true;
+    try {
+      const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
+        method: "POST",
+        headers: getSessionAuthHeaders(),
+        body: {
+          prompt: { ...feature.prompt },
+          settings: nextSettings,
+        },
+      });
+      applyServerFeatureStates([response.feature || {}], { persist: true });
+      state.paymentStatus = response.paymentStatus || state.paymentStatus;
+      updateAgentMonitorActionFrequency(action, nextSettings);
+      setAgentMonitorEditorStatus(editor, "Saved");
+      setStatus("Monitor settings saved.");
+      return response;
+    } catch (error) {
+      setAgentMonitorEditorStatus(editor, formatApiErrorMessage(error, "We couldn’t save the monitor settings."), true);
+      setStatus("Couldn’t save the monitor settings.");
+      throw error;
+    } finally {
+      featureConfigBusy = false;
+      if (editor.savePromise === currentSavePromise) {
+        editor.savePromise = null;
+      }
+      if (featureConfigSavePromise === currentSavePromise) {
+        featureConfigSavePromise = null;
+      }
+      if (editor.saveQueued) {
+        editor.saveQueued = false;
+        scheduleAgentMonitorAutoSave(action, draft, form, { delayMs: 0, status: false });
+      }
+    }
+  })();
+  editor.savePromise = currentSavePromise;
+  featureConfigSavePromise = currentSavePromise;
+  return currentSavePromise;
 }
 
 function createScheduledActionDetail(action) {
@@ -12506,9 +12542,6 @@ function createScheduledActionDetail(action) {
     }
     if (payload.timeWindow) {
       details.append(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
-    }
-    if (Array.isArray(payload.watchItems) && payload.watchItems.length) {
-      details.append(createScheduledActionDetailRow("Watching", payload.watchItems.join(" · ")));
     }
     if (payload.lastRunAt) {
       const lastRunStatus = String(payload.lastRunStatus || "").trim();
@@ -14118,6 +14151,21 @@ function handleAgentWorkspaceClick(event) {
     event.preventDefault();
     event.stopPropagation();
     void runMonitorActionNow(runMonitorActionButton.dataset.agentRunMonitorAction || "");
+    return;
+  }
+
+  const scheduledActionItem = target?.closest("[data-agent-scheduled-action-id]");
+  const scheduledActionId = scheduledActionItem?.dataset.agentScheduledActionId || "";
+  const isActionControl = target?.closest("button, input, select, textarea, a, [contenteditable=\"true\"], [role=\"button\"], [role=\"combobox\"]");
+  if (
+    scheduledActionItem
+    && scheduledActionId
+    && state.selectedScheduledActionId === scheduledActionId
+    && !isActionControl
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    selectScheduledAction(scheduledActionId);
     return;
   }
 
