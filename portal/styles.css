@@ -880,6 +880,13 @@ a {
   will-change: filter, transform;
 }
 
+/* The tool picker sits above the app shell. Blur the shell as one composited
+   layer so every background label and surface softens consistently, while the
+   picker itself remains sharp and readable. */
+.app-shell.agent-tool-picker-background-blurred {
+  filter: blur(8px);
+}
+
 body[data-modal="billing"] .app-shell {
   filter: none;
   transform: none;
@@ -3320,19 +3327,16 @@ body[data-modal="billing"] .app-shell {
   background: rgba(20, 28, 38, 0.08);
   opacity: 0;
   pointer-events: none;
-  backdrop-filter: blur(0) saturate(100%);
   transition:
     opacity 180ms ease,
-    background-color 220ms ease,
-    backdrop-filter 240ms ease;
-  will-change: opacity, backdrop-filter, background-color;
+    background-color 220ms ease;
+  will-change: opacity, background-color;
 }
 
 .agent-add-tool-backdrop.is-open {
   background: rgba(20, 28, 38, 0.2);
   opacity: 1;
   pointer-events: auto;
-  backdrop-filter: blur(8px) saturate(118%);
 }
 
 .agent-add-tool-backdrop.is-closing {

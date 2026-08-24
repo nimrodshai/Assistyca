@@ -14038,6 +14038,7 @@ function renderAgentAddToolMenu() {
   const isClosing = Boolean(state.agentAddToolMenuClosing) && !isOpen;
   const isVisible = isOpen || isClosing;
   elements.agentAddToolButton.setAttribute("aria-expanded", String(isOpen));
+  elements.appView?.classList.toggle("agent-tool-picker-background-blurred", isVisible);
   elements.agentAddToolMenu.hidden = !isVisible;
   elements.agentAddToolMenu.classList.toggle("is-hidden", !isVisible);
   elements.agentAddToolMenu.classList.toggle("is-closing", isClosing);
