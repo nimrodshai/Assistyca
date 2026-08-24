@@ -11522,6 +11522,55 @@ function getAgentProposalFieldValue(proposal, key) {
   return String(fields[key] || "").trim();
 }
 
+function getAgentProposalExecutionSettings(proposal) {
+  return proposal?.executionPlan?.settings && typeof proposal.executionPlan.settings === "object"
+    ? proposal.executionPlan.settings
+    : {};
+}
+
+function agentWebMonitorTextSuggestsManualOnly(value) {
+  return /\b(?:manual(?:ly)?|manual[ _-]?only|on[ -]?demand|when i (?:ask|choose|want)|when (?:the )?user clicks?|run only when|run now)\b/i
+    .test(String(value || ""));
+}
+
+function getAgentProposalWebMonitorManualOnly(proposal, backendFeature = null) {
+  if (proposal?.type !== "web-monitor") {
+    return false;
+  }
+
+  if (backendFeature && isMonitorFeature(backendFeature)) {
+    return normalizeMonitorManualOnly(getSavedFeatureSettings(backendFeature).manualOnly, false);
+  }
+
+  const settings = getAgentProposalExecutionSettings(proposal);
+  if (Object.prototype.hasOwnProperty.call(settings, "manualOnly")) {
+    return normalizeMonitorManualOnly(settings.manualOnly, false);
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, "manual_only")) {
+    return normalizeMonitorManualOnly(settings.manual_only, false);
+  }
+
+  const runMode = String(
+    settings.runMode
+    || settings.run_mode
+    || settings.mode
+    || proposal?.executionPlan?.runMode
+    || proposal?.executionPlan?.run_mode
+    || "",
+  ).trim().toLowerCase();
+  if (["manual", "manual_only", "on_demand", "on-demand"].includes(runMode)) {
+    return true;
+  }
+
+  return [
+    settings.frequency,
+    proposal?.executionPlan?.frequency,
+    getAgentProposalFieldValue(proposal, "frequency"),
+    proposal?.summary,
+    proposal?.requestText,
+  ].some(agentWebMonitorTextSuggestsManualOnly);
+}
+
 function getAgentProposalLocalActionTitle(proposal) {
   if (proposal?.type === "web-monitor") {
     return "Web monitor";
@@ -11558,9 +11607,7 @@ function getAgentProposalDeliveryChannel(proposal) {
   if (proposal?.type === "whatsapp-replies") {
     return normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel")) || "portal";
   }
-  const settings = proposal?.executionPlan?.settings && typeof proposal.executionPlan.settings === "object"
-    ? proposal.executionPlan.settings
-    : {};
+  const settings = getAgentProposalExecutionSettings(proposal);
   return normalizeAgentDeliveryChannel(settings.deliveryChannel)
     || normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
     || normalizeAgentDeliveryChannel(proposal?.requestText || "");
@@ -11597,11 +11644,6 @@ function createAgentProposalLocalAction(proposal) {
     return null;
   }
 
-  const executionSettings = proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object"
-    ? proposal.executionPlan.settings
-    : {};
-  const manualOnly = proposal.type === "web-monitor"
-    && normalizeMonitorManualOnly(executionSettings.manualOnly);
   const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
   const deliveryTarget = getAgentProposalDeliveryTarget(proposal, deliveryChannel);
   const deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget);
@@ -11609,6 +11651,7 @@ function createAgentProposalLocalAction(proposal) {
   const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || "").trim();
   const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
   const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
+  const manualOnly = getAgentProposalWebMonitorManualOnly(proposal, backendFeature);
   const status = backendFeatureId
     ? (backendFeatureActive ? (manualOnly ? "manual_only" : "running") : "cancelled")
     : (proposal.missingCredential ? "pending" : (manualOnly ? "manual_only" : "running"));
