@@ -44,6 +44,44 @@ DEFAULT_MONITOR_MAX_OUTPUT_TOKENS = 1800
 DEFAULT_MONITOR_MAX_ITEMS = 5
 RECENT_SENT_RESULTS_LOOKBACK = timedelta(hours=1)
 
+MONITOR_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "why_it_matters": {"type": "string"},
+                    "matched_watch_item": {"type": "string"},
+                    "event_date": {"type": "string"},
+                    "source_name": {"type": "string"},
+                    "source_url": {"type": "string"},
+                    "urgency": {"type": "string"},
+                },
+                "required": [
+                    "id",
+                    "title",
+                    "summary",
+                    "why_it_matters",
+                    "matched_watch_item",
+                    "event_date",
+                    "source_name",
+                    "source_url",
+                    "urgency",
+                ],
+            },
+        },
+    },
+    "required": ["summary", "items"],
+}
+
 DEFAULT_MONITOR_SETTINGS = {
     "model": DEFAULT_MONITOR_MODEL,
     "watchItems": [],
@@ -1248,9 +1286,28 @@ class ScheduledMonitorScheduler:
                 "selectedModel": selected_model,
             },
             tools=[{"type": "web_search", "search_context_size": self.config.search_context_size}],
+            reasoning={"effort": "low"},
+            extra_payload={
+                "tool_choice": "required",
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "scheduled_monitor_result",
+                        "strict": True,
+                        "schema": MONITOR_RESPONSE_SCHEMA,
+                    },
+                },
+            },
         )
         payload = extract_json_payload(result.output_text)
-        raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        if not payload or not isinstance(payload.get("items"), list):
+            raw_response = getattr(result, "raw_response", {})
+            response_status = normalize_text(raw_response.get("status")) if isinstance(raw_response, dict) else ""
+            incomplete_details = raw_response.get("incomplete_details") if isinstance(raw_response, dict) else None
+            detail = normalize_text(incomplete_details.get("reason")) if isinstance(incomplete_details, dict) else ""
+            suffix = f" ({detail})" if detail else (f" ({response_status})" if response_status else "")
+            raise RuntimeError(f"Web monitor returned an invalid structured search response{suffix}.")
+        raw_items = payload["items"]
         watch_items = normalize_watch_items(settings.get("watchItems"))
         items: list[dict[str, Any]] = []
         for item in raw_items:

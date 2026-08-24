@@ -67,6 +67,41 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertIn("even if they were sent before", prompt)
         self.assertIn("Do not filter results by whether they are new", prompt)
 
+    def test_search_requires_web_search_and_structured_output(self) -> None:
+        self._configure_monitor()
+        response = SimpleNamespace(
+            output_text=json.dumps({"summary": "No useful results.", "items": []}),
+            request_id="request-structured",
+            response_id="response-structured",
+            model="gpt-5.4",
+            raw_response={"status": "completed"},
+        )
+        scheduler = ScheduledMonitorScheduler(
+            self.database,
+            config=ScheduledMonitorConfig(max_output_tokens=1200),
+        )
+        with mock.patch(
+            "packages.tools.scheduled_monitor.monitor.call_openai_response",
+            return_value=response,
+        ) as call_openai:
+            target = scheduler._build_target_for_email("owner@example.com")
+            self.assertIsNotNone(target)
+            scheduler._run_search(
+                target=target or {},
+                settings=normalize_monitor_settings((target or {}).get("settings")),
+                scheduled_for=datetime(2026, 8, 24, 6, 0, tzinfo=timezone.utc),
+                manual_run=True,
+            )
+
+        kwargs = call_openai.call_args.kwargs
+        self.assertEqual(kwargs["tools"], [{"type": "web_search", "search_context_size": "high"}])
+        self.assertEqual(kwargs["reasoning"], {"effort": "low"})
+        self.assertEqual(kwargs["extra_payload"]["tool_choice"], "required")
+        response_format = kwargs["extra_payload"]["text"]["format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertTrue(response_format["strict"])
+        self.assertEqual(response_format["schema"]["required"], ["summary", "items"])
+
     def _configure_monitor(self) -> None:
         self.database.save_feature_assignment_metadata(
             "owner@example.com",
