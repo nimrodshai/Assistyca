@@ -197,6 +197,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function removeAgentProposalLocalAction", script)
         self.assertIn("function cancelScheduledAction", script)
         self.assertIn("function buildAgentWebMonitorSettings", script)
+        self.assertIn("const manualOnly = requestsManualRuns || !requestedFrequency;", script)
         self.assertIn("function saveAndActivateAgentWebMonitorProposal", script)
         self.assertIn("function runAgentWebMonitorInitialCheck", script)
         self.assertIn("function createMonitorFeatureLiveAction", script)

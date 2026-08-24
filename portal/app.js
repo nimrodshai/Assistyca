@@ -11538,16 +11538,32 @@ function getAgentProposalWebMonitorManualOnly(proposal, backendFeature = null) {
     return false;
   }
 
+  const requestedFrequency = extractAgentFrequencyField(proposal?.requestText || "");
   if (backendFeature && isMonitorFeature(backendFeature)) {
-    return normalizeMonitorManualOnly(getSavedFeatureSettings(backendFeature).manualOnly, false);
+    if (normalizeMonitorManualOnly(getSavedFeatureSettings(backendFeature).manualOnly, false)) {
+      return true;
+    }
+    if (!requestedFrequency) {
+      return true;
+    }
   }
 
   const settings = getAgentProposalExecutionSettings(proposal);
   if (Object.prototype.hasOwnProperty.call(settings, "manualOnly")) {
-    return normalizeMonitorManualOnly(settings.manualOnly, false);
+    if (normalizeMonitorManualOnly(settings.manualOnly, false)) {
+      return true;
+    }
+    if (!requestedFrequency) {
+      return true;
+    }
   }
   if (Object.prototype.hasOwnProperty.call(settings, "manual_only")) {
-    return normalizeMonitorManualOnly(settings.manual_only, false);
+    if (normalizeMonitorManualOnly(settings.manual_only, false)) {
+      return true;
+    }
+    if (!requestedFrequency) {
+      return true;
+    }
   }
 
   const runMode = String(
@@ -11568,7 +11584,7 @@ function getAgentProposalWebMonitorManualOnly(proposal, backendFeature = null) {
     getAgentProposalFieldValue(proposal, "frequency"),
     proposal?.summary,
     proposal?.requestText,
-  ].some(agentWebMonitorTextSuggestsManualOnly);
+  ].some(agentWebMonitorTextSuggestsManualOnly) || !requestedFrequency;
 }
 
 function getAgentProposalLocalActionTitle(proposal) {
@@ -13074,9 +13090,9 @@ function buildAgentWebMonitorSettings(proposal) {
   const frequency = requestedFrequency || getAgentProposalFieldValue(proposal, "frequency");
   const interval = buildAgentMonitorIntervalFromFrequency(frequency);
   const requestsManualRuns = /\b(manual(?:ly)?|on[ -]?demand|when i want|when i ask|turn(?:ed)? on manually)\b/i.test(requestText);
-  // A model-derived cadence must not override an explicit manual-only request.
-  // Only a cadence stated in the user's request opts back into recurring runs.
-  const manualOnly = requestsManualRuns && !requestedFrequency;
+  // Agent-created monitors are manual by default; only an explicit cadence in
+  // the user's request opts into recurring background checks.
+  const manualOnly = requestsManualRuns || !requestedFrequency;
   const deliveryChannel = normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
     || normalizeAgentDeliveryChannel(proposal?.requestText || "")
     || DEFAULT_MONITOR_SETTINGS.deliveryChannel;
