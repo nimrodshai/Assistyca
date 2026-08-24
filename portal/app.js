@@ -14599,6 +14599,43 @@ function createAgentAddToolLogo(option) {
     return svg;
   }
 
+  if (iconType === "whatsapp") {
+    svg.append(
+      createSvgElement("path", {
+        d: "M5.7 18.2 4.3 21l3.1-.8a8 8 0 1 0-1.7-2Z",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      }),
+      createSvgElement("path", {
+        d: "M9.2 8.7c.3-.6.5-.7.9-.7h.6c.3 0 .5.2.6.5l.5 1.2c.1.3.1.5-.1.8l-.4.5c.6 1.1 1.5 1.9 2.6 2.5l.6-.6c.2-.3.5-.3.8-.2l1.2.5c.3.1.5.3.5.6v.7c0 .4-.2.7-.6.9-.5.3-1.2.4-2 .2-2.3-.5-4.9-2.9-5.5-5.2-.2-.8-.1-1.3.3-1.7Z",
+        fill: "currentColor",
+      }),
+    );
+    return svg;
+  }
+
+  if (iconType === "web-monitor" || iconType === "web-monitoring" || iconType === "monitor") {
+    svg.append(
+      createSvgElement("circle", {
+        cx: "10.5",
+        cy: "10.5",
+        r: "5.8",
+        stroke: "currentColor",
+        "stroke-width": "2",
+      }),
+      createSvgElement("path", {
+        d: "M4.9 10.5h11.2M10.5 4.7c1.5 1.6 2.2 3.5 2.2 5.8s-.7 4.2-2.2 5.8M10.5 4.7c-1.5 1.6-2.2 3.5-2.2 5.8s.7 4.2 2.2 5.8M15.1 15.1 20 20",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      }),
+    );
+    return svg;
+  }
+
   if (iconType === "telegram") {
     svg.append(
       createSvgElement("path", {
@@ -14660,6 +14697,41 @@ function createAgentAddToolOption(option) {
 
   item.append(icon, copy);
   return item;
+}
+
+function createAgentToolIconOption(feature) {
+  if (isWhatsAppFeature(feature)) {
+    return {
+      id: "whatsapp",
+      label: "WhatsApp",
+      icon: "whatsapp",
+    };
+  }
+  if (isMonitorFeature(feature)) {
+    return {
+      id: "web-monitor",
+      label: "Web monitoring",
+      icon: "web-monitor",
+    };
+  }
+  return {
+    id: "custom",
+    label: getAgentToolLabel(feature),
+    icon: "custom",
+  };
+}
+
+function createPlatformConnectionIconOption(connection) {
+  const option = getPlatformConnectionOption(connection?.platform);
+  if (option) {
+    return option;
+  }
+  const platform = String(connection?.platform || "").trim().toLowerCase();
+  return {
+    id: platform || "custom",
+    label: connection?.label || "Connected app",
+    icon: platform || "custom",
+  };
 }
 
 function renderAgentAddToolMenu() {
@@ -14732,7 +14804,7 @@ function createAgentToolItem(feature) {
   const icon = document.createElement("span");
   icon.className = "agent-tool-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = label.slice(0, 1).toUpperCase();
+  icon.append(createAgentAddToolLogo(createAgentToolIconOption(feature)));
 
   const copy = document.createElement("span");
   copy.className = "agent-tool-copy";
@@ -14764,7 +14836,7 @@ function createAgentPlatformConnectionItem(connection) {
   const icon = document.createElement("span");
   icon.className = "agent-tool-icon agent-platform-connection-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = label.slice(0, 1).toUpperCase();
+  icon.append(createAgentAddToolLogo(createPlatformConnectionIconOption(connection)));
 
   const copy = document.createElement("span");
   copy.className = "agent-tool-copy";

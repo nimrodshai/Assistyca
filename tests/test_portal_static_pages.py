@@ -340,6 +340,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".platform-connection-status[hidden]", styles)
         self.assertIn(".auth-alert-icon svg", styles)
         self.assertIn("function createAgentAddToolLogo", script)
+        self.assertIn("function createAgentToolIconOption", script)
+        self.assertIn("function createPlatformConnectionIconOption", script)
+        self.assertIn('icon: "whatsapp"', script)
+        self.assertIn('icon: "web-monitor"', script)
+        self.assertIn("icon.append(createAgentAddToolLogo(createAgentToolIconOption(feature)))", script)
+        self.assertIn("icon.append(createAgentAddToolLogo(createPlatformConnectionIconOption(connection)))", script)
+        self.assertNotIn("icon.textContent = label.slice(0, 1).toUpperCase();", script)
         self.assertIn('icon: "telegram"', script)
         self.assertIn("function renderAgentAddToolMenu", script)
         self.assertIn("data-agent-add-tool", script)
@@ -365,6 +372,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("filter: blur(8px);", styles)
         self.assertIn("overflow-y: auto;", add_tool_menu_styles)
         self.assertIn(".agent-add-tool-icon svg", styles)
+        self.assertIn(".agent-tool-icon svg", styles)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 
     def test_agent_proposal_changes_use_contextual_structured_revision(self) -> None:

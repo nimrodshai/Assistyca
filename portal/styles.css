@@ -3914,6 +3914,12 @@ body[data-modal="billing"] .app-shell {
   font-weight: 800;
 }
 
+.agent-tool-icon svg {
+  display: block;
+  width: 1.08rem;
+  height: 1.08rem;
+}
+
 .agent-tool-copy {
   display: grid;
   gap: 0.1rem;
