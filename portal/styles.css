@@ -3180,6 +3180,12 @@ body[data-modal="billing"] .app-shell {
   gap: 0.48rem;
 }
 
+/* The history list is collapsed with the native `hidden` attribute. Keep that
+   state authoritative even though the list has a layout display rule above. */
+.agent-action-list[hidden] {
+  display: none;
+}
+
 .agent-action-item {
   position: relative;
   display: grid;
