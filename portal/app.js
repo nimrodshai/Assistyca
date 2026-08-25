@@ -1323,6 +1323,9 @@ const elements = {
   featureActivationBusinessAccountIdHelpButton: document.querySelector("#featureActivationBusinessAccountIdHelpButton"),
   featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
   featureActivationPhoneNumberIdHelpButton: document.querySelector("#featureActivationPhoneNumberIdHelpButton"),
+  featureActivationCustomerNumberCard: document.querySelector("#featureActivationCustomerNumberCard"),
+  featureActivationCustomerNumberValue: document.querySelector("#featureActivationCustomerNumberValue"),
+  featureActivationCustomerNumberHelp: document.querySelector("#featureActivationCustomerNumberHelp"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
   featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
   featureActivationAccessTokenInput: document.querySelector("#featureActivationAccessToken"),
@@ -5104,9 +5107,21 @@ function getFeatureWhatsAppOwnerLabel(feature = getSelectedFeature()) {
   return String(whatsapp.owner_wa_id || whatsapp.display_phone_number || "your phone").trim() || "your phone";
 }
 
+function formatWhatsAppHumanPhoneNumber(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (/^\+?[\d\s().-]{7,}$/.test(text)) {
+    const digits = text.replace(/\D/g, "");
+    return digits ? `+${digits}` : text;
+  }
+  return text;
+}
+
 function getFeatureWhatsAppConnectedLabel(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const displayPhoneNumber = String(whatsapp.display_phone_number || "").trim();
+  const displayPhoneNumber = formatWhatsAppHumanPhoneNumber(whatsapp.display_phone_number);
   const verifiedName = String(whatsapp.verified_name || "").trim();
   if (displayPhoneNumber && verifiedName && verifiedName !== displayPhoneNumber) {
     return `${displayPhoneNumber} (${verifiedName})`;
@@ -19071,6 +19086,39 @@ function updateFeatureActivationFields() {
   if (elements.featureActivationOwnerWaIdInput) {
     elements.featureActivationOwnerWaIdInput.value = whatsapp.owner_wa_id;
   }
+  updateFeatureActivationCustomerNumber(whatsapp);
+}
+
+function updateFeatureActivationCustomerNumber(whatsapp = getSelectedFeatureWhatsApp()) {
+  const card = elements.featureActivationCustomerNumberCard;
+  if (!card || !elements.featureActivationCustomerNumberValue || !elements.featureActivationCustomerNumberHelp) {
+    return;
+  }
+
+  const customerNumber = formatWhatsAppHumanPhoneNumber(whatsapp.display_phone_number);
+  const verifiedName = String(whatsapp.verified_name || "").trim();
+  const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
+  const ownerNumber = formatWhatsAppHumanPhoneNumber(whatsapp.owner_wa_id);
+
+  if (customerNumber) {
+    elements.featureActivationCustomerNumberValue.textContent = customerNumber;
+    elements.featureActivationCustomerNumberHelp.textContent = verifiedName
+      ? `Customers must message this number. Meta lists it as ${verifiedName}. Approval alerts go to ${ownerNumber || "your approval phone"}.`
+      : `Customers must message this number. Approval alerts go to ${ownerNumber || "your approval phone"}.`;
+    card.dataset.state = "ready";
+    return;
+  }
+
+  if (phoneNumberId) {
+    elements.featureActivationCustomerNumberValue.textContent = "Not available from Meta yet";
+    elements.featureActivationCustomerNumberHelp.textContent = `The saved Phone Number ID ${phoneNumberId} is not a WhatsApp number you can message. Open the phone number details in Meta and use the Display phone number for customer tests.`;
+    card.dataset.state = "missing";
+    return;
+  }
+
+  elements.featureActivationCustomerNumberValue.textContent = "Not shown yet";
+  elements.featureActivationCustomerNumberHelp.textContent = "After setup, this should show the real number customers need to message.";
+  card.dataset.state = "empty";
 }
 
 function updateFeatureActivationStatus(feature = getSelectedFeature()) {

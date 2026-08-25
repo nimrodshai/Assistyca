@@ -4948,14 +4948,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 **metadata,
                 **subscription_metadata,
             }
+            display_phone_number = normalize_text(existing.get("displayPhoneNumber"))
+            verified_name = normalize_text(existing.get("verifiedName"))
+            number_details_refreshed = False
+            try:
+                number_result = test_whatsapp_connection(
+                    access_token=access_token,
+                    phone_number_id=phone_number_id,
+                )
+            except (ValueError, WhatsAppConnectionError) as exc:
+                next_metadata.update({
+                    "phoneNumberDetailsRefreshStatus": "failed",
+                    "phoneNumberDetailsRefreshError": str(exc),
+                })
+            else:
+                display_phone_number = normalize_text(number_result.get("display_phone_number")) or display_phone_number
+                verified_name = normalize_text(number_result.get("verified_name")) or verified_name
+                number_details_refreshed = True
+                next_metadata.update({
+                    "phoneNumberDetailsRefreshStatus": "refreshed",
+                    "phoneNumberDetailsRefreshedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                    "phoneNumberDetailsRefreshError": "",
+                })
             connection = self.database.save_whatsapp_connection(
                 session.email,
                 business_account_id=business_account_id,
                 phone_number_id=phone_number_id,
                 access_token=None,
                 owner_wa_id=owner_wa_id,
-                display_phone_number=normalize_text(existing.get("displayPhoneNumber")),
-                verified_name=normalize_text(existing.get("verifiedName")),
+                display_phone_number=display_phone_number,
+                verified_name=verified_name,
                 connection_status=existing_connection_status,
                 metadata=next_metadata,
                 connected_at=existing.get("connectedAt"),
@@ -4966,6 +4988,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "message": "Approval phone saved and the WABA webhook subscription was refreshed. Send a real WhatsApp message next to confirm Assistyca receives it.",
                 "connection": self._serialize_whatsapp_connection(connection),
                 "liveTested": False,
+                "numberDetailsRefreshed": number_details_refreshed,
                 "requiresAccessToken": False,
                 "webhookSubscribed": True,
             })

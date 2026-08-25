@@ -8,7 +8,7 @@
       name="description"
       content="Tell Assistyca what you need and get help through a simple conversation."
     />
-    <link rel="stylesheet" href="./styles.css?v=117" />
+    <link rel="stylesheet" href="./styles.css?v=118" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -609,6 +609,19 @@
                   <small class="field-help">Copy the Phone Number ID Meta shows for this WhatsApp number.</small>
                   <span id="featureActivationPhoneNumberIdError" class="field-error" hidden></span>
                 </label>
+
+                <section
+                  id="featureActivationCustomerNumberCard"
+                  class="feature-activation-customer-number"
+                  aria-live="polite"
+                  data-state="missing"
+                >
+                  <p class="feature-activation-customer-number-label">Customer WhatsApp number</p>
+                  <strong id="featureActivationCustomerNumberValue">Not shown yet</strong>
+                  <p id="featureActivationCustomerNumberHelp">
+                    This is the real number customers should message. The Phone Number ID above is only a Meta ID.
+                  </p>
+                </section>
 
                 <label class="field">
                   <span>Access token</span>
@@ -1519,6 +1532,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=145"></script>
+    <script src="./app.js?v=146"></script>
   </body>
 </html>

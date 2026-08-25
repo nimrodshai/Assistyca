@@ -1420,7 +1420,7 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertTrue(stored["metadata"]["webhookCallbackOverrideApplied"])
         self.assertTrue(stored["metadata"]["webhookVerifyTokenConfigured"])
 
-    def test_whatsapp_connection_endpoint_refreshes_webhook_without_retesting_existing_connection(self) -> None:
+    def test_whatsapp_connection_endpoint_refreshes_webhook_and_number_details(self) -> None:
         self.server.database.save_whatsapp_connection(
             "owner@example.com",
             business_account_id="11111",
@@ -1437,7 +1437,11 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
 
         with mock.patch(
             "packages.infrastructure.portal_auth.server.test_whatsapp_connection",
-            side_effect=AssertionError("Meta connection should not be retested"),
+            return_value={
+                "phone_number_id": "22222",
+                "display_phone_number": "+1 555 765 0000",
+                "verified_name": "Updated Co",
+            },
         ) as mocked_test:
             with mock.patch(
                 "packages.infrastructure.portal_auth.server.list_whatsapp_business_phone_numbers",
@@ -1468,10 +1472,12 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertFalse(body["liveTested"])
+        self.assertTrue(body["numberDetailsRefreshed"])
         self.assertIn("webhook subscription was refreshed", body["message"])
         self.assertEqual(body["connection"]["ownerWaId"], "972507322341")
-        self.assertEqual(body["connection"]["displayPhoneNumber"], "+1 555 123 4567")
-        mocked_test.assert_not_called()
+        self.assertEqual(body["connection"]["displayPhoneNumber"], "+1 555 765 0000")
+        self.assertEqual(body["connection"]["verifiedName"], "Updated Co")
+        mocked_test.assert_called_once_with(access_token="client-token", phone_number_id="22222")
         mocked_list_numbers.assert_not_called()
         mocked_subscribe.assert_called_once_with(
             access_token="client-token",
@@ -1484,8 +1490,11 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertIsNotNone(stored)
         self.assertEqual(stored["ownerWaId"], "972507322341")
         self.assertEqual(stored["accessToken"], "client-token")
+        self.assertEqual(stored["displayPhoneNumber"], "+1 555 765 0000")
+        self.assertEqual(stored["verifiedName"], "Updated Co")
         self.assertEqual(stored["metadata"]["webhookCallbackUrl"], "https://portal.example.com/webhooks/whatsapp")
         self.assertTrue(stored["metadata"]["webhookCallbackOverrideApplied"])
+        self.assertEqual(stored["metadata"]["phoneNumberDetailsRefreshStatus"], "refreshed")
 
     def test_whatsapp_connection_endpoint_keeps_international_approval_phone(self) -> None:
         self.server.database.save_whatsapp_connection(
