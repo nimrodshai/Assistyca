@@ -16344,6 +16344,18 @@ function shouldRenderAgentToolShelfFeature(feature) {
   return Boolean(feature && !isMonitorFeature(feature));
 }
 
+const ACTION_ONLY_PLATFORM_CONNECTION_IDS = new Set([
+  "web-monitor",
+  "web-monitoring",
+  "monitor",
+  MONITOR_FEATURE_ID,
+]);
+
+function shouldRenderAgentToolShelfConnection(connection) {
+  const platform = String(connection?.platform || connection?.id || "").trim().toLowerCase();
+  return Boolean(connection && platform && !ACTION_ONLY_PLATFORM_CONNECTION_IDS.has(platform));
+}
+
 function createAgentPlatformConnectionItem(connection) {
   const item = document.createElement("button");
   const label = connection.label || "Connected app";
@@ -16376,18 +16388,10 @@ function createAgentPlatformConnectionItem(connection) {
 function updateFeatureList() {
   const features = clientState.features.length ? clientState.features : [];
   const connections = Array.isArray(state.platformConnections) ? state.platformConnections : [];
+  const visibleConnections = connections.filter(shouldRenderAgentToolShelfConnection);
   const target = elements.agentToolShelf || elements.featureList;
   renderAgentAddToolMenu();
   if (!target) {
-    return;
-  }
-
-  if (!features.length && !connections.length) {
-    const emptyState = document.createElement("p");
-    emptyState.className = "agent-tools-empty";
-
-    emptyState.textContent = "No tools are available yet.";
-    target.replaceChildren(emptyState);
     return;
   }
 
@@ -16405,9 +16409,18 @@ function updateFeatureList() {
     visibleFeatures.push(feature);
   }
 
+  if (!visibleFeatures.length && !visibleConnections.length) {
+    const emptyState = document.createElement("p");
+    emptyState.className = "agent-tools-empty";
+
+    emptyState.textContent = "No tools are available yet.";
+    target.replaceChildren(emptyState);
+    return;
+  }
+
   target.replaceChildren(
     ...visibleFeatures.map((feature) => createAgentToolItem(feature)),
-    ...connections.map((connection) => createAgentPlatformConnectionItem(connection)),
+    ...visibleConnections.map((connection) => createAgentPlatformConnectionItem(connection)),
   );
 }
 
