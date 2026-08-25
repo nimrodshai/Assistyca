@@ -482,8 +482,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=114", html)
-        self.assertIn("app.js?v=141", html)
+        self.assertIn("styles.css?v=115", html)
+        self.assertIn("app.js?v=142", html)
+        self.assertIn('id="featureActivationResult"', html)
+        self.assertIn('id="featureActivationResultTitle"', html)
+        self.assertIn('id="featureActivationResultCopy"', html)
+        self.assertIn("function updateFeatureActivationResult", script)
+        self.assertIn('title: refreshOnly ? "Refreshing webhook" : "Saving WhatsApp details"', script)
+        self.assertIn('title: isWarning ? "Refresh failed" : webhookSuccess ? "Webhook refreshed" : getFeatureActivationNoticeLabel()', script)
+        self.assertIn(".feature-activation-result {", styles)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')

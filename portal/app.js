@@ -1339,6 +1339,9 @@ const elements = {
   featureActivationOwnerStatusTitle: document.querySelector("#featureActivationOwnerStatusTitle"),
   featureActivationOwnerStatusCopy: document.querySelector("#featureActivationOwnerStatusCopy"),
   featureActivationWebhookHint: document.querySelector("#featureActivationWebhookHint"),
+  featureActivationResult: document.querySelector("#featureActivationResult"),
+  featureActivationResultTitle: document.querySelector("#featureActivationResultTitle"),
+  featureActivationResultCopy: document.querySelector("#featureActivationResultCopy"),
   monitorTargetCard: document.querySelector("#monitorTargetCard"),
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
@@ -17268,16 +17271,15 @@ async function activateSelectedFeature() {
       return;
     }
 
-    clearFeatureActivationNotice();
     if (refreshOnly || editingActiveFeature) {
       state.featureStudioView = "activation";
       setHashForTab("features", feature.id, "activation");
       renderApp();
-      window.scrollTo(0, 0);
       setStatus(refreshOnly ? "WhatsApp webhook refreshed." : "WhatsApp details saved.");
       return;
     }
 
+    clearFeatureActivationNotice();
     state.featureStudioView = "editor";
     setHashForTab("features", feature.id, "editor");
     renderApp();
@@ -17306,7 +17308,7 @@ async function activateSelectedFeature() {
       setFeatureActivationFieldErrors(payload.issues);
     }
     const message = formatApiErrorMessage(error, "WhatsApp setup could not be confirmed.");
-    state.featureActivationNotice = "Setup failed";
+    state.featureActivationNotice = message;
     updateFeatureStudioHeader();
     openFeatureActivationAlert(
       "Setup failed",
@@ -19099,6 +19101,71 @@ function updateFeatureActivationStatus(feature = getSelectedFeature()) {
   }
 }
 
+function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
+  const activationBusy = isFeatureActivationBusy(feature);
+  const hasActivationChanges = hasFeatureActivationChanges(feature);
+  const canRefreshWebhook = canRefreshFeatureActivationWebhook(feature);
+  const refreshOnly = !hasActivationChanges && canRefreshWebhook;
+
+  if (activationBusy) {
+    return {
+      tone: "busy",
+      title: refreshOnly ? "Refreshing webhook" : "Saving WhatsApp details",
+      copy: refreshOnly
+        ? "Asking Meta to send incoming WhatsApp messages to Assistyca."
+        : "Checking the saved number and webhook subscription with Meta.",
+    };
+  }
+
+  const notice = String(state.featureActivationNotice || "").trim();
+  if (notice) {
+    const isWarning = /failed|could not|rejected|unavailable|invalid|expired|missing|denied|error|unauthorized|network|timeout/i.test(notice);
+    const webhookSuccess = /webhook/i.test(notice) && /refreshed|saved|subscribed|accepted/i.test(notice);
+    return {
+      tone: isWarning ? "warning" : "success",
+      title: isWarning ? "Refresh failed" : webhookSuccess ? "Webhook refreshed" : getFeatureActivationNoticeLabel(),
+      copy: notice,
+    };
+  }
+
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  const health = getSelectedFeatureWhatsAppMetadata(feature);
+  const webhookStatus = String(health.webhookSubscriptionStatus || "").trim().toLowerCase();
+  if (whatsapp.connection_status === "connected" && webhookStatus === "subscribed") {
+    const lastWebhookSubscribedAt = health.webhookSubscribedAt ? formatAdminDateTime(health.webhookSubscribedAt) : "";
+    return {
+      tone: "success",
+      title: health.webhookSubscribedAt ? "Webhook refreshed" : "Webhook subscribed",
+      copy: lastWebhookSubscribedAt
+        ? `Meta accepted the webhook subscription on ${lastWebhookSubscribedAt}.`
+        : "Meta accepted the webhook subscription for this WhatsApp Business Account.",
+    };
+  }
+
+  return null;
+}
+
+function updateFeatureActivationResult(feature = getSelectedFeature()) {
+  const result = buildFeatureActivationResultContent(feature);
+  const element = elements.featureActivationResult;
+  if (!element || !elements.featureActivationResultTitle || !elements.featureActivationResultCopy) {
+    return;
+  }
+
+  if (!result) {
+    element.classList.add("is-hidden");
+    element.dataset.tone = "";
+    elements.featureActivationResultTitle.textContent = "";
+    elements.featureActivationResultCopy.textContent = "";
+    return;
+  }
+
+  element.classList.remove("is-hidden");
+  element.dataset.tone = result.tone;
+  elements.featureActivationResultTitle.textContent = result.title;
+  elements.featureActivationResultCopy.textContent = result.copy;
+}
+
 function updateFeatureStudioWhatsAppHealthNotice(feature = getSelectedFeature()) {
   const notice = buildFeatureEditorWhatsAppHealthNotice(feature);
   const element = elements.featureStudioWhatsAppHealthNotice;
@@ -19314,6 +19381,7 @@ function updateFeatureStudioHeader() {
   }
 
   updateFeatureActivationStatus(feature);
+  updateFeatureActivationResult(feature);
   updateFeatureStudioWhatsAppHealthNotice(feature);
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {

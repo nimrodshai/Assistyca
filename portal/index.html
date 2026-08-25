@@ -8,7 +8,7 @@
       name="description"
       content="Tell Assistyca what you need and get help through a simple conversation."
     />
-    <link rel="stylesheet" href="./styles.css?v=114" />
+    <link rel="stylesheet" href="./styles.css?v=115" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -637,6 +637,15 @@
               </div>
 
               <div class="feature-page-actions feature-activation-actions">
+                <section
+                  id="featureActivationResult"
+                  class="feature-activation-result is-hidden"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <p id="featureActivationResultTitle" class="feature-activation-result-title"></p>
+                  <p id="featureActivationResultCopy" class="feature-activation-result-copy"></p>
+                </section>
                 <button id="featureStudioActivationButton" class="primary-button" type="button">
                   Save setup
                 </button>
@@ -1510,6 +1519,6 @@ Owner said afternoons are easier."
       </div>
     </section>
 
-    <script src="./app.js?v=141"></script>
+    <script src="./app.js?v=142"></script>
   </body>
 </html>
