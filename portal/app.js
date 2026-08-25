@@ -4012,6 +4012,14 @@ async function refreshFeatureActivationStates(options = {}) {
 function normalizePlatformConnection(source = {}) {
   const platform = String(source.platform || "").trim().toLowerCase();
   const option = getPlatformConnectionOption(platform);
+  const rawMetadata = source.metadata && typeof source.metadata === "object" ? source.metadata : {};
+  const metadata = {};
+  for (const key of ["label", "workspace", "account"]) {
+    const value = String(rawMetadata[key] || "").trim();
+    if (value) {
+      metadata[key] = value.slice(0, 200);
+    }
+  }
   return {
     id: String(source.id || "").trim(),
     platform,
@@ -4021,6 +4029,7 @@ function normalizePlatformConnection(source = {}) {
     connectionStatus: String(source.connectionStatus || source.connection_status || "connected").trim().toLowerCase(),
     connectedAt: String(source.connectedAt || source.connected_at || "").trim(),
     updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
+    metadata,
   };
 }
 
@@ -12214,6 +12223,58 @@ function getSignedInDeliveryEmail() {
   return normalizeEmail(authSession?.email || activeEmail || "");
 }
 
+function formatAgentPlatformAddress(platform, value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (normalizeAgentDeliveryChannel(platform) === "whatsapp" && /^\+?[\d\s().-]{7,}$/.test(text)) {
+    const digits = text.replace(/\D/g, "");
+    return digits ? `+${digits}` : text;
+  }
+  return text;
+}
+
+function getConnectedPlatformAddress(platform) {
+  const normalized = normalizeAgentDeliveryChannel(platform) || String(platform || "").trim().toLowerCase();
+  if (normalized === "email") {
+    return getSignedInDeliveryEmail();
+  }
+
+  if (normalized === "whatsapp") {
+    const featureCandidates = [
+      getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID),
+      ...(Array.isArray(clientState?.features) ? clientState.features.filter((feature) => isWhatsAppFeature(feature)) : []),
+    ].filter(Boolean);
+    for (const feature of featureCandidates) {
+      const configs = [feature.whatsapp, feature.savedWhatsApp, feature.saved_whatsapp]
+        .map((config) => normalizeFeatureWhatsApp(config || {}));
+      for (const config of configs) {
+        const address = formatAgentPlatformAddress("whatsapp", config.display_phone_number || config.owner_wa_id);
+        if (address) {
+          return address;
+        }
+      }
+    }
+  }
+
+  const connection = getPlatformConnectionByPlatform(normalized);
+  const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
+  return formatAgentPlatformAddress(normalized, metadata.account || metadata.workspace || metadata.label);
+}
+
+function getAgentDeliveryOptionItems() {
+  return [
+    { value: "portal", label: "This chat" },
+    { value: "email", label: "Email", address: getConnectedPlatformAddress("email") },
+    { value: "telegram", label: "Telegram", address: getConnectedPlatformAddress("telegram") },
+    { value: "whatsapp", label: "WhatsApp", address: getConnectedPlatformAddress("whatsapp") },
+  ].map((option) => ({
+    ...option,
+    label: option.address ? `${option.label} (${option.address})` : option.label,
+  }));
+}
+
 function getAgentProposalDeliveryChannel(proposal) {
   if (proposal?.type === "whatsapp-replies") {
     return normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel")) || "portal";
@@ -12235,13 +12296,17 @@ function getAgentProposalDeliveryTarget(proposal, deliveryChannel = "") {
   if (normalizedChannel === "email") {
     return validateEmail(explicitTarget) ? normalizeEmail(explicitTarget) : getSignedInDeliveryEmail();
   }
-  return explicitTarget && explicitTarget !== "owner" ? explicitTarget : "";
+  return explicitTarget && explicitTarget !== "owner"
+    ? explicitTarget
+    : getConnectedPlatformAddress(normalizedChannel);
 }
 
 function formatAgentDeliveryTargetDetail(deliveryChannel = "", deliveryTarget = "") {
   const channelLabel = formatAgentScheduledMessageChannel(deliveryChannel);
   const targetLabel = String(deliveryTarget || "").trim();
-  return targetLabel ? `${channelLabel} → ${targetLabel}` : channelLabel;
+  const normalizedChannel = normalizeAgentDeliveryChannel(deliveryChannel);
+  const targetIsChannel = normalizedChannel && normalizeAgentDeliveryChannel(targetLabel) === normalizedChannel;
+  return targetLabel && !targetIsChannel ? `${channelLabel} (${targetLabel})` : channelLabel;
 }
 
 function formatAgentDeliveryTargetSentence(deliveryChannel = "", deliveryTarget = "") {
@@ -12331,9 +12396,9 @@ function getMonitorFeatureDeliveryTarget(settings = {}, deliveryChannel = "") {
     return getSignedInDeliveryEmail();
   }
   if (deliveryChannel === "telegram") {
-    return String(settings.telegramChatId || "").trim();
+    return String(settings.telegramChatId || "").trim() || getConnectedPlatformAddress("telegram");
   }
-  return "";
+  return getConnectedPlatformAddress(deliveryChannel);
 }
 
 function createMonitorFeatureLiveAction(feature) {
@@ -12998,7 +13063,7 @@ function createAgentMonitorEditor(action) {
     frequencySelect.append(optionElement);
   }
   frequencySelect.value = draft.frequency;
-  frequencyField.append(frequencyLabel, frequencySelect);
+  frequencyField.append(frequencyLabel, wrapAgentActionEditorSelect(frequencySelect));
 
   const delivery = document.createElement("p");
   delivery.className = "agent-action-editor-delivery";
@@ -13200,9 +13265,93 @@ function getAgentLocalActionFrequencyOptions() {
   ];
 }
 
+function getAgentWorkspaceDateParts(timeZone = getWorkspaceTimeZone()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: normalizeMonitorScheduleTimezone(timeZone, getWorkspaceTimeZone()) || undefined,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  }).formatToParts(new Date());
+  const year = Number.parseInt(parts.find((part) => part.type === "year")?.value || "", 10);
+  const month = Number.parseInt(parts.find((part) => part.type === "month")?.value || "", 10);
+  const day = Number.parseInt(parts.find((part) => part.type === "day")?.value || "", 10);
+  return Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)
+    ? new Date(Date.UTC(year, month - 1, day))
+    : new Date();
+}
+
+function addAgentCalendarDays(date, amount) {
+  const next = new Date(date.getTime());
+  next.setUTCDate(next.getUTCDate() + Number(amount || 0));
+  return next;
+}
+
+function getAgentDateRangeFromTimeWindow(value, timeZone = getWorkspaceTimeZone()) {
+  const text = String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!text) {
+    return null;
+  }
+
+  const today = getAgentWorkspaceDateParts(timeZone);
+  const daysSinceMonday = (today.getUTCDay() + 6) % 7;
+  let start = null;
+  let end = null;
+  if (text === "today") {
+    start = today;
+    end = today;
+  } else if (text === "tomorrow") {
+    start = addAgentCalendarDays(today, 1);
+    end = start;
+  } else if (text === "this week" || text === "next week" || text === "last week") {
+    const weekOffset = text === "next week" ? 7 : text === "last week" ? -7 : 0;
+    start = addAgentCalendarDays(today, -daysSinceMonday + weekOffset);
+    end = addAgentCalendarDays(start, 6);
+  } else if (text === "next month") {
+    start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1));
+    end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
+  } else if (text === "this month") {
+    start = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+    end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0));
+  }
+
+  return start && end ? { start, end } : null;
+}
+
+function getAgentOrdinalDay(day) {
+  const numericDay = Number(day);
+  const suffix = numericDay % 100 >= 11 && numericDay % 100 <= 13
+    ? "th"
+    : ({ 1: "st", 2: "nd", 3: "rd" }[numericDay % 10] || "th");
+  return `${numericDay}${suffix}`;
+}
+
+function formatAgentTimeWindowPreview(value, timeZone = getWorkspaceTimeZone()) {
+  const range = getAgentDateRangeFromTimeWindow(value, timeZone);
+  if (!range) {
+    return "";
+  }
+
+  const startMonth = range.start.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+  const endMonth = range.end.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+  const sameMonth = range.start.getUTCFullYear() === range.end.getUTCFullYear()
+    && range.start.getUTCMonth() === range.end.getUTCMonth();
+  const startLabel = getAgentOrdinalDay(range.start.getUTCDate());
+  const endLabel = getAgentOrdinalDay(range.end.getUTCDate());
+  return sameMonth
+    ? `${startLabel} to ${endLabel}`
+    : `${startLabel} ${startMonth} to ${endLabel} ${endMonth}`;
+}
+
 function formatAgentLocalActionFrequency(value) {
   const option = getAgentLocalActionFrequencyOptions().find((candidate) => candidate.value === value);
   return option?.label || "Daily";
+}
+
+function wrapAgentActionEditorSelect(select) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "agent-action-editor-select-wrap";
+  wrapper.append(select);
+  return wrapper;
 }
 
 function createAgentLocalActionEditorField(labelText, value, options = {}) {
@@ -13228,7 +13377,7 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
     }
     input.value = String(value || options.options?.[0]?.value || "");
   }
-  field.append(label, input);
+  field.append(label, options.select ? wrapAgentActionEditorSelect(input) : input);
   return { field, input };
 }
 
@@ -13320,6 +13469,16 @@ function scheduleAgentLocalActionAutoSave(action, draft, form) {
         runMode: draft.frequency === "manual" ? "manual" : "recurring",
       },
     };
+    const previousDeliveryChannel = normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel);
+    const nextDeliveryTarget = previousDeliveryChannel === draft.deliveryChannel
+      ? String(action.payload?.deliveryTarget || action.recipientRef || "").trim()
+      : getConnectedPlatformAddress(draft.deliveryChannel);
+    proposal.executionPlan.deliveryTarget = nextDeliveryTarget;
+    proposal.executionPlan.settings.deliveryTarget = nextDeliveryTarget;
+    proposal.executionPlan.action = {
+      ...(proposal.executionPlan.action && typeof proposal.executionPlan.action === "object" ? proposal.executionPlan.action : {}),
+      recipientRef: nextDeliveryTarget || draft.deliveryChannel,
+    };
     proposal.updatedAt = new Date().toISOString();
     updateAgentProposalSummaryFromFields(proposal);
     action.payload.manualOnly = draft.frequency === "manual";
@@ -13327,7 +13486,9 @@ function scheduleAgentLocalActionAutoSave(action, draft, form) {
     action.payload.summary = proposal.summary;
     action.payload.preview = getAgentProposalLocalActionPreview(proposal);
     action.payload.deliveryChannel = draft.deliveryChannel;
-    action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, action.payload.deliveryTarget || action.recipientRef);
+    action.payload.deliveryTarget = nextDeliveryTarget;
+    action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, nextDeliveryTarget || action.recipientRef);
+    action.recipientRef = nextDeliveryTarget || draft.deliveryChannel;
     for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
       if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
     }
@@ -13371,6 +13532,24 @@ function createAgentLocalActionEditor(action) {
   for (const [label, key, placeholder] of typeFields[proposal.type] || []) {
     draft[key] = getAgentProposalFieldValue(proposal, key);
     const control = createAgentLocalActionEditorField(label, draft[key], { placeholder });
+    let timeWindowPreview = null;
+    if (key === "timeWindow") {
+      const valueRow = document.createElement("span");
+      valueRow.className = "agent-action-editor-value-row";
+      control.field.replaceChildren(control.field.querySelector(".agent-action-editor-label"));
+      valueRow.append(control.input);
+      timeWindowPreview = document.createElement("span");
+      timeWindowPreview.className = "agent-action-editor-value-meta";
+      timeWindowPreview.setAttribute("aria-live", "polite");
+      valueRow.append(timeWindowPreview);
+      control.field.append(valueRow);
+      const updateTimeWindowPreview = () => {
+        timeWindowPreview.textContent = formatAgentTimeWindowPreview(control.input.value);
+        timeWindowPreview.hidden = !timeWindowPreview.textContent;
+      };
+      updateTimeWindowPreview();
+      control.input.addEventListener("input", updateTimeWindowPreview);
+    }
     control.input.addEventListener("input", () => {
       draft[key] = control.input.value;
       scheduleAgentLocalActionAutoSave(action, draft, form);
@@ -13394,12 +13573,7 @@ function createAgentLocalActionEditor(action) {
     draft.deliveryChannel,
     {
       select: true,
-      options: [
-        { value: "portal", label: "This chat" },
-        { value: "email", label: "Email" },
-        { value: "telegram", label: "Telegram" },
-        { value: "whatsapp", label: "WhatsApp" },
-      ],
+      options: getAgentDeliveryOptionItems(),
     },
   );
   delivery.input.addEventListener("change", () => {

@@ -3897,6 +3897,27 @@ body[data-modal="billing"] .app-shell {
   gap: 0.4rem;
 }
 
+.agent-action-editor-value-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.agent-action-editor-value-meta {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.agent-action-editor-select-wrap {
+  position: relative;
+  display: block;
+}
+
 .agent-action-editor-input,
 .agent-action-editor-select {
   width: 100%;
@@ -3910,6 +3931,25 @@ body[data-modal="billing"] .app-shell {
   font-size: 0.73rem;
 }
 
+.agent-action-editor-select {
+  padding-right: 2.6rem;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.agent-action-editor-select-wrap::after {
+  position: absolute;
+  top: 50%;
+  right: 0.9rem;
+  width: 0.48rem;
+  height: 0.48rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  content: "";
+  pointer-events: none;
+  transform: translateY(-65%) rotate(45deg);
+}
+
 .agent-action-editor-input:focus,
 .agent-action-editor-select:focus {
   border-color: rgba(15, 118, 110, 0.45);
@@ -3919,6 +3959,17 @@ body[data-modal="billing"] .app-shell {
 
 .agent-action-editor-status.is-error {
   color: #9e3434;
+}
+
+@media (max-width: 520px) {
+  .agent-action-editor-value-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.25rem;
+  }
+
+  .agent-action-editor-value-meta {
+    justify-self: end;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
