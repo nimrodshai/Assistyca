@@ -14465,11 +14465,24 @@ function getAgentComposerLineHeight(styles) {
   return Number.isFinite(fontSize) && fontSize > 0 ? fontSize * 1.45 : 22;
 }
 
-function resizeAgentComposerInput() {
+function isAgentComposerCaretAtEnd(input) {
+  const textLength = String(input?.value || "").length;
+  return input?.selectionStart === textLength && input?.selectionEnd === textLength;
+}
+
+function scrollAgentComposerInputToBottom(input) {
+  input.scrollTop = input.scrollHeight;
+  window.requestAnimationFrame(() => {
+    input.scrollTop = input.scrollHeight;
+  });
+}
+
+function resizeAgentComposerInput(options = {}) {
   const input = elements.agentComposerInput;
   if (!input) {
     return;
   }
+  const shouldScrollToBottom = Boolean(options.scrollToBottom);
 
   const styles = window.getComputedStyle(input);
   const lineHeight = getAgentComposerLineHeight(styles);
@@ -14487,6 +14500,11 @@ function resizeAgentComposerInput() {
 
   input.style.height = `${nextHeight}px`;
   input.style.overflowY = isScrollable ? "auto" : "hidden";
+  if (isScrollable && shouldScrollToBottom) {
+    scrollAgentComposerInputToBottom(input);
+  } else if (!isScrollable) {
+    input.scrollTop = 0;
+  }
   elements.agentComposerForm?.classList.toggle("is-multiline", isMultiline);
   elements.agentComposerForm?.classList.toggle("is-scrollable", isScrollable);
 }
@@ -20991,7 +21009,11 @@ function bindEvents() {
         handleAgentComposerSubmit(event);
       }
     });
-    elements.agentComposerInput.addEventListener("input", resizeAgentComposerInput);
+    elements.agentComposerInput.addEventListener("input", (event) => {
+      resizeAgentComposerInput({
+        scrollToBottom: isAgentComposerCaretAtEnd(event.currentTarget),
+      });
+    });
     elements.agentComposerInput.addEventListener("paste", handleAgentComposerPaste);
     scheduleAgentComposerInputResize();
   }
