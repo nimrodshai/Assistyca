@@ -4421,6 +4421,28 @@ body[data-modal="billing"] .app-shell {
   padding: 0.5rem 0;
 }
 
+.agent-loading-row {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.65rem 0.2rem;
+  color: var(--muted-strong);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.agent-loading-spinner {
+  flex: 0 0 auto;
+  width: 0.82rem;
+  height: 0.82rem;
+  border: 2px solid rgba(15, 118, 110, 0.18);
+  border-top-color: rgba(15, 118, 110, 0.78);
+  border-radius: 999px;
+  animation: spin 760ms linear infinite;
+}
+
 .agent-tools-toggle {
   display: none;
   justify-self: center;

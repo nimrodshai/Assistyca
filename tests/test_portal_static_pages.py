@@ -155,6 +155,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function sortScheduledActionsByCreatedAt", script)
         self.assertIn("sortScheduledActionsByCreatedAt(", script)
         self.assertIn("Number.NEGATIVE_INFINITY", script)
+        self.assertIn("function isAgentActionsInitialLoading", script)
+        self.assertIn("scheduledActionsInitialLoadPending", script)
+        self.assertIn("sourceActionsInitialLoadPending", script)
+        self.assertIn('renderScheduledActionLoadingList(elements.agentPendingActionList, "Loading actions…");', script)
+        self.assertIn("resetAgentWorkspaceRemoteState({ loading: true });", script)
         self.assertIn("function renderScheduledActionList", script)
         action_item_renderer = script[
             script.index("function renderScheduledActionItemContent"):
@@ -429,7 +434,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("if (!shouldRenderAgentToolShelfFeature(feature))", script)
         self.assertIn("ACTION_ONLY_PLATFORM_CONNECTION_IDS", script)
         self.assertIn("function shouldRenderAgentToolShelfConnection", script)
-        self.assertIn("const visibleConnections = connections.filter(shouldRenderAgentToolShelfConnection);", script)
+        self.assertIn("function isAgentToolsInitialLoading", script)
+        self.assertIn("featureActivationInitialLoadPending", script)
+        self.assertIn("platformConnectionsInitialLoadPending", script)
+        self.assertIn("function sortFeaturesByDisplayOrder", script)
+        self.assertIn("function sortAgentToolShelfConnections", script)
+        self.assertIn('target.replaceChildren(createAgentLoadingRow("Loading tools…"));', script)
+        self.assertIn("const visibleConnections = sortAgentToolShelfConnections(connections.filter(shouldRenderAgentToolShelfConnection));", script)
         self.assertIn("if (!visibleFeatures.length && !visibleConnections.length)", script)
         self.assertIn("item.dataset.agentToolFeatureId = feature.id;", script)
         self.assertIn('const toolButton = target?.closest("[data-agent-tool-feature-id]");', script)
@@ -452,6 +463,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("overflow-y: auto;", add_tool_menu_styles)
         self.assertIn(".agent-add-tool-icon svg", styles)
         self.assertIn(".agent-tool-icon svg", styles)
+        self.assertIn(".agent-loading-row", styles)
+        self.assertIn(".agent-loading-spinner", styles)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 
     def test_agent_proposal_changes_use_contextual_structured_revision(self) -> None:

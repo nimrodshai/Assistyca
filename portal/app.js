@@ -285,6 +285,7 @@ const DEFAULT_FEATURES = [
     description: "Turns incoming WhatsApp questions into quick, human-reviewed replies that help you quote faster and book more work.",
     channel: "WhatsApp",
     mode: "Human-reviewed",
+    sortOrder: 100,
     status: "non-active",
     activated: false,
     setupComplete: false,
@@ -315,6 +316,7 @@ const DEFAULT_FEATURES = [
     description: "Helps you reconnect with past customers using ready-to-send WhatsApp follow-ups, so more quiet conversations turn back into active work.",
     channel: "WhatsApp",
     mode: "Weekly follow-up",
+    sortOrder: 110,
     status: "non-active",
     activated: false,
     setupComplete: false,
@@ -352,6 +354,7 @@ const DEFAULT_FEATURES = [
     description: "Searches the web on a daily, weekly, or monthly schedule and sends source-backed alerts about the events, dates, and opportunities you care about.",
     channel: "Alerts",
     mode: "Scheduled search",
+    sortOrder: 120,
     status: "non-active",
     activated: false,
     setupComplete: false,
@@ -1126,17 +1129,26 @@ const state = {
   scheduledActions: [],
   sourceActions: [],
   sourceActionsLoading: false,
+  sourceActionsInitialLoadPending: false,
+  sourceActionsLoadedAt: 0,
   scheduledActionsLoading: false,
+  scheduledActionsInitialLoadPending: false,
   scheduledActionsError: "",
   scheduledActionsFailureCount: 0,
   scheduledActionsLastError: "",
   scheduledActionsLastErrorAt: 0,
   scheduledActionsLoadedAt: 0,
+  featureActivationLoading: false,
+  featureActivationInitialLoadPending: false,
+  featureActivationLoadedAt: 0,
   selectedScheduledActionId: "",
   agentHistoryExpanded: false,
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
   platformConnections: [],
+  platformConnectionsLoading: false,
+  platformConnectionsInitialLoadPending: false,
+  platformConnectionsLoadedAt: 0,
   platformConnectionStorageAvailable: true,
   platformConnectionStorageMessage: "",
   paymentStatus: null,
@@ -1682,22 +1694,38 @@ function canManageClients() {
   return isAdminUser() || canReviewOpportunities();
 }
 
-function clearAuthSession() {
-  authSession = null;
-  persistJson(AUTH_SESSION_KEY, null);
+function resetAgentWorkspaceRemoteState(options = {}) {
+  const loading = Boolean(options.loading);
   state.scheduledActions = [];
-  state.scheduledActionsLoading = false;
+  state.sourceActions = [];
+  state.sourceActionsLoading = loading;
+  state.sourceActionsInitialLoadPending = loading;
+  state.sourceActionsLoadedAt = 0;
+  state.scheduledActionsLoading = loading;
+  state.scheduledActionsInitialLoadPending = loading;
   state.scheduledActionsError = "";
   state.scheduledActionsFailureCount = 0;
   state.scheduledActionsLastError = "";
   state.scheduledActionsLastErrorAt = 0;
   state.scheduledActionsLoadedAt = 0;
+  state.featureActivationLoading = loading;
+  state.featureActivationInitialLoadPending = loading;
+  state.featureActivationLoadedAt = 0;
   state.selectedScheduledActionId = "";
   state.agentAddToolMenuOpen = false;
   state.whatsappConnection = null;
   state.platformConnections = [];
+  state.platformConnectionsLoading = loading;
+  state.platformConnectionsInitialLoadPending = loading;
+  state.platformConnectionsLoadedAt = 0;
   state.platformConnectionStorageAvailable = true;
   state.platformConnectionStorageMessage = "";
+}
+
+function clearAuthSession() {
+  authSession = null;
+  persistJson(AUTH_SESSION_KEY, null);
+  resetAgentWorkspaceRemoteState({ loading: false });
   if (scheduledActionsPollTimer !== null) {
     window.clearInterval(scheduledActionsPollTimer);
     scheduledActionsPollTimer = null;
@@ -1735,6 +1763,29 @@ function normalizeAdminFeatureRecord(feature = {}) {
     mode: String(feature.mode || "").trim(),
     sortOrder: Number(feature.sortOrder || 100),
   };
+}
+
+function normalizeFeatureSortOrder(feature = {}, fallback = 100) {
+  const rawValue = feature?.sortOrder ?? feature?.sort_order ?? fallback;
+  const numericValue = Number(rawValue);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function compareFeaturesByDisplayOrder(left = {}, right = {}) {
+  const leftSort = normalizeFeatureSortOrder(left);
+  const rightSort = normalizeFeatureSortOrder(right);
+  if (leftSort !== rightSort) {
+    return leftSort - rightSort;
+  }
+  const nameCompare = String(left.name || "").localeCompare(String(right.name || ""));
+  if (nameCompare) {
+    return nameCompare;
+  }
+  return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
+function sortFeaturesByDisplayOrder(features = []) {
+  return [...features].sort(compareFeaturesByDisplayOrder);
 }
 
 function sortUniqueFeatureIds(featureIds = []) {
@@ -2860,7 +2911,7 @@ function loadClientState(email) {
     ? saved.features
     : DEFAULT_FEATURES;
   let didMigrateLegacyDescription = false;
-  const features = featuresSource.map((feature, index) => {
+  const features = sortFeaturesByDisplayOrder(featuresSource.map((feature, index) => {
     const fallbackPrompt = index === 0 ? { ...DEFAULT_PROMPT, ...savedPrompt } : DEFAULT_PROMPT;
     const featureId = String(feature?.id || "");
     const featureName = String(feature?.name || "");
@@ -2910,6 +2961,7 @@ function loadClientState(email) {
       mode: isLegacyDefaultFeature
         ? DEFAULT_FEATURES[0].mode
         : String(feature?.mode || "Default"),
+      sortOrder: normalizeFeatureSortOrder(feature, DEFAULT_FEATURES[index]?.sortOrder ?? 100 + index),
       status: activated ? "active" : "non-active",
       activated,
       setupComplete,
@@ -2940,7 +2992,7 @@ function loadClientState(email) {
         || {},
       ),
     };
-  });
+  }));
   const settings = { ...DEFAULT_SETTINGS, ...(saved.settings || {}) };
   const simulator = normalizeSimulatorState(savedSimulator, savedPrompt);
   const agent = normalizeAgentWorkspace(saved.agent || {});
@@ -3909,6 +3961,7 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
     description: String(serverFeature?.description || existingFeature?.description || "").trim(),
     channel,
     mode: String(serverFeature?.mode || existingFeature?.mode || "Default").trim() || "Default",
+    sortOrder: normalizeFeatureSortOrder(serverFeature, normalizeFeatureSortOrder(existingFeature, 100 + index)),
     status: activated ? "active" : "non-active",
     activated,
     setupComplete,
@@ -3986,7 +4039,7 @@ function applyServerFeatureStates(features = [], options = {}) {
     }
   }
 
-  clientState.features = nextFeatures.filter(Boolean);
+  clientState.features = sortFeaturesByDisplayOrder(nextFeatures.filter(Boolean));
   if (state.selectedFeatureId && !clientState.features.some((feature) => feature.id === state.selectedFeatureId)) {
     state.selectedFeatureId = clientState.features[0]?.id || null;
   }
@@ -3998,20 +4051,34 @@ function applyServerFeatureStates(features = [], options = {}) {
 
 async function refreshFeatureActivationStates(options = {}) {
   if (!isSignedIn()) {
+    state.featureActivationLoading = false;
+    state.featureActivationInitialLoadPending = false;
     return null;
   }
 
-  const response = await apiRequest("/api/features", {
-    headers: getSessionAuthHeaders(),
-    timeoutMs: options.timeoutMs || 15000,
-  });
-
-  applyServerFeatureStates(response.features || [], { persist: true, resetMissing: true });
-  state.paymentStatus = response.paymentStatus || null;
-  if (options.render !== false && document.body.dataset.view === "app") {
-    renderApp();
+  const requestToken = String(authSession?.token || "");
+  state.featureActivationLoading = true;
+  try {
+    const response = await apiRequest("/api/features", {
+      headers: getSessionAuthHeaders(),
+      timeoutMs: options.timeoutMs || 15000,
+    });
+    if (requestToken !== String(authSession?.token || "")) {
+      return null;
+    }
+    applyServerFeatureStates(response.features || [], { persist: true, resetMissing: true });
+    state.paymentStatus = response.paymentStatus || null;
+    state.featureActivationLoadedAt = Date.now();
+    return response;
+  } finally {
+    if (requestToken === String(authSession?.token || "")) {
+      state.featureActivationLoading = false;
+      state.featureActivationInitialLoadPending = false;
+      if (options.render !== false && document.body.dataset.view === "app") {
+        renderApp({ preserveStatus: true });
+      }
+    }
   }
-  return response;
 }
 
 function normalizePlatformConnection(source = {}) {
@@ -4051,26 +4118,41 @@ function getPlatformConnectionByPlatform(platform) {
 async function refreshPlatformConnections(options = {}) {
   if (!isSignedIn()) {
     state.platformConnections = [];
+    state.platformConnectionsLoading = false;
+    state.platformConnectionsInitialLoadPending = false;
     state.platformConnectionStorageAvailable = true;
     state.platformConnectionStorageMessage = "";
     return [];
   }
 
-  const response = await apiRequest("/api/platform-connections", {
-    headers: getSessionAuthHeaders(),
-    timeoutMs: options.timeoutMs || 15000,
-  });
-  state.platformConnectionStorageAvailable = response.credentialStorageAvailable !== false;
-  state.platformConnectionStorageMessage = normalizeText(
-    response.credentialStorageMessage || response.storageMessage || "",
-  );
-  state.platformConnections = Array.isArray(response.connections)
-    ? response.connections.map(normalizePlatformConnection).filter((connection) => connection.platform)
-    : [];
-  if (options.render !== false && document.body.dataset.view === "app") {
-    renderApp({ preserveStatus: true });
+  const requestToken = String(authSession?.token || "");
+  state.platformConnectionsLoading = true;
+  try {
+    const response = await apiRequest("/api/platform-connections", {
+      headers: getSessionAuthHeaders(),
+      timeoutMs: options.timeoutMs || 15000,
+    });
+    if (requestToken !== String(authSession?.token || "")) {
+      return [];
+    }
+    state.platformConnectionStorageAvailable = response.credentialStorageAvailable !== false;
+    state.platformConnectionStorageMessage = normalizeText(
+      response.credentialStorageMessage || response.storageMessage || "",
+    );
+    state.platformConnections = Array.isArray(response.connections)
+      ? response.connections.map(normalizePlatformConnection).filter((connection) => connection.platform)
+      : [];
+    state.platformConnectionsLoadedAt = Date.now();
+    return state.platformConnections;
+  } finally {
+    if (requestToken === String(authSession?.token || "")) {
+      state.platformConnectionsLoading = false;
+      state.platformConnectionsInitialLoadPending = false;
+      if (options.render !== false && document.body.dataset.view === "app") {
+        renderApp({ preserveStatus: true });
+      }
+    }
   }
-  return state.platformConnections;
 }
 
 function createPlatformConnectionForm(option) {
@@ -12825,6 +12907,32 @@ function createScheduledActionEmpty(message) {
   return empty;
 }
 
+function createAgentLoadingRow(message) {
+  const loading = document.createElement("div");
+  loading.className = "agent-loading-row";
+  loading.setAttribute("role", "status");
+  loading.setAttribute("aria-live", "polite");
+
+  const spinner = document.createElement("span");
+  spinner.className = "agent-loading-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+
+  const text = document.createElement("span");
+  text.textContent = message;
+  loading.append(spinner, text);
+  return loading;
+}
+
+function renderScheduledActionLoadingList(container, message) {
+  const signature = JSON.stringify(["loading", message]);
+  if (container.dataset.agentActionListSignature === signature) {
+    return;
+  }
+  container.dataset.agentActionListSignature = signature;
+  container.replaceChildren(createAgentLoadingRow(message));
+  container.dataset.agentActionListMounted = "true";
+}
+
 function renderScheduledActionList(container, actions, emptyMessage) {
   const signature = getScheduledActionListSignature(actions, emptyMessage);
   if (container.dataset.agentActionListSignature === signature) {
@@ -14269,6 +14377,31 @@ function markScheduledActionsRefreshFailure(error, options = {}) {
     : "";
 }
 
+function isInitialRemoteLoadPending(loading, initialLoadPending) {
+  return Boolean(loading && initialLoadPending);
+}
+
+function isAgentActionsInitialLoading() {
+  return Boolean(
+    isSignedIn()
+    && (
+      isInitialRemoteLoadPending(state.featureActivationLoading, state.featureActivationInitialLoadPending)
+      || isInitialRemoteLoadPending(state.scheduledActionsLoading, state.scheduledActionsInitialLoadPending)
+      || isInitialRemoteLoadPending(state.sourceActionsLoading, state.sourceActionsInitialLoadPending)
+    ),
+  );
+}
+
+function isAgentToolsInitialLoading() {
+  return Boolean(
+    isSignedIn()
+    && (
+      isInitialRemoteLoadPending(state.featureActivationLoading, state.featureActivationInitialLoadPending)
+      || isInitialRemoteLoadPending(state.platformConnectionsLoading, state.platformConnectionsInitialLoadPending)
+    ),
+  );
+}
+
 function renderAgentActions() {
   if (!elements.agentPendingActionList || !elements.agentCompletedActionList) {
     return;
@@ -14281,9 +14414,10 @@ function renderAgentActions() {
   const completed = sortScheduledActionsByCreatedAt(
     actions.filter((action) => !isActiveAgentActionStatus(action.status)),
   );
+  const initialLoading = isAgentActionsInitialLoading();
 
-  elements.agentPendingActionsCount.textContent = String(activeActions.length);
-  elements.agentCompletedActionsCount.textContent = String(completed.length);
+  elements.agentPendingActionsCount.textContent = initialLoading ? "…" : String(activeActions.length);
+  elements.agentCompletedActionsCount.textContent = initialLoading ? "…" : String(completed.length);
   const historyExpanded = Boolean(state.agentHistoryExpanded);
   elements.agentHistoryToggleButton?.setAttribute("aria-expanded", String(historyExpanded));
   elements.agentHistoryToggleButton?.setAttribute(
@@ -14296,14 +14430,19 @@ function renderAgentActions() {
   if (elements.agentCompletedActionList) {
     elements.agentCompletedActionList.hidden = !historyExpanded;
   }
-  renderScheduledActionList(elements.agentPendingActionList, activeActions, "No active actions.");
-  renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
+  if (initialLoading) {
+    renderScheduledActionLoadingList(elements.agentPendingActionList, "Loading actions…");
+    renderScheduledActionLoadingList(elements.agentCompletedActionList, "Loading history…");
+  } else {
+    renderScheduledActionList(elements.agentPendingActionList, activeActions, "No active actions.");
+    renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
+  }
 
   const statusRow = elements.agentActionsStatus?.closest(".agent-actions-sync-row");
   statusRow?.classList.toggle("is-error", Boolean(state.scheduledActionsError));
-  statusRow?.classList.toggle("is-syncing", Boolean(state.scheduledActionsLoading && state.scheduledActionsLoadedAt));
+  statusRow?.classList.toggle("is-syncing", Boolean(initialLoading || (state.scheduledActionsLoading && state.scheduledActionsLoadedAt)));
   if (elements.agentActionsStatus) {
-    if (state.scheduledActionsLoading && !state.scheduledActionsLoadedAt) {
+    if (initialLoading || (state.scheduledActionsLoading && !state.scheduledActionsLoadedAt)) {
       elements.agentActionsStatus.textContent = "Checking actions…";
     } else if (state.scheduledActionsError) {
       elements.agentActionsStatus.textContent = "Couldn’t refresh actions";
@@ -14319,9 +14458,10 @@ function renderAgentActions() {
       elements.agentActionsStatus.textContent = "Waiting to check";
     }
   }
-  elements.agentActionsRefreshButton?.classList.toggle("is-loading", state.scheduledActionsLoading);
+  const actionsBusy = initialLoading || state.scheduledActionsLoading;
+  elements.agentActionsRefreshButton?.classList.toggle("is-loading", actionsBusy);
   if (elements.agentActionsRefreshButton) {
-    elements.agentActionsRefreshButton.disabled = state.scheduledActionsLoading;
+    elements.agentActionsRefreshButton.disabled = actionsBusy;
   }
 
   const selectedAction = actions.find((action) => String(action.id) === String(state.selectedScheduledActionId));
@@ -14340,6 +14480,8 @@ function renderAgentActions() {
 
 async function refreshScheduledActions(options = {}) {
   if (!isSignedIn()) {
+    state.scheduledActionsLoading = false;
+    state.scheduledActionsInitialLoadPending = false;
     return null;
   }
   if (scheduledActionsRefreshPromise) {
@@ -14370,6 +14512,7 @@ async function refreshScheduledActions(options = {}) {
     } finally {
       if (requestToken === String(authSession?.token || "")) {
         state.scheduledActionsLoading = false;
+        state.scheduledActionsInitialLoadPending = false;
         renderAgentActions();
       }
       scheduledActionsRefreshPromise = null;
@@ -14380,6 +14523,10 @@ async function refreshScheduledActions(options = {}) {
 
 async function refreshSourceActions() {
   if (!isSignedIn() || sourceActionsRefreshPromise) {
+    if (!isSignedIn()) {
+      state.sourceActionsLoading = false;
+      state.sourceActionsInitialLoadPending = false;
+    }
     return null;
   }
   const requestToken = String(authSession?.token || "");
@@ -14389,12 +14536,16 @@ async function refreshSourceActions() {
       const response = await apiRequest("/api/source-actions?limit=100", { headers: getSessionAuthHeaders() });
       if (requestToken !== String(authSession?.token || "")) return null;
       state.sourceActions = Array.isArray(response.actions) ? response.actions : [];
-      renderAgentActions();
+      state.sourceActionsLoadedAt = Date.now();
       return state.sourceActions;
     } catch {
       return null;
     } finally {
-      if (requestToken === String(authSession?.token || "")) state.sourceActionsLoading = false;
+      if (requestToken === String(authSession?.token || "")) {
+        state.sourceActionsLoading = false;
+        state.sourceActionsInitialLoadPending = false;
+        renderAgentActions();
+      }
       sourceActionsRefreshPromise = null;
     }
   })();
@@ -16666,6 +16817,16 @@ function shouldRenderAgentToolShelfConnection(connection) {
   return Boolean(connection && platform && !ACTION_ONLY_PLATFORM_CONNECTION_IDS.has(platform));
 }
 
+function sortAgentToolShelfConnections(connections = []) {
+  return [...connections].sort((left, right) => {
+    const labelCompare = String(left.label || "").localeCompare(String(right.label || ""));
+    if (labelCompare) {
+      return labelCompare;
+    }
+    return String(left.platform || left.id || "").localeCompare(String(right.platform || right.id || ""));
+  });
+}
+
 function createAgentPlatformConnectionItem(connection) {
   const item = document.createElement("button");
   const label = connection.label || "Connected app";
@@ -16696,12 +16857,17 @@ function createAgentPlatformConnectionItem(connection) {
 }
 
 function updateFeatureList() {
-  const features = clientState.features.length ? clientState.features : [];
+  const features = clientState.features.length ? sortFeaturesByDisplayOrder(clientState.features) : [];
   const connections = Array.isArray(state.platformConnections) ? state.platformConnections : [];
-  const visibleConnections = connections.filter(shouldRenderAgentToolShelfConnection);
+  const visibleConnections = sortAgentToolShelfConnections(connections.filter(shouldRenderAgentToolShelfConnection));
   const target = elements.agentToolShelf || elements.featureList;
   renderAgentAddToolMenu();
   if (!target) {
+    return;
+  }
+
+  if (isAgentToolsInitialLoading()) {
+    target.replaceChildren(createAgentLoadingRow("Loading tools…"));
     return;
   }
 
@@ -20234,10 +20400,7 @@ function completeSignIn(session) {
   state.pricingLoading = false;
   state.pricingError = "";
   state.paymentStatus = null;
-  state.whatsappConnection = null;
-  state.platformConnections = [];
-  state.platformConnectionStorageAvailable = true;
-  state.platformConnectionStorageMessage = "";
+  resetAgentWorkspaceRemoteState({ loading: true });
   resetAdminState();
   setHashForTab("features");
   setView("app");
@@ -21075,16 +21238,7 @@ async function bootstrapAuthState() {
     state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
     activeEmail = normalizeEmail(authSession?.email || "");
     clientState = loadClientState(activeEmail);
-    state.scheduledActions = [];
-    state.scheduledActionsLoading = false;
-    state.scheduledActionsError = "";
-    state.scheduledActionsFailureCount = 0;
-    state.scheduledActionsLastError = "";
-    state.scheduledActionsLastErrorAt = 0;
-    state.scheduledActionsLoadedAt = 0;
-    state.selectedScheduledActionId = "";
-    state.agentAddToolMenuOpen = false;
-    state.whatsappConnection = null;
+    resetAgentWorkspaceRemoteState({ loading: true });
     applyRemoteAccountProfile(response);
     state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
     clearAuthChallenge();
@@ -21096,9 +21250,6 @@ async function bootstrapAuthState() {
     state.pricingLoading = false;
     state.pricingError = "";
     state.paymentStatus = null;
-    state.platformConnections = [];
-    state.platformConnectionStorageAvailable = true;
-    state.platformConnectionStorageMessage = "";
     resetAdminState();
     refreshView();
     void refreshBillingReport();
