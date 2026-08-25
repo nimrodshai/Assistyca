@@ -12707,11 +12707,37 @@ function getScheduledActionListSignature(actions, emptyMessage) {
   return JSON.stringify(actions.map(getScheduledActionItemSignature));
 }
 
-function createScheduledActionItem(action) {
-  const item = document.createElement("article");
+function getScheduledActionDomKey(action, index = 0) {
+  const id = String(action?.id || "").trim();
+  if (id) {
+    return id;
+  }
+  return `anonymous:${index}:${getScheduledActionItemSignature(action)}`;
+}
+
+function shouldAnimateScheduledActionEntries(container) {
+  return container.dataset.agentActionListMounted === "true"
+    && !state.scheduledActionsLoading
+    && !state.sourceActionsLoading
+    && !scheduledActionsRefreshPromise
+    && !sourceActionsRefreshPromise;
+}
+
+function applyScheduledActionItemEnteringState(item) {
+  if (!item) {
+    return;
+  }
+  item.classList.add("is-entering");
+  item.addEventListener("animationend", () => {
+    item.classList.remove("is-entering");
+  }, { once: true });
+}
+
+function renderScheduledActionItemContent(item, action) {
   const statusClass = getScheduledActionStatusClass(action.status);
   item.className = `agent-action-item is-${statusClass}`;
   item.dataset.agentScheduledActionId = String(action.id || "");
+  item.dataset.agentActionItemSignature = getScheduledActionItemSignature(action);
 
   const isExpanded = state.selectedScheduledActionId === String(action.id);
   if (isExpanded) {
@@ -12758,6 +12784,14 @@ function createScheduledActionItem(action) {
   expansion.append(expansionInner);
 
   item.append(trigger, expansion);
+}
+
+function createScheduledActionItem(action, options = {}) {
+  const item = document.createElement("article");
+  renderScheduledActionItemContent(item, action);
+  if (options.entering) {
+    applyScheduledActionItemEnteringState(item);
+  }
   return item;
 }
 
@@ -12774,12 +12808,34 @@ function renderScheduledActionList(container, actions, emptyMessage) {
     return;
   }
 
+  const existingItemsByKey = new Map();
+  for (const item of container.querySelectorAll("[data-agent-action-key]")) {
+    existingItemsByKey.set(item.dataset.agentActionKey, item);
+  }
+
+  const animateNewEntries = shouldAnimateScheduledActionEntries(container);
+  const nextItems = actions.length
+    ? actions.map((action, index) => {
+      const key = getScheduledActionDomKey(action, index);
+      const existingItem = existingItemsByKey.get(key);
+      if (existingItem) {
+        existingItemsByKey.delete(key);
+        if (existingItem.dataset.agentActionItemSignature !== getScheduledActionItemSignature(action)) {
+          renderScheduledActionItemContent(existingItem, action);
+        }
+        existingItem.dataset.agentActionKey = key;
+        return existingItem;
+      }
+
+      const item = createScheduledActionItem(action, { entering: animateNewEntries });
+      item.dataset.agentActionKey = key;
+      return item;
+    })
+    : [createScheduledActionEmpty(emptyMessage)];
+
   container.dataset.agentActionListSignature = signature;
-  container.replaceChildren(
-    ...(actions.length
-      ? actions.map(createScheduledActionItem)
-      : [createScheduledActionEmpty(emptyMessage)]),
-  );
+  container.replaceChildren(...nextItems);
+  container.dataset.agentActionListMounted = "true";
 }
 
 function setScheduledActionItemExpandedState(item, isExpanded) {

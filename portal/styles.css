@@ -3463,8 +3463,17 @@ body[data-modal="billing"] .app-shell {
   border: 1px solid rgba(20, 28, 38, 0.075);
   border-radius: 14px;
   box-shadow: 0 5px 14px rgba(25, 38, 54, 0.025);
-  animation: rise 320ms ease both;
   transition: grid-template-rows 260ms cubic-bezier(0.22, 1, 0.36, 1), transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.agent-action-item.is-entering {
+  animation: rise 260ms ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-action-item.is-entering {
+    animation: none;
+  }
 }
 
 .agent-action-item.is-expanded {
