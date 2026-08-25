@@ -778,7 +778,7 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
     {
       key: "timeWindow",
       question: "Which date range should I summarize?",
-      actions: ["Today", "This week", "Next week"],
+      actions: ["Today", "Tomorrow", "This week", "Next week", "This month", "Next month"],
     },
     {
       key: "deliveryChannel",
@@ -1122,6 +1122,7 @@ const state = {
   whatsappHistorySelectedConversationId: "",
   whatsappHistoryLoadedAt: 0,
   whatsappHistoryEmail: "",
+  whatsappConnection: null,
   scheduledActions: [],
   sourceActions: [],
   sourceActionsLoading: false,
@@ -1693,6 +1694,7 @@ function clearAuthSession() {
   state.scheduledActionsLoadedAt = 0;
   state.selectedScheduledActionId = "";
   state.agentAddToolMenuOpen = false;
+  state.whatsappConnection = null;
   state.platformConnections = [];
   state.platformConnectionStorageAvailable = true;
   state.platformConnectionStorageMessage = "";
@@ -3825,6 +3827,9 @@ function buildWhatsAppConfigHint() {
 
 function applyWhatsAppConnectionToFeatures(connection, options = {}) {
   const normalizedConnection = normalizeFeatureWhatsApp(connection || {});
+  state.whatsappConnection = normalizedConnection.configured || normalizedConnection.connection_status === "connected"
+    ? { ...normalizedConnection }
+    : null;
   const setupComplete = Boolean(
     normalizedConnection.business_account_id
     && normalizedConnection.phone_number_id
@@ -12242,6 +12247,17 @@ function getConnectedPlatformAddress(platform) {
   }
 
   if (normalized === "whatsapp") {
+    const savedConnection = state.whatsappConnection
+      ? normalizeFeatureWhatsApp(state.whatsappConnection)
+      : null;
+    const savedAddress = formatAgentPlatformAddress(
+      "whatsapp",
+      savedConnection?.owner_wa_id || savedConnection?.display_phone_number,
+    );
+    if (savedAddress) {
+      return savedAddress;
+    }
+
     const featureCandidates = [
       getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID),
       ...(Array.isArray(clientState?.features) ? clientState.features.filter((feature) => isWhatsAppFeature(feature)) : []),
@@ -12273,6 +12289,12 @@ function getAgentDeliveryOptionItems() {
     ...option,
     label: option.address ? `${option.label} (${option.address})` : option.label,
   }));
+}
+
+function getAgentDeliveryOptionsSignature() {
+  return getAgentDeliveryOptionItems()
+    .map((option) => `${option.value}:${option.label}`)
+    .join("|");
 }
 
 function getAgentProposalDeliveryChannel(proposal) {
@@ -12673,6 +12695,7 @@ function getScheduledActionItemSignature(action) {
     String(action.payload?.lastRunStatus || ""),
     String(action.payload?.nextRunAt || ""),
     Array.isArray(action.payload?.watchItems) ? action.payload.watchItems.join("|") : "",
+    getAgentDeliveryOptionsSignature(),
     String(monitorActionRunBusy.has(featureId)),
   ]);
 }
@@ -13265,6 +13288,36 @@ function getAgentLocalActionFrequencyOptions() {
   ];
 }
 
+const AGENT_CALENDAR_SUMMARY_DATE_RANGE_OPTIONS = [
+  { value: "today", label: "today" },
+  { value: "tomorrow", label: "tomorrow" },
+  { value: "this week", label: "this week" },
+  { value: "next week", label: "next week" },
+  { value: "this month", label: "this month" },
+  { value: "next month", label: "next month" },
+];
+
+function normalizeAgentCalendarSummaryDateRangeValue(value) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) {
+    return "";
+  }
+  const option = AGENT_CALENDAR_SUMMARY_DATE_RANGE_OPTIONS.find((candidate) => (
+    candidate.value.toLowerCase() === text.toLowerCase()
+    || candidate.label.toLowerCase() === text.toLowerCase()
+  ));
+  return option?.value || text;
+}
+
+function getAgentCalendarSummaryDateRangeOptions(currentValue = "") {
+  const options = AGENT_CALENDAR_SUMMARY_DATE_RANGE_OPTIONS.map((option) => ({ ...option }));
+  const normalizedCurrentValue = normalizeAgentCalendarSummaryDateRangeValue(currentValue);
+  if (normalizedCurrentValue && !options.some((option) => option.value === normalizedCurrentValue)) {
+    options.push({ value: normalizedCurrentValue, label: normalizedCurrentValue });
+  }
+  return options;
+}
+
 function getAgentWorkspaceDateParts(timeZone = getWorkspaceTimeZone()) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: normalizeMonitorScheduleTimezone(timeZone, getWorkspaceTimeZone()) || undefined,
@@ -13359,7 +13412,8 @@ function resizeAgentActionEditorTextarea(input) {
     return;
   }
   input.style.height = "auto";
-  input.style.height = `${input.scrollHeight}px`;
+  const borderBlock = Math.max(0, input.offsetHeight - input.clientHeight);
+  input.style.height = `${input.scrollHeight + borderBlock}px`;
 }
 
 function scheduleAgentActionEditorTextareaResize(input) {
@@ -13388,7 +13442,7 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
     input.placeholder = options.placeholder || "Enter a value";
   }
   if (options.multiline) {
-    input.rows = Number(options.rows || 3);
+    input.rows = Number(options.rows || 1);
     input.placeholder = options.placeholder || "Enter a value";
     input.addEventListener("input", () => resizeAgentActionEditorTextarea(input));
   }
@@ -13551,17 +13605,23 @@ function createAgentLocalActionEditor(action) {
     ],
     "email-digest": [["Mailbox", "mailbox", "Gmail or Outlook"]],
     reengagement: [["Quiet period", "inactivityPeriod", "e.g. 30 days"]],
-    custom: [["Result", "result", "What should this action produce?", { multiline: true, rows: 4 }]],
+    custom: [["Result", "result", "What should this action produce?", { multiline: true }]],
   };
   for (const [label, key, placeholder, fieldOptions = {}] of typeFields[proposal.type] || []) {
     draft[key] = getAgentProposalFieldValue(proposal, key);
-    const control = createAgentLocalActionEditorField(label, draft[key], { placeholder, ...fieldOptions });
+    const editorFieldOptions = { placeholder, ...fieldOptions };
+    if (key === "timeWindow") {
+      draft[key] = normalizeAgentCalendarSummaryDateRangeValue(draft[key] || "next week");
+      editorFieldOptions.select = true;
+      editorFieldOptions.options = getAgentCalendarSummaryDateRangeOptions(draft[key]);
+    }
+    const control = createAgentLocalActionEditorField(label, draft[key], editorFieldOptions);
     let timeWindowPreview = null;
     if (key === "timeWindow") {
       const valueRow = document.createElement("span");
       valueRow.className = "agent-action-editor-value-row";
       control.field.replaceChildren(control.field.querySelector(".agent-action-editor-label"));
-      valueRow.append(control.input);
+      valueRow.append(editorFieldOptions.select ? wrapAgentActionEditorSelect(control.input) : control.input);
       timeWindowPreview = document.createElement("span");
       timeWindowPreview.className = "agent-action-editor-value-meta";
       timeWindowPreview.setAttribute("aria-live", "polite");
@@ -13572,9 +13632,9 @@ function createAgentLocalActionEditor(action) {
         timeWindowPreview.hidden = !timeWindowPreview.textContent;
       };
       updateTimeWindowPreview();
-      control.input.addEventListener("input", updateTimeWindowPreview);
+      control.input.addEventListener(editorFieldOptions.select ? "change" : "input", updateTimeWindowPreview);
     }
-    control.input.addEventListener("input", () => {
+    control.input.addEventListener(editorFieldOptions.select ? "change" : "input", () => {
       draft[key] = control.input.value;
       scheduleAgentLocalActionAutoSave(action, draft, form);
     });
@@ -16280,6 +16340,10 @@ function createAgentToolItem(feature) {
   return item;
 }
 
+function shouldRenderAgentToolShelfFeature(feature) {
+  return Boolean(feature && !isMonitorFeature(feature));
+}
+
 function createAgentPlatformConnectionItem(connection) {
   const item = document.createElement("button");
   const label = connection.label || "Connected app";
@@ -16330,6 +16394,9 @@ function updateFeatureList() {
   const visibleFeatures = [];
   const seenLabels = new Set();
   for (const feature of features) {
+    if (!shouldRenderAgentToolShelfFeature(feature)) {
+      continue;
+    }
     const label = getAgentToolLabel(feature);
     if (seenLabels.has(label)) {
       continue;
@@ -19818,6 +19885,7 @@ function completeSignIn(session) {
   state.pricingLoading = false;
   state.pricingError = "";
   state.paymentStatus = null;
+  state.whatsappConnection = null;
   state.platformConnections = [];
   state.platformConnectionStorageAvailable = true;
   state.platformConnectionStorageMessage = "";
@@ -19943,6 +20011,7 @@ async function signOut() {
   state.pricingLoading = false;
   state.pricingError = "";
   state.paymentStatus = null;
+  state.whatsappConnection = null;
   state.platformConnections = [];
   state.platformConnectionStorageAvailable = true;
   state.platformConnectionStorageMessage = "";
@@ -20666,6 +20735,7 @@ async function bootstrapAuthState() {
     state.scheduledActionsLoadedAt = 0;
     state.selectedScheduledActionId = "";
     state.agentAddToolMenuOpen = false;
+    state.whatsappConnection = null;
     applyRemoteAccountProfile(response);
     state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
     clearAuthChallenge();

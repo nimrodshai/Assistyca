@@ -3501,7 +3501,7 @@ body[data-modal="billing"] .app-shell {
 .agent-action-item:focus-visible {
   transform: translateY(-1px);
   background: rgba(255, 255, 255, 0.96);
-  border-color: rgba(15, 118, 110, 0.2);
+  border-color: rgba(20, 28, 38, 0.09);
   box-shadow: 0 9px 22px rgba(25, 38, 54, 0.065);
   outline: 0;
 }
@@ -3521,8 +3521,8 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-action-item-trigger:focus-visible {
-  outline: 2px solid rgba(15, 118, 110, 0.55);
-  outline-offset: -3px;
+  background: rgba(20, 28, 38, 0.035);
+  outline: 0;
 }
 
 .agent-action-item-expansion {
@@ -3938,11 +3938,11 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-action-editor-textarea {
-  min-height: 5.8rem;
+  min-height: calc(1.45em + 1rem);
   line-height: 1.45;
   overflow-y: hidden;
   overflow-wrap: anywhere;
-  resize: vertical;
+  resize: none;
   white-space: pre-wrap;
 }
 
