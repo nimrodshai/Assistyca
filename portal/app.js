@@ -12783,7 +12783,7 @@ function renderScheduledActionItemContent(item, action) {
   expansionInner.append(createScheduledActionDetail(action));
   expansion.append(expansionInner);
 
-  item.append(trigger, expansion);
+  item.replaceChildren(trigger, expansion);
 }
 
 function createScheduledActionItem(action, options = {}) {

@@ -148,6 +148,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/scheduled-actions?limit=100"', script)
         self.assertIn("function renderAgentActions", script)
         self.assertIn("function renderScheduledActionList", script)
+        action_item_renderer = script[
+            script.index("function renderScheduledActionItemContent"):
+            script.index("function createScheduledActionItem")
+        ]
+        self.assertIn("item.replaceChildren(trigger, expansion);", action_item_renderer)
+        self.assertNotIn("item.append(trigger, expansion);", action_item_renderer)
 
     def test_monitor_actions_support_manual_runs_and_manual_only_mode(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
@@ -443,7 +449,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=114", html)
-        self.assertIn("app.js?v=138", html)
+        self.assertIn("app.js?v=139", html)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')
