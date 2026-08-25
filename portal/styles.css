@@ -2999,6 +2999,14 @@ body[data-modal="billing"] .app-shell {
   backdrop-filter: blur(12px) saturate(130%);
 }
 
+.agent-composer.is-multiline {
+  align-items: end;
+}
+
+.agent-composer.is-multiline .agent-attach-source-control {
+  align-self: end;
+}
+
 .agent-attach-source-control {
   position: relative;
   display: grid;
@@ -3184,15 +3192,18 @@ body[data-modal="billing"] .app-shell {
 .agent-composer textarea {
   height: 2.46rem;
   min-height: 2.46rem;
-  max-height: 10rem;
+  max-height: calc((1.45em * 5) + 1rem);
+  padding: 0.5rem 0.18rem;
   resize: none;
   border: 0;
   background: transparent;
   box-shadow: none;
   line-height: 1.45;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
-  white-space: pre;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 #agentComposerButton {
@@ -3200,6 +3211,10 @@ body[data-modal="billing"] .app-shell {
   padding: 0.58rem 0.96rem;
   border-radius: 13px;
   box-shadow: 0 8px 18px rgba(15, 118, 110, 0.14);
+}
+
+.agent-composer.is-scrollable textarea {
+  overflow-y: auto;
 }
 
 .agent-composer textarea:focus {

@@ -404,6 +404,7 @@ const DEFAULT_SIMULATOR = {
 
 const AGENT_INITIAL_MESSAGE = "";
 const AGENT_MAX_MESSAGES = 40;
+const AGENT_COMPOSER_MAX_LINES = 5;
 const AGENT_ADD_TOOL_OPTIONS = [
   {
     id: "email",
@@ -13951,6 +13952,7 @@ function updateAgentWorkspace() {
   if (elements.agentComposerInput) {
     elements.agentComposerInput.disabled = agentTurnBusy;
     elements.agentComposerInput.setAttribute("aria-busy", String(agentTurnBusy));
+    scheduleAgentComposerInputResize();
   }
   if (elements.agentComposerButton) {
     elements.agentComposerButton.disabled = agentTurnBusy;
@@ -14449,6 +14451,53 @@ async function handleAgentUserText(text) {
   }
 }
 
+function getAgentComposerPixelValue(styles, property) {
+  const value = Number.parseFloat(styles?.getPropertyValue(property) || "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function getAgentComposerLineHeight(styles) {
+  const lineHeight = Number.parseFloat(styles?.lineHeight || "");
+  if (Number.isFinite(lineHeight) && lineHeight > 0) {
+    return lineHeight;
+  }
+  const fontSize = Number.parseFloat(styles?.fontSize || "");
+  return Number.isFinite(fontSize) && fontSize > 0 ? fontSize * 1.45 : 22;
+}
+
+function resizeAgentComposerInput() {
+  const input = elements.agentComposerInput;
+  if (!input) {
+    return;
+  }
+
+  const styles = window.getComputedStyle(input);
+  const lineHeight = getAgentComposerLineHeight(styles);
+  const paddingBlock = getAgentComposerPixelValue(styles, "padding-top")
+    + getAgentComposerPixelValue(styles, "padding-bottom");
+  const borderBlock = Math.max(0, input.offsetHeight - input.clientHeight);
+  const singleLineHeight = Math.ceil(lineHeight + paddingBlock + borderBlock);
+  const maxHeight = Math.ceil((lineHeight * AGENT_COMPOSER_MAX_LINES) + paddingBlock + borderBlock);
+
+  input.style.height = `${singleLineHeight}px`;
+  const measuredHeight = Math.max(input.scrollHeight + borderBlock, singleLineHeight);
+  const nextHeight = Math.min(measuredHeight, maxHeight);
+  const isMultiline = measuredHeight > singleLineHeight + 1;
+  const isScrollable = measuredHeight > maxHeight + 1;
+
+  input.style.height = `${nextHeight}px`;
+  input.style.overflowY = isScrollable ? "auto" : "hidden";
+  elements.agentComposerForm?.classList.toggle("is-multiline", isMultiline);
+  elements.agentComposerForm?.classList.toggle("is-scrollable", isScrollable);
+}
+
+function scheduleAgentComposerInputResize() {
+  resizeAgentComposerInput();
+  window.requestAnimationFrame(() => {
+    resizeAgentComposerInput();
+  });
+}
+
 function handleAgentComposerSubmit(event = null) {
   event?.preventDefault();
   if (agentTurnBusy) {
@@ -14463,6 +14512,7 @@ function handleAgentComposerSubmit(event = null) {
 
   if (input) {
     input.value = "";
+    resizeAgentComposerInput();
   }
 
   const defaultSourceText = agentSourceAttachment?.sourceType === "url"
@@ -20941,7 +20991,9 @@ function bindEvents() {
         handleAgentComposerSubmit(event);
       }
     });
+    elements.agentComposerInput.addEventListener("input", resizeAgentComposerInput);
     elements.agentComposerInput.addEventListener("paste", handleAgentComposerPaste);
+    scheduleAgentComposerInputResize();
   }
 
   if (elements.agentAttachSourceButton) {
@@ -20984,6 +21036,7 @@ function bindEvents() {
     button.addEventListener("click", () => {
       if (elements.agentComposerInput) {
         elements.agentComposerInput.value = button.dataset.agentPrompt || "";
+        resizeAgentComposerInput();
       }
       handleAgentComposerSubmit();
     });

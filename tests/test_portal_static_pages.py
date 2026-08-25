@@ -386,7 +386,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=106", html)
+        self.assertIn("styles.css?v=107", html)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')
@@ -396,7 +396,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('pushAgentMessage("assistant", message, {', script)
         self.assertIn('technical: getAgentErrorTechnicalInfo(error)', script)
         self.assertIn("I couldn’t get a response right now", script)
-        self.assertIn('wrap="off"', html)
+        self.assertIn('wrap="soft"', html)
         composer_markup = html[
             html.index('<form id="agentComposerForm"'):
             html.index('<button id="agentComposerButton"', html.index('<form id="agentComposerForm"'))
@@ -414,6 +414,10 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('aria-label="Attach a file as a recurring source">Attach file</button>', composer_markup)
         self.assertIn("function normalizeAgentComposerPastedText", script)
         self.assertIn("function handleAgentComposerPaste", script)
+        self.assertIn("const AGENT_COMPOSER_MAX_LINES = 5;", script)
+        self.assertIn("function resizeAgentComposerInput", script)
+        self.assertIn("function scheduleAgentComposerInputResize", script)
+        self.assertIn('elements.agentComposerInput.addEventListener("input", resizeAgentComposerInput);', script)
         self.assertIn('elements.agentComposerInput.addEventListener("paste", handleAgentComposerPaste);', script)
         self.assertIn("function setAgentAttachSourceMenuOpen", script)
         self.assertIn("function normalizeAgentSourceUrl", script)
@@ -423,9 +427,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("elements.agentAttachSourceUrlOption.addEventListener", script)
         self.assertIn("elements.agentSourceUrlAttachButton.addEventListener", script)
         self.assertIn('replace(/[ \\t]*\\n+[ \\t]*/g, " ")', script)
-        self.assertIn("white-space: pre;", styles)
-        self.assertIn("overflow-x: auto;", styles)
+        self.assertIn("white-space: pre-wrap;", styles)
+        self.assertIn("overflow-x: hidden;", styles)
         self.assertIn("overflow-y: hidden;", styles)
+        self.assertIn(".agent-composer.is-multiline", styles)
+        self.assertIn(".agent-composer.is-multiline .agent-attach-source-control", styles)
+        self.assertIn(".agent-composer.is-scrollable textarea", styles)
         self.assertIn(".agent-attach-source-control", styles)
         self.assertIn(".agent-attach-source-menu", styles)
         self.assertIn('.agent-attach-source-menu[data-mode="url"]', styles)
