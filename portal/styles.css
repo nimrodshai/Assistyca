@@ -5761,10 +5761,13 @@ body[data-modal="billing"] .app-shell {
   height: 1.35rem;
   place-items: center;
   border-radius: 999px;
-  font-family: var(--font-display);
-  font-size: 0.72rem;
-  font-weight: 850;
-  line-height: 1;
+  line-height: 0;
+}
+
+.feature-activation-result-icon svg {
+  display: block;
+  width: 0.9rem;
+  height: 0.9rem;
 }
 
 .feature-activation-result[data-tone="success"] {

@@ -19121,7 +19121,7 @@ function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
     const webhookSuccess = /webhook/i.test(notice) && /refreshed|saved|subscribed|accepted/i.test(notice);
     return {
       tone: isWarning ? "warning" : "success",
-      icon: isWarning ? "X" : "V",
+      icon: isWarning ? "x" : "check",
       text: isWarning ? (refreshOnly ? "Refresh failed" : "Save failed") : webhookSuccess ? "Refresh succeeded" : "Save succeeded",
     };
   }
@@ -19132,7 +19132,7 @@ function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
   if (whatsapp.connection_status === "connected" && webhookStatus === "subscribed") {
     return {
       tone: "success",
-      icon: "V",
+      icon: "check",
       text: "Refresh succeeded",
     };
   }
@@ -19157,8 +19157,47 @@ function updateFeatureActivationResult(feature = getSelectedFeature()) {
 
   element.classList.remove("is-hidden");
   element.dataset.tone = result.tone;
-  elements.featureActivationResultIcon.textContent = result.icon;
+  elements.featureActivationResultIcon.replaceChildren(createFeatureActivationResultIcon(result.icon));
   elements.featureActivationResultText.textContent = result.text;
+}
+
+function createFeatureActivationResultIcon(iconType) {
+  const normalizedIcon = String(iconType || "").trim().toLowerCase();
+  if (!normalizedIcon) {
+    return document.createDocumentFragment();
+  }
+
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "16",
+    height: "16",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+
+  if (normalizedIcon === "x") {
+    svg.append(
+      createSvgElement("path", {
+        d: "M7 7l10 10M17 7 7 17",
+        stroke: "currentColor",
+        "stroke-width": "2.7",
+        "stroke-linecap": "round",
+      }),
+    );
+    return svg;
+  }
+
+  svg.append(
+    createSvgElement("path", {
+      d: "M5.5 12.6 9.8 17 18.8 7",
+      stroke: "currentColor",
+      "stroke-width": "2.8",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+    }),
+  );
+  return svg;
 }
 
 function updateFeatureStudioWhatsAppHealthNotice(feature = getSelectedFeature()) {
