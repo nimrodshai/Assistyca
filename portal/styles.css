@@ -3937,6 +3937,15 @@ body[data-modal="billing"] .app-shell {
   -webkit-appearance: none;
 }
 
+.agent-action-editor-textarea {
+  min-height: 5.8rem;
+  line-height: 1.45;
+  overflow-y: hidden;
+  overflow-wrap: anywhere;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
 .agent-action-editor-select-wrap::after {
   position: absolute;
   top: 50%;

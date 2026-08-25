@@ -175,6 +175,10 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function createAgentMonitorEditor", script)
         self.assertIn("agentMonitorEditForm", script)
         self.assertIn('subtitle.textContent = "Changes save automatically.";', script)
+        self.assertIn("function resizeAgentActionEditorTextarea", script)
+        self.assertIn("scheduleAgentActionEditorTextareaResize(control.input);", script)
+        self.assertIn("agent-action-editor-textarea", script)
+        self.assertIn(".agent-action-editor-textarea", styles)
         self.assertIn('button.textContent = removeAction ? "Remove action" : "Turn off action";', script)
         self.assertIn("const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(action.payload?.manualOnly, false);", script)
         self.assertNotIn('createScheduledActionDetailRow("Watching"', script)
@@ -386,7 +390,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=107", html)
+        self.assertIn("styles.css?v=108", html)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')

@@ -13354,19 +13354,43 @@ function wrapAgentActionEditorSelect(select) {
   return wrapper;
 }
 
+function resizeAgentActionEditorTextarea(input) {
+  if (!input || input.tagName !== "TEXTAREA") {
+    return;
+  }
+  input.style.height = "auto";
+  input.style.height = `${input.scrollHeight}px`;
+}
+
+function scheduleAgentActionEditorTextareaResize(input) {
+  resizeAgentActionEditorTextarea(input);
+  window.requestAnimationFrame(() => resizeAgentActionEditorTextarea(input));
+}
+
 function createAgentLocalActionEditorField(labelText, value, options = {}) {
   const field = document.createElement("label");
   field.className = "agent-action-editor-field";
   const label = document.createElement("span");
   label.className = "agent-action-editor-label";
   label.textContent = labelText;
-  const input = options.select ? document.createElement("select") : document.createElement("input");
-  input.className = options.select ? "agent-action-editor-select" : "agent-action-editor-input";
+  const input = options.select
+    ? document.createElement("select")
+    : options.multiline
+      ? document.createElement("textarea")
+      : document.createElement("input");
+  input.className = options.select
+    ? "agent-action-editor-select"
+    : `agent-action-editor-input${options.multiline ? " agent-action-editor-textarea" : ""}`;
   input.value = String(value || "");
   input.setAttribute("aria-label", labelText);
-  if (!options.select) {
+  if (!options.select && !options.multiline) {
     input.type = "text";
     input.placeholder = options.placeholder || "Enter a value";
+  }
+  if (options.multiline) {
+    input.rows = Number(options.rows || 3);
+    input.placeholder = options.placeholder || "Enter a value";
+    input.addEventListener("input", () => resizeAgentActionEditorTextarea(input));
   }
   if (options.select) {
     for (const option of options.options || []) {
@@ -13527,11 +13551,11 @@ function createAgentLocalActionEditor(action) {
     ],
     "email-digest": [["Mailbox", "mailbox", "Gmail or Outlook"]],
     reengagement: [["Quiet period", "inactivityPeriod", "e.g. 30 days"]],
-    custom: [["Result", "result", "What should this action produce?"]],
+    custom: [["Result", "result", "What should this action produce?", { multiline: true, rows: 4 }]],
   };
-  for (const [label, key, placeholder] of typeFields[proposal.type] || []) {
+  for (const [label, key, placeholder, fieldOptions = {}] of typeFields[proposal.type] || []) {
     draft[key] = getAgentProposalFieldValue(proposal, key);
-    const control = createAgentLocalActionEditorField(label, draft[key], { placeholder });
+    const control = createAgentLocalActionEditorField(label, draft[key], { placeholder, ...fieldOptions });
     let timeWindowPreview = null;
     if (key === "timeWindow") {
       const valueRow = document.createElement("span");
@@ -13555,6 +13579,9 @@ function createAgentLocalActionEditor(action) {
       scheduleAgentLocalActionAutoSave(action, draft, form);
     });
     form.append(control.field);
+    if (fieldOptions.multiline) {
+      scheduleAgentActionEditorTextareaResize(control.input);
+    }
   }
 
   const frequency = createAgentLocalActionEditorField(
