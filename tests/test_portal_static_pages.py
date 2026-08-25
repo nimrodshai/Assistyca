@@ -175,6 +175,19 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function createAgentMonitorEditor", script)
         self.assertIn("agentMonitorEditForm", script)
         self.assertIn('subtitle.textContent = "Changes save automatically.";', script)
+        detail_card_styles = styles[
+            styles.index(".agent-action-detail-card {"):
+            styles.index(".agent-action-editor {")
+        ]
+        editor_styles = styles[
+            styles.index(".agent-action-editor {"):
+            styles.index(".agent-action-editor-heading {")
+        ]
+        self.assertIn("background: transparent;", detail_card_styles)
+        self.assertIn("box-shadow: none;", detail_card_styles)
+        self.assertIn("border-top: 1px solid rgba(20, 28, 38, 0.065);", detail_card_styles)
+        self.assertIn("background: transparent;", editor_styles)
+        self.assertIn("border-top: 1px solid rgba(15, 118, 110, 0.11);", editor_styles)
         self.assertIn("function resizeAgentActionEditorTextarea", script)
         self.assertIn("input.scrollHeight + borderBlock", script)
         self.assertIn("input.rows = Number(options.rows || 1);", script)
@@ -407,7 +420,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=109", html)
+        self.assertIn("styles.css?v=110", html)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')

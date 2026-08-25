@@ -3794,21 +3794,23 @@ body[data-modal="billing"] .app-shell {
 
 .agent-action-detail-card {
   display: grid;
-  gap: 0.9rem;
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(20, 28, 38, 0.08);
-  border-radius: 17px;
-  box-shadow: var(--shadow-soft);
+  gap: 0.78rem;
+  padding: 0.72rem 0 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid rgba(20, 28, 38, 0.065);
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .agent-action-editor {
   display: grid;
   gap: 0.65rem;
-  padding: 0.78rem;
-  background: rgba(15, 118, 110, 0.045);
-  border: 1px solid rgba(15, 118, 110, 0.11);
-  border-radius: 14px;
+  padding: 0.76rem 0 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid rgba(15, 118, 110, 0.11);
+  border-radius: 0;
 }
 
 .agent-action-editor-heading {
@@ -3924,8 +3926,8 @@ body[data-modal="billing"] .app-shell {
   min-height: 2.35rem;
   padding: 0.5rem 0.62rem;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(20, 28, 38, 0.11);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(20, 28, 38, 0.095);
   border-radius: 10px;
   font: inherit;
   font-size: 0.73rem;
