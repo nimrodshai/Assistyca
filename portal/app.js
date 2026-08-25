@@ -10439,6 +10439,22 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     alternatives: [...blueprint.alternatives],
   });
 
+  const requestedManualOnly = agentWebMonitorTextSuggestsManualOnly(text)
+    || (blueprint.type === "calendar-summary" && !extractAgentFrequencyField(text));
+  if (requestedManualOnly) {
+    proposal.details = {
+      ...proposal.details,
+      manualOnly: true,
+      runMode: "manual",
+    };
+    proposal.executionPlan = {
+      ...proposal.executionPlan,
+      manualOnly: true,
+      runMode: "manual",
+      frequency: "manual only",
+    };
+  }
+
   if (proposal.type === "custom") {
     proposal.summary = `${blueprint.summary} Request: "${String(text).trim().slice(0, 140)}"`;
   }
@@ -10480,12 +10496,26 @@ function switchAgentProposalToCalendarSummary(proposal, requestText) {
   const previousCreatedAt = proposal.createdAt;
   const previousRevision = Math.max(1, Number(proposal.revision || 1));
   const previousDeliveryChannel = getAgentProposalFieldValue(proposal, "deliveryChannel");
+  const previousManualOnly = getAgentProposalManualOnly(proposal);
   const replacement = createAgentProposalFromRequest(requestText, AGENT_BLUEPRINTS.calendarSummary);
   if (previousDeliveryChannel && !replacement.fields.deliveryChannel) {
     replacement.fields.deliveryChannel = previousDeliveryChannel;
   }
   if (getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected") {
     replacement.fields.calendar = "Connected calendar";
+  }
+  if (previousManualOnly) {
+    replacement.details = {
+      ...replacement.details,
+      manualOnly: true,
+      runMode: "manual",
+    };
+    replacement.executionPlan = {
+      ...replacement.executionPlan,
+      manualOnly: true,
+      runMode: "manual",
+      frequency: "manual only",
+    };
   }
   syncAgentProposalFieldCompatibility(replacement);
   updateAgentProposalSummaryFromFields(replacement);
@@ -12070,6 +12100,81 @@ function getAgentProposalWebMonitorManualOnly(proposal, backendFeature = null) {
   ].some(agentWebMonitorTextSuggestsManualOnly) || !requestedFrequency;
 }
 
+function getAgentProposalManualOnly(proposal, backendFeature = null) {
+  if (proposal?.type === "web-monitor") {
+    return getAgentProposalWebMonitorManualOnly(proposal, backendFeature);
+  }
+
+  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
+  const settings = getAgentProposalExecutionSettings(proposal);
+  const explicitManual = [
+    details.manualOnly,
+    details.manual_only,
+    settings.manualOnly,
+    settings.manual_only,
+  ].find((value) => value !== undefined && value !== null && value !== "");
+  if (explicitManual !== undefined) {
+    return normalizeMonitorManualOnly(explicitManual, false);
+  }
+
+  const runMode = String(
+    details.runMode
+    || details.run_mode
+    || settings.runMode
+    || settings.run_mode
+    || proposal?.executionPlan?.runMode
+    || proposal?.executionPlan?.run_mode
+    || "",
+  ).trim().toLowerCase();
+  if (["manual", "manual_only", "on_demand", "on-demand"].includes(runMode)) {
+    return true;
+  }
+
+  // Calendar summaries are currently created as user-triggered actions. A
+  // recurring cadence can still be chosen later in the shared editor.
+  if (proposal?.type === "calendar-summary" && !extractAgentFrequencyField(proposal?.requestText || "")) {
+    return true;
+  }
+
+  return [
+    settings.frequency,
+    proposal?.executionPlan?.frequency,
+    getAgentProposalFieldValue(proposal, "frequency"),
+    getAgentProposalFieldValue(proposal, "schedule"),
+    proposal?.summary,
+    proposal?.requestText,
+  ].some(agentWebMonitorTextSuggestsManualOnly);
+}
+
+function applyAgentProposalManualMode(proposal) {
+  if (!proposal || proposal.type === "scheduled-message") {
+    return false;
+  }
+  proposal.details = {
+    ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
+    manualOnly: true,
+    runMode: "manual",
+  };
+  proposal.executionPlan = {
+    ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
+    manualOnly: true,
+    runMode: "manual",
+    frequency: "manual only",
+  };
+  proposal.fields = {
+    ...getAgentProposalFieldMap(proposal),
+    frequency: "manual only",
+  };
+  if (proposal.type === "email-digest") {
+    proposal.fields.schedule = "manual only";
+  }
+  syncAgentProposalFieldCompatibility(proposal);
+  proposal.revision = Math.max(1, Number(proposal.revision || 1)) + 1;
+  proposal.updatedAt = new Date().toISOString();
+  updateAgentProposalSummaryFromFields(proposal);
+  return true;
+}
+
 function getAgentProposalLocalActionTitle(proposal) {
   if (proposal?.type === "web-monitor") {
     return "Web monitor";
@@ -12156,7 +12261,7 @@ function createAgentProposalLocalAction(proposal) {
   const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || proposal.relatedFeatureId || "").trim();
   const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
   const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
-  const manualOnly = getAgentProposalWebMonitorManualOnly(proposal, backendFeature);
+  const manualOnly = getAgentProposalManualOnly(proposal, backendFeature);
   const status = backendFeatureId
     ? (backendFeatureActive ? (manualOnly ? "manual_only" : "running") : "cancelled")
     : (proposal.missingCredential ? "pending" : (manualOnly ? "manual_only" : "running"));
@@ -13039,6 +13144,265 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
   return currentSavePromise;
 }
 
+function getAgentLocalActionProposal(action) {
+  const proposalId = String(action?.payload?.proposalId || "").trim();
+  if (!proposalId) {
+    return null;
+  }
+  return getAgentWorkspace().proposals.find((proposal) => proposal.id === proposalId) || null;
+}
+
+function getAgentLocalActionFrequencyValue(action, proposal) {
+  if (getAgentProposalManualOnly(proposal)) {
+    return "manual";
+  }
+  const raw = String(
+    action?.payload?.frequency
+    || getAgentProposalFieldValue(proposal, "frequency")
+    || getAgentProposalFieldValue(proposal, "schedule")
+    || proposal?.executionPlan?.frequency
+    || "daily",
+  ).trim().toLowerCase();
+  if (/hour/.test(raw)) return "hourly";
+  if (/week/.test(raw)) return "weekly";
+  if (/month/.test(raw)) return "monthly";
+  if (/15\s*minutes?/.test(raw)) return "minutes:15";
+  if (/5\s*minutes?/.test(raw)) return "minutes:5";
+  if (/minute/.test(raw)) return "minutes:15";
+  return "daily";
+}
+
+function getAgentLocalActionFrequencyOptions() {
+  return [
+    { value: "manual", label: "Run manually" },
+    { value: "minutes:5", label: "Every 5 minutes" },
+    { value: "minutes:15", label: "Every 15 minutes" },
+    { value: "hourly", label: "Hourly" },
+    { value: "daily", label: "Daily" },
+    { value: "weekly", label: "Weekly" },
+    { value: "monthly", label: "Monthly" },
+  ];
+}
+
+function formatAgentLocalActionFrequency(value) {
+  const option = getAgentLocalActionFrequencyOptions().find((candidate) => candidate.value === value);
+  return option?.label || "Daily";
+}
+
+function createAgentLocalActionEditorField(labelText, value, options = {}) {
+  const field = document.createElement("label");
+  field.className = "agent-action-editor-field";
+  const label = document.createElement("span");
+  label.className = "agent-action-editor-label";
+  label.textContent = labelText;
+  const input = options.select ? document.createElement("select") : document.createElement("input");
+  input.className = options.select ? "agent-action-editor-select" : "agent-action-editor-input";
+  input.value = String(value || "");
+  input.setAttribute("aria-label", labelText);
+  if (!options.select) {
+    input.type = "text";
+    input.placeholder = options.placeholder || "Enter a value";
+  }
+  if (options.select) {
+    for (const option of options.options || []) {
+      const optionElement = document.createElement("option");
+      optionElement.value = option.value;
+      optionElement.textContent = option.label;
+      input.append(optionElement);
+    }
+    input.value = String(value || options.options?.[0]?.value || "");
+  }
+  field.append(label, input);
+  return { field, input };
+}
+
+function updateAgentLocalActionDom(action) {
+  const item = Array.from(document.querySelectorAll("[data-agent-scheduled-action-id]") )
+    .find((candidate) => candidate.dataset.agentScheduledActionId === String(action?.id || ""));
+  if (!item) {
+    return;
+  }
+  const statusClass = getScheduledActionStatusClass(action.status);
+  item.className = `agent-action-item is-${statusClass}${state.selectedScheduledActionId === String(action.id) ? " is-expanded" : ""}`;
+  const status = item.querySelector(".agent-action-status");
+  if (status) {
+    status.className = `agent-action-status is-${statusClass}`;
+    status.textContent = getScheduledActionStatusLabel(action.status, action);
+  }
+  const time = item.querySelector(".agent-action-item-time");
+  if (time) {
+    time.textContent = action.payload?.manualOnly
+      ? "Run when you choose"
+      : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone);
+  }
+  for (const term of item.querySelectorAll("dt")) {
+    const label = String(term.textContent || "").trim();
+    const value = term.nextElementSibling;
+    if (!value) continue;
+    if (label === "Delivery") {
+      value.textContent = action.payload?.deliveryLabel
+        || formatAgentDeliveryTargetDetail(action.payload?.deliveryChannel || action.channel, action.payload?.deliveryTarget || action.recipientRef)
+        || "As configured";
+    }
+    if (label === "Frequency") {
+      value.textContent = action.payload?.frequency || "As configured";
+    }
+    if (label === "Date range") {
+      value.textContent = action.payload?.timeWindow || "Not available";
+    }
+  }
+}
+
+function setAgentLocalActionEditorStatus(editor, message, isError = false) {
+  if (!editor?.status) return;
+  editor.status.hidden = !message;
+  editor.status.textContent = message;
+  editor.status.classList.toggle("is-error", isError);
+}
+
+function scheduleAgentLocalActionAutoSave(action, draft, form) {
+  const editor = form?._agentLocalActionEditor;
+  if (!editor) return;
+  if (editor.saveTimer) window.clearTimeout(editor.saveTimer);
+  setAgentLocalActionEditorStatus(editor, "Saving changes…");
+  editor.saveTimer = window.setTimeout(() => {
+    editor.saveTimer = null;
+    const proposal = getAgentLocalActionProposal(action);
+    if (!proposal) return;
+    const fields = { ...getAgentProposalFieldMap(proposal) };
+    const frequencyLabel = formatAgentLocalActionFrequency(draft.frequency);
+    if (draft.frequency === "manual") {
+      fields.frequency = "manual only";
+      fields.schedule = "manual only";
+    } else {
+      fields.frequency = frequencyLabel;
+      if (proposal.type === "email-digest") fields.schedule = frequencyLabel;
+    }
+    if (draft.deliveryChannel) fields.deliveryChannel = formatAgentScheduledMessageChannel(draft.deliveryChannel);
+    for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
+      if (Object.prototype.hasOwnProperty.call(draft, key)) {
+        const value = String(draft[key] || "").trim();
+        if (value) fields[key] = value;
+      }
+    }
+    proposal.fields = normalizeAgentFieldValues(fields);
+    proposal.details = {
+      ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
+      manualOnly: draft.frequency === "manual",
+      runMode: draft.frequency === "manual" ? "manual" : "recurring",
+      frequency: frequencyLabel,
+    };
+    proposal.executionPlan = {
+      ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
+      manualOnly: draft.frequency === "manual",
+      runMode: draft.frequency === "manual" ? "manual" : "recurring",
+      frequency: frequencyLabel,
+      settings: {
+        ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
+        manualOnly: draft.frequency === "manual",
+        runMode: draft.frequency === "manual" ? "manual" : "recurring",
+      },
+    };
+    proposal.updatedAt = new Date().toISOString();
+    updateAgentProposalSummaryFromFields(proposal);
+    action.payload.manualOnly = draft.frequency === "manual";
+    action.payload.frequency = draft.frequency === "manual" ? "manual only" : frequencyLabel;
+    action.payload.summary = proposal.summary;
+    action.payload.preview = getAgentProposalLocalActionPreview(proposal);
+    action.payload.deliveryChannel = draft.deliveryChannel;
+    action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, action.payload.deliveryTarget || action.recipientRef);
+    for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
+      if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
+    }
+    action.channel = draft.deliveryChannel || action.channel;
+    action.status = draft.frequency === "manual" ? "manual_only" : "running";
+    persistClientState();
+    updateAgentLocalActionDom(action);
+    setAgentLocalActionEditorStatus(editor, "Saved");
+  }, 260);
+}
+
+function createAgentLocalActionEditor(action) {
+  const proposal = getAgentLocalActionProposal(action);
+  if (!proposal || !isAgentProposalLocalAction(action)) return null;
+
+  const draft = {
+    frequency: getAgentLocalActionFrequencyValue(action, proposal),
+    deliveryChannel: getAgentProposalDeliveryChannel(proposal) || normalizeAgentDeliveryChannel(action.channel) || "portal",
+  };
+  const form = document.createElement("form");
+  form.className = "agent-action-editor";
+  form.addEventListener("submit", (event) => event.preventDefault());
+  const heading = document.createElement("div");
+  heading.className = "agent-action-editor-heading";
+  const title = document.createElement("strong");
+  title.textContent = "Edit action";
+  const subtitle = document.createElement("span");
+  subtitle.textContent = "Changes save automatically.";
+  heading.append(title, subtitle);
+  form.append(heading);
+
+  const typeFields = {
+    "calendar-summary": [
+      ["Calendar", "calendar", "Connected calendar"],
+      ["Date range", "timeWindow", "e.g. next week"],
+    ],
+    "email-digest": [["Mailbox", "mailbox", "Gmail or Outlook"]],
+    reengagement: [["Quiet period", "inactivityPeriod", "e.g. 30 days"]],
+    custom: [["Result", "result", "What should this action produce?"]],
+  };
+  for (const [label, key, placeholder] of typeFields[proposal.type] || []) {
+    draft[key] = getAgentProposalFieldValue(proposal, key);
+    const control = createAgentLocalActionEditorField(label, draft[key], { placeholder });
+    control.input.addEventListener("input", () => {
+      draft[key] = control.input.value;
+      scheduleAgentLocalActionAutoSave(action, draft, form);
+    });
+    form.append(control.field);
+  }
+
+  const frequency = createAgentLocalActionEditorField(
+    "Frequency",
+    draft.frequency,
+    { select: true, options: getAgentLocalActionFrequencyOptions() },
+  );
+  frequency.input.addEventListener("change", () => {
+    draft.frequency = frequency.input.value;
+    scheduleAgentLocalActionAutoSave(action, draft, form);
+  });
+  form.append(frequency.field);
+
+  const delivery = createAgentLocalActionEditorField(
+    "Delivery",
+    draft.deliveryChannel,
+    {
+      select: true,
+      options: [
+        { value: "portal", label: "This chat" },
+        { value: "email", label: "Email" },
+        { value: "telegram", label: "Telegram" },
+        { value: "whatsapp", label: "WhatsApp" },
+      ],
+    },
+  );
+  delivery.input.addEventListener("change", () => {
+    draft.deliveryChannel = delivery.input.value;
+    scheduleAgentLocalActionAutoSave(action, draft, form);
+  });
+  form.append(delivery.field);
+
+  const deliveryNote = document.createElement("p");
+  deliveryNote.className = "agent-action-editor-delivery";
+  deliveryNote.textContent = "You can change the delivery channel without recreating the action.";
+  const status = document.createElement("p");
+  status.className = "agent-action-editor-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  form.append(deliveryNote, status);
+  form._agentLocalActionEditor = { draft, status, frequencySelect: frequency.input, saveTimer: null };
+  return form;
+}
+
 function createScheduledActionDetail(action) {
   const card = document.createElement("div");
   card.className = "agent-action-detail-card";
@@ -13122,12 +13486,8 @@ function createScheduledActionDetail(action) {
       }
     } else {
       const details = document.createElement("dl");
-      details.className = "agent-action-detail-grid";
-      details.append(
-        createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
-        createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
-        deliveryRow,
-      );
+      details.className = "agent-action-detail-grid agent-action-primary-details";
+      details.append(deliveryRow);
       if (payload.location) {
         details.append(createScheduledActionDetailRow("Location", String(payload.location)));
       }
@@ -13135,6 +13495,13 @@ function createScheduledActionDetail(action) {
         details.append(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
       }
       card.append(details);
+
+      const moreRows = [
+        createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
+        createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
+      ];
+      const moreDetails = createScheduledActionMoreDetails(moreRows);
+      if (moreDetails) card.append(moreDetails);
     }
 
     if (payload.initialRunError) {
@@ -13159,6 +13526,11 @@ function createScheduledActionDetail(action) {
 
     if (isFeatureAction) {
       const editor = createAgentMonitorEditor(action);
+      if (editor) {
+        card.append(editor);
+      }
+    } else if (isAgentProposalLocalAction(action)) {
+      const editor = createAgentLocalActionEditor(action);
       if (editor) {
         card.append(editor);
       }
@@ -13819,9 +14191,13 @@ async function applyAgentTurnResponse(turn, userText) {
   const activeProposal = agent.proposals.find((proposal) => proposal.id === agent.activeProposalId)
     || agent.proposals[agent.proposals.length - 1]
     || null;
-  const currentRevision = Math.max(1, Number(activeProposal?.revision || 1));
   const outcome = String(turn?.outcome || "").trim();
   const reply = String(turn?.reply || "").trim();
+
+  if (activeProposal && !activeProposal.approved && agentWebMonitorTextSuggestsManualOnly(userText)) {
+    applyAgentProposalManualMode(activeProposal);
+  }
+  const currentRevision = Math.max(1, Number(activeProposal?.revision || 1));
 
   if (activeProposal && switchAgentProposalToCalendarSummary(activeProposal, userText)) {
     applyAgentFieldProposalRevision(activeProposal, turn?.changes, { bumpRevision: false });
