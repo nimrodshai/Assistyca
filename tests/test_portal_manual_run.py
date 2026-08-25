@@ -1352,45 +1352,60 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertIn("access_token", {issue["field"] for issue in body["issues"]})
 
     def test_whatsapp_connection_endpoint_stores_client_token_and_subscribes_waba(self) -> None:
-        with mock.patch.dict(os.environ, {"WHATSAPP_ACCESS_TOKEN": ""}, clear=False):
-            with mock.patch(
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "PUBLIC_BASE_URL": "https://portal.example.com",
+                    "WHATSAPP_ACCESS_TOKEN": "",
+                    "WHATSAPP_VERIFY_TOKEN": "verify-token",
+                },
+                clear=False,
+            ),
+            mock.patch(
                 "packages.infrastructure.portal_auth.server.test_whatsapp_connection",
                 return_value={
                     "phone_number_id": "22222",
                     "display_phone_number": "+1 555 123 4567",
                     "verified_name": "Client Co",
                 },
-            ) as mocked_test:
-                with mock.patch(
-                    "packages.infrastructure.portal_auth.server.list_whatsapp_business_phone_numbers",
-                    return_value=[
-                        {
-                            "id": "22222",
-                            "display_phone_number": "+1 555 123 4567",
-                            "verified_name": "Client Co",
-                        }
-                    ],
-                ) as mocked_list_numbers:
-                    with mock.patch(
-                        "packages.infrastructure.portal_auth.server.subscribe_whatsapp_business_account",
-                        return_value={"success": True},
-                    ) as mocked_subscribe:
-                        status, body = self._request(
-                            "POST",
-                            "/api/whatsapp/connection",
-                            {
-                                "business_account_id": "11111",
-                                "phone_number_id": "22222",
-                                "access_token": "client-token",
-                                "owner_wa_id": "15551234567",
-                            },
-                        )
+            ) as mocked_test,
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.list_whatsapp_business_phone_numbers",
+                return_value=[
+                    {
+                        "id": "22222",
+                        "display_phone_number": "+1 555 123 4567",
+                        "verified_name": "Client Co",
+                    }
+                ],
+            ) as mocked_list_numbers,
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.subscribe_whatsapp_business_account",
+                return_value={"success": True},
+            ) as mocked_subscribe,
+        ):
+            status, body = self._request(
+                "POST",
+                "/api/whatsapp/connection",
+                {
+                    "business_account_id": "11111",
+                    "phone_number_id": "22222",
+                    "access_token": "client-token",
+                    "owner_wa_id": "15551234567",
+                },
+            )
 
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         mocked_test.assert_called_once_with(access_token="client-token", phone_number_id="22222")
         mocked_list_numbers.assert_called_once_with(access_token="client-token", business_account_id="11111")
-        mocked_subscribe.assert_called_once_with(access_token="client-token", business_account_id="11111")
+        mocked_subscribe.assert_called_once_with(
+            access_token="client-token",
+            business_account_id="11111",
+            callback_url="https://portal.example.com/webhooks/whatsapp",
+            verify_token="verify-token",
+        )
         self.assertNotIn("accessToken", body["connection"])
         self.assertTrue(body["connection"]["accessTokenConfigured"])
         self.assertTrue(body["connection"]["workspaceAccessTokenConfigured"])
@@ -1401,8 +1416,11 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertIsNotNone(stored)
         self.assertEqual(stored["accessToken"], "client-token")
         self.assertEqual(stored["metadata"]["webhookSubscriptionStatus"], "subscribed")
+        self.assertEqual(stored["metadata"]["webhookCallbackUrl"], "https://portal.example.com/webhooks/whatsapp")
+        self.assertTrue(stored["metadata"]["webhookCallbackOverrideApplied"])
+        self.assertTrue(stored["metadata"]["webhookVerifyTokenConfigured"])
 
-    def test_whatsapp_connection_endpoint_saves_approval_phone_without_retesting_existing_connection(self) -> None:
+    def test_whatsapp_connection_endpoint_refreshes_webhook_without_retesting_existing_connection(self) -> None:
         self.server.database.save_whatsapp_connection(
             "owner@example.com",
             business_account_id="11111",
@@ -1427,32 +1445,47 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             ) as mocked_list_numbers:
                 with mock.patch(
                     "packages.infrastructure.portal_auth.server.subscribe_whatsapp_business_account",
-                    side_effect=AssertionError("Webhook subscription should not be retried"),
+                    return_value={"success": True},
                 ) as mocked_subscribe:
-                    status, body = self._request(
-                        "POST",
-                        "/api/whatsapp/connection",
+                    with mock.patch.dict(
+                        os.environ,
                         {
-                            "business_account_id": "11111",
-                            "phone_number_id": "22222",
-                            "owner_wa_id": "0507322341",
+                            "PUBLIC_BASE_URL": "https://portal.example.com",
+                            "WHATSAPP_VERIFY_TOKEN": "verify-token",
                         },
-                    )
+                        clear=False,
+                    ):
+                        status, body = self._request(
+                            "POST",
+                            "/api/whatsapp/connection",
+                            {
+                                "business_account_id": "11111",
+                                "phone_number_id": "22222",
+                                "owner_wa_id": "0507322341",
+                            },
+                        )
 
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertFalse(body["liveTested"])
-        self.assertIn("Approval phone saved", body["message"])
+        self.assertIn("webhook subscription was refreshed", body["message"])
         self.assertEqual(body["connection"]["ownerWaId"], "972507322341")
         self.assertEqual(body["connection"]["displayPhoneNumber"], "+1 555 123 4567")
         mocked_test.assert_not_called()
         mocked_list_numbers.assert_not_called()
-        mocked_subscribe.assert_not_called()
+        mocked_subscribe.assert_called_once_with(
+            access_token="client-token",
+            business_account_id="11111",
+            callback_url="https://portal.example.com/webhooks/whatsapp",
+            verify_token="verify-token",
+        )
 
         stored = self.server.database.get_whatsapp_connection("owner@example.com")
         self.assertIsNotNone(stored)
         self.assertEqual(stored["ownerWaId"], "972507322341")
         self.assertEqual(stored["accessToken"], "client-token")
+        self.assertEqual(stored["metadata"]["webhookCallbackUrl"], "https://portal.example.com/webhooks/whatsapp")
+        self.assertTrue(stored["metadata"]["webhookCallbackOverrideApplied"])
 
     def test_whatsapp_connection_endpoint_keeps_international_approval_phone(self) -> None:
         self.server.database.save_whatsapp_connection(
@@ -1465,19 +1498,24 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             metadata={"webhookSubscriptionStatus": "subscribed"},
         )
 
-        status, body = self._request(
-            "POST",
-            "/api/whatsapp/connection",
-            {
-                "business_account_id": "11111",
-                "phone_number_id": "22222",
-                "owner_wa_id": "+972 50-732-2341",
-            },
-        )
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.subscribe_whatsapp_business_account",
+            return_value={"success": True},
+        ) as mocked_subscribe:
+            status, body = self._request(
+                "POST",
+                "/api/whatsapp/connection",
+                {
+                    "business_account_id": "11111",
+                    "phone_number_id": "22222",
+                    "owner_wa_id": "+972 50-732-2341",
+                },
+            )
 
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertEqual(body["connection"]["ownerWaId"], "972507322341")
+        mocked_subscribe.assert_called_once_with(access_token="client-token", business_account_id="11111")
 
     def test_whatsapp_history_includes_suggested_reply_for_inbound_message(self) -> None:
         webhook_request = urllib_request.Request(

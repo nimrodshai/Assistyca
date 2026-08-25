@@ -4477,6 +4477,35 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
         )
 
+    def _subscribe_whatsapp_business_webhook(
+        self,
+        *,
+        access_token: str,
+        business_account_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        webhook_url = f"{self._public_base_url()}/webhooks/whatsapp"
+        verify_token = normalize_text(os.getenv("WHATSAPP_VERIFY_TOKEN"))
+        subscribe_kwargs: dict[str, Any] = {
+            "access_token": access_token,
+            "business_account_id": business_account_id,
+        }
+        if verify_token:
+            subscribe_kwargs.update({
+                "callback_url": webhook_url,
+                "verify_token": verify_token,
+            })
+
+        result = subscribe_whatsapp_business_account(**subscribe_kwargs)
+        return result, {
+            "wabaId": business_account_id,
+            "webhookSubscriptionStatus": "subscribed",
+            "webhookSubscribedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "webhookSubscriptionResult": result if isinstance(result, dict) else {},
+            "webhookCallbackUrl": webhook_url,
+            "webhookCallbackOverrideApplied": bool(verify_token),
+            "webhookVerifyTokenConfigured": bool(verify_token),
+        }
+
     def _resolve_whatsapp_connection_for_webhook(
         self,
         phone_number_id: str,
@@ -4862,6 +4891,40 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             and existing_connection_status == "connected"
         )
         if credentials_unchanged:
+            try:
+                _subscription_result, subscription_metadata = self._subscribe_whatsapp_business_webhook(
+                    access_token=access_token,
+                    business_account_id=business_account_id,
+                )
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "missing_fields",
+                    "message": str(exc),
+                })
+                return
+            except WhatsAppConnectionError as exc:
+                response = {
+                    "ok": False,
+                    "error": "whatsapp_subscription_failed",
+                    "message": str(exc),
+                }
+                if exc.details:
+                    response["details"] = exc.details
+                json_response(self, HTTPStatus.BAD_GATEWAY, response)
+                return
+            except Exception as exc:  # pragma: no cover - surfaced to UI
+                json_response(self, HTTPStatus.BAD_GATEWAY, {
+                    "ok": False,
+                    "error": "whatsapp_subscription_failed",
+                    "message": f"WhatsApp could not subscribe the webhook: {exc}",
+                })
+                return
+
+            next_metadata = {
+                **metadata,
+                **subscription_metadata,
+            }
             connection = self.database.save_whatsapp_connection(
                 session.email,
                 business_account_id=business_account_id,
@@ -4871,17 +4934,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 display_phone_number=normalize_text(existing.get("displayPhoneNumber")),
                 verified_name=normalize_text(existing.get("verifiedName")),
                 connection_status=existing_connection_status,
-                metadata=metadata,
+                metadata=next_metadata,
                 connected_at=existing.get("connectedAt"),
                 tested_at=existing.get("lastTestedAt"),
             )
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
-                "message": "Approval phone saved. Suggested replies will be sent there for review. The existing WhatsApp Business connection was kept.",
+                "message": "Approval phone saved and the WABA webhook subscription was refreshed. Send a real WhatsApp message next to confirm Assistyca receives it.",
                 "connection": self._serialize_whatsapp_connection(connection),
                 "liveTested": False,
                 "requiresAccessToken": False,
-                "webhookSubscribed": normalize_text(metadata.get("webhookSubscriptionStatus")) == "subscribed",
+                "webhookSubscribed": True,
             })
             return
 
@@ -4968,7 +5031,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            subscription_result = subscribe_whatsapp_business_account(
+            _subscription_result, subscription_metadata = self._subscribe_whatsapp_business_webhook(
                 access_token=access_token,
                 business_account_id=business_account_id,
             )
@@ -4999,10 +5062,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         next_metadata = {
             **metadata,
-            "wabaId": business_account_id,
-            "webhookSubscriptionStatus": "subscribed",
-            "webhookSubscribedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "webhookSubscriptionResult": subscription_result if isinstance(subscription_result, dict) else {},
+            **subscription_metadata,
         }
 
         connection = self.database.save_whatsapp_connection(

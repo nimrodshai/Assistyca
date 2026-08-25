@@ -228,11 +228,15 @@ def subscribe_whatsapp_business_account(
     *,
     access_token: str,
     business_account_id: str,
+    callback_url: str = "",
+    verify_token: str = "",
     api_version: str = DEFAULT_WHATSAPP_API_VERSION,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
     access_token_value = normalize_text(access_token)
     business_account_id_value = normalize_text(business_account_id)
+    callback_url_value = normalize_text(callback_url).rstrip("/")
+    verify_token_value = normalize_text(verify_token)
     api_version_value = normalize_text(api_version) or DEFAULT_WHATSAPP_API_VERSION
 
     if not access_token_value:
@@ -241,16 +245,32 @@ def subscribe_whatsapp_business_account(
     if not business_account_id_value:
         raise ValueError("WhatsApp Business Account ID is required.")
 
+    if callback_url_value and not verify_token_value:
+        raise ValueError("WhatsApp webhook verify token is required to override the callback URL.")
+
     url = f"https://graph.facebook.com/{api_version_value}/{business_account_id_value}/subscribed_apps"
-    body = urllib_parse.urlencode({"access_token": access_token_value}).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+    }
+    if callback_url_value:
+        body = json.dumps(
+            {
+                "override_callback_uri": callback_url_value,
+                "verify_token": verify_token_value,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        headers["Authorization"] = f"Bearer {access_token_value}"
+        headers["Content-Type"] = "application/json"
+    else:
+        body = urllib_parse.urlencode({"access_token": access_token_value}).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
     request = urllib_request.Request(
         url,
         data=body,
         method="POST",
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
+        headers=headers,
     )
 
     try:
