@@ -30,7 +30,7 @@ def extract_graph_error_message(payload: dict[str, Any]) -> str:
     if not isinstance(error, dict):
         return ""
 
-    message = normalize_text(error.get("message"))
+    message = normalize_text(error.get("error_user_msg")) or normalize_text(error.get("message"))
     if message:
         return message
 
@@ -52,12 +52,18 @@ def format_connection_error(status_code: int, raw_body: str) -> str:
         parsed_message = extract_graph_error_message(payload)
 
     if status_code in {401, 403}:
+        if parsed_message:
+            return f"WhatsApp rejected the connection credentials: {parsed_message}"
         return "WhatsApp rejected the connection credentials. Check them and try again."
 
     if status_code == 404:
+        if parsed_message:
+            return f"WhatsApp could not find that phone number ID: {parsed_message}"
         return "WhatsApp could not find that phone number ID. Check it and try again."
 
     if status_code == 400:
+        if parsed_message:
+            return f"WhatsApp could not confirm those details: {parsed_message}"
         return "WhatsApp could not confirm those details. Check the connection credentials, then try again."
 
     if parsed_message:
@@ -248,60 +254,76 @@ def subscribe_whatsapp_business_account(
     if callback_url_value and not verify_token_value:
         raise ValueError("WhatsApp webhook verify token is required to override the callback URL.")
 
-    url = f"https://graph.facebook.com/{api_version_value}/{business_account_id_value}/subscribed_apps"
-    headers = {
-        "Accept": "application/json",
-    }
-    if callback_url_value:
-        body = json.dumps(
-            {
-                "override_callback_uri": callback_url_value,
-                "verify_token": verify_token_value,
-            },
-            ensure_ascii=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        headers["Authorization"] = f"Bearer {access_token_value}"
-        headers["Content-Type"] = "application/json"
-    else:
-        body = urllib_parse.urlencode({"access_token": access_token_value}).encode("utf-8")
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-    request = urllib_request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers=headers,
-    )
-
-    try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
-            raw_body = response.read().decode("utf-8")
-    except urllib_error.HTTPError as exc:
-        raw_body = exc.read().decode("utf-8", errors="replace")
-        raise WhatsAppConnectionError(format_connection_error(exc.code, raw_body), details=raw_body) from exc
-    except urllib_error.URLError as exc:
-        reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
-        raise WhatsAppConnectionError(
-            "WhatsApp did not respond. Check the connection and try again.",
-            details=reason,
-        ) from exc
-
-    try:
-        payload = json.loads(raw_body) if raw_body else {}
-    except json.JSONDecodeError as exc:
-        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body) from exc
-
-    if not isinstance(payload, dict):
-        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body)
-
-    if isinstance(payload.get("error"), dict):
-        details = json.dumps(payload.get("error"), ensure_ascii=True, separators=(",", ":"))
-        raise WhatsAppConnectionError(
-            extract_graph_error_message(payload) or "WhatsApp could not subscribe the webhook.",
-            details=details,
+    def post_subscription_request(body: bytes, headers: dict[str, str]) -> dict[str, Any]:
+        url = f"https://graph.facebook.com/{api_version_value}/{business_account_id_value}/subscribed_apps"
+        request = urllib_request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers=headers,
         )
 
-    if payload and payload.get("success") is False:
-        raise WhatsAppConnectionError("WhatsApp did not confirm the webhook subscription.", details=raw_body)
+        try:
+            with urllib_request.urlopen(request, timeout=timeout) as response:
+                raw_body = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            raw_body = exc.read().decode("utf-8", errors="replace")
+            raise WhatsAppConnectionError(format_connection_error(exc.code, raw_body), details=raw_body) from exc
+        except urllib_error.URLError as exc:
+            reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
+            raise WhatsAppConnectionError(
+                "WhatsApp did not respond. Check the connection and try again.",
+                details=reason,
+            ) from exc
 
-    return payload
+        try:
+            payload = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError as exc:
+            raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body) from exc
+
+        if not isinstance(payload, dict):
+            raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body)
+
+        if isinstance(payload.get("error"), dict):
+            details = json.dumps(payload.get("error"), ensure_ascii=True, separators=(",", ":"))
+            raise WhatsAppConnectionError(
+                extract_graph_error_message(payload) or "WhatsApp could not subscribe the webhook.",
+                details=details,
+            )
+
+        if payload and payload.get("success") is False:
+            raise WhatsAppConnectionError("WhatsApp did not confirm the webhook subscription.", details=raw_body)
+
+        return payload
+
+    base_body = urllib_parse.urlencode({"access_token": access_token_value}).encode("utf-8")
+    base_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
+    if not callback_url_value:
+        return post_subscription_request(base_body, base_headers)
+
+    base_payload = post_subscription_request(base_body, base_headers)
+
+    override_headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {access_token_value}",
+        "Content-Type": "application/json",
+    }
+    override_body = json.dumps(
+        {
+            "override_callback_uri": callback_url_value,
+            "verify_token": verify_token_value,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    override_payload = post_subscription_request(override_body, override_headers)
+    if isinstance(override_payload, dict):
+        return {
+            **override_payload,
+            "baselineSubscription": base_payload,
+        }
+    return override_payload

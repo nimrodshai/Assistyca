@@ -138,7 +138,7 @@ The portal setup form saves the WhatsApp Business Platform fields needed per wor
 
 - `business_account_id` required WABA ID
 - `phone_number_id` required
-- `access_token` required for that client-owned WhatsApp Business Account
+- `access_token` required for that client-owned WhatsApp Business Account. It must be able to access the phone number and subscribe the WABA to webhooks, so use a System User token with `whatsapp_business_messaging` and `whatsapp_business_management`.
 - `owner_wa_id` required
 
 Clients can find the WABA ID in Meta Business Settings at Accounts > WhatsApp Accounts, or by opening `https://business.facebook.com/latest/settings/whatsapp_account` and selecting the correct WhatsApp Business Account.

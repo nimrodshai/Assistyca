@@ -18,7 +18,7 @@ For a multi-tenant product, the usual setup is:
 
 - Create one Meta app for the whole product.
 - Let each customer connect their own WhatsApp Business Account through Embedded Signup.
-- Store each connected WABA ID, phone number ID, and customer access token server-side through the portal connection flow.
+- Store each connected WABA ID, phone number ID, and customer access token server-side through the portal connection flow. The customer token must include WhatsApp messaging access plus WABA management access so the backend can subscribe the WABA webhook.
 - Keep shared app secrets only in the backend deployment environment as `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET`.
 - Keep Assistyca-owned sender credentials in the backend deployment environment as `ASSISTYCA_WHATSAPP_ACCESS_TOKEN` and, if overriding the built-in default, `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID`.
 - Use one webhook endpoint for all tenants, then route each event by WABA ID or phone number ID.
