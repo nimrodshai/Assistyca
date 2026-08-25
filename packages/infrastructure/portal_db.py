@@ -2817,7 +2817,13 @@ class PortalDatabase:
                 if item
             ]
 
-    def get_platform_connection_ciphertext(self, email: str, platform: str) -> str | None:
+    def get_platform_connection_ciphertext(
+        self,
+        email: str,
+        platform: str,
+        *,
+        include_statuses: tuple[str, ...] = ("connected",),
+    ) -> str | None:
         """Return ciphertext for server-side tools; never serialize this to the portal."""
 
         normalized_email = normalize_email(email)
@@ -2825,19 +2831,30 @@ class PortalDatabase:
         if not normalized_email or not normalized_platform:
             return None
 
+        statuses = tuple(
+            normalized_status
+            for normalized_status in (
+                normalize_text(status).lower() for status in include_statuses
+            )
+            if normalized_status
+        )
+        if not statuses:
+            return None
+
+        placeholders = ", ".join("?" for _ in statuses)
         with self._connection() as conn:
             try:
                 user_id = self._resolve_active_user_id(conn, normalized_email)
             except (KeyError, ValueError):
                 return None
             row = conn.execute(
-                """
+                f"""
                 SELECT secret_ciphertext
                 FROM platform_connections
-                WHERE user_id = ? AND platform = ? AND connection_status = 'connected'
+                WHERE user_id = ? AND platform = ? AND connection_status IN ({placeholders})
                 LIMIT 1
                 """,
-                (user_id, normalized_platform),
+                (user_id, normalized_platform, *statuses),
             ).fetchone()
             return normalize_text(row["secret_ciphertext"]) if row else None
 
@@ -2852,18 +2869,22 @@ class PortalDatabase:
         key_version: str = "1",
         secret_fingerprint: str = "",
         metadata: dict[str, Any] | None = None,
+        connection_status: str = "connected",
     ) -> dict[str, Any]:
         normalized_email = normalize_email(email)
         normalized_platform = normalize_text(platform).lower()
         normalized_auth_type = normalize_text(auth_type).lower() or "api_token"
         normalized_ciphertext = normalize_text(secret_ciphertext)
         normalized_hint = normalize_text(secret_hint)
+        normalized_status = normalize_text(connection_status).lower() or "connected"
         if not normalized_email:
             raise ValueError("Email is required.")
         if not normalized_platform:
             raise ValueError("Platform is required.")
         if not normalized_ciphertext:
             raise ValueError("Encrypted credential is required.")
+        if normalized_status not in {"connected", "needs_verification", "needs_attention", "disconnected"}:
+            raise ValueError("Unsupported connection status.")
 
         metadata_payload = _load_json_dict(metadata)
         metadata_json = json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True)
@@ -2894,14 +2915,14 @@ class PortalDatabase:
                     key_version, secret_fingerprint,
                     secret_hint, connection_status, metadata_json,
                     connected_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, platform) DO UPDATE SET
                     auth_type = excluded.auth_type,
                     secret_ciphertext = excluded.secret_ciphertext,
                     key_version = excluded.key_version,
                     secret_fingerprint = excluded.secret_fingerprint,
                     secret_hint = excluded.secret_hint,
-                    connection_status = 'connected',
+                    connection_status = excluded.connection_status,
                     metadata_json = excluded.metadata_json,
                     updated_at = excluded.updated_at
                 """,
@@ -2914,6 +2935,7 @@ class PortalDatabase:
                     normalize_text(key_version) or "1",
                     normalize_text(secret_fingerprint),
                     normalized_hint,
+                    normalized_status,
                     metadata_json,
                     connected_at,
                     now,
@@ -2924,6 +2946,64 @@ class PortalDatabase:
                 user_id=user_id,
                 connection_id=connection_id,
             ) or {}
+
+    def update_platform_connection_status(
+        self,
+        email: str,
+        *,
+        platform: str,
+        connection_status: str,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Update non-secret connection health metadata after provider validation."""
+
+        normalized_email = normalize_email(email)
+        normalized_platform = normalize_text(platform).lower()
+        normalized_status = normalize_text(connection_status).lower()
+        if not normalized_email or not normalized_platform:
+            return None
+        if normalized_status not in {"connected", "needs_verification", "needs_attention", "disconnected"}:
+            raise ValueError("Unsupported connection status.")
+
+        updates = _load_json_dict(metadata_updates)
+        now = now_iso()
+        with self._connection() as conn:
+            user_id = self._resolve_active_user_id(conn, normalized_email)
+            row = conn.execute(
+                """
+                SELECT id, metadata_json, connected_at
+                FROM platform_connections
+                WHERE user_id = ? AND platform = ?
+                LIMIT 1
+                """,
+                (user_id, normalized_platform),
+            ).fetchone()
+            if row is None:
+                return None
+
+            metadata = _load_json_dict(row["metadata_json"])
+            metadata.update(updates)
+            connected_at = normalize_text(row["connected_at"]) or now
+            conn.execute(
+                """
+                UPDATE platform_connections
+                SET connection_status = ?, metadata_json = ?, connected_at = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (
+                    normalized_status,
+                    json.dumps(metadata, ensure_ascii=True, sort_keys=True),
+                    connected_at,
+                    now,
+                    normalize_text(row["id"]),
+                    user_id,
+                ),
+            )
+            return self._load_platform_connection_row(
+                conn,
+                user_id=user_id,
+                connection_id=normalize_text(row["id"]),
+            )
 
     def delete_platform_connection(self, email: str, *, connection_id: str = "", platform: str = "") -> bool:
         normalized_email = normalize_email(email)

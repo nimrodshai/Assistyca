@@ -2411,6 +2411,14 @@ body[data-modal="billing"] .app-shell {
   border-color: rgba(180, 35, 24, 0.15);
 }
 
+.platform-connection-docs-link {
+  justify-self: start;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-underline-offset: 0.16em;
+}
+
 .platform-connection-help {
   justify-self: start;
   padding-inline: 0.15rem;

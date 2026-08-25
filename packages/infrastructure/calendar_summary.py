@@ -244,7 +244,7 @@ class CalendarSummaryRunner:
         token = str(access_token or "").strip()
         if not token:
             raise CalendarAuthorizationError(
-                "Calendar is connected, but its access token is missing. Reconnect Calendar with read-only access."
+                "Calendar access needs attention: no usable access token is saved. Reconnect Calendar with Google read-only access, then run it again."
             )
         safe_calendar_id = str(calendar_id or "primary").strip() or "primary"
         # Calendar IDs are provider data, not a URL supplied by the user. Keep
@@ -272,7 +272,7 @@ class CalendarSummaryRunner:
         except urllib_error.HTTPError as exc:
             if exc.code in {401, 403}:
                 raise CalendarAuthorizationError(
-                    "Calendar is connected, but this credential cannot read events. Reconnect Calendar with an OAuth token that grants read-only calendar access."
+                    "Calendar access needs attention: Google rejected the saved credential or its permissions. Reconnect with a Google OAuth token that grants read-only Calendar access, then run it again."
                 ) from exc
             raise CalendarSummaryError(
                 f"Google Calendar returned an error ({exc.code}). Try again or reconnect Calendar.",

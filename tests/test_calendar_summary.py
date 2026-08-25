@@ -192,6 +192,35 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         self.assertIn("Planning session", payload["message"])
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], "calendar-token")
+        connection = self.server.database.list_platform_connections("owner@example.com")[0]
+        self.assertEqual(connection["connectionStatus"], "connected")
+        self.assertEqual(connection["metadata"]["validationStatus"], "verified")
+
+    def test_calendar_proposal_run_marks_rejected_credential_as_needing_attention(self) -> None:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/proposals/run",
+            data=json.dumps({
+                "proposalType": "calendar-summary",
+                "fields": {"timeWindow": "next week", "deliveryChannel": "portal"},
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
+            side_effect=CalendarAuthorizationError("Calendar access needs attention."),
+        ):
+            with self.assertRaises(urllib_error.HTTPError) as context:
+                urllib_request.urlopen(request, timeout=5)
+
+        self.assertEqual(context.exception.code, 409)
+        self.assertIn("needs attention", context.exception.read().decode("utf-8"))
+        connection = self.server.database.list_platform_connections("owner@example.com")[0]
+        self.assertEqual(connection["connectionStatus"], "needs_attention")
+        self.assertEqual(connection["metadata"]["validationStatus"], "failed")
 
     def test_calendar_proposal_run_rejects_external_delivery_until_supported(self) -> None:
         request = urllib_request.Request(

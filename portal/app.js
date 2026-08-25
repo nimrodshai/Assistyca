@@ -452,8 +452,12 @@ const PLATFORM_CONNECTION_OPTIONS = AGENT_ADD_TOOL_OPTIONS
     label: option.label,
     detail: option.detail,
     icon: option.icon,
-    authType: option.id === "telegram" ? "bot_token" : "api_token",
-    credentialLabel: option.id === "slack" ? "Slack bot token" : `${option.label} token`,
+    authType: option.id === "telegram"
+      ? "bot_token"
+      : (option.id === "calendar" ? "oauth" : "api_token"),
+    credentialLabel: option.id === "slack"
+      ? "Slack bot token"
+      : (option.id === "calendar" ? "Google Calendar OAuth access token" : `${option.label} token`),
   }));
 const PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is not available yet, so no token was saved.";
 const AGENT_BLUEPRINTS = {
@@ -4100,11 +4104,17 @@ function normalizePlatformConnection(source = {}) {
   const option = getPlatformConnectionOption(platform);
   const rawMetadata = source.metadata && typeof source.metadata === "object" ? source.metadata : {};
   const metadata = {};
-  for (const key of ["label", "workspace", "account"]) {
+  for (const key of ["label", "workspace", "account", "provider", "validationStatus", "validatedAt"]) {
     const value = String(rawMetadata[key] || "").trim();
     if (value) {
       metadata[key] = value.slice(0, 200);
     }
+  }
+  let connectionStatus = String(source.connectionStatus || source.connection_status || "connected").trim().toLowerCase();
+  // Older Calendar rows were marked connected as soon as a token was saved.
+  // Keep them visibly pending until a real Google Calendar read succeeds.
+  if (platform === "calendar" && connectionStatus === "connected" && metadata.validationStatus !== "verified") {
+    connectionStatus = "needs_verification";
   }
   return {
     id: String(source.id || "").trim(),
@@ -4112,10 +4122,40 @@ function normalizePlatformConnection(source = {}) {
     label: option?.label || platform || "Connected app",
     authType: String(source.authType || source.auth_type || "api_token").trim().toLowerCase(),
     secretHint: String(source.secretHint || "").trim(),
-    connectionStatus: String(source.connectionStatus || source.connection_status || "connected").trim().toLowerCase(),
+    connectionStatus,
     connectedAt: String(source.connectedAt || source.connected_at || "").trim(),
     updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
     metadata,
+  };
+}
+
+function getPlatformConnectionStatus(connection) {
+  const status = String(connection?.connectionStatus || "").trim().toLowerCase();
+  if (status === "needs_attention") {
+    return {
+      label: "Needs attention",
+      tone: "warning",
+      detail: "Reconnect to restore access",
+    };
+  }
+  if (status === "needs_verification") {
+    return {
+      label: "Needs verification",
+      tone: "warning",
+      detail: "Run once to verify access",
+    };
+  }
+  if (status === "disconnected") {
+    return {
+      label: "Disconnected",
+      tone: "warning",
+      detail: "Reconnect to use this app",
+    };
+  }
+  return {
+    label: "Connected",
+    tone: "success",
+    detail: "Ready to use",
   };
 }
 
@@ -4171,6 +4211,8 @@ async function refreshPlatformConnections(options = {}) {
 
 function createPlatformConnectionForm(option) {
   const connection = getPlatformConnectionByPlatform(option.id);
+  const connectionStatus = getPlatformConnectionStatus(connection);
+  const isCalendar = option.id === "calendar";
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const form = document.createElement("form");
@@ -4180,7 +4222,9 @@ function createPlatformConnectionForm(option) {
   intro.className = "platform-connection-intro";
   intro.textContent = connection
     ? storageAvailable
-      ? `${option.label} is connected. Enter a new token to replace it.`
+      ? (connectionStatus.label === "Connected"
+        ? `${option.label} is connected. Enter a new credential to replace it.`
+        : `${option.label} access is ${connectionStatus.label.toLowerCase()}. Enter a new credential to reconnect.`)
       : `${option.label} has saved connection details, but secure storage is unavailable right now.`
     : `Once connected, you can ask me to use ${option.label} for whatever you need.`;
 
@@ -4198,13 +4242,21 @@ function createPlatformConnectionForm(option) {
     status.hidden = false;
   };
 
-  if (connection && storageAvailable) {
+  if (connection && storageAvailable && connectionStatus.label === "Connected") {
     setStatus(
       "success",
       `${option.label} is connected`,
       connection.secretHint
         ? `Saved securely as ${connection.secretHint}.`
         : "Saved securely and ready under Available tools.",
+    );
+  } else if (connection && storageAvailable) {
+    setStatus(
+      "warning",
+      `${option.label} needs verification`,
+      isCalendar
+        ? "The credential is encrypted and saved, but Google has not confirmed read-only Calendar access yet."
+        : "The credential is encrypted and saved, but the provider has not confirmed access yet.",
     );
   } else if (connection) {
     setStatus(
@@ -4258,8 +4310,10 @@ function createPlatformConnectionForm(option) {
   help.id = "platformConnectionHelp";
   help.className = "field-help";
   help.textContent = storageAvailable
-    ? "Use the smallest set of permissions you need. This token is not saved in this browser or sent to the assistant."
-    : "No token has been saved. Secure storage must be configured before this app can be connected.";
+    ? (isCalendar
+      ? "Use a Google OAuth access token with the read-only Calendar scope. A Google API key will not work. Access tokens expire, so you may need to reconnect later. This credential is not saved in this browser or sent to the assistant."
+      : "Use the smallest set of permissions you need. This token is not saved in this browser or sent to the assistant.")
+    : "No credential has been saved. Secure storage must be configured before this app can be connected.";
   const error = document.createElement("span");
   error.id = "platformConnectionError";
   error.className = "field-error";
@@ -4277,16 +4331,29 @@ function createPlatformConnectionForm(option) {
   const helpButton = document.createElement("button");
   helpButton.type = "button";
   helpButton.className = "ghost-button small platform-connection-help";
-  helpButton.textContent = "Help me get it";
+  helpButton.textContent = isCalendar ? "How do I get Calendar access?" : "Help me get it";
   helpButton.addEventListener("click", () => {
     closeAuthAlert();
-    pushAgentMessage("assistant", `I can help you get a ${option.label} token. Tell me what screen you’re on and I’ll walk you through it. Please don’t paste the token into chat.`);
-    persistAgentWorkspace(`I can help you get a ${option.label} token.`);
+    const message = isCalendar
+      ? "For a meeting summary, you need a Google OAuth access token with the read-only Calendar scope. A Google API key is not enough. I can walk you through the Google Cloud OAuth setup; please never paste the token into chat."
+      : `I can help you get a ${option.label} token. Tell me what screen you’re on and I’ll walk you through it. Please don’t paste the token into chat.`;
+    pushAgentMessage("assistant", message);
+    persistAgentWorkspace(isCalendar ? "I can help you set up read-only Google Calendar access." : `I can help you get a ${option.label} token.`);
     renderApp({ preserveStatus: true });
     elements.agentComposerInput?.focus();
   });
 
-  form.append(intro, status, field, securityNote, helpButton);
+  if (isCalendar) {
+    const docsLink = document.createElement("a");
+    docsLink.className = "platform-connection-docs-link";
+    docsLink.href = "https://developers.google.com/workspace/calendar/api/auth";
+    docsLink.target = "_blank";
+    docsLink.rel = "noopener noreferrer";
+    docsLink.textContent = "See Google’s Calendar permission guide";
+    form.append(intro, status, field, docsLink, securityNote, helpButton);
+  } else {
+    form.append(intro, status, field, securityNote, helpButton);
+  }
   return { form, input, error, field, reveal, securityNote, help, setStatus, storageAvailable, connection };
 }
 
@@ -4362,16 +4429,22 @@ function openPlatformConnection(optionId) {
       } else {
         await refreshPlatformConnections({ render: false });
       }
-      pushAgentMessage("assistant", `${option.label} is connected. You can ask me to use it whenever you need it.`);
-      persistAgentWorkspace(`${option.label} is connected.`);
+      const isPendingCalendar = option.id === "calendar" && connection?.connectionStatus !== "connected";
+      const savedMessage = isPendingCalendar
+        ? "Calendar access was saved securely. Run the meeting summary once to verify that Google granted read-only access."
+        : `${option.label} is connected. You can ask me to use it whenever you need it.`;
+      pushAgentMessage("assistant", savedMessage);
+      persistAgentWorkspace(savedMessage);
       renderApp({ preserveStatus: true });
       openAuthAlert(
-        `${option.label} connected`,
-        `${option.label} now appears under Available tools and is ready to use from chat.`,
+        isPendingCalendar ? `${option.label} access saved` : `${option.label} connected`,
+        isPendingCalendar
+          ? "Run the meeting summary once to verify the Google Calendar read-only permission."
+          : `${option.label} now appears under Available tools and is ready to use from chat.`,
         {
           eyebrow: "Connection saved",
-          icon: "✓",
-          tone: "success",
+          icon: isPendingCalendar ? "i" : "✓",
+          tone: isPendingCalendar ? "progress" : "success",
           buttonLabel: "Done",
           returnFocus: elements.agentAddToolButton,
         },
@@ -16343,6 +16416,7 @@ async function runAgentProposalLocalActionNow(actionId) {
       return false;
     } finally {
       localActionRunBusy.delete(normalizedActionId);
+      await refreshPlatformConnections({ render: false });
       renderApp({ preserveStatus: true });
     }
   }
@@ -16953,7 +17027,7 @@ function createAgentPlatformConnectionItem(connection) {
   const title = document.createElement("strong");
   title.textContent = label;
   const detail = document.createElement("span");
-  detail.textContent = "Connected";
+  detail.textContent = getPlatformConnectionStatus(connection).label;
   copy.append(title, detail);
 
   const arrow = document.createElement("span");

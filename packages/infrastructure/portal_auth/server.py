@@ -2539,6 +2539,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         try:
             encrypted_secret = vault.encrypt(secret)
+            connection_metadata = normalize_platform_connection_metadata(payload.get("metadata"))
+            connection_status = "connected"
+            if platform == "calendar":
+                # Saving an encrypted token is not the same as proving that
+                # Google will accept it. The first runner call verifies the
+                # read-only scope and upgrades this to connected.
+                connection_status = "needs_verification"
+                connection_metadata.update({
+                    "provider": "google_calendar",
+                    "validationStatus": "pending",
+                })
             connection = self.database.save_platform_connection(
                 session.email,
                 platform=platform,
@@ -2547,7 +2558,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 secret_hint=credential_hint(secret),
                 key_version=vault.key_version,
                 secret_fingerprint=vault.fingerprint(secret),
-                metadata=normalize_platform_connection_metadata(payload.get("metadata")),
+                metadata=connection_metadata,
+                connection_status=connection_status,
             )
         except (CredentialVaultError, ValueError, KeyError):
             # Never include credential contents or encryption details in a response.
@@ -2560,10 +2572,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         # The secret is intentionally absent from this response and from every
         # agent turn; only connection metadata is returned to the browser.
+        is_pending_calendar = platform == "calendar" and connection_status != "connected"
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "credentialStorageAvailable": True,
-            "message": f"{descriptor['label']} is connected.",
+            "message": (
+                "Calendar access was saved securely. Run the meeting summary once to verify the Google Calendar read-only permission."
+                if is_pending_calendar
+                else f"{descriptor['label']} is connected."
+            ),
             "connection": connection,
         })
 
@@ -3086,7 +3103,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        ciphertext = self.database.get_platform_connection_ciphertext(session.email, "calendar")
+        ciphertext = self.database.get_platform_connection_ciphertext(
+            session.email,
+            "calendar",
+            include_statuses=("connected", "needs_verification", "needs_attention"),
+        )
         vault = self.credential_vault
         if not ciphertext or vault is None:
             json_response(self, HTTPStatus.CONFLICT, {
@@ -3125,6 +3146,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 timezone_name=timezone_name,
             )
         except CalendarAuthorizationError as exc:
+            self.database.update_platform_connection_status(
+                session.email,
+                platform="calendar",
+                connection_status="needs_attention",
+                metadata_updates={
+                    "provider": "google_calendar",
+                    "validationStatus": "failed",
+                    "validatedAt": datetime.now(timezone.utc).isoformat(),
+                },
+            )
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
                 "error": exc.code,
@@ -3139,6 +3170,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        self.database.update_platform_connection_status(
+            session.email,
+            platform="calendar",
+            connection_status="connected",
+            metadata_updates={
+                "provider": "google_calendar",
+                "validationStatus": "verified",
+                "validatedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "message": str(result.get("message") or "Meeting summary complete."),

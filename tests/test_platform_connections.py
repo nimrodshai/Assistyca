@@ -134,6 +134,8 @@ class PlatformConnectionTests(unittest.TestCase):
             self.assertTrue(payload["credentialStorageAvailable"])
             self.assertEqual(payload["connection"]["platform"], "calendar")
             self.assertEqual(payload["connection"]["authType"], "api_token")
+            self.assertEqual(payload["connection"]["connectionStatus"], "needs_verification")
+            self.assertIn("saved securely", payload["message"])
             self.assertIn("secretHint", payload["connection"])
             self.assertNotIn("calendar-secret-value-that-stays-server-side", body)
 
