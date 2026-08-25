@@ -5257,6 +5257,37 @@ class PortalDatabase:
             row = conn.execute("SELECT * FROM source_actions WHERE id = ? AND user_id = ? LIMIT 1", (int(action_id), int(user_id))).fetchone()
         return self._load_source_action_row(row)
 
+    def update_source_action_schedule(
+        self,
+        *,
+        action_id: int,
+        user_id: int,
+        interval_minutes: int,
+    ) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0 or int(user_id or 0) <= 0:
+            return None
+        interval = int(interval_minutes or 0)
+        if not 5 <= interval <= 30 * 24 * 60:
+            raise ValueError("Interval must be between 5 minutes and 30 days.")
+        now = datetime.now(timezone.utc)
+        next_run = (now + timedelta(minutes=interval)).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE source_actions
+                SET interval_minutes = ?, next_run_at = ?,
+                    status = CASE WHEN status = 'cancelled' THEN status ELSE 'active' END,
+                    claimed_at = NULL, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (interval, next_run, now.isoformat(), int(action_id), int(user_id)),
+            )
+            row = conn.execute(
+                "SELECT * FROM source_actions WHERE id = ? AND user_id = ? LIMIT 1",
+                (int(action_id), int(user_id)),
+            ).fetchone()
+        return self._load_source_action_row(row)
+
     def get_feature_monitor_run(
         self,
         *,

@@ -3347,6 +3347,37 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         _session, user = authenticated
         action_id = self._source_action_id_from_path(parsed)
         if action_id is not None:
+            if parsed.path.rstrip("/").endswith("/settings"):
+                try:
+                    payload = parse_json_body(self)
+                    interval_minutes = int(payload.get("intervalMinutes") or payload.get("interval_minutes") or 0)
+                    if not SOURCE_ACTION_MIN_INTERVAL_MINUTES <= interval_minutes <= SOURCE_ACTION_MAX_INTERVAL_MINUTES:
+                        raise ValueError("Choose a frequency between every 5 minutes and every 30 days.")
+                    updated = self.database.update_source_action_schedule(
+                        action_id,
+                        user_id=int(user.get("id") or 0),
+                        interval_minutes=interval_minutes,
+                    )
+                except (TypeError, ValueError) as exc:
+                    json_response(self, HTTPStatus.BAD_REQUEST, {
+                        "ok": False,
+                        "error": "invalid_source_action_settings",
+                        "message": str(exc),
+                    })
+                    return
+                if updated is None:
+                    json_response(self, HTTPStatus.NOT_FOUND, {
+                        "ok": False,
+                        "error": "source_action_not_found",
+                        "message": "Source action not found.",
+                    })
+                    return
+                json_response(self, HTTPStatus.OK, {
+                    "ok": True,
+                    "message": "Source action settings saved.",
+                    "action": self._serialize_source_action_for_client(updated),
+                })
+                return
             if parsed.path.rstrip("/").endswith("/run"):
                 action = self.database.get_source_action(action_id)
                 if action is None or int(action.get("userId") or 0) != int(user.get("id") or 0):

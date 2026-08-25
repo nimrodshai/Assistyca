@@ -13403,6 +13403,81 @@ function createAgentLocalActionEditor(action) {
   return form;
 }
 
+function getSourceActionEditorFrequencyValue(action) {
+  const raw = String(action?.payload?.frequency || "daily").toLowerCase();
+  if (/5\s*minutes?/.test(raw)) return "minutes:5";
+  if (/15\s*minutes?/.test(raw)) return "minutes:15";
+  if (/hour/.test(raw)) return "minutes:60";
+  if (/week/.test(raw)) return "days:7";
+  if (/month/.test(raw)) return "days:30";
+  return "days:1";
+}
+
+function getSourceActionEditorFrequencyOptions() {
+  return [
+    { value: "minutes:5", label: "Every 5 minutes", intervalMinutes: 5 },
+    { value: "minutes:15", label: "Every 15 minutes", intervalMinutes: 15 },
+    { value: "minutes:60", label: "Hourly", intervalMinutes: 60 },
+    { value: "days:1", label: "Daily", intervalMinutes: 1440 },
+    { value: "days:7", label: "Weekly", intervalMinutes: 10080 },
+    { value: "days:30", label: "Monthly", intervalMinutes: 43200 },
+  ];
+}
+
+function createSourceActionEditor(action) {
+  const sourceActionId = Number(action?.payload?.sourceActionId || 0);
+  if (!sourceActionId) return null;
+  const form = document.createElement("form");
+  form.className = "agent-action-editor";
+  form.addEventListener("submit", (event) => event.preventDefault());
+  const heading = document.createElement("div");
+  heading.className = "agent-action-editor-heading";
+  const title = document.createElement("strong");
+  title.textContent = "Edit source action";
+  const subtitle = document.createElement("span");
+  subtitle.textContent = "Changes save automatically.";
+  heading.append(title, subtitle);
+  const frequency = createAgentLocalActionEditorField(
+    "Frequency",
+    getSourceActionEditorFrequencyValue(action),
+    { select: true, options: getSourceActionEditorFrequencyOptions() },
+  );
+  const status = document.createElement("p");
+  status.className = "agent-action-editor-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  form.append(heading, frequency.field, status);
+  let saveTimer = null;
+  frequency.input.addEventListener("change", () => {
+    if (saveTimer) window.clearTimeout(saveTimer);
+    status.hidden = false;
+    status.classList.remove("is-error");
+    status.textContent = "Saving changes…";
+    saveTimer = window.setTimeout(async () => {
+      const selected = getSourceActionEditorFrequencyOptions().find((option) => option.value === frequency.input.value);
+      if (!selected) return;
+      try {
+        const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(sourceActionId))}/settings`, {
+          method: "POST",
+          headers: getSessionAuthHeaders(),
+          body: { intervalMinutes: selected.intervalMinutes },
+        });
+        status.textContent = "Saved";
+        if (response.action) {
+          state.sourceActions = state.sourceActions.map((candidate) => (
+            Number(candidate.id || 0) === sourceActionId ? response.action : candidate
+          ));
+          renderAgentActions();
+        }
+      } catch (error) {
+        status.textContent = formatApiErrorMessage(error, "Couldn’t save the source schedule.");
+        status.classList.add("is-error");
+      }
+    }, 260);
+  });
+  return form;
+}
+
 function createScheduledActionDetail(action) {
   const card = document.createElement("div");
   card.className = "agent-action-detail-card";
@@ -13435,6 +13510,8 @@ function createScheduledActionDetail(action) {
       note.className = "agent-action-note";
       note.textContent = "This phase checks and records the source. Content interpretation will be added next.";
       card.append(note);
+      const editor = createSourceActionEditor(action);
+      if (editor) card.append(editor);
       if (action.lastError) {
         const error = document.createElement("div");
         error.className = "agent-action-error";
