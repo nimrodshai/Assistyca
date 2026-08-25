@@ -13385,10 +13385,25 @@ function formatAgentTimeWindowPreview(value, timeZone = getWorkspaceTimeZone()) 
 
   const startMonth = range.start.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
   const endMonth = range.end.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-  const sameMonth = range.start.getUTCFullYear() === range.end.getUTCFullYear()
-    && range.start.getUTCMonth() === range.end.getUTCMonth();
+  const sameYear = range.start.getUTCFullYear() === range.end.getUTCFullYear();
+  const sameMonth = sameYear && range.start.getUTCMonth() === range.end.getUTCMonth();
+  const sameDay = sameMonth && range.start.getUTCDate() === range.end.getUTCDate();
+  const monthEndDay = new Date(Date.UTC(
+    range.start.getUTCFullYear(),
+    range.start.getUTCMonth() + 1,
+    0,
+  )).getUTCDate();
+  const fullCalendarMonth = sameMonth
+    && range.start.getUTCDate() === 1
+    && range.end.getUTCDate() === monthEndDay;
   const startLabel = getAgentOrdinalDay(range.start.getUTCDate());
   const endLabel = getAgentOrdinalDay(range.end.getUTCDate());
+  if (sameDay) {
+    return `${startLabel} ${startMonth}`;
+  }
+  if (fullCalendarMonth) {
+    return `${startMonth} ${range.start.getUTCFullYear()}`;
+  }
   return sameMonth
     ? `${startLabel} to ${endLabel}`
     : `${startLabel} ${startMonth} to ${endLabel} ${endMonth}`;

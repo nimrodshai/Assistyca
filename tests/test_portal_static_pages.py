@@ -213,6 +213,10 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('{ value: "tomorrow", label: "tomorrow" }', script)
         self.assertIn('{ value: "next week", label: "next week" }', script)
         self.assertIn("preview: formatAgentTimeWindowPreview(option.value)", script)
+        self.assertIn("const sameDay = sameMonth && range.start.getUTCDate() === range.end.getUTCDate();", script)
+        self.assertIn("const fullCalendarMonth = sameMonth", script)
+        self.assertIn("return `${startLabel} ${startMonth}`;", script)
+        self.assertIn("return `${startMonth} ${range.start.getUTCFullYear()}`;", script)
         self.assertIn("function createAgentCalendarSummaryDateRangeField", script)
         self.assertIn("agent-date-range-dropdown-option-meta", script)
         self.assertIn("optionPreview.textContent = option.preview || \"\";", script)
@@ -439,6 +443,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=112", html)
+        self.assertIn("app.js?v=136", html)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')
