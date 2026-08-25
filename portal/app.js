@@ -12445,6 +12445,20 @@ function createAgentActionDetailActions(action) {
     runButton.setAttribute("aria-label", "Run source action now");
     actions.append(runButton);
   }
+  if (isAgentProposalLocalAction(action) && action.payload?.manualOnly) {
+    const runButton = document.createElement("button");
+    runButton.type = "button";
+    runButton.className = "primary-button small agent-action-run-button";
+    const backendFeatureId = String(action.payload?.backendFeatureId || "").trim();
+    if (backendFeatureId && action.actionType === "agent_web_monitor") {
+      runButton.dataset.agentRunMonitorAction = backendFeatureId;
+    } else {
+      runButton.dataset.agentRunLocalAction = String(action.id || "");
+    }
+    runButton.textContent = "Run now";
+    runButton.setAttribute("aria-label", `Run ${getScheduledActionTitle(action)} now`);
+    actions.append(runButton);
+  }
   if (isAgentFeatureLiveAction(action) && action.actionType === "agent_web_monitor" && featureId) {
     const runButton = document.createElement("button");
     runButton.type = "button";
@@ -12587,7 +12601,7 @@ function getScheduledActionItemSignature(action) {
     getScheduledActionTitle(action),
     getScheduledActionStatusClass(action.status),
     getScheduledActionStatusLabel(action.status, action),
-    action.payload?.manualOnly ? "Run when you choose" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
+    action.payload?.manualOnly ? "manual" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     String(action.payload?.frequency || ""),
     String(action.payload?.lastRunAt || ""),
     String(action.payload?.lastRunStatus || ""),
@@ -12632,11 +12646,12 @@ function createScheduledActionItem(action) {
   const time = document.createElement("span");
   time.className = "agent-action-item-time";
   time.textContent = action.payload?.manualOnly
-    ? "Run when you choose"
+    ? ""
     : formatScheduledActionDate(
       getScheduledActionItemTimeValue(action),
       action.timezone,
     );
+  time.hidden = Boolean(action.payload?.manualOnly);
 
   trigger.append(head, time);
 
@@ -13232,8 +13247,9 @@ function updateAgentLocalActionDom(action) {
   const time = item.querySelector(".agent-action-item-time");
   if (time) {
     time.textContent = action.payload?.manualOnly
-      ? "Run when you choose"
+      ? ""
       : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone);
+    time.hidden = Boolean(action.payload?.manualOnly);
   }
   for (const term of item.querySelectorAll("dt")) {
     const label = String(term.textContent || "").trim();
@@ -13562,17 +13578,6 @@ function createScheduledActionDetail(action) {
         card.append(moreDetails);
       }
     } else {
-      const details = document.createElement("dl");
-      details.className = "agent-action-detail-grid agent-action-primary-details";
-      details.append(deliveryRow);
-      if (payload.location) {
-        details.append(createScheduledActionDetailRow("Location", String(payload.location)));
-      }
-      if (payload.timeWindow) {
-        details.append(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
-      }
-      card.append(details);
-
       const moreRows = [
         createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
         createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
@@ -15428,6 +15433,35 @@ async function runSourceActionNow(actionId) {
   }
 }
 
+function runAgentProposalLocalActionNow(actionId) {
+  const action = getRenderableAgentActions().find((candidate) => String(candidate.id) === String(actionId || ""));
+  const proposal = getAgentLocalActionProposal(action);
+  if (!action || !proposal) {
+    return false;
+  }
+
+  if (proposal.missingCredential) {
+    const message = `${proposal.missingCredential} setup is required before this action can run.`;
+    pushAgentMessage("assistant", message, { kind: "credential", proposalId: proposal.id });
+    persistAgentWorkspace(message);
+    renderApp({ preserveStatus: true });
+    openAgentProposalSetup(proposal.id);
+    return true;
+  }
+
+  const title = getScheduledActionTitle(action);
+  const message = proposal.type === "calendar-summary"
+    ? "The manual run button is ready, but the calendar summary runner is not connected yet. The action settings were saved; nothing was sent."
+    : `The manual run button is ready for ${title}, but its execution service is not connected yet. Nothing was sent.`;
+  pushAgentMessage("assistant", message, {
+    kind: "result",
+    proposalId: proposal.id,
+  });
+  persistAgentWorkspace(message);
+  renderApp({ preserveStatus: true });
+  return true;
+}
+
 async function removeSourceAction(actionId) {
   const id = Math.max(0, Number(actionId || 0));
   if (!id) return false;
@@ -15491,6 +15525,14 @@ function handleAgentWorkspaceClick(event) {
     return;
   }
 
+  const runLocalActionButton = target?.closest("[data-agent-run-local-action]");
+  if (runLocalActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    runAgentProposalLocalActionNow(runLocalActionButton.dataset.agentRunLocalAction || "");
+    return;
+  }
+
   const removeSourceActionButton = target?.closest("[data-agent-remove-source-action]");
   if (removeSourceActionButton) {
     event.preventDefault();
@@ -15501,7 +15543,7 @@ function handleAgentWorkspaceClick(event) {
 
   const scheduledActionItem = target?.closest("[data-agent-scheduled-action-id]");
   const scheduledActionId = scheduledActionItem?.dataset.agentScheduledActionId || "";
-  const isActionControl = target?.closest("button, input, select, textarea, a, [contenteditable=\"true\"], [role=\"button\"], [role=\"combobox\"]");
+  const isActionControl = target?.closest("button, input, select, textarea, a, summary, details, [contenteditable=\"true\"], [role=\"button\"], [role=\"combobox\"]");
   if (
     scheduledActionItem
     && scheduledActionId
