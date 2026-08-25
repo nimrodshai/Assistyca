@@ -1332,6 +1332,8 @@ const elements = {
   featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
   featureActivationNumberStatusTitle: document.querySelector("#featureActivationNumberStatusTitle"),
   featureActivationNumberStatusCopy: document.querySelector("#featureActivationNumberStatusCopy"),
+  featureActivationWebhookStatusTitle: document.querySelector("#featureActivationWebhookStatusTitle"),
+  featureActivationWebhookStatusCopy: document.querySelector("#featureActivationWebhookStatusCopy"),
   featureActivationInboundStatusTitle: document.querySelector("#featureActivationInboundStatusTitle"),
   featureActivationInboundStatusCopy: document.querySelector("#featureActivationInboundStatusCopy"),
   featureActivationOwnerStatusTitle: document.querySelector("#featureActivationOwnerStatusTitle"),
@@ -3318,6 +3320,11 @@ function normalizeFeatureWhatsAppMetadata(metadata = null) {
     lastOwnerNotificationStatus: String(source.lastOwnerNotificationStatus || source.last_owner_notification_status || "").trim(),
     lastOwnerNotificationError: String(source.lastOwnerNotificationError || source.last_owner_notification_error || "").trim(),
     lastOwnerNotificationMessageId: String(source.lastOwnerNotificationMessageId || source.last_owner_notification_message_id || "").trim(),
+    webhookSubscriptionStatus: String(source.webhookSubscriptionStatus || source.webhook_subscription_status || "").trim(),
+    webhookSubscribedAt: String(source.webhookSubscribedAt || source.webhook_subscribed_at || "").trim(),
+    webhookCallbackUrl: String(source.webhookCallbackUrl || source.webhook_callback_url || "").trim(),
+    webhookCallbackOverrideApplied: Boolean(source.webhookCallbackOverrideApplied ?? source.webhook_callback_override_applied ?? false),
+    webhookVerifyTokenConfigured: Boolean(source.webhookVerifyTokenConfigured ?? source.webhook_verify_token_configured ?? false),
   };
 }
 
@@ -5115,6 +5122,8 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
   const lastInboundAt = health.lastInboundAt ? formatAdminDateTime(health.lastInboundAt) : "";
   const lastOwnerNotificationAt = health.lastOwnerNotificationAt ? formatAdminDateTime(health.lastOwnerNotificationAt) : "";
+  const lastWebhookSubscribedAt = health.webhookSubscribedAt ? formatAdminDateTime(health.webhookSubscribedAt) : "";
+  const webhookStatus = String(health.webhookSubscriptionStatus || "").trim().toLowerCase();
   const lastInboundSender = String(health.lastInboundSenderName || health.lastInboundSenderWaId || "a customer").trim() || "a customer";
   const lastOwnerStatus = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
 
@@ -5122,6 +5131,10 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
     number: {
       title: "Add your details",
       copy: "Save the WABA ID, Phone Number ID, access token, and approval phone.",
+    },
+    webhook: {
+      title: "Waiting for setup",
+      copy: "After you save, Assistyca will ask Meta to forward messages to this workspace.",
     },
     inbound: {
       title: "Waiting for the first live message",
@@ -5144,6 +5157,25 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
           title: "Still need to verify the number",
           copy: "The details are saved, but Assistyca still needs to verify the phone number and subscribe the WABA webhook with Meta.",
         };
+  }
+
+  if (isConnected && webhookStatus === "subscribed" && health.webhookSubscribedAt) {
+    content.webhook = {
+      title: "Webhook refreshed",
+      copy: lastWebhookSubscribedAt
+        ? `Meta accepted the webhook subscription on ${lastWebhookSubscribedAt}.`
+        : "Meta accepted the webhook subscription.",
+    };
+  } else if (isConnected && webhookStatus === "subscribed") {
+    content.webhook = {
+      title: "Webhook subscribed",
+      copy: "Meta accepted the webhook subscription for this WhatsApp Business Account.",
+    };
+  } else if (isConnected) {
+    content.webhook = {
+      title: "Refresh webhook",
+      copy: "Click Refresh webhook to ask Meta to forward incoming messages to Assistyca again.",
+    };
   }
 
   if (health.lastInboundAt) {
@@ -19042,6 +19074,12 @@ function updateFeatureActivationStatus(feature = getSelectedFeature()) {
   }
   if (elements.featureActivationNumberStatusCopy) {
     elements.featureActivationNumberStatusCopy.textContent = content.number.copy;
+  }
+  if (elements.featureActivationWebhookStatusTitle) {
+    elements.featureActivationWebhookStatusTitle.textContent = content.webhook.title;
+  }
+  if (elements.featureActivationWebhookStatusCopy) {
+    elements.featureActivationWebhookStatusCopy.textContent = content.webhook.copy;
   }
   if (elements.featureActivationInboundStatusTitle) {
     elements.featureActivationInboundStatusTitle.textContent = content.inbound.title;

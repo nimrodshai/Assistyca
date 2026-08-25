@@ -4496,6 +4496,29 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
 
         result = subscribe_whatsapp_business_account(**subscribe_kwargs)
+        print(
+            json.dumps(
+                {
+                    "event": "whatsapp_webhook_subscription_refreshed",
+                    "wabaId": self._mask_whatsapp_log_identifier(business_account_id),
+                    "callbackUrl": webhook_url,
+                    "callbackOverrideApplied": bool(verify_token),
+                    "verifyTokenConfigured": bool(verify_token),
+                    "subscriptionConfirmed": bool(
+                        not isinstance(result, dict)
+                        or result.get("success") is not False
+                    ),
+                    "baselineSubscriptionConfirmed": bool(
+                        not isinstance(result, dict)
+                        or not isinstance(result.get("baselineSubscription"), dict)
+                        or result.get("baselineSubscription", {}).get("success") is not False
+                    ),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         return result, {
             "wabaId": business_account_id,
             "webhookSubscriptionStatus": "subscribed",

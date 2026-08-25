@@ -123,6 +123,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+        server_source = (self.root / "packages" / "infrastructure" / "portal_auth" / "server.py").read_text(encoding="utf-8")
 
         self.assertIn('type: "scheduled-message"', script)
         self.assertIn("function isAgentScheduledMessageRequest", script)
@@ -136,6 +137,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function canRefreshFeatureActivationWebhook", script)
         self.assertIn('const refreshOnly = !hasActivationChanges && canRefreshWebhook;', script)
         self.assertIn('"Refresh webhook"', script)
+        self.assertIn("featureActivationWebhookStatusTitle", script)
+        self.assertIn('"Webhook refreshed"', script)
+        self.assertIn('"whatsapp_webhook_subscription_refreshed"', server_source)
         self.assertIn('setStatus(refreshOnly ? "WhatsApp webhook refreshed." : "WhatsApp details saved.");', script)
         self.assertIn("function buildAgentToolContext", script)
         self.assertIn("function isAgentWhatsAppMonitoringRequest", script)
@@ -479,7 +483,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=114", html)
-        self.assertIn("app.js?v=140", html)
+        self.assertIn("app.js?v=141", html)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')
