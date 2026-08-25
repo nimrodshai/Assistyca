@@ -5173,6 +5173,19 @@ function hasFeatureActivationChanges(feature = getSelectedFeature()) {
   return editableKeys.some((key) => String(current[key] || "").trim() !== String(saved[key] || "").trim());
 }
 
+function canRefreshFeatureActivationWebhook(feature = getSelectedFeature()) {
+  const whatsapp = getSelectedFeatureWhatsApp(feature);
+  return Boolean(
+    feature
+    && isWhatsAppFeature(feature)
+    && whatsapp.connection_status === "connected"
+    && whatsapp.business_account_id
+    && whatsapp.phone_number_id
+    && whatsapp.owner_wa_id
+    && whatsapp.access_token_configured
+  );
+}
+
 function canSendWhatsAppReplySample(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
   return Boolean(
@@ -12932,19 +12945,38 @@ function createScheduledActionMoreDetails(rows) {
     return null;
   }
 
-  const disclosure = document.createElement("details");
+  const disclosure = document.createElement("section");
   disclosure.className = "agent-action-more-details";
 
-  const summary = document.createElement("summary");
+  const summary = document.createElement("button");
+  summary.type = "button";
   summary.className = "agent-action-more-details-summary";
   summary.textContent = "More details";
+  summary.setAttribute("aria-expanded", "false");
 
   const content = document.createElement("div");
   content.className = "agent-action-more-details-content";
+  content.id = createAgentId("agent-action-more-details");
+  content.setAttribute("aria-hidden", "true");
+  content.inert = true;
   const details = document.createElement("dl");
   details.className = "agent-action-detail-grid";
   details.append(...rows);
-  content.append(details);
+  const contentInner = document.createElement("div");
+  contentInner.className = "agent-action-more-details-content-inner";
+  contentInner.append(details);
+  content.append(contentInner);
+  summary.setAttribute("aria-controls", content.id);
+
+  const setOpen = (isOpen) => {
+    disclosure.classList.toggle("is-open", isOpen);
+    summary.setAttribute("aria-expanded", String(isOpen));
+    content.setAttribute("aria-hidden", String(!isOpen));
+    content.inert = !isOpen;
+  };
+  summary.addEventListener("click", () => {
+    setOpen(!disclosure.classList.contains("is-open"));
+  });
 
   disclosure.append(summary, content);
   return disclosure;
@@ -13491,12 +13523,80 @@ function scheduleAgentActionEditorTextareaResize(input) {
   window.requestAnimationFrame(() => resizeAgentActionEditorTextarea(input));
 }
 
-function createAgentLocalActionEditorField(labelText, value, options = {}) {
-  const field = document.createElement("label");
-  field.className = "agent-action-editor-field";
+function createAgentActionEditorStatusElement(className = "agent-action-editor-status", tagName = "p") {
+  const status = document.createElement(tagName);
+  status.className = className;
+  status.hidden = true;
+  const spinner = document.createElement("span");
+  spinner.className = "agent-action-editor-status-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  const text = document.createElement("span");
+  text.className = "agent-action-editor-status-text";
+  status._agentActionEditorStatusText = text;
+  status.append(spinner, text);
+  return status;
+}
+
+function setAgentActionEditorStatusElement(status, message, isError = false, isSaving = false) {
+  if (!status) {
+    return;
+  }
+  const text = status._agentActionEditorStatusText || status.querySelector?.(".agent-action-editor-status-text");
+  status.hidden = !message;
+  status.classList.toggle("is-error", isError);
+  status.classList.toggle("is-saving", Boolean(isSaving && !isError));
+  if (text) {
+    text.textContent = message;
+  } else {
+    status.textContent = message;
+  }
+}
+
+function createAgentActionEditorLabelRow(labelText) {
+  const labelRow = document.createElement("span");
+  labelRow.className = "agent-action-editor-label-row";
   const label = document.createElement("span");
   label.className = "agent-action-editor-label";
   label.textContent = labelText;
+  const fieldStatus = createAgentActionEditorStatusElement("agent-action-editor-field-status", "span");
+  fieldStatus.setAttribute("aria-hidden", "true");
+  labelRow.append(label, fieldStatus);
+  return { labelRow, label, fieldStatus };
+}
+
+function setAgentActionEditorFieldStatus(field, message = "", isError = false, isSaving = false) {
+  if (!field) {
+    return;
+  }
+  if (field._agentActionEditorStatusTimer) {
+    window.clearTimeout(field._agentActionEditorStatusTimer);
+    field._agentActionEditorStatusTimer = null;
+  }
+  field.classList.toggle("is-saving", Boolean(isSaving && !isError));
+  setAgentActionEditorStatusElement(field._agentActionEditorFieldStatus, message, isError, isSaving);
+}
+
+function clearAgentActionEditorFieldStatusSoon(field) {
+  if (!field) {
+    return;
+  }
+  if (field._agentActionEditorStatusTimer) {
+    window.clearTimeout(field._agentActionEditorStatusTimer);
+  }
+  field._agentActionEditorStatusTimer = window.setTimeout(() => {
+    field._agentActionEditorStatusTimer = null;
+    const status = field._agentActionEditorFieldStatus;
+    if (status && !status.classList.contains("is-saving") && !status.classList.contains("is-error")) {
+      setAgentActionEditorFieldStatus(field);
+    }
+  }, 1400);
+}
+
+function createAgentLocalActionEditorField(labelText, value, options = {}) {
+  const field = document.createElement("label");
+  field.className = "agent-action-editor-field";
+  const { labelRow, label, fieldStatus } = createAgentActionEditorLabelRow(labelText);
+  field._agentActionEditorFieldStatus = fieldStatus;
   const input = options.select
     ? document.createElement("select")
     : options.multiline
@@ -13525,7 +13625,7 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
     }
     input.value = String(value || options.options?.[0]?.value || "");
   }
-  field.append(label, options.select ? wrapAgentActionEditorSelect(input) : input);
+  field.append(labelRow, options.select ? wrapAgentActionEditorSelect(input) : input);
   return { field, input };
 }
 
@@ -13533,10 +13633,9 @@ function createAgentCalendarSummaryDateRangeField(labelText, value) {
   const options = getAgentCalendarSummaryDateRangeOptions(value);
   const field = document.createElement("div");
   field.className = "agent-action-editor-field";
-  const label = document.createElement("span");
-  label.className = "agent-action-editor-label";
+  const { labelRow, label, fieldStatus } = createAgentActionEditorLabelRow(labelText);
+  field._agentActionEditorFieldStatus = fieldStatus;
   label.id = createAgentId("agent-date-range-label");
-  label.textContent = labelText;
   const input = document.createElement("input");
   input.type = "hidden";
   input.value = normalizeAgentCalendarSummaryDateRangeValue(value) || options[0]?.value || "";
@@ -13662,7 +13761,7 @@ function createAgentCalendarSummaryDateRangeField(labelText, value) {
 
   updateSelectedDateRangeOption();
   dropdown.append(button, menu);
-  field.append(label, dropdown, input);
+  field.append(labelRow, dropdown, input);
   return { field, input };
 }
 
@@ -13704,22 +13803,38 @@ function updateAgentLocalActionDom(action) {
   }
 }
 
-function setAgentLocalActionEditorStatus(editor, message, isError = false) {
+function setAgentLocalActionEditorStatus(editor, message, isError = false, isSaving = false, changedField = null) {
   if (!editor?.status) return;
-  editor.status.hidden = !message;
-  editor.status.textContent = message;
-  editor.status.classList.toggle("is-error", isError);
+  if (isSaving) {
+    if (editor.activeField && editor.activeField !== changedField) {
+      setAgentActionEditorFieldStatus(editor.activeField);
+    }
+    editor.activeField = changedField || editor.activeField || null;
+    setAgentActionEditorFieldStatus(editor.activeField, "Saving", false, true);
+  } else if (editor.activeField) {
+    const completedField = editor.activeField;
+    const fieldMessage = isError ? "Error" : message === "Saved" ? "Saved" : "";
+    setAgentActionEditorFieldStatus(completedField, fieldMessage, isError, false);
+    editor.activeField = null;
+    if (fieldMessage && !isError) {
+      clearAgentActionEditorFieldStatusSoon(completedField);
+    }
+  }
+  setAgentActionEditorStatusElement(editor.status, message, isError, isSaving);
 }
 
-function scheduleAgentLocalActionAutoSave(action, draft, form) {
+function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = null) {
   const editor = form?._agentLocalActionEditor;
   if (!editor) return;
   if (editor.saveTimer) window.clearTimeout(editor.saveTimer);
-  setAgentLocalActionEditorStatus(editor, "Saving changes…");
+  setAgentLocalActionEditorStatus(editor, "Saving changes…", false, true, changedField);
   editor.saveTimer = window.setTimeout(() => {
     editor.saveTimer = null;
     const proposal = getAgentLocalActionProposal(action);
-    if (!proposal) return;
+    if (!proposal) {
+      setAgentLocalActionEditorStatus(editor, "Couldn’t save changes.", true);
+      return;
+    }
     const fields = { ...getAgentProposalFieldMap(proposal) };
     const frequencyLabel = formatAgentLocalActionFrequency(draft.frequency);
     if (draft.frequency === "manual") {
@@ -13814,7 +13929,7 @@ function createAgentLocalActionEditor(action) {
       const control = createAgentCalendarSummaryDateRangeField(label, draft[key]);
       control.input.addEventListener("change", () => {
         draft[key] = control.input.value;
-        scheduleAgentLocalActionAutoSave(action, draft, form);
+        scheduleAgentLocalActionAutoSave(action, draft, form, control.field);
       });
       form.append(control.field);
       continue;
@@ -13822,7 +13937,7 @@ function createAgentLocalActionEditor(action) {
     const control = createAgentLocalActionEditorField(label, draft[key], editorFieldOptions);
     control.input.addEventListener(editorFieldOptions.select ? "change" : "input", () => {
       draft[key] = control.input.value;
-      scheduleAgentLocalActionAutoSave(action, draft, form);
+      scheduleAgentLocalActionAutoSave(action, draft, form, control.field);
     });
     form.append(control.field);
     if (fieldOptions.multiline) {
@@ -13837,7 +13952,7 @@ function createAgentLocalActionEditor(action) {
   );
   frequency.input.addEventListener("change", () => {
     draft.frequency = frequency.input.value;
-    scheduleAgentLocalActionAutoSave(action, draft, form);
+    scheduleAgentLocalActionAutoSave(action, draft, form, frequency.field);
   });
   form.append(frequency.field);
 
@@ -13851,19 +13966,18 @@ function createAgentLocalActionEditor(action) {
   );
   delivery.input.addEventListener("change", () => {
     draft.deliveryChannel = delivery.input.value;
-    scheduleAgentLocalActionAutoSave(action, draft, form);
+    scheduleAgentLocalActionAutoSave(action, draft, form, delivery.field);
   });
   form.append(delivery.field);
 
   const deliveryNote = document.createElement("p");
   deliveryNote.className = "agent-action-editor-delivery";
   deliveryNote.textContent = "You can change the delivery channel without recreating the action.";
-  const status = document.createElement("p");
-  status.className = "agent-action-editor-status";
+  const status = createAgentActionEditorStatusElement("agent-action-editor-status", "p");
   status.setAttribute("role", "status");
-  status.hidden = true;
+  status.setAttribute("aria-live", "polite");
   form.append(deliveryNote, status);
-  form._agentLocalActionEditor = { draft, status, frequencySelect: frequency.input, saveTimer: null };
+  form._agentLocalActionEditor = { draft, status, frequencySelect: frequency.input, saveTimer: null, activeField: null };
   return form;
 }
 
@@ -13899,27 +14013,31 @@ function createSourceActionEditor(action) {
     getSourceActionEditorFrequencyValue(action),
     { select: true, options: getSourceActionEditorFrequencyOptions() },
   );
-  const status = document.createElement("p");
-  status.className = "agent-action-editor-status";
+  const status = createAgentActionEditorStatusElement("agent-action-editor-status", "p");
   status.setAttribute("role", "status");
-  status.hidden = true;
+  status.setAttribute("aria-live", "polite");
   form.append(frequency.field, status);
   let saveTimer = null;
   frequency.input.addEventListener("change", () => {
     if (saveTimer) window.clearTimeout(saveTimer);
-    status.hidden = false;
-    status.classList.remove("is-error");
-    status.textContent = "Saving changes…";
+    setAgentActionEditorStatusElement(status, "Saving changes…", false, true);
+    setAgentActionEditorFieldStatus(frequency.field, "Saving", false, true);
     saveTimer = window.setTimeout(async () => {
       const selected = getSourceActionEditorFrequencyOptions().find((option) => option.value === frequency.input.value);
-      if (!selected) return;
+      if (!selected) {
+        setAgentActionEditorStatusElement(status, "Choose a frequency.", true);
+        setAgentActionEditorFieldStatus(frequency.field, "Error", true);
+        return;
+      }
       try {
         const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(sourceActionId))}/settings`, {
           method: "POST",
           headers: getSessionAuthHeaders(),
           body: { intervalMinutes: selected.intervalMinutes },
         });
-        status.textContent = "Saved";
+        setAgentActionEditorStatusElement(status, "Saved");
+        setAgentActionEditorFieldStatus(frequency.field, "Saved");
+        clearAgentActionEditorFieldStatusSoon(frequency.field);
         if (response.action) {
           state.sourceActions = state.sourceActions.map((candidate) => (
             Number(candidate.id || 0) === sourceActionId ? response.action : candidate
@@ -13927,8 +14045,8 @@ function createSourceActionEditor(action) {
           renderAgentActions();
         }
       } catch (error) {
-        status.textContent = formatApiErrorMessage(error, "Couldn’t save the source schedule.");
-        status.classList.add("is-error");
+        setAgentActionEditorStatusElement(status, formatApiErrorMessage(error, "Couldn’t save the source schedule."), true);
+        setAgentActionEditorFieldStatus(frequency.field, "Error", true);
       }
     }, 260);
   });
@@ -13989,6 +14107,7 @@ function createScheduledActionDetail(action) {
       || "As configured",
     ).trim());
 
+    let moreDetails = null;
     if (isFeatureAction) {
       const primaryDetails = document.createElement("dl");
       primaryDetails.className = "agent-action-detail-grid agent-action-primary-details";
@@ -14014,17 +14133,13 @@ function createScheduledActionDetail(action) {
       if (payload.nextRunAt) {
         moreRows.push(createScheduledActionDetailRow("Next check", formatScheduledActionDate(payload.nextRunAt, action.timezone)));
       }
-      const moreDetails = createScheduledActionMoreDetails(moreRows);
-      if (moreDetails) {
-        card.append(moreDetails);
-      }
+      moreDetails = createScheduledActionMoreDetails(moreRows);
     } else {
       const moreRows = [
         createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
         createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
       ];
-      const moreDetails = createScheduledActionMoreDetails(moreRows);
-      if (moreDetails) card.append(moreDetails);
+      moreDetails = createScheduledActionMoreDetails(moreRows);
     }
 
     if (payload.initialRunError) {
@@ -14057,6 +14172,12 @@ function createScheduledActionDetail(action) {
       if (editor) {
         card.append(editor);
       }
+    }
+
+    // Keep secondary metadata below the editable delivery area. The disclosure
+    // itself stays in the card so opening it does not replace or re-anchor the list.
+    if (moreDetails) {
+      card.append(moreDetails);
     }
 
     const localActions = createAgentActionDetailActions(action);
@@ -16853,7 +16974,10 @@ async function activateSelectedFeature() {
     return;
   }
   const editingActiveFeature = isFeatureActivated(feature);
-  if (!hasFeatureActivationChanges(feature)) {
+  const hasActivationChanges = hasFeatureActivationChanges(feature);
+  const canRefreshWebhook = canRefreshFeatureActivationWebhook(feature);
+  const refreshOnly = !hasActivationChanges && canRefreshWebhook;
+  if (!hasActivationChanges && !canRefreshWebhook) {
     updateFeatureStudioHeader();
     setStatus("No changes to save.");
     return;
@@ -16876,7 +17000,13 @@ async function activateSelectedFeature() {
   state.featureActivationNotice = "";
   try {
     updateFeatureStudioHeader();
-    setStatus(editingActiveFeature ? "Saving details..." : "Saving setup...");
+    setStatus(
+      refreshOnly
+        ? "Refreshing WhatsApp webhook..."
+        : editingActiveFeature
+          ? "Saving details..."
+          : "Saving setup...",
+    );
     const whatsapp = getSelectedFeatureWhatsApp(feature);
     const accessToken = normalizePendingAccessToken(whatsapp.access_token);
     const response = await apiRequest("/api/whatsapp/connection", {
@@ -16931,12 +17061,12 @@ async function activateSelectedFeature() {
     }
 
     clearFeatureActivationNotice();
-    if (editingActiveFeature) {
+    if (refreshOnly || editingActiveFeature) {
       state.featureStudioView = "activation";
       setHashForTab("features", feature.id, "activation");
       renderApp();
       window.scrollTo(0, 0);
-      setStatus("WhatsApp details saved.");
+      setStatus(refreshOnly ? "WhatsApp webhook refreshed." : "WhatsApp details saved.");
       return;
     }
 
@@ -18838,7 +18968,13 @@ function syncFeatureActivationField(key) {
     clearFeatureActivationFieldError(key);
     persistClientState();
     updateFeatureStudioHeader();
-    setStatus(hasFeatureActivationChanges(feature) ? "Changes ready to save." : "No changes to save.");
+    setStatus(
+      hasFeatureActivationChanges(feature)
+        ? "Changes ready to save."
+        : canRefreshFeatureActivationWebhook(feature)
+          ? "Connection ready to refresh."
+          : "No changes to save.",
+    );
   };
 }
 
@@ -18867,6 +19003,8 @@ function updateFeatureStudioHeader() {
   const transitionBusy = isFeatureActivationTransitionBusy(feature);
   const manualRunBusy = isMonitorManualRunBusy(feature) || isReengagementDemoRunBusy(feature);
   const hasActivationChanges = hasFeatureActivationChanges(feature);
+  const canRefreshWebhook = canRefreshFeatureActivationWebhook(feature);
+  const refreshOnly = !hasActivationChanges && canRefreshWebhook;
 
   state.featureStudioView = studioView;
 
@@ -18965,7 +19103,7 @@ function updateFeatureStudioHeader() {
   updateFeatureStudioWhatsAppHealthNotice(feature);
   renderFeatureActivationFieldErrors();
   if (elements.featureStudioActivationButton) {
-    const showActivationSaveButton = activationBusy || hasActivationChanges;
+    const showActivationSaveButton = activationBusy || hasActivationChanges || canRefreshWebhook;
     const activationActions = elements.featureStudioActivationButton.closest(".feature-activation-actions");
     if (activationActions) {
       activationActions.classList.remove("is-hidden");
@@ -18975,15 +19113,24 @@ function updateFeatureStudioHeader() {
     elements.featureStudioActivationButton.hidden = false;
     elements.featureStudioActivationButton.tabIndex = showActivationSaveButton ? 0 : -1;
     elements.featureStudioActivationButton.textContent = activationBusy
-      ? isActivated
-        ? "Saving details..."
-        : "Saving setup..."
+      ? refreshOnly
+        ? "Refreshing webhook..."
+        : isActivated
+          ? "Saving details..."
+          : "Saving setup..."
       : isActivated
-        ? "Save details"
-        : "Save setup";
-    elements.featureStudioActivationButton.disabled = activationBusy || !hasActivationChanges;
+        ? hasActivationChanges
+          ? "Save details"
+          : "Refresh webhook"
+        : hasActivationChanges
+          ? "Save setup"
+          : "Refresh webhook";
+    elements.featureStudioActivationButton.disabled = activationBusy || (!hasActivationChanges && !canRefreshWebhook);
     elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
     elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
+    elements.featureStudioActivationButton.title = refreshOnly
+      ? "Ask Meta to send WhatsApp webhooks to Assistyca again"
+      : "";
   }
   if (elements.featureActivationBusinessAccountIdInput) {
     elements.featureActivationBusinessAccountIdInput.disabled = activationBusy;
