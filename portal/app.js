@@ -5106,7 +5106,12 @@ function getFeatureWhatsAppOwnerLabel(feature = getSelectedFeature()) {
 
 function getFeatureWhatsAppConnectedLabel(feature = getSelectedFeature()) {
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return String(whatsapp.verified_name || whatsapp.display_phone_number || whatsapp.phone_number_id || "your WhatsApp number").trim() || "your WhatsApp number";
+  const displayPhoneNumber = String(whatsapp.display_phone_number || "").trim();
+  const verifiedName = String(whatsapp.verified_name || "").trim();
+  if (displayPhoneNumber && verifiedName && verifiedName !== displayPhoneNumber) {
+    return `${displayPhoneNumber} (${verifiedName})`;
+  }
+  return String(displayPhoneNumber || verifiedName || whatsapp.phone_number_id || "your WhatsApp number").trim() || "your WhatsApp number";
 }
 
 function getWhatsAppOwnerNotificationFailureCopy(feature = getSelectedFeature(), options = {}) {
@@ -5153,8 +5158,8 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   if (hasFeatureWhatsAppDetails(feature)) {
     content.number = isConnected
       ? {
-          title: "Phone number verified",
-          copy: `${numberLabel} is saved and ready for live checks.`,
+          title: "Business number verified",
+          copy: `Customer messages must be sent to ${numberLabel}. ${ownerLabel} only receives approval alerts.`,
         }
       : {
           title: "Still need to verify the number",
@@ -5189,7 +5194,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   } else if (isConnected) {
     content.inbound = {
       title: "Waiting for the first live message",
-      copy: "Ask someone else to message your connected WhatsApp number. Messages from your approval phone are treated as your commands, so they will not create a customer draft.",
+      copy: `Ask someone else to message ${numberLabel}. Messages from ${ownerLabel} are treated as your commands, so they will not create a customer draft.`,
     };
   }
 
@@ -5241,7 +5246,7 @@ function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
   }
 
   if (isConnected && !health.lastInboundAt && whatsapp.webhook_url) {
-    content.note = `If another number messages your connected WhatsApp number and nothing reaches Assistyca, make sure Meta is forwarding new messages to ${whatsapp.webhook_url}.`;
+    content.note = `If another number messages ${numberLabel} and nothing reaches Assistyca, make sure Meta is forwarding the messages webhook field to ${whatsapp.webhook_url}.`;
   }
 
   return content;
