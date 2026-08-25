@@ -3961,8 +3961,102 @@ body[data-modal="billing"] .app-shell {
   transform: translateY(-65%) rotate(45deg);
 }
 
+.agent-date-range-dropdown {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.agent-date-range-dropdown-button,
+.agent-date-range-dropdown-option {
+  width: 100%;
+  min-width: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-date-range-dropdown-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.58rem;
+  align-items: center;
+  min-height: 2.35rem;
+  padding: 0.5rem 0.62rem;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(20, 28, 38, 0.095);
+  border-radius: 10px;
+  font-size: 0.73rem;
+}
+
+.agent-date-range-dropdown-button-label,
+.agent-date-range-dropdown-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-date-range-dropdown-button-meta,
+.agent-date-range-dropdown-option-meta {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.agent-date-range-dropdown-chevron {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: translateY(-14%) rotate(45deg);
+}
+
+.agent-date-range-dropdown-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.28rem);
+  right: 0;
+  left: 0;
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.24rem;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(20, 28, 38, 0.11);
+  border-radius: 10px;
+  box-shadow: 0 16px 30px rgba(20, 28, 38, 0.12);
+}
+
+.agent-date-range-dropdown-menu[hidden] {
+  display: none;
+}
+
+.agent-date-range-dropdown-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.58rem;
+  align-items: center;
+  min-height: 2.05rem;
+  padding: 0.42rem 0.48rem;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-size: 0.7rem;
+}
+
+.agent-date-range-dropdown-option:hover,
+.agent-date-range-dropdown-option:focus-visible,
+.agent-date-range-dropdown-option.is-selected {
+  background: rgba(15, 118, 110, 0.1);
+  outline: 0;
+}
+
 .agent-action-editor-input:focus,
-.agent-action-editor-select:focus {
+.agent-action-editor-select:focus,
+.agent-date-range-dropdown-button:focus-visible {
   border-color: rgba(15, 118, 110, 0.45);
   outline: 2px solid rgba(15, 118, 110, 0.15);
   outline-offset: 1px;
@@ -3980,6 +4074,16 @@ body[data-modal="billing"] .app-shell {
 
   .agent-action-editor-value-meta {
     justify-self: end;
+  }
+
+  .agent-date-range-dropdown-button,
+  .agent-date-range-dropdown-option {
+    gap: 0.42rem;
+  }
+
+  .agent-date-range-dropdown-button-meta,
+  .agent-date-range-dropdown-option-meta {
+    font-size: 0.64rem;
   }
 }
 

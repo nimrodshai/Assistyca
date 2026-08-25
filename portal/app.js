@@ -13310,10 +13310,17 @@ function normalizeAgentCalendarSummaryDateRangeValue(value) {
 }
 
 function getAgentCalendarSummaryDateRangeOptions(currentValue = "") {
-  const options = AGENT_CALENDAR_SUMMARY_DATE_RANGE_OPTIONS.map((option) => ({ ...option }));
+  const options = AGENT_CALENDAR_SUMMARY_DATE_RANGE_OPTIONS.map((option) => ({
+    ...option,
+    preview: formatAgentTimeWindowPreview(option.value),
+  }));
   const normalizedCurrentValue = normalizeAgentCalendarSummaryDateRangeValue(currentValue);
   if (normalizedCurrentValue && !options.some((option) => option.value === normalizedCurrentValue)) {
-    options.push({ value: normalizedCurrentValue, label: normalizedCurrentValue });
+    options.push({
+      value: normalizedCurrentValue,
+      label: normalizedCurrentValue,
+      preview: formatAgentTimeWindowPreview(normalizedCurrentValue),
+    });
   }
   return options;
 }
@@ -13456,6 +13463,143 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
     input.value = String(value || options.options?.[0]?.value || "");
   }
   field.append(label, options.select ? wrapAgentActionEditorSelect(input) : input);
+  return { field, input };
+}
+
+function createAgentCalendarSummaryDateRangeField(labelText, value) {
+  const options = getAgentCalendarSummaryDateRangeOptions(value);
+  const field = document.createElement("div");
+  field.className = "agent-action-editor-field";
+  const label = document.createElement("span");
+  label.className = "agent-action-editor-label";
+  label.id = createAgentId("agent-date-range-label");
+  label.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.value = normalizeAgentCalendarSummaryDateRangeValue(value) || options[0]?.value || "";
+  const dropdown = document.createElement("span");
+  dropdown.className = "agent-date-range-dropdown";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "agent-date-range-dropdown-button";
+  button.setAttribute("aria-haspopup", "listbox");
+  button.setAttribute("aria-expanded", "false");
+  const selectedLabel = document.createElement("span");
+  selectedLabel.className = "agent-date-range-dropdown-button-label";
+  const selectedPreview = document.createElement("span");
+  selectedPreview.className = "agent-date-range-dropdown-button-meta";
+  selectedPreview.setAttribute("aria-live", "polite");
+  const chevron = document.createElement("span");
+  chevron.className = "agent-date-range-dropdown-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  button.append(selectedLabel, selectedPreview, chevron);
+  const menu = document.createElement("div");
+  menu.id = createAgentId("agent-date-range-menu");
+  menu.className = "agent-date-range-dropdown-menu";
+  menu.setAttribute("role", "listbox");
+  menu.setAttribute("aria-labelledby", label.id);
+  menu.hidden = true;
+  button.setAttribute("aria-controls", menu.id);
+
+  const optionButtons = options.map((option) => {
+    const optionButton = document.createElement("button");
+    optionButton.type = "button";
+    optionButton.className = "agent-date-range-dropdown-option";
+    optionButton.setAttribute("role", "option");
+    optionButton.dataset.value = option.value;
+    const optionLabel = document.createElement("span");
+    optionLabel.className = "agent-date-range-dropdown-option-label";
+    optionLabel.textContent = option.label;
+    const optionPreview = document.createElement("span");
+    optionPreview.className = "agent-date-range-dropdown-option-meta";
+    optionPreview.textContent = option.preview || "";
+    optionPreview.hidden = !optionPreview.textContent;
+    optionButton.append(optionLabel, optionPreview);
+    optionButton.addEventListener("click", () => {
+      if (input.value !== option.value) {
+        input.value = option.value;
+        updateSelectedDateRangeOption();
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        updateSelectedDateRangeOption();
+      }
+      setDateRangeDropdownOpen(false);
+      button.focus();
+    });
+    menu.append(optionButton);
+    return optionButton;
+  });
+
+  const getSelectedOption = () => (
+    options.find((option) => option.value === input.value)
+    || { value: input.value, label: input.value || options[0]?.label || "", preview: formatAgentTimeWindowPreview(input.value) }
+  );
+
+  function updateSelectedDateRangeOption() {
+    const selectedOption = getSelectedOption();
+    selectedLabel.textContent = selectedOption.label;
+    selectedPreview.textContent = selectedOption.preview || "";
+    selectedPreview.hidden = !selectedPreview.textContent;
+    button.setAttribute(
+      "aria-label",
+      selectedOption.preview
+        ? `${labelText}: ${selectedOption.label}, ${selectedOption.preview}`
+        : `${labelText}: ${selectedOption.label}`,
+    );
+    for (const optionButton of optionButtons) {
+      const isSelected = optionButton.dataset.value === input.value;
+      optionButton.classList.toggle("is-selected", isSelected);
+      optionButton.setAttribute("aria-selected", String(isSelected));
+    }
+  }
+
+  function setDateRangeDropdownOpen(isOpen) {
+    menu.hidden = !isOpen;
+    dropdown.classList.toggle("is-open", isOpen);
+    button.setAttribute("aria-expanded", String(isOpen));
+    document[isOpen ? "addEventListener" : "removeEventListener"]("click", closeDateRangeDropdownOnOutsideClick);
+  }
+
+  function closeDateRangeDropdownOnOutsideClick(event) {
+    if (!field.contains(event.target)) {
+      setDateRangeDropdownOpen(false);
+    }
+  }
+
+  function focusDateRangeOption(offset = 0) {
+    const selectedIndex = Math.max(0, optionButtons.findIndex((optionButton) => optionButton.dataset.value === input.value));
+    const nextIndex = Math.max(0, Math.min(optionButtons.length - 1, selectedIndex + offset));
+    optionButtons[nextIndex]?.focus();
+  }
+
+  button.addEventListener("click", () => setDateRangeDropdownOpen(menu.hidden));
+  button.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setDateRangeDropdownOpen(true);
+      focusDateRangeOption();
+    }
+  });
+  menu.addEventListener("keydown", (event) => {
+    const currentIndex = optionButtons.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setDateRangeDropdownOpen(false);
+      button.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = Math.max(0, Math.min(optionButtons.length - 1, currentIndex + direction));
+      optionButtons[nextIndex]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      optionButtons[event.key === "Home" ? 0 : optionButtons.length - 1]?.focus();
+    }
+  });
+
+  updateSelectedDateRangeOption();
+  dropdown.append(button, menu);
+  field.append(label, dropdown, input);
   return { field, input };
 }
 
@@ -13612,28 +13756,15 @@ function createAgentLocalActionEditor(action) {
     const editorFieldOptions = { placeholder, ...fieldOptions };
     if (key === "timeWindow") {
       draft[key] = normalizeAgentCalendarSummaryDateRangeValue(draft[key] || "next week");
-      editorFieldOptions.select = true;
-      editorFieldOptions.options = getAgentCalendarSummaryDateRangeOptions(draft[key]);
+      const control = createAgentCalendarSummaryDateRangeField(label, draft[key]);
+      control.input.addEventListener("change", () => {
+        draft[key] = control.input.value;
+        scheduleAgentLocalActionAutoSave(action, draft, form);
+      });
+      form.append(control.field);
+      continue;
     }
     const control = createAgentLocalActionEditorField(label, draft[key], editorFieldOptions);
-    let timeWindowPreview = null;
-    if (key === "timeWindow") {
-      const valueRow = document.createElement("span");
-      valueRow.className = "agent-action-editor-value-row";
-      control.field.replaceChildren(control.field.querySelector(".agent-action-editor-label"));
-      valueRow.append(editorFieldOptions.select ? wrapAgentActionEditorSelect(control.input) : control.input);
-      timeWindowPreview = document.createElement("span");
-      timeWindowPreview.className = "agent-action-editor-value-meta";
-      timeWindowPreview.setAttribute("aria-live", "polite");
-      valueRow.append(timeWindowPreview);
-      control.field.append(valueRow);
-      const updateTimeWindowPreview = () => {
-        timeWindowPreview.textContent = formatAgentTimeWindowPreview(control.input.value);
-        timeWindowPreview.hidden = !timeWindowPreview.textContent;
-      };
-      updateTimeWindowPreview();
-      control.input.addEventListener(editorFieldOptions.select ? "change" : "input", updateTimeWindowPreview);
-    }
     control.input.addEventListener(editorFieldOptions.select ? "change" : "input", () => {
       draft[key] = control.input.value;
       scheduleAgentLocalActionAutoSave(action, draft, form);
