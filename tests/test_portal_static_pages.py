@@ -151,6 +151,10 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/scheduled-actions"', script)
         self.assertIn('apiRequest("/api/scheduled-actions?limit=100"', script)
         self.assertIn("function renderAgentActions", script)
+        self.assertIn("function getScheduledActionCreatedTime", script)
+        self.assertIn("function sortScheduledActionsByCreatedAt", script)
+        self.assertIn("sortScheduledActionsByCreatedAt(", script)
+        self.assertIn("Number.NEGATIVE_INFINITY", script)
         self.assertIn("function renderScheduledActionList", script)
         action_item_renderer = script[
             script.index("function renderScheduledActionItemContent"):

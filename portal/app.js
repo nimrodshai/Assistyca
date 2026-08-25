@@ -12689,10 +12689,20 @@ function getScheduledActionItemTimeValue(action) {
     : (action.completedAt || action.updatedAt);
 }
 
-function getScheduledActionSortTime(action, fallback = Number.MAX_SAFE_INTEGER) {
-  const value = getScheduledActionItemTimeValue(action) || action.updatedAt || action.createdAt;
+function getScheduledActionCreatedTime(action) {
+  const value = action?.createdAt || action?.created_at || action?.payload?.createdAt || action?.payload?.created_at;
   const parsed = new Date(value).getTime();
-  return Number.isNaN(parsed) ? fallback : parsed;
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+function sortScheduledActionsByCreatedAt(actions) {
+  return actions
+    .map((action, index) => ({ action, index }))
+    .sort((left, right) => {
+      const createdDifference = getScheduledActionCreatedTime(right.action) - getScheduledActionCreatedTime(left.action);
+      return createdDifference || left.index - right.index;
+    })
+    .map((entry) => entry.action);
 }
 
 function getScheduledActionItemSignature(action) {
@@ -14265,12 +14275,12 @@ function renderAgentActions() {
   }
 
   const actions = getRenderableAgentActions();
-  const activeActions = actions
-    .filter((action) => isActiveAgentActionStatus(action.status))
-    .sort((left, right) => getScheduledActionSortTime(left) - getScheduledActionSortTime(right));
-  const completed = actions
-    .filter((action) => !isActiveAgentActionStatus(action.status))
-    .sort((left, right) => getScheduledActionSortTime(right, 0) - getScheduledActionSortTime(left, 0));
+  const activeActions = sortScheduledActionsByCreatedAt(
+    actions.filter((action) => isActiveAgentActionStatus(action.status)),
+  );
+  const completed = sortScheduledActionsByCreatedAt(
+    actions.filter((action) => !isActiveAgentActionStatus(action.status)),
+  );
 
   elements.agentPendingActionsCount.textContent = String(activeActions.length);
   elements.agentCompletedActionsCount.textContent = String(completed.length);
