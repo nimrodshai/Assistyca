@@ -19129,7 +19129,7 @@ function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
   }
 
   const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const health = getSelectedFeatureWhatsAppMetadata(feature);
+  const health = getFeatureWhatsAppHealth(feature);
   const webhookStatus = String(health.webhookSubscriptionStatus || "").trim().toLowerCase();
   if (whatsapp.connection_status === "connected" && webhookStatus === "subscribed") {
     const lastWebhookSubscribedAt = health.webhookSubscribedAt ? formatAdminDateTime(health.webhookSubscribedAt) : "";

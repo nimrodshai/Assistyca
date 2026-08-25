@@ -490,6 +490,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function updateFeatureActivationResult", script)
         self.assertIn('title: refreshOnly ? "Refreshing webhook" : "Saving WhatsApp details"', script)
         self.assertIn('title: isWarning ? "Refresh failed" : webhookSuccess ? "Webhook refreshed" : getFeatureActivationNoticeLabel()', script)
+        self.assertIn("getFeatureWhatsAppHealth(feature)", script)
+        self.assertNotIn("getSelectedFeatureWhatsAppMetadata", script)
         self.assertIn(".feature-activation-result {", styles)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
