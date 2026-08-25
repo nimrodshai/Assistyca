@@ -13041,14 +13041,6 @@ function createAgentMonitorEditor(action) {
   form.className = "agent-action-editor";
   form.dataset.agentMonitorEditForm = featureId;
 
-  const heading = document.createElement("div");
-  heading.className = "agent-action-editor-heading";
-  const title = document.createElement("strong");
-  title.textContent = "Edit monitor";
-  const subtitle = document.createElement("span");
-  subtitle.textContent = "Changes save automatically.";
-  heading.append(title, subtitle);
-
   const topicsField = document.createElement("div");
   topicsField.className = "agent-action-editor-field";
   const topicsLabel = document.createElement("span");
@@ -13169,7 +13161,7 @@ function createAgentMonitorEditor(action) {
     savePromise: null,
     saveQueued: false,
   };
-  form.append(heading, topicsField, frequencyField, delivery, status);
+  form.append(topicsField, frequencyField, delivery, status);
   renderTopics();
   return form;
 }
@@ -13733,14 +13725,6 @@ function createAgentLocalActionEditor(action) {
   const form = document.createElement("form");
   form.className = "agent-action-editor";
   form.addEventListener("submit", (event) => event.preventDefault());
-  const heading = document.createElement("div");
-  heading.className = "agent-action-editor-heading";
-  const title = document.createElement("strong");
-  title.textContent = "Edit action";
-  const subtitle = document.createElement("span");
-  subtitle.textContent = "Changes save automatically.";
-  heading.append(title, subtitle);
-  form.append(heading);
 
   const typeFields = {
     "calendar-summary": [
@@ -13839,13 +13823,6 @@ function createSourceActionEditor(action) {
   const form = document.createElement("form");
   form.className = "agent-action-editor";
   form.addEventListener("submit", (event) => event.preventDefault());
-  const heading = document.createElement("div");
-  heading.className = "agent-action-editor-heading";
-  const title = document.createElement("strong");
-  title.textContent = "Edit source action";
-  const subtitle = document.createElement("span");
-  subtitle.textContent = "Changes save automatically.";
-  heading.append(title, subtitle);
   const frequency = createAgentLocalActionEditorField(
     "Frequency",
     getSourceActionEditorFrequencyValue(action),
@@ -13855,7 +13832,7 @@ function createSourceActionEditor(action) {
   status.className = "agent-action-editor-status";
   status.setAttribute("role", "status");
   status.hidden = true;
-  form.append(heading, frequency.field, status);
+  form.append(frequency.field, status);
   let saveTimer = null;
   frequency.input.addEventListener("change", () => {
     if (saveTimer) window.clearTimeout(saveTimer);

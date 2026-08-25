@@ -3803,26 +3803,20 @@ body[data-modal="billing"] .app-shell {
   box-shadow: none;
 }
 
+.agent-action-detail-card > * + * {
+  padding-top: 0.76rem;
+  border-top: 1px solid rgba(20, 28, 38, 0.065);
+}
+
 .agent-action-editor {
   display: grid;
   gap: 0.65rem;
-  padding: 0.76rem 0 0;
+  padding: 0;
   background: transparent;
   border: 0;
-  border-top: 1px solid rgba(15, 118, 110, 0.11);
   border-radius: 0;
 }
 
-.agent-action-editor-heading {
-  display: grid;
-  gap: 0.12rem;
-}
-
-.agent-action-editor-heading strong {
-  font-size: 0.78rem;
-}
-
-.agent-action-editor-heading span,
 .agent-action-editor-delivery,
 .agent-action-editor-status {
   margin: 0;
@@ -4144,7 +4138,7 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-action-more-details {
-  border-top: 1px solid rgba(20, 28, 38, 0.065);
+  margin: 0;
 }
 
 .agent-action-more-details-summary {

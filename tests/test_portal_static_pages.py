@@ -174,20 +174,33 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn("No background checks. Use Run now whenever you want a fresh top-five summary.", script)
         self.assertIn("function createAgentMonitorEditor", script)
         self.assertIn("agentMonitorEditForm", script)
-        self.assertIn('subtitle.textContent = "Changes save automatically.";', script)
+        self.assertNotIn('subtitle.textContent = "Changes save automatically.";', script)
+        self.assertNotIn('title.textContent = "Edit action";', script)
+        self.assertNotIn('title.textContent = "Edit monitor";', script)
+        self.assertNotIn('title.textContent = "Edit source action";', script)
+        self.assertNotIn("agent-action-editor-heading", script)
+        self.assertNotIn(".agent-action-editor-heading", styles)
         detail_card_styles = styles[
             styles.index(".agent-action-detail-card {"):
             styles.index(".agent-action-editor {")
         ]
         editor_styles = styles[
             styles.index(".agent-action-editor {"):
-            styles.index(".agent-action-editor-heading {")
+            styles.index(".agent-action-editor-delivery,")
+        ]
+        more_details_styles = styles[
+            styles.index(".agent-action-more-details {"):
+            styles.index(".agent-action-more-details-summary {")
         ]
         self.assertIn("background: transparent;", detail_card_styles)
         self.assertIn("box-shadow: none;", detail_card_styles)
         self.assertIn("border-top: 1px solid rgba(20, 28, 38, 0.065);", detail_card_styles)
+        self.assertIn(".agent-action-detail-card > * + *", detail_card_styles)
         self.assertIn("background: transparent;", editor_styles)
-        self.assertIn("border-top: 1px solid rgba(15, 118, 110, 0.11);", editor_styles)
+        self.assertIn("padding: 0;", editor_styles)
+        self.assertNotIn("border-top:", editor_styles)
+        self.assertIn("margin: 0;", more_details_styles)
+        self.assertNotIn("border-top:", more_details_styles)
         self.assertIn("function resizeAgentActionEditorTextarea", script)
         self.assertIn("input.scrollHeight + borderBlock", script)
         self.assertIn("input.rows = Number(options.rows || 1);", script)
@@ -425,7 +438,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=111", html)
+        self.assertIn("styles.css?v=112", html)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')
