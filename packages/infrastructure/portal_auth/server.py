@@ -54,6 +54,9 @@ from packages.infrastructure.agent_proposals import normalize_agent_source_conte
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.agent_proposals import parse_agent_proposal_revision_json
 from packages.infrastructure.billing_ledger import load_billing_report
+from packages.infrastructure.calendar_summary import CalendarAuthorizationError
+from packages.infrastructure.calendar_summary import CalendarSummaryError
+from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.credential_vault import CredentialVault
 from packages.infrastructure.credential_vault import CredentialVaultError
 from packages.infrastructure.credential_vault import credential_hint
@@ -2110,6 +2113,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/contact/agent"
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
+            or path == "/api/agent/proposals/run"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -2172,6 +2176,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/contact/agent"
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
+            or path == "/api/agent/proposals/run"
             or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
             or path == "/api/features"
@@ -2404,6 +2409,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/proposals/revise":
             self._handle_agent_proposal_revision()
+            return
+
+        if path == "/api/agent/proposals/run":
+            self._handle_agent_proposal_run()
             return
 
         if path == "/api/platform-connections":
@@ -3032,6 +3041,111 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             **revision,
+        })
+
+    def _handle_agent_proposal_run(self) -> None:
+        """Execute a supported local proposal without routing it through chat."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        proposal_type = normalize_text(payload.get("proposalType") or payload.get("proposal_type")).lower()
+        if proposal_type != "calendar-summary":
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "proposal_runner_not_found",
+                "message": "This action does not have a manual runner yet.",
+            })
+            return
+
+        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        time_window = normalize_text(fields.get("timeWindow") or payload.get("timeWindow")) or "next week"
+        calendar_label = normalize_text(fields.get("calendar") or payload.get("calendar")) or "connected calendar"
+        delivery_channel = normalize_text(
+            payload.get("deliveryChannel") or fields.get("deliveryChannel")
+        ).lower()
+        # The portal is the only delivery target implemented by this runner;
+        # external delivery should be added as an explicit provider integration.
+        if delivery_channel and delivery_channel not in {"portal", "chat", "this chat", "workspace"}:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "delivery_not_supported",
+                "message": "This meeting summary runner currently delivers into this chat. Choose “This chat” in the action editor and run it again.",
+            })
+            return
+
+        ciphertext = self.database.get_platform_connection_ciphertext(session.email, "calendar")
+        vault = self.credential_vault
+        if not ciphertext or vault is None:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_setup_required",
+                "message": "Calendar is not ready for reading events. Open Calendar setup and reconnect it with read-only access, then try again.",
+            })
+            return
+
+        try:
+            access_token = vault.decrypt(ciphertext)
+        except CredentialVaultError:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_setup_required",
+                "message": "The saved Calendar connection could not be opened securely. Reconnect Calendar and try again.",
+            })
+            return
+
+        timezone_name = normalize_text(
+            payload.get("timezone")
+            or payload.get("timeZone")
+            or "UTC"
+        ) or "UTC"
+        # “Connected calendar” and the current Google Calendar labels both map
+        # to the provider's primary calendar. Never treat a chat field as a URL.
+        calendar_id = "primary"
+        if calendar_label.lower() not in {"connected calendar", "google calendar", "primary", "calendar"}:
+            calendar_id = "primary"
+
+        try:
+            result = CalendarSummaryRunner().run(
+                access_token,
+                calendar_id=calendar_id,
+                time_window=time_window,
+                timezone_name=timezone_name,
+            )
+        except CalendarAuthorizationError as exc:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": exc.code,
+                "message": str(exc),
+            })
+            return
+        except CalendarSummaryError as exc:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": exc.code,
+                "message": str(exc),
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": str(result.get("message") or "Meeting summary complete."),
+            "summary": str(result.get("summary") or result.get("message") or ""),
+            "eventCount": int(result.get("eventCount") or 0),
+            "dateRange": result.get("dateRange") if isinstance(result.get("dateRange"), dict) else {},
+            "calendar": "connected calendar",
         })
 
     def _handle_agent_turn(self) -> None:

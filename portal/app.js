@@ -1201,6 +1201,7 @@ let monitorManualRunCancelling = false;
 let monitorManualRunCancellationError = "";
 let monitorManualRunOverlayVisible = false;
 const monitorActionRunBusy = new Set();
+const localActionRunBusy = new Set();
 let reengagementDemoRunBusy = false;
 let reengagementDemoRunTargetId = "";
 let reengagementDemoRunRequestId = "";
@@ -12687,13 +12688,17 @@ function createAgentActionDetailActions(action) {
     const runButton = document.createElement("button");
     runButton.type = "button";
     runButton.className = "primary-button small agent-action-run-button";
+    const actionId = String(action.id || "");
+    const isBusy = localActionRunBusy.has(actionId);
     const backendFeatureId = String(action.payload?.backendFeatureId || "").trim();
     if (backendFeatureId && action.actionType === "agent_web_monitor") {
       runButton.dataset.agentRunMonitorAction = backendFeatureId;
     } else {
-      runButton.dataset.agentRunLocalAction = String(action.id || "");
+      runButton.dataset.agentRunLocalAction = actionId;
     }
-    runButton.textContent = "Run now";
+    runButton.textContent = isBusy ? "Running…" : "Run now";
+    runButton.disabled = isBusy;
+    runButton.setAttribute("aria-busy", String(isBusy));
     runButton.setAttribute("aria-label", `Run ${getScheduledActionTitle(action)} now`);
     actions.append(runButton);
   }
@@ -13180,6 +13185,7 @@ function getScheduledActionDetailSignature(action) {
     String(action.payload?.backendFeatureActive ?? ""),
     String(action.payload?.manualOnly ?? ""),
     monitorActionRunBusy.has(String(action.payload?.backendFeatureId || "").trim()),
+    localActionRunBusy.has(String(action.id || "").trim()),
     String(action.payload?.initialRunStatus || ""),
     String(action.payload?.initialRunMessage || ""),
     String(action.payload?.initialRunError || ""),
@@ -16278,7 +16284,7 @@ async function runSourceActionNow(actionId) {
   }
 }
 
-function runAgentProposalLocalActionNow(actionId) {
+async function runAgentProposalLocalActionNow(actionId) {
   const action = getRenderableAgentActions().find((candidate) => String(candidate.id) === String(actionId || ""));
   const proposal = getAgentLocalActionProposal(action);
   if (!action || !proposal) {
@@ -16294,9 +16300,56 @@ function runAgentProposalLocalActionNow(actionId) {
     return true;
   }
 
+  const normalizedActionId = String(action.id || "");
+  if (localActionRunBusy.has(normalizedActionId)) {
+    return false;
+  }
+
+  if (proposal.type === "calendar-summary") {
+    localActionRunBusy.add(normalizedActionId);
+    const runningMessage = "I’m checking your connected calendar and preparing the meeting summary…";
+    persistAgentWorkspace(runningMessage);
+    renderApp({ preserveStatus: true });
+    try {
+      const response = await apiRequest("/api/agent/proposals/run", {
+        method: "POST",
+        headers: getSessionAuthHeaders(),
+        body: {
+          proposalId: proposal.id,
+          proposalType: proposal.type,
+          fields: { ...getAgentProposalFieldMap(proposal) },
+          deliveryChannel: getAgentProposalDeliveryChannel(proposal) || "portal",
+          timezone: getWorkspaceTimeZone(),
+        },
+        timeoutMs: 90000,
+      });
+      const message = String(response.message || response.summary || "Meeting summary complete.").trim();
+      pushAgentMessage("assistant", message, {
+        kind: "result",
+        proposalId: proposal.id,
+      });
+      persistAgentWorkspace(message);
+      return true;
+    } catch (error) {
+      const message = formatApiErrorMessage(
+        error,
+        "I couldn’t read the connected calendar. Check Calendar setup and try again.",
+      );
+      pushAgentMessage("assistant", message, {
+        kind: "error",
+        proposalId: proposal.id,
+      });
+      persistAgentWorkspace(message);
+      return false;
+    } finally {
+      localActionRunBusy.delete(normalizedActionId);
+      renderApp({ preserveStatus: true });
+    }
+  }
+
   const title = getScheduledActionTitle(action);
   const message = proposal.type === "calendar-summary"
-    ? "The manual run button is ready, but the calendar summary runner is not connected yet. The action settings were saved; nothing was sent."
+    ? "This action does not have a connected runner yet. Nothing was sent."
     : `The manual run button is ready for ${title}, but its execution service is not connected yet. Nothing was sent.`;
   pushAgentMessage("assistant", message, {
     kind: "result",
@@ -16374,7 +16427,7 @@ function handleAgentWorkspaceClick(event) {
   if (runLocalActionButton) {
     event.preventDefault();
     event.stopPropagation();
-    runAgentProposalLocalActionNow(runLocalActionButton.dataset.agentRunLocalAction || "");
+    void runAgentProposalLocalActionNow(runLocalActionButton.dataset.agentRunLocalAction || "");
     return;
   }
 
