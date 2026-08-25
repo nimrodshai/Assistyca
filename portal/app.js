@@ -12250,7 +12250,7 @@ function getConnectedPlatformAddress(platform) {
       const configs = [feature.whatsapp, feature.savedWhatsApp, feature.saved_whatsapp]
         .map((config) => normalizeFeatureWhatsApp(config || {}));
       for (const config of configs) {
-        const address = formatAgentPlatformAddress("whatsapp", config.display_phone_number || config.owner_wa_id);
+        const address = formatAgentPlatformAddress("whatsapp", config.owner_wa_id || config.display_phone_number);
         if (address) {
           return address;
         }
@@ -18651,9 +18651,7 @@ function updateFeatureStudioHeader() {
     elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "history"
       ? "Back to editor"
       : studioView === "activation"
-      ? getActivationBackView(feature) === "editor"
-        ? "Back to editor"
-        : "Back to overview"
+      ? "Back to chat"
       : "Back to tools";
   }
   if (elements.featureStudioStatus) {
@@ -20799,7 +20797,9 @@ function bindEvents() {
     }
 
     if (state.featureStudioView === "activation") {
-      setFeatureStudioView(getActivationBackView());
+      // WhatsApp details are a setup detour from the conversational workspace.
+      // Return the user to the chat rather than another tool-editor step.
+      setActiveTab("features");
       return;
     }
 
