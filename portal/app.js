@@ -1340,8 +1340,8 @@ const elements = {
   featureActivationOwnerStatusCopy: document.querySelector("#featureActivationOwnerStatusCopy"),
   featureActivationWebhookHint: document.querySelector("#featureActivationWebhookHint"),
   featureActivationResult: document.querySelector("#featureActivationResult"),
-  featureActivationResultTitle: document.querySelector("#featureActivationResultTitle"),
-  featureActivationResultCopy: document.querySelector("#featureActivationResultCopy"),
+  featureActivationResultIcon: document.querySelector("#featureActivationResultIcon"),
+  featureActivationResultText: document.querySelector("#featureActivationResultText"),
   monitorTargetCard: document.querySelector("#monitorTargetCard"),
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
@@ -19110,10 +19110,8 @@ function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
   if (activationBusy) {
     return {
       tone: "busy",
-      title: refreshOnly ? "Refreshing webhook" : "Saving WhatsApp details",
-      copy: refreshOnly
-        ? "Asking Meta to send incoming WhatsApp messages to Assistyca."
-        : "Checking the saved number and webhook subscription with Meta.",
+      icon: "",
+      text: refreshOnly ? "Refreshing..." : "Saving...",
     };
   }
 
@@ -19123,8 +19121,8 @@ function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
     const webhookSuccess = /webhook/i.test(notice) && /refreshed|saved|subscribed|accepted/i.test(notice);
     return {
       tone: isWarning ? "warning" : "success",
-      title: isWarning ? "Refresh failed" : webhookSuccess ? "Webhook refreshed" : getFeatureActivationNoticeLabel(),
-      copy: notice,
+      icon: isWarning ? "X" : "V",
+      text: isWarning ? (refreshOnly ? "Refresh failed" : "Save failed") : webhookSuccess ? "Refresh succeeded" : "Save succeeded",
     };
   }
 
@@ -19132,13 +19130,10 @@ function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
   const health = getFeatureWhatsAppHealth(feature);
   const webhookStatus = String(health.webhookSubscriptionStatus || "").trim().toLowerCase();
   if (whatsapp.connection_status === "connected" && webhookStatus === "subscribed") {
-    const lastWebhookSubscribedAt = health.webhookSubscribedAt ? formatAdminDateTime(health.webhookSubscribedAt) : "";
     return {
       tone: "success",
-      title: health.webhookSubscribedAt ? "Webhook refreshed" : "Webhook subscribed",
-      copy: lastWebhookSubscribedAt
-        ? `Meta accepted the webhook subscription on ${lastWebhookSubscribedAt}.`
-        : "Meta accepted the webhook subscription for this WhatsApp Business Account.",
+      icon: "V",
+      text: "Refresh succeeded",
     };
   }
 
@@ -19148,22 +19143,22 @@ function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
 function updateFeatureActivationResult(feature = getSelectedFeature()) {
   const result = buildFeatureActivationResultContent(feature);
   const element = elements.featureActivationResult;
-  if (!element || !elements.featureActivationResultTitle || !elements.featureActivationResultCopy) {
+  if (!element || !elements.featureActivationResultIcon || !elements.featureActivationResultText) {
     return;
   }
 
   if (!result) {
     element.classList.add("is-hidden");
     element.dataset.tone = "";
-    elements.featureActivationResultTitle.textContent = "";
-    elements.featureActivationResultCopy.textContent = "";
+    elements.featureActivationResultIcon.textContent = "";
+    elements.featureActivationResultText.textContent = "";
     return;
   }
 
   element.classList.remove("is-hidden");
   element.dataset.tone = result.tone;
-  elements.featureActivationResultTitle.textContent = result.title;
-  elements.featureActivationResultCopy.textContent = result.copy;
+  elements.featureActivationResultIcon.textContent = result.icon;
+  elements.featureActivationResultText.textContent = result.text;
 }
 
 function updateFeatureStudioWhatsAppHealthNotice(feature = getSelectedFeature()) {
