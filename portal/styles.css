@@ -2412,12 +2412,28 @@ body[data-modal="billing"] .app-shell {
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] {
-  width: min(100%, 25rem);
+  --calendar-oauth-column-offset: 3.5rem;
+  width: min(100%, 25.5rem);
   gap: 0.92rem;
+}
+
+.auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-head {
+  gap: 0.8rem;
+}
+
+.auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-icon {
+  width: 2.7rem;
+  height: 2.7rem;
+}
+
+.auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-body,
+.auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions {
+  margin-left: var(--calendar-oauth-column-offset);
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions {
   align-items: center;
+  justify-content: flex-start;
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small {
@@ -9243,6 +9259,11 @@ body[data-modal="billing"] .app-shell {
   .auth-alert-copy h2 {
     font-size: 1.3rem;
     line-height: 1.1;
+  }
+
+  .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-body,
+  .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions {
+    margin-left: 0;
   }
 
   .auth-alert-actions {
