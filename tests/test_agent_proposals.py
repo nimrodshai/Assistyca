@@ -164,6 +164,23 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("do not ask which WhatsApp number or account", prompt)
         self.assertNotIn("secret", prompt)
 
+    def test_agent_tool_context_includes_calendar_health_without_credentials(self) -> None:
+        context = normalize_agent_tool_context({
+            "calendar": {
+                "platformConnected": True,
+                "connectionStatus": "needs_attention",
+                "validationStatus": "failed",
+                "accessToken": "must-not-be-forwarded",
+            },
+        })
+
+        self.assertEqual(context["calendar"], {
+            "platformConnected": True,
+            "connectionStatus": "needs_attention",
+            "validationStatus": "failed",
+        })
+        self.assertNotIn("must-not-be-forwarded", json.dumps(context))
+
     def test_conversational_turn_prompt_discourages_repeated_plan_summaries(self) -> None:
         prompt = build_agent_turn_prompt(
             user_message="Please check the web every 5 minutes for fun events to do with kids in August. When you have the results send me an email with the top most relevant results",

@@ -120,7 +120,7 @@ def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
         raw_whatsapp.get("connectionStatus") or raw_whatsapp.get("connection_status"),
         40,
     ).lower() or "not_connected"
-    return {
+    context = {
         "whatsapp": {
             "ready": raw_whatsapp.get("ready") is True,
             "platformConnected": bool(
@@ -132,6 +132,26 @@ def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
             "missingFields": missing_fields,
         },
     }
+    raw_calendar = source.get("calendar") if isinstance(source.get("calendar"), dict) else None
+    if raw_calendar is not None:
+        calendar_status = _single_line(
+            raw_calendar.get("connectionStatus") or raw_calendar.get("connection_status"),
+            40,
+        ).lower() or "not_connected"
+        validation_status = _single_line(
+            raw_calendar.get("validationStatus") or raw_calendar.get("validation_status"),
+            40,
+        ).lower() or "unknown"
+        context["calendar"] = {
+            "platformConnected": bool(
+                raw_calendar.get("platformConnected") is True
+                if "platformConnected" in raw_calendar
+                else raw_calendar.get("platform_connected") is True
+            ),
+            "connectionStatus": calendar_status,
+            "validationStatus": validation_status,
+        }
+    return context
 
 
 def normalize_agent_source_context(value: Any) -> dict[str, str]:
@@ -349,6 +369,10 @@ def build_agent_turn_prompt(
         "For calendar-summary, use the connected calendar as the meeting source. Never ask for Gmail or mailbox "
         "access for this proposal. Delivery (such as email) is separate from calendar access. Ask only for a missing "
         "calendar, date range, or delivery channel.\n"
+        "For questions about getting Calendar access, answer the user's practical question directly using the "
+        "calendar status in toolContext. Explain that the portal currently accepts a Google OAuth access token with "
+        "the read-only Calendar scope through the secure setup form; a Google API key is not sufficient, and tokens "
+        "must never be pasted into chat. Do not claim Calendar is connected unless validationStatus is verified.\n"
         "Use toolContext to understand which integrations are already connected. If toolContext.whatsapp.ready "
         "is true, use the connected WhatsApp Business connection and do not ask which WhatsApp number or account "
         "to monitor. If it is false, ask only for the specific WhatsApp details listed in "

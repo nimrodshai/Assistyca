@@ -4334,13 +4334,14 @@ function createPlatformConnectionForm(option) {
   helpButton.textContent = isCalendar ? "How do I get Calendar access?" : "Help me get it";
   helpButton.addEventListener("click", () => {
     closeAuthAlert();
-    const message = isCalendar
-      ? "For a meeting summary, you need a Google OAuth access token with the read-only Calendar scope. A Google API key is not enough. I can walk you through the Google Cloud OAuth setup; please never paste the token into chat."
-      : `I can help you get a ${option.label} token. Tell me what screen you’re on and I’ll walk you through it. Please don’t paste the token into chat.`;
-    pushAgentMessage("assistant", message);
-    persistAgentWorkspace(isCalendar ? "I can help you set up read-only Google Calendar access." : `I can help you get a ${option.label} token.`);
-    renderApp({ preserveStatus: true });
-    elements.agentComposerInput?.focus();
+    // Route the question through the normal chat turn so the user sees what
+    // they asked and receives an answer grounded in the current conversation.
+    // The secure-form warning remains in the setup dialog; credentials never
+    // enter this transcript or the model request.
+    const question = isCalendar
+      ? "How do I get Calendar access?"
+      : `How do I get ${option.label} access?`;
+    void handleAgentUserText(question);
   });
 
   if (isCalendar) {
@@ -5034,6 +5035,7 @@ function isWhatsAppConnectionReady(feature = getFeatureById(WHATSAPP_REPLY_ASSIS
 
 function buildAgentToolContext() {
   const whatsapp = getWhatsAppConnectionSetupState();
+  const calendar = getPlatformConnectionByPlatform("calendar");
   return {
     whatsapp: {
       ready: whatsapp.ready,
@@ -5043,6 +5045,11 @@ function buildAgentToolContext() {
         key: field.key,
         label: field.label,
       })),
+    },
+    calendar: {
+      platformConnected: Boolean(calendar),
+      connectionStatus: getPlatformConnectionStatus(calendar).label.toLowerCase().replace(/\s+/g, "_"),
+      validationStatus: String(calendar?.metadata?.validationStatus || "unknown").trim().toLowerCase() || "unknown",
     },
   };
 }
