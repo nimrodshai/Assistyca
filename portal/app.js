@@ -4570,68 +4570,18 @@ function openCalendarOAuthConnection(option) {
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const body = document.createElement("div");
   body.className = "calendar-oauth-flow";
-  const primaryLabel = connection && connectionStatus.label === "Connected"
-    ? "Reconnect with Google"
-    : "Continue with Google";
+  const primaryLabel = "Continue with Google";
 
   const intro = document.createElement("p");
-  intro.className = "calendar-oauth-intro";
-  intro.textContent = connection
-    ? connectionStatus.label === "Connected"
-      ? "Calendar is already connected. Reconnect only if you want to switch Google accounts or refresh access."
-      : "Reconnect with Google to restore Calendar access."
-    : "Continue to Google, choose the account, and approve read-only Calendar access.";
-
-  const provider = document.createElement("section");
-  provider.className = "calendar-oauth-provider";
-  const providerLogo = document.createElement("span");
-  providerLogo.className = "calendar-oauth-provider-logo";
-  providerLogo.append(createGoogleBrandLogo());
-  const providerCopy = document.createElement("span");
-  providerCopy.className = "calendar-oauth-provider-copy";
-  const providerTitle = document.createElement("strong");
-  providerTitle.textContent = "Google Calendar";
-  const providerDetail = document.createElement("span");
-  providerDetail.textContent = "Read-only event access";
-  providerCopy.append(providerTitle, providerDetail);
-  const providerBadge = document.createElement("span");
-  providerBadge.className = "calendar-oauth-provider-badge";
-  providerBadge.textContent = "OAuth";
-  provider.append(providerLogo, providerCopy, providerBadge);
+  intro.className = "calendar-oauth-copy";
+  intro.textContent = "Sign in with Google so Assistyca can read your Calendar events when an action runs. Access is read-only; Assistyca cannot edit your calendar or see your Google password.";
 
   const { status, setStatus } = createCalendarOAuthStatusNode();
   if (!storageAvailable) {
     setStatus("error", "Storage unavailable", storageMessage);
-  } else if (connection && connectionStatus.label === "Connected") {
-    setStatus("success", "Connected", "Actions can read Calendar events when you run them.");
-  } else if (connection) {
-    setStatus("warning", "Reconnect needed", "The saved Calendar connection needs a fresh Google sign-in.");
   }
 
-  const steps = document.createElement("ol");
-  steps.className = "calendar-oauth-steps";
-  [
-    "Open Google sign-in",
-    "Choose the Calendar account",
-    "Return here automatically",
-  ].forEach((label) => {
-    const step = document.createElement("li");
-    step.textContent = label;
-    steps.append(step);
-  });
-
-  const note = document.createElement("p");
-  note.className = "calendar-oauth-footnote";
-  note.textContent = "Assistyca stores an encrypted refresh token. It never receives your Google password.";
-
-  const docsLink = document.createElement("a");
-  docsLink.className = "platform-connection-docs-link";
-  docsLink.href = "https://developers.google.com/identity/protocols/oauth2/web-server";
-  docsLink.target = "_blank";
-  docsLink.rel = "noopener noreferrer";
-  docsLink.textContent = "OAuth setup";
-
-  body.append(intro, provider, status, steps, note, docsLink);
+  body.append(intro, status);
 
   let starting = false;
   let fallbackAuthUrl = "";
@@ -4640,7 +4590,7 @@ function openCalendarOAuthConnection(option) {
       elements.authAlertTitle.textContent = "Connect Google Calendar";
     }
     if (elements.authAlertMessage) {
-      elements.authAlertMessage.textContent = "Authorize Calendar once, then use it from your actions.";
+      elements.authAlertMessage.textContent = "Continue with Google to allow read-only Calendar access.";
     }
     if (elements.authAlertIcon) {
       elements.authAlertIcon.dataset.tone = connectionStatus.label === "Connected" ? "success" : "progress";
@@ -4667,8 +4617,8 @@ function openCalendarOAuthConnection(option) {
     }
     setStatus(
       "loading",
-      "Opening Google sign-in",
-      "Choose the right account and approve read-only Calendar access.",
+      "Opening Google",
+      "Choose the Calendar account to connect.",
     );
     elements.authAlertDismissButton.disabled = true;
     if (elements.authAlertSecondaryButton) {
@@ -4696,7 +4646,7 @@ function openCalendarOAuthConnection(option) {
       setStatus(
         "loading",
         "Waiting for Google",
-        "Use the Google popup to choose the Calendar account.",
+        "Finish the sign-in in the Google popup.",
       );
       const authorization = await requestGoogleCalendarAuthorizationCode({
         clientId,
@@ -4782,7 +4732,7 @@ function openCalendarOAuthConnection(option) {
 
   openAuthAlert(
     "Connect Google Calendar",
-    "Authorize Calendar once, then use it from your actions.",
+    "Continue with Google to allow read-only Calendar access.",
     {
       eyebrow: "Google Calendar",
       iconNode: createAgentAddToolLogo(option),
