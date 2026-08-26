@@ -128,6 +128,10 @@ class PlatformConnectionTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 503)
         self.assertEqual(body["error"], "google_oauth_not_configured")
         self.assertIn("/api/oauth/google/calendar/callback", body["redirectUri"])
+        popup_redirect = urllib_parse.urlparse(body["popupRedirectUri"])
+        self.assertIn(popup_redirect.scheme, {"http", "https"})
+        self.assertTrue(popup_redirect.netloc)
+        self.assertEqual(popup_redirect.path, "")
         self.assertEqual(body["scope"], GOOGLE_CALENDAR_OAUTH_SCOPE)
 
     def test_calendar_oauth_start_returns_google_authorization_url(self) -> None:
@@ -163,6 +167,12 @@ class PlatformConnectionTests(unittest.TestCase):
                 payload = json.loads(response.read().decode("utf-8"))
 
             self.assertTrue(payload["ok"])
+            self.assertEqual(payload["clientId"], "google-client-id.apps.googleusercontent.com")
+            self.assertEqual(payload["mode"], "google_identity_services")
+            popup_redirect = urllib_parse.urlparse(payload["popupRedirectUri"])
+            self.assertIn(popup_redirect.scheme, {"http", "https"})
+            self.assertTrue(popup_redirect.netloc)
+            self.assertEqual(popup_redirect.path, "")
             auth_url = urllib_parse.urlparse(payload["authUrl"])
             params = urllib_parse.parse_qs(auth_url.query)
             self.assertEqual(auth_url.netloc, "accounts.google.com")
@@ -172,6 +182,83 @@ class PlatformConnectionTests(unittest.TestCase):
             self.assertEqual(params["access_type"], ["offline"])
             self.assertEqual(params["prompt"], ["consent"])
             self.assertTrue(params["state"][0])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_calendar_oauth_code_post_saves_encrypted_refresh_token(self) -> None:
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
+        except ImportError:
+            self.skipTest("cryptography is installed in deployment, not this minimal test environment")
+
+        db_path = Path(self.temp_dir.name) / "oauth-code.db"
+        key = base64.urlsafe_b64encode(b"0123456789abcdef0123456789abcdef").decode("ascii")
+        server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(
+                db_path=db_path,
+                credential_encryption_key=key,
+                google_oauth_client_id="google-client-id.apps.googleusercontent.com",
+                google_oauth_client_secret="google-client-secret",
+            ),
+        )
+        server.database.register_user("owner@example.com")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            cookie = self._cookie_for(server, base_url)
+
+            def fake_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+                self.assertEqual(timeout, 20)
+                self.assertEqual(request.full_url, GOOGLE_OAUTH_TOKEN_URL)
+                fields = urllib_parse.parse_qs(request.data.decode("utf-8"))  # type: ignore[union-attr]
+                self.assertEqual(fields["grant_type"], ["authorization_code"])
+                self.assertEqual(fields["code"], ["popup-calendar-code"])
+                self.assertEqual(fields["redirect_uri"], [base_url])
+                return _JsonResponse({
+                    "access_token": "popup-google-access-token",
+                    "refresh_token": "popup-refresh-token-that-stays-encrypted",
+                    "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                })
+
+            request = urllib_request.Request(
+                f"{base_url}/api/oauth/google/calendar/code",
+                data=json.dumps({"code": "popup-calendar-code"}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Cookie": cookie,
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                method="POST",
+            )
+            opener = urllib_request.build_opener()
+            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+                with mock.patch(
+                    "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
+                    return_value={"eventCount": 0, "message": "", "summary": ""},
+                ) as run:
+                    with opener.open(request, timeout=5) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["connection"]["platform"], "calendar")
+            self.assertEqual(payload["connection"]["authType"], "oauth")
+            self.assertNotIn("popup-refresh-token-that-stays-encrypted", json.dumps(payload))
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0], "popup-google-access-token")
+
+            with sqlite3.connect(str(db_path)) as database:
+                raw = database.execute("SELECT secret_ciphertext FROM platform_connections").fetchone()[0]
+            decrypted = server.credential_vault.decrypt(raw)  # type: ignore[union-attr]
+            self.assertIn("popup-refresh-token-that-stays-encrypted", decrypted)
+            self.assertNotIn("popup-google-access-token", decrypted)
         finally:
             server.shutdown()
             server.server_close()

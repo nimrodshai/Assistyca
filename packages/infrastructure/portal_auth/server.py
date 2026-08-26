@@ -2023,7 +2023,7 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
 
 def send_api_headers(handler: SimpleHTTPRequestHandler, *, content_length: int | None = None) -> None:
     handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
     handler.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
     handler.send_header("Content-Type", JSON_CONTENT_TYPE)
     handler.send_header("Cache-Control", "no-store")
@@ -2186,6 +2186,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/auth/")
             or path == "/api/billing"
             or path.startswith("/api/billing/")
+            or path.startswith("/api/oauth/")
             or path == "/api/account/profile"
             or path == "/api/pricing"
             or path.startswith("/api/pricing/")
@@ -2416,6 +2417,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_logout()
             return
 
+        if path == "/api/oauth/google/calendar/code":
+            self._handle_google_calendar_oauth_code_post()
+            return
+
         if path == "/api/account/profile":
             self._handle_account_profile_post()
             return
@@ -2522,6 +2527,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "error": "google_oauth_not_configured",
                 "message": config_error,
                 "redirectUri": redirect_uri,
+                "popupRedirectUri": self._google_calendar_oauth_popup_redirect_uri(),
                 "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
             })
             return
@@ -2534,6 +2540,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "error": "google_oauth_not_configured",
                 "message": "Session signing is not configured, so Google Calendar cannot be connected yet.",
                 "redirectUri": redirect_uri,
+                "popupRedirectUri": self._google_calendar_oauth_popup_redirect_uri(),
                 "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
             })
             return
@@ -2552,6 +2559,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "authUrl": auth_url,
+            "clientId": normalize_text(self.config.google_oauth_client_id),
+            "mode": "google_identity_services",
+            "popupRedirectUri": self._google_calendar_oauth_popup_redirect_uri(),
             "redirectUri": redirect_uri,
             "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
         })
@@ -2597,42 +2607,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         try:
             token_payload = self._exchange_google_calendar_oauth_code(code)
-            access_token = normalize_text(token_payload.get("access_token"))
-            refresh_token = normalize_text(token_payload.get("refresh_token"))
-            granted_scope = normalize_text(token_payload.get("scope"))
-            if not access_token:
-                raise CalendarAuthorizationError("Google did not return a usable Calendar access token. Try connecting Calendar again.")
-            if not refresh_token:
-                raise CalendarAuthorizationError(
-                    "Google did not return long-lived Calendar access. Try connecting again and approve offline access."
-                )
-            CalendarSummaryRunner().run(access_token, time_window="today", timezone_name="UTC")
-            assert self.credential_vault is not None
-            secret_payload = self._build_google_calendar_oauth_secret(refresh_token)
-            encrypted_secret = self.credential_vault.encrypt(secret_payload)
-            connection = self.database.save_platform_connection(
-                session.email,
-                platform=GOOGLE_CALENDAR_OAUTH_PLATFORM,
-                auth_type="oauth",
-                secret_ciphertext=encrypted_secret,
-                secret_hint="Google OAuth",
-                key_version=self.credential_vault.key_version,
-                secret_fingerprint=self.credential_vault.fingerprint(refresh_token),
-                metadata={
-                    "provider": GOOGLE_CALENDAR_OAUTH_PROVIDER,
-                    "authFlow": "google_oauth",
-                    "validationStatus": "verified",
-                    "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
-                    "grantedScope": granted_scope,
-                    "validatedAt": datetime.now(timezone.utc).isoformat(),
-                },
-                connection_status="connected",
-            )
+            connection = self._save_google_calendar_oauth_connection(session, token_payload)
             print(json.dumps({
                 "event": "google_calendar_oauth_connected",
                 "userEmail": session.email,
                 "connectionId": normalize_text(connection.get("id")) if isinstance(connection, dict) else "",
-                "scopeGranted": bool(granted_scope),
+                "source": "redirect_callback",
             }))
         except (CredentialVaultError, CalendarAuthorizationError, CalendarSummaryError) as exc:
             self._redirect(self._google_calendar_oauth_return_url("error", str(exc)))
@@ -2648,6 +2628,132 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "success",
             "Calendar connected. You can run meeting summaries with read-only Google Calendar access.",
         ))
+
+    def _handle_google_calendar_oauth_code_post(self) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        config_error = self._google_calendar_oauth_config_error()
+        if config_error:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "google_oauth_not_configured",
+                "message": config_error,
+                "redirectUri": self._google_calendar_oauth_redirect_uri(),
+                "popupRedirectUri": self._google_calendar_oauth_popup_redirect_uri(),
+                "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
+            })
+            return
+
+        requested_with = normalize_text(self.headers.get("X-Requested-With")).lower()
+        if requested_with != "xmlhttprequest":
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_oauth_code_request",
+                "message": "Calendar sign-in must finish from the secure Google popup.",
+            })
+            return
+
+        origin = normalize_text(self.headers.get("Origin")).rstrip("/")
+        expected_origin = self._public_origin_url().rstrip("/")
+        if origin and origin != expected_origin:
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "oauth_origin_mismatch",
+                "message": "Calendar sign-in returned from another site. Start the connection again from Assistyca.",
+            })
+            return
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        code = normalize_text(payload.get("code"))
+        if not code:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_google_oauth_code",
+                "message": "Google did not return an authorization code. Try connecting Calendar again.",
+            })
+            return
+
+        try:
+            token_payload = self._exchange_google_calendar_oauth_code(
+                code,
+                redirect_uri=self._google_calendar_oauth_popup_redirect_uri(),
+            )
+            connection = self._save_google_calendar_oauth_connection(session, token_payload)
+        except (CredentialVaultError, CalendarAuthorizationError, CalendarSummaryError) as exc:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": exc.code if isinstance(exc, CalendarSummaryError) else "google_calendar_oauth_failed",
+                "message": str(exc),
+            })
+            return
+        except Exception:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "google_calendar_oauth_failed",
+                "message": "Calendar could not be connected right now. Try again in a moment.",
+            })
+            return
+
+        print(json.dumps({
+            "event": "google_calendar_oauth_connected",
+            "userEmail": session.email,
+            "connectionId": normalize_text(connection.get("id")) if isinstance(connection, dict) else "",
+            "source": "gis_popup_code",
+        }))
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Calendar connected. You can run meeting summaries with read-only Google Calendar access.",
+            "connection": connection,
+        })
+
+    def _save_google_calendar_oauth_connection(
+        self,
+        session: PortalSession,
+        token_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        access_token = normalize_text(token_payload.get("access_token"))
+        refresh_token = normalize_text(token_payload.get("refresh_token"))
+        granted_scope = normalize_text(token_payload.get("scope"))
+        if not access_token:
+            raise CalendarAuthorizationError("Google did not return a usable Calendar access token. Try connecting Calendar again.")
+        if not refresh_token:
+            raise CalendarAuthorizationError(
+                "Google did not return long-lived Calendar access. Try connecting again and approve offline access."
+            )
+        CalendarSummaryRunner().run(access_token, time_window="today", timezone_name="UTC")
+        if self.credential_vault is None:
+            raise CredentialVaultError("Secure connection storage is not available, so Calendar could not be saved.")
+        secret_payload = self._build_google_calendar_oauth_secret(refresh_token)
+        encrypted_secret = self.credential_vault.encrypt(secret_payload)
+        return self.database.save_platform_connection(
+            session.email,
+            platform=GOOGLE_CALENDAR_OAUTH_PLATFORM,
+            auth_type="oauth",
+            secret_ciphertext=encrypted_secret,
+            secret_hint="Google OAuth",
+            key_version=self.credential_vault.key_version,
+            secret_fingerprint=self.credential_vault.fingerprint(refresh_token),
+            metadata={
+                "provider": GOOGLE_CALENDAR_OAUTH_PROVIDER,
+                "authFlow": "google_oauth",
+                "validationStatus": "verified",
+                "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
+                "grantedScope": granted_scope,
+                "validatedAt": datetime.now(timezone.utc).isoformat(),
+            },
+            connection_status="connected",
+        )
 
     def _handle_platform_connection_post(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -4774,11 +4880,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return configured.rstrip("/")
         return f"{self._request_scheme()}://{self._request_host()}".rstrip("/")
 
+    def _public_origin_url(self) -> str:
+        parsed = urllib_parse.urlparse(self._public_base_url())
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return self._public_base_url()
+
     def _google_calendar_oauth_redirect_uri(self) -> str:
         configured = normalize_text(self.config.google_oauth_redirect_uri)
         if configured:
             return configured
         return f"{self._public_base_url()}/api/oauth/google/calendar/callback"
+
+    def _google_calendar_oauth_popup_redirect_uri(self) -> str:
+        return self._public_origin_url()
 
     def _google_calendar_oauth_config_error(self) -> str:
         if self.credential_vault is None:
@@ -4902,12 +5017,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         return parsed
 
-    def _exchange_google_calendar_oauth_code(self, code: str) -> dict[str, Any]:
+    def _exchange_google_calendar_oauth_code(self, code: str, *, redirect_uri: str = "") -> dict[str, Any]:
         return self._post_google_oauth_token_request({
             "code": normalize_text(code),
             "client_id": normalize_text(self.config.google_oauth_client_id),
             "client_secret": normalize_text(self.config.google_oauth_client_secret),
-            "redirect_uri": self._google_calendar_oauth_redirect_uri(),
+            "redirect_uri": redirect_uri or self._google_calendar_oauth_redirect_uri(),
             "grant_type": "authorization_code",
         })
 

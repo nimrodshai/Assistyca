@@ -4311,7 +4311,7 @@ function createPlatformConnectionForm(option) {
   help.className = "field-help";
   help.textContent = storageAvailable
     ? (isCalendar
-      ? "Use Connect with Google for read-only Calendar access. A Google API key will not work. Credentials are never saved in this browser or sent to the assistant."
+      ? "Use Continue with Google for read-only Calendar access. A Google API key will not work. Credentials are never saved in this browser or sent to the assistant."
       : "Use the smallest set of permissions you need. This token is not saved in this browser or sent to the assistant.")
     : "No credential has been saved. Secure storage must be configured before this app can be connected.";
   const error = document.createElement("span");
@@ -4374,103 +4374,422 @@ function createPlatformConnectionStatusNode() {
   return { status, setStatus };
 }
 
+function createGoogleBrandLogo() {
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "18",
+    height: "18",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  svg.append(
+    createSvgElement("path", {
+      d: "M22.6 12.2c0-.8-.1-1.5-.2-2.2H12v4.2h5.9a5 5 0 0 1-2.2 3.3v2.8h3.6c2.1-1.9 3.3-4.7 3.3-8.1Z",
+      fill: "#4285F4",
+    }),
+    createSvgElement("path", {
+      d: "M12 23c3 0 5.5-1 7.3-2.7l-3.6-2.8c-1 .7-2.2 1.1-3.7 1.1-2.9 0-5.3-1.9-6.2-4.5H2.2V17A11 11 0 0 0 12 23Z",
+      fill: "#34A853",
+    }),
+    createSvgElement("path", {
+      d: "M5.8 14.1a6.7 6.7 0 0 1 0-4.2V7.1H2.2A11 11 0 0 0 1 12c0 1.8.4 3.5 1.2 5l3.6-2.9Z",
+      fill: "#FBBC05",
+    }),
+    createSvgElement("path", {
+      d: "M12 5.4c1.6 0 3.1.6 4.2 1.6l3.2-3.1A10.7 10.7 0 0 0 12 1a11 11 0 0 0-9.8 6.1l3.6 2.8c.9-2.6 3.3-4.5 6.2-4.5Z",
+      fill: "#EA4335",
+    }),
+  );
+  return svg;
+}
+
+function setCalendarOAuthPrimaryButton(label, options = {}) {
+  if (!elements.authAlertDismissButton) {
+    return;
+  }
+  const labelNode = document.createElement("span");
+  labelNode.textContent = String(label || "Continue with Google");
+  const icon = document.createElement("span");
+  icon.className = options.loading ? "calendar-oauth-button-spinner" : "calendar-oauth-button-logo";
+  icon.setAttribute("aria-hidden", "true");
+  if (!options.loading) {
+    icon.append(createGoogleBrandLogo());
+  }
+  elements.authAlertDismissButton.replaceChildren(icon, labelNode);
+}
+
+let googleIdentityServicesPromise = null;
+
+function getGoogleIdentityCodeClientFactory() {
+  return window.google?.accounts?.oauth2?.initCodeClient || null;
+}
+
+function loadGoogleIdentityServices() {
+  const existingFactory = getGoogleIdentityCodeClientFactory();
+  if (existingFactory) {
+    return Promise.resolve(window.google);
+  }
+  if (googleIdentityServicesPromise) {
+    return googleIdentityServicesPromise;
+  }
+
+  googleIdentityServicesPromise = new Promise((resolve, reject) => {
+    let script = document.querySelector('script[data-google-identity-services="true"]');
+    if (!script) {
+      script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.dataset.googleIdentityServices = "true";
+      document.head.append(script);
+    }
+
+    const startedAt = Date.now();
+    const poll = () => {
+      if (getGoogleIdentityCodeClientFactory()) {
+        resolve(window.google);
+        return;
+      }
+      if (Date.now() - startedAt > 8000) {
+        reject(new Error("Google sign-in did not finish loading."));
+        return;
+      }
+      window.setTimeout(poll, 80);
+    };
+
+    script.addEventListener("error", () => {
+      reject(new Error("Google sign-in could not load."));
+    }, { once: true });
+    poll();
+  });
+
+  return googleIdentityServicesPromise;
+}
+
+async function requestGoogleCalendarAuthorizationCode(oauthConfig) {
+  await loadGoogleIdentityServices();
+  const initCodeClient = getGoogleIdentityCodeClientFactory();
+  if (typeof initCodeClient !== "function") {
+    throw new Error("Google sign-in is not available in this browser.");
+  }
+
+  return new Promise((resolve, reject) => {
+    let client = null;
+    try {
+      client = initCodeClient({
+        client_id: normalizeText(oauthConfig.clientId),
+        scope: normalizeText(oauthConfig.scope),
+        ux_mode: "popup",
+        include_granted_scopes: true,
+        select_account: true,
+        callback: (response) => {
+          const error = normalizeText(response?.error || response?.type);
+          if (error) {
+            const wrapped = new Error(
+              error === "popup_closed"
+                ? "Google sign-in was closed before Calendar access was approved."
+                : "Google did not finish the Calendar authorization.",
+            );
+            wrapped.code = error;
+            wrapped.googleResponse = response;
+            reject(wrapped);
+            return;
+          }
+          const code = normalizeText(response?.code);
+          if (!code) {
+            reject(new Error("Google did not return an authorization code."));
+            return;
+          }
+          resolve({ code });
+        },
+        error_callback: (error) => {
+          const code = normalizeText(error?.type || error?.error);
+          const wrapped = new Error(
+            code === "popup_closed"
+              ? "Google sign-in was closed before Calendar access was approved."
+              : "Google sign-in could not open.",
+          );
+          wrapped.code = code;
+          wrapped.googleResponse = error;
+          reject(wrapped);
+        },
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    if (!client || typeof client.requestCode !== "function") {
+      reject(new Error("Google sign-in is not available in this browser."));
+      return;
+    }
+    client.requestCode();
+  });
+}
+
+function createCalendarOAuthStatusNode() {
+  const status = document.createElement("div");
+  status.className = "calendar-oauth-status";
+  status.hidden = true;
+  const icon = document.createElement("span");
+  icon.className = "calendar-oauth-status-icon";
+  icon.setAttribute("aria-hidden", "true");
+  const copy = document.createElement("span");
+  copy.className = "calendar-oauth-status-copy";
+  const title = document.createElement("strong");
+  const text = document.createElement("span");
+  const detail = document.createElement("code");
+  detail.hidden = true;
+  copy.append(title, text, detail);
+  status.append(icon, copy);
+
+  const setStatus = (tone, statusTitle, statusCopy, statusDetail = "") => {
+    const normalizedTone = normalizeText(tone).toLowerCase() || "info";
+    status.dataset.tone = normalizedTone;
+    icon.classList.toggle("is-spinner", normalizedTone === "loading");
+    icon.replaceChildren();
+    if (normalizedTone === "error" || normalizedTone === "warning") {
+      icon.append(createFeatureActivationResultIcon("x"));
+    } else if (normalizedTone !== "loading") {
+      icon.append(createFeatureActivationResultIcon("check"));
+    }
+    title.textContent = statusTitle;
+    text.textContent = statusCopy;
+    detail.textContent = statusDetail;
+    detail.hidden = !normalizeText(statusDetail);
+    status.hidden = false;
+  };
+
+  return { status, setStatus };
+}
+
 function openCalendarOAuthConnection(option) {
   const connection = getPlatformConnectionByPlatform(option.id);
   const connectionStatus = getPlatformConnectionStatus(connection);
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const body = document.createElement("div");
-  body.className = "platform-connection-form platform-connection-oauth-form";
+  body.className = "calendar-oauth-flow";
+  const primaryLabel = connection && connectionStatus.label === "Connected"
+    ? "Reconnect with Google"
+    : "Continue with Google";
 
   const intro = document.createElement("p");
-  intro.className = "platform-connection-intro";
+  intro.className = "calendar-oauth-intro";
   intro.textContent = connection
     ? connectionStatus.label === "Connected"
-      ? "Google Calendar is connected. Reconnect only if you want to change the Google account or refresh access."
-      : "Google Calendar needs attention. Reconnect with Google to restore read-only Calendar access."
-    : "Connect Google Calendar without pasting tokens. Google will ask you to approve read-only access.";
+      ? "Calendar is already connected. Reconnect only if you want to switch Google accounts or refresh access."
+      : "Reconnect with Google to restore Calendar access."
+    : "Continue to Google, choose the account, and approve read-only Calendar access.";
 
-  const { status, setStatus } = createPlatformConnectionStatusNode();
+  const provider = document.createElement("section");
+  provider.className = "calendar-oauth-provider";
+  const providerLogo = document.createElement("span");
+  providerLogo.className = "calendar-oauth-provider-logo";
+  providerLogo.append(createGoogleBrandLogo());
+  const providerCopy = document.createElement("span");
+  providerCopy.className = "calendar-oauth-provider-copy";
+  const providerTitle = document.createElement("strong");
+  providerTitle.textContent = "Google Calendar";
+  const providerDetail = document.createElement("span");
+  providerDetail.textContent = "Read-only event access";
+  providerCopy.append(providerTitle, providerDetail);
+  const providerBadge = document.createElement("span");
+  providerBadge.className = "calendar-oauth-provider-badge";
+  providerBadge.textContent = "OAuth";
+  provider.append(providerLogo, providerCopy, providerBadge);
+
+  const { status, setStatus } = createCalendarOAuthStatusNode();
   if (!storageAvailable) {
-    setStatus("error", "Connection storage unavailable", storageMessage);
+    setStatus("error", "Storage unavailable", storageMessage);
   } else if (connection && connectionStatus.label === "Connected") {
-    setStatus("success", "Calendar connected", "Meeting summaries can read your Google Calendar events when you run them.");
+    setStatus("success", "Connected", "Actions can read Calendar events when you run them.");
   } else if (connection) {
-    setStatus("warning", "Calendar needs reconnection", "Google Calendar access was saved before, but it has not been verified.");
+    setStatus("warning", "Reconnect needed", "The saved Calendar connection needs a fresh Google sign-in.");
   }
 
-  const oauthPanel = document.createElement("section");
-  oauthPanel.className = "calendar-oauth-panel";
-  const iconWrap = document.createElement("span");
-  iconWrap.className = "calendar-oauth-icon";
-  iconWrap.append(createAgentAddToolLogo({ icon: "calendar" }));
-  const copyWrap = document.createElement("span");
-  copyWrap.className = "calendar-oauth-copy";
-  const title = document.createElement("strong");
-  title.textContent = "Google handles the sign-in";
-  const copy = document.createElement("span");
-  copy.textContent = "Assistyca stores only the encrypted refresh token and uses the smallest Calendar Events read-only permission.";
-  copyWrap.append(title, copy);
-  oauthPanel.append(iconWrap, copyWrap);
+  const steps = document.createElement("ol");
+  steps.className = "calendar-oauth-steps";
+  [
+    "Open Google sign-in",
+    "Choose the Calendar account",
+    "Return here automatically",
+  ].forEach((label) => {
+    const step = document.createElement("li");
+    step.textContent = label;
+    steps.append(step);
+  });
 
-  const note = document.createElement("div");
-  note.className = "platform-connection-security-note";
-  note.textContent = "You can revoke this access from your Google Account at any time. Calendar details are read only when an action runs.";
+  const note = document.createElement("p");
+  note.className = "calendar-oauth-footnote";
+  note.textContent = "Assistyca stores an encrypted refresh token. It never receives your Google password.";
 
   const docsLink = document.createElement("a");
   docsLink.className = "platform-connection-docs-link";
   docsLink.href = "https://developers.google.com/identity/protocols/oauth2/web-server";
   docsLink.target = "_blank";
   docsLink.rel = "noopener noreferrer";
-  docsLink.textContent = "OAuth setup details";
+  docsLink.textContent = "OAuth setup";
 
-  body.append(intro, status, oauthPanel, note, docsLink);
+  body.append(intro, provider, status, steps, note, docsLink);
 
   let starting = false;
+  let fallbackAuthUrl = "";
+  const restoreInitialAlertChrome = () => {
+    if (elements.authAlertTitle) {
+      elements.authAlertTitle.textContent = "Connect Google Calendar";
+    }
+    if (elements.authAlertMessage) {
+      elements.authAlertMessage.textContent = "Authorize Calendar once, then use it from your actions.";
+    }
+    if (elements.authAlertIcon) {
+      elements.authAlertIcon.dataset.tone = connectionStatus.label === "Connected" ? "success" : "progress";
+      elements.authAlertIcon.classList.remove("is-spinner");
+      elements.authAlertIcon.replaceChildren(createAgentAddToolLogo(option));
+    }
+  };
   const startOAuth = async () => {
     if (starting || !storageAvailable) {
       return;
     }
     starting = true;
+    body.classList.add("is-starting");
+    if (elements.authAlertTitle) {
+      elements.authAlertTitle.textContent = "Opening Google";
+    }
+    if (elements.authAlertMessage) {
+      elements.authAlertMessage.textContent = "You will return to Assistyca after Google finishes the secure handoff.";
+    }
+    if (elements.authAlertIcon) {
+      elements.authAlertIcon.dataset.tone = "progress";
+      elements.authAlertIcon.classList.add("is-spinner");
+      elements.authAlertIcon.replaceChildren();
+    }
+    setStatus(
+      "loading",
+      "Opening Google sign-in",
+      "Choose the right account and approve read-only Calendar access.",
+    );
     elements.authAlertDismissButton.disabled = true;
-    elements.authAlertDismissButton.textContent = "Opening Google…";
+    if (elements.authAlertSecondaryButton) {
+      elements.authAlertSecondaryButton.disabled = true;
+    }
+    setCalendarOAuthPrimaryButton("Opening Google", { loading: true });
     try {
       const response = await apiRequest("/api/oauth/google/calendar/start", {
         method: "GET",
         headers: getSessionAuthHeaders(),
         timeoutMs: 20000,
       });
-      const authUrl = String(response.authUrl || "").trim();
-      if (!authUrl) {
-        throw new Error("Google did not return a sign-in URL.");
+      const clientId = normalizeText(response.clientId);
+      const scope = normalizeText(response.scope);
+      const authUrl = normalizeText(response.authUrl);
+      fallbackAuthUrl = authUrl;
+      if (!clientId || !scope) {
+        if (authUrl) {
+          window.location.assign(authUrl);
+          return;
+        }
+        throw new Error("Google did not return a usable sign-in setup.");
       }
-      window.location.assign(authUrl);
+
+      setStatus(
+        "loading",
+        "Waiting for Google",
+        "Use the Google popup to choose the Calendar account.",
+      );
+      const authorization = await requestGoogleCalendarAuthorizationCode({
+        clientId,
+        scope,
+      });
+
+      setStatus(
+        "loading",
+        "Finishing connection",
+        "Saving the encrypted Calendar connection in Assistyca.",
+      );
+      const exchangeHeaders = new Headers(getSessionAuthHeaders());
+      exchangeHeaders.set("X-Requested-With", "XMLHttpRequest");
+      const saveResponse = await apiRequest("/api/oauth/google/calendar/code", {
+        method: "POST",
+        headers: exchangeHeaders,
+        body: { code: authorization.code },
+        timeoutMs: 30000,
+      });
+      if (saveResponse.connection) {
+        state.platformConnections = [
+          normalizePlatformConnection(saveResponse.connection),
+          ...state.platformConnections.filter((savedConnection) => savedConnection.platform !== "calendar"),
+        ];
+      }
+      try {
+        await refreshPlatformConnections({ render: false });
+      } catch {
+        // The saved response is already enough to update the visible state.
+      }
+      openAuthAlert(
+        "Calendar connected",
+        saveResponse.message || "Google Calendar is connected and ready for meeting summaries.",
+        {
+          eyebrow: "Google Calendar",
+          iconNode: createFeatureActivationResultIcon("check"),
+          tone: "success",
+          buttonLabel: "OK",
+          returnFocus: elements.agentAddToolButton,
+        },
+      );
+      pushAgentMessage("assistant", "Calendar is connected. You can ask me to summarize meetings or use Calendar in actions.");
+      persistAgentWorkspace("Calendar connected through Google OAuth.");
     } catch (requestError) {
+      const errorCode = normalizeText(requestError?.code);
+      const shouldUseRedirectFallback = fallbackAuthUrl
+        && errorCode !== "popup_closed"
+        && (
+          errorCode === "popup_failed_to_open"
+          || normalizeText(requestError?.message).toLowerCase().includes("google sign-in")
+        );
+      if (shouldUseRedirectFallback) {
+        setStatus("loading", "Opening Google", "Your browser blocked the popup, so Assistyca is opening Google in this tab.");
+        window.location.assign(fallbackAuthUrl);
+        return;
+      }
       const payload = requestError?.payload && typeof requestError.payload === "object"
         ? requestError.payload
         : {};
-      const redirectUri = String(payload.redirectUri || "").trim();
+      const redirectUri = normalizeText(payload.redirectUri);
+      const popupRedirectUri = normalizeText(payload.popupRedirectUri);
       const message = formatApiErrorMessage(requestError, "Google Calendar OAuth is not configured yet.");
-      const setupHint = redirectUri
-        ? `${message} In Google Cloud, add this Authorized redirect URI: ${redirectUri}`
+      const lowerMessage = message.toLowerCase();
+      const needsServerEnv = lowerMessage.includes("client id") || lowerMessage.includes("client secret");
+      const setupHint = needsServerEnv
+        ? `${message} Add the Google OAuth client ID and secret in Render, then try again.`
         : message;
-      setStatus("error", "Google connection unavailable", setupHint);
+      const setupDetails = [
+        popupRedirectUri ? `Authorized JavaScript origin: ${popupRedirectUri}` : "",
+        redirectUri ? `Fallback redirect URI: ${redirectUri}` : "",
+      ].filter(Boolean).join("\n");
+      setStatus("error", "Setup needed", setupHint, setupDetails);
+      body.classList.remove("is-starting");
+      restoreInitialAlertChrome();
       elements.authAlertDismissButton.disabled = !storageAvailable;
-      elements.authAlertDismissButton.textContent = connection ? "Reconnect with Google" : "Connect with Google";
+      if (elements.authAlertSecondaryButton) {
+        elements.authAlertSecondaryButton.disabled = false;
+      }
+      setCalendarOAuthPrimaryButton(primaryLabel);
       starting = false;
     }
   };
 
   openAuthAlert(
-    "Connect Calendar",
-    "Authorize Google Calendar once, then use it from your actions.",
+    "Connect Google Calendar",
+    "Authorize Calendar once, then use it from your actions.",
     {
       eyebrow: "Google Calendar",
       iconNode: createAgentAddToolLogo(option),
       tone: connectionStatus.label === "Connected" ? "success" : "progress",
-      variant: "platform-connection",
+      variant: "calendar-oauth",
       bodyNode: body,
-      buttonLabel: connection ? "Reconnect with Google" : "Connect with Google",
+      buttonLabel: primaryLabel,
       secondaryButtonLabel: "Cancel",
       primaryDisabled: !storageAvailable,
       closeOnPrimary: false,
@@ -4478,6 +4797,7 @@ function openCalendarOAuthConnection(option) {
       onPrimary: startOAuth,
     },
   );
+  setCalendarOAuthPrimaryButton(primaryLabel);
 }
 
 function openPlatformConnection(optionId) {
