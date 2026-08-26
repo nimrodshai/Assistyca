@@ -2433,7 +2433,7 @@ body[data-modal="billing"] .app-shell {
 
 .auth-alert-dialog[data-variant="calendar-oauth"] {
   --calendar-oauth-column-offset: 3.5rem;
-  width: min(100%, 25.5rem);
+  width: min(100%, 30rem);
   gap: 0.92rem;
 }
 
@@ -2509,6 +2509,91 @@ body[data-modal="billing"] .app-shell {
   color: var(--muted);
   font-size: 0.86rem;
   line-height: 1.5;
+}
+
+.calendar-oauth-permissions {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.62rem 0;
+  border-top: 1px solid rgba(20, 28, 38, 0.08);
+  border-bottom: 1px solid rgba(20, 28, 38, 0.08);
+}
+
+.calendar-oauth-permissions h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.calendar-oauth-permission-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.calendar-oauth-permission {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  min-width: 0;
+  padding: 0.38rem 0;
+  color: var(--muted);
+}
+
+.calendar-oauth-permission:not(:last-child) {
+  border-bottom: 1px solid rgba(20, 28, 38, 0.055);
+}
+
+.calendar-oauth-permission input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.12rem 0 0;
+  accent-color: var(--accent);
+}
+
+.calendar-oauth-permission.is-disabled {
+  opacity: 0.76;
+}
+
+.calendar-oauth-permission-copy {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+  font-size: 0.78rem;
+  line-height: 1.38;
+}
+
+.calendar-oauth-permission-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.34rem;
+  align-items: center;
+}
+
+.calendar-oauth-permission-row strong {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.calendar-oauth-permission-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.15rem;
+  padding: 0.08rem 0.38rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.08);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.calendar-oauth-permission code {
+  min-width: 0;
+  color: var(--muted-strong);
+  font: inherit;
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
 }
 
 .calendar-oauth-button-logo {
@@ -9849,6 +9934,7 @@ body.is-chat-view {
 :root[data-theme="dark"] .agent-action-error,
 :root[data-theme="dark"] .agent-action-note,
 :root[data-theme="dark"] .feature-activation-customer-number,
+:root[data-theme="dark"] .calendar-oauth-permissions,
 :root[data-theme="dark"] .calendar-oauth-status {
   border-color: var(--line-strong);
   background: rgba(10, 16, 22, 0.7);
@@ -9890,6 +9976,19 @@ body.is-chat-view {
 :root[data-theme="dark"] .calendar-oauth-status-icon {
   color: var(--accent);
   background: rgba(55, 184, 171, 0.18);
+}
+
+:root[data-theme="dark"] .calendar-oauth-permission:not(:last-child) {
+  border-bottom-color: rgba(224, 239, 244, 0.07);
+}
+
+:root[data-theme="dark"] .calendar-oauth-permission-badge {
+  color: var(--accent-strong);
+  background: rgba(55, 184, 171, 0.14);
+}
+
+:root[data-theme="dark"] .calendar-oauth-permission code {
+  color: rgba(168, 182, 195, 0.84);
 }
 
 :root[data-theme="dark"] .theme-switch {
