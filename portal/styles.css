@@ -2432,8 +2432,10 @@ body[data-modal="billing"] .app-shell {
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions {
-  align-items: center;
-  justify-content: flex-start;
+  display: grid;
+  grid-template-columns: minmax(5.5rem, 0.62fr) minmax(13.5rem, 1.38fr);
+  align-items: stretch;
+  justify-content: stretch;
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small {
@@ -2441,7 +2443,8 @@ body[data-modal="billing"] .app-shell {
   gap: 0.72rem;
   align-items: center;
   justify-content: center;
-  min-width: 14.75rem;
+  width: 100%;
+  min-width: 0;
   min-height: 3.05rem;
   padding: 0.38rem 1.1rem 0.38rem 0.42rem;
   border: 1px solid rgba(7, 24, 44, 0.94);
@@ -2451,9 +2454,23 @@ body[data-modal="billing"] .app-shell {
   box-shadow: 0 16px 34px rgba(7, 24, 44, 0.22);
 }
 
+.auth-alert-dialog[data-variant="calendar-oauth"] .ghost-button.small {
+  width: 100%;
+  min-width: 0;
+  min-height: 3.05rem;
+}
+
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:hover {
   background: #0b213b;
   box-shadow: 0 18px 38px rgba(7, 24, 44, 0.27);
+}
+
+.auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.86),
+    0 0 0 5px rgba(15, 118, 110, 0.52),
+    0 16px 34px rgba(7, 24, 44, 0.22);
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:disabled {
@@ -9276,6 +9293,10 @@ body[data-modal="billing"] .app-shell {
   .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-body,
   .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions {
     margin-left: 0;
+  }
+
+  .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions {
+    grid-template-columns: 1fr;
   }
 
   .auth-alert-actions {
