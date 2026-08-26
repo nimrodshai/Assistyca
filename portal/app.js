@@ -4311,7 +4311,7 @@ function createPlatformConnectionForm(option) {
   help.className = "field-help";
   help.textContent = storageAvailable
     ? (isCalendar
-      ? "Use Continue with Google for read-only Calendar access. A Google API key will not work. Credentials are never saved in this browser or sent to the assistant."
+      ? "Use Sign in with Google for read-only Calendar access. A Google API key will not work. Credentials are never saved in this browser or sent to the assistant."
       : "Use the smallest set of permissions you need. This token is not saved in this browser or sent to the assistant.")
     : "No credential has been saved. Secure storage must be configured before this app can be connected.";
   const error = document.createElement("span");
@@ -4408,7 +4408,7 @@ function setCalendarOAuthPrimaryButton(label, options = {}) {
     return;
   }
   const labelNode = document.createElement("span");
-  labelNode.textContent = String(label || "Continue with Google");
+  labelNode.textContent = String(label || "Sign in with Google");
   const icon = document.createElement("span");
   icon.className = options.loading ? "calendar-oauth-button-spinner" : "calendar-oauth-button-logo";
   icon.setAttribute("aria-hidden", "true");
@@ -4570,7 +4570,7 @@ function openCalendarOAuthConnection(option) {
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const body = document.createElement("div");
   body.className = "calendar-oauth-flow";
-  const primaryLabel = "Continue with Google";
+  const primaryLabel = "Sign in with Google";
 
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
@@ -4590,7 +4590,7 @@ function openCalendarOAuthConnection(option) {
       elements.authAlertTitle.textContent = "Connect Google Calendar";
     }
     if (elements.authAlertMessage) {
-      elements.authAlertMessage.textContent = "Continue with Google to allow read-only Calendar access.";
+      elements.authAlertMessage.textContent = "Sign in with Google to allow read-only Calendar access.";
     }
     if (elements.authAlertIcon) {
       elements.authAlertIcon.dataset.tone = connectionStatus.label === "Connected" ? "success" : "progress";
@@ -4732,7 +4732,7 @@ function openCalendarOAuthConnection(option) {
 
   openAuthAlert(
     "Connect Google Calendar",
-    "Continue with Google to allow read-only Calendar access.",
+    "Sign in with Google to allow read-only Calendar access.",
     {
       eyebrow: "Google Calendar",
       iconNode: createAgentAddToolLogo(option),
