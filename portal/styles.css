@@ -9278,6 +9278,7 @@ body.is-chat-view {
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
+  gap: 0;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
