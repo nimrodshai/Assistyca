@@ -12,7 +12,9 @@ const AUTH_CHALLENGE_KEY = `${STORAGE_PREFIX}.portal.auth-challenge`;
 const CLIENT_STATE_PREFIX = `${STORAGE_PREFIX}.client-state`;
 const LAST_PRIMARY_TAB_KEY = `${STORAGE_PREFIX}.portal.last-primary-tab`;
 const MONITOR_WATCH_DRAFT_PREFIX = `${STORAGE_PREFIX}.portal.monitor-watch-draft`;
+const THEME_STORAGE_KEY = `${STORAGE_PREFIX}.portal.theme`;
 migrateLegacyStorage();
+applyInitialTheme();
 const PORTAL_API_BASE = resolvePortalApiBase();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const SETTINGS_PANEL_ANIMATION_MS = 320;
@@ -1508,6 +1510,7 @@ const elements = {
   displayNameInput: document.querySelector("#displayNameInput"),
   workspaceNameInput: document.querySelector("#workspaceNameInput"),
   timezoneSelect: document.querySelector("#timezoneSelect"),
+  themeToggleButton: document.querySelector("#themeToggleButton"),
 };
 
 const storedAuthSession = loadJson(AUTH_SESSION_KEY, null);
@@ -1577,6 +1580,78 @@ function persistJson(key, value) {
   } catch {
     // Keep the app usable when local storage is restricted.
   }
+}
+
+function normalizeThemePreference(value) {
+  const theme = String(value || "").trim().toLowerCase();
+  return theme === "dark" || theme === "light" ? theme : "";
+}
+
+function getSystemThemePreference() {
+  try {
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  } catch {
+    return "light";
+  }
+}
+
+function loadThemePreference() {
+  try {
+    return normalizeThemePreference(window.localStorage.getItem(THEME_STORAGE_KEY));
+  } catch {
+    return "";
+  }
+}
+
+function resolveThemePreference(preference = loadThemePreference()) {
+  return normalizeThemePreference(preference) || getSystemThemePreference();
+}
+
+function applyThemePreference(preference = loadThemePreference()) {
+  const theme = resolveThemePreference(preference);
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  return theme;
+}
+
+function applyInitialTheme() {
+  applyThemePreference();
+}
+
+function updateThemeControls() {
+  const isDark = applyThemePreference() === "dark";
+  if (!elements.themeToggleButton) {
+    return;
+  }
+
+  elements.themeToggleButton.setAttribute("aria-checked", String(isDark));
+  elements.themeToggleButton.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+}
+
+function setThemePreference(nextTheme) {
+  const theme = normalizeThemePreference(nextTheme) || "light";
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // Keep the theme applied even when local storage is restricted.
+  }
+  applyThemePreference(theme);
+  updateThemeControls();
+  setStatus(theme === "dark" ? "Dark mode saved" : "Light mode saved");
+}
+
+function toggleThemePreference() {
+  setThemePreference(resolveThemePreference() === "dark" ? "light" : "dark");
+}
+
+function handleSystemThemePreferenceChange() {
+  if (loadThemePreference()) {
+    return;
+  }
+  applyThemePreference();
+  updateThemeControls();
 }
 
 function migrateLegacyStorage() {
@@ -20722,6 +20797,7 @@ function updateSettingsFields() {
   elements.displayNameInput.value = clientState.settings.displayName;
   elements.workspaceNameInput.value = clientState.settings.workspaceName;
   elements.timezoneSelect.value = clientState.settings.timezone;
+  updateThemeControls();
   renderAdminUsersPane();
 }
 
@@ -22988,6 +23064,15 @@ function bindEvents() {
   elements.displayNameInput.addEventListener("input", syncSettingsField("displayName"));
   elements.workspaceNameInput.addEventListener("input", syncSettingsField("workspaceName"));
   elements.timezoneSelect.addEventListener("change", syncSettingsField("timezone"));
+  if (elements.themeToggleButton) {
+    elements.themeToggleButton.addEventListener("click", toggleThemePreference);
+  }
+  const themeMediaQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  if (themeMediaQuery?.addEventListener) {
+    themeMediaQuery.addEventListener("change", handleSystemThemePreferenceChange);
+  } else if (themeMediaQuery?.addListener) {
+    themeMediaQuery.addListener(handleSystemThemePreferenceChange);
+  }
   if (elements.profileBusinessSummaryInput) {
     elements.profileBusinessSummaryInput.addEventListener("input", syncAccountProfileField("businessSummary"));
   }

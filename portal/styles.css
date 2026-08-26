@@ -25,6 +25,26 @@
   --font-mono: "SFMono-Regular", "SF Mono", "Menlo", monospace;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c1218;
+  --bg-alt: #121b24;
+  --surface: rgba(19, 28, 36, 0.94);
+  --surface-strong: #17232c;
+  --surface-soft: rgba(24, 35, 44, 0.74);
+  --line: rgba(224, 239, 244, 0.1);
+  --line-strong: rgba(224, 239, 244, 0.16);
+  --text: #edf6f4;
+  --muted: #a8b6c3;
+  --muted-strong: #80909f;
+  --accent: #37b8ab;
+  --accent-2: #7ab7ff;
+  --accent-soft: rgba(55, 184, 171, 0.15);
+  --warn: #ff9b69;
+  --shadow: 0 20px 58px rgba(0, 0, 0, 0.28);
+  --shadow-soft: 0 12px 28px rgba(0, 0, 0, 0.2);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -2447,11 +2467,11 @@ body[data-modal="billing"] .app-shell {
   min-width: 0;
   min-height: 3.05rem;
   padding: 0.38rem 1.1rem 0.38rem 0.42rem;
-  border: 1px solid rgba(7, 24, 44, 0.94);
+  border: 1px solid #dadce0;
   border-radius: 13px;
-  background: #07182c;
-  color: #fff;
-  box-shadow: 0 16px 34px rgba(7, 24, 44, 0.22);
+  background: #ffffff;
+  color: #1f1f1f;
+  box-shadow: 0 10px 22px rgba(25, 38, 54, 0.08);
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .ghost-button.small {
@@ -2461,21 +2481,21 @@ body[data-modal="billing"] .app-shell {
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:hover {
-  background: #0b213b;
-  box-shadow: 0 18px 38px rgba(7, 24, 44, 0.27);
+  border-color: #cfd7e2;
+  background: #f8fafd;
+  box-shadow: 0 12px 26px rgba(25, 38, 54, 0.11);
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:focus-visible {
   outline: none;
   box-shadow:
-    0 0 0 3px rgba(255, 255, 255, 0.86),
-    0 0 0 5px rgba(15, 118, 110, 0.52),
-    0 16px 34px rgba(7, 24, 44, 0.22);
+    0 0 0 3px rgba(66, 133, 244, 0.18),
+    0 10px 22px rgba(25, 38, 54, 0.08);
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:disabled {
-  color: rgba(255, 255, 255, 0.62);
-  background: rgba(7, 24, 44, 0.58);
+  color: rgba(31, 31, 31, 0.5);
+  background: rgba(255, 255, 255, 0.68);
   box-shadow: none;
 }
 
@@ -2499,6 +2519,7 @@ body[data-modal="billing"] .app-shell {
   border-radius: 9px;
   background: #fff;
   flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(60, 64, 67, 0.08);
 }
 
 .calendar-oauth-status {
@@ -2596,8 +2617,8 @@ body[data-modal="billing"] .app-shell {
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .calendar-oauth-button-spinner::before {
-  border-color: rgba(255, 255, 255, 0.28);
-  border-top-color: rgba(255, 255, 255, 0.96);
+  border-color: rgba(66, 133, 244, 0.18);
+  border-top-color: rgba(66, 133, 244, 0.92);
 }
 
 .platform-connection-docs-link {
@@ -7434,6 +7455,123 @@ body[data-modal="billing"] .app-shell {
   min-width: 9rem;
 }
 
+.preference-row {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.86rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.66);
+}
+
+.preference-copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.preference-copy span {
+  color: var(--text);
+  font-size: 0.94rem;
+  font-weight: 800;
+}
+
+.preference-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.83rem;
+  line-height: 1.45;
+}
+
+.theme-switch {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  flex: 0 0 auto;
+  width: 4.68rem;
+  height: 2.34rem;
+  padding: 0.24rem;
+  border: 1px solid rgba(20, 28, 38, 0.09);
+  border-radius: 999px;
+  color: var(--muted-strong);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.88) inset,
+    0 8px 18px rgba(25, 38, 54, 0.07);
+}
+
+.theme-switch::before {
+  content: "";
+  position: absolute;
+  top: 0.22rem;
+  left: 0.22rem;
+  width: 1.86rem;
+  height: 1.86rem;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 6px 14px rgba(25, 38, 54, 0.14);
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.theme-switch:hover,
+.theme-switch:focus-visible {
+  border-color: rgba(15, 118, 110, 0.24);
+  transform: translateY(-1px);
+}
+
+.theme-switch:focus-visible {
+  outline: 0;
+  box-shadow:
+    0 0 0 4px rgba(15, 118, 110, 0.12),
+    0 8px 18px rgba(25, 38, 54, 0.07);
+}
+
+.theme-switch[aria-checked="true"]::before {
+  transform: translateX(2.32rem);
+  background: #0b1118;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
+}
+
+.theme-switch-icon {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  color: inherit;
+}
+
+.theme-switch-icon svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.25;
+}
+
+.theme-switch-icon-light {
+  color: #c47b17;
+}
+
+.theme-switch-icon-dark {
+  color: #6f7f8d;
+}
+
+.theme-switch[aria-checked="true"] .theme-switch-icon-light {
+  color: #718293;
+}
+
+.theme-switch[aria-checked="true"] .theme-switch-icon-dark {
+  color: #b9f1ea;
+}
+
 .admin-user-access-card {
   width: 100%;
 }
@@ -9503,4 +9641,296 @@ body.is-chat-view {
     height: min(calc(100% - 1.7rem), 28rem);
     justify-self: stretch;
   }
+}
+
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at 18% 14%, rgba(55, 184, 171, 0.18), transparent 0 24%),
+    radial-gradient(circle at 83% 10%, rgba(122, 183, 255, 0.12), transparent 0 18%),
+    radial-gradient(circle at 74% 86%, rgba(255, 155, 105, 0.07), transparent 0 18%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-alt) 100%);
+}
+
+:root[data-theme="dark"] body::before {
+  background-image:
+    linear-gradient(rgba(224, 239, 244, 0.026) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(224, 239, 244, 0.026) 1px, transparent 1px);
+}
+
+:root[data-theme="dark"] body[data-view="auth"]::before {
+  background-image:
+    linear-gradient(rgba(224, 239, 244, 0.024) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(224, 239, 244, 0.024) 1px, transparent 1px);
+}
+
+:root[data-theme="dark"] body[data-view="auth"] .mesh,
+:root[data-theme="dark"] .mesh {
+  background:
+    linear-gradient(180deg, rgba(12, 18, 24, 0.34), rgba(12, 18, 24, 0.18)),
+    radial-gradient(circle at top, transparent, rgba(12, 18, 24, 0.28) 80%);
+}
+
+:root[data-theme="dark"] .glass-card,
+:root[data-theme="dark"] .auth-card,
+:root[data-theme="dark"] .settings-dialog,
+:root[data-theme="dark"] .auth-alert-dialog,
+:root[data-theme="dark"] .billing-help-dialog,
+:root[data-theme="dark"] .menu-popover,
+:root[data-theme="dark"] .tab-strip,
+:root[data-theme="dark"] .status-pill,
+:root[data-theme="dark"] .feature-card,
+:root[data-theme="dark"] .config-card,
+:root[data-theme="dark"] .preview-card,
+:root[data-theme="dark"] .settings-card,
+:root[data-theme="dark"] .billing-card,
+:root[data-theme="dark"] .empty-state,
+:root[data-theme="dark"] .pricing-card,
+:root[data-theme="dark"] .agent-composer,
+:root[data-theme="dark"] .agent-attach-source-menu,
+:root[data-theme="dark"] .agent-message-connection-card,
+:root[data-theme="dark"] .agent-message-whatsapp-card,
+:root[data-theme="dark"] .agent-action-item,
+:root[data-theme="dark"] .agent-action-detail-card,
+:root[data-theme="dark"] .agent-action-editor,
+:root[data-theme="dark"] .simulator-inbox-card,
+:root[data-theme="dark"] .simulator-detail-card,
+:root[data-theme="dark"] .simulator-queue-item,
+:root[data-theme="dark"] .admin-detail-panel,
+:root[data-theme="dark"] .admin-tool-picker,
+:root[data-theme="dark"] .admin-assigned-tools-shell,
+:root[data-theme="dark"] .admin-feature-option,
+:root[data-theme="dark"] .delivery-platform-menu {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+:root[data-theme="dark"] .app-bar,
+:root[data-theme="dark"] .feature-page-header {
+  border-color: var(--line-strong);
+  background: linear-gradient(180deg, rgba(12, 18, 24, 0.94) 0%, rgba(12, 18, 24, 0.72) 100%);
+  box-shadow:
+    0 1px 0 rgba(224, 239, 244, 0.06) inset,
+    0 18px 34px rgba(0, 0, 0, 0.22);
+}
+
+:root[data-theme="dark"] .brand-logo {
+  filter: brightness(0) invert(1);
+  opacity: 0.92;
+}
+
+:root[data-theme="dark"] .field input,
+:root[data-theme="dark"] .field textarea,
+:root[data-theme="dark"] .field select,
+:root[data-theme="dark"] .agent-action-editor-input,
+:root[data-theme="dark"] .agent-action-editor-select,
+:root[data-theme="dark"] .agent-message-whatsapp-card-textarea,
+:root[data-theme="dark"] .simulator-reply,
+:root[data-theme="dark"] .admin-client-type-select {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(10, 16, 22, 0.82);
+}
+
+:root[data-theme="dark"] .field input::placeholder,
+:root[data-theme="dark"] .field textarea::placeholder,
+:root[data-theme="dark"] .agent-action-editor-input::placeholder,
+:root[data-theme="dark"] .agent-message-whatsapp-card-textarea::placeholder {
+  color: rgba(168, 182, 195, 0.58);
+}
+
+:root[data-theme="dark"] .field input:focus,
+:root[data-theme="dark"] .field textarea:focus,
+:root[data-theme="dark"] .field select:focus,
+:root[data-theme="dark"] .agent-action-editor-input:focus,
+:root[data-theme="dark"] .agent-action-editor-select:focus {
+  border-color: rgba(55, 184, 171, 0.52);
+  background: rgba(13, 21, 28, 0.94);
+  box-shadow: 0 0 0 4px rgba(55, 184, 171, 0.14);
+}
+
+:root[data-theme="dark"] .ghost-button,
+:root[data-theme="dark"] .settings-close,
+:root[data-theme="dark"] .billing-help-close,
+:root[data-theme="dark"] .agent-actions-icon-button,
+:root[data-theme="dark"] .agent-action-back,
+:root[data-theme="dark"] .delivery-platform-add,
+:root[data-theme="dark"] .delivery-platform-remove,
+:root[data-theme="dark"] .agent-attach-source-button {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(21, 31, 40, 0.88);
+}
+
+:root[data-theme="dark"] .ghost-button:hover,
+:root[data-theme="dark"] .ghost-button:focus-visible,
+:root[data-theme="dark"] .settings-close:hover,
+:root[data-theme="dark"] .settings-close:focus-visible,
+:root[data-theme="dark"] .billing-help-close:hover,
+:root[data-theme="dark"] .billing-help-close:focus-visible,
+:root[data-theme="dark"] .agent-actions-icon-button:hover,
+:root[data-theme="dark"] .agent-actions-icon-button:focus-visible,
+:root[data-theme="dark"] .agent-action-back:hover,
+:root[data-theme="dark"] .agent-action-back:focus-visible,
+:root[data-theme="dark"] .delivery-platform-add:hover,
+:root[data-theme="dark"] .delivery-platform-add:focus-visible,
+:root[data-theme="dark"] .delivery-platform-remove:hover,
+:root[data-theme="dark"] .delivery-platform-remove:focus-visible,
+:root[data-theme="dark"] .agent-attach-source-button:hover,
+:root[data-theme="dark"] .agent-attach-source-button:focus-visible,
+:root[data-theme="dark"] .agent-attach-source-button.is-open {
+  border-color: rgba(55, 184, 171, 0.28);
+  color: var(--accent);
+  background: rgba(31, 45, 56, 0.96);
+}
+
+:root[data-theme="dark"] .tab-button.is-active,
+:root[data-theme="dark"] .subtab-button.is-active,
+:root[data-theme="dark"] .menu-button,
+:root[data-theme="dark"] .agent-action-status,
+:root[data-theme="dark"] .delivery-platform-badge,
+:root[data-theme="dark"] .agent-attach-source-option-icon,
+:root[data-theme="dark"] .platform-connection-security-note,
+:root[data-theme="dark"] .preference-row {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(24, 35, 44, 0.78);
+}
+
+:root[data-theme="dark"] .menu-button:hover,
+:root[data-theme="dark"] .menu-button:focus-visible,
+:root[data-theme="dark"] .menu-item:hover,
+:root[data-theme="dark"] .menu-item:focus-visible,
+:root[data-theme="dark"] .agent-attach-source-options button:hover,
+:root[data-theme="dark"] .agent-attach-source-options button:focus-visible,
+:root[data-theme="dark"] .delivery-platform-menu button:hover:not(:disabled),
+:root[data-theme="dark"] .delivery-platform-menu button:focus-visible:not(:disabled),
+:root[data-theme="dark"] .feature-card-button:hover,
+:root[data-theme="dark"] .feature-card-button:focus-visible,
+:root[data-theme="dark"] .agent-action-item:hover,
+:root[data-theme="dark"] .agent-action-item:focus-visible,
+:root[data-theme="dark"] .simulator-queue-item:hover,
+:root[data-theme="dark"] .simulator-queue-item:focus-visible,
+:root[data-theme="dark"] .admin-tool-result:hover:not(:disabled),
+:root[data-theme="dark"] .admin-tool-result:focus-visible:not(:disabled),
+:root[data-theme="dark"] .admin-feature-option:hover {
+  border-color: rgba(55, 184, 171, 0.28);
+  background: rgba(31, 45, 56, 0.94);
+}
+
+:root[data-theme="dark"] .settings-overlay.is-open {
+  background: rgba(7, 11, 16, 0.62);
+}
+
+:root[data-theme="dark"] .auth-alert-overlay.is-open {
+  background: rgba(5, 8, 12, 0.62);
+}
+
+:root[data-theme="dark"] .agent-message-help-button {
+  border-color: rgba(168, 182, 195, 0.22);
+  color: var(--muted);
+  background: rgba(21, 31, 40, 0.5);
+}
+
+:root[data-theme="dark"] .agent-message.is-user .agent-message-bubble {
+  border-color: rgba(55, 184, 171, 0.28);
+  background: linear-gradient(180deg, #17958a, #0f746c);
+  box-shadow: 0 10px 22px rgba(4, 119, 108, 0.24);
+}
+
+:root[data-theme="dark"] .agent-message.is-question .agent-message-bubble,
+:root[data-theme="dark"] .agent-message.is-approval .agent-message-bubble,
+:root[data-theme="dark"] .agent-message.is-credential .agent-message-bubble,
+:root[data-theme="dark"] .agent-message.is-result .agent-message-bubble,
+:root[data-theme="dark"] .agent-message-whatsapp-card-incoming,
+:root[data-theme="dark"] .personal-details-preview,
+:root[data-theme="dark"] .simulator-context-item,
+:root[data-theme="dark"] .agent-action-error,
+:root[data-theme="dark"] .agent-action-note,
+:root[data-theme="dark"] .feature-activation-customer-number,
+:root[data-theme="dark"] .calendar-oauth-status {
+  border-color: var(--line-strong);
+  background: rgba(10, 16, 22, 0.7);
+}
+
+:root[data-theme="dark"] .agent-composer textarea {
+  color: var(--text);
+}
+
+:root[data-theme="dark"] .agent-composer textarea::placeholder {
+  color: rgba(168, 182, 195, 0.7);
+}
+
+:root[data-theme="dark"] .agent-tools-panel,
+:root[data-theme="dark"] .whatsapp-history-conversation-panel {
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .feature-page-example.whatsapp-preview {
+  background: linear-gradient(180deg, #0a5954 0 5.4rem, #101b23 5.4rem 100%);
+}
+
+:root[data-theme="dark"] .platform-connection-status[data-tone="success"],
+:root[data-theme="dark"] .calendar-oauth-status[data-tone="success"],
+:root[data-theme="dark"] .feature-activation-result[data-tone="success"] {
+  border-color: rgba(71, 216, 139, 0.2);
+  background: rgba(71, 216, 139, 0.11);
+}
+
+:root[data-theme="dark"] .platform-connection-status[data-tone="warning"],
+:root[data-theme="dark"] .platform-connection-status[data-tone="error"],
+:root[data-theme="dark"] .calendar-oauth-status[data-tone="error"],
+:root[data-theme="dark"] .calendar-oauth-status[data-tone="warning"],
+:root[data-theme="dark"] .feature-activation-result[data-tone="warning"] {
+  border-color: rgba(255, 120, 98, 0.24);
+  background: rgba(255, 120, 98, 0.12);
+}
+
+:root[data-theme="dark"] .calendar-oauth-status-icon {
+  color: var(--accent);
+  background: rgba(55, 184, 171, 0.18);
+}
+
+:root[data-theme="dark"] .theme-switch {
+  border-color: rgba(224, 239, 244, 0.16);
+  color: var(--muted);
+  background: rgba(9, 15, 21, 0.82);
+  box-shadow:
+    0 1px 0 rgba(224, 239, 244, 0.05) inset,
+    0 10px 22px rgba(0, 0, 0, 0.26);
+}
+
+:root[data-theme="dark"] .theme-switch:focus-visible {
+  box-shadow:
+    0 0 0 4px rgba(55, 184, 171, 0.18),
+    0 10px 22px rgba(0, 0, 0, 0.26);
+}
+
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small {
+  border-color: #8e918f;
+  background: #131314;
+  color: #e3e3e3;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:hover {
+  border-color: #c4c7c5;
+  background: #1f1f1f;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
+}
+
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:focus-visible {
+  box-shadow:
+    0 0 0 3px rgba(138, 180, 248, 0.26),
+    0 14px 32px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:disabled {
+  color: rgba(227, 227, 227, 0.52);
+  background: rgba(19, 19, 20, 0.64);
+}
+
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .calendar-oauth-button-spinner::before {
+  border-color: rgba(227, 227, 227, 0.22);
+  border-top-color: rgba(227, 227, 227, 0.94);
 }

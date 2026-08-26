@@ -8,7 +8,23 @@
       name="description"
       content="Tell Assistyca what you need and get help through a simple conversation."
     />
-    <link rel="stylesheet" href="./styles.css?v=124" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      (() => {
+        try {
+          const storedTheme = window.localStorage.getItem("assistyca.portal.theme");
+          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const theme = storedTheme === "dark" || storedTheme === "light"
+            ? storedTheme
+            : systemDark ? "dark" : "light";
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="./styles.css?v=125" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -1465,6 +1481,33 @@ Owner said afternoons are easier."
                   <option value="UTC">UTC</option>
                 </select>
               </label>
+
+              <div class="preference-row theme-preference">
+                <div class="preference-copy">
+                  <span id="themePreferenceLabel">Dark mode</span>
+                  <p>Use a darker Assistyca theme on this device.</p>
+                </div>
+                <button
+                  id="themeToggleButton"
+                  class="theme-switch"
+                  type="button"
+                  role="switch"
+                  aria-checked="false"
+                  aria-labelledby="themePreferenceLabel"
+                >
+                  <span class="theme-switch-icon theme-switch-icon-light" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <circle cx="12" cy="12" r="4"></circle>
+                      <path d="M12 2v2.4M12 19.6V22M4.93 4.93l1.7 1.7M17.37 17.37l1.7 1.7M2 12h2.4M19.6 12H22M4.93 19.07l1.7-1.7M17.37 6.63l1.7-1.7"></path>
+                    </svg>
+                  </span>
+                  <span class="theme-switch-icon theme-switch-icon-dark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M20.2 14.2A7.7 7.7 0 0 1 9.8 3.8 8.5 8.5 0 1 0 20.2 14.2Z"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
             </article>
           </div>
 
@@ -1533,6 +1576,6 @@ Owner said afternoons are easier."
     </section>
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
-    <script src="./app.js?v=150"></script>
+    <script src="./app.js?v=151"></script>
   </body>
 </html>
