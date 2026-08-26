@@ -9,6 +9,7 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from unittest import mock
 
@@ -17,6 +18,7 @@ from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import build_calendar_summary
 from packages.infrastructure.calendar_summary import normalize_calendar_event
 from packages.infrastructure.calendar_summary import parse_calendar_date_range
+from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_TOKEN_URL
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 
@@ -195,6 +197,68 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         connection = self.server.database.list_platform_connections("owner@example.com")[0]
         self.assertEqual(connection["connectionStatus"], "connected")
         self.assertEqual(connection["metadata"]["validationStatus"], "verified")
+
+    def test_calendar_proposal_run_refreshes_oauth_calendar_token(self) -> None:
+        self.server.config.google_oauth_client_id = "google-client-id.apps.googleusercontent.com"
+        self.server.config.google_oauth_client_secret = "google-client-secret"
+        self.server.database.save_platform_connection(
+            "owner@example.com",
+            platform="calendar",
+            auth_type="oauth",
+            secret_ciphertext=self.server.credential_vault.encrypt(json.dumps({  # type: ignore[union-attr]
+                "type": "google_calendar_refresh_token",
+                "provider": "google_calendar",
+                "refreshToken": "saved-refresh-token",
+            })),
+            secret_hint="Google OAuth",
+            key_version=self.server.credential_vault.key_version,  # type: ignore[union-attr]
+            connection_status="connected",
+            metadata={"provider": "google_calendar", "validationStatus": "verified"},
+        )
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/proposals/run",
+            data=json.dumps({
+                "proposalType": "calendar-summary",
+                "fields": {
+                    "calendar": "Connected calendar",
+                    "timeWindow": "today",
+                    "deliveryChannel": "portal",
+                },
+                "timezone": "UTC",
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        def fake_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+            self.assertEqual(request.full_url, GOOGLE_OAUTH_TOKEN_URL)
+            fields = urllib_parse.parse_qs(request.data.decode("utf-8"))  # type: ignore[union-attr]
+            self.assertEqual(fields["grant_type"], ["refresh_token"])
+            self.assertEqual(fields["refresh_token"], ["saved-refresh-token"])
+            return _FakeResponse({"access_token": "fresh-google-access-token"})
+
+        fake_result = {
+            "message": "Meeting summary · Aug 25, 2026",
+            "summary": "Meeting summary · Aug 25, 2026",
+            "eventCount": 0,
+            "dateRange": {"display": "Aug 25, 2026"},
+        }
+        with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+            with mock.patch(
+                "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
+                return_value=fake_result,
+            ) as run:
+                with urllib_request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], "fresh-google-access-token")
+        connection = self.server.database.list_platform_connections("owner@example.com")[0]
+        self.assertEqual(connection["metadata"]["credentialSource"], "google_oauth_refresh_token")
 
     def test_calendar_proposal_run_marks_rejected_credential_as_needing_attention(self) -> None:
         request = urllib_request.Request(

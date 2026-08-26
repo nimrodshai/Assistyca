@@ -11,5 +11,9 @@ export WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME='notification_message'
 export WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE='en_US'
 # Optional when approval links should use a public hostname instead of localhost.
 # export PUBLIC_BASE_URL='https://your-portal-host.example.com'
+# Optional for the Google Calendar OAuth flow.
+# export GOOGLE_OAUTH_CLIENT_ID='your-google-oauth-client-id'
+# export GOOGLE_OAUTH_CLIENT_SECRET='your-google-oauth-client-secret'
+# export GOOGLE_OAUTH_REDIRECT_URI='http://127.0.0.1:8000/api/oauth/google/calendar/callback'
 
 python3 scripts/run_portal_server.py --port 8000
