@@ -9261,6 +9261,9 @@ body.is-chat-view {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  /* Keep the conversation attached to the navigation; the message list
+     provides the small, intentional breathing room below the app bar. */
+  padding-top: 0;
 }
 
 .app-shell.is-chat-workspace .agent-message-list {
@@ -9269,6 +9272,7 @@ body.is-chat-view {
   max-height: none;
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding-top: 0.75rem;
 }
 
 .app-shell.is-chat-workspace .agent-tools-panel {
