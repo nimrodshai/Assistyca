@@ -9611,7 +9611,8 @@ body.is-chat-view {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-top: 0;
-  padding-bottom: 0;
+  padding-bottom: 30px;
+  scroll-padding-bottom: 30px;
 }
 
 .app-shell.is-chat-workspace .agent-tools-panel {

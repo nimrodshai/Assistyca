@@ -401,6 +401,12 @@ class PortalStaticPageTests(unittest.TestCase):
         )
         self.assertIn(".agent-message-list::before", styles)
         self.assertIn("margin-top: auto;", styles)
+        chat_workspace_message_styles = styles[
+            styles.index(".app-shell.is-chat-workspace .agent-message-list {"):
+            styles.index(".app-shell.is-chat-workspace .agent-tools-panel {")
+        ]
+        self.assertIn("padding-bottom: 30px;", chat_workspace_message_styles)
+        self.assertIn("scroll-padding-bottom: 30px;", chat_workspace_message_styles)
         action_panel_styles = styles[
             styles.index(".agent-actions-panel {"):
             styles.index(".agent-tools-head {")
@@ -525,7 +531,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=125", html)
+        self.assertIn("styles.css?v=126", html)
         self.assertIn("app.js?v=151", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
