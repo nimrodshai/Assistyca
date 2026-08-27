@@ -13130,12 +13130,15 @@ function getAgentQuestionFieldIndexFromText(proposal, questionText = "") {
 
 function getAgentQuestionActionFieldIndex(proposal, questionIndex = 0, questionText = "", questionFieldKey = "") {
   const explicitIndex = getAgentQuestionFieldIndexByKey(proposal, questionFieldKey);
-  if (explicitIndex >= 0) {
-    return explicitIndex;
-  }
   const inferredIndex = getAgentQuestionFieldIndexFromText(proposal, questionText);
+  // Prefer the wording when metadata and visible text disagree. This keeps
+  // answer chips tied to the question the user can actually read, including
+  // messages persisted before fieldKey metadata was corrected.
   if (inferredIndex >= 0) {
     return inferredIndex;
+  }
+  if (explicitIndex >= 0) {
+    return explicitIndex;
   }
   return Math.max(0, Number(questionIndex || 0));
 }
