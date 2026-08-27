@@ -16136,7 +16136,7 @@ function showAgentActionInPanel(actionId) {
   const targetAction = getRenderableAgentActions()
     .find((action) => String(action.id || "") === normalizedActionId);
   agentActionSpotlightId = normalizedActionId;
-  state.selectedScheduledActionId = normalizedActionId;
+  state.selectedScheduledActionId = "";
   if (targetAction && !isActiveAgentActionStatus(targetAction.status)) {
     state.agentHistoryExpanded = true;
   }
@@ -19180,7 +19180,7 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     });
     persistAgentWorkspace(message);
   } else {
-    const message = "Agent helper created.";
+    const message = "Action created.";
     pushAgentProposalResult(proposal.id, message, "result", {
       showActionLink: true,
     });
