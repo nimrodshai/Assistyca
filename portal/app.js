@@ -13912,6 +13912,11 @@ function agentContextSuggestsMonthlyBatchTask(proposal, questionText = "") {
   return hasBatchObject && hasMonthlyWindow && hasBatchVerb;
 }
 
+function isAgentProposalCustomGoogleBatchRunner(proposal) {
+  return proposal?.type === "custom"
+    && agentContextSuggestsMonthlyBatchTask(proposal, getAgentProposalFieldValue(proposal, "result"));
+}
+
 function getAgentMonthlyBatchScheduleActions(includeOneTime = false, options = {}) {
   const cadenceValue = "monthly, at the beginning of each month for the previous month";
   if (options.confirmCadence) {
@@ -15357,6 +15362,57 @@ function isAgentLocalAction(action) {
   );
 }
 
+function normalizeScheduledActionStatusClass(status) {
+  const normalized = String(status || "pending").trim().toLowerCase();
+  return ["pending", "running", "paused", "manual_only", "sent", "delivered", "read", "failed", "cancelled"].includes(normalized)
+    ? normalized
+    : "unknown";
+}
+
+function agentActionFrequencyLooksRecurring(value) {
+  return /\b(?:every|hourly|daily|weekly|monthly|recurring|scheduled)\b/i.test(String(value || ""))
+    || /\b\d+\s*(?:minutes?|hours?|days?|weeks?|months?)\b/i.test(String(value || ""));
+}
+
+function getAgentActionPresentationStatus(action, status = action?.status) {
+  const rawStatus = normalizeScheduledActionStatusClass(status);
+  if (!isAgentLocalAction(action)) {
+    return rawStatus;
+  }
+  if (["sent", "delivered", "read", "failed", "cancelled"].includes(rawStatus)) {
+    return rawStatus;
+  }
+
+  const payload = action?.payload && typeof action.payload === "object" ? action.payload : {};
+  const runMode = String(payload.runMode || payload.run_mode || payload.mode || "").trim().toLowerCase();
+  const manualOnly = normalizeMonitorManualOnly(payload.manualOnly, false)
+    || rawStatus === "manual_only"
+    || ["manual", "manual_only", "on_demand", "on-demand"].includes(runMode);
+  if (manualOnly) {
+    return "manual_only";
+  }
+
+  const recurring = ["running", "paused"].includes(rawStatus)
+    || ["recurring", "scheduled", "auto", "automatic", "background"].includes(runMode)
+    || agentActionFrequencyLooksRecurring(payload.frequency)
+    || agentActionFrequencyLooksRecurring(payload.schedule);
+  if (!recurring) {
+    return rawStatus;
+  }
+
+  const lifecycleStatus = normalizeMonitorActionLifecycleStatus(
+    payload.actionLifecycleStatus
+      || payload.action_lifecycle_status
+      || payload.lifecycleStatus
+      || payload.lifecycle_status
+      || rawStatus,
+  );
+  if (lifecycleStatus === "removed") {
+    return "cancelled";
+  }
+  return lifecycleStatus === "paused" || rawStatus === "paused" ? "paused" : "running";
+}
+
 function getAgentActionSourceActionId(action) {
   return Math.max(0, Number(action?.payload?.sourceActionId || 0));
 }
@@ -15405,14 +15461,14 @@ function isAgentLocalActionSettingsBusy(action) {
 }
 
 function isAgentLifecycleActionPaused(action) {
-  return getScheduledActionStatusClass(action?.status) === "paused";
+  return getScheduledActionStatusClass(action?.status, action) === "paused";
 }
 
 function canToggleAgentActionLifecycle(action) {
-  if (!isAgentLocalAction(action) || normalizeMonitorManualOnly(action?.payload?.manualOnly, false)) {
+  if (!isAgentLocalAction(action) || getAgentActionPresentationStatus(action) === "manual_only") {
     return false;
   }
-  const statusClass = getScheduledActionStatusClass(action?.status);
+  const statusClass = getScheduledActionStatusClass(action?.status, action);
   if (!["running", "paused"].includes(statusClass)) {
     return false;
   }
@@ -15964,12 +16020,12 @@ function getRenderableAgentActions() {
   ];
 }
 
-function isActiveAgentActionStatus(status) {
-  return ["pending", "running", "manual_only", "paused"].includes(String(status || "").trim().toLowerCase());
+function isActiveAgentActionStatus(status, action = null) {
+  return ["pending", "running", "manual_only", "paused"].includes(getScheduledActionStatusClass(status, action));
 }
 
 function canCancelAgentAction(action) {
-  return isActiveAgentActionStatus(action?.status);
+  return isActiveAgentActionStatus(action?.status, action);
 }
 
 function appendAgentActionButton(actions, options = {}) {
@@ -16061,8 +16117,8 @@ function createAgentActionDetailActions(action) {
 
   if (canToggleAgentActionLifecycle(action)) {
     const actionId = String(action.id || "");
-    const nextLabel = paused ? "Resume" : "Stop";
-    const busyText = paused ? "Resuming…" : "Stopping…";
+    const nextLabel = paused ? "Start" : "Stop";
+    const busyText = paused ? "Starting…" : "Stopping…";
     const dataset = {};
     if (sourceActionId) {
       dataset[paused ? "agentResumeSourceAction" : "agentStopSourceAction"] = sourceActionId;
@@ -16070,7 +16126,7 @@ function createAgentActionDetailActions(action) {
       dataset[paused ? "agentResumeLocalAction" : "agentStopLocalAction"] = actionId;
     }
     appendAgentActionButton(actions, {
-      className: `${paused ? "primary-button" : "ghost-button"} small agent-action-stop-button`,
+      className: `${paused ? "primary-button agent-action-start-button" : "ghost-button agent-action-stop-button"} small`,
       text: lifecycleBusy ? busyText : nextLabel,
       disabled: lifecycleBusy,
       busy: lifecycleBusy,
@@ -16118,7 +16174,7 @@ function getScheduledActionStatusLabel(status, action = null) {
     failed: "Failed",
     cancelled: "Cancelled",
   };
-  const normalized = String(status || "pending").trim().toLowerCase();
+  const normalized = getScheduledActionStatusClass(status, action);
   if (isAgentLocalAction(action)) {
     if (normalized === "manual_only") {
       return "Manual";
@@ -16127,7 +16183,7 @@ function getScheduledActionStatusLabel(status, action = null) {
       return "Live";
     }
     if (normalized === "paused") {
-      return "Paused";
+      return "Stopped";
     }
     if (normalized === "pending") {
       return "Ready";
@@ -16136,11 +16192,8 @@ function getScheduledActionStatusLabel(status, action = null) {
   return labels[normalized] || capitalizeWords(normalized.replace(/[_-]+/g, " ")) || "Unknown";
 }
 
-function getScheduledActionStatusClass(status) {
-  const normalized = String(status || "pending").trim().toLowerCase();
-  return ["pending", "running", "paused", "manual_only", "sent", "delivered", "read", "failed", "cancelled"].includes(normalized)
-    ? normalized
-    : "unknown";
+function getScheduledActionStatusClass(status, action = null) {
+  return action ? getAgentActionPresentationStatus(action, status) : normalizeScheduledActionStatusClass(status);
 }
 
 function getScheduledActionTitle(action) {
@@ -16183,7 +16236,7 @@ function formatScheduledActionDate(value, timeZone = "") {
 
 function createScheduledActionStatus(action) {
   const status = document.createElement("span");
-  const statusClass = getScheduledActionStatusClass(action.status);
+  const statusClass = getScheduledActionStatusClass(action.status, action);
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
   const isRunBusy = isAgentFeatureLiveAction(action)
     && action.actionType === "agent_web_monitor"
@@ -16194,13 +16247,13 @@ function createScheduledActionStatus(action) {
   status.textContent = isRunBusy
     ? "Running"
     : isLifecycleBusy
-      ? (isAgentLifecycleActionPaused(action) ? "Resuming" : "Stopping")
+      ? (isAgentLifecycleActionPaused(action) ? "Starting" : "Stopping")
       : getScheduledActionStatusLabel(action.status, action);
   return status;
 }
 
 function getScheduledActionItemTimeValue(action) {
-  return isActiveAgentActionStatus(action.status)
+  return isActiveAgentActionStatus(action.status, action)
     ? action.runAt
     : (action.completedAt || action.updatedAt);
 }
@@ -16223,11 +16276,12 @@ function sortScheduledActionsByCreatedAt(actions) {
 
 function getScheduledActionItemSignature(action) {
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
-  const hideTime = Boolean(action.payload?.manualOnly) || getScheduledActionStatusClass(action.status) === "paused";
+  const statusClass = getScheduledActionStatusClass(action.status, action);
+  const hideTime = Boolean(action.payload?.manualOnly) || statusClass === "paused";
   return JSON.stringify([
     action.id,
     getScheduledActionTitle(action),
-    getScheduledActionStatusClass(action.status),
+    statusClass,
     getScheduledActionStatusLabel(action.status, action),
     hideTime ? "" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     String(action.payload?.frequency || ""),
@@ -16278,7 +16332,7 @@ function applyScheduledActionItemEnteringState(item) {
 }
 
 function renderScheduledActionItemContent(item, action) {
-  const statusClass = getScheduledActionStatusClass(action.status);
+  const statusClass = getScheduledActionStatusClass(action.status, action);
   item.className = `agent-action-item is-${statusClass}`;
   item.dataset.agentScheduledActionId = String(action.id || "");
   item.dataset.agentActionItemSignature = getScheduledActionItemSignature(action);
@@ -16546,7 +16600,7 @@ function showAgentActionInPanel(actionId) {
     .find((action) => String(action.id || "") === normalizedActionId);
   agentActionSpotlightId = normalizedActionId;
   state.selectedScheduledActionId = "";
-  if (targetAction && !isActiveAgentActionStatus(targetAction.status)) {
+  if (targetAction && !isActiveAgentActionStatus(targetAction.status, targetAction)) {
     state.agentHistoryExpanded = true;
   }
 
@@ -16608,7 +16662,7 @@ function getScheduledActionDetailSignature(action) {
   return JSON.stringify([
     action.id,
     getScheduledActionTitle(action),
-    getScheduledActionStatusClass(action.status),
+    getScheduledActionStatusClass(action.status, action),
     getScheduledActionStatusLabel(action.status, action),
     messageText,
     formatScheduledActionDate(action.runAt, action.timezone),
@@ -17433,7 +17487,7 @@ function updateAgentLocalActionDom(action) {
   if (!item) {
     return;
   }
-  const statusClass = getScheduledActionStatusClass(action.status);
+  const statusClass = getScheduledActionStatusClass(action.status, action);
   item.className = `agent-action-item is-${statusClass}${state.selectedScheduledActionId === String(action.id) ? " is-expanded" : ""}${agentActionSpotlightId && String(action.id || "") === agentActionSpotlightId ? " is-spotlighted" : ""}`;
   item.dataset.agentActionItemSignature = getScheduledActionItemSignature(action);
   const status = item.querySelector(".agent-action-status");
@@ -17441,7 +17495,7 @@ function updateAgentLocalActionDom(action) {
   if (status) {
     status.className = `agent-action-status is-${lifecycleBusy ? "lifecycle-busy" : statusClass}`;
     status.textContent = lifecycleBusy
-      ? (isAgentLifecycleActionPaused(action) ? "Resuming" : "Stopping")
+      ? (isAgentLifecycleActionPaused(action) ? "Starting" : "Stopping")
       : getScheduledActionStatusLabel(action.status, action);
   }
   const time = item.querySelector(".agent-action-item-time");
@@ -17891,15 +17945,16 @@ function createScheduledActionDetail(action) {
     const isFeatureAction = isAgentFeatureLiveAction(action);
     const isSourceAction = payload.source === "source_action";
     if (isSourceAction) {
+      const sourceStatusClass = getScheduledActionStatusClass(action.status, action);
       const sourceDetails = document.createElement("dl");
       sourceDetails.className = "agent-action-detail-grid";
       sourceDetails.append(
         createScheduledActionDetailRow("Source", payload.sourceType === "file" ? (payload.fileName || "Attached file") : (payload.sourceUrl || "URL")),
         createScheduledActionDetailRow("Frequency", payload.frequency || "As configured"),
         createScheduledActionDetailRow(
-          getScheduledActionStatusClass(action.status) === "paused" ? "Status" : "Next check",
-          getScheduledActionStatusClass(action.status) === "paused"
-            ? "Stopped until resumed"
+          sourceStatusClass === "paused" ? "Status" : "Next check",
+          sourceStatusClass === "paused"
+            ? "Stopped until you start it"
             : formatScheduledActionDate(payload.nextRunAt || action.runAt, action.timezone),
         ),
       );
@@ -17909,8 +17964,8 @@ function createScheduledActionDetail(action) {
       card.append(sourceDetails);
       const note = document.createElement("p");
       note.className = "agent-action-note";
-      note.textContent = getScheduledActionStatusClass(action.status) === "paused"
-        ? "This source action is stopped. Resume it when you want it to continue checking on its schedule."
+      note.textContent = sourceStatusClass === "paused"
+        ? "This source action is stopped. Start it when you want it to continue checking on its schedule."
         : "This phase checks and records the source. Content interpretation will be added next.";
       card.append(note);
       const editor = createSourceActionEditor(action);
@@ -17998,7 +18053,7 @@ function createScheduledActionDetail(action) {
     const notes = {
       pending: ["Waiting to run", "This action is queued and will run automatically at the scheduled time."],
       running: ["Sending now", "The action has started and is waiting for WhatsApp to respond."],
-      paused: ["Paused", "This action is stopped until you resume it."],
+      paused: ["Stopped", "This action is stopped until you start it."],
       sent: ["Accepted by WhatsApp", "WhatsApp accepted the message. Waiting for a delivery update."],
       delivered: ["Delivered", "WhatsApp confirmed that the message reached the recipient."],
       read: ["Read", "WhatsApp confirmed that the message was opened."],
@@ -18073,10 +18128,10 @@ function renderAgentActions() {
 
   const actions = getRenderableAgentActions();
   const activeActions = sortScheduledActionsByCreatedAt(
-    actions.filter((action) => isActiveAgentActionStatus(action.status)),
+    actions.filter((action) => isActiveAgentActionStatus(action.status, action)),
   );
   const completed = sortScheduledActionsByCreatedAt(
-    actions.filter((action) => !isActiveAgentActionStatus(action.status)),
+    actions.filter((action) => !isActiveAgentActionStatus(action.status, action)),
   );
   const initialLoading = isAgentActionsInitialLoading();
 
@@ -20012,7 +20067,7 @@ async function resumeAgentLocalAction(actionId) {
   }
   const backendFeatureId = getAgentActionBackendFeatureId(action);
   setLocalActionLifecycleBusy(action, true);
-  persistAgentWorkspace("Resuming action...");
+  persistAgentWorkspace("Starting action...");
   renderApp({ preserveStatus: true });
   try {
     if (backendFeatureId) {
@@ -20024,11 +20079,11 @@ async function resumeAgentLocalAction(actionId) {
       updateProposalLocalActionLifecycle(action, "active");
     }
     state.selectedScheduledActionId = String(action.id || "");
-    persistAgentWorkspace("Action resumed.");
+    persistAgentWorkspace("Action started.");
     renderApp({ preserveStatus: true });
     return true;
   } catch (error) {
-    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t resume that action."));
+    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t start that action."));
     renderApp({ preserveStatus: true });
     return false;
   } finally {
@@ -20187,7 +20242,7 @@ async function updateSourceActionLifecycle(actionId, lifecycleStatus) {
     setLocalActionLifecycleBusy(currentAction, true);
     renderAgentActions();
   }
-  setStatus(endpoint === "pause" ? "Stopping source action…" : "Resuming source action…");
+  setStatus(endpoint === "pause" ? "Stopping source action…" : "Starting source action…");
   try {
     const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}/${endpoint}`, {
       method: "POST",
@@ -20201,10 +20256,10 @@ async function updateSourceActionLifecycle(actionId, lifecycleStatus) {
     }
     state.selectedScheduledActionId = `source:${id}`;
     renderAgentActions();
-    setStatus(endpoint === "pause" ? "Source action stopped." : "Source action resumed.");
+    setStatus(endpoint === "pause" ? "Source action stopped." : "Source action started.");
     return true;
   } catch (error) {
-    setStatus(formatApiErrorMessage(error, endpoint === "pause" ? "Couldn’t stop that source action." : "Couldn’t resume that source action."));
+    setStatus(formatApiErrorMessage(error, endpoint === "pause" ? "Couldn’t stop that source action." : "Couldn’t start that source action."));
     await refreshSourceActions();
     return false;
   } finally {
@@ -20335,6 +20390,78 @@ async function runAgentProposalLocalActionNow(actionId) {
         message,
         tone: "error",
         source: "email-digest",
+        actionId: String(action.id || ""),
+        proposalId: proposal.id,
+        dedupeKey: `proposal:${proposal.id}:error:${message}`,
+      });
+      persistAgentWorkspace(message);
+      return false;
+    } finally {
+      localActionRunBusy.delete(normalizedActionId);
+      await refreshPlatformConnections({ render: false });
+      renderApp({ preserveStatus: true });
+    }
+  }
+
+  if (isAgentProposalCustomGoogleBatchRunner(proposal)) {
+    if (!isGmailConnectionReady()) {
+      const message = "Gmail access is required to run this receipts search. Connect Google with Email read access, then try again.";
+      addAgentNotification({
+        title: "Gmail setup required",
+        message,
+        tone: "warning",
+        source: "agent-action",
+        actionId: String(action.id || ""),
+        proposalId: proposal.id,
+        dedupeKey: `proposal:${proposal.id}:gmail-required`,
+      });
+      persistAgentWorkspace(message);
+      openAgentProposalSetup(proposal.id);
+      renderApp({ preserveStatus: true });
+      return true;
+    }
+
+    localActionRunBusy.add(normalizedActionId);
+    const runMonth = formatAgentManualRunMonthLabel(getAgentProposalManualRunMonthValue(proposal));
+    const runningMessage = `I’m checking your connected Gmail for ${runMonth} receipts…`;
+    persistAgentWorkspace(runningMessage);
+    renderApp({ preserveStatus: true });
+    try {
+      const response = await apiRequest("/api/agent/proposals/run", {
+        method: "POST",
+        headers: getSessionAuthHeaders(),
+        body: {
+          proposalId: proposal.id,
+          proposalType: proposal.type,
+          fields: { ...getAgentProposalFieldMap(proposal) },
+          deliveryChannel: getAgentProposalDeliveryChannel(proposal) || "portal",
+          timezone: getWorkspaceTimeZone(),
+        },
+        timeoutMs: 90000,
+      });
+      const message = String(response.message || response.summary || "Receipt search complete.").trim();
+      addAgentNotification({
+        title: "Receipt search ready",
+        message,
+        tone: "success",
+        source: "custom-google-batch",
+        actionId: String(action.id || ""),
+        proposalId: proposal.id,
+        href: getAgentResponseResultHref(response),
+        dedupeKey: `proposal:${proposal.id}:run:${response?.runId || response?.completedAt || Date.now()}`,
+      });
+      persistAgentWorkspace(message);
+      return true;
+    } catch (error) {
+      const message = formatApiErrorMessage(
+        error,
+        "I couldn’t run that receipts search. Check Gmail setup and try again.",
+      );
+      addAgentNotification({
+        title: "Receipt search failed",
+        message,
+        tone: "error",
+        source: "custom-google-batch",
         actionId: String(action.id || ""),
         proposalId: proposal.id,
         dedupeKey: `proposal:${proposal.id}:error:${message}`,
@@ -20573,7 +20700,7 @@ function setAgentToolsOpen(open) {
   elements.agentToolsPanel?.classList.toggle("is-open", isOpen);
   elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
   if (elements.agentToolsToggleButton) {
-    const upcomingCount = getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status)).length;
+    const upcomingCount = getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status, action)).length;
     const folderCount = getAgentWorkspace().folders.length;
     const closedLabel = state.agentPanelMode === "chats"
       ? "View chats"

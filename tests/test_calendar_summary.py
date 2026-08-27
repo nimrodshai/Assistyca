@@ -364,6 +364,73 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         ][0]
         self.assertEqual(connection["metadata"]["credentialSource"], "google_oauth_refresh_token")
 
+    def test_custom_receipt_proposal_run_uses_gmail_month_query(self) -> None:
+        self.server.config.google_oauth_client_id = "google-client-id.apps.googleusercontent.com"
+        self.server.config.google_oauth_client_secret = "google-client-secret"
+        self.server.database.save_platform_connection(
+            "owner@example.com",
+            platform="email",
+            auth_type="oauth",
+            secret_ciphertext=self.server.credential_vault.encrypt(json.dumps({  # type: ignore[union-attr]
+                "type": GOOGLE_OAUTH_SECRET_TYPE,
+                "provider": "google",
+                "refreshToken": "saved-gmail-refresh-token",
+            })),
+            secret_hint="Google OAuth",
+            key_version=self.server.credential_vault.key_version,  # type: ignore[union-attr]
+            connection_status="connected",
+            metadata={"provider": "google_gmail", "validationStatus": "verified"},
+        )
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/proposals/run",
+            data=json.dumps({
+                "proposalType": "custom",
+                "fields": {
+                    "result": "Pull all receipts for August 2026",
+                    "manualRunMonth": "2026-08",
+                    "deliveryChannel": "portal",
+                },
+                "deliveryChannel": "portal",
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        def fake_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+            self.assertEqual(request.full_url, GOOGLE_OAUTH_TOKEN_URL)
+            fields = urllib_parse.parse_qs(request.data.decode("utf-8"))  # type: ignore[union-attr]
+            self.assertEqual(fields["grant_type"], ["refresh_token"])
+            self.assertEqual(fields["refresh_token"], ["saved-gmail-refresh-token"])
+            return _FakeResponse({"access_token": "fresh-gmail-access-token"})
+
+        fake_result = {
+            "message": "Gmail digest\n\n1 recent message:\n1. Receipt - Store",
+            "summary": "Gmail digest - 1 message",
+            "messageCount": 1,
+            "items": [{"subject": "Receipt - Store"}],
+        }
+        with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+            with mock.patch(
+                "packages.infrastructure.portal_auth.server.GmailDigestRunner.run",
+                return_value=fake_result,
+            ) as run:
+                with urllib_request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["messageCount"], 1)
+        self.assertIn("Receipt search", payload["message"])
+        self.assertIn("Receipt search", payload["summary"])
+        self.assertIn("after:2026/08/01", payload["query"])
+        self.assertIn("before:2026/09/01", payload["query"])
+        self.assertIn("receipt", payload["query"])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], "fresh-gmail-access-token")
+        self.assertEqual(run.call_args.kwargs["query"], payload["query"])
+
     def test_calendar_proposal_run_marks_rejected_credential_as_needing_attention(self) -> None:
         request = urllib_request.Request(
             f"{self.base_url}/api/agent/proposals/run",

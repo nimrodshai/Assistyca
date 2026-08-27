@@ -34,7 +34,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -219,6 +219,53 @@ GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60
 GOOGLE_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
 GOOGLE_OAUTH_SECRET_TYPE = "google_refresh_token"
 GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE = "google_calendar_refresh_token"
+AGENT_GOOGLE_BATCH_OBJECT_RE = re.compile(
+    r"\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|bookkeeping|reconciliation)\b",
+    re.IGNORECASE,
+)
+AGENT_GOOGLE_BATCH_VERB_RE = re.compile(
+    r"\b(?:pull|fetch|find|collect|gather|get|export|search|summari[sz]e|prepare|reconcile)\b",
+    re.IGNORECASE,
+)
+AGENT_MONTH_VALUE_RE = re.compile(r"\b(\d{4})-(\d{1,2})\b")
+AGENT_MONTH_NAME_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?\b",
+    re.IGNORECASE,
+)
+AGENT_MONTH_NAME_INDEX = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+AGENT_GMAIL_BATCH_SEARCH_TERMS = (
+    "receipt",
+    "invoice",
+    "statement",
+    "bill",
+    "transaction",
+    "expense",
+)
 AGENT_SECRET_PATTERNS = (
     re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._-]{24,}\b", re.IGNORECASE),
@@ -1534,6 +1581,96 @@ def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
         raise ValueError("Request body must be a JSON object.")
 
     return parsed
+
+
+def get_agent_proposal_field_text(fields: dict[str, Any]) -> str:
+    pieces: list[str] = []
+    for key in ("result", "mailbox", "source", "sourceType", "sourceUrl", "manualRunMonth"):
+        if key in fields:
+            pieces.append(normalize_text(fields.get(key)))
+    return " ".join(piece for piece in pieces if piece).strip()
+
+
+def is_custom_google_batch_proposal_fields(fields: dict[str, Any]) -> bool:
+    text = get_agent_proposal_field_text(fields)
+    return bool(text and AGENT_GOOGLE_BATCH_OBJECT_RE.search(text) and AGENT_GOOGLE_BATCH_VERB_RE.search(text))
+
+
+def parse_agent_run_month_value(*values: Any) -> Optional[tuple[int, int]]:
+    for value in values:
+        text = normalize_text(value)
+        if not text:
+            continue
+        numeric_match = AGENT_MONTH_VALUE_RE.search(text)
+        if numeric_match:
+            year = int(numeric_match.group(1))
+            month = int(numeric_match.group(2))
+            if 1 <= month <= 12:
+                return year, month
+
+        month_match = AGENT_MONTH_NAME_RE.search(text)
+        if month_match:
+            month = AGENT_MONTH_NAME_INDEX.get(month_match.group(1).lower())
+            if month:
+                year = int(month_match.group(2) or datetime.now(timezone.utc).year)
+                return year, month
+    return None
+
+
+def format_agent_gmail_month_start(year: int, month: int) -> str:
+    return f"{year:04d}/{month:02d}/01"
+
+
+def get_next_agent_run_month(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month >= 12 else (year, month + 1)
+
+
+def build_custom_google_batch_gmail_query(fields: dict[str, Any], payload: dict[str, Any]) -> str:
+    explicit_query = normalize_text(
+        fields.get("gmailQuery")
+        or fields.get("query")
+        or payload.get("gmailQuery")
+        or payload.get("query")
+    )
+    if explicit_query:
+        return explicit_query
+
+    terms = " OR ".join(AGENT_GMAIL_BATCH_SEARCH_TERMS)
+    month_value = parse_agent_run_month_value(
+        fields.get("manualRunMonth"),
+        payload.get("manualRunMonth"),
+        fields.get("result"),
+    )
+    if month_value:
+        year, month = month_value
+        next_year, next_month = get_next_agent_run_month(year, month)
+        return (
+            f"after:{format_agent_gmail_month_start(year, month)} "
+            f"before:{format_agent_gmail_month_start(next_year, next_month)} "
+            f"({terms})"
+        )
+
+    return f"newer_than:31d ({terms})"
+
+
+def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
+    text = get_agent_proposal_field_text(fields)
+    if re.search(r"\breceipts?\b", text, re.IGNORECASE):
+        return "Receipt search"
+    if re.search(r"\binvoices?\b", text, re.IGNORECASE):
+        return "Invoice search"
+    if re.search(r"\bstatements?\b", text, re.IGNORECASE):
+        return "Statement search"
+    return "Gmail source search"
+
+
+def relabel_gmail_digest_result(result: dict[str, Any], header: str) -> dict[str, Any]:
+    next_result = dict(result)
+    for key in ("message", "summary"):
+        value = str(next_result.get(key) or "")
+        if value.startswith("Gmail digest"):
+            next_result[key] = header + value[len("Gmail digest"):]
+    return next_result
 
 
 def normalize_import_text(value: Any) -> str:
@@ -3599,7 +3736,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         proposal_type = normalize_text(payload.get("proposalType") or payload.get("proposal_type")).lower()
-        if proposal_type not in {"calendar-summary", "email-digest"}:
+        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        is_custom_google_batch = proposal_type == "custom" and is_custom_google_batch_proposal_fields(fields)
+        if proposal_type not in {"calendar-summary", "email-digest"} and not is_custom_google_batch:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
                 "error": "proposal_runner_not_found",
@@ -3607,16 +3746,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
         delivery_channel = normalize_text(
             payload.get("deliveryChannel") or fields.get("deliveryChannel")
         ).lower()
-        if proposal_type == "email-digest":
-            if delivery_channel and delivery_channel not in {"portal", "chat", "this chat", "workspace"}:
+        if proposal_type == "email-digest" or is_custom_google_batch:
+            if delivery_channel and delivery_channel not in {"portal", "notification", "notifications", "chat", "this chat", "workspace"}:
+                runner_label = "receipt search" if is_custom_google_batch else "Gmail digest"
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
                     "error": "delivery_not_supported",
-                    "message": "This Gmail digest runner currently delivers into Notifications. Choose “Notifications” in the action editor and run it again.",
+                    "message": f"This {runner_label} runner currently delivers into Notifications. Choose “Notifications” in the action editor and run it again.",
                 })
                 return
 
@@ -3662,12 +3801,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            gmail_query = normalize_text(
-                fields.get("gmailQuery")
-                or fields.get("query")
-                or payload.get("gmailQuery")
-                or payload.get("query")
-                or "in:inbox newer_than:1d"
+            gmail_query = (
+                build_custom_google_batch_gmail_query(fields, payload)
+                if is_custom_google_batch
+                else normalize_text(
+                    fields.get("gmailQuery")
+                    or fields.get("query")
+                    or payload.get("gmailQuery")
+                    or payload.get("query")
+                    or "in:inbox newer_than:1d"
+                )
             ) or "in:inbox newer_than:1d"
             try:
                 result = GmailDigestRunner().run(access_token, query=gmail_query)
@@ -3696,6 +3839,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
+            if is_custom_google_batch:
+                result = relabel_gmail_digest_result(
+                    result,
+                    get_custom_google_batch_result_header(fields),
+                )
+
             self.database.update_platform_connection_status(
                 session.email,
                 platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
@@ -3714,6 +3863,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "messageCount": int(result.get("messageCount") or 0),
                 "items": result.get("items") if isinstance(result.get("items"), list) else [],
                 "mailbox": "Gmail",
+                "query": gmail_query,
             })
             return
 
