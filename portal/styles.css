@@ -6714,6 +6714,32 @@ body[data-modal="billing"] .app-shell {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.whatsapp-guided-connect {
+  display: grid;
+  gap: 0.7rem;
+  justify-items: start;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft, rgba(255, 255, 255, 0.5));
+}
+
+.whatsapp-guided-connect-copy {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.whatsapp-guided-connect .primary-button {
+  width: auto;
+}
+
+.whatsapp-guided-connect .feature-activation-note[data-state="error"] {
+  color: var(--danger, #b3261e);
+}
+
 .field-help {
   display: block;
   margin-top: 0.34rem;

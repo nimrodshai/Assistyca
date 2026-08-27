@@ -111,8 +111,11 @@ from packages.infrastructure.source_actions import SOURCE_ACTION_MIN_INTERVAL_MI
 from packages.infrastructure.source_actions import SourceActionScheduler
 from packages.infrastructure.source_actions import load_source_action_config
 from packages.infrastructure.source_actions import validate_source_url
+from packages.infrastructure.whatsapp_api import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
+from packages.infrastructure.whatsapp_api import exchange_embedded_signup_code
 from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_numbers
+from packages.infrastructure.whatsapp_api import register_whatsapp_phone_number
 from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
@@ -420,6 +423,9 @@ STATIC_PAGE_ALIASES: dict[str, Path] = {
 # style-src keeps 'unsafe-inline' because the marketing pages carry <style>
 # blocks and GSI injects its own styles; inline CSS is a far weaker vector than
 # inline script.
+EMBEDDED_SIGNUP_APP_ID_ENV = "META_APP_ID"
+EMBEDDED_SIGNUP_CONFIG_ID_ENV = "WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID"
+
 CONTENT_SECURITY_POLICY = "; ".join(
     (
         "default-src 'self'",
@@ -427,12 +433,13 @@ CONTENT_SECURITY_POLICY = "; ".join(
         "object-src 'none'",
         "frame-ancestors 'none'",
         "form-action 'self'",
-        "script-src 'self' https://accounts.google.com",
+        "script-src 'self' https://accounts.google.com https://connect.facebook.net",
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data: https:",
         "font-src 'self' data:",
-        "connect-src 'self' https://accounts.google.com https://www.googleapis.com",
-        "frame-src https://accounts.google.com",
+        "connect-src 'self' https://accounts.google.com https://www.googleapis.com "
+        "https://graph.facebook.com https://www.facebook.com https://web.facebook.com",
+        "frame-src https://accounts.google.com https://www.facebook.com https://web.facebook.com",
     )
 )
 # Popups, not same-origin isolation: the Google code client uses ux_mode "popup"
@@ -2795,6 +2802,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_webhook_verification(parsed)
             return
 
+        if path == "/api/whatsapp/embedded-signup/config":
+            self._handle_whatsapp_embedded_signup_config_get()
+            return
+
         if path == "/api/whatsapp/connection":
             self._handle_whatsapp_connection_get()
             return
@@ -2862,6 +2873,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/whatsapp/test":
             self._handle_whatsapp_test()
+            return
+
+        if path == "/api/whatsapp/embedded-signup/code":
+            self._handle_whatsapp_embedded_signup_code_post()
             return
 
         if path == "/api/whatsapp/connection":
@@ -7019,6 +7034,175 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "connection": self._serialize_whatsapp_connection(connection),
             "liveTested": True,
             "requiresAccessToken": False,
+            "webhookSubscribed": True,
+        })
+
+    def _embedded_signup_settings(self) -> dict[str, str]:
+        return {
+            "appId": normalize_text(os.getenv(EMBEDDED_SIGNUP_APP_ID_ENV)),
+            "configId": normalize_text(os.getenv(EMBEDDED_SIGNUP_CONFIG_ID_ENV)),
+            "appSecret": normalize_text(os.getenv("WHATSAPP_APP_SECRET")),
+        }
+
+    def _handle_whatsapp_embedded_signup_config_get(self) -> None:
+        """Tell the browser whether the popup can run, and which flow to launch.
+
+        Only the two public identifiers are returned. The app secret is checked
+        here so the portal can hide the button rather than open a popup that is
+        guaranteed to fail at the exchange step.
+        """
+
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        settings = self._embedded_signup_settings()
+        configured = bool(settings["appId"] and settings["configId"] and settings["appSecret"])
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "configured": configured,
+            "appId": settings["appId"],
+            "configId": settings["configId"],
+            "graphVersion": DEFAULT_WHATSAPP_API_VERSION,
+            "message": (
+                ""
+                if configured
+                else "WhatsApp guided setup is not configured on this server yet."
+            ),
+        })
+
+    def _handle_whatsapp_embedded_signup_code_post(self) -> None:
+        """Finish an Embedded Signup run started in the browser.
+
+        The popup hands back a one-time code plus the account and phone ids it
+        created. Everything after that happens here, so the customer's business
+        token is never exposed to the browser.
+        """
+
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        settings = self._embedded_signup_settings()
+        if not (settings["appId"] and settings["configId"] and settings["appSecret"]):
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "embedded_signup_not_configured",
+                "message": "WhatsApp guided setup is not configured on this server yet.",
+            })
+            return
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        code = normalize_text(payload.get("code"))
+        business_account_id = self._normalize_digits(payload.get("waba_id") or payload.get("business_account_id"))
+        phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
+        owner_wa_id = normalize_portal_owner_wa_id(payload.get("owner_wa_id"))
+
+        if not code or not business_account_id or not phone_number_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_fields",
+                "message": "WhatsApp did not return a complete signup result. Start the connection again.",
+            })
+            return
+
+        existing = self.database.get_whatsapp_connection(session.email) or {}
+        metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+        owner_wa_id = owner_wa_id or normalize_text(existing.get("ownerWaId"))
+
+        def fail(status: HTTPStatus, error: str, exc: Exception) -> None:
+            response = {"ok": False, "error": error, "message": str(exc)}
+            details = normalize_text(getattr(exc, "details", ""))
+            if details:
+                response["details"] = details
+            json_response(self, status, response)
+
+        try:
+            exchange = exchange_embedded_signup_code(
+                code=code,
+                app_id=settings["appId"],
+                app_secret=settings["appSecret"],
+            )
+        except ValueError as exc:
+            fail(HTTPStatus.BAD_REQUEST, "invalid_fields", exc)
+            return
+        except WhatsAppConnectionError as exc:
+            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_code_exchange_failed", exc)
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to UI
+            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_code_exchange_failed", exc)
+            return
+
+        access_token = normalize_text(exchange.get("accessToken"))
+
+        # A fresh PIN per connection, kept so the number can be re-registered later
+        # without the customer having to invent and remember one.
+        registration_pin = normalize_text(metadata.get("registrationPin")) or f"{secrets.randbelow(1000000):06d}"
+        registration_note = ""
+        try:
+            register_whatsapp_phone_number(
+                access_token=access_token,
+                phone_number_id=phone_number_id,
+                pin=registration_pin,
+            )
+        except (ValueError, WhatsAppConnectionError) as exc:
+            # Numbers already live on the WhatsApp Business app are registered by
+            # the signup flow itself and reject this call. Not fatal.
+            registration_note = str(exc)
+
+        try:
+            number_result = test_whatsapp_connection(
+                access_token=access_token,
+                phone_number_id=phone_number_id,
+            )
+        except (ValueError, WhatsAppConnectionError) as exc:
+            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_connection_failed", exc)
+            return
+
+        try:
+            _subscription, subscription_metadata = self._subscribe_whatsapp_business_webhook(
+                access_token=access_token,
+                business_account_id=business_account_id,
+            )
+        except (ValueError, WhatsAppConnectionError) as exc:
+            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_subscription_failed", exc)
+            return
+        except Exception as exc:  # pragma: no cover - surfaced to UI
+            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_subscription_failed", exc)
+            return
+
+        connection = self.database.save_whatsapp_connection(
+            session.email,
+            business_account_id=business_account_id,
+            phone_number_id=phone_number_id,
+            access_token=access_token,
+            owner_wa_id=owner_wa_id,
+            display_phone_number=normalize_text(number_result.get("display_phone_number")),
+            verified_name=normalize_text(number_result.get("verified_name")),
+            connection_status="connected",
+            metadata={
+                **metadata,
+                **subscription_metadata,
+                "onboarding": "embedded_signup",
+                "registrationPin": registration_pin,
+                "registrationNote": registration_note,
+            },
+        )
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "WhatsApp is connected. Send a real message to the number to confirm Assistyca receives it.",
+            "connection": self._serialize_whatsapp_connection(connection),
+            "requiresOwnerWaId": not owner_wa_id,
             "webhookSubscribed": True,
         })
 

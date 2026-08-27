@@ -144,6 +144,23 @@ The portal setup form saves the WhatsApp Business Platform fields needed per wor
 
 Clients can find the WABA ID in Meta Business Settings at Accounts > WhatsApp Accounts, or by opening `https://business.facebook.com/latest/settings/whatsapp_account` and selecting the correct WhatsApp Business Account.
 
+### Connecting a client's WhatsApp
+
+Two routes exist. **Embedded Signup** is the one clients should use: they press
+Connect WhatsApp, sign in with Facebook, pick their number, and the portal
+receives the business account id, phone number id, and an access token scoped to
+them. Nothing is copied or pasted, and the client can revoke the token from their
+own Meta settings.
+
+It needs `META_APP_ID` and `WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` alongside
+`WHATSAPP_APP_SECRET`, and it needs the Meta app approved as a Tech Provider.
+Until all of that is in place the portal hides the button and falls back to the
+manual form below, which is also still reachable behind "Enter the details
+manually instead".
+
+The one thing Embedded Signup does not return is the approval phone
+(`owner_wa_id`), because Meta has no notion of it. It stays an optional field.
+
 `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` stay server-side in environment variables for webhook verification and signature checks. Client access tokens are never returned to the browser after save.
 The saved client `phone_number_id` is used to route inbound webhooks and to send approved replies from the client's number. Owner alerts, sample alerts, Scheduled Web Monitor WhatsApp notifications, and scheduled assistant messages are sent from the Assistyca sender number instead. Scheduled assistant messages resolve the destination from the saved approval phone, use the approved `notification_message` template, and never read the client connection token or client sender number.
 The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.

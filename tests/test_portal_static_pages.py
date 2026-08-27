@@ -60,6 +60,25 @@ class PortalStaticPageTests(unittest.TestCase):
                 self.assertNotIn("unsafe-eval", script_src)
                 self.assertIn("https://accounts.google.com", script_src)
 
+    def test_csp_allows_everything_the_meta_signup_popup_needs(self) -> None:
+        """The Embedded Signup SDK loads a script, calls facebook.com, and frames it.
+
+        Missing any one of these makes the Connect WhatsApp button fail in a way
+        that only shows up in the browser console, never in a Python test.
+        """
+        with urllib_request.urlopen(f"{self.base_url}/portal/") as response:
+            policy = response.headers.get("Content-Security-Policy", "")
+
+        directives = {
+            part.split(" ", 1)[0]: part
+            for part in policy.split("; ")
+            if " " in part
+        }
+        self.assertIn("https://connect.facebook.net", directives["script-src"])
+        self.assertIn("https://graph.facebook.com", directives["connect-src"])
+        self.assertIn("https://www.facebook.com", directives["connect-src"])
+        self.assertIn("https://www.facebook.com", directives["frame-src"])
+
     def test_hsts_is_sent_only_when_the_request_arrived_over_https(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/portal/") as response:
             self.assertIsNone(response.headers.get("Strict-Transport-Security"))
@@ -97,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=138", html)
+        self.assertIn("styles.css?v=139", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -870,8 +889,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=138", html)
-        self.assertIn("app.js?v=175", html)
+        self.assertIn("styles.css?v=139", html)
+        self.assertIn("app.js?v=176", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

@@ -1457,6 +1457,11 @@ const elements = {
   featureActivationCustomerNumberHelp: document.querySelector("#featureActivationCustomerNumberHelp"),
   featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
   featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
+  whatsappGuidedConnect: document.querySelector("#whatsappGuidedConnect"),
+  whatsappGuidedConnectButton: document.querySelector("#whatsappGuidedConnectButton"),
+  whatsappGuidedConnectStatus: document.querySelector("#whatsappGuidedConnectStatus"),
+  whatsappManualToggle: document.querySelector("#whatsappManualToggle"),
+  whatsappManualFields: document.querySelector("#whatsappManualFields"),
   featureActivationAccessTokenInput: document.querySelector("#featureActivationAccessToken"),
   featureActivationAccessTokenHelp: document.querySelector("#featureActivationAccessTokenHelp"),
   featureActivationAccessTokenError: document.querySelector("#featureActivationAccessTokenError"),
@@ -6778,6 +6783,257 @@ async function saveSelectedFeatureConfig(options = {}) {
   })();
   featureConfigSavePromise = currentSavePromise;
   return await currentSavePromise;
+}
+
+// --- WhatsApp Embedded Signup -------------------------------------------------
+// Meta's guided flow. The customer signs in with Facebook and picks their number;
+// the popup hands back a one-time code plus the ids it created, and the server
+// does the rest. Their business token never touches this browser.
+
+const WHATSAPP_SIGNUP_SDK_URL = "https://connect.facebook.net/en_US/sdk.js";
+const WHATSAPP_SIGNUP_TIMEOUT_MS = 10 * 60 * 1000;
+const WHATSAPP_SIGNUP_TRUSTED_ORIGINS = new Set([
+  "https://www.facebook.com",
+  "https://web.facebook.com",
+  "https://business.facebook.com",
+]);
+
+let whatsappSignupConfig = null;
+let whatsappSignupSdkPromise = null;
+let whatsappSignupSessionDetails = null;
+let whatsappSignupListenerAttached = false;
+
+function setWhatsAppGuidedStatus(message, { error = false } = {}) {
+  const element = elements.whatsappGuidedConnectStatus;
+  if (!element) {
+    return;
+  }
+
+  const text = normalizeText(message);
+  element.textContent = text;
+  element.classList.toggle("is-hidden", !text);
+  element.dataset.state = error ? "error" : "info";
+}
+
+async function loadWhatsAppSignupConfig() {
+  if (whatsappSignupConfig) {
+    return whatsappSignupConfig;
+  }
+
+  try {
+    const response = await apiRequest("/api/whatsapp/embedded-signup/config");
+    whatsappSignupConfig = {
+      configured: Boolean(response?.configured),
+      appId: normalizeText(response?.appId),
+      configId: normalizeText(response?.configId),
+      graphVersion: normalizeText(response?.graphVersion) || "v20.0",
+    };
+  } catch {
+    whatsappSignupConfig = { configured: false, appId: "", configId: "", graphVersion: "v20.0" };
+  }
+
+  return whatsappSignupConfig;
+}
+
+function loadWhatsAppSignupSdk(config) {
+  if (whatsappSignupSdkPromise) {
+    return whatsappSignupSdkPromise;
+  }
+
+  whatsappSignupSdkPromise = new Promise((resolve, reject) => {
+    if (window.FB) {
+      resolve(window.FB);
+      return;
+    }
+
+    window.fbAsyncInit = () => {
+      try {
+        window.FB.init({
+          appId: config.appId,
+          autoLogAppEvents: false,
+          xfbml: false,
+          version: config.graphVersion,
+        });
+        resolve(window.FB);
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    const existing = document.querySelector('script[data-whatsapp-signup-sdk="true"]');
+    if (existing) {
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = WHATSAPP_SIGNUP_SDK_URL;
+    script.async = true;
+    script.defer = true;
+    script.crossOrigin = "anonymous";
+    script.dataset.whatsappSignupSdk = "true";
+    script.addEventListener("error", () => {
+      whatsappSignupSdkPromise = null;
+      reject(new Error("Facebook could not be reached to start the connection."));
+    });
+    document.head.append(script);
+  });
+
+  return whatsappSignupSdkPromise;
+}
+
+function attachWhatsAppSignupListener() {
+  if (whatsappSignupListenerAttached) {
+    return;
+  }
+  whatsappSignupListenerAttached = true;
+
+  window.addEventListener("message", (event) => {
+    // Only Meta's own signup windows may set these ids. Anything else is
+    // someone else's page talking to ours.
+    if (!WHATSAPP_SIGNUP_TRUSTED_ORIGINS.has(event.origin)) {
+      return;
+    }
+
+    let payload = null;
+    try {
+      payload = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+    } catch {
+      return;
+    }
+
+    if (!payload || payload.type !== "WA_EMBEDDED_SIGNUP") {
+      return;
+    }
+
+    if (payload.event === "FINISH" || payload.event === "FINISH_ONLY_WABA"
+      || payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING") {
+      whatsappSignupSessionDetails = {
+        wabaId: normalizeText(payload.data?.waba_id),
+        phoneNumberId: normalizeText(payload.data?.phone_number_id),
+      };
+      return;
+    }
+
+    if (payload.event === "CANCEL") {
+      whatsappSignupSessionDetails = null;
+    }
+  });
+}
+
+async function completeWhatsAppSignup(code) {
+  const details = whatsappSignupSessionDetails || {};
+  const response = await apiRequest("/api/whatsapp/embedded-signup/code", {
+    method: "POST",
+    timeoutMs: 60000,
+    body: {
+      code,
+      waba_id: details.wabaId || "",
+      phone_number_id: details.phoneNumberId || "",
+      owner_wa_id: normalizeText(elements.featureActivationOwnerWaIdInput?.value || ""),
+    },
+  });
+
+  whatsappSignupSessionDetails = null;
+  return response;
+}
+
+async function startWhatsAppGuidedConnect() {
+  const button = elements.whatsappGuidedConnectButton;
+  if (!button || button.disabled) {
+    return;
+  }
+
+  const config = await loadWhatsAppSignupConfig();
+  if (!config.configured) {
+    setWhatsAppGuidedStatus(
+      "Guided setup is not available yet. Use the manual details below for now.",
+      { error: true },
+    );
+    return;
+  }
+
+  button.disabled = true;
+  setWhatsAppGuidedStatus("Opening WhatsApp…");
+
+  try {
+    attachWhatsAppSignupListener();
+    const FB = await loadWhatsAppSignupSdk(config);
+    whatsappSignupSessionDetails = null;
+
+    // FB.login can fail without ever invoking its callback, which would leave the
+    // button disabled and the status frozen. The timeout is only a safety net --
+    // it is deliberately longer than any real signup takes.
+    const authResponse = await new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (!settled) {
+          settled = true;
+          resolve(value);
+        }
+      };
+
+      window.setTimeout(() => finish(null), WHATSAPP_SIGNUP_TIMEOUT_MS);
+      try {
+        FB.login((response) => finish(response), {
+          config_id: config.configId,
+          response_type: "code",
+          override_default_response_type: true,
+          extras: { sessionInfoVersion: "3" },
+        });
+      } catch {
+        finish(null);
+      }
+    });
+
+    const code = normalizeText(authResponse?.authResponse?.code);
+    if (!code) {
+      setWhatsAppGuidedStatus("The WhatsApp connection was closed before it finished.");
+      return;
+    }
+
+    setWhatsAppGuidedStatus("Finishing the connection…");
+    const result = await completeWhatsAppSignup(code);
+    applyWhatsAppConnectionToFeatures(result?.connection || null, { persist: true });
+    renderApp({ preserveStatus: true });
+    setWhatsAppGuidedStatus(result?.message || "WhatsApp is connected.");
+  } catch (error) {
+    setWhatsAppGuidedStatus(
+      formatApiErrorMessage(error, "We couldn’t finish the WhatsApp connection. Please try again."),
+      { error: true },
+    );
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function toggleWhatsAppManualFields() {
+  const fields = elements.whatsappManualFields;
+  const toggle = elements.whatsappManualToggle;
+  if (!fields || !toggle) {
+    return;
+  }
+
+  const nowHidden = !fields.classList.contains("is-hidden");
+  fields.classList.toggle("is-hidden", nowHidden);
+  toggle.setAttribute("aria-expanded", String(!nowHidden));
+  toggle.textContent = nowHidden ? "Enter the details manually instead" : "Hide the manual details";
+}
+
+async function syncWhatsAppGuidedConnectVisibility() {
+  const panel = elements.whatsappGuidedConnect;
+  const fields = elements.whatsappManualFields;
+  if (!panel) {
+    return;
+  }
+
+  const config = await loadWhatsAppSignupConfig();
+  panel.classList.toggle("is-hidden", !config.configured);
+  // Until this server is set up as a Meta Tech Provider the guided flow cannot
+  // run, so the manual form stays as the only way in.
+  if (fields) {
+    fields.classList.toggle("is-hidden", config.configured);
+    elements.whatsappManualToggle?.setAttribute("aria-expanded", String(!config.configured));
+  }
 }
 
 async function refreshWhatsAppConnection(options = {}) {
@@ -24159,6 +24415,7 @@ function updateFeatureStudioHeader() {
 
   updateFeatureActivationStatus(feature);
   updateFeatureActivationResult(feature);
+  void syncWhatsAppGuidedConnectVisibility();
   updateFeatureStudioWhatsAppHealthNotice(feature);
   renderFeatureActivationFieldErrors();
   if (elements.featureActivationDisconnectButton) {
@@ -26375,6 +26632,19 @@ function bindEvents() {
   }
   if (elements.featureActivationAccessTokenInput) {
     elements.featureActivationAccessTokenInput.addEventListener("input", syncFeatureActivationField("access_token"));
+  }
+
+  if (elements.whatsappGuidedConnectButton) {
+    elements.whatsappGuidedConnectButton.addEventListener("click", () => {
+      void startWhatsAppGuidedConnect();
+    });
+  }
+
+  if (elements.whatsappManualToggle) {
+    elements.whatsappManualToggle.addEventListener("click", toggleWhatsAppManualFields);
+  }
+
+  if (elements.featureActivationAccessTokenInput) {
     elements.featureActivationAccessTokenInput.addEventListener("focus", handleFeatureActivationAccessTokenFocus);
     elements.featureActivationAccessTokenInput.addEventListener("blur", handleFeatureActivationAccessTokenBlur);
   }

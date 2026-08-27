@@ -327,3 +327,153 @@ def subscribe_whatsapp_business_account(
             "baselineSubscription": base_payload,
         }
     return override_payload
+
+
+def _graph_request(
+    *,
+    url: str,
+    method: str,
+    body: bytes | None,
+    headers: dict[str, str],
+    timeout: float,
+    failure_message: str,
+) -> dict[str, Any]:
+    """One Graph call, with the error handling every caller here needs.
+
+    Meta reports failures three different ways -- an HTTP error status, a 200
+    carrying an "error" object, and a 200 carrying nothing useful -- so all
+    three are turned into WhatsAppConnectionError with the raw body attached
+    for the portal to surface.
+    """
+
+    request = urllib_request.Request(url, data=body, method=method, headers=headers)
+
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            raw_body = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        raise WhatsAppConnectionError(format_connection_error(exc.code, raw_body), details=raw_body) from exc
+    except urllib_error.URLError as exc:
+        reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
+        raise WhatsAppConnectionError(
+            "WhatsApp did not respond. Check the connection and try again.",
+            details=reason,
+        ) from exc
+
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError as exc:
+        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body) from exc
+
+    if not isinstance(payload, dict):
+        raise WhatsAppConnectionError("WhatsApp returned an unexpected response.", details=raw_body)
+
+    if isinstance(payload.get("error"), dict):
+        details = json.dumps(payload.get("error"), ensure_ascii=True, separators=(",", ":"))
+        raise WhatsAppConnectionError(
+            extract_graph_error_message(payload) or failure_message,
+            details=details,
+        )
+
+    return payload
+
+
+def exchange_embedded_signup_code(
+    *,
+    code: str,
+    app_id: str,
+    app_secret: str,
+    api_version: str = DEFAULT_WHATSAPP_API_VERSION,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Trade the Embedded Signup popup's one-time code for a business token.
+
+    The token that comes back belongs to the customer's WhatsApp Business
+    Account, not to Assistyca, and the customer can revoke it from their own
+    Meta settings at any time. It is the only credential the portal needs from
+    them, and it never passes through their hands.
+    """
+
+    code_value = normalize_text(code)
+    app_id_value = normalize_text(app_id)
+    app_secret_value = normalize_text(app_secret)
+    api_version_value = normalize_text(api_version) or DEFAULT_WHATSAPP_API_VERSION
+
+    if not code_value:
+        raise ValueError("The WhatsApp signup code is required.")
+    if not app_id_value or not app_secret_value:
+        raise ValueError("Meta app credentials are not configured on this server.")
+
+    query = urllib_parse.urlencode({
+        "client_id": app_id_value,
+        "client_secret": app_secret_value,
+        "code": code_value,
+    })
+    payload = _graph_request(
+        url=f"https://graph.facebook.com/{api_version_value}/oauth/access_token?{query}",
+        method="GET",
+        body=None,
+        headers={"Accept": "application/json"},
+        timeout=timeout,
+        failure_message="WhatsApp could not complete the connection.",
+    )
+
+    access_token = normalize_text(payload.get("access_token"))
+    if not access_token:
+        raise WhatsAppConnectionError(
+            "WhatsApp did not return an access token for this connection.",
+            details=json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+        )
+
+    return {
+        "accessToken": access_token,
+        "tokenType": normalize_text(payload.get("token_type")) or "bearer",
+        "expiresIn": int(payload.get("expires_in") or 0),
+    }
+
+
+def register_whatsapp_phone_number(
+    *,
+    access_token: str,
+    phone_number_id: str,
+    pin: str,
+    api_version: str = DEFAULT_WHATSAPP_API_VERSION,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Register a number onto the Cloud API so it can send and receive.
+
+    Numbers already running on the WhatsApp Business app are registered by the
+    signup flow itself; calling this for them fails, so callers should treat a
+    rejection here as informational rather than fatal.
+    """
+
+    access_token_value = normalize_text(access_token)
+    phone_number_id_value = normalize_text(phone_number_id)
+    pin_value = normalize_text(pin)
+
+    if not access_token_value:
+        raise ValueError("WhatsApp connection credentials are required.")
+    if not phone_number_id_value:
+        raise ValueError("WhatsApp Phone Number ID is required.")
+    if not (pin_value.isdigit() and len(pin_value) == 6):
+        raise ValueError("The WhatsApp registration PIN must be six digits.")
+
+    api_version_value = normalize_text(api_version) or DEFAULT_WHATSAPP_API_VERSION
+    body = urllib_parse.urlencode({
+        "messaging_product": "whatsapp",
+        "pin": pin_value,
+    }).encode("utf-8")
+
+    return _graph_request(
+        url=f"https://graph.facebook.com/{api_version_value}/{phone_number_id_value}/register",
+        method="POST",
+        body=body,
+        headers={
+            "Authorization": f"Bearer {access_token_value}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        timeout=timeout,
+        failure_message="WhatsApp could not register this phone number.",
+    )

@@ -10,7 +10,7 @@
     />
     <meta name="color-scheme" content="light dark" />
     <script src="./theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="./styles.css?v=138" />
+    <link rel="stylesheet" href="./styles.css?v=139" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -708,7 +708,26 @@
             </div>
 
             <div class="feature-activation-hero-form">
-              <div class="activation-form-grid">
+              <div id="whatsappGuidedConnect" class="whatsapp-guided-connect is-hidden">
+                <p class="whatsapp-guided-connect-copy">
+                  Connect straight from WhatsApp. You will sign in with Facebook and pick the
+                  number Assistyca should answer on. Nothing to copy or paste.
+                </p>
+                <button id="whatsappGuidedConnectButton" class="primary-button" type="button">
+                  Connect WhatsApp
+                </button>
+                <p id="whatsappGuidedConnectStatus" class="feature-activation-note is-hidden" role="status"></p>
+                <button
+                  id="whatsappManualToggle"
+                  class="text-button"
+                  type="button"
+                  aria-expanded="false"
+                  aria-controls="whatsappManualFields"
+                >
+                  Enter the details manually instead
+                </button>
+              </div>
+              <div id="whatsappManualFields" class="activation-form-grid">
                 <label class="field">
                   <div class="field-label">
                     <span>WhatsApp Business Account ID</span>
@@ -1723,6 +1742,6 @@ Owner said afternoons are easier."
     </section>
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
-    <script src="./app.js?v=175"></script>
+    <script src="./app.js?v=176"></script>
   </body>
 </html>

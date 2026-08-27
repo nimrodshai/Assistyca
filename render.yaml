@@ -125,6 +125,14 @@ services:
         value: "0"
       - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION
         value: send
+      # WhatsApp Embedded Signup. Both are public identifiers handed to the
+      # browser; the flow stays hidden until all three (these plus
+      # WHATSAPP_APP_SECRET) are present, and until Meta approves the app as a
+      # Tech Provider.
+      - key: META_APP_ID
+        sync: false
+      - key: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
+        sync: false
       - key: WHATSAPP_VERIFY_TOKEN
         sync: false
       - key: WHATSAPP_APP_SECRET

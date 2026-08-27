@@ -55,6 +55,7 @@ jobs:
             tests.test_openai_pricing \
             tests.test_lemon_squeezy_api \
             tests.test_whatsapp_api \
+            tests.test_whatsapp_embedded_signup \
             tests.test_contact_api \
             tests.test_feature_activation \
             tests.test_portal_runtime_paths
