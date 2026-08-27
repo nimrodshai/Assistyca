@@ -10077,6 +10077,14 @@ body.is-chat-view {
   background: rgba(10, 16, 22, 0.7);
 }
 
+/* Assistant replies should sit directly on the chat canvas in dark mode.
+   Keep user bubbles and interactive cards visually distinct. */
+:root[data-theme="dark"] .agent-message:not(.is-user) .agent-message-bubble {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
 :root[data-theme="dark"] .calendar-oauth-permissions {
   border-color: var(--line-strong);
   background: transparent;
