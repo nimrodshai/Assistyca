@@ -5107,6 +5107,175 @@ function clearGoogleConnectionMissingCredentials() {
   return changed;
 }
 
+function getAgentConnectionRequirementIdsForPlatforms(platforms = []) {
+  const ids = new Set();
+  const normalizedPlatforms = Array.isArray(platforms)
+    ? platforms
+    : [platforms];
+
+  for (const platform of normalizedPlatforms) {
+    const normalized = String(platform || "").trim().toLowerCase();
+    if (normalized === "email" || normalized === "gmail" || normalized === "google_gmail") {
+      ids.add("gmail");
+      ids.add("google-workspace");
+    } else if (normalized === "drive" || normalized === "google_drive") {
+      ids.add("drive");
+      ids.add("google-workspace");
+    } else if (normalized === "calendar" || normalized === "google_calendar") {
+      ids.add("calendar");
+      ids.add("google-workspace");
+    } else if (normalized === "google" || normalized === "google-workspace") {
+      ids.add("gmail");
+      ids.add("drive");
+      ids.add("calendar");
+      ids.add("google-workspace");
+    } else if (normalized) {
+      ids.add(normalized);
+    }
+  }
+
+  return ids;
+}
+
+function findAgentProposalReadyAfterConnection(platforms = []) {
+  const agent = getAgentWorkspace();
+  const requirementIds = getAgentConnectionRequirementIdsForPlatforms(platforms);
+  const seenProposalIds = new Set();
+  const activeProposal = agent.proposals.find((proposal) => proposal.id === agent.activeProposalId) || null;
+  const candidates = [
+    activeProposal,
+    ...[...agent.proposals].reverse(),
+  ].filter((proposal) => {
+    if (!proposal || seenProposalIds.has(proposal.id)) {
+      return false;
+    }
+    seenProposalIds.add(proposal.id);
+    return true;
+  });
+
+  for (const proposal of candidates) {
+    if (proposal.approved || proposal.status === "rejected") {
+      continue;
+    }
+
+    const requirement = getAgentProposalRequiredConnection(proposal);
+    if (!requirement || (requirementIds.size && !requirementIds.has(requirement.id))) {
+      continue;
+    }
+
+    syncAgentProposalRequiredConnection(proposal);
+    if (isAgentProposalRequiredConnectionReady(requirement)) {
+      return proposal;
+    }
+  }
+
+  return null;
+}
+
+function joinAgentResumeSentences(prefix = "", suffix = "") {
+  const cleanPrefix = String(prefix || "").trim().replace(/[.!?]+$/g, "");
+  const cleanSuffix = String(suffix || "").trim();
+  if (!cleanPrefix) {
+    return cleanSuffix;
+  }
+  if (!cleanSuffix) {
+    return `${cleanPrefix}.`;
+  }
+  return `${cleanPrefix}. ${cleanSuffix}`;
+}
+
+function getAgentDefaultProposalQuestionText(proposal, questionIndex = 0) {
+  const index = Math.max(0, Number(questionIndex || 0));
+  if (proposal?.type === "scheduled-message") {
+    return proposal.questions?.[index] || "What should I know next?";
+  }
+
+  const field = getAgentProposalFieldSchema(proposal)[index] || null;
+  if (field?.key === "frequency" && agentContextSuggestsMonthlyBatchTask(proposal)) {
+    return "Should I pull this just once for the requested month, or make it a recurring monthly action?";
+  }
+  return field?.question || proposal?.questions?.[index] || "What should I know next?";
+}
+
+function getAgentDefaultApprovalPromptText(proposal) {
+  if (proposal?.type === "scheduled-message") {
+    const details = proposal.details || {};
+    const channel = formatAgentScheduledMessageChannel(details.channel);
+    const time = String(details.timeLocal || "").trim();
+    return time
+      ? `I can send it by ${channel} at ${time}. Want me to set it up?`
+      : `I can send it by ${channel}. Want me to set it up?`;
+  }
+
+  if (proposal?.type === "custom" && agentContextSuggestsMonthlyBatchTask(proposal)) {
+    return "I have what I need to pull those items. Want me to set it up?";
+  }
+
+  return "I have what I need for this action. Want me to set it up?";
+}
+
+function getAgentConnectionResumeReply(proposal, connectionMessage = "") {
+  const missingIndex = getAgentNextMissingQuestionIndex(proposal);
+  if (missingIndex >= 0) {
+    return joinAgentResumeSentences(
+      connectionMessage || "That connection is ready",
+      getAgentDefaultProposalQuestionText(proposal, missingIndex),
+    );
+  }
+
+  return joinAgentResumeSentences(
+    connectionMessage || "That connection is ready",
+    getAgentDefaultApprovalPromptText(proposal),
+  );
+}
+
+function consumeAgentApprovalPendingAfterConnection(proposal) {
+  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
+  const pending = Boolean(details.approvalPendingAfterConnection);
+  if (pending) {
+    proposal.details = {
+      ...details,
+      approvalPendingAfterConnection: false,
+    };
+    proposal.updatedAt = new Date().toISOString();
+  }
+  return pending;
+}
+
+function resumeAgentProposalAfterConnectedPlatforms(platforms = [], options = {}) {
+  const proposal = findAgentProposalReadyAfterConnection(platforms);
+  if (!proposal) {
+    return false;
+  }
+
+  syncAgentProposalRequiredConnection(proposal);
+  proposal.status = "needs-approval";
+  proposal.approved = false;
+  proposal.updatedAt = new Date().toISOString();
+  getAgentWorkspace().activeProposalId = proposal.id;
+
+  const hasMissingQuestion = getAgentNextMissingQuestionIndex(proposal) >= 0;
+  const shouldContinueApproval = !hasMissingQuestion && consumeAgentApprovalPendingAfterConnection(proposal);
+  const connectionMessage = String(options.connectionMessage || "").trim();
+  const reply = shouldContinueApproval
+    ? joinAgentResumeSentences(connectionMessage || "That connection is ready", "I’ll finish setting it up now.")
+    : getAgentConnectionResumeReply(proposal, connectionMessage);
+
+  if (shouldContinueApproval) {
+    pushAgentProposalResult(proposal.id, reply);
+  } else {
+    pushAgentProposalNextStep(proposal, reply);
+  }
+  persistAgentWorkspace(shouldContinueApproval ? "Continuing action setup..." : "Action setup continued.");
+  renderApp({ preserveStatus: true });
+
+  if (shouldContinueApproval) {
+    startAgentProposalApproval(proposal.id, Math.max(1, Number(proposal.revision || 1)));
+  }
+
+  return true;
+}
+
 async function refreshPlatformConnections(options = {}) {
   if (!isSignedIn()) {
     state.platformConnections = [];
@@ -5597,16 +5766,17 @@ function createCalendarOAuthStatusNode() {
   return { status, setStatus };
 }
 
-function getGoogleOAuthPermissionState(scopeOption) {
+function getGoogleOAuthPermissionState(scopeOption, options = {}) {
+  const readOnly = Boolean(options.readOnly);
   const connected = getPlatformConnectionByPlatform(scopeOption.platformId)?.connectionStatus === "connected";
   return {
-    checked: true,
-    disabled: false,
-    stateLabel: connected ? "Connected" : (scopeOption.stateLabel || "Selected"),
+    checked: readOnly ? connected : true,
+    disabled: readOnly,
   };
 }
 
-function createGoogleOAuthPermissionList(option) {
+function createGoogleOAuthPermissionList(option, options = {}) {
+  const readOnly = Boolean(options.readOnly);
   const wrapper = document.createElement("div");
   wrapper.className = "calendar-oauth-permissions";
 
@@ -5617,10 +5787,11 @@ function createGoogleOAuthPermissionList(option) {
   list.className = "calendar-oauth-permission-list";
 
   for (const scopeOption of GOOGLE_CONNECTION_SCOPE_OPTIONS) {
-    const permissionState = getGoogleOAuthPermissionState(scopeOption);
+    const permissionState = getGoogleOAuthPermissionState(scopeOption, { readOnly });
     const item = document.createElement("label");
     item.className = "calendar-oauth-permission";
     item.classList.toggle("is-disabled", Boolean(permissionState.disabled && !permissionState.checked));
+    item.classList.toggle("is-readonly", Boolean(permissionState.disabled));
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
@@ -5637,12 +5808,6 @@ function createGoogleOAuthPermissionList(option) {
     const label = document.createElement("strong");
     label.textContent = scopeOption.label;
     row.append(label);
-    if (permissionState.stateLabel && permissionState.stateLabel !== "Selected") {
-      const stateLabel = document.createElement("span");
-      stateLabel.className = "calendar-oauth-permission-badge";
-      stateLabel.textContent = permissionState.stateLabel;
-      row.append(stateLabel);
-    }
 
     const detail = document.createElement("span");
     detail.textContent = scopeOption.detail;
@@ -5673,14 +5838,19 @@ function openCalendarOAuthConnection(option) {
   body.className = "calendar-oauth-flow";
   const primaryLabel = "Sign in with Google";
   const isEmailConnection = option.id === "email";
-  const setupTitle = isEmailConnection ? "Connect Gmail" : "Connect Google";
+  const setupTitle = isConnected ? "Google connected" : (isEmailConnection ? "Connect Gmail" : "Connect Google");
+  const setupMessage = isConnected
+    ? "These Google permissions are connected and ready to use."
+    : "Choose the Google access Assistyca can use.";
   const assistantSuccessMessage = isEmailConnection
     ? "Gmail is connected with read-only access. You can use it for email digest actions."
     : "Google is connected with the selected read-only access. You can use it in actions.";
 
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
-  intro.textContent = isEmailConnection
+  intro.textContent = isConnected
+    ? "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca."
+    : isEmailConnection
     ? "Sign in with Google so Assistyca can read Gmail for email digest actions."
     : "Sign in with Google so Assistyca can use the selected read-only Google permissions.";
 
@@ -5689,7 +5859,7 @@ function openCalendarOAuthConnection(option) {
     setStatus("error", "Storage unavailable", storageMessage);
   }
 
-  const permissionList = createGoogleOAuthPermissionList(option);
+  const permissionList = createGoogleOAuthPermissionList(option, { readOnly: isConnected });
   body.append(intro, permissionList, status);
   const disconnectButton = createPlatformConnectionDisconnectButton(option, connection);
   if (disconnectButton) {
@@ -5703,7 +5873,7 @@ function openCalendarOAuthConnection(option) {
       elements.authAlertTitle.textContent = setupTitle;
     }
     if (elements.authAlertMessage) {
-      elements.authAlertMessage.textContent = "Choose the Google access Assistyca can use.";
+      elements.authAlertMessage.textContent = setupMessage;
     }
     if (elements.authAlertIcon) {
       elements.authAlertIcon.dataset.tone = isConnected ? "success" : "progress";
@@ -5803,9 +5973,24 @@ function openCalendarOAuthConnection(option) {
       } catch {
         // The saved response is already enough to update the visible state.
       }
+      const connectedPlatforms = savedConnections.length
+        ? savedConnections.map((savedConnection) => savedConnection.platform)
+        : selectedScopeIds
+          .map((scopeId) => (
+            GOOGLE_CONNECTION_SCOPE_OPTIONS.find((scopeOption) => scopeOption.id === scopeId)?.platformId || ""
+          ))
+          .filter(Boolean);
+      const connectionMessage = saveResponse.message || assistantSuccessMessage;
+      if (resumeAgentProposalAfterConnectedPlatforms(connectedPlatforms, {
+        connectionMessage,
+      })) {
+        closeAuthAlert();
+        elements.agentComposerInput?.focus();
+        return;
+      }
       openAuthAlert(
         "Google connected",
-        saveResponse.message || "Google is connected with read-only Calendar access.",
+        connectionMessage || "Google is connected with read-only Calendar access.",
         {
           eyebrow: "Google",
           iconNode: createFeatureActivationResultIcon("check"),
@@ -5814,8 +5999,9 @@ function openCalendarOAuthConnection(option) {
           returnFocus: elements.agentAddToolButton,
         },
       );
-      pushAgentMessage("assistant", saveResponse.message || assistantSuccessMessage);
+      pushAgentMessage("assistant", connectionMessage);
       persistAgentWorkspace("Google connected through OAuth.");
+      renderApp({ preserveStatus: true });
     } catch (requestError) {
       const errorCode = normalizeText(requestError?.code);
       const shouldUseRedirectFallback = fallbackAuthUrl
@@ -5858,7 +6044,7 @@ function openCalendarOAuthConnection(option) {
 
   openAuthAlert(
     setupTitle,
-    "Choose the Google access Assistyca can use.",
+    setupMessage,
     {
       eyebrow: "Google",
       iconNode: createAgentAddToolLogo(option),
@@ -5959,6 +6145,12 @@ function openPlatformConnection(optionId) {
       const savedMessage = isPendingCalendar
         ? "Calendar access was saved securely. Run the meeting summary once to verify Google read-only access."
         : `${option.label} is connected. You can ask me to use it whenever you need it.`;
+      if (!isPendingCalendar && resumeAgentProposalAfterConnectedPlatforms([option.id], {
+        connectionMessage: savedMessage,
+      })) {
+        elements.agentComposerInput?.focus();
+        return;
+      }
       pushAgentMessage("assistant", savedMessage);
       persistAgentWorkspace(savedMessage);
       renderApp({ preserveStatus: true });
@@ -9111,6 +9303,13 @@ function consumeCalendarOAuthReturn() {
     ? "Google is connected with the selected read-only access."
     : "Google could not be connected. Try again from Google setup.");
 
+  if (succeeded && resumeAgentProposalAfterConnectedPlatforms(["google"], {
+    connectionMessage: message,
+  })) {
+    elements.agentComposerInput?.focus();
+    return;
+  }
+
   openAuthAlert(
     succeeded ? "Google connected" : "Google not connected",
     message,
@@ -9126,6 +9325,7 @@ function consumeCalendarOAuthReturn() {
   if (succeeded) {
     pushAgentMessage("assistant", message);
     persistAgentWorkspace("Google connected through OAuth.");
+    renderApp({ preserveStatus: true });
   }
 }
 
@@ -13269,14 +13469,14 @@ function pushAgentProposalNextStep(proposal, reply = "") {
   }
   const missingIndex = getAgentNextMissingQuestionIndex(proposal);
   if (missingIndex >= 0) {
-    pushAgentQuestion(proposal, missingIndex, reply);
+    pushAgentQuestion(proposal, missingIndex, reply || getAgentDefaultProposalQuestionText(proposal, missingIndex));
     return;
   }
   const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
   const nextStepReply = deliveryChannel === "portal" && isAgentDeliveryQuestionText(reply)
     ? "I’ll bring the results to this chat. Shall I set it up?"
     : reply;
-  pushAgentApprovalPrompt(proposal, nextStepReply);
+  pushAgentApprovalPrompt(proposal, nextStepReply || getAgentDefaultApprovalPromptText(proposal));
 }
 
 function getAgentQuestionFieldIndexByKey(proposal, key) {
@@ -17839,6 +18039,10 @@ function ensureAgentProposalRequiredConnectionReady(proposal) {
 
   proposal.status = "needs-approval";
   proposal.approved = false;
+  proposal.details = {
+    ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
+    approvalPendingAfterConnection: true,
+  };
   proposal.updatedAt = new Date().toISOString();
   pushAgentRequiredConnectionSetupPrompt(proposal, requirement);
   const statusMessage = `${requirement.missingCredential} is required before I can create this action.`;
