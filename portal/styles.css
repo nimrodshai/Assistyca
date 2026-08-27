@@ -10838,6 +10838,52 @@ body.is-chat-view {
     0 1px 0 rgba(224, 239, 244, 0.08) inset;
 }
 
+:root[data-theme="dark"] .agent-add-tool-menu {
+  color: var(--text);
+  border-color: rgba(224, 239, 244, 0.18);
+  background:
+    radial-gradient(circle at top left, rgba(55, 184, 171, 0.12), transparent 42%),
+    linear-gradient(180deg, rgba(22, 33, 42, 0.98), rgba(11, 18, 25, 0.96));
+  box-shadow:
+    0 1px 0 rgba(224, 239, 244, 0.08) inset,
+    0 28px 76px rgba(0, 0, 0, 0.44);
+}
+
+:root[data-theme="dark"] .agent-add-tool-backdrop.is-open {
+  background: rgba(5, 8, 12, 0.48);
+}
+
+:root[data-theme="dark"] .agent-add-tool-option {
+  color: var(--text);
+}
+
+:root[data-theme="dark"] .agent-add-tool-option .agent-tool-copy span {
+  color: rgba(168, 182, 195, 0.82);
+}
+
+:root[data-theme="dark"] .agent-add-tool-option:hover,
+:root[data-theme="dark"] .agent-add-tool-option:focus-visible {
+  color: var(--text);
+  background: rgba(55, 184, 171, 0.13);
+}
+
+:root[data-theme="dark"] .agent-add-tool-option:hover .agent-tool-copy span,
+:root[data-theme="dark"] .agent-add-tool-option:focus-visible .agent-tool-copy span {
+  color: rgba(237, 246, 244, 0.82);
+}
+
+:root[data-theme="dark"] .agent-add-tool-icon {
+  color: var(--accent);
+  background: rgba(55, 184, 171, 0.15);
+  box-shadow: 0 1px 0 rgba(224, 239, 244, 0.06) inset;
+}
+
+:root[data-theme="dark"] .agent-add-tool-option:hover .agent-add-tool-icon,
+:root[data-theme="dark"] .agent-add-tool-option:focus-visible .agent-add-tool-icon {
+  color: #f0fffb;
+  background: rgba(55, 184, 171, 0.28);
+}
+
 :root[data-theme="dark"] .agent-action-detail-card,
 :root[data-theme="dark"] .agent-action-editor {
   background: transparent;

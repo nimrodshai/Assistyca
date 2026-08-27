@@ -51,7 +51,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=134", html)
+        self.assertIn("styles.css?v=135", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -726,6 +726,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".app-shell.agent-tool-picker-background-blurred", styles)
         self.assertIn("filter: blur(8px);", styles)
         self.assertIn("overflow-y: auto;", add_tool_menu_styles)
+        dark_add_tool_menu_start = styles.index(':root[data-theme="dark"] .agent-add-tool-menu {')
+        dark_add_tool_menu_styles = styles[
+            dark_add_tool_menu_start:
+            styles.index(':root[data-theme="dark"] .agent-action-detail-card,', dark_add_tool_menu_start)
+        ]
+        self.assertIn("background:", dark_add_tool_menu_styles)
+        self.assertIn("rgba(22, 33, 42, 0.98)", dark_add_tool_menu_styles)
+        self.assertIn(':root[data-theme="dark"] .agent-add-tool-option .agent-tool-copy span', styles)
+        self.assertIn(':root[data-theme="dark"] .agent-add-tool-option:hover .agent-add-tool-icon', styles)
         self.assertIn(".agent-add-tool-icon svg", styles)
         self.assertIn(".agent-tool-icon svg", styles)
         self.assertIn(".agent-loading-row", styles)
@@ -766,7 +775,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=134", html)
+        self.assertIn("styles.css?v=135", html)
         self.assertIn("app.js?v=170", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
