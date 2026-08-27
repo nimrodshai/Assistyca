@@ -780,7 +780,7 @@ const AGENT_BLUEPRINTS = {
   },
   custom: {
     type: "custom",
-    title: "Custom task agent",
+    title: "Workflow helper",
     summary:
       "Create a custom workflow from your request, then ask any missing questions before installation.",
     response:
@@ -3791,6 +3791,9 @@ function normalizeAgentProposal(value = {}) {
       : [],
   };
   syncAgentProposalFieldCompatibility(proposal);
+  if (proposal.type === "custom") {
+    proposal.title = getAgentProposalPurposeTitle(proposal);
+  }
   return proposal;
 }
 
@@ -12961,6 +12964,7 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   }
 
   if (proposal.type === "custom") {
+    proposal.title = getAgentProposalPurposeTitle(proposal);
     proposal.summary = `${blueprint.summary} Request: "${String(text).trim().slice(0, 140)}"`;
   }
   if (proposal.type === "scheduled-message") {
@@ -12977,6 +12981,9 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   }
 
   syncAgentProposalRequiredConnection(proposal);
+  if (proposal.type === "custom") {
+    proposal.title = getAgentProposalPurposeTitle(proposal);
+  }
   return proposal;
 }
 
@@ -13666,6 +13673,7 @@ function getAgentQuestionContextText(proposal, questionText = "") {
 
 const AGENT_MONTH_NAME_PATTERN = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 const AGENT_MONTHLY_BATCH_OBJECT_PATTERN = "(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?|summar(?:y|ies|ize|ise)|digests?|bookkeeping|reconciliation)";
+const AGENT_GENERIC_CUSTOM_TITLE_PATTERN = /^(?:custom\s+task\s+agent|workflow helper|task helper|agent helper|planning agent|task plan)$/i;
 const AGENT_MONTH_NAME_INDEX = {
   jan: 0,
   january: 0,
@@ -15120,7 +15128,7 @@ function renderAgentProposalCard() {
   eyebrow.className = "eyebrow";
   eyebrow.textContent = "Proposed plan";
   const title = document.createElement("h2");
-  title.textContent = proposal.title;
+  title.textContent = getAgentProposalPurposeTitle(proposal);
   const summary = document.createElement("p");
   summary.textContent = proposal.summary;
   copyBlock.append(eyebrow, title, summary);
@@ -15659,6 +15667,137 @@ function applyAgentProposalManualMode(proposal) {
   return true;
 }
 
+function isGenericAgentPurposeTitle(value) {
+  return AGENT_GENERIC_CUSTOM_TITLE_PATTERN.test(String(value || "").trim());
+}
+
+function getAgentPurposeTextFromProposal(proposal, extra = {}) {
+  const fields = getAgentProposalFieldMap(proposal);
+  const pieces = [
+    extra.result,
+    fields.result,
+    fields.mailbox,
+    fields.sourceFileName,
+    fields.sourceUrl,
+    fields.watchQuery,
+    fields.calendar,
+    proposal?.requestText,
+    proposal?.summary,
+    extra.preview,
+    extra.summary,
+  ];
+  return pieces
+    .map((piece) => String(piece || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function getAgentPurposeTextFromAction(action) {
+  const payload = action?.payload && typeof action.payload === "object" ? action.payload : {};
+  const pieces = [
+    payload.result,
+    payload.preview,
+    payload.summary,
+    payload.mailbox,
+    payload.sourceFileName,
+    payload.sourceUrl,
+    payload.watchQuery,
+    payload.calendar,
+  ];
+  return pieces
+    .map((piece) => String(piece || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatAgentDerivedPurposeTitle(value) {
+  const clean = String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:;,.!?-]+|[\s:;,.!?-]+$/g, "")
+    .trim();
+  if (!clean) {
+    return "";
+  }
+  const words = clean
+    .split(/\s+/)
+    .filter((word) => !/^(?:my|the|a|an|all|some|any|please)$/i.test(word))
+    .slice(0, 4);
+  if (!words.length) {
+    return "";
+  }
+  const phrase = words.join(" ").toLowerCase();
+  const title = capitalizeWords(phrase);
+  return /\b(?:agent|assistant|helper|collector|summari[sz]er|digest|monitor|report|tracker)\b/i.test(title)
+    ? title
+    : `${title} helper`;
+}
+
+function getAgentPurposeTitleFromText(text) {
+  const value = String(text || "").trim();
+  const lower = value.toLowerCase();
+  if (!lower) {
+    return "";
+  }
+  const has = (pattern) => pattern.test(lower);
+  if (has(/\breceipts?\b/)) {
+    return "Receipt collector";
+  }
+  if (has(/\binvoices?\b/)) {
+    return "Invoice collector";
+  }
+  if (has(/\bstatements?\b/)) {
+    return "Statement collector";
+  }
+  if (has(/\b(?:expenses?|transactions?|bills?)\b/)) {
+    return "Expense collector";
+  }
+  if (has(/\b(?:bookkeeping|reconciliation)\b/)) {
+    return "Bookkeeping helper";
+  }
+  if (has(/\b(?:gmail|email|emails|mailbox|inbox|mail)\b/) && has(/\b(?:summar(?:y|ize|ise)|digest|brief|overview)\b/)) {
+    return "Email summarizer";
+  }
+  if (has(/\b(?:drive|docs?|documents?|files?|pdfs?|spreadsheets?)\b/)) {
+    return has(/\b(?:summar(?:y|ize|ise)|digest|brief|overview)\b/)
+      ? "Document summarizer"
+      : "Drive file collector";
+  }
+  if (has(/\b(?:calendar|meetings?|agenda|appointments?)\b/) && has(/\b(?:summar(?:y|ize|ise)|brief|overview|review|list|show)\b/)) {
+    return "Meeting summary";
+  }
+  if (has(/\b(?:watch|monitor|deadline|alert|web|search|opportunit|event)\b/)) {
+    return "Web monitor";
+  }
+  if (has(/\b(?:whatsapp|reply|approval|lead|customer message)\b/)) {
+    return has(/\b(?:reply|approval)\b/) ? "WhatsApp reply helper" : "WhatsApp helper";
+  }
+  if (has(/\b(?:re-?engage|follow[- ]?up|past customer|quiet conversation|dormant)\b/)) {
+    return "Customer follow-up";
+  }
+
+  const cleaned = value
+    .replace(/^\s*(?:please\s+)?(?:can you|could you|i want you to|i need you to|i need to|help me(?:\s+to)?)\s+/i, "")
+    .replace(/^\s*(?:pull|fetch|find|collect|gather|get|search|summari[sz]e|prepare|create|make|generate|build|watch|monitor|check|send|read|organize|sort|list|show)\s+/i, "")
+    .replace(/^\s*(?:all|my|the|a|an)\s+/i, "")
+    .replace(new RegExp(`\\s+(?:from|for|in|during)\\s+(?:${AGENT_MONTH_NAME_PATTERN}|\\d{4}|this|next|last)\\b[\\s\\S]*$`, "i"), "")
+    .replace(/\s+every\b[\s\S]*$/i, "")
+    .trim();
+  return formatAgentDerivedPurposeTitle(cleaned);
+}
+
+function getAgentProposalPurposeTitle(proposal, extra = {}) {
+  if (!proposal) {
+    return "";
+  }
+  const explicitTitle = String(proposal.title || extra.title || "").trim();
+  if (proposal.type !== "custom" && explicitTitle) {
+    return explicitTitle;
+  }
+  return getAgentPurposeTitleFromText(getAgentPurposeTextFromProposal(proposal, extra))
+    || (explicitTitle && !isGenericAgentPurposeTitle(explicitTitle) ? explicitTitle : "")
+    || "Workflow helper";
+}
+
 function getAgentProposalLocalActionTitle(proposal) {
   if (proposal?.type === "web-monitor") {
     return "Web monitor";
@@ -15677,6 +15816,9 @@ function getAgentProposalLocalActionTitle(proposal) {
   }
   if (proposal?.type === "source-action") {
     return "Source action";
+  }
+  if (proposal?.type === "custom") {
+    return getAgentProposalPurposeTitle(proposal);
   }
   return proposal?.title || proposal?.helpers?.[0]?.name || "Agent helper";
 }
@@ -16198,11 +16340,23 @@ function getScheduledActionStatusClass(status, action = null) {
 
 function getScheduledActionTitle(action) {
   const payloadTitle = String(action?.payload?.title || "").trim();
-  if (payloadTitle) {
+  if (payloadTitle && !isGenericAgentPurposeTitle(payloadTitle)) {
     return payloadTitle;
   }
   if (isAgentLocalAction(action)) {
+    const proposal = getAgentLocalActionProposal(action);
+    const proposalTitle = proposal ? getAgentProposalLocalActionTitle(proposal) : "";
+    if (proposalTitle && !isGenericAgentPurposeTitle(proposalTitle)) {
+      return proposalTitle;
+    }
+    const payloadPurposeTitle = getAgentPurposeTitleFromText(getAgentPurposeTextFromAction(action));
+    if (payloadPurposeTitle) {
+      return payloadPurposeTitle;
+    }
     return normalizeAgentActionTypeLabel(action?.actionType) || "Agent helper";
+  }
+  if (payloadTitle) {
+    return payloadTitle;
   }
   const channel = formatAgentScheduledMessageChannel(action?.channel);
   if (String(action?.actionType || "").trim() === "send_message") {
@@ -17637,9 +17791,13 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
   };
   proposal.updatedAt = new Date().toISOString();
   updateAgentProposalSummaryFromFields(proposal);
+  if (proposal.type === "custom") {
+    proposal.title = getAgentProposalPurposeTitle(proposal);
+  }
   action.payload.manualOnly = manualOnly;
   action.payload.actionLifecycleStatus = lifecycleStatus;
   action.payload.frequency = manualOnly ? "manual only" : frequencyLabel;
+  action.payload.title = getAgentProposalLocalActionTitle(proposal);
   action.payload.summary = proposal.summary;
   action.payload.preview = getAgentProposalLocalActionPreview(proposal);
   action.payload.manualRunMonth = savedManualRunMonth;
