@@ -12445,6 +12445,15 @@ function getAgentRenderableMessageActions(message, kind, proposal) {
   if (kind === "question" && proposal && !proposal.approved && proposal.status !== "rejected") {
     const questionIndex = Math.max(0, Number(message.metadata?.questionIndex || proposal.questionIndex || 0) || 0);
     const questionText = getAgentDisplayMessageText(message, kind, proposal);
+    const requirement = getAgentProposalRequiredConnection(proposal);
+    if (requirement && !isAgentProposalRequiredConnectionReady(requirement) && isAgentConnectionSetupReply(questionText)) {
+      return [createAgentAction(
+        "open-setup",
+        requirement.actionLabel || "Open setup",
+        proposal.id,
+        "primary",
+      )];
+    }
     const questionFieldKey = String(message.metadata?.fieldKey || "").trim();
     const questionActions = questionFieldKey
       ? getAgentQuestionActions(proposal, questionIndex, questionText, questionFieldKey)
@@ -12931,7 +12940,18 @@ function applyAgentFieldProposalRevision(proposal, changes = {}, options = {}) {
   return didChange;
 }
 
+function isAgentConnectionSetupReply(value = "") {
+  return /\b(?:connect|reconnect|connection|access|credential|token|setup|permission|oauth|read[- ]only)\b/i.test(
+    String(value || ""),
+  );
+}
+
 function pushAgentProposalNextStep(proposal, reply = "") {
+  const requirement = getAgentProposalRequiredConnection(proposal);
+  if (requirement && !isAgentProposalRequiredConnectionReady(requirement)) {
+    pushAgentRequiredConnectionSetupPrompt(proposal, requirement, reply);
+    return;
+  }
   const missingIndex = getAgentNextMissingQuestionIndex(proposal);
   if (missingIndex >= 0) {
     pushAgentQuestion(proposal, missingIndex, reply);
@@ -14780,6 +14800,16 @@ function getAgentDeliveryOptionItems() {
   }));
 }
 
+function normalizeAgentMonitorDeliveryChannel(value, fallback = DEFAULT_MONITOR_SETTINGS.deliveryChannel) {
+  const channel = normalizeAgentDeliveryChannel(value) || normalizeAgentDeliveryChannel(fallback);
+  return ["email", "telegram", "whatsapp"].includes(channel) ? channel : DEFAULT_MONITOR_SETTINGS.deliveryChannel;
+}
+
+function getAgentMonitorDeliveryOptionItems() {
+  return getAgentDeliveryOptionItems()
+    .filter((option) => ["email", "telegram", "whatsapp"].includes(option.value));
+}
+
 function getAgentDeliveryOptionsSignature() {
   return getAgentDeliveryOptionItems()
     .map((option) => `${option.value}:${option.label}`)
@@ -15729,9 +15759,7 @@ function setAgentMonitorEditorStatus(editor, message, isError = false) {
   if (!editor?.status) {
     return;
   }
-  editor.status.hidden = !message;
-  editor.status.textContent = message;
-  editor.status.classList.toggle("is-error", isError);
+  setAgentActionEditorStatusElement(editor.status, message, isError, message === "Saving changes…");
 }
 
 function scheduleAgentMonitorAutoSave(action, draft, form, options = {}) {
@@ -15781,6 +15809,9 @@ function createAgentMonitorEditor(action) {
         : (action?.payload?.watchItems || []),
     ),
     frequency: getAgentMonitorEditorFrequencyValue(currentSettings),
+    deliveryChannel: normalizeAgentMonitorDeliveryChannel(
+      currentSettings.deliveryChannel || action?.payload?.deliveryChannel || action?.channel,
+    ),
   };
 
   const form = document.createElement("form");
@@ -15826,13 +15857,21 @@ function createAgentMonitorEditor(action) {
   frequencySelect.value = draft.frequency;
   frequencyField.append(frequencyLabel, wrapAgentActionEditorSelect(frequencySelect));
 
-  const delivery = document.createElement("p");
-  delivery.className = "agent-action-editor-delivery";
-  delivery.textContent = `Results go to ${String(action.payload?.deliveryLabel || formatAgentDeliveryTargetDetail(action.payload?.deliveryChannel || action.channel, action.payload?.deliveryTarget || action.recipientRef) || "your configured delivery" )}.`;
+  const delivery = createAgentLocalActionEditorField(
+    "Delivery",
+    draft.deliveryChannel,
+    {
+      select: true,
+      options: getAgentMonitorDeliveryOptionItems(),
+    },
+  );
+  const deliveryNote = document.createElement("p");
+  deliveryNote.className = "agent-action-editor-delivery";
+  deliveryNote.textContent = "You can change the delivery channel without recreating the action.";
 
-  const status = document.createElement("p");
-  status.className = "agent-action-editor-status";
+  const status = createAgentActionEditorStatusElement("agent-action-editor-status", "p");
   status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
   status.hidden = true;
 
   const renderTopics = () => {
@@ -15898,16 +15937,22 @@ function createAgentMonitorEditor(action) {
     draft.frequency = frequencySelect.value;
     scheduleAgentMonitorAutoSave(action, draft, form);
   });
+  delivery.input.addEventListener("change", () => {
+    draft.deliveryChannel = normalizeAgentMonitorDeliveryChannel(delivery.input.value);
+    delivery.input.value = draft.deliveryChannel;
+    scheduleAgentMonitorAutoSave(action, draft, form);
+  });
 
   form._agentMonitorEditor = {
     draft,
     frequencySelect,
+    deliverySelect: delivery.input,
     status,
     saveTimer: null,
     savePromise: null,
     saveQueued: false,
   };
-  form.append(topicsField, frequencyField, delivery, status);
+  form.append(topicsField, frequencyField, delivery.field, deliveryNote, status);
   renderTopics();
   return form;
 }
@@ -15947,6 +15992,7 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
     ...currentSettings,
     watchItems,
     ...getAgentMonitorEditorFrequencySettings(editor.frequencySelect?.value, currentSettings),
+    deliveryChannel: normalizeAgentMonitorDeliveryChannel(draft.deliveryChannel || editor.deliverySelect?.value, currentSettings.deliveryChannel),
     actionLifecycleStatus: currentLifecycleStatus,
   });
   setAgentMonitorEditorStatus(editor, "Saving changes…");
@@ -15967,8 +16013,16 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
       state.paymentStatus = response.paymentStatus || state.paymentStatus;
       updateAgentMonitorActionFrequency(action, nextSettings);
       if (action?.payload) {
+        const deliveryChannel = normalizeAgentMonitorDeliveryChannel(nextSettings.deliveryChannel);
+        const deliveryTarget = getMonitorFeatureDeliveryTarget(nextSettings, deliveryChannel);
         action.payload.actionLifecycleStatus = nextSettings.actionLifecycleStatus;
         action.payload.manualOnly = normalizeMonitorManualOnly(nextSettings.manualOnly);
+        action.payload.frequency = formatAgentWebMonitorFrequency(nextSettings);
+        action.payload.deliveryChannel = deliveryChannel;
+        action.payload.deliveryTarget = deliveryTarget;
+        action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget);
+        action.channel = deliveryChannel;
+        action.recipientRef = deliveryTarget || deliveryChannel;
         action.status = action.payload.manualOnly
           ? "manual_only"
           : (nextSettings.actionLifecycleStatus === "paused" ? "paused" : "running");
@@ -16794,18 +16848,6 @@ function createScheduledActionDetail(action) {
       if (sourceControls) card.append(sourceControls);
       return card;
     }
-    if (isFeatureAction) {
-      const deliveryRow = createScheduledActionDetailRow("Delivery", String(
-        payload.deliveryLabel
-        || formatAgentDeliveryTargetDetail(payload.deliveryChannel || action.channel, payload.deliveryTarget || action.recipientRef)
-        || "As configured",
-      ).trim());
-      const primaryDetails = document.createElement("dl");
-      primaryDetails.className = "agent-action-detail-grid agent-action-primary-details";
-      primaryDetails.append(deliveryRow);
-      card.append(primaryDetails);
-    }
-
     if (payload.initialRunError) {
       const error = document.createElement("div");
       error.className = "agent-action-error";
@@ -17445,8 +17487,11 @@ function getAgentRequiredConnectionApprovalMessage(requirement) {
   return `Before I create this action, connect ${requirement.toolLabel} so I can ${requirement.capability}.`;
 }
 
-function pushAgentRequiredConnectionSetupPrompt(proposal, requirement) {
-  const message = getAgentRequiredConnectionApprovalMessage(requirement);
+function pushAgentRequiredConnectionSetupPrompt(proposal, requirement, reply = "") {
+  const candidateReply = String(reply || "").trim();
+  const message = isAgentConnectionSetupReply(candidateReply)
+    ? candidateReply
+    : getAgentRequiredConnectionApprovalMessage(requirement);
   return pushAgentMessage("assistant", message, {
     kind: "credential",
     proposalId: proposal?.id || "",
