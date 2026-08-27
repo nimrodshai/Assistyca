@@ -22168,6 +22168,15 @@ async function runSelectedReengagementDemo() {
     state.reengagementDemoDrafts = {};
     renderReengagementDemoResults(feature);
     reengagementDemoRunOverlayVisible = false;
+    addAgentNotification({
+      title: getReengagementDemoAlertTitle(response.run),
+      message: getReengagementDemoAlertMessage(response.run, completionMessage),
+      tone: getReengagementDemoAlertTone(response.run),
+      source: "whatsapp-reengagement",
+      actionId: `feature:${feature.id}`,
+      href: getAgentResponseResultHref(response),
+      dedupeKey: `reengagement:${feature.id}:run:${response?.run?.id || response?.run?.completedAt || Date.now()}`,
+    });
     setStatus(completionMessage);
     openReengagementDemoResultsAlert(
       response.run,
@@ -22190,6 +22199,15 @@ async function runSelectedReengagementDemo() {
       };
       state.reengagementDemoDrafts = {};
       renderReengagementDemoResults(feature);
+      addAgentNotification({
+        title: getReengagementDemoAlertTitle(errorRun),
+        message: getReengagementDemoAlertMessage(errorRun, completionMessage),
+        tone: getReengagementDemoAlertTone(errorRun),
+        source: "whatsapp-reengagement",
+        actionId: `feature:${feature.id}`,
+        href: getAgentResponseResultHref(errorPayload),
+        dedupeKey: `reengagement:${feature.id}:run:${errorRun?.id || errorRun?.completedAt || Date.now()}`,
+      });
       setStatus(completionMessage);
       openReengagementDemoResultsAlert(
         errorRun,
@@ -22198,9 +22216,18 @@ async function runSelectedReengagementDemo() {
       );
       return;
     }
+    const message = formatApiErrorMessage(error, "We couldn’t run the re-engagement demo right now.");
+    addAgentNotification({
+      title: "Re-engagement demo failed",
+      message,
+      tone: "error",
+      source: "whatsapp-reengagement",
+      actionId: `feature:${feature.id}`,
+      dedupeKey: `reengagement:${feature.id}:error:${message}`,
+    });
     openFeatureActivationAlert(
       "Couldn’t run the demo",
-      formatApiErrorMessage(error, "We couldn’t run the re-engagement demo right now."),
+      message,
       {
         eyebrow: "Try again",
         returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,

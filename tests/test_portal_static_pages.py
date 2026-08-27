@@ -717,6 +717,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('title: "Meeting summary ready"', script)
         self.assertIn('title: "Email digest ready"', script)
         self.assertIn('source: "web-monitor"', script)
+        self.assertIn('source: "whatsapp-reengagement"', script)
+        self.assertIn("getReengagementDemoAlertTitle(response.run)", script)
         self.assertIn(".notification-center-popover", styles)
         self.assertIn(".notification-center-item.is-unread", styles)
         self.assertIn("notification-center-enter", styles)
