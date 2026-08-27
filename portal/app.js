@@ -13795,6 +13795,9 @@ function replaceAgentMonthlyBatchWindowInResult(value, targetLabel) {
   if (!text || !target) {
     return text;
   }
+  if (text.toLowerCase().includes(target.toLowerCase())) {
+    return text;
+  }
 
   const namedMonthWindow = new RegExp(`\\b(?:from|for|during|in)\\s+${AGENT_MONTH_NAME_PATTERN}(?:\\s+\\d{4})?\\b`, "i");
   if (namedMonthWindow.test(text)) {
@@ -13806,8 +13809,8 @@ function replaceAgentMonthlyBatchWindowInResult(value, targetLabel) {
     return text.replace(leadingMonthObject, `${target} $1`);
   }
 
-  if (/\b(?:selected|requested|previous|last)\s+month\b/i.test(text)) {
-    return text.replace(/\b(?:selected|requested|previous|last)\s+month\b/i, target);
+  if (/\b(?:the\s+)?(?:selected|requested|previous|last)\s+month\b/i.test(text)) {
+    return text.replace(/\b(?:the\s+)?(?:selected|requested|previous|last)\s+month\b/i, target);
   }
 
   return `${text.replace(/[.?!]+$/, "")} for ${target}`;
