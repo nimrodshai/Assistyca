@@ -225,6 +225,25 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('title.textContent = "Edit source action";', script)
         self.assertNotIn("agent-action-editor-heading", script)
         self.assertNotIn(".agent-action-editor-heading", styles)
+
+    def test_action_results_use_notification_center(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="notificationCenterButton"', html)
+        self.assertIn('id="notificationCenterPopover"', html)
+        self.assertIn('id="notificationCenterList"', html)
+        self.assertIn('id="notificationCenterBadge"', html)
+        self.assertIn("function addAgentNotification", script)
+        self.assertIn("function renderNotificationCenter", script)
+        self.assertIn("notifyScheduledActionTransitions", script)
+        self.assertIn('title: "Meeting summary ready"', script)
+        self.assertIn('title: "Email digest ready"', script)
+        self.assertIn('source: "web-monitor"', script)
+        self.assertIn(".notification-center-popover", styles)
+        self.assertIn(".notification-center-item.is-unread", styles)
+        self.assertIn("notification-center-enter", styles)
         monitor_editor = script[
             script.index("function createAgentMonitorEditor"):
             script.index("async function saveAgentMonitorActionSettings")
