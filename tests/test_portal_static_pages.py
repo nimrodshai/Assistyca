@@ -51,7 +51,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=136", html)
+        self.assertIn("styles.css?v=138", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -599,6 +599,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("hidePrimaryButton: isConnected,", calendar_oauth_flow)
         self.assertIn('secondaryButtonLabel: "Cancel"', calendar_oauth_flow)
         self.assertIn("onPrimary: isConnected ? null : startOAuth,", calendar_oauth_flow)
+        self.assertIn('elements.authAlertIcon.classList.remove("is-spinner");', calendar_oauth_flow)
+        self.assertNotIn('elements.authAlertIcon.classList.add("is-spinner");', calendar_oauth_flow)
+        self.assertIn('setCalendarOAuthPrimaryButton("Opening Google", { loading: true });', calendar_oauth_flow)
         self.assertIn("if (!isConnected) {\n    setCalendarOAuthPrimaryButton(primaryLabel);\n  }", calendar_oauth_flow)
         self.assertIn("function getConnectedGoogleOAuthConnections", script)
         self.assertIn("function createGoogleConnectionDisconnectButton", script)
@@ -610,6 +613,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Sign in with Google", script)
         self.assertIn("function createGoogleBrandLogo", script)
         self.assertIn("function createGoogleOAuthPermissionList", script)
+        calendar_oauth_status_renderer = script[
+            script.index("function createCalendarOAuthStatusNode"):
+            script.index("function getGoogleOAuthPermissionState")
+        ]
+        self.assertIn('icon.classList.remove("is-spinner");', calendar_oauth_status_renderer)
+        self.assertIn('dot.className = "calendar-oauth-status-dot";', calendar_oauth_status_renderer)
+        self.assertNotIn('icon.classList.toggle("is-spinner"', calendar_oauth_status_renderer)
         google_scope_options = script[
             script.index("const GOOGLE_CONNECTION_SCOPE_OPTIONS"):
             script.index("const AGENT_ADD_TOOL_OPTIONS")
@@ -658,6 +668,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".calendar-oauth-copy", styles)
         self.assertIn(".calendar-oauth-permissions", styles)
         self.assertIn(".calendar-oauth-permission-access", styles)
+        self.assertIn(".calendar-oauth-status-dot", styles)
+        self.assertIn(".calendar-oauth-button-spinner::before", styles)
+        self.assertNotIn(".calendar-oauth-status-icon.is-spinner::before", styles)
         self.assertNotIn(".calendar-oauth-permission-badge", styles)
         self.assertNotIn(".calendar-oauth-permission code", styles)
         self.assertIn("--calendar-oauth-column-offset", styles)
@@ -784,8 +797,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=136", html)
-        self.assertIn("app.js?v=171", html)
+        self.assertIn("styles.css?v=138", html)
+        self.assertIn("app.js?v=172", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

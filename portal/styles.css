@@ -2895,7 +2895,6 @@ body[data-modal="billing"] .app-shell {
   height: 0.78rem;
 }
 
-.calendar-oauth-status-icon.is-spinner::before,
 .calendar-oauth-button-spinner::before {
   content: "";
   width: 0.9rem;
@@ -2904,6 +2903,14 @@ body[data-modal="billing"] .app-shell {
   border: 2px solid rgba(15, 118, 110, 0.22);
   border-top-color: rgba(15, 118, 110, 0.9);
   animation: spin 760ms linear infinite;
+}
+
+.calendar-oauth-status-dot {
+  width: 0.46rem;
+  height: 0.46rem;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.82;
 }
 
 .calendar-oauth-status-copy {

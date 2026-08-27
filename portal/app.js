@@ -5895,12 +5895,16 @@ function createCalendarOAuthStatusNode() {
   const setStatus = (tone, statusTitle, statusCopy, statusDetail = "") => {
     const normalizedTone = normalizeText(tone).toLowerCase() || "info";
     status.dataset.tone = normalizedTone;
-    icon.classList.toggle("is-spinner", normalizedTone === "loading");
+    icon.classList.remove("is-spinner");
     icon.replaceChildren();
     if (normalizedTone === "error" || normalizedTone === "warning") {
       icon.append(createFeatureActivationResultIcon("x"));
-    } else if (normalizedTone !== "loading") {
+    } else if (normalizedTone === "success") {
       icon.append(createFeatureActivationResultIcon("check"));
+    } else {
+      const dot = document.createElement("span");
+      dot.className = "calendar-oauth-status-dot";
+      icon.append(dot);
     }
     title.textContent = statusTitle;
     text.textContent = statusCopy;
@@ -6059,8 +6063,8 @@ function openCalendarOAuthConnection(option) {
     }
     if (elements.authAlertIcon) {
       elements.authAlertIcon.dataset.tone = "progress";
-      elements.authAlertIcon.classList.add("is-spinner");
-      elements.authAlertIcon.replaceChildren();
+      elements.authAlertIcon.classList.remove("is-spinner");
+      elements.authAlertIcon.replaceChildren(createAgentAddToolLogo(option));
     }
     setStatus(
       "loading",
