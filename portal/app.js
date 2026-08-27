@@ -426,6 +426,11 @@ const AGENT_FOLDER_TYPES = [
 const GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly";
 const GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const GOOGLE_TOOL_PLATFORM_CONNECTION_IDS = new Set([
+  "calendar",
+  "drive",
+  "email",
+]);
 const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
   {
     id: "calendar",
@@ -922,6 +927,11 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
       question: "What should the finished result look like?",
     },
     {
+      key: "manualRunMonth",
+      question: "Which month should a manual run use?",
+      required: false,
+    },
+    {
       key: "frequency",
       question: "How often should this happen?",
       actions: ["Daily", "Weekly", "Monthly"],
@@ -985,6 +995,15 @@ const AGENT_PROPOSAL_FIELD_ALIASES = {
   quietperiod: "inactivityPeriod",
   result: "result",
   output: "result",
+  month: "manualRunMonth",
+  run_month: "manualRunMonth",
+  runmonth: "manualRunMonth",
+  manual_month: "manualRunMonth",
+  manualmonth: "manualRunMonth",
+  manual_run_month: "manualRunMonth",
+  manualrunmonth: "manualRunMonth",
+  reporting_month: "manualRunMonth",
+  reportingmonth: "manualRunMonth",
   url: "sourceUrl",
   source_url: "sourceUrl",
   sourceurl: "sourceUrl",
@@ -1270,6 +1289,7 @@ let monitorManualRunOverlayVisible = false;
 const monitorActionRunBusy = new Set();
 const localActionRunBusy = new Set();
 const agentActionLifecycleBusy = new Set();
+const agentLocalActionSettingsBusy = new Set();
 let reengagementDemoRunBusy = false;
 let reengagementDemoRunTargetId = "";
 let reengagementDemoRunRequestId = "";
@@ -4908,6 +4928,19 @@ function getPlatformConnectionByPlatform(platform) {
   return state.platformConnections.find((connection) => connection.platform === normalized) || null;
 }
 
+function isGoogleToolPlatformConnection(platform) {
+  const normalized = String(platform || "").trim().toLowerCase();
+  return GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(normalized);
+}
+
+function getConnectedGoogleOAuthConnections() {
+  return state.platformConnections.filter((connection) => (
+    isGoogleToolPlatformConnection(connection?.platform)
+    && isPlatformConnectionConnected(connection)
+    && connection.authType === "oauth"
+  ));
+}
+
 function isGoogleOAuthPlatformConnectionReady(platform, provider = "") {
   const connection = getPlatformConnectionByPlatform(platform);
   const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
@@ -5340,6 +5373,42 @@ function createPlatformConnectionDisconnectButton(option, connection) {
   return button;
 }
 
+function getUniqueConnectedGoogleOAuthConnections(connections = []) {
+  const source = Array.isArray(connections) && connections.length
+    ? connections
+    : getConnectedGoogleOAuthConnections();
+  const uniqueConnections = new Map();
+  for (const connection of source) {
+    if (
+      connection?.id
+      && isGoogleToolPlatformConnection(connection.platform)
+      && isPlatformConnectionConnected(connection)
+      && connection.authType === "oauth"
+    ) {
+      uniqueConnections.set(connection.id, connection);
+    }
+  }
+  return Array.from(uniqueConnections.values());
+}
+
+function createGoogleConnectionDisconnectButton(option, connections = []) {
+  const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
+  if (!option || !connectedConnections.length) {
+    return null;
+  }
+
+  const label = option.label || "Google";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost-button danger small platform-connection-disconnect";
+  button.textContent = `Disconnect ${label}`;
+  button.setAttribute("aria-label", `Disconnect ${label}`);
+  button.addEventListener("click", () => {
+    openGoogleConnectionDisconnectConfirmation(option, connectedConnections);
+  });
+  return button;
+}
+
 function openPlatformConnectionDisconnectConfirmation(option, connection) {
   if (!option || !connection?.id) {
     return;
@@ -5395,6 +5464,83 @@ async function disconnectPlatformConnection(option, connection) {
     openAuthAlert(
       `Couldn’t disconnect ${option.label}`,
       formatApiErrorMessage(error, `I couldn’t disconnect ${option.label} right now. Please try again.`),
+      {
+        eyebrow: "Connection issue",
+        icon: "!",
+        tone: "warning",
+        buttonLabel: "Close",
+        returnFocus: elements.agentAddToolButton,
+      },
+    );
+  }
+}
+
+function openGoogleConnectionDisconnectConfirmation(option, connections = []) {
+  const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
+  if (!option || !connectedConnections.length) {
+    return;
+  }
+  const label = option.label || "Google";
+
+  openAuthAlert(
+    `Disconnect ${label}?`,
+    "This removes the saved Google access from Assistyca. Any actions that use Calendar, Email, or Drive will need setup again before they can run.",
+    {
+      eyebrow: "Disconnect app",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Disconnect",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Keep connected",
+      returnFocus: elements.agentAddToolButton,
+      onPrimary: () => {
+        void disconnectGoogleConnections(option, connectedConnections);
+      },
+    },
+  );
+}
+
+async function disconnectGoogleConnections(option, connections = []) {
+  const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
+  if (!connectedConnections.length) {
+    return;
+  }
+  const label = option?.label || "Google";
+  try {
+    const responses = await Promise.all(connectedConnections.map((connection) => (
+      apiRequest(
+        `/api/platform-connections/${encodeURIComponent(connection.id)}`,
+        {
+          method: "DELETE",
+          headers: getSessionAuthHeaders(),
+          timeoutMs: 20000,
+        },
+      )
+    )));
+    const removedIds = new Set(connectedConnections.map((connection) => connection.id));
+    state.platformConnections = state.platformConnections.filter(
+      (candidate) => !removedIds.has(candidate.id),
+    );
+    const message = normalizeText(responses.find((response) => normalizeText(response?.message))?.message)
+      || `${label} was disconnected.`;
+    pushAgentMessage("assistant", message, { kind: "result" });
+    persistAgentWorkspace(message);
+    renderApp({ preserveStatus: true });
+    openAuthAlert(
+      `${label} disconnected`,
+      message,
+      {
+        eyebrow: "Connection removed",
+        icon: "✓",
+        tone: "success",
+        buttonLabel: "Done",
+        returnFocus: elements.agentAddToolButton,
+      },
+    );
+  } catch (error) {
+    openAuthAlert(
+      `Couldn’t disconnect ${label}`,
+      formatApiErrorMessage(error, `I couldn’t disconnect ${label} right now. Please try again.`),
       {
         eyebrow: "Connection issue",
         icon: "!",
@@ -5836,8 +5982,13 @@ function getSelectedGoogleOAuthScopeIds(container) {
 
 function openCalendarOAuthConnection(option) {
   const connection = getPlatformConnectionByPlatform(option.id);
-  const connectionStatus = getPlatformConnectionStatus(connection);
-  const isConnected = isPlatformConnectionConnected(connection);
+  const usesAggregateGoogleConnection = option.id === "calendar";
+  const connectedGoogleConnections = usesAggregateGoogleConnection
+    ? getConnectedGoogleOAuthConnections()
+    : [];
+  const isConnected = usesAggregateGoogleConnection
+    ? connectedGoogleConnections.length > 0
+    : isPlatformConnectionConnected(connection);
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const body = document.createElement("div");
@@ -5867,7 +6018,9 @@ function openCalendarOAuthConnection(option) {
 
   const permissionList = createGoogleOAuthPermissionList(option, { readOnly: isConnected });
   body.append(intro, permissionList, status);
-  const disconnectButton = createPlatformConnectionDisconnectButton(option, connection);
+  const disconnectButton = usesAggregateGoogleConnection
+    ? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)
+    : createPlatformConnectionDisconnectButton(option, connection);
   if (disconnectButton) {
     body.append(disconnectButton);
   }
@@ -6058,6 +6211,7 @@ function openCalendarOAuthConnection(option) {
       variant: "calendar-oauth",
       bodyNode: body,
       buttonLabel: primaryLabel,
+      secondaryButtonLabel: "Cancel",
       hidePrimaryButton: isConnected,
       primaryDisabled: !storageAvailable,
       closeOnPrimary: false,
@@ -13448,6 +13602,7 @@ function applyAgentFieldProposalRevision(proposal, changes = {}, options = {}) {
   }
 
   syncAgentProposalFieldCompatibility(proposal);
+  normalizeAgentMonthlyBatchProposalFields(proposal);
   updateAgentProposalSummaryFromFields(proposal);
   syncAgentProposalRequiredConnection(proposal);
   if (didChange && options.bumpRevision !== false) {
@@ -13507,6 +13662,200 @@ function getAgentQuestionContextText(proposal, questionText = "") {
 
 const AGENT_MONTH_NAME_PATTERN = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 const AGENT_MONTHLY_BATCH_OBJECT_PATTERN = "(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?|summar(?:y|ies|ize|ise)|digests?|bookkeeping|reconciliation)";
+const AGENT_MONTH_NAME_INDEX = {
+  jan: 0,
+  january: 0,
+  feb: 1,
+  february: 1,
+  mar: 2,
+  march: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  jun: 5,
+  june: 5,
+  jul: 6,
+  july: 6,
+  aug: 7,
+  august: 7,
+  sep: 8,
+  sept: 8,
+  september: 8,
+  oct: 9,
+  october: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+};
+
+function formatAgentYearMonthValue(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+function getAgentWorkspaceMonthDate(timeZone = getWorkspaceTimeZone()) {
+  const today = getAgentWorkspaceDateParts(timeZone);
+  return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+}
+
+function shiftAgentMonth(date, offset = 0) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + Number(offset || 0), 1));
+}
+
+function parseAgentManualRunMonthValue(value, timeZone = getWorkspaceTimeZone()) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const numericMatch = text.match(/\b(\d{4})-(\d{1,2})\b/);
+  if (numericMatch) {
+    const year = Number.parseInt(numericMatch[1], 10);
+    const month = Number.parseInt(numericMatch[2], 10);
+    if (Number.isInteger(year) && month >= 1 && month <= 12) {
+      return `${year}-${String(month).padStart(2, "0")}`;
+    }
+  }
+
+  const monthMatch = text.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?\b/i);
+  if (!monthMatch) {
+    return "";
+  }
+
+  const monthIndex = AGENT_MONTH_NAME_INDEX[String(monthMatch[1] || "").toLowerCase()];
+  if (!Number.isInteger(monthIndex)) {
+    return "";
+  }
+  const workspaceMonth = getAgentWorkspaceMonthDate(timeZone);
+  const year = Number.parseInt(monthMatch[2] || "", 10) || workspaceMonth.getUTCFullYear();
+  return formatAgentYearMonthValue(new Date(Date.UTC(year, monthIndex, 1)));
+}
+
+function formatAgentManualRunMonthLabel(value, fallback = "") {
+  const normalizedValue = parseAgentManualRunMonthValue(value) || parseAgentManualRunMonthValue(fallback);
+  const match = normalizedValue.match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return String(value || fallback || "").trim();
+  }
+  const date = new Date(Date.UTC(Number.parseInt(match[1], 10), Number.parseInt(match[2], 10) - 1, 1));
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function getAgentProposalManualRunMonthValue(proposal, draft = {}) {
+  const fields = getAgentProposalFieldMap(proposal);
+  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
+  const settings = getAgentProposalExecutionSettings(proposal);
+  const candidates = [
+    draft.manualRunMonth,
+    fields.manualRunMonth,
+    details.manualRunMonth,
+    details.reportingMonth,
+    proposal?.executionPlan?.manualRunMonth,
+    proposal?.executionPlan?.reportingMonth,
+    settings.manualRunMonth,
+    settings.reportingMonth,
+    fields.result,
+    proposal?.requestText,
+  ];
+  for (const candidate of candidates) {
+    const value = parseAgentManualRunMonthValue(candidate);
+    if (value) {
+      return value;
+    }
+  }
+  return formatAgentYearMonthValue(getAgentWorkspaceMonthDate());
+}
+
+function getAgentManualRunMonthOptions(currentValue = "") {
+  const baseMonth = getAgentWorkspaceMonthDate();
+  const options = [];
+  for (let offset = 0; offset > -13; offset -= 1) {
+    const value = formatAgentYearMonthValue(shiftAgentMonth(baseMonth, offset));
+    options.push({ value, label: formatAgentManualRunMonthLabel(value) });
+  }
+  const normalizedCurrentValue = parseAgentManualRunMonthValue(currentValue);
+  if (normalizedCurrentValue && !options.some((option) => option.value === normalizedCurrentValue)) {
+    options.unshift({
+      value: normalizedCurrentValue,
+      label: formatAgentManualRunMonthLabel(normalizedCurrentValue),
+    });
+  }
+  return options;
+}
+
+function replaceAgentMonthlyBatchWindowInResult(value, targetLabel) {
+  const text = String(value || "").trim();
+  const target = String(targetLabel || "").trim();
+  if (!text || !target) {
+    return text;
+  }
+
+  const namedMonthWindow = new RegExp(`\\b(?:from|for|during|in)\\s+${AGENT_MONTH_NAME_PATTERN}(?:\\s+\\d{4})?\\b`, "i");
+  if (namedMonthWindow.test(text)) {
+    return text.replace(namedMonthWindow, `for ${target}`);
+  }
+
+  const leadingMonthObject = new RegExp(`\\b${AGENT_MONTH_NAME_PATTERN}(?:\\s+\\d{4})?\\s+(${AGENT_MONTHLY_BATCH_OBJECT_PATTERN})\\b`, "i");
+  if (leadingMonthObject.test(text)) {
+    return text.replace(leadingMonthObject, `${target} $1`);
+  }
+
+  if (/\b(?:selected|requested|previous|last)\s+month\b/i.test(text)) {
+    return text.replace(/\b(?:selected|requested|previous|last)\s+month\b/i, target);
+  }
+
+  return `${text.replace(/[.?!]+$/, "")} for ${target}`;
+}
+
+function getAgentMonthlyBatchResultText(proposal, draft = {}) {
+  const rawResult = String(draft.result || getAgentProposalFieldValue(proposal, "result") || proposal?.requestText || "").trim();
+  if (!agentContextSuggestsMonthlyBatchTask(proposal, rawResult)) {
+    return rawResult;
+  }
+
+  const draftFrequency = String(draft.frequency || "").trim().toLowerCase();
+  const isManual = draftFrequency ? draftFrequency === "manual" : getAgentProposalManualOnly(proposal);
+  const targetLabel = isManual
+    ? formatAgentManualRunMonthLabel(getAgentProposalManualRunMonthValue(proposal, draft))
+    : "the previous month";
+  return replaceAgentMonthlyBatchWindowInResult(rawResult, targetLabel);
+}
+
+function normalizeAgentMonthlyBatchProposalFields(proposal, draft = {}) {
+  if (!proposal || proposal.type === "scheduled-message" || !agentContextSuggestsMonthlyBatchTask(proposal, draft.result || "")) {
+    return false;
+  }
+
+  const fields = { ...getAgentProposalFieldMap(proposal) };
+  const monthValue = getAgentProposalManualRunMonthValue(proposal, draft);
+  const resultText = getAgentMonthlyBatchResultText(proposal, {
+    ...draft,
+    manualRunMonth: monthValue,
+    result: draft.result || fields.result,
+  });
+  let didChange = false;
+  if (monthValue && fields.manualRunMonth !== monthValue) {
+    fields.manualRunMonth = monthValue;
+    didChange = true;
+  }
+  if (resultText && fields.result !== resultText) {
+    fields.result = resultText;
+    didChange = true;
+  }
+  if (didChange) {
+    proposal.fields = normalizeAgentFieldValues(fields);
+    proposal.answers = getAgentProposalAnswersFromFields(proposal);
+    proposal.updatedAt = new Date().toISOString();
+  }
+  return didChange;
+}
+
 function isAgentRunModeQuestionText(value = "") {
   const text = String(value || "").toLowerCase();
   return (
@@ -15020,6 +15369,27 @@ function isAgentActionLifecycleBusy(action) {
   return Boolean(key && agentActionLifecycleBusy.has(key));
 }
 
+function getAgentLocalActionSettingsBusyKey(action) {
+  return String(action?.id || "").trim();
+}
+
+function setAgentLocalActionSettingsBusy(action, busy = true) {
+  const key = getAgentLocalActionSettingsBusyKey(action);
+  if (!key) {
+    return;
+  }
+  if (busy) {
+    agentLocalActionSettingsBusy.add(key);
+  } else {
+    agentLocalActionSettingsBusy.delete(key);
+  }
+}
+
+function isAgentLocalActionSettingsBusy(action) {
+  const key = getAgentLocalActionSettingsBusyKey(action);
+  return Boolean(key && agentLocalActionSettingsBusy.has(key));
+}
+
 function isAgentLifecycleActionPaused(action) {
   return getScheduledActionStatusClass(action?.status) === "paused";
 }
@@ -15212,6 +15582,7 @@ function applyAgentProposalManualMode(proposal) {
     proposal.fields.schedule = "manual only";
   }
   syncAgentProposalFieldCompatibility(proposal);
+  normalizeAgentMonthlyBatchProposalFields(proposal, { frequency: "manual" });
   proposal.revision = Math.max(1, Number(proposal.revision || 1)) + 1;
   proposal.updatedAt = new Date().toISOString();
   updateAgentProposalSummaryFromFields(proposal);
@@ -15421,6 +15792,8 @@ function createAgentProposalLocalAction(proposal) {
       watchQuery: getAgentProposalFieldValue(proposal, "watchQuery"),
       location: getAgentProposalFieldValue(proposal, "location"),
       timeWindow: getAgentProposalFieldValue(proposal, "timeWindow"),
+      manualRunMonth: getAgentProposalFieldValue(proposal, "manualRunMonth"),
+      result: getAgentProposalFieldValue(proposal, "result"),
       frequency: manualOnly
         ? "manual only"
         : (proposal.executionPlan?.frequency || getAgentProposalFieldValue(proposal, "frequency")),
@@ -15603,6 +15976,20 @@ function appendAgentActionButton(actions, options = {}) {
   return button;
 }
 
+function createAgentActionSavingIndicator(message = "Saving action…") {
+  const status = document.createElement("span");
+  status.className = "agent-action-detail-saving is-saving";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const spinner = document.createElement("span");
+  spinner.className = "agent-action-editor-status-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  const text = document.createElement("span");
+  text.textContent = message;
+  status.append(spinner, text);
+  return status;
+}
+
 function createAgentActionDetailActions(action) {
   if (!canCancelAgentAction(action)) {
     return null;
@@ -15610,6 +15997,11 @@ function createAgentActionDetailActions(action) {
 
   const actions = document.createElement("div");
   actions.className = "agent-action-detail-actions";
+  if (isAgentLocalActionSettingsBusy(action)) {
+    actions.append(createAgentActionSavingIndicator());
+    return actions;
+  }
+
   const featureId = getAgentActionBackendFeatureId(action);
   const sourceActionId = getAgentActionSourceActionId(action);
   const paused = isAgentLifecycleActionPaused(action);
@@ -15825,6 +16217,8 @@ function getScheduledActionItemSignature(action) {
     getScheduledActionStatusLabel(action.status, action),
     hideTime ? "" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     String(action.payload?.frequency || ""),
+    String(action.payload?.manualRunMonth || ""),
+    String(action.payload?.result || ""),
     String(action.payload?.lastRunAt || ""),
     String(action.payload?.lastRunStatus || ""),
     String(action.payload?.nextRunAt || ""),
@@ -15832,6 +16226,7 @@ function getScheduledActionItemSignature(action) {
     getAgentDeliveryOptionsSignature(),
     String(monitorActionRunBusy.has(featureId)),
     String(isAgentActionLifecycleBusy(action)),
+    String(isAgentLocalActionSettingsBusy(action)),
   ]);
 }
 
@@ -16214,11 +16609,14 @@ function getScheduledActionDetailSignature(action) {
     String(action.payload?.manualOnly ?? ""),
     monitorActionRunBusy.has(String(action.payload?.backendFeatureId || "").trim()),
     localActionRunBusy.has(String(action.id || "").trim()),
+    isAgentLocalActionSettingsBusy(action),
     String(action.payload?.initialRunStatus || ""),
     String(action.payload?.initialRunMessage || ""),
     String(action.payload?.initialRunError || ""),
     String(action.payload?.deliveryTarget || ""),
     String(action.payload?.deliveryLabel || ""),
+    String(action.payload?.manualRunMonth || ""),
+    String(action.payload?.result || ""),
     String(action.payload?.lastRunAt || ""),
     String(action.payload?.lastRunStatus || ""),
     String(action.payload?.nextRunAt || ""),
@@ -16292,6 +16690,8 @@ function scheduleAgentMonitorAutoSave(action, draft, form, options = {}) {
   if (options.status !== false) {
     setAgentMonitorEditorStatus(editor, "Saving changes…");
   }
+  setAgentLocalActionSettingsBusy(action, true);
+  updateAgentLocalActionDom(action);
   const delayMs = Number.isFinite(options.delayMs) ? Math.max(0, Number(options.delayMs)) : 220;
   editor.saveTimer = window.setTimeout(() => {
     editor.saveTimer = null;
@@ -16498,6 +16898,8 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
   const watchItems = normalizeMonitorWatchItems(draft.watchItems);
   if (!watchItems.length) {
     setAgentMonitorEditorStatus(editor, "Add at least one topic before saving.", true);
+    setAgentLocalActionSettingsBusy(action, false);
+    updateAgentLocalActionDom(action);
     return null;
   }
 
@@ -16555,6 +16957,8 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
       throw error;
     } finally {
       featureConfigBusy = false;
+      setAgentLocalActionSettingsBusy(action, false);
+      updateAgentLocalActionDom(action);
       if (editor.savePromise === currentSavePromise) {
         editor.savePromise = null;
       }
@@ -17016,7 +17420,8 @@ function updateAgentLocalActionDom(action) {
     return;
   }
   const statusClass = getScheduledActionStatusClass(action.status);
-  item.className = `agent-action-item is-${statusClass}${state.selectedScheduledActionId === String(action.id) ? " is-expanded" : ""}`;
+  item.className = `agent-action-item is-${statusClass}${state.selectedScheduledActionId === String(action.id) ? " is-expanded" : ""}${agentActionSpotlightId && String(action.id || "") === agentActionSpotlightId ? " is-spotlighted" : ""}`;
+  item.dataset.agentActionItemSignature = getScheduledActionItemSignature(action);
   const status = item.querySelector(".agent-action-status");
   const lifecycleBusy = isAgentActionLifecycleBusy(action);
   if (status) {
@@ -17049,6 +17454,15 @@ function updateAgentLocalActionDom(action) {
       value.textContent = action.payload?.timeWindow || "Not available";
     }
   }
+  const currentActions = item.querySelector(".agent-action-detail-actions");
+  const nextActions = createAgentActionDetailActions(action);
+  if (currentActions && nextActions) {
+    currentActions.replaceWith(nextActions);
+  } else if (!currentActions && nextActions) {
+    item.querySelector(".agent-action-detail-card")?.append(nextActions);
+  } else if (currentActions) {
+    currentActions.remove();
+  }
 }
 
 function setAgentLocalActionEditorStatus(editor, message, isError = false, isSaving = false, changedField = null) {
@@ -17071,7 +17485,105 @@ function setAgentLocalActionEditorStatus(editor, message, isError = false, isSav
   setAgentActionEditorStatusElement(editor.status, message, isError, isSaving);
 }
 
-function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = null) {
+function shouldShowAgentManualRunMonthField(proposal, draft = {}) {
+  return String(draft.frequency || "").trim().toLowerCase() === "manual"
+    && agentContextSuggestsMonthlyBatchTask(proposal, draft.result || "");
+}
+
+function applyAgentLocalActionDraftState(action, draft, options = {}) {
+  const proposal = getAgentLocalActionProposal(action);
+  if (!proposal) {
+    return null;
+  }
+  const fields = { ...getAgentProposalFieldMap(proposal) };
+  const frequencyLabel = formatAgentLocalActionFrequency(draft.frequency);
+  const manualOnly = draft.frequency === "manual";
+  const previousLifecycleStatus = getAgentProposalLifecycleStatus(proposal);
+  const lifecycleStatus = manualOnly ? "active" : previousLifecycleStatus;
+  if (manualOnly) {
+    fields.frequency = "manual only";
+    fields.schedule = "manual only";
+  } else {
+    fields.frequency = frequencyLabel;
+    if (proposal.type === "email-digest") fields.schedule = frequencyLabel;
+  }
+  if (draft.deliveryChannel) fields.deliveryChannel = formatAgentScheduledMessageChannel(draft.deliveryChannel);
+  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
+    if (Object.prototype.hasOwnProperty.call(draft, key)) {
+      const value = String(draft[key] || "").trim();
+      if (value) fields[key] = value;
+    }
+  }
+  if (shouldShowAgentManualRunMonthField(proposal, draft)) {
+    fields.manualRunMonth = getAgentProposalManualRunMonthValue(proposal, draft);
+  }
+
+  proposal.fields = normalizeAgentFieldValues(fields);
+  normalizeAgentMonthlyBatchProposalFields(proposal, {
+    ...draft,
+    manualRunMonth: fields.manualRunMonth,
+    result: fields.result,
+  });
+  proposal.details = {
+    ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
+    manualOnly,
+    runMode: manualOnly ? "manual" : "recurring",
+    frequency: frequencyLabel,
+    actionLifecycleStatus: lifecycleStatus,
+    manualRunMonth: proposal.fields.manualRunMonth || fields.manualRunMonth || "",
+  };
+  proposal.executionPlan = {
+    ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
+    manualOnly,
+    runMode: manualOnly ? "manual" : "recurring",
+    frequency: frequencyLabel,
+    actionLifecycleStatus: lifecycleStatus,
+    manualRunMonth: proposal.fields.manualRunMonth || fields.manualRunMonth || "",
+    settings: {
+      ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
+      manualOnly,
+      runMode: manualOnly ? "manual" : "recurring",
+      actionLifecycleStatus: lifecycleStatus,
+      manualRunMonth: proposal.fields.manualRunMonth || fields.manualRunMonth || "",
+    },
+  };
+  const previousDeliveryChannel = normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel);
+  const nextDeliveryTarget = previousDeliveryChannel === draft.deliveryChannel
+    ? String(action.payload?.deliveryTarget || action.recipientRef || "").trim()
+    : getConnectedPlatformAddress(draft.deliveryChannel);
+  proposal.executionPlan.deliveryTarget = nextDeliveryTarget;
+  proposal.executionPlan.settings.deliveryTarget = nextDeliveryTarget;
+  proposal.executionPlan.action = {
+    ...(proposal.executionPlan.action && typeof proposal.executionPlan.action === "object" ? proposal.executionPlan.action : {}),
+    recipientRef: nextDeliveryTarget || draft.deliveryChannel,
+  };
+  proposal.updatedAt = new Date().toISOString();
+  updateAgentProposalSummaryFromFields(proposal);
+  action.payload.manualOnly = manualOnly;
+  action.payload.actionLifecycleStatus = lifecycleStatus;
+  action.payload.frequency = manualOnly ? "manual only" : frequencyLabel;
+  action.payload.summary = proposal.summary;
+  action.payload.preview = getAgentProposalLocalActionPreview(proposal);
+  action.payload.manualRunMonth = proposal.fields.manualRunMonth || fields.manualRunMonth || "";
+  action.payload.deliveryChannel = draft.deliveryChannel;
+  action.payload.deliveryTarget = nextDeliveryTarget;
+  action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, nextDeliveryTarget || action.recipientRef);
+  action.recipientRef = nextDeliveryTarget || draft.deliveryChannel;
+  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
+    if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
+  }
+  if (action.payload.result !== proposal.fields.result && proposal.fields.result) {
+    action.payload.result = proposal.fields.result;
+  }
+  action.channel = draft.deliveryChannel || action.channel;
+  action.status = manualOnly ? "manual_only" : (lifecycleStatus === "paused" ? "paused" : "running");
+  if (options.persist !== false) {
+    persistClientState();
+  }
+  return { proposal, manualOnly, frequencyLabel, lifecycleStatus };
+}
+
+function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = null, options = {}) {
   const editor = form?._agentLocalActionEditor;
   if (!editor) return;
   if (editor.saveTimer) window.clearTimeout(editor.saveTimer);
@@ -17080,78 +17592,18 @@ function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = nu
     editor.saveTimer = null;
     const proposal = getAgentLocalActionProposal(action);
     if (!proposal) {
+      setAgentLocalActionSettingsBusy(action, false);
+      updateAgentLocalActionDom(action);
       setAgentLocalActionEditorStatus(editor, "Couldn’t save changes.", true);
       return;
     }
-    const fields = { ...getAgentProposalFieldMap(proposal) };
-    const frequencyLabel = formatAgentLocalActionFrequency(draft.frequency);
-    const manualOnly = draft.frequency === "manual";
-    const previousLifecycleStatus = getAgentProposalLifecycleStatus(proposal);
-    const lifecycleStatus = manualOnly ? "active" : previousLifecycleStatus;
-    if (draft.frequency === "manual") {
-      fields.frequency = "manual only";
-      fields.schedule = "manual only";
-    } else {
-      fields.frequency = frequencyLabel;
-      if (proposal.type === "email-digest") fields.schedule = frequencyLabel;
-    }
-    if (draft.deliveryChannel) fields.deliveryChannel = formatAgentScheduledMessageChannel(draft.deliveryChannel);
-    for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
-      if (Object.prototype.hasOwnProperty.call(draft, key)) {
-        const value = String(draft[key] || "").trim();
-        if (value) fields[key] = value;
-      }
-    }
-    proposal.fields = normalizeAgentFieldValues(fields);
-    proposal.details = {
-      ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
-      manualOnly,
-      runMode: manualOnly ? "manual" : "recurring",
-      frequency: frequencyLabel,
-      actionLifecycleStatus: lifecycleStatus,
-    };
-    proposal.executionPlan = {
-      ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
-      manualOnly,
-      runMode: manualOnly ? "manual" : "recurring",
-      frequency: frequencyLabel,
-      actionLifecycleStatus: lifecycleStatus,
-      settings: {
-        ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
-        manualOnly,
-        runMode: manualOnly ? "manual" : "recurring",
-        actionLifecycleStatus: lifecycleStatus,
-      },
-    };
-    const previousDeliveryChannel = normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel);
-    const nextDeliveryTarget = previousDeliveryChannel === draft.deliveryChannel
-      ? String(action.payload?.deliveryTarget || action.recipientRef || "").trim()
-      : getConnectedPlatformAddress(draft.deliveryChannel);
-    proposal.executionPlan.deliveryTarget = nextDeliveryTarget;
-    proposal.executionPlan.settings.deliveryTarget = nextDeliveryTarget;
-    proposal.executionPlan.action = {
-      ...(proposal.executionPlan.action && typeof proposal.executionPlan.action === "object" ? proposal.executionPlan.action : {}),
-      recipientRef: nextDeliveryTarget || draft.deliveryChannel,
-    };
-    proposal.updatedAt = new Date().toISOString();
-    updateAgentProposalSummaryFromFields(proposal);
-    action.payload.manualOnly = manualOnly;
-    action.payload.actionLifecycleStatus = lifecycleStatus;
-    action.payload.frequency = manualOnly ? "manual only" : frequencyLabel;
-    action.payload.summary = proposal.summary;
-    action.payload.preview = getAgentProposalLocalActionPreview(proposal);
-    action.payload.deliveryChannel = draft.deliveryChannel;
-    action.payload.deliveryTarget = nextDeliveryTarget;
-    action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, nextDeliveryTarget || action.recipientRef);
-    action.recipientRef = nextDeliveryTarget || draft.deliveryChannel;
-    for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
-      if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
-    }
-    action.channel = draft.deliveryChannel || action.channel;
-    action.status = manualOnly ? "manual_only" : (lifecycleStatus === "paused" ? "paused" : "running");
-    persistClientState();
+    applyAgentLocalActionDraftState(action, draft);
+    setAgentLocalActionSettingsBusy(action, false);
     updateAgentLocalActionDom(action);
     setAgentLocalActionEditorStatus(editor, "Saved");
+    if (options.renderOnSave) {
+      renderAgentActions();
+    }
   }, 260);
 }
 
@@ -17161,6 +17613,7 @@ function createAgentLocalActionEditor(action) {
 
   const draft = {
     frequency: getAgentLocalActionFrequencyValue(action, proposal),
+    manualRunMonth: getAgentProposalManualRunMonthValue(proposal),
     // Preserve an action's already-selected channel (including older saved
     // actions) before applying the new chat default.
     deliveryChannel: normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel)
@@ -17180,8 +17633,12 @@ function createAgentLocalActionEditor(action) {
     reengagement: [["Quiet period", "inactivityPeriod", "e.g. 30 days"]],
     custom: [["Result", "result", "What should this action produce?", { multiline: true }]],
   };
+  let resultControl = null;
   for (const [label, key, placeholder, fieldOptions = {}] of typeFields[proposal.type] || []) {
     draft[key] = getAgentProposalFieldValue(proposal, key);
+    if (key === "result") {
+      draft[key] = getAgentMonthlyBatchResultText(proposal, draft) || draft[key];
+    }
     const editorFieldOptions = { placeholder, ...fieldOptions };
     if (key === "timeWindow") {
       draft[key] = normalizeAgentCalendarSummaryDateRangeValue(draft[key] || "next week");
@@ -17199,6 +17656,9 @@ function createAgentLocalActionEditor(action) {
       scheduleAgentLocalActionAutoSave(action, draft, form, control.field);
     });
     form.append(control.field);
+    if (key === "result") {
+      resultControl = control;
+    }
     if (fieldOptions.multiline) {
       scheduleAgentActionEditorTextareaResize(control.input);
     }
@@ -17211,9 +17671,63 @@ function createAgentLocalActionEditor(action) {
   );
   frequency.input.addEventListener("change", () => {
     draft.frequency = frequency.input.value;
-    scheduleAgentLocalActionAutoSave(action, draft, form, frequency.field);
+    if (shouldShowAgentManualRunMonthField(proposal, draft) && !draft.manualRunMonth) {
+      draft.manualRunMonth = getAgentProposalManualRunMonthValue(proposal, draft);
+    }
+    syncManualRunMonthField();
+    refreshMonthlyBatchResultField();
+    applyAgentLocalActionDraftState(action, draft, { persist: false });
+    setAgentLocalActionSettingsBusy(action, true);
+    updateAgentLocalActionDom(action);
+    scheduleAgentLocalActionAutoSave(action, draft, form, frequency.field, { renderOnSave: true });
   });
   form.append(frequency.field);
+
+  const manualRunMonth = createAgentLocalActionEditorField(
+    "Run month",
+    draft.manualRunMonth,
+    { select: true, options: getAgentManualRunMonthOptions(draft.manualRunMonth) },
+  );
+  manualRunMonth.input.addEventListener("change", () => {
+    draft.manualRunMonth = parseAgentManualRunMonthValue(manualRunMonth.input.value) || manualRunMonth.input.value;
+    refreshMonthlyBatchResultField();
+    applyAgentLocalActionDraftState(action, draft, { persist: false });
+    setAgentLocalActionSettingsBusy(action, true);
+    updateAgentLocalActionDom(action);
+    scheduleAgentLocalActionAutoSave(action, draft, form, manualRunMonth.field, { renderOnSave: true });
+  });
+  form.append(manualRunMonth.field);
+
+  function syncManualRunMonthField() {
+    const showField = shouldShowAgentManualRunMonthField(proposal, draft);
+    manualRunMonth.field.hidden = !showField;
+    manualRunMonth.input.disabled = !showField;
+    if (showField) {
+      draft.manualRunMonth = parseAgentManualRunMonthValue(draft.manualRunMonth) || getAgentProposalManualRunMonthValue(proposal, draft);
+      if (!Array.from(manualRunMonth.input.options).some((option) => option.value === draft.manualRunMonth)) {
+        const optionElement = document.createElement("option");
+        optionElement.value = draft.manualRunMonth;
+        optionElement.textContent = formatAgentManualRunMonthLabel(draft.manualRunMonth);
+        manualRunMonth.input.prepend(optionElement);
+      }
+      manualRunMonth.input.value = draft.manualRunMonth;
+    }
+  }
+
+  function refreshMonthlyBatchResultField() {
+    if (!resultControl) {
+      return;
+    }
+    const nextResult = getAgentMonthlyBatchResultText(proposal, draft);
+    if (!nextResult || resultControl.input.value === nextResult) {
+      return;
+    }
+    draft.result = nextResult;
+    resultControl.input.value = nextResult;
+    scheduleAgentActionEditorTextareaResize(resultControl.input);
+  }
+  syncManualRunMonthField();
+  refreshMonthlyBatchResultField();
 
   const delivery = createAgentLocalActionEditorField(
     "Delivery",
@@ -17281,11 +17795,15 @@ function createSourceActionEditor(action) {
     if (saveTimer) window.clearTimeout(saveTimer);
     setAgentActionEditorStatusElement(status, "Saving changes…", false, true);
     setAgentActionEditorFieldStatus(frequency.field, "Saving", false, true);
+    setAgentLocalActionSettingsBusy(action, true);
+    updateAgentLocalActionDom(action);
     saveTimer = window.setTimeout(async () => {
       const selected = getSourceActionEditorFrequencyOptions().find((option) => option.value === frequency.input.value);
       if (!selected) {
         setAgentActionEditorStatusElement(status, "Choose a frequency.", true);
         setAgentActionEditorFieldStatus(frequency.field, "Error", true);
+        setAgentLocalActionSettingsBusy(action, false);
+        updateAgentLocalActionDom(action);
         return;
       }
       try {
@@ -17306,6 +17824,9 @@ function createSourceActionEditor(action) {
       } catch (error) {
         setAgentActionEditorStatusElement(status, formatApiErrorMessage(error, "Couldn’t save the source schedule."), true);
         setAgentActionEditorFieldStatus(frequency.field, "Error", true);
+      } finally {
+        setAgentLocalActionSettingsBusy(action, false);
+        updateAgentLocalActionDom(action);
       }
     }, 260);
   });
@@ -19109,6 +19630,7 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     }
   }
 
+  normalizeAgentMonthlyBatchProposalFields(proposal);
   proposal.approved = true;
   proposal.status = "approved";
   proposal.approvedAt = new Date().toISOString();
@@ -20409,12 +20931,6 @@ const ACTION_ONLY_PLATFORM_CONNECTION_IDS = new Set([
   "web-monitoring",
   "monitor",
   MONITOR_FEATURE_ID,
-]);
-
-const GOOGLE_TOOL_PLATFORM_CONNECTION_IDS = new Set([
-  "calendar",
-  "drive",
-  "email",
 ]);
 
 function shouldRenderAgentToolShelfConnection(connection) {

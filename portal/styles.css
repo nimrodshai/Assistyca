@@ -4560,7 +4560,7 @@ body[data-modal="billing"] .app-shell {
   border-color: rgba(55, 184, 171, 0.88);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(237, 252, 250, 0.92));
   box-shadow: 0 0 0 2px rgba(55, 184, 171, 0.26), 0 16px 34px rgba(15, 118, 110, 0.16);
-  animation: agent-action-card-border-pulse 1080ms ease-in-out 4;
+  animation: agent-action-card-border-pulse 960ms ease-in-out 4 forwards;
 }
 
 .agent-action-item.is-expanded {
@@ -4605,8 +4605,8 @@ body[data-modal="billing"] .app-shell {
   0%,
   100% {
     transform: translateY(0);
-    border-color: rgba(55, 184, 171, 0.42);
-    box-shadow: 0 0 0 1px rgba(55, 184, 171, 0.16), 0 12px 28px rgba(15, 118, 110, 0.1);
+    border-color: rgba(55, 184, 171, 0.18);
+    box-shadow: 0 0 0 0 rgba(55, 184, 171, 0), 0 8px 18px rgba(15, 118, 110, 0.06);
   }
 
   48% {
@@ -4974,7 +4974,8 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-action-editor-status.is-saving .agent-action-editor-status-spinner,
-.agent-action-editor-field-status.is-saving .agent-action-editor-status-spinner {
+.agent-action-editor-field-status.is-saving .agent-action-editor-status-spinner,
+.agent-action-detail-saving.is-saving .agent-action-editor-status-spinner {
   display: inline-block;
 }
 
@@ -5324,6 +5325,16 @@ body[data-modal="billing"] .app-shell {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+
+.agent-action-detail-saving {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  min-height: 2.25rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 750;
 }
 
 .agent-action-stop-button {

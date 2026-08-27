@@ -48,7 +48,7 @@ _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "whatsapp-replies": ["whatsappNumber", "approver", "guardrails", "deliveryChannel"],
     "reengagement": ["inactivityPeriod", "frequency", "deliveryChannel"],
     "source-action": ["sourceType", "sourceUrl", "sourceFileName", "sourceMimeType", "frequency", "timezone"],
-    "custom": ["result", "frequency", "deliveryChannel", "calendar"],
+    "custom": ["result", "manualRunMonth", "frequency", "deliveryChannel", "calendar"],
 }
 _AGENT_PROPOSAL_FIELD_ALIASES = {
     "channel": "deliveryChannel",
@@ -85,6 +85,15 @@ _AGENT_PROPOSAL_FIELD_ALIASES = {
     "quiet_period": "inactivityPeriod",
     "quietperiod": "inactivityPeriod",
     "output": "result",
+    "month": "manualRunMonth",
+    "run_month": "manualRunMonth",
+    "runmonth": "manualRunMonth",
+    "manual_month": "manualRunMonth",
+    "manualmonth": "manualRunMonth",
+    "manual_run_month": "manualRunMonth",
+    "manualrunmonth": "manualRunMonth",
+    "reporting_month": "manualRunMonth",
+    "reportingmonth": "manualRunMonth",
     "url": "sourceUrl",
     "source_url": "sourceUrl",
     "sourceurl": "sourceUrl",
@@ -386,7 +395,9 @@ def build_agent_turn_prompt(
         "question for these jobs. If you still need confirmation, ask whether that monthly beginning-of-month "
         "cadence is okay. If the user must choose between one-time and recurring, make the wording explicit: the "
         "one-time choice is for the named/requested month, while the recurring choice pulls the previous month's "
-        "items each month. Do not phrase recurring work as repeatedly pulling the same named month. If the task "
+        "items each month. For a one-time/manual month-based job, include manualRunMonth as YYYY-MM when the "
+        "month is known. For recurring monthly jobs, make changes.fields.result refer to the previous month rather "
+        "than a fixed named month. Do not phrase recurring work as repeatedly pulling the same named month. If the task "
         "requires finding receipts, invoices, statements, expenses, bills, transactions, or bookkeeping records in "
         "Gmail or Google Drive, treat that as Google source access. If toolContext.gmail and toolContext.drive are "
         "not connected, ask the user to connect Google with Gmail or Drive read access before approval; do not imply "

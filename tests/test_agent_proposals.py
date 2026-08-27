@@ -84,6 +84,23 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertEqual(turn["changes"], {"timeLocal": "13:50"})
         self.assertIn("changed the time", turn["reply"])
 
+    def test_conversational_turn_preserves_manual_run_month_field(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "revise_proposal",
+            "reply": "I’ll use August 2026 for the manual run.",
+            "proposalType": "custom",
+            "changes": {
+                "fields": {
+                    "result": "Pull all receipts for August 2026",
+                    "manualRunMonth": "2026-08",
+                },
+            },
+        }, has_active_proposal=True, active_proposal_type="custom")
+
+        self.assertEqual(turn["outcome"], "revise_proposal")
+        self.assertEqual(turn["changes"]["fields"]["manualRunMonth"], "2026-08")
+        self.assertEqual(turn["changes"]["fields"]["result"], "Pull all receipts for August 2026")
+
     def test_conversational_turn_prompt_preserves_pending_proposal_context(self) -> None:
         prompt = build_agent_turn_prompt(
             user_message="No, let's change it to 13:50",
@@ -267,6 +284,8 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("month-based batch jobs", prompt)
         self.assertIn("infer frequency/schedule as monthly", prompt)
         self.assertIn("beginning of each month for the previous month", prompt)
+        self.assertIn("manualRunMonth", prompt)
+        self.assertIn("previous month rather than a fixed named month", prompt)
         self.assertIn("Do not ask a generic daily/weekly/monthly frequency question", prompt)
         self.assertIn("Do not phrase recurring work as repeatedly pulling the same named month", prompt)
         self.assertIn("ask the user to connect Google with Gmail or Drive read access before approval", prompt)
@@ -553,7 +572,7 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertIn("reply is required for every outcome", kwargs["prompt"])
         self.assertIn("include a natural approval question", kwargs["prompt"])
         self.assertIn("Do not echo the user's full request", kwargs["prompt"])
-        self.assertIn("Notifications center as the default delivery destination", kwargs["prompt"])
+        self.assertIn("default deliveryChannel to portal (the Notifications center)", kwargs["prompt"])
         self.assertIn("Setup questions and approvals still stay in the Assistyca chat", kwargs["prompt"])
         self.assertIn('"toolContext":{"whatsapp":{"ready":true', kwargs["prompt"])
 
