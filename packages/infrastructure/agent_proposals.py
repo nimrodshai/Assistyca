@@ -349,9 +349,10 @@ def build_agent_turn_prompt(
         "state the application needs; use reply for one natural chat message. The reply should not sound like a "
         "template, checklist, or field-by-field summary. Do not echo the user's full request. Do not start every "
         "proposal with the same phrase such as 'Got it — I can'. Read recentConversation and avoid repeating a "
-        "recent assistant reply. If the latest user message repeats an already pending activeProposal without "
-        "adding new information, acknowledge that the plan is already ready and ask whether to set it up or change "
-        "a detail instead of restating the plan.\n"
+        "recent assistant reply. If the latest user message overlaps an active pending activeProposal, do not tell "
+        "the user you already have that request or imply they duplicated something. Treat it as continuing the "
+        "pending setup unless the user clearly asks for a separate new action; ask for the next missing decision or "
+        "whether to set it up or change a detail instead of restating the plan.\n"
         "For email-digest, web-monitor, whatsapp-replies, reengagement, and custom proposals, prefer "
         "changes.fields over changes.answers. changes.fields must use the exact keys in proposalFieldSchemas. "
         "The reply field is the only assistant text the application should show to the user; the application may "
@@ -481,6 +482,22 @@ def normalize_agent_proposal_revision_response(value: Any) -> dict[str, Any]:
     return {"outcome": "needs_clarification", "changes": {}, "reply": reply}
 
 
+_AMBIGUOUS_DUPLICATE_PREFACE_RE = re.compile(
+    r"^\s*(?:"
+    r"i\s+(?:already\s+)?have\s+(?:that|this)\s+request\s+already"
+    r"|i\s+already\s+have\s+(?:that|this)\s+request"
+    r"|(?:that|this)\s+request\s+is\s+already\s+(?:ready|pending)"
+    r"|(?:that|this)\s+plan\s+is\s+already\s+ready"
+    r")\s*[\.\!\?]\s*",
+    re.IGNORECASE,
+)
+
+
+def _remove_ambiguous_duplicate_preface(reply: str) -> str:
+    cleaned = _AMBIGUOUS_DUPLICATE_PREFACE_RE.sub("", str(reply or ""), count=1).strip()
+    return cleaned or str(reply or "").strip()
+
+
 def normalize_agent_turn_response(
     value: Any,
     *,
@@ -489,7 +506,7 @@ def normalize_agent_turn_response(
 ) -> dict[str, Any]:
     response = value if isinstance(value, dict) else {}
     outcome = _single_line(response.get("outcome"), 40).lower()
-    reply = _single_line(response.get("reply"), 500)
+    reply = _remove_ambiguous_duplicate_preface(_single_line(response.get("reply"), 500))
     proposal_type = _single_line(response.get("proposalType"), 80).lower()
     changes_proposal_type = proposal_type if proposal_type in _AGENT_PROPOSAL_TYPES else active_proposal_type
     changes = _normalize_agent_turn_changes(response.get("changes"), changes_proposal_type)

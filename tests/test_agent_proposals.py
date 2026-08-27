@@ -206,11 +206,27 @@ class AgentProposalRevisionTests(unittest.TestCase):
         )
 
         self.assertIn("avoid repeating a recent assistant reply", prompt)
-        self.assertIn("repeats an already pending activeProposal", prompt)
-        self.assertIn("plan is already ready", prompt)
+        self.assertIn("overlaps an active pending activeProposal", prompt)
+        self.assertIn("do not tell the user you already have that request", prompt)
+        self.assertIn("Treat it as continuing the pending setup", prompt)
         self.assertIn("instead of restating the plan", prompt)
         self.assertIn("may omit them when the reply already gives the user a clear", prompt)
         self.assertNotIn("may attach Set it up and Change something buttons", prompt)
+
+    def test_conversational_turn_response_removes_duplicate_preface(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "question",
+            "reply": "I have that request already. Should this be a one-time pull for August?",
+            "proposalType": "custom",
+            "changes": {
+                "fields": {
+                    "result": "Pull all receipts from August",
+                },
+            },
+        }, has_active_proposal=True, active_proposal_type="custom")
+
+        self.assertEqual(turn["reply"], "Should this be a one-time pull for August?")
+        self.assertEqual(turn["outcome"], "question")
 
     def test_question_turn_can_preserve_known_draft_fields(self) -> None:
         turn = normalize_agent_turn_response({
