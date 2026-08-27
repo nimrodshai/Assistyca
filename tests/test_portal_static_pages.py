@@ -398,6 +398,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-action-detail-actions", styles)
         self.assertIn(".agent-action-danger-button", styles)
         self.assertIn(".agent-action-item.is-failed::before", styles)
+        self.assertIn("#agentCompletedActionList .agent-action-item::before", styles)
         self.assertIn(".agent-add-tool-button", styles)
         self.assertIn(".agent-add-tool-menu", styles)
         self.assertIn("function getAgentMessageRenderSignature", script)

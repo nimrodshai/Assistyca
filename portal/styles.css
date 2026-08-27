@@ -3951,6 +3951,10 @@ body[data-modal="billing"] .app-shell {
   background: #bd4f4f;
 }
 
+#agentCompletedActionList .agent-action-item::before {
+  display: none;
+}
+
 .agent-action-item:hover,
 .agent-action-item:focus-visible {
   transform: translateY(-1px);
