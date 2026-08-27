@@ -3966,6 +3966,16 @@ function normalizeAgentWorkspace(agent = {}) {
     activeChatId = chats.find((chat) => chat.status === "active")?.id || chats[0]?.id || "";
   }
   const activeChat = chats.find((chat) => chat.id === activeChatId) || chats[0] || fallback.chats[0];
+  // status mirrors "is this the open chat", and the two drift apart whenever
+  // activeChatId moves on its own: a chat aged out past AGENT_MAX_CHATS, or a
+  // stale id fell back to chats[0]. The chat left behind still says active
+  // while rendering as "Saved", so re-anchor every status to activeChatId.
+  for (const chat of chats) {
+    chat.status = chat.id === activeChat?.id ? "active" : "historical";
+    if (chat.status === "historical" && !chat.archivedAt) {
+      chat.archivedAt = chat.updatedAt || chat.createdAt || new Date().toISOString();
+    }
+  }
   if (activeChat && messages.length) {
     const sourceMessageIds = messages.map((message) => message.id).join("|");
     const activeMessageIds = activeChat.messages.map((message) => message.id).join("|");
@@ -12765,7 +12775,7 @@ function selectAgentChat(chatId) {
 function deleteAgentChat(chatId) {
   const agent = getAgentWorkspace();
   const chat = agent.chats.find((candidate) => candidate.id === chatId);
-  if (!chat || chat.id === agent.activeChatId || chat.status === "active") {
+  if (!chat || chat.id === agent.activeChatId) {
     return;
   }
 
