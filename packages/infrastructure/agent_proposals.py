@@ -48,7 +48,7 @@ _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "whatsapp-replies": ["whatsappNumber", "approver", "guardrails", "deliveryChannel"],
     "reengagement": ["inactivityPeriod", "frequency", "deliveryChannel"],
     "source-action": ["sourceType", "sourceUrl", "sourceFileName", "sourceMimeType", "frequency", "timezone"],
-    "custom": ["result", "manualRunMonth", "frequency", "deliveryChannel", "calendar"],
+    "custom": ["result", "manualRunMonth", "outputFolder", "frequency", "deliveryChannel", "calendar"],
 }
 _AGENT_PROPOSAL_FIELD_ALIASES = {
     "channel": "deliveryChannel",
@@ -85,6 +85,17 @@ _AGENT_PROPOSAL_FIELD_ALIASES = {
     "quiet_period": "inactivityPeriod",
     "quietperiod": "inactivityPeriod",
     "output": "result",
+    "folder": "outputFolder",
+    "save_folder": "outputFolder",
+    "savefolder": "outputFolder",
+    "save_to": "outputFolder",
+    "saveto": "outputFolder",
+    "output_folder": "outputFolder",
+    "outputfolder": "outputFolder",
+    "destination_folder": "outputFolder",
+    "destinationfolder": "outputFolder",
+    "report_folder": "outputFolder",
+    "reportfolder": "outputFolder",
     "month": "manualRunMonth",
     "run_month": "manualRunMonth",
     "runmonth": "manualRunMonth",
@@ -396,8 +407,11 @@ def build_agent_turn_prompt(
         "cadence is okay. If the user must choose between one-time and recurring, make the wording explicit: the "
         "one-time choice is for the named/requested month, while the recurring choice pulls the previous month's "
         "items each month. For a one-time/manual month-based job, include manualRunMonth as YYYY-MM when the "
-        "month is known. For recurring monthly jobs, make changes.fields.result refer to the previous month rather "
-        "than a fixed named month. Do not phrase recurring work as repeatedly pulling the same named month. If the task "
+        "month is known and include outputFolder as Receipts/<MonYYYY>/ for receipt jobs, for example "
+        "Receipts/Aug2026/. For recurring monthly receipt jobs, make changes.fields.result refer to the "
+        "previous month rather than a fixed named month, and include outputFolder as Receipts/{RunMonth}/ so "
+        "the application can resolve the actual month when the action runs. Do not phrase recurring work as "
+        "repeatedly pulling the same named month. If the task "
         "requires finding receipts, invoices, statements, expenses, bills, transactions, or bookkeeping records in "
         "Gmail or Google Drive, treat that as Google source access. If toolContext.gmail and toolContext.drive are "
         "not connected, ask the user to connect Google with Gmail or Drive read access before approval; do not imply "

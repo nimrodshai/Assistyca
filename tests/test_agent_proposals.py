@@ -93,12 +93,14 @@ class AgentProposalRevisionTests(unittest.TestCase):
                 "fields": {
                     "result": "Pull all receipts for August 2026",
                     "manualRunMonth": "2026-08",
+                    "outputFolder": "Receipts/Aug2026/",
                 },
             },
         }, has_active_proposal=True, active_proposal_type="custom")
 
         self.assertEqual(turn["outcome"], "revise_proposal")
         self.assertEqual(turn["changes"]["fields"]["manualRunMonth"], "2026-08")
+        self.assertEqual(turn["changes"]["fields"]["outputFolder"], "Receipts/Aug2026/")
         self.assertEqual(turn["changes"]["fields"]["result"], "Pull all receipts for August 2026")
 
     def test_conversational_turn_prompt_preserves_pending_proposal_context(self) -> None:
@@ -285,6 +287,9 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("infer frequency/schedule as monthly", prompt)
         self.assertIn("beginning of each month for the previous month", prompt)
         self.assertIn("manualRunMonth", prompt)
+        self.assertIn("outputFolder", prompt)
+        self.assertIn("Receipts/<MonYYYY>/", prompt)
+        self.assertIn("Receipts/{RunMonth}/", prompt)
         self.assertIn("previous month rather than a fixed named month", prompt)
         self.assertIn("Do not ask a generic daily/weekly/monthly frequency question", prompt)
         self.assertIn("Do not phrase recurring work as repeatedly pulling the same named month", prompt)

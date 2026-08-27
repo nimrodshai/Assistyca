@@ -156,6 +156,57 @@ class GmailDigestTests(unittest.TestCase):
         self.assertEqual(requests[0].headers["Authorization"], "Bearer gmail-token")  # type: ignore[attr-defined]
         self.assertNotIn("gmail-token", result["message"])
 
+    def test_runner_saves_receipt_image_attachments(self) -> None:
+        requests: list[object] = []
+        image_bytes = b"small-receipt-image"
+        image_data = base64.urlsafe_b64encode(image_bytes).decode("ascii").rstrip("=")
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            requests.append(request)
+            self.assertEqual(timeout, 20)
+            if request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"):  # type: ignore[attr-defined]
+                return _FakeResponse({
+                    "messages": [{"id": "msg-1", "threadId": "thread-1"}],
+                    "resultSizeEstimate": 1,
+                })
+            if "/attachments/att-1" in request.full_url:  # type: ignore[attr-defined]
+                return _FakeResponse({"data": image_data, "size": len(image_bytes)})
+            self.assertIn("/messages/msg-1?", request.full_url)  # type: ignore[attr-defined]
+            return _FakeResponse({
+                "id": "msg-1",
+                "threadId": "thread-1",
+                "snippet": "Total USD 19.95",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Store <receipts@example.com>"},
+                        {"name": "Subject", "value": "Receipt"},
+                        {"name": "Date", "value": "Thu, 27 Aug 2026 08:15:00 +0000"},
+                    ],
+                    "parts": [{
+                        "filename": "receipt.png",
+                        "mimeType": "image/png",
+                        "body": {"attachmentId": "att-1", "size": len(image_bytes)},
+                    }],
+                },
+            })
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = GmailDigestRunner(opener=opener).run(
+                "gmail-token",
+                query="receipt after:2026/08/01 before:2026/09/01",
+                include_attachments=True,
+                attachment_output_dir=Path(temp_dir),
+                attachment_url_prefix="/output/agent_receipts/owner/Receipts/Aug2026/attachments",
+            )
+
+            attachment = result["items"][0]["attachments"][0]
+            attachment_path = Path(attachment["path"])
+            self.assertTrue(attachment_path.exists())
+            self.assertEqual(attachment_path.read_bytes(), image_bytes)
+            self.assertEqual(attachment["mimeType"], "image/png")
+            self.assertTrue(attachment["url"].endswith("/attachments/msg-1-01-receipt.png"))
+            self.assertEqual(len(requests), 3)
+
 
 class CalendarSummaryEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -169,6 +220,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
             PortalConfig(
                 db_path=Path(self.temp_dir.name) / "portal.db",
                 credential_encryption_key=key,
+                agent_output_dir=Path(self.temp_dir.name) / "agent_outputs",
             ),
         )
         if self.server.credential_vault is None:
@@ -388,6 +440,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
                 "fields": {
                     "result": "Pull all receipts for August 2026",
                     "manualRunMonth": "2026-08",
+                    "outputFolder": "Receipts/Aug2026/",
                     "deliveryChannel": "portal",
                 },
                 "deliveryChannel": "portal",
@@ -410,7 +463,14 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
             "message": "Gmail digest\n\n1 recent message:\n1. Receipt - Store",
             "summary": "Gmail digest - 1 message",
             "messageCount": 1,
-            "items": [{"subject": "Receipt - Store"}],
+            "items": [{
+                "id": "msg-1",
+                "threadId": "thread-1",
+                "from": "Store <receipts@example.com>",
+                "subject": "Receipt - Store",
+                "date": "Thu, 27 Aug 2026 08:15:00 +0000",
+                "snippet": "Total USD 19.95",
+            }],
         }
         with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
             with mock.patch(
@@ -427,9 +487,20 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         self.assertIn("after:2026/08/01", payload["query"])
         self.assertIn("before:2026/09/01", payload["query"])
         self.assertIn("receipt", payload["query"])
+        self.assertEqual(payload["outputFolder"], "Receipts/Aug2026/")
+        self.assertEqual(payload["receiptCount"], 1)
+        self.assertIn("receipt-report.pdf", payload["resultUrl"])
+        self.assertEqual(payload["hrefLabel"], "Open PDF")
+        self.assertTrue(Path(payload["artifacts"]["pdf"]["path"]).exists())
+        self.assertTrue(Path(payload["artifacts"]["excel"]["path"]).exists())
+        with urllib_request.urlopen(f"{self.base_url}{payload['resultUrl']}", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(4), b"%PDF")
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], "fresh-gmail-access-token")
         self.assertEqual(run.call_args.kwargs["query"], payload["query"])
+        self.assertTrue(run.call_args.kwargs["include_attachments"])
+        self.assertIn("Receipts/Aug2026/attachments", str(run.call_args.kwargs["attachment_output_dir"]))
 
     def test_calendar_proposal_run_marks_rejected_credential_as_needing_attention(self) -> None:
         request = urllib_request.Request(

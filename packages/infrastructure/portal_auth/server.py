@@ -86,6 +86,11 @@ from packages.infrastructure.portal_db import normalize_client_type
 from packages.infrastructure.portal_db import normalize_user_profile
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
+from packages.infrastructure.portal_runtime_paths import resolve_runtime_path
+from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
+from packages.infrastructure.receipt_collector import create_receipt_bundle
+from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
+from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
@@ -442,6 +447,7 @@ class PortalConfig:
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_redirect_uri: str = ""
+    agent_output_dir: Path = Path("output/agent_receipts")
     smtp: SmtpConfig = field(default_factory=SmtpConfig)
     resend: ResendConfig = field(default_factory=ResendConfig)
 
@@ -1233,6 +1239,9 @@ def load_config() -> PortalConfig:
 
     db_path = resolve_portal_db_path()
     billing_data_path = resolve_portal_billing_data_path()
+    agent_output_dir = resolve_runtime_path(
+        os.getenv("PORTAL_AGENT_OUTPUT_DIR", "output/agent_receipts").strip() or "output/agent_receipts"
+    )
 
     legacy_markup_multiplier = read_float_env("PORTAL_BILLING_MULTIPLIER", DEFAULT_BILLING_MULTIPLIER)
     input_token_price_multiplier = read_float_env(
@@ -1282,6 +1291,7 @@ def load_config() -> PortalConfig:
         google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
         google_oauth_redirect_uri=os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip(),
+        agent_output_dir=agent_output_dir,
         smtp=smtp,
         resend=resend,
     )
@@ -1585,7 +1595,7 @@ def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
 
 def get_agent_proposal_field_text(fields: dict[str, Any]) -> str:
     pieces: list[str] = []
-    for key in ("result", "mailbox", "source", "sourceType", "sourceUrl", "manualRunMonth"):
+    for key in ("result", "mailbox", "source", "sourceType", "sourceUrl", "manualRunMonth", "outputFolder", "frequency", "schedule"):
         if key in fields:
             pieces.append(normalize_text(fields.get(key)))
     return " ".join(piece for piece in pieces if piece).strip()
@@ -1617,12 +1627,75 @@ def parse_agent_run_month_value(*values: Any) -> Optional[tuple[int, int]]:
     return None
 
 
+def get_previous_agent_run_month(now: Optional[datetime] = None) -> tuple[int, int]:
+    current = now or datetime.now(timezone.utc)
+    year = current.year
+    month = current.month - 1
+    if month < 1:
+        return year - 1, 12
+    return year, month
+
+
 def format_agent_gmail_month_start(year: int, month: int) -> str:
     return f"{year:04d}/{month:02d}/01"
 
 
 def get_next_agent_run_month(year: int, month: int) -> tuple[int, int]:
     return (year + 1, 1) if month >= 12 else (year, month + 1)
+
+
+def agent_batch_frequency_is_monthly(fields: dict[str, Any], payload: dict[str, Any]) -> bool:
+    text = normalize_text(
+        fields.get("frequency")
+        or fields.get("schedule")
+        or payload.get("frequency")
+        or payload.get("schedule")
+    ).lower()
+    return bool(re.search(r"\bmonth(?:ly)?\b", text))
+
+
+def resolve_agent_batch_run_month(fields: dict[str, Any], payload: dict[str, Any]) -> Optional[tuple[int, int]]:
+    explicit_month = parse_agent_run_month_value(
+        fields.get("manualRunMonth"),
+        payload.get("manualRunMonth"),
+        fields.get("result"),
+    )
+    if explicit_month:
+        return explicit_month
+
+    context = normalize_text(" ".join([
+        normalize_text(fields.get("result")),
+        normalize_text(payload.get("result")),
+        normalize_text(fields.get("frequency")),
+        normalize_text(payload.get("frequency")),
+        normalize_text(fields.get("schedule")),
+        normalize_text(payload.get("schedule")),
+    ])).lower()
+    if (
+        re.search(r"\b(?:previous|last)\s+month\b", context)
+        or agent_batch_frequency_is_monthly(fields, payload)
+    ):
+        return get_previous_agent_run_month()
+
+    return None
+
+
+def build_agent_receipt_output_folder(
+    fields: dict[str, Any],
+    payload: dict[str, Any],
+    month_value: Optional[tuple[int, int]],
+) -> str:
+    return normalize_receipt_output_folder(
+        fields.get("outputFolder") or payload.get("outputFolder"),
+        month_value=month_value,
+    )
+
+
+def build_agent_receipt_owner_key(email: str) -> str:
+    normalized_email = normalize_email(email)
+    if not normalized_email:
+        return "workspace"
+    return hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:16]
 
 
 def build_custom_google_batch_gmail_query(fields: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -1636,11 +1709,7 @@ def build_custom_google_batch_gmail_query(fields: dict[str, Any], payload: dict[
         return explicit_query
 
     terms = " OR ".join(AGENT_GMAIL_BATCH_SEARCH_TERMS)
-    month_value = parse_agent_run_month_value(
-        fields.get("manualRunMonth"),
-        payload.get("manualRunMonth"),
-        fields.get("result"),
-    )
+    month_value = resolve_agent_batch_run_month(fields, payload)
     if month_value:
         year, month = month_value
         next_year, next_month = get_next_agent_run_month(year, month)
@@ -2400,6 +2469,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def send_head(self):  # type: ignore[override]
         parsed = urllib_parse.urlparse(self.path)
+        if parsed.path.startswith("/output/agent_receipts/"):
+            return self._send_agent_output_file(parsed.path)
         static_alias = resolve_static_page_alias(parsed.path)
         if static_alias is not None:
             return self._send_static_page(static_alias)
@@ -3812,8 +3883,42 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     or "in:inbox newer_than:1d"
                 )
             ) or "in:inbox newer_than:1d"
+            receipt_bundle: Optional[dict[str, Any]] = None
+            result_header = get_custom_google_batch_result_header(fields) if is_custom_google_batch else ""
+            receipt_month: tuple[int, int] | None = None
+            receipt_output_folder = ""
+            receipt_output_root: Path | None = None
+            receipt_owner_key = ""
+            receipt_attachment_dir: Path | None = None
+            receipt_attachment_url_prefix = ""
+            if result_header == "Receipt search":
+                receipt_month = resolve_agent_batch_run_month(fields, payload)
+                receipt_output_folder = build_agent_receipt_output_folder(fields, payload, receipt_month)
+                receipt_output_root = resolve_runtime_path(self.server.config.agent_output_dir, root=self.server.root)  # type: ignore[attr-defined]
+                receipt_owner_key = build_agent_receipt_owner_key(session.email)
+                receipt_folder_path = resolve_receipt_bundle_folder(
+                    receipt_output_root,
+                    owner_key=receipt_owner_key,
+                    output_folder=receipt_output_folder,
+                    month_value=receipt_month,
+                )
+                receipt_attachment_dir = receipt_folder_path / "attachments"
+                receipt_attachment_url_prefix = (
+                    build_receipt_bundle_base_url(
+                        owner_key=receipt_owner_key,
+                        output_folder=receipt_output_folder,
+                        month_value=receipt_month,
+                    )
+                    + "/attachments"
+                )
             try:
-                result = GmailDigestRunner().run(access_token, query=gmail_query)
+                result = GmailDigestRunner().run(
+                    access_token,
+                    query=gmail_query,
+                    include_attachments=receipt_attachment_dir is not None,
+                    attachment_output_dir=receipt_attachment_dir,
+                    attachment_url_prefix=receipt_attachment_url_prefix,
+                )
             except GmailAuthorizationError as exc:
                 self.database.update_platform_connection_status(
                     session.email,
@@ -3840,10 +3945,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return
 
             if is_custom_google_batch:
-                result = relabel_gmail_digest_result(
-                    result,
-                    get_custom_google_batch_result_header(fields),
-                )
+                result = relabel_gmail_digest_result(result, result_header)
+                if result_header == "Receipt search":
+                    receipt_items = result.get("items") if isinstance(result.get("items"), list) else []
+                    try:
+                        receipt_bundle = create_receipt_bundle(
+                            receipt_items,
+                            output_root=receipt_output_root or resolve_runtime_path(self.server.config.agent_output_dir, root=self.server.root),  # type: ignore[attr-defined]
+                            owner_key=receipt_owner_key or build_agent_receipt_owner_key(session.email),
+                            output_folder=receipt_output_folder,
+                            month_value=receipt_month,
+                            query=gmail_query,
+                        )
+                    except Exception as exc:
+                        print(f"Receipt export failed: {exc}", flush=True)
+                        json_response(self, HTTPStatus.BAD_GATEWAY, {
+                            "ok": False,
+                            "error": "receipt_export_failed",
+                            "message": "Receipt search found messages, but I couldn’t save the Excel and PDF bundle. Try again.",
+                        })
+                        return
+
+                    receipt_count = int(receipt_bundle.get("receiptCount") or 0)
+                    review_count = int(receipt_bundle.get("reviewCount") or 0)
+                    result["summary"] = f"Receipt search - {receipt_count} candidate receipt(s)"
+                    result["message"] = (
+                        f"Receipt bundle ready. I found {receipt_count} candidate receipt(s)"
+                        f" and saved the Excel workbook and PDF report in {receipt_bundle['outputFolder']}."
+                    )
+                    if review_count:
+                        result["message"] += f" {review_count} row(s) need review."
 
             self.database.update_platform_connection_status(
                 session.email,
@@ -3856,7 +3987,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "validatedAt": datetime.now(timezone.utc).isoformat(),
                 },
             )
-            json_response(self, HTTPStatus.OK, {
+            response_payload = {
                 "ok": True,
                 "message": str(result.get("message") or "Gmail digest complete."),
                 "summary": str(result.get("summary") or result.get("message") or ""),
@@ -3864,7 +3995,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "items": result.get("items") if isinstance(result.get("items"), list) else [],
                 "mailbox": "Gmail",
                 "query": gmail_query,
-            })
+            }
+            if receipt_bundle:
+                response_payload.update({
+                    "outputFolder": str(receipt_bundle.get("outputFolder") or ""),
+                    "receiptCount": int(receipt_bundle.get("receiptCount") or 0),
+                    "reviewCount": int(receipt_bundle.get("reviewCount") or 0),
+                    "artifacts": receipt_bundle.get("artifacts") if isinstance(receipt_bundle.get("artifacts"), dict) else {},
+                    "resultUrl": str((receipt_bundle.get("artifacts") or {}).get("pdf", {}).get("url") or ""),
+                    "hrefLabel": "Open PDF",
+                })
+            json_response(self, HTTPStatus.OK, response_payload)
             return
 
         time_window = normalize_text(fields.get("timeWindow") or payload.get("timeWindow")) or "next week"
@@ -4756,6 +4897,26 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
 
+        return self._send_file_path(file_path)
+
+    def _send_agent_output_file(self, request_path: str):
+        prefix = "/output/agent_receipts/"
+        relative_path = urllib_parse.unquote(str(request_path or "")[len(prefix):])
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        file_path = (output_root / relative_path).resolve()
+        try:
+            file_path.relative_to(output_root)
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+
+        if not file_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+
+        return self._send_file_path(file_path)
+
+    def _send_file_path(self, file_path: Path):
         try:
             handle = file_path.open("rb")
         except OSError:

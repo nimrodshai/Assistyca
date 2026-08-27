@@ -423,6 +423,7 @@ const AGENT_FOLDER_TYPES = [
   { value: "receipts", label: "Receipts" },
   { value: "sources", label: "Sources" },
 ];
+const AGENT_RECEIPT_RECURRING_OUTPUT_FOLDER = "Receipts/{RunMonth}/";
 const GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly";
 const GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
@@ -932,6 +933,11 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
       required: false,
     },
     {
+      key: "outputFolder",
+      question: "Where should I save the receipt files?",
+      required: false,
+    },
+    {
       key: "frequency",
       question: "How often should this happen?",
       actions: ["Daily", "Weekly", "Monthly"],
@@ -995,6 +1001,17 @@ const AGENT_PROPOSAL_FIELD_ALIASES = {
   quietperiod: "inactivityPeriod",
   result: "result",
   output: "result",
+  folder: "outputFolder",
+  save_folder: "outputFolder",
+  savefolder: "outputFolder",
+  save_to: "outputFolder",
+  saveto: "outputFolder",
+  output_folder: "outputFolder",
+  outputfolder: "outputFolder",
+  destination_folder: "outputFolder",
+  destinationfolder: "outputFolder",
+  report_folder: "outputFolder",
+  reportfolder: "outputFolder",
   month: "manualRunMonth",
   run_month: "manualRunMonth",
   runmonth: "manualRunMonth",
@@ -3452,6 +3469,10 @@ function getAgentResponseResultHref(response = {}) {
     response?.result?.resultUrl,
     response?.result?.url,
     response?.result?.link,
+    response?.artifacts?.pdf?.url,
+    response?.artifacts?.excel?.url,
+    response?.result?.artifacts?.pdf?.url,
+    response?.result?.artifacts?.excel?.url,
     Array.isArray(response?.links) ? response.links[0] : "",
   ];
   for (const candidate of candidates) {
@@ -13858,6 +13879,11 @@ function normalizeAgentMonthlyBatchProposalFields(proposal, draft = {}) {
     manualRunMonth: monthValue,
     result: draft.result || fields.result,
   });
+  const outputFolder = getAgentMonthlyBatchOutputFolder(proposal, {
+    ...draft,
+    manualRunMonth: isManual ? monthValue : "",
+    result: resultText || draft.result || fields.result,
+  });
   let didChange = false;
   if (isManual && monthValue && fields.manualRunMonth !== monthValue) {
     fields.manualRunMonth = monthValue;
@@ -13868,6 +13894,10 @@ function normalizeAgentMonthlyBatchProposalFields(proposal, draft = {}) {
   }
   if (resultText && fields.result !== resultText) {
     fields.result = resultText;
+    didChange = true;
+  }
+  if (outputFolder && fields.outputFolder !== outputFolder) {
+    fields.outputFolder = outputFolder;
     didChange = true;
   }
   if (didChange) {
@@ -16005,6 +16035,7 @@ function createAgentProposalLocalAction(proposal) {
       location: getAgentProposalFieldValue(proposal, "location"),
       timeWindow: getAgentProposalFieldValue(proposal, "timeWindow"),
       manualRunMonth: getAgentProposalFieldValue(proposal, "manualRunMonth"),
+      outputFolder: getAgentProposalFieldValue(proposal, "outputFolder"),
       result: getAgentProposalFieldValue(proposal, "result"),
       frequency: manualOnly
         ? "manual only"
@@ -16440,6 +16471,7 @@ function getScheduledActionItemSignature(action) {
     hideTime ? "" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     String(action.payload?.frequency || ""),
     String(action.payload?.manualRunMonth || ""),
+    String(action.payload?.outputFolder || ""),
     String(action.payload?.result || ""),
     String(action.payload?.lastRunAt || ""),
     String(action.payload?.lastRunStatus || ""),
@@ -17716,6 +17748,83 @@ function shouldAllowAgentManualRunMonthChoice(proposal, draft = {}) {
     && String(draft.frequency || "").trim().toLowerCase() === "manual";
 }
 
+function isAgentProposalReceiptCollector(proposal, draft = {}) {
+  if (!isAgentProposalCustomGoogleBatchRunner(proposal)) {
+    return false;
+  }
+  return /\breceipts?\b/i.test(getAgentQuestionContextText(proposal, draft.result || getAgentProposalFieldValue(proposal, "result")));
+}
+
+function formatAgentReceiptFolderMonth(value) {
+  const normalizedValue = parseAgentManualRunMonthValue(value);
+  const match = normalizedValue.match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return "";
+  }
+  const year = Number.parseInt(match[1], 10);
+  const monthIndex = Number.parseInt(match[2], 10) - 1;
+  const date = new Date(Date.UTC(year, monthIndex, 1));
+  const monthLabel = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    timeZone: "UTC",
+  }).format(date).replace(/\./g, "");
+  return `${monthLabel}${year}`;
+}
+
+function normalizeAgentReceiptOutputFolder(value = "") {
+  const raw = String(value || "").trim().replace(/\\/g, "/");
+  if (!raw) {
+    return "";
+  }
+  const segments = raw
+    .split("/")
+    .map((segment) => segment.trim().replace(/[^a-zA-Z0-9 ._{}-]+/g, "-").replace(/^[ ._-]+|[ ._-]+$/g, ""))
+    .filter(Boolean)
+    .slice(0, 8);
+  return segments.length ? `${segments.join("/")}/` : "";
+}
+
+function isAgentGeneratedReceiptOutputFolder(value = "") {
+  return /^Receipts\/(?:\{RunMonth\}|[A-Z][a-z]{2}\d{4}|Unsorted)\/?$/i.test(String(value || "").trim());
+}
+
+function getAgentMonthlyBatchOutputFolder(proposal, draft = {}) {
+  if (!isAgentProposalReceiptCollector(proposal, draft)) {
+    return "";
+  }
+  const fields = getAgentProposalFieldMap(proposal);
+  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
+  const settings = getAgentProposalExecutionSettings(proposal);
+  const rawValue = Object.prototype.hasOwnProperty.call(draft, "outputFolder")
+    ? draft.outputFolder
+    : (fields.outputFolder || details.outputFolder || settings.outputFolder || "");
+  const isManual = String(draft.frequency || "").trim().toLowerCase() === "manual"
+    || (!String(draft.frequency || "").trim() && getAgentProposalManualOnly(proposal));
+  const runMonthLabel = isManual
+    ? formatAgentReceiptFolderMonth(getAgentProposalManualRunMonthValue(proposal, draft))
+    : "{RunMonth}";
+  const generatedFolder = isManual
+    ? `Receipts/${runMonthLabel || "Unsorted"}/`
+    : AGENT_RECEIPT_RECURRING_OUTPUT_FOLDER;
+  const rawText = String(rawValue || "").trim();
+  if (!rawText || isAgentGeneratedReceiptOutputFolder(rawText)) {
+    return generatedFolder;
+  }
+  const normalizedFolder = normalizeAgentReceiptOutputFolder(
+    isManual ? rawText.replace(/\{RunMonth\}/gi, runMonthLabel || "Unsorted") : rawText,
+  );
+  return normalizedFolder || generatedFolder;
+}
+
+function getAgentCustomGoogleBatchRunLabel(proposal) {
+  const fields = getAgentProposalFieldMap(proposal);
+  const frequencyText = String(fields.frequency || proposal?.executionPlan?.frequency || "").trim().toLowerCase();
+  if (!getAgentProposalManualOnly(proposal) && /\bmonth(?:ly)?\b/.test(frequencyText)) {
+    return "the previous month";
+  }
+  return formatAgentManualRunMonthLabel(getAgentProposalManualRunMonthValue(proposal));
+}
+
 function applyAgentLocalActionDraftState(action, draft, options = {}) {
   const proposal = getAgentLocalActionProposal(action);
   if (!proposal) {
@@ -17734,7 +17843,7 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     if (proposal.type === "email-digest") fields.schedule = frequencyLabel;
   }
   if (draft.deliveryChannel) fields.deliveryChannel = formatAgentScheduledMessageChannel(draft.deliveryChannel);
-  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
+  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result", "outputFolder"]) {
     if (Object.prototype.hasOwnProperty.call(draft, key)) {
       const value = String(draft[key] || "").trim();
       if (value) fields[key] = value;
@@ -17756,6 +17865,13 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
   const savedManualRunMonth = canChooseRunMonth
     ? (proposal.fields.manualRunMonth || fields.manualRunMonth || "")
     : "";
+  const savedOutputFolder = getAgentMonthlyBatchOutputFolder(proposal, {
+    ...draft,
+    manualRunMonth: savedManualRunMonth,
+  });
+  if (savedOutputFolder) {
+    proposal.fields.outputFolder = savedOutputFolder;
+  }
   proposal.details = {
     ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
     manualOnly,
@@ -17763,6 +17879,7 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     frequency: frequencyLabel,
     actionLifecycleStatus: lifecycleStatus,
     manualRunMonth: savedManualRunMonth,
+    outputFolder: savedOutputFolder,
   };
   proposal.executionPlan = {
     ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
@@ -17771,12 +17888,14 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     frequency: frequencyLabel,
     actionLifecycleStatus: lifecycleStatus,
     manualRunMonth: savedManualRunMonth,
+    outputFolder: savedOutputFolder,
     settings: {
       ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
       manualOnly,
       runMode: manualOnly ? "manual" : "recurring",
       actionLifecycleStatus: lifecycleStatus,
       manualRunMonth: savedManualRunMonth,
+      outputFolder: savedOutputFolder,
     },
   };
   const previousDeliveryChannel = normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel);
@@ -17801,12 +17920,16 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
   action.payload.summary = proposal.summary;
   action.payload.preview = getAgentProposalLocalActionPreview(proposal);
   action.payload.manualRunMonth = savedManualRunMonth;
+  action.payload.outputFolder = savedOutputFolder;
   action.payload.deliveryChannel = draft.deliveryChannel;
   action.payload.deliveryTarget = nextDeliveryTarget;
   action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, nextDeliveryTarget || action.recipientRef);
   action.recipientRef = nextDeliveryTarget || draft.deliveryChannel;
-  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result"]) {
+  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result", "outputFolder"]) {
     if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
+  }
+  if (savedOutputFolder) {
+    action.payload.outputFolder = savedOutputFolder;
   }
   if (action.payload.result !== proposal.fields.result && proposal.fields.result) {
     action.payload.result = proposal.fields.result;
@@ -17850,6 +17973,7 @@ function createAgentLocalActionEditor(action) {
   const draft = {
     frequency: getAgentLocalActionFrequencyValue(action, proposal),
     manualRunMonth: getAgentProposalManualRunMonthValue(proposal),
+    outputFolder: getAgentProposalFieldValue(proposal, "outputFolder") || action.payload?.outputFolder || "",
     // Preserve an action's already-selected channel (including older saved
     // actions) before applying the new chat default.
     deliveryChannel: normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel)
@@ -17889,6 +18013,9 @@ function createAgentLocalActionEditor(action) {
     const control = createAgentLocalActionEditorField(label, draft[key], editorFieldOptions);
     control.input.addEventListener(editorFieldOptions.select ? "change" : "input", () => {
       draft[key] = control.input.value;
+      if (key === "result") {
+        syncOutputFolderField();
+      }
       scheduleAgentLocalActionAutoSave(action, draft, form, control.field);
     });
     form.append(control.field);
@@ -17912,6 +18039,7 @@ function createAgentLocalActionEditor(action) {
     }
     syncManualRunMonthField();
     refreshMonthlyBatchResultField();
+    syncOutputFolderField();
     applyAgentLocalActionDraftState(action, draft, { persist: false });
     setAgentLocalActionSettingsBusy(action, true);
     updateAgentLocalActionDom(action);
@@ -17927,12 +18055,26 @@ function createAgentLocalActionEditor(action) {
   manualRunMonth.input.addEventListener("change", () => {
     draft.manualRunMonth = parseAgentManualRunMonthValue(manualRunMonth.input.value) || manualRunMonth.input.value;
     refreshMonthlyBatchResultField();
+    syncOutputFolderField();
     applyAgentLocalActionDraftState(action, draft, { persist: false });
     setAgentLocalActionSettingsBusy(action, true);
     updateAgentLocalActionDom(action);
     scheduleAgentLocalActionAutoSave(action, draft, form, manualRunMonth.field, { renderOnSave: true });
   });
   form.append(manualRunMonth.field);
+
+  const outputFolder = createAgentLocalActionEditorField(
+    "Save folder",
+    draft.outputFolder,
+    { placeholder: "Receipts/Aug2026/" },
+  );
+  let outputFolderTouched = Boolean(draft.outputFolder && !isAgentGeneratedReceiptOutputFolder(draft.outputFolder));
+  outputFolder.input.addEventListener("input", () => {
+    outputFolderTouched = true;
+    draft.outputFolder = outputFolder.input.value;
+    scheduleAgentLocalActionAutoSave(action, draft, form, outputFolder.field);
+  });
+  form.append(outputFolder.field);
 
   function setManualRunMonthOptions(options, selectedValue) {
     const nextOptions = (Array.isArray(options) ? options : []).filter((option) => option?.value);
@@ -17967,6 +18109,19 @@ function createAgentLocalActionEditor(action) {
     setManualRunMonthOptions(getAgentManualRunMonthOptions(draft.manualRunMonth), draft.manualRunMonth);
   }
 
+  function syncOutputFolderField() {
+    const showField = isAgentProposalReceiptCollector(proposal, draft);
+    outputFolder.field.hidden = !showField;
+    outputFolder.input.disabled = !showField;
+    if (!showField) {
+      return;
+    }
+    if (!outputFolderTouched || isAgentGeneratedReceiptOutputFolder(draft.outputFolder)) {
+      draft.outputFolder = getAgentMonthlyBatchOutputFolder(proposal, draft);
+      outputFolder.input.value = draft.outputFolder;
+    }
+  }
+
   function refreshMonthlyBatchResultField() {
     if (!resultControl) {
       return;
@@ -17981,6 +18136,7 @@ function createAgentLocalActionEditor(action) {
   }
   syncManualRunMonthField();
   refreshMonthlyBatchResultField();
+  syncOutputFolderField();
 
   const delivery = createAgentLocalActionEditorField(
     "Delivery",
@@ -20580,7 +20736,19 @@ async function runAgentProposalLocalActionNow(actionId) {
     }
 
     localActionRunBusy.add(normalizedActionId);
-    const runMonth = formatAgentManualRunMonthLabel(getAgentProposalManualRunMonthValue(proposal));
+    const requestFields = { ...getAgentProposalFieldMap(proposal) };
+    const outputFolder = getAgentMonthlyBatchOutputFolder(proposal, {
+      ...requestFields,
+      frequency: getAgentLocalActionFrequencyValue(action, proposal),
+      outputFolder: requestFields.outputFolder || action.payload?.outputFolder || "",
+    });
+    if (outputFolder) {
+      requestFields.outputFolder = outputFolder;
+      proposal.fields = normalizeAgentFieldValues({ ...getAgentProposalFieldMap(proposal), outputFolder });
+      action.payload.outputFolder = outputFolder;
+      persistClientState();
+    }
+    const runMonth = getAgentCustomGoogleBatchRunLabel(proposal);
     const runningMessage = `I’m checking your connected Gmail for ${runMonth} receipts…`;
     persistAgentWorkspace(runningMessage);
     renderApp({ preserveStatus: true });
@@ -20591,7 +20759,7 @@ async function runAgentProposalLocalActionNow(actionId) {
         body: {
           proposalId: proposal.id,
           proposalType: proposal.type,
-          fields: { ...getAgentProposalFieldMap(proposal) },
+          fields: requestFields,
           deliveryChannel: getAgentProposalDeliveryChannel(proposal) || "portal",
           timezone: getWorkspaceTimeZone(),
         },
@@ -20599,13 +20767,14 @@ async function runAgentProposalLocalActionNow(actionId) {
       });
       const message = String(response.message || response.summary || "Receipt search complete.").trim();
       addAgentNotification({
-        title: "Receipt search ready",
+        title: response.artifacts ? "Receipt bundle ready" : "Receipt search ready",
         message,
         tone: "success",
         source: "custom-google-batch",
         actionId: String(action.id || ""),
         proposalId: proposal.id,
         href: getAgentResponseResultHref(response),
+        hrefLabel: response.hrefLabel || response.href_label || "Open PDF",
         dedupeKey: `proposal:${proposal.id}:run:${response?.runId || response?.completedAt || Date.now()}`,
       });
       persistAgentWorkspace(message);
