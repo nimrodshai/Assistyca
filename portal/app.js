@@ -896,6 +896,7 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
     {
       key: "frequency",
       question: "How often should this happen?",
+      actions: ["Daily", "Weekly", "Monthly"],
     },
     {
       key: "deliveryChannel",
@@ -11904,7 +11905,7 @@ function getAgentProposalFieldSchema(proposal) {
   const requestText = String(proposal?.requestText || "");
   if (
     proposal?.type === "custom"
-    && /\b(calendar|schedule|agenda|appointments?)\b/i.test(requestText)
+    && /\b(calendar|agenda|appointments?)\b/i.test(requestText)
   ) {
     return AGENT_CALENDAR_FIELD_SCHEMA;
   }
@@ -12258,7 +12259,7 @@ function inferAgentProposalFieldsFromText(text, proposalType) {
     return fields;
   }
 
-  if (/\b(calendar|schedule|agenda|appointments?)\b/i.test(value)) {
+  if (/\b(calendar|agenda|appointments?)\b/i.test(value)) {
     return {};
   }
 
@@ -12343,8 +12344,77 @@ function pushAgentProposalNextStep(proposal, reply = "") {
   pushAgentApprovalPrompt(proposal, reply);
 }
 
-function getAgentQuestionActions(proposal, questionIndex = 0) {
-  const index = Math.max(0, Number(questionIndex || 0));
+function getAgentQuestionFieldIndexByKey(proposal, key) {
+  const schema = getAgentProposalFieldSchema(proposal);
+  return schema.findIndex((field) => field?.key === key);
+}
+
+function getAgentQuestionFieldIndexFromText(proposal, questionText = "") {
+  if (proposal?.type === "scheduled-message") {
+    return -1;
+  }
+  const text = String(questionText || "").toLowerCase();
+  const findKey = (key) => getAgentQuestionFieldIndexByKey(proposal, key);
+
+  if (/\b(?:how often|frequency|cadence|daily|weekly|monthly|hourly|every\s+\d+|every day|every week|every month)\b/.test(text)) {
+    const frequencyIndex = findKey("frequency");
+    if (frequencyIndex >= 0) {
+      return frequencyIndex;
+    }
+  }
+
+  if (/\b(?:mailbox|inbox|gmail|outlook|email account|mail account)\b/.test(text)) {
+    const mailboxIndex = findKey("mailbox");
+    if (mailboxIndex >= 0) {
+      return mailboxIndex;
+    }
+  }
+
+  if (/\b(?:source|where to look|where should i search)\b/.test(text)) {
+    const sourceIndex = findKey("sourceType");
+    if (sourceIndex >= 0) {
+      return sourceIndex;
+    }
+    const mailboxIndex = findKey("mailbox");
+    if (mailboxIndex >= 0) {
+      return mailboxIndex;
+    }
+  }
+
+  if (/\b(?:where should i (?:send|deliver|notify|alert)|where should [\s\S]{0,80}\b(?:send|deliver|notify|alert)|how should i (?:let you know|send|deliver|notify|alert)|send|deliver|notify|alert)\b/.test(text)) {
+    const deliveryIndex = findKey("deliveryChannel");
+    if (deliveryIndex >= 0) {
+      return deliveryIndex;
+    }
+  }
+
+  if (/\bcalendar\b/.test(text)) {
+    const calendarIndex = findKey("calendar");
+    if (calendarIndex >= 0) {
+      return calendarIndex;
+    }
+  }
+
+  if (/\b(?:date range|time range|which date|what date|when|today|tomorrow|this week|next week|this month|next month)\b/.test(text)) {
+    const timeWindowIndex = findKey("timeWindow");
+    if (timeWindowIndex >= 0) {
+      return timeWindowIndex;
+    }
+  }
+
+  return -1;
+}
+
+function getAgentQuestionActionFieldIndex(proposal, questionIndex = 0, questionText = "") {
+  const inferredIndex = getAgentQuestionFieldIndexFromText(proposal, questionText);
+  if (inferredIndex >= 0) {
+    return inferredIndex;
+  }
+  return Math.max(0, Number(questionIndex || 0));
+}
+
+function getAgentQuestionActions(proposal, questionIndex = 0, questionText = "") {
+  const index = getAgentQuestionActionFieldIndex(proposal, questionIndex, questionText);
 
   if (proposal?.type === "scheduled-message") {
     const questionKey = proposal.questionKeys?.[index] || "";
@@ -12409,20 +12479,21 @@ function getAgentApprovalPromptActions(proposal, messageText = "") {
 
 function pushAgentQuestion(proposal, questionIndex = 0, questionOverride = "") {
   const index = Math.max(0, Number(questionIndex || 0));
-  proposal.questionIndex = index;
   const messageText = String(questionOverride || "").trim();
   if (!messageText) {
     return null;
   }
+  const actionIndex = getAgentQuestionActionFieldIndex(proposal, index, messageText);
+  proposal.questionIndex = actionIndex;
   const field = proposal?.type === "scheduled-message"
     ? null
-    : getAgentProposalFieldSchema(proposal)[index] || null;
+    : getAgentProposalFieldSchema(proposal)[actionIndex] || null;
   return pushAgentMessage("assistant", messageText, {
     kind: "question",
     proposalId: proposal.id,
-    questionIndex: index,
+    questionIndex: actionIndex,
     fieldKey: field?.key || "",
-    actions: getAgentQuestionActions(proposal, index),
+    actions: getAgentQuestionActions(proposal, actionIndex, messageText),
   });
 }
 
