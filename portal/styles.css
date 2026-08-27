@@ -9766,6 +9766,59 @@ body.is-chat-view {
   box-shadow: 0 0 0 4px rgba(55, 184, 171, 0.14);
 }
 
+:root[data-theme="dark"] .settings-switcher {
+  border-color: rgba(224, 239, 244, 0.16);
+  background: rgba(10, 16, 22, 0.72);
+  box-shadow: 0 1px 0 rgba(224, 239, 244, 0.05) inset;
+}
+
+:root[data-theme="dark"] .settings-switcher .subtab-button {
+  color: rgba(168, 182, 195, 0.88);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .settings-switcher .subtab-button.is-active {
+  color: #f0fffb;
+  background: rgba(55, 184, 171, 0.22);
+  border-color: rgba(55, 184, 171, 0.42);
+  box-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.2),
+    0 1px 0 rgba(224, 239, 244, 0.08) inset;
+}
+
+:root[data-theme="dark"] .agent-action-detail-card,
+:root[data-theme="dark"] .agent-action-editor {
+  background: transparent;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .agent-action-editor-input,
+:root[data-theme="dark"] .agent-action-editor-select,
+:root[data-theme="dark"] .agent-date-range-dropdown-button {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+:root[data-theme="dark"] .agent-action-editor-input:focus,
+:root[data-theme="dark"] .agent-action-editor-select:focus,
+:root[data-theme="dark"] .agent-date-range-dropdown-button:focus-visible {
+  background: var(--surface);
+}
+
+:root[data-theme="dark"] .agent-date-range-dropdown-menu {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.22);
+}
+
+:root[data-theme="dark"] .agent-date-range-dropdown-option:hover,
+:root[data-theme="dark"] .agent-date-range-dropdown-option:focus-visible,
+:root[data-theme="dark"] .agent-date-range-dropdown-option.is-selected {
+  background: rgba(55, 184, 171, 0.14);
+}
+
 :root[data-theme="dark"] .ghost-button,
 :root[data-theme="dark"] .settings-close,
 :root[data-theme="dark"] .billing-help-close,
