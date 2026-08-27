@@ -4,7 +4,9 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+import re
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -1131,6 +1133,32 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/agent/turn"', handler)
         self.assertIn('resolvePendingAgentMessageActions("user-message")', handler)
         self.assertNotIn("createAgentProposalFromRequest(cleanText)", handler)
+
+    def test_page_scripts_resolve_from_the_url_the_page_is_served_at(self) -> None:
+        """Resolve each <script src> the way a browser does, against the request URL.
+
+        /about is served directly with no redirect to /about/, so a document-relative
+        "./page.js" there resolves to /page.js at the root and 404s. Fetching the
+        script's own path proves it is served; only resolving it against the page
+        proves the page can actually load it.
+        """
+        for path in ("/about", "/about/", "/portal/", "/"):
+            with self.subTest(page=path):
+                with urllib_request.urlopen(f"{self.base_url}{path}") as response:
+                    markup = response.read().decode("utf-8")
+                    page_url = response.geturl()
+
+                for src in re.findall(r'<script[^>]+src="([^"]+)"', markup):
+                    if src.startswith(("http://", "https://", "//")):
+                        continue
+                    resolved = urllib_parse.urljoin(page_url, src)
+                    with self.subTest(script=src):
+                        with urllib_request.urlopen(resolved) as script_response:
+                            self.assertEqual(script_response.status, 200)
+                            self.assertIn(
+                                "javascript",
+                                script_response.headers.get("Content-Type", ""),
+                            )
 
     def _fetch_about_script(self) -> str:
         """The about page ships as HTML plus an extracted script file."""
