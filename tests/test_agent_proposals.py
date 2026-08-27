@@ -553,6 +553,8 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
         self.assertIn("reply is required for every outcome", kwargs["prompt"])
         self.assertIn("include a natural approval question", kwargs["prompt"])
         self.assertIn("Do not echo the user's full request", kwargs["prompt"])
+        self.assertIn("Notifications center as the default delivery destination", kwargs["prompt"])
+        self.assertIn("Setup questions and approvals still stay in the Assistyca chat", kwargs["prompt"])
         self.assertIn('"toolContext":{"whatsapp":{"ready":true', kwargs["prompt"])
 
     def test_initial_scheduled_message_turn_uses_openai_proposal(self) -> None:
