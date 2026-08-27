@@ -1203,6 +1203,9 @@ const state = {
   agentPanelMode: "actions",
   agentFolderSearch: "",
   agentFolderSort: "recent",
+  agentFolderCreateOpen: false,
+  agentFolderFilterOpen: false,
+  agentFolderSortOpen: false,
   agentHistoryExpanded: false,
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
@@ -1351,7 +1354,12 @@ const elements = {
   agentFoldersListView: document.querySelector("#agentFoldersListView"),
   agentChatList: document.querySelector("#agentChatList"),
   agentNewChatButton: document.querySelector("#agentNewChatButton"),
+  agentFolderCreateToggleButton: document.querySelector("#agentFolderCreateToggleButton"),
+  agentFolderFilterButton: document.querySelector("#agentFolderFilterButton"),
+  agentFolderSortButton: document.querySelector("#agentFolderSortButton"),
   agentFolderCreateForm: document.querySelector("#agentFolderCreateForm"),
+  agentFolderFilterPanel: document.querySelector("#agentFolderFilterPanel"),
+  agentFolderSortPanel: document.querySelector("#agentFolderSortPanel"),
   agentFolderNameInput: document.querySelector("#agentFolderNameInput"),
   agentFolderTypeSelect: document.querySelector("#agentFolderTypeSelect"),
   agentFolderSearchInput: document.querySelector("#agentFolderSearchInput"),
@@ -11619,6 +11627,74 @@ function setAgentFolderSort(value, options = {}) {
   renderAgentFolders();
 }
 
+function closeAgentFolderDisclosurePanels(except = "") {
+  state.agentFolderCreateOpen = except === "create";
+  state.agentFolderFilterOpen = except === "filter";
+  state.agentFolderSortOpen = except === "sort";
+}
+
+function setAgentFolderCreateOpen(open) {
+  closeAgentFolderDisclosurePanels(open ? "create" : "");
+  renderAgentFolders();
+  if (open) {
+    window.requestAnimationFrame(() => {
+      elements.agentFolderNameInput?.focus();
+    });
+  }
+}
+
+function setAgentFolderFilterOpen(open) {
+  closeAgentFolderDisclosurePanels(open ? "filter" : "");
+  renderAgentFolders();
+  if (open) {
+    window.requestAnimationFrame(() => {
+      elements.agentFolderSearchInput?.focus();
+    });
+  }
+}
+
+function setAgentFolderSortOpen(open) {
+  closeAgentFolderDisclosurePanels(open ? "sort" : "");
+  renderAgentFolders();
+  if (open) {
+    window.requestAnimationFrame(() => {
+      elements.agentFolderSortSelect?.focus();
+    });
+  }
+}
+
+function syncAgentFolderDisclosureControl(button, panel, open, active = open) {
+  button?.setAttribute("aria-expanded", String(Boolean(open)));
+  button?.classList.toggle("is-active", Boolean(active));
+  panel?.classList.toggle("is-hidden", !open);
+  if (panel) {
+    panel.hidden = !open;
+  }
+}
+
+function syncAgentFolderDisclosureControls() {
+  syncAgentFolderDisclosureControl(
+    elements.agentFolderCreateToggleButton,
+    elements.agentFolderCreateForm,
+    state.agentFolderCreateOpen,
+  );
+  elements.agentFolderCreateToggleButton?.classList.toggle("is-open", state.agentFolderCreateOpen);
+
+  syncAgentFolderDisclosureControl(
+    elements.agentFolderFilterButton,
+    elements.agentFolderFilterPanel,
+    state.agentFolderFilterOpen,
+    state.agentFolderFilterOpen || Boolean(state.agentFolderSearch),
+  );
+
+  syncAgentFolderDisclosureControl(
+    elements.agentFolderSortButton,
+    elements.agentFolderSortPanel,
+    state.agentFolderSortOpen,
+    state.agentFolderSortOpen || state.agentFolderSort !== "recent",
+  );
+}
+
 function addAgentFolder(name, type = "general") {
   const folderName = normalizeAgentFolderName(name, "");
   if (!folderName) {
@@ -13582,7 +13658,26 @@ function createAgentChatItem(chat, activeChatId) {
     deleteButton.dataset.agentChatDelete = chat.id;
     deleteButton.setAttribute("aria-label", `Delete conversation: ${getAgentChatTitle(chat)}`);
     deleteButton.title = "Delete conversation";
-    deleteButton.textContent = "Delete";
+    deleteButton.append(
+      createSvgElement("svg", {
+        viewBox: "0 0 24 24",
+        width: "16",
+        height: "16",
+        fill: "none",
+        "aria-hidden": "true",
+        focusable: "false",
+      }),
+    );
+    const deleteIcon = deleteButton.firstElementChild;
+    deleteIcon.append(
+      createSvgElement("path", {
+        d: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
+        stroke: "currentColor",
+        "stroke-width": "1.8",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      }),
+    );
     item.append(deleteButton);
   }
 
@@ -13694,6 +13789,7 @@ function renderAgentFolders() {
   if (elements.agentFolderSortSelect && elements.agentFolderSortSelect.value !== state.agentFolderSort) {
     elements.agentFolderSortSelect.value = state.agentFolderSort;
   }
+  syncAgentFolderDisclosureControls();
 
   if (!folders.length) {
     const empty = document.createElement("p");
@@ -24404,6 +24500,24 @@ function bindEvents() {
     });
   }
 
+  if (elements.agentFolderCreateToggleButton) {
+    elements.agentFolderCreateToggleButton.addEventListener("click", () => {
+      setAgentFolderCreateOpen(!state.agentFolderCreateOpen);
+    });
+  }
+
+  if (elements.agentFolderFilterButton) {
+    elements.agentFolderFilterButton.addEventListener("click", () => {
+      setAgentFolderFilterOpen(!state.agentFolderFilterOpen);
+    });
+  }
+
+  if (elements.agentFolderSortButton) {
+    elements.agentFolderSortButton.addEventListener("click", () => {
+      setAgentFolderSortOpen(!state.agentFolderSortOpen);
+    });
+  }
+
   if (elements.agentFolderCreateForm) {
     elements.agentFolderCreateForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -24419,10 +24533,9 @@ function bindEvents() {
         nameInput.value = "";
         nameInput.setCustomValidity("");
       }
+      state.agentFolderCreateOpen = false;
       setStatus(`Created ${folder.name}.`);
-      window.requestAnimationFrame(() => {
-        nameInput?.focus();
-      });
+      renderAgentFolders();
     });
   }
 

@@ -24,7 +24,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="./styles.css?v=129" />
+    <link rel="stylesheet" href="./styles.css?v=130" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -370,25 +370,53 @@
                     <p class="eyebrow">Workspace</p>
                     <h3 id="agentFoldersTitle">Folders</h3>
                   </div>
-                  <span id="agentFolderCount" class="agent-actions-count">0</span>
+                  <div class="agent-folder-head-actions">
+                    <span id="agentFolderCount" class="agent-actions-count">0</span>
+                    <button
+                      id="agentFolderFilterButton"
+                      class="agent-folder-utility-button"
+                      type="button"
+                      aria-expanded="false"
+                      aria-controls="agentFolderFilterPanel"
+                    >
+                      Filter
+                    </button>
+                    <button
+                      id="agentFolderSortButton"
+                      class="agent-folder-utility-button"
+                      type="button"
+                      aria-expanded="false"
+                      aria-controls="agentFolderSortPanel"
+                    >
+                      Sort
+                    </button>
+                    <button
+                      id="agentFolderCreateToggleButton"
+                      class="agent-folder-create-toggle"
+                      type="button"
+                      aria-label="Create folder"
+                      aria-expanded="false"
+                      aria-controls="agentFolderCreateForm"
+                    >
+                      <span aria-hidden="true">+</span>
+                    </button>
+                  </div>
                 </div>
 
-                <form id="agentFolderCreateForm" class="agent-folder-create">
-                  <label class="sr-only" for="agentFolderNameInput">Folder name</label>
-                  <input id="agentFolderNameInput" type="text" maxlength="64" autocomplete="off" placeholder="Folder name" />
-                  <label class="sr-only" for="agentFolderTypeSelect">Folder type</label>
-                  <select id="agentFolderTypeSelect" aria-label="Folder type">
-                    <option value="general">General</option>
-                    <option value="reports">Reports</option>
-                    <option value="receipts">Receipts</option>
-                    <option value="sources">Sources</option>
-                  </select>
-                  <button class="primary-button small" type="submit">Create</button>
+                <form id="agentFolderCreateForm" class="agent-folder-create is-hidden" hidden>
+                  <label class="agent-folder-field" for="agentFolderNameInput">
+                    <span>Folder name</span>
+                    <input id="agentFolderNameInput" type="text" maxlength="64" autocomplete="off" placeholder="Receipts, reports, sources..." />
+                  </label>
+                  <button class="agent-folder-submit-button" type="submit">Create</button>
                 </form>
 
-                <div class="agent-folder-controls">
+                <div id="agentFolderFilterPanel" class="agent-folder-controls is-hidden" hidden>
                   <label class="sr-only" for="agentFolderSearchInput">Filter folders</label>
                   <input id="agentFolderSearchInput" type="search" autocomplete="off" placeholder="Filter folders" />
+                </div>
+
+                <div id="agentFolderSortPanel" class="agent-folder-sort-panel is-hidden" hidden>
                   <label class="sr-only" for="agentFolderSortSelect">Sort folders</label>
                   <select id="agentFolderSortSelect" aria-label="Sort folders">
                     <option value="recent">Recent</option>
@@ -1660,6 +1688,6 @@ Owner said afternoons are easier."
     </section>
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
-    <script src="./app.js?v=156"></script>
+    <script src="./app.js?v=157"></script>
   </body>
 </html>
