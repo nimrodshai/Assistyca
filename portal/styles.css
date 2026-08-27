@@ -999,11 +999,11 @@ body[data-modal="billing"] .app-shell {
   grid-area: actions;
   display: flex;
   justify-content: flex-end;
-  align-items: flex-start;
-  gap: 0.55rem;
+  align-items: center;
+  gap: 0.65rem;
   flex-wrap: wrap;
   align-self: start;
-  padding-top: 0.05rem;
+  padding-top: 0;
 }
 
 .status-pill {
@@ -1986,6 +1986,8 @@ body[data-modal="billing"] .app-shell {
 
 .notification-center-wrap {
   position: relative;
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
 }
 
