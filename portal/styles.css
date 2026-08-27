@@ -2588,14 +2588,6 @@ body[data-modal="billing"] .app-shell {
   font-weight: 800;
 }
 
-.calendar-oauth-permission code {
-  min-width: 0;
-  color: var(--muted-strong);
-  font: inherit;
-  font-size: 0.68rem;
-  overflow-wrap: anywhere;
-}
-
 .calendar-oauth-button-logo {
   display: inline-grid;
   place-items: center;
@@ -10147,10 +10139,6 @@ body.is-chat-view {
 :root[data-theme="dark"] .calendar-oauth-permission-badge {
   color: var(--accent-strong);
   background: rgba(55, 184, 171, 0.14);
-}
-
-:root[data-theme="dark"] .calendar-oauth-permission code {
-  color: rgba(168, 182, 195, 0.84);
 }
 
 :root[data-theme="dark"] .theme-switch {

@@ -4975,10 +4975,7 @@ function createGoogleOAuthPermissionList() {
     const detail = document.createElement("span");
     detail.textContent = scopeOption.detail;
 
-    const scope = document.createElement("code");
-    scope.textContent = scopeOption.scope;
-
-    copy.append(row, detail, scope);
+    copy.append(row, detail);
     item.append(checkbox, copy);
     list.append(item);
   }

@@ -461,6 +461,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Sign in with Google", script)
         self.assertIn("function createGoogleBrandLogo", script)
         self.assertIn("function createGoogleOAuthPermissionList", script)
+        google_permissions_renderer = script[
+            script.index("function createGoogleOAuthPermissionList"):
+            script.index("function openCalendarOAuthConnection")
+        ]
+        self.assertIn("checkbox.dataset.googleScope = scopeOption.scope;", google_permissions_renderer)
+        self.assertNotIn("scope.textContent = scopeOption.scope;", google_permissions_renderer)
+        self.assertNotIn('document.createElement("code")', google_permissions_renderer)
         self.assertIn("requestGoogleCalendarAuthorizationCode", script)
         self.assertIn("X-Requested-With", script)
         self.assertIn("Authorized JavaScript origin", script)
@@ -478,6 +485,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".calendar-oauth-copy", styles)
         self.assertIn(".calendar-oauth-permissions", styles)
         self.assertIn(".calendar-oauth-permission-badge", styles)
+        self.assertNotIn(".calendar-oauth-permission code", styles)
         self.assertIn("--calendar-oauth-column-offset", styles)
         self.assertIn(".calendar-oauth-status", styles)
         calendar_oauth_dark_styles = styles[
