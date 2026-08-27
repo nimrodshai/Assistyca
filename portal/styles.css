@@ -3569,7 +3569,8 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-panel-mode-head {
-  grid-template-columns: minmax(0, 1fr) auto;
+  position: relative;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   padding-bottom: 0.75rem;
 }
@@ -3579,6 +3580,7 @@ body[data-modal="billing"] .app-shell {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.18rem;
   width: min(100%, 15rem);
+  justify-self: center;
   padding: 0.2rem;
   background: rgba(20, 28, 38, 0.055);
   border: 1px solid rgba(20, 28, 38, 0.075);
@@ -9661,6 +9663,17 @@ body[data-modal="billing"] .app-shell {
 
   .agent-tools-close {
     display: inline-grid;
+  }
+
+  .agent-panel-mode-head {
+    padding-inline: 2.5rem;
+  }
+
+  .agent-tools-close {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
   }
 
   .agent-tools-toggle {
