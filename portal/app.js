@@ -12770,6 +12770,20 @@ function getAgentQuestionContextText(proposal, questionText = "") {
 
 const AGENT_MONTH_NAME_PATTERN = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 const AGENT_MONTHLY_BATCH_OBJECT_PATTERN = "(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?|summar(?:y|ies|ize|ise)|digests?|bookkeeping|reconciliation)";
+const AGENT_MONTH_LABELS = {
+  jan: "January",
+  feb: "February",
+  mar: "March",
+  apr: "April",
+  may: "May",
+  jun: "June",
+  jul: "July",
+  aug: "August",
+  sep: "September",
+  oct: "October",
+  nov: "November",
+  dec: "December",
+};
 function isAgentRunModeQuestionText(value = "") {
   const text = String(value || "").toLowerCase();
   return (
@@ -12801,6 +12815,93 @@ function agentContextSuggestsMonthlyBatchTask(proposal, questionText = "") {
   const hasMonthlyWindow = hasRelativeMonthlyWindow || hasNamedMonthWindow;
   const hasBatchVerb = /\b(?:collect|pull|gather|fetch|find|search|export|summarize|summarise|prepare|get|send)\b/.test(text);
   return hasBatchObject && hasMonthlyWindow && hasBatchVerb;
+}
+
+function getAgentMonthlyBatchContextSources(proposal, questionText = "") {
+  const fields = getAgentProposalFieldMap(proposal);
+  return [
+    proposal?.requestText,
+    proposal?.summary,
+    ...Object.values(fields),
+    questionText,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function formatAgentMonthNameLabel(monthName = "", year = "") {
+  const normalized = String(monthName || "").trim().toLowerCase().slice(0, 3);
+  const label = AGENT_MONTH_LABELS[normalized] || String(monthName || "").trim();
+  return `${label}${year ? ` ${String(year).trim()}` : ""}`.trim();
+}
+
+function getAgentMonthlyBatchObjectLabel(proposal, questionText = "") {
+  const sources = getAgentMonthlyBatchContextSources(proposal, questionText);
+  const objectRegex = new RegExp(`\\b(${AGENT_MONTHLY_BATCH_OBJECT_PATTERN})\\b`, "i");
+  for (const source of sources) {
+    const match = source.match(objectRegex);
+    if (match?.[1]) {
+      const raw = match[1].toLowerCase();
+      if (raw === "receipt") return "receipts";
+      if (raw === "invoice") return "invoices";
+      if (raw === "statement") return "statements";
+      if (raw === "expense") return "expenses";
+      if (raw === "bill") return "bills";
+      if (raw === "transaction") return "transactions";
+      if (raw === "report") return "reports";
+      if (/^summar/.test(raw)) return "summaries";
+      if (raw === "digest") return "digests";
+      return raw;
+    }
+  }
+  return "items";
+}
+
+function getAgentMonthlyBatchOneTimeTarget(proposal, questionText = "") {
+  const sources = getAgentMonthlyBatchContextSources(proposal, questionText);
+  const objectLabel = getAgentMonthlyBatchObjectLabel(proposal, questionText);
+  const namedMonthRegexes = [
+    new RegExp(`\\b(?:from|for|during|in)\\s+(${AGENT_MONTH_NAME_PATTERN})(?:\\s+(\\d{4}))?\\b`, "i"),
+    new RegExp(`\\b(${AGENT_MONTH_NAME_PATTERN})(?:\\s+(\\d{4}))?\\s+(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?)\\b`, "i"),
+  ];
+  for (const source of sources) {
+    for (const regex of namedMonthRegexes) {
+      const match = source.match(regex);
+      if (match?.[1]) {
+        return `the ${formatAgentMonthNameLabel(match[1], match[2])} ${objectLabel}`;
+      }
+    }
+  }
+  const allText = sources.join(" ").toLowerCase();
+  if (/\blast month\b|\bprevious month\b/.test(allText)) {
+    return `last month's ${objectLabel}`;
+  }
+  if (/\bthis month\b|\bcurrent month\b/.test(allText)) {
+    return `this month's ${objectLabel}`;
+  }
+  if (/\bnext month\b/.test(allText)) {
+    return `next month's ${objectLabel}`;
+  }
+  return `these ${objectLabel}`;
+}
+
+function getAgentMonthlyBatchQuestionText(proposal, questionIndex = 0, questionText = "") {
+  const text = String(questionText || "").trim();
+  if (!proposal || proposal.type === "scheduled-message") {
+    return text;
+  }
+  const field = getAgentProposalFieldSchema(proposal)[Math.max(0, Number(questionIndex || 0))] || null;
+  if (
+    field?.key === "frequency"
+    && agentContextSuggestsMonthlyBatchTask(proposal, text)
+    && !isAgentMonthlyBatchCadenceConfirmationText(text)
+    && (isAgentRunModeQuestionText(text) || isAgentFrequencyQuestionText(text))
+  ) {
+    const oneTimeTarget = getAgentMonthlyBatchOneTimeTarget(proposal, text);
+    const objectLabel = getAgentMonthlyBatchObjectLabel(proposal, text);
+    return `Should I pull ${oneTimeTarget} once, or set this up so each month pulls the previous month's ${objectLabel}?`;
+  }
+  return text;
 }
 
 function getAgentMonthlyBatchScheduleActions(includeOneTime = false, options = {}) {
@@ -12849,7 +12950,7 @@ function getAgentContextualQuestionActions(proposal, questionIndex = 0, question
     if (isAgentMonthlyBatchCadenceConfirmationText(questionText)) {
       return getAgentMonthlyBatchScheduleActions(false, { confirmCadence: true });
     }
-    return [];
+    return getAgentMonthlyBatchScheduleActions(true);
   }
 
   return [];
@@ -13005,16 +13106,17 @@ function pushAgentQuestion(proposal, questionIndex = 0, questionOverride = "") {
     return null;
   }
   const actionIndex = getAgentQuestionActionFieldIndex(proposal, index, messageText);
+  const displayText = getAgentMonthlyBatchQuestionText(proposal, actionIndex, messageText);
   proposal.questionIndex = actionIndex;
   const field = proposal?.type === "scheduled-message"
     ? null
     : getAgentProposalFieldSchema(proposal)[actionIndex] || null;
-  return pushAgentMessage("assistant", messageText, {
+  return pushAgentMessage("assistant", displayText, {
     kind: "question",
     proposalId: proposal.id,
     questionIndex: actionIndex,
     fieldKey: field?.key || "",
-    actions: getAgentQuestionActions(proposal, actionIndex, messageText),
+    actions: getAgentQuestionActions(proposal, actionIndex, displayText),
   });
 }
 
@@ -13442,7 +13544,13 @@ async function handleAgentWhatsAppApprovalAction(button) {
 }
 
 function getAgentDisplayMessageText(message, kind, proposal) {
-  return String(message?.text || "");
+  const text = String(message?.text || "");
+  if (kind === "question" && proposal && !proposal.approved && proposal.status !== "rejected") {
+    const questionIndex = Math.max(0, Number(message.metadata?.questionIndex || proposal.questionIndex || 0) || 0);
+    const actionIndex = getAgentQuestionActionFieldIndex(proposal, questionIndex, text);
+    return getAgentMonthlyBatchQuestionText(proposal, actionIndex, text);
+  }
+  return text;
 }
 
 function renderAgentMessage(message) {
