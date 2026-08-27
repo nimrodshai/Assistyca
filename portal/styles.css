@@ -2822,7 +2822,7 @@ body[data-modal="billing"] .app-shell {
   font-size: 0.82rem;
 }
 
-.calendar-oauth-permission-badge {
+.calendar-oauth-permission-access {
   display: inline-flex;
   align-items: center;
   min-height: 1.15rem;
@@ -11159,7 +11159,7 @@ body.is-chat-view {
   border-bottom-color: rgba(224, 239, 244, 0.07);
 }
 
-:root[data-theme="dark"] .calendar-oauth-permission-badge {
+:root[data-theme="dark"] .calendar-oauth-permission-access {
   color: var(--accent-strong);
   background: rgba(55, 184, 171, 0.14);
 }

@@ -409,7 +409,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         with self.assertRaises(urllib_error.HTTPError) as context:
             urllib_request.urlopen(request, timeout=5)
         self.assertEqual(context.exception.code, 409)
-        self.assertIn("This meeting summary runner currently delivers into this chat", context.exception.read().decode("utf-8"))
+        self.assertIn("This meeting summary runner currently delivers into Notifications", context.exception.read().decode("utf-8"))
 
 
 if __name__ == "__main__":

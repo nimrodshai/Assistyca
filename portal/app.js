@@ -430,26 +430,26 @@ const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
   {
     id: "calendar",
     platformId: "calendar",
-    label: "Calendar events",
+    label: "Calendar",
     detail: "Read event titles, times, attendees, and locations when an action runs.",
     scope: GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE,
-    stateLabel: "Selected",
+    accessLabel: "Read-only",
   },
   {
     id: "gmail",
     platformId: "email",
-    label: "Email summaries",
-    detail: "Read Gmail messages for digest actions.",
+    label: "Email",
+    detail: "Read Gmail messages when an action runs.",
     scope: GOOGLE_GMAIL_READONLY_SCOPE,
-    stateLabel: "Selected",
+    accessLabel: "Read-only",
   },
   {
     id: "drive",
     platformId: "drive",
-    label: "Drive files",
-    detail: "Read Google Drive files for document-based actions.",
+    label: "Drive",
+    detail: "Read Google Drive files when an action runs.",
     scope: GOOGLE_DRIVE_READONLY_SCOPE,
-    stateLabel: "Selected",
+    accessLabel: "Read-only",
   },
 ];
 const AGENT_ADD_TOOL_OPTIONS = [
@@ -560,7 +560,7 @@ const AGENT_BLUEPRINTS = {
       "What time should the digest run?",
       "How would you like to be notified with the results?",
     ],
-    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Portal inbox"],
+    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Notifications"],
   },
   calendarSummary: {
     type: "calendar-summary",
@@ -602,7 +602,7 @@ const AGENT_BLUEPRINTS = {
       "Which date range should I summarize?",
       "Where should I deliver the summary?",
     ],
-    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Portal inbox"],
+    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Notifications"],
   },
   webMonitor: {
     type: "web-monitor",
@@ -640,7 +640,7 @@ const AGENT_BLUEPRINTS = {
       "How often should I check?",
       "Where should alerts be delivered?",
     ],
-    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Portal inbox"],
+    alternatives: ["Email", "Telegram", "WhatsApp after setup", "Notifications"],
   },
   whatsappReplies: {
     type: "whatsapp-replies",
@@ -712,7 +712,7 @@ const AGENT_BLUEPRINTS = {
       },
     ],
     questions: [],
-    alternatives: ["WhatsApp", "Email", "Telegram", "Portal inbox"],
+    alternatives: ["WhatsApp", "Email", "Telegram", "Notifications"],
   },
   sourceAction: {
     type: "source-action",
@@ -809,7 +809,7 @@ const AGENT_BLUEPRINTS = {
       "How often should this happen?",
       "How should I notify you when it is done?",
     ],
-    alternatives: ["Portal inbox", "Email", "Telegram", "WhatsApp after setup"],
+    alternatives: ["Notifications", "Email", "Telegram", "WhatsApp after setup"],
   },
 };
 
@@ -929,7 +929,7 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
     {
       key: "deliveryChannel",
       question: "How should I let you know when it is done?",
-      actions: ["Portal inbox", "Email", "Telegram", "WhatsApp"],
+      actions: ["Notifications", "Email", "Telegram", "WhatsApp"],
     },
   ],
 };
@@ -5808,6 +5808,12 @@ function createGoogleOAuthPermissionList(option, options = {}) {
     const label = document.createElement("strong");
     label.textContent = scopeOption.label;
     row.append(label);
+    if (scopeOption.accessLabel) {
+      const accessLabel = document.createElement("span");
+      accessLabel.className = "calendar-oauth-permission-access";
+      accessLabel.textContent = scopeOption.accessLabel;
+      row.append(accessLabel);
+    }
 
     const detail = document.createElement("span");
     detail.textContent = scopeOption.detail;
@@ -12416,7 +12422,7 @@ function normalizeAgentDeliveryChannel(value) {
   if (/\bemail\b|\bmail\b/.test(text)) {
     return "email";
   }
-  if (/\bportal\b|\bworkspace\b|\bchat\b/.test(text)) {
+  if (/\bportal\b|\bworkspace\b|\bchat\b|\bnotification(?:s)?\b/.test(text)) {
     return "portal";
   }
   return "";
@@ -12659,7 +12665,7 @@ function formatAgentScheduledMessageChannel(channel) {
     return "email";
   }
   if (normalized === "portal") {
-    return "this chat";
+    return "the notification center";
   }
   return "the chosen channel";
 }
@@ -12717,10 +12723,8 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   const inferredFields = blueprint.type === "scheduled-message"
     ? {}
     : inferAgentProposalFieldsFromText(text, blueprint.type);
-  // Action results belong in the Assistyca conversation unless the user
-  // explicitly chooses another delivery channel. This keeps setup focused on
-  // the task instead of asking an avoidable "where should I notify you?"
-  // question, and gives every action a safe default destination.
+  // Action results default to the notification center. Setup questions and
+  // approvals still stay in the Assistyca conversation.
   if (
     blueprint.type !== "scheduled-message"
     && getAgentProposalFieldSchema({ type: blueprint.type, requestText: String(text || "") })
@@ -13474,7 +13478,7 @@ function pushAgentProposalNextStep(proposal, reply = "") {
   }
   const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
   const nextStepReply = deliveryChannel === "portal" && isAgentDeliveryQuestionText(reply)
-    ? "I’ll bring the results to this chat. Shall I set it up?"
+    ? "I’ll add the results to Notifications. Shall I set it up?"
     : reply;
   pushAgentApprovalPrompt(proposal, nextStepReply || getAgentDefaultApprovalPromptText(proposal));
 }
@@ -15305,7 +15309,7 @@ function getConnectedPlatformAddress(platform) {
 
 function getAgentDeliveryOptionItems() {
   return [
-    { value: "portal", label: "This chat" },
+    { value: "portal", label: "Notifications" },
     { value: "email", label: "Email", address: getConnectedPlatformAddress("email") },
     { value: "telegram", label: "Telegram", address: getConnectedPlatformAddress("telegram") },
     { value: "whatsapp", label: "WhatsApp", address: getConnectedPlatformAddress("whatsapp") },
@@ -19149,10 +19153,11 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     });
     persistAgentWorkspace(message);
   } else if (proposal.type === "whatsapp-replies") {
-    const deliveryChannel = formatAgentScheduledMessageChannel(
-      getAgentProposalDeliveryChannel(proposal) || whatsappActivation?.settings?.deliveryChannels?.[0] || "portal",
-    );
-    const message = deliveryChannel === "this chat"
+    const deliveryChannelId = getAgentProposalDeliveryChannel(proposal)
+      || whatsappActivation?.settings?.deliveryChannels?.[0]
+      || "portal";
+    const deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannelId);
+    const message = deliveryChannelId === "portal"
       ? "WhatsApp reply assistant is active. New drafts will appear here for review."
       : `WhatsApp reply assistant is active. New drafts will be brought to you by ${deliveryChannel}.`;
     pushAgentProposalResult(proposal.id, message, "result", {

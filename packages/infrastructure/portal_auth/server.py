@@ -3616,7 +3616,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
                     "error": "delivery_not_supported",
-                    "message": "This Gmail digest runner currently delivers into this chat. Choose “This chat” in the action editor and run it again.",
+                    "message": "This Gmail digest runner currently delivers into Notifications. Choose “Notifications” in the action editor and run it again.",
                 })
                 return
 
@@ -3725,7 +3725,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
                 "error": "delivery_not_supported",
-                "message": "This meeting summary runner currently delivers into this chat. Choose “This chat” in the action editor and run it again.",
+                "message": "This meeting summary runner currently delivers into Notifications. Choose “Notifications” in the action editor and run it again.",
             })
             return
 
