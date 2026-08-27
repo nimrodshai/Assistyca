@@ -1,11 +1,11 @@
-name: Package Layout
+name: Checks
 
 on:
   push:
   pull_request:
 
 jobs:
-  check-package-layout:
+  checks:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,5 +17,44 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            python3 -m pip install --upgrade pip
+            python3 -m pip install -r requirements.txt
+          fi
+
       - name: Check package layout
         run: python3 scripts/check_package_layout.py
+
+      - name: Check portal script syntax
+        run: node --check portal/app.js
+
+      - name: Run tests
+        run: |
+          python3 -m unittest \
+            tests.test_calendar_summary \
+            tests.test_receipt_collector \
+            tests.test_agent_proposals \
+            tests.test_scheduled_monitor \
+            tests.test_whatsapp_tool_delivery \
+            tests.test_portal_manual_run \
+            tests.test_scheduled_actions \
+            tests.test_source_actions \
+            tests.test_whatsapp_reengagement \
+            tests.test_platform_connections \
+            tests.test_portal_static_pages \
+            tests.test_portal_db \
+            tests.test_portal_auth_sessions \
+            tests.test_portal_user_access \
+            tests.test_openai_pricing \
+            tests.test_lemon_squeezy_api \
+            tests.test_whatsapp_api \
+            tests.test_contact_api \
+            tests.test_feature_activation \
+            tests.test_portal_runtime_paths

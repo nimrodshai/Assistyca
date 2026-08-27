@@ -85,6 +85,17 @@ from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_client_type
 from packages.infrastructure.portal_db import normalize_user_profile
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
+from packages.infrastructure.rate_limiter import (
+    CONTACT_AGENT_GLOBAL,
+    CONTACT_AGENT_PER_IP,
+    CONTACT_PER_IP,
+    OTP_REQUEST_PER_EMAIL,
+    OTP_REQUEST_PER_IP,
+    OTP_VERIFY_PER_EMAIL,
+    OTP_VERIFY_PER_IP,
+    RateLimitRule,
+    SlidingWindowRateLimiter,
+)
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.portal_runtime_paths import resolve_runtime_path
 from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
@@ -139,6 +150,12 @@ SESSION_TOKEN_VERSION = 1
 SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
+# Transport-level cap on any single request body. Generous enough for the largest
+# supported WhatsApp history import, but bounded so a declared Content-Length can
+# no longer be used to exhaust memory on the threading server.
+MAX_REQUEST_BODY_BYTES = 128 * 1024 * 1024
+# Unauthenticated endpoints get a far tighter cap.
+MAX_PUBLIC_REQUEST_BODY_BYTES = 256 * 1024
 WHATSAPP_HISTORY_IMPORT_MAX_FILES = 20
 WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS = 20_000_000
 WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES = 100_000
@@ -390,9 +407,54 @@ CONTACT_AGENT_GENERAL_HELP_MARKERS = (
     "קוד",
 )
 CONTACT_OPPORTUNITY_OWNER_EMAIL = "nimrod.shai@gmail.com"
+MINIMUM_SESSION_SECRET_LENGTH = 32
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
 }
+
+# Static serving is allowlisted rather than denylisted: the repository root holds
+# the SQLite database, the WhatsApp JSON stores, client configuration, and local
+# environment scripts, none of which may ever be reachable over HTTP. Anything not
+# named here is a 404, so new files added to the repo are private by default.
+STATIC_ALLOWED_DIRECTORIES: tuple[str, ...] = (
+    "portal",
+    "assets",
+    "about",
+)
+STATIC_ALLOWED_ROOT_FILES: tuple[str, ...] = (
+    "index.html",
+    "privacy.html",
+    "favicon.ico",
+    "robots.txt",
+    # Legacy standalone approval page, kept as a debug fallback.
+    "approval.html",
+    "approval.css",
+    "approval.js",
+)
+# Directory membership alone is not enough: `portal/` also contains portal.db,
+# portal-whatsapp/, and billing.sample.json. Only these extensions are served.
+STATIC_ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".html",
+        ".css",
+        ".js",
+        ".mjs",
+        ".map",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".webp",
+        ".ico",
+        ".txt",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".eot",
+    }
+)
 
 
 @dataclass
@@ -1233,8 +1295,6 @@ def load_config() -> PortalConfig:
     )
     session_secret = resolve_session_secret(
         explicit_secret=os.getenv("PORTAL_SESSION_SECRET", "").strip(),
-        smtp=smtp,
-        resend=resend,
     )
 
     db_path = resolve_portal_db_path()
@@ -1305,17 +1365,29 @@ def normalize_mail_provider(value: str) -> str:
     return DEFAULT_MAIL_PROVIDER
 
 
-def resolve_session_secret(*, explicit_secret: str, smtp: SmtpConfig, resend: ResendConfig) -> str:
-    if explicit_secret:
-        return explicit_secret
+def resolve_session_secret(*, explicit_secret: str) -> str:
+    """Resolve the HMAC key used for session tokens and OAuth state.
 
-    if resend.api_key:
-        return resend.api_key
+    Only PORTAL_SESSION_SECRET is accepted. This used to fall back to the Resend
+    API key or the SMTP password, which meant the mail credential could mint a
+    valid session for any registered email -- including an admin -- and that
+    rotating the mail credential silently invalidated every session.
 
-    if smtp.password:
-        return smtp.password
+    With no secret configured the caller degrades to ephemeral in-memory sessions,
+    which do not survive a restart but cannot be forged offline.
+    """
 
-    return ""
+    secret = str(explicit_secret or "").strip()
+    if not secret:
+        return ""
+
+    if len(secret) < MINIMUM_SESSION_SECRET_LENGTH:
+        raise ValueError(
+            "PORTAL_SESSION_SECRET must be at least "
+            f"{MINIMUM_SESSION_SECRET_LENGTH} characters."
+        )
+
+    return secret
 
 
 def build_not_registered_message(config: PortalConfig) -> str:
@@ -1576,9 +1648,54 @@ def send_otp_email(config: PortalConfig, email: str, code: str) -> None:
     send_otp_email_via_smtp(config, email, code)
 
 
-def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
-    length = int(handler.headers.get("Content-Length", "0") or 0)
-    raw = handler.rfile.read(length).decode("utf-8") if length else ""
+class RequestBodyTooLarge(ValueError):
+    """Raised when a request declares or sends more body bytes than allowed."""
+
+
+def read_request_body(
+    handler: SimpleHTTPRequestHandler,
+    *,
+    max_bytes: int = MAX_REQUEST_BODY_BYTES,
+) -> bytes:
+    """Read a request body with a hard size cap.
+
+    Content-Length is attacker-controlled, so it is both validated and used only
+    as an upper bound -- the read itself is clamped, and a client that streams
+    more than it declared is cut off rather than trusted.
+    """
+
+    raw_length = str(handler.headers.get("Content-Length", "") or "").strip()
+    if not raw_length:
+        return b""
+
+    try:
+        length = int(raw_length)
+    except ValueError as exc:
+        raise ValueError("Invalid Content-Length header.") from exc
+
+    if length < 0:
+        raise ValueError("Invalid Content-Length header.")
+    if length > max_bytes:
+        raise RequestBodyTooLarge(
+            f"Request body is too large. The limit is {max_bytes} bytes."
+        )
+    if length == 0:
+        return b""
+
+    body = handler.rfile.read(length)
+    if len(body) > max_bytes:
+        raise RequestBodyTooLarge(
+            f"Request body is too large. The limit is {max_bytes} bytes."
+        )
+    return body
+
+
+def parse_json_body(
+    handler: SimpleHTTPRequestHandler,
+    *,
+    max_bytes: int = MAX_REQUEST_BODY_BYTES,
+) -> dict[str, Any]:
+    raw = read_request_body(handler, max_bytes=max_bytes).decode("utf-8", errors="replace")
     if not raw.strip():
         return {}
 
@@ -2445,7 +2562,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
         ):
-            self._handle_api_post(parsed)
+            try:
+                self._handle_api_post(parsed)
+            except RequestBodyTooLarge as exc:
+                json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {
+                    "ok": False,
+                    "error": "payload_too_large",
+                    "message": str(exc),
+                })
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -2474,6 +2598,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         static_alias = resolve_static_page_alias(parsed.path)
         if static_alias is not None:
             return self._send_static_page(static_alias)
+        if not is_public_static_path(parsed.path):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
         return super().send_head()
 
     def _handle_api_get(self, parsed: urllib_parse.ParseResult) -> None:
@@ -3410,8 +3537,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.manual_feature_run_events.pop(key, None)
 
     def _handle_otp_request(self) -> None:
+        if not self._enforce_rate_limit(
+            f"otp-request-ip:{self._client_ip()}",
+            OTP_REQUEST_PER_IP,
+            message="Too many sign-in requests. Wait a moment and try again.",
+        ):
+            return
+
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
             return
@@ -3423,6 +3557,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "error": "invalid_email",
                 "message": "Enter a valid email address.",
             })
+            return
+
+        # Per-email throttle as well as per-IP: without it, a fresh challenge could
+        # be issued indefinitely, and each one resets the 5-attempt guess counter.
+        if not self._enforce_rate_limit(
+            f"otp-request-email:{email}",
+            OTP_REQUEST_PER_EMAIL,
+            message="Too many codes requested for this address. Wait a moment and try again.",
+        ):
             return
 
         if not self.store.is_registered_email(email):
@@ -3458,14 +3601,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_otp_verify(self) -> None:
+        if not self._enforce_rate_limit(
+            f"otp-verify-ip:{self._client_ip()}",
+            OTP_VERIFY_PER_IP,
+            message="Too many sign-in attempts. Wait a moment and try again.",
+        ):
+            return
+
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
             return
 
         email = normalize_email(payload.get("email", ""))
         code = normalize_code(payload.get("code", ""))
+
+        if email and not self._enforce_rate_limit(
+            f"otp-verify-email:{email}",
+            OTP_VERIFY_PER_EMAIL,
+            message="Too many sign-in attempts for this address. Wait a moment and try again.",
+        ):
+            return
 
         if not is_valid_email(email):
             json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -3599,8 +3756,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_contact_agent_turn(self) -> None:
+        # This endpoint is intentionally unauthenticated -- it powers the public
+        # marketing chat -- but it calls OpenAI, so it is throttled per client and
+        # capped globally. Without both, anonymous callers could drive unbounded
+        # spend that is attributed to no account.
+        if not self._enforce_rate_limit(
+            f"contact-agent-ip:{self._client_ip()}",
+            CONTACT_AGENT_PER_IP,
+            message="You have reached the limit for this chat. Please try again later.",
+        ):
+            return
+        if not self._enforce_rate_limit(
+            "contact-agent-global",
+            CONTACT_AGENT_GLOBAL,
+            message="The assistant is busy right now. Please try again shortly.",
+        ):
+            return
+
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -4243,8 +4417,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_contact_submit(self) -> None:
+        if not self._enforce_rate_limit(
+            f"contact-submit-ip:{self._client_ip()}",
+            CONTACT_PER_IP,
+            message="You have already sent a few messages. Please try again later.",
+        ):
+            return
+
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -4880,9 +5061,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "label": success_label,
         })
 
-    def _read_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        return self.rfile.read(length) if length > 0 else b""
+    def _read_body(self, *, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> bytes:
+        return read_request_body(self, max_bytes=max_bytes)
 
     def _send_static_page(self, relative_path: Path):
         file_path = (self.root / relative_path).resolve()
@@ -4902,6 +5082,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _send_agent_output_file(self, request_path: str):
         prefix = "/output/agent_receipts/"
         relative_path = urllib_parse.unquote(str(request_path or "")[len(prefix):])
+
+        # Generated receipts are private financial documents. The owner key in the
+        # path is derived from the account email, so it must be matched against the
+        # caller's session rather than treated as a bearer capability.
+        session = self._get_authenticated_session()
+        if session is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+
+        segments = [segment for segment in relative_path.split("/") if segment]
+        expected_owner_key = build_agent_receipt_owner_key(session.email)
+        if not segments or not hmac.compare_digest(segments[0], expected_owner_key):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
+
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         file_path = (output_root / relative_path).resolve()
         try:
@@ -4955,6 +5150,51 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
         self.end_headers()
+
+    def _send_approval_sign_in_required(self, status: HTTPStatus, message: str) -> None:
+        """Render a minimal page for approval requests that fail authorization.
+
+        Deliberately does not reveal whether the approval exists or who owns it.
+        """
+
+        self._send_html(
+            status,
+            (
+                "<!doctype html><html lang=\"en\"><head>"
+                "<meta charset=\"utf-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                "<title>Assistyca</title>"
+                "<style>body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;"
+                "background:#0b1120;color:#e2e8f0;margin:0;display:flex;min-height:100vh;"
+                "align-items:center;justify-content:center;padding:24px}"
+                "main{max-width:26rem;text-align:center}"
+                "a{display:inline-block;margin-top:1.25rem;padding:.7rem 1.4rem;border-radius:999px;"
+                "background:#14b8a6;color:#04211d;font-weight:600;text-decoration:none}</style>"
+                "</head><body><main>"
+                f"<h1>Sign in required</h1><p>{escape(message)}</p>"
+                "<a href=\"/portal/\">Open Assistyca</a>"
+                "</main></body></html>"
+            ),
+        )
+
+    def _request_origin_is_same_site(self) -> bool:
+        """Reject cross-origin form posts (CSRF) on cookie-authenticated endpoints."""
+
+        origin = normalize_text(self.headers.get("Origin"))
+        referer = normalize_text(self.headers.get("Referer"))
+        candidate = origin or referer
+        if not candidate:
+            # Some WhatsApp in-app browsers omit both on same-document form posts.
+            # SameSite=Lax already blocks the cross-site cookie case here.
+            return True
+
+        try:
+            parsed = urllib_parse.urlparse(candidate)
+        except ValueError:
+            return False
+        if not parsed.netloc:
+            return False
+        return parsed.netloc.lower() == normalize_text(self._request_host()).lower()
 
     def _get_authenticated_session(self) -> PortalSession | None:
         for token in self._extract_session_tokens():
@@ -5569,6 +5809,51 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return value
 
         return ""
+
+    def _client_ip(self) -> str:
+        """Best-effort client address for rate limiting.
+
+        Behind Render the real address arrives in X-Forwarded-For. That header is
+        client-spoofable in general, so this is a throttling signal only and must
+        not be used for any authorization decision.
+        """
+
+        forwarded = normalize_text(self.headers.get("X-Forwarded-For"))
+        if forwarded:
+            first = forwarded.split(",", 1)[0].strip()
+            if first:
+                return first
+        real_ip = normalize_text(self.headers.get("X-Real-IP"))
+        if real_ip:
+            return real_ip
+        try:
+            return str(self.client_address[0])
+        except (AttributeError, IndexError, TypeError):
+            return ""
+
+    def _enforce_rate_limit(self, key: str, rule: RateLimitRule, *, message: str) -> bool:
+        """Return True when the request may proceed, else emit 429 and return False."""
+
+        limiter = getattr(self.server, "rate_limiter", None)
+        if limiter is None:
+            return True
+
+        decision = limiter.check(key, rule)
+        if decision.allowed:
+            return True
+
+        json_response(
+            self,
+            HTTPStatus.TOO_MANY_REQUESTS,
+            {
+                "ok": False,
+                "error": "rate_limited",
+                "message": message,
+                "retryAfterSeconds": decision.retry_after_seconds,
+            },
+            extra_headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+        return False
 
     def _public_base_url(self) -> str:
         configured = normalize_text(os.getenv("PUBLIC_BASE_URL"))
@@ -7453,9 +7738,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
             return
 
-        _, service, _ = resolved
+        _, service, connection = resolved
         if service.get_approval(approval_id) is None:
             self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
+            return
+
+        # The page renders the customer's inbound message and the drafted reply,
+        # so it is gated on the same session/ownership check as the send endpoint.
+        session = self._get_authenticated_session()
+        if session is None:
+            self._send_approval_sign_in_required(
+                HTTPStatus.UNAUTHORIZED,
+                "Sign in to Assistyca on this device to review this conversation.",
+            )
+            return
+        if normalize_email(session.email) != normalize_email(connection.get("email")):
+            self._send_approval_sign_in_required(
+                HTTPStatus.FORBIDDEN,
+                "This approval belongs to another workspace.",
+            )
             return
 
         query = urllib_parse.parse_qs(parsed.query)
@@ -7501,22 +7802,45 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
             return
 
+        # Sending an approval delivers a real WhatsApp message from the owner's
+        # Business number, so both the JSON and form paths must be authenticated.
+        # The approval id is not a bearer capability: it appears in notification
+        # messages, rendered page HTML, and access logs.
         session = self._get_authenticated_session()
-        if as_json:
-            if session is None:
+        if session is None:
+            if as_json:
                 json_response(self, HTTPStatus.UNAUTHORIZED, {
                     "ok": False,
                     "error": "unauthorized",
                     "message": "Sign in again to continue.",
                 })
-                return
-            if normalize_email(session.email) != normalize_email(connection.get("email")):
+            else:
+                self._send_approval_sign_in_required(
+                    HTTPStatus.UNAUTHORIZED,
+                    "Sign in to Assistyca on this device to review and send this reply.",
+                )
+            return
+
+        if normalize_email(session.email) != normalize_email(connection.get("email")):
+            if as_json:
                 json_response(self, HTTPStatus.FORBIDDEN, {
                     "ok": False,
                     "error": "forbidden",
                     "message": "This approval belongs to another workspace.",
                 })
-                return
+            else:
+                self._send_approval_sign_in_required(
+                    HTTPStatus.FORBIDDEN,
+                    "This approval belongs to another workspace.",
+                )
+            return
+
+        if not as_json and not self._request_origin_is_same_site():
+            self._send_approval_sign_in_required(
+                HTTPStatus.FORBIDDEN,
+                "This request did not come from Assistyca. Open the approval again and retry.",
+            )
+            return
 
         body = self._read_body()
         content_type = normalize_text(self.headers.get("Content-Type")).lower()
@@ -7583,6 +7907,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "sentMessageId": sent_message_id,
             })
             return
+
+        # The form path previously fell off the end of the function without writing
+        # a response. Redirect back to the approval page, which renders the
+        # "Reply sent successfully." notice from the ?sent= query parameter.
+        self._redirect(f"/approval/{urllib_parse.quote(approval_id)}?sent=1")
 
     def _handle_feature_run_delete(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
@@ -8001,6 +8330,7 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
         session_secret=config.session_secret,
         registered_email_lookup=server.database.is_registered_email,
     )  # type: ignore[attr-defined]
+    server.rate_limiter = SlidingWindowRateLimiter()  # type: ignore[attr-defined]
     server.whatsapp_stores = {}  # type: ignore[attr-defined]
     server.whatsapp_store_lock = threading.RLock()  # type: ignore[attr-defined]
     server.manual_feature_run_events = {}  # type: ignore[attr-defined]
@@ -8034,6 +8364,43 @@ def resolve_static_page_alias(path: str) -> Path | None:
         normalized_path = f"/{normalized_path}"
     normalized_path = normalized_path.rstrip("/") or "/"
     return STATIC_PAGE_ALIASES.get(normalized_path)
+
+
+def is_public_static_path(path: str) -> bool:
+    """Return True only for paths the server is allowed to serve from disk.
+
+    The repository root doubles as the web root, so this is an allowlist. Anything
+    not explicitly permitted -- the SQLite database, the WhatsApp JSON stores,
+    `scripts/`, `clients/`, `packages/`, `docs/`, dotfiles -- is refused.
+    """
+
+    raw_path = urllib_parse.unquote(str(path or "")).strip()
+    if not raw_path.startswith("/"):
+        raw_path = f"/{raw_path}"
+
+    # Serve the portal shell for "/" and for directory-style requests.
+    if raw_path.endswith("/"):
+        raw_path = f"{raw_path}index.html"
+    if raw_path == "/":
+        raw_path = "/index.html"
+
+    segments = [segment for segment in raw_path.split("/") if segment]
+    if not segments:
+        return False
+
+    # Reject traversal and hidden files outright. SimpleHTTPRequestHandler already
+    # normalizes "..", but this must not depend on that behaviour.
+    for segment in segments:
+        if segment in {".", ".."} or segment.startswith("."):
+            return False
+
+    if Path(segments[-1]).suffix.lower() not in STATIC_ALLOWED_EXTENSIONS:
+        return False
+
+    if len(segments) == 1:
+        return segments[0] in STATIC_ALLOWED_ROOT_FILES
+
+    return segments[0] in STATIC_ALLOWED_DIRECTORIES
 
 
 def normalize_telegram_delivery_message_id(response: dict[str, Any]) -> str:
@@ -8149,8 +8516,10 @@ def main() -> int:
         )
     else:
         print(
-            "Session signing is not configured, so sessions will be lost on redeploy. "
-            "Set PORTAL_SESSION_SECRET or configure mail credentials with a stable secret.",
+            "WARNING: PORTAL_SESSION_SECRET is not set. Sessions are held in memory only "
+            "and every user will be signed out on restart or redeploy. Set a dedicated "
+            f"random secret of at least {MINIMUM_SESSION_SECRET_LENGTH} characters "
+            "(mail credentials are no longer accepted as a fallback).",
             flush=True,
         )
 

@@ -82,6 +82,15 @@ class ScheduledActionScheduler:
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+        # Release claims abandoned by a crashed or redeployed worker before picking
+        # up new work, otherwise those rows stay 'running' forever and the message
+        # is never sent.
+        try:
+            recovered = self.database.requeue_stale_scheduled_actions(now=reference)
+        except Exception:  # noqa: BLE001 - recovery must never block dispatch
+            recovered = 0
+
         actions = self.database.list_due_scheduled_actions(
             now=reference,
             limit=self.config.batch_size,
@@ -128,6 +137,7 @@ class ScheduledActionScheduler:
             "processed": processed,
             "sent": sent,
             "failed": failed,
+            "recovered": recovered,
         }
 
     def _dispatch(self, action: dict[str, Any]) -> str:

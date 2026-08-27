@@ -26,6 +26,10 @@ DEFAULT_MONTHLY_MINIMUM_CENTS = 5000
 DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER = 1.5
 BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS = "active"
+# A claimed row whose worker has not reported back within this window is treated as
+# abandoned (crash, redeploy, or killed daemon thread) and returned to the queue.
+STALE_CLAIM_SECONDS = 15 * 60
+MAX_SCHEDULED_ACTION_ATTEMPTS = 3
 VALID_CLIENT_TYPES = ("paying", "demo", "qa")
 RAW_CENTS_QUANT = Decimal("0.0001")
 USD_QUANT = Decimal("0.01")
@@ -4773,6 +4777,88 @@ class PortalDatabase:
             scheduled_for=row["scheduled_for"],
         )
 
+    def claim_whatsapp_reengagement_run(
+        self,
+        *,
+        user_id: int,
+        feature_id: str,
+        scheduled_for: str | datetime,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Atomically reserve a re-engagement slot, or return None if already taken.
+
+        Mirrors claim_feature_monitor_run. The previous flow read the run row, did
+        minutes of OpenAI drafting, sent the owner report, and only then wrote the
+        marker -- so a restart or a concurrent trigger in that gap produced a
+        duplicate owner report and duplicate OpenAI spend.
+        """
+
+        normalized_feature_id = normalize_text(feature_id)
+        if user_id <= 0:
+            raise ValueError("User id is required.")
+        if not normalized_feature_id:
+            raise ValueError("Feature id is required.")
+
+        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+        now = now_iso()
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO whatsapp_reengagement_runs (
+                    user_id,
+                    feature_id,
+                    scheduled_for,
+                    conversations_checked,
+                    notifications_sent,
+                    status,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, 0, 0, 'running', ?, ?, ?)
+                ON CONFLICT(user_id, feature_id, scheduled_for) DO NOTHING
+                """,
+                (
+                    int(user_id),
+                    normalized_feature_id,
+                    scheduled_for_value,
+                    metadata_json,
+                    now,
+                    now,
+                ),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            return self._load_whatsapp_reengagement_run_row(
+                conn,
+                user_id=int(user_id),
+                feature_id=normalized_feature_id,
+                scheduled_for=scheduled_for_value,
+            )
+
+    def release_stale_whatsapp_reengagement_runs(
+        self,
+        *,
+        older_than_seconds: int = STALE_CLAIM_SECONDS,
+        now: str | datetime | None = None,
+    ) -> int:
+        """Drop abandoned 'running' re-engagement claims so the slot can retry."""
+
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc)
+        cutoff = (reference - timedelta(seconds=max(1, int(older_than_seconds)))).isoformat()
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM whatsapp_reengagement_runs
+                WHERE status = 'running'
+                  AND updated_at <= ?
+                """,
+                (cutoff,),
+            )
+            return int(cursor.rowcount or 0)
+
     def save_whatsapp_reengagement_run(
         self,
         *,
@@ -5122,6 +5208,108 @@ class PortalDatabase:
                 (int(action_id),),
             ).fetchone()
         return self._load_scheduled_action_row(row)
+
+    def requeue_stale_scheduled_actions(
+        self,
+        *,
+        older_than_seconds: int = STALE_CLAIM_SECONDS,
+        max_attempts: int = MAX_SCHEDULED_ACTION_ATTEMPTS,
+        now: str | datetime | None = None,
+    ) -> int:
+        """Return abandoned 'running' rows to 'pending' so they are retried.
+
+        A claim is only ever released by finish_scheduled_action, so a process that
+        dies mid-dispatch -- including every redeploy, since the server uses daemon
+        threads -- used to strand the row permanently and the message was never
+        sent. Rows that have exhausted their attempts are failed explicitly instead
+        of being retried forever.
+        """
+
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc)
+        cutoff = (reference - timedelta(seconds=max(1, int(older_than_seconds)))).isoformat()
+        timestamp = reference.isoformat()
+
+        with self._connection() as conn:
+            exhausted = conn.execute(
+                """
+                UPDATE scheduled_actions
+                SET status = 'failed',
+                    last_error = 'Abandoned while running and out of retry attempts.',
+                    updated_at = ?
+                WHERE status = 'running'
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at <= ?
+                  AND attempt_count >= ?
+                """,
+                (timestamp, cutoff, max(1, int(max_attempts))),
+            )
+            requeued = conn.execute(
+                """
+                UPDATE scheduled_actions
+                SET status = 'pending',
+                    claimed_at = NULL,
+                    updated_at = ?
+                WHERE status = 'running'
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at <= ?
+                  AND attempt_count < ?
+                """,
+                (timestamp, cutoff, max(1, int(max_attempts))),
+            )
+            return int(exhausted.rowcount or 0) + int(requeued.rowcount or 0)
+
+    def requeue_stale_source_actions(
+        self,
+        *,
+        older_than_seconds: int = STALE_CLAIM_SECONDS,
+        now: str | datetime | None = None,
+    ) -> int:
+        """Return abandoned 'running' source actions to 'active'."""
+
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc)
+        cutoff = (reference - timedelta(seconds=max(1, int(older_than_seconds)))).isoformat()
+        timestamp = reference.isoformat()
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE source_actions
+                SET status = 'active',
+                    claimed_at = NULL,
+                    updated_at = ?
+                WHERE status = 'running'
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at <= ?
+                """,
+                (timestamp, cutoff),
+            )
+            return int(cursor.rowcount or 0)
+
+    def release_stale_feature_monitor_runs(
+        self,
+        *,
+        older_than_seconds: int = STALE_CLAIM_SECONDS,
+        now: str | datetime | None = None,
+    ) -> int:
+        """Drop abandoned 'running' monitor claims so the slot can be retried.
+
+        The claim is the row itself, so releasing it means deleting it. Completed
+        and failed runs are left untouched.
+        """
+
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc)
+        cutoff = (reference - timedelta(seconds=max(1, int(older_than_seconds)))).isoformat()
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM feature_monitor_runs
+                WHERE status = 'running'
+                  AND updated_at <= ?
+                """,
+                (cutoff,),
+            )
+            return int(cursor.rowcount or 0)
 
     def finish_scheduled_action(
         self,

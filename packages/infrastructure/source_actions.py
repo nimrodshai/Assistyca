@@ -172,7 +172,16 @@ class SourceActionScheduler:
         self.config = config or load_source_action_config()
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
-        due = self.database.list_due_source_actions(now=now or datetime.now(timezone.utc), limit=self.config.batch_size)
+        reference = now or datetime.now(timezone.utc)
+
+        # Recover sources stranded in 'running' by a crashed or redeployed worker;
+        # without this they are never polled again.
+        try:
+            recovered = self.database.requeue_stale_source_actions(now=reference)
+        except Exception:  # noqa: BLE001 - recovery must never block the batch
+            recovered = 0
+
+        due = self.database.list_due_source_actions(now=reference, limit=self.config.batch_size)
         processed = success = failed = 0
         for candidate in due:
             action = self.database.claim_source_action(int(candidate.get("id") or 0))
@@ -189,7 +198,14 @@ class SourceActionScheduler:
                     last_error=str(exc),
                     next_run_at=datetime.now(timezone.utc) + timedelta(minutes=int(action.get("intervalMinutes") or 1440)),
                 )
-        return {"ok": True, "due": len(due), "processed": processed, "success": success, "failed": failed}
+        return {
+            "ok": True,
+            "due": len(due),
+            "processed": processed,
+            "success": success,
+            "failed": failed,
+            "recovered": recovered,
+        }
 
     def run_one(self, action_id: int) -> dict[str, Any]:
         action = self.database.claim_source_action(int(action_id), force=True)

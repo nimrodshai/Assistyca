@@ -68,7 +68,8 @@ Required environment variables on Render:
 - `PORTAL_DB_SEED_ADMIN_EMAILS` for the comma-separated list of admin portal users that get promoted on startup
 - `PORTAL_DB_SEED_PAID_EMAILS` for the comma-separated list of portal users that should be treated as paid and entitled for billing-required tools during debugging or controlled internal testing
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
-- `PORTAL_SESSION_SECRET` optional but recommended when you want session signing to stay independent from mail-provider credentials
+- `PORTAL_SESSION_SECRET` **required in production**. At least 32 characters, random, and dedicated to this purpose. It signs session tokens and Google OAuth state. There is no longer a fallback to the Resend API key or SMTP password: that fallback meant the mail credential could mint a valid session for any registered email, including an admin. With no secret set the server still boots but sessions are held in memory only, so every user is signed out on restart or redeploy.
+- `WHATSAPP_APP_SECRET` **required if you receive WhatsApp webhooks**. Signature verification fails closed, so `/webhooks/whatsapp` rejects every request while this is unset.
 - `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number. Owner alerts can also use the portal-saved client WhatsApp connection token when no Assistyca sender token is configured.
 - `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional override for the Assistyca-owned sender number. If unset, the backend uses `1186653017865246`.
 - `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME` approved Meta template for scheduled WhatsApp notifications. Defaults to `notification_message`; its body must contain one text variable (`{{1}}`) for the requested message.

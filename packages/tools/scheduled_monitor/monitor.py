@@ -1807,6 +1807,14 @@ class ScheduledMonitorScheduler:
 
         current_time = self._normalize_now(now)
 
+        # Drop claims left behind by a crashed or redeployed worker. The run row is
+        # the claim, so a stranded 'running' row makes the slot look already-taken
+        # and the monitor silently never runs for that user again.
+        try:
+            self.database.release_stale_feature_monitor_runs(now=current_time)
+        except Exception:  # noqa: BLE001 - recovery must never block the batch
+            pass
+
         targets = self.database.list_active_feature_monitor_targets(MONITOR_FEATURE_ID)
         runs = [self._process_target(target=target, now=current_time) for target in targets]
         completed_runs = [run for run in runs if normalize_text(run.get("status")) != "skipped"]

@@ -1322,6 +1322,13 @@ class WhatsAppReengagementScheduler:
             current_time = current_time.replace(tzinfo=timezone.utc)
         current_time = current_time.astimezone(timezone.utc)
 
+        # Release claims stranded by a crashed or redeployed worker before claiming
+        # new slots, otherwise a single crash blocks that user's slot permanently.
+        try:
+            self.database.release_stale_whatsapp_reengagement_runs(now=current_time)
+        except Exception:  # noqa: BLE001 - recovery must never block the batch
+            pass
+
         targets = self.database.list_active_whatsapp_reengagement_targets(REENGAGEMENT_FEATURE_ID)
         runs: list[dict[str, Any]] = []
         skipped = 0
@@ -1330,14 +1337,23 @@ class WhatsAppReengagementScheduler:
             tz = self._timezone_for_settings(settings)
             scheduled_for = latest_reengagement_scheduled_slot(current_time, settings, tz)
             cutoff_at = resolve_reengagement_cutoff_at(now=current_time, settings=settings, tz=tz)
-            existing_run = self.database.get_whatsapp_reengagement_run(
+
+            # Claim the slot up front. The previous check-then-act left minutes of
+            # OpenAI drafting and an owner WhatsApp send between the check and the
+            # marker write, so a restart or concurrent trigger double-sent.
+            claim = self.database.claim_whatsapp_reengagement_run(
                 user_id=int(connection.get("userId") or 0),
                 feature_id=REENGAGEMENT_FEATURE_ID,
                 scheduled_for=scheduled_for,
+                metadata={
+                    "claimedAt": current_time.isoformat(),
+                    "cutoffAt": cutoff_at.isoformat() if hasattr(cutoff_at, "isoformat") else str(cutoff_at),
+                },
             )
-            if existing_run is not None:
+            if claim is None:
                 skipped += 1
                 continue
+
             runs.append(
                 self._process_target(
                     connection=connection,

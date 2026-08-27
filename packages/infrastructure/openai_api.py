@@ -8,7 +8,9 @@ It is intentionally dependency-light and uses the standard library only.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,16 +25,40 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 
+_logger = logging.getLogger("assistyca.openai_api")
+
 DEFAULT_OPENAI_API_BASE = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MODEL = "gpt-5.5"
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 60.0
 DEFAULT_OPENAI_CURRENCY = "USD"
+
+# Bounded retry for transient upstream failures. Only idempotent-safe conditions
+# are retried: connection errors, 408/409/429 and 5xx. Everything else fails fast.
+DEFAULT_OPENAI_MAX_ATTEMPTS = 3
+DEFAULT_OPENAI_RETRY_BASE_DELAY_SECONDS = 0.5
+DEFAULT_OPENAI_RETRY_MAX_DELAY_SECONDS = 8.0
+RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
 OpenAIEventSink = Callable[[dict[str, Any]], None]
 OpenAIPriceResolver = Callable[
     [str],
     Optional[Union[dict[str, Any], Tuple[Optional[float], Optional[float]]]],
 ]
+
+
+def _sleep_before_retry(attempt: int, *, retry_after: str | None = None) -> None:
+    """Back off between attempts, honouring Retry-After when the server sends it."""
+
+    delay = min(
+        DEFAULT_OPENAI_RETRY_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1)),
+        DEFAULT_OPENAI_RETRY_MAX_DELAY_SECONDS,
+    )
+    if retry_after:
+        try:
+            delay = max(delay, min(float(str(retry_after).strip()), DEFAULT_OPENAI_RETRY_MAX_DELAY_SECONDS))
+        except (TypeError, ValueError):
+            pass
+    time.sleep(delay)
 
 
 class OpenAIError(RuntimeError):
@@ -327,23 +353,36 @@ def _json_request(
         },
     )
 
-    try:
-        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
-            raw_body = response.read().decode("utf-8")
-            status_code = int(getattr(response, "status", 200) or 200)
-    except urllib_error.HTTPError as exc:
-        raw_body = exc.read().decode("utf-8", errors="replace")
+    # Bounded retry with exponential backoff. A single transient blip used to be
+    # terminal, and for scheduled actions that meant a message was silently never
+    # delivered because the row was marked failed with no path back to pending.
+    max_attempts = max(1, DEFAULT_OPENAI_MAX_ATTEMPTS)
+    for attempt in range(1, max_attempts + 1):
         try:
-            parsed = json.loads(raw_body)
-        except json.JSONDecodeError:
-            parsed = {}
-        message = extract_openai_error_message(parsed, status_code=exc.code) if isinstance(parsed, dict) else ""
-        if not message:
-            message = f"OpenAI returned HTTP {exc.code}."
-        raise OpenAIRequestError(message, details=raw_body, status_code=exc.code) from exc
-    except urllib_error.URLError as exc:
-        reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
-        raise OpenAIRequestError("OpenAI did not respond. Check the network and try again.", details=reason) from exc
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                raw_body = response.read().decode("utf-8")
+                status_code = int(getattr(response, "status", 200) or 200)
+            break
+        except urllib_error.HTTPError as exc:
+            raw_body = exc.read().decode("utf-8", errors="replace")
+            retryable = exc.code in RETRYABLE_HTTP_STATUS_CODES
+            if retryable and attempt < max_attempts:
+                _sleep_before_retry(attempt, retry_after=exc.headers.get("Retry-After") if exc.headers else None)
+                continue
+            try:
+                parsed = json.loads(raw_body)
+            except json.JSONDecodeError:
+                parsed = {}
+            message = extract_openai_error_message(parsed, status_code=exc.code) if isinstance(parsed, dict) else ""
+            if not message:
+                message = f"OpenAI returned HTTP {exc.code}."
+            raise OpenAIRequestError(message, details=raw_body, status_code=exc.code) from exc
+        except urllib_error.URLError as exc:
+            if attempt < max_attempts:
+                _sleep_before_retry(attempt)
+                continue
+            reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
+            raise OpenAIRequestError("OpenAI did not respond. Check the network and try again.", details=reason) from exc
 
     try:
         parsed_body = json.loads(raw_body)
@@ -393,6 +432,15 @@ class OpenAIGateway:
 
     def _emit(self, event_name: str, payload: dict[str, Any]) -> None:
         if self.event_sink is None:
+            # No caller currently supplies an event sink, which meant that skipped
+            # billing -- the one event that costs real money -- produced no log, no
+            # metric, and no row. Fall back to the module logger so the gap is at
+            # least observable in the deployment logs.
+            _logger.warning(
+                "%s %s",
+                event_name,
+                json.dumps(make_json_safe(payload), ensure_ascii=True, sort_keys=True),
+            )
             return
 
         envelope = make_json_safe(

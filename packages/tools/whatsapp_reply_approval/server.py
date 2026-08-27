@@ -1180,8 +1180,11 @@ def generate_suggestion(message_text: str, context: list[dict[str, Any]], assist
 
 
 def verify_whatsapp_signature(secret: str, body: bytes, header: str | None) -> bool:
+    # Fails closed. Without a configured app secret there is no way to tell a
+    # genuine Meta delivery from an anonymous POST, and accepting one lets an
+    # attacker inject inbound messages into any workspace.
     if not secret:
-        return True
+        return False
     if not header:
         return False
     try:
@@ -1271,14 +1274,23 @@ def send_whatsapp_message(
     except urllib_error.URLError as exc:
         raise RuntimeError(f"WhatsApp send failed: {exc.reason}") from exc
 
-    messages = response_payload.get("messages", [])
+    # Graph can return HTTP 200 with an error body. Treat anything that is not a
+    # real provider message id as a failure: fabricating an id here made callers
+    # record the send as successful, and the synthetic id never matched a delivery
+    # status webhook, so the record was never corrected.
+    if isinstance(response_payload, dict) and isinstance(response_payload.get("error"), dict):
+        raise RuntimeError(format_whatsapp_send_error(200, json.dumps(response_payload)))
+
+    messages = response_payload.get("messages", []) if isinstance(response_payload, dict) else []
     if messages and isinstance(messages, list):
         first_message = messages[0] or {}
         message_id = normalize_text(first_message.get("id"))
         if message_id:
             return message_id
 
-    return f"whatsapp-{uuid.uuid4().hex}"
+    raise RuntimeError(
+        "WhatsApp send failed: the provider accepted the request but returned no message id."
+    )
 
 
 def render_layout(title: str, body: str, subtitle: str | None = None) -> str:

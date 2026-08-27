@@ -1246,6 +1246,17 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
             clear=False,
         )
         self.env_patcher.start()
+
+        # Webhook signature verification fails closed, so these routing tests would
+        # otherwise all 403 for want of a WHATSAPP_APP_SECRET. What they exercise is
+        # message routing, not authentication; the fail-closed behaviour has its own
+        # tests in WhatsAppWebhookSignatureTests below.
+        self.signature_patcher = mock.patch(
+            "packages.infrastructure.portal_auth.server.verify_whatsapp_signature",
+            return_value=True,
+        )
+        self.signature_patcher.start()
+
         self.root = Path(__file__).resolve().parents[1]
         self.server = create_server(
             "127.0.0.1",
@@ -1273,6 +1284,7 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+        self.signature_patcher.stop()
         self.env_patcher.stop()
         self.temp_dir.cleanup()
 
@@ -2431,6 +2443,151 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertTrue(messages[0]["metadata"]["contentUnavailable"])
         self.assertTrue(messages[0]["metadata"]["outsideAssistyca"])
         self.assertEqual(messages[0]["metadata"]["status"], "sent")
+
+
+class WhatsAppWebhookSignatureTests(unittest.TestCase):
+    """The webhook must fail closed when no app secret is configured."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.env_patcher = mock.patch.dict(
+            os.environ,
+            {"PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp")},
+            clear=False,
+        )
+        self.env_patcher.start()
+        self.root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db"),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.env_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def _post_webhook(self, headers: dict[str, str] | None = None) -> int:
+        request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps({"entry": []}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json", **(headers or {})},
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                return response.status
+        except urllib_error.HTTPError as exc:
+            return exc.code
+
+    def test_unsigned_webhook_is_rejected_when_no_app_secret_is_configured(self) -> None:
+        with mock.patch.dict(os.environ, {"WHATSAPP_APP_SECRET": ""}, clear=False):
+            self.assertEqual(self._post_webhook(), 403)
+
+    def test_webhook_with_bogus_signature_is_rejected(self) -> None:
+        with mock.patch.dict(os.environ, {"WHATSAPP_APP_SECRET": "test-secret"}, clear=False):
+            self.assertEqual(self._post_webhook({"X-Hub-Signature-256": "sha256=deadbeef"}), 403)
+
+
+class WhatsAppSendResultTests(unittest.TestCase):
+    """send_whatsapp_message must never invent a provider message id."""
+
+    def _fake_response(self, payload: dict[str, object]):
+        body = json.dumps(payload).encode("utf-8")
+
+        class _Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self_inner):  # noqa: N805 - context manager protocol
+                return self_inner
+
+            def __exit__(self_inner, *args):  # noqa: N805 - context manager protocol
+                return False
+
+        return _Response(body)
+
+    def _send(self, payload: dict[str, object]) -> str:
+        with mock.patch(
+            "packages.tools.whatsapp_reply_approval.server.urllib_request.urlopen",
+            return_value=self._fake_response(payload),
+        ):
+            return send_whatsapp_message(
+                access_token="token",
+                phone_number_id="12345",
+                recipient_wa_id="15551234567",
+                message_text="hello",
+                api_version="v21.0",
+            )
+
+    def test_returns_provider_message_id_on_success(self) -> None:
+        self.assertEqual(self._send({"messages": [{"id": "wamid.real-1"}]}), "wamid.real-1")
+
+    def test_raises_when_response_has_no_messages_array(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self._send({"messaging_product": "whatsapp"})
+
+    def test_raises_when_response_carries_an_error_object(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self._send({"error": {"message": "Invalid parameter", "code": 100}})
+
+
+class StaticFileExposureTests(unittest.TestCase):
+    """The repository root must not be browsable over HTTP."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db"),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def _status(self, path: str) -> int:
+        try:
+            with urllib_request.urlopen(f"{self.base_url}{path}", timeout=5) as response:
+                return response.status
+        except urllib_error.HTTPError as exc:
+            return exc.code
+
+    def test_private_paths_are_not_served(self) -> None:
+        for path in (
+            "/portal/portal.db",
+            "/portal/portal-whatsapp/user-1.json",
+            "/portal/billing.sample.json",
+            "/scripts/run_portal_server.local.sh",
+            "/scripts/run_portal_server.py",
+            "/packages/infrastructure/portal_db.py",
+            "/clients/Dor/client.yaml",
+            "/AGENTS.md",
+            "/requirements.txt",
+            "/.git/config",
+            "/render.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self._status(path), 404)
+
+    def test_public_assets_are_still_served(self) -> None:
+        for path in ("/", "/portal/", "/portal/app.js", "/portal/styles.css", "/privacy.html"):
+            with self.subTest(path=path):
+                self.assertEqual(self._status(path), 200)
 
 
 if __name__ == "__main__":
