@@ -4041,27 +4041,39 @@ body[data-modal="billing"] .app-shell {
 .agent-folder-utility-button {
   display: inline-grid;
   place-items: center;
-  height: 1.88rem;
-  min-width: 0;
-  padding: 0 0.58rem;
+  width: 2.35rem;
+  height: 2.35rem;
+  padding: 0;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.38);
-  border: 1px solid rgba(20, 28, 38, 0.07);
+  background: rgba(255, 255, 255, 0.46);
+  border: 1px solid rgba(20, 28, 38, 0.08);
   border-radius: 999px;
+  box-shadow: 0 10px 20px rgba(25, 38, 54, 0.045);
   cursor: pointer;
   font: inherit;
-  font-size: 0.66rem;
-  font-weight: 800;
   line-height: 1;
-  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, transform 160ms ease;
+  transition: border-color 160ms ease, box-shadow 160ms ease, color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.agent-folder-utility-icon {
+  width: 1.08rem;
+  height: 1.08rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 
 .agent-folder-utility-button:hover,
 .agent-folder-utility-button:focus-visible,
 .agent-folder-utility-button.is-active {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.68);
-  border-color: rgba(15, 118, 110, 0.18);
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(15, 118, 110, 0.22);
+  box-shadow: 0 12px 24px rgba(21, 135, 124, 0.12);
+  transform: translateY(-1px);
 }
 
 .agent-folder-utility-button:focus-visible,
@@ -10804,16 +10816,22 @@ body.is-chat-view {
 
 :root[data-theme="dark"] .agent-folder-utility-button {
   color: var(--muted);
-  background: rgba(224, 239, 244, 0.045);
-  border-color: rgba(224, 239, 244, 0.09);
+  background: rgba(224, 239, 244, 0.055);
+  border-color: rgba(224, 239, 244, 0.11);
+  box-shadow:
+    0 10px 22px rgba(0, 0, 0, 0.14),
+    inset 0 1px 0 rgba(224, 239, 244, 0.05);
 }
 
 :root[data-theme="dark"] .agent-folder-utility-button:hover,
 :root[data-theme="dark"] .agent-folder-utility-button:focus-visible,
 :root[data-theme="dark"] .agent-folder-utility-button.is-active {
-  color: var(--text);
-  background: rgba(224, 239, 244, 0.075);
-  border-color: rgba(55, 184, 171, 0.24);
+  color: var(--accent);
+  background: rgba(55, 184, 171, 0.13);
+  border-color: rgba(55, 184, 171, 0.3);
+  box-shadow:
+    0 14px 28px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(55, 184, 171, 0.06) inset;
 }
 
 :root[data-theme="dark"] .settings-switcher {

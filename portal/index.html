@@ -24,7 +24,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="./styles.css?v=135" />
+    <link rel="stylesheet" href="./styles.css?v=136" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -414,19 +414,30 @@
                       id="agentFolderFilterButton"
                       class="agent-folder-utility-button"
                       type="button"
+                      aria-label="Filter folders"
                       aria-expanded="false"
                       aria-controls="agentFolderFilterPanel"
                     >
-                      Filter
+                      <svg class="agent-folder-utility-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M4 6h16"></path>
+                        <path d="M7 12h10"></path>
+                        <path d="M10 18h4"></path>
+                      </svg>
                     </button>
                     <button
                       id="agentFolderSortButton"
                       class="agent-folder-utility-button"
                       type="button"
+                      aria-label="Sort folders"
                       aria-expanded="false"
                       aria-controls="agentFolderSortPanel"
                     >
-                      Sort
+                      <svg class="agent-folder-utility-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M7 4v16"></path>
+                        <path d="m3 8 4-4 4 4"></path>
+                        <path d="M17 20V4"></path>
+                        <path d="m21 16-4 4-4-4"></path>
+                      </svg>
                     </button>
                     <button
                       id="agentFolderCreateToggleButton"
