@@ -12257,7 +12257,8 @@ function getAgentRenderableMessageActions(message, kind, proposal) {
 
   if (kind === "question" && proposal && !proposal.approved && proposal.status !== "rejected") {
     const questionIndex = Math.max(0, Number(message.metadata?.questionIndex || proposal.questionIndex || 0) || 0);
-    const questionActions = getAgentQuestionActions(proposal, questionIndex, message.text);
+    const questionText = getAgentDisplayMessageText(message, kind, proposal);
+    const questionActions = getAgentQuestionActions(proposal, questionIndex, questionText);
     if (questionActions.length) {
       return questionActions;
     }
@@ -12767,6 +12768,8 @@ function getAgentQuestionContextText(proposal, questionText = "") {
     .toLowerCase();
 }
 
+const AGENT_MONTH_NAME_PATTERN = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+const AGENT_MONTHLY_BATCH_OBJECT_PATTERN = "(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?|summar(?:y|ies|ize|ise)|digests?|bookkeeping|reconciliation)";
 function isAgentRunModeQuestionText(value = "") {
   const text = String(value || "").toLowerCase();
   return (
@@ -12775,28 +12778,54 @@ function isAgentRunModeQuestionText(value = "") {
   );
 }
 
+function isAgentFrequencyQuestionText(value = "") {
+  return /\b(?:how often|frequency|cadence|daily|weekly|monthly|hourly|every\s+\d+|every day|every week|every month)\b/i.test(String(value || ""));
+}
+
+function isAgentMonthlyBatchCadenceConfirmationText(value = "") {
+  const text = String(value || "").toLowerCase();
+  return (
+    /\bmonthly\b/.test(text)
+    && /\b(?:beginning|start|first)\b/.test(text)
+    && /\b(?:previous|last)\s+month\b/.test(text)
+    && /\b(?:ok|okay|work|confirm|right)\b/.test(text)
+  );
+}
+
 function agentContextSuggestsMonthlyBatchTask(proposal, questionText = "") {
   const text = getAgentQuestionContextText(proposal, questionText);
-  const monthNamePattern = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
-  const hasBatchObject = /\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?|summar(?:y|ies|ize|ise)|digests?|bookkeeping|reconciliation)\b/.test(text);
+  const hasBatchObject = new RegExp(`\\b${AGENT_MONTHLY_BATCH_OBJECT_PATTERN}\\b`).test(text);
   const hasRelativeMonthlyWindow = /\b(?:monthly|month|last month|this month|next month|previous month|current month)\b/.test(text);
-  const hasNamedMonthWindow = new RegExp(`\\b(?:from|for|during|in)\\s+${monthNamePattern}(?:\\s+\\d{4})?\\b`).test(text)
-    || new RegExp(`\\b${monthNamePattern}(?:\\s+\\d{4})?\\s+(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?)\\b`).test(text);
+  const hasNamedMonthWindow = new RegExp(`\\b(?:from|for|during|in)\\s+${AGENT_MONTH_NAME_PATTERN}(?:\\s+\\d{4})?\\b`).test(text)
+    || new RegExp(`\\b${AGENT_MONTH_NAME_PATTERN}(?:\\s+\\d{4})?\\s+(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?)\\b`).test(text);
   const hasMonthlyWindow = hasRelativeMonthlyWindow || hasNamedMonthWindow;
   const hasBatchVerb = /\b(?:collect|pull|gather|fetch|find|search|export|summarize|summarise|prepare|get|send)\b/.test(text);
   return hasBatchObject && hasMonthlyWindow && hasBatchVerb;
 }
 
-function getAgentMonthlyBatchScheduleActions(includeOneTime = false) {
+function getAgentMonthlyBatchScheduleActions(includeOneTime = false, options = {}) {
+  const cadenceValue = "monthly, at the beginning of each month for the previous month";
+  if (options.confirmCadence) {
+    return [
+      createAgentAction("choose", "Yes, monthly", cadenceValue, "primary"),
+      createAgentAction("choose", "Change timing", "change the timing"),
+    ];
+  }
+
   const actions = includeOneTime
-    ? [createAgentAction("choose", "Just once", "just once")]
+    ? [createAgentAction("choose", "Just once", "just once for the requested month")]
     : [];
   actions.push(createAgentAction(
     "choose",
-    "Monthly",
-    "monthly, at the beginning of the next month",
+    includeOneTime ? "Every month" : "Monthly",
+    cadenceValue,
   ));
   return actions;
+}
+
+function filterAgentQuestionActions(actions) {
+  const normalizedActions = Array.isArray(actions) ? actions.filter(Boolean) : [];
+  return normalizedActions.length > 1 ? normalizedActions : [];
 }
 
 function getAgentContextualQuestionActions(proposal, questionIndex = 0, questionText = "") {
@@ -12817,7 +12846,10 @@ function getAgentContextualQuestionActions(proposal, questionIndex = 0, question
   }
 
   if (field?.key === "frequency" && isMonthlyBatchTask) {
-    return getAgentMonthlyBatchScheduleActions(false);
+    if (isAgentMonthlyBatchCadenceConfirmationText(questionText)) {
+      return getAgentMonthlyBatchScheduleActions(false, { confirmCadence: true });
+    }
+    return [];
   }
 
   return [];
@@ -12837,7 +12869,7 @@ function getAgentQuestionFieldIndexFromText(proposal, questionText = "") {
     }
   }
 
-  if (/\b(?:how often|frequency|cadence|daily|weekly|monthly|hourly|every\s+\d+|every day|every week|every month)\b/.test(text)) {
+  if (isAgentFrequencyQuestionText(text)) {
     const frequencyIndex = findKey("frequency");
     if (frequencyIndex >= 0) {
       return frequencyIndex;
@@ -12916,17 +12948,21 @@ function getAgentQuestionActions(proposal, questionIndex = 0, questionText = "")
   }
 
   const field = getAgentProposalFieldSchema(proposal)[index];
+  if ((isAgentRunModeQuestionText(questionText) || isAgentFrequencyQuestionText(questionText)) && field?.key !== "frequency") {
+    return [];
+  }
   const contextualActions = getAgentContextualQuestionActions(proposal, index, questionText);
   if (contextualActions.length) {
-    return contextualActions;
+    return filterAgentQuestionActions(contextualActions);
   }
-  return Array.isArray(field?.actions)
+  const fieldActions = Array.isArray(field?.actions)
     ? field.actions.map((action) => (
       typeof action === "string"
         ? createAgentAction("choose", action)
         : createAgentAction("choose", action.label, action.value || action.label, action.tone || "secondary")
     ))
     : [];
+  return filterAgentQuestionActions(fieldActions);
 }
 
 function getAgentApprovalActions(proposal) {
@@ -13405,9 +13441,16 @@ async function handleAgentWhatsAppApprovalAction(button) {
   }
 }
 
+function getAgentDisplayMessageText(message, kind, proposal) {
+  return String(message?.text || "");
+}
+
 function renderAgentMessage(message) {
   const row = document.createElement("article");
   const kind = String(message.metadata?.kind || (message.role === "user" ? "user" : "text"));
+  const agent = getAgentWorkspace();
+  const proposal = getAgentMessageProposal(message, agent);
+  const displayText = getAgentDisplayMessageText(message, kind, proposal);
   row.className = `agent-message is-${message.role} is-${kind}`;
 
   const bubble = document.createElement("div");
@@ -13424,7 +13467,7 @@ function renderAgentMessage(message) {
     }
     bubble.append(dots);
   } else {
-    bubble.textContent = message.text;
+    bubble.textContent = displayText;
   }
 
   const messageLine = document.createElement("div");
@@ -13453,8 +13496,6 @@ function renderAgentMessage(message) {
     row.append(createAgentWhatsAppReplyCard(message));
   }
 
-  const agent = getAgentWorkspace();
-  const proposal = getAgentMessageProposal(message, agent);
   const actions = getAgentRenderableMessageActions(message, kind, proposal);
   if (actions.length && message.role !== "user") {
     const messageRevision = Math.max(0, Number(message.metadata?.proposalRevision || 0));

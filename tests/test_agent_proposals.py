@@ -213,6 +213,34 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("may omit them when the reply already gives the user a clear", prompt)
         self.assertNotIn("may attach Set it up and Change something buttons", prompt)
 
+    def test_conversational_turn_prompt_infers_monthly_batch_cadence(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="on a schedule",
+            conversation=[
+                {"role": "user", "text": "Pull all my receipts from August."},
+                {"role": "assistant", "text": "Which mailbox or source should I search for the August receipts?"},
+                {"role": "user", "text": "nimrod.shai@gmail.com"},
+                {"role": "assistant", "text": "Should this be a one-time pull, or do you want it to run on a schedule?"},
+                {"role": "user", "text": "on a schedule"},
+            ],
+            timezone_name="Asia/Jerusalem",
+            active_proposal={
+                "id": "proposal-1",
+                "type": "custom",
+                "revision": 1,
+                "requestText": "Pull all my receipts from August.",
+                "fields": {
+                    "result": "Pull all receipts from August from nimrod.shai@gmail.com",
+                },
+            },
+        )
+
+        self.assertIn("month-based batch jobs", prompt)
+        self.assertIn("infer frequency/schedule as monthly", prompt)
+        self.assertIn("beginning of each month for the previous month", prompt)
+        self.assertIn("Do not ask a generic daily/weekly/monthly frequency question", prompt)
+        self.assertIn("Do not phrase recurring work as repeatedly pulling the same named month", prompt)
+
     def test_conversational_turn_response_removes_duplicate_preface(self) -> None:
         turn = normalize_agent_turn_response({
             "outcome": "question",
@@ -226,6 +254,24 @@ class AgentProposalRevisionTests(unittest.TestCase):
         }, has_active_proposal=True, active_proposal_type="custom")
 
         self.assertEqual(turn["reply"], "Should this be a one-time pull for August?")
+        self.assertEqual(turn["outcome"], "question")
+
+    def test_conversational_turn_response_removes_task_noted_preface(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "question",
+            "reply": "I already have the receipt-pulling task noted. Is monthly at the beginning of each month for the previous month okay?",
+            "proposalType": "custom",
+            "changes": {
+                "fields": {
+                    "result": "Pull all receipts from August",
+                },
+            },
+        }, has_active_proposal=True, active_proposal_type="custom")
+
+        self.assertEqual(
+            turn["reply"],
+            "Is monthly at the beginning of each month for the previous month okay?",
+        )
         self.assertEqual(turn["outcome"], "question")
 
     def test_question_turn_can_preserve_known_draft_fields(self) -> None:

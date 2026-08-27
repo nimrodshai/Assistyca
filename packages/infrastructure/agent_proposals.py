@@ -363,6 +363,14 @@ def build_agent_turn_prompt(
         "exactly one missing detail in reply. When activeProposal exists and the user answers or corrects a detail, "
         "return outcome=revise_proposal with changes.fields containing the new or corrected field values. Do not "
         "restart questions whose values are already present in activeProposal.fields.\n"
+        "For month-based batch jobs such as pulling receipts, invoices, statements, expenses, bills, transactions, "
+        "reports, summaries, or digests for a named month or for last/previous month, treat the month as the "
+        "reporting window. If the user chooses a schedule for that job, infer frequency/schedule as monthly, at "
+        "the beginning of each month for the previous month. Do not ask a generic daily/weekly/monthly frequency "
+        "question for these jobs. If you still need confirmation, ask whether that monthly beginning-of-month "
+        "cadence is okay. If the user must choose between one-time and recurring, make the wording explicit: the "
+        "one-time choice is for the named/requested month, while the recurring choice pulls the previous month's "
+        "items each month. Do not phrase recurring work as repeatedly pulling the same named month.\n"
         "For source-action, use sourceContext when present. This first phase only fetches a URL or stores a file "
         "snapshot on a recurring schedule; it does not understand, summarize, or interpret source content yet. "
         "Ask only for a missing source or frequency. Use sourceType=url or sourceType=file, and never request file "
@@ -488,6 +496,7 @@ _AMBIGUOUS_DUPLICATE_PREFACE_RE = re.compile(
     r"|i\s+already\s+have\s+(?:that|this)\s+request"
     r"|(?:that|this)\s+request\s+is\s+already\s+(?:ready|pending)"
     r"|(?:that|this)\s+plan\s+is\s+already\s+ready"
+    r"|i\s+already\s+have\s+(?:the\s+)?[^.!?]{0,80}?\s+(?:task|plan|setup)\s+(?:noted|ready|pending)"
     r")\s*[\.\!\?]\s*",
     re.IGNORECASE,
 )
