@@ -2925,6 +2925,33 @@ body[data-modal="billing"] .app-shell {
   font-size: 0.9rem;
 }
 
+.agent-action-inline-link {
+  display: inline;
+  padding: 0;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  border-radius: 0.4em;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+  transition: color 160ms ease, text-decoration-color 160ms ease, box-shadow 160ms ease;
+}
+
+.agent-action-inline-link:hover,
+.agent-action-inline-link:focus-visible {
+  color: var(--accent-strong);
+  text-decoration-color: currentColor;
+  outline: 0;
+}
+
+.agent-action-inline-link:focus-visible {
+  box-shadow: 0 0 0 3px rgba(55, 184, 171, 0.22);
+}
+
 .agent-message.is-thinking .agent-message-bubble {
   display: inline-flex;
   gap: 0.42rem;
@@ -3568,6 +3595,7 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-panel-mode-switch {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.18rem;
@@ -3578,9 +3606,35 @@ body[data-modal="billing"] .app-shell {
   border: 1px solid rgba(20, 28, 38, 0.075);
   border-radius: 999px;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.68) inset;
+  isolation: isolate;
+  --agent-panel-mode-index: 0;
+}
+
+.agent-panel-mode-switch[data-agent-panel-current-mode="chats"] {
+  --agent-panel-mode-index: 1;
+}
+
+.agent-panel-mode-switch[data-agent-panel-current-mode="folders"] {
+  --agent-panel-mode-index: 2;
+}
+
+.agent-panel-mode-switch::before {
+  content: "";
+  position: absolute;
+  inset-block: 0.2rem;
+  left: 0.2rem;
+  z-index: 0;
+  width: calc((100% - 0.4rem - 0.36rem) / 3);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 8px 22px rgba(25, 38, 54, 0.1), 0 1px 0 rgba(255, 255, 255, 0.78) inset;
+  transform: translateX(calc(var(--agent-panel-mode-index) * (100% + 0.18rem)));
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, background 180ms ease;
 }
 
 .agent-panel-mode-button {
+  position: relative;
+  z-index: 1;
   display: inline-grid;
   place-items: center;
   min-height: 2rem;
@@ -3609,8 +3663,24 @@ body[data-modal="billing"] .app-shell {
 
 .agent-panel-mode-button.is-active {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 7px 18px rgba(25, 38, 54, 0.08);
+  background: transparent;
+  box-shadow: none;
+}
+
+.agent-panel-mode-button.is-guided {
+  animation: agent-tab-guide 1050ms ease-in-out 3;
+}
+
+@keyframes agent-tab-guide {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+
+  45% {
+    color: var(--accent);
+    box-shadow: 0 0 0 5px rgba(55, 184, 171, 0.16);
+  }
 }
 
 .agent-actions-head .eyebrow {
@@ -4240,6 +4310,29 @@ body[data-modal="billing"] .app-shell {
   }
 }
 
+.agent-action-item.is-spotlighted {
+  border-color: rgba(55, 184, 171, 0.62);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(237, 252, 250, 0.92));
+  box-shadow: 0 0 0 1px rgba(55, 184, 171, 0.2), 0 16px 34px rgba(15, 118, 110, 0.16);
+  animation: agent-action-card-glow 1100ms ease-in-out 3;
+}
+
+.agent-action-item.is-spotlighted::after {
+  content: "";
+  position: absolute;
+  top: 0.92rem;
+  right: 0.92rem;
+  z-index: 2;
+  width: 0.78rem;
+  height: 0.78rem;
+  pointer-events: none;
+  background: #37b8ab;
+  border: 2px solid rgba(255, 255, 255, 0.94);
+  border-radius: 999px;
+  box-shadow: 0 0 0 0 rgba(55, 184, 171, 0.45);
+  animation: agent-action-spotlight-dot 980ms ease-out 4;
+}
+
 .agent-action-item.is-expanded {
   grid-template-rows: auto 1fr;
 }
@@ -4276,6 +4369,38 @@ body[data-modal="billing"] .app-shell {
 
 #agentCompletedActionList .agent-action-item::before {
   display: none;
+}
+
+@keyframes agent-action-card-glow {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  45% {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 4px rgba(55, 184, 171, 0.15), 0 18px 38px rgba(15, 118, 110, 0.2);
+  }
+}
+
+@keyframes agent-action-spotlight-dot {
+  0% {
+    opacity: 0.45;
+    transform: scale(0.72);
+    box-shadow: 0 0 0 0 rgba(55, 184, 171, 0.42);
+  }
+
+  48% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 0.75rem rgba(55, 184, 171, 0.02);
+  }
+
+  100% {
+    opacity: 0.42;
+    transform: scale(0.72);
+    box-shadow: 0 0 0 0 rgba(55, 184, 171, 0);
+  }
 }
 
 .agent-action-item:hover,
@@ -4935,6 +5060,23 @@ body[data-modal="billing"] .app-shell {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .agent-panel-mode-switch::before,
+  .agent-panel-mode-button,
+  .agent-action-inline-link,
+  .agent-action-item.is-spotlighted {
+    transition: none;
+  }
+
+  .agent-panel-mode-button.is-guided,
+  .agent-action-item.is-spotlighted,
+  .agent-action-item.is-spotlighted::after {
+    animation: none;
+  }
+
+  .agent-action-item.is-spotlighted::after {
+    box-shadow: 0 0 0 0.38rem rgba(55, 184, 171, 0.14);
+  }
+
   .agent-action-editor-status-spinner {
     animation: none;
     border-style: dotted;
@@ -10467,6 +10609,12 @@ body.is-chat-view {
   background: rgba(31, 45, 56, 0.94);
 }
 
+:root[data-theme="dark"] .agent-action-item.is-spotlighted {
+  border-color: rgba(55, 184, 171, 0.62);
+  background: linear-gradient(180deg, rgba(20, 40, 47, 0.98), rgba(11, 28, 34, 0.96));
+  box-shadow: 0 0 0 1px rgba(55, 184, 171, 0.24), 0 18px 38px rgba(0, 0, 0, 0.28);
+}
+
 :root[data-theme="dark"] .agent-chat-delete {
   color: #a8b6c3;
 }
@@ -10545,10 +10693,15 @@ body.is-chat-view {
   box-shadow: 0 1px 0 rgba(224, 239, 244, 0.05) inset;
 }
 
+:root[data-theme="dark"] .agent-panel-mode-switch::before {
+  background: rgba(31, 45, 56, 0.96);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(224, 239, 244, 0.06) inset;
+}
+
 :root[data-theme="dark"] .agent-panel-mode-button.is-active {
   color: var(--text);
-  background: rgba(31, 45, 56, 0.96);
-  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.18);
+  background: transparent;
+  box-shadow: none;
 }
 
 :root[data-theme="dark"] .feature-page-example.whatsapp-preview {

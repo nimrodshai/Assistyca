@@ -1292,6 +1292,8 @@ let scheduledActionsRefreshPromise = null;
 let sourceActionsRefreshPromise = null;
 let whatsappApprovalsPollTimer = null;
 let whatsappApprovalsRefreshPromise = null;
+let agentActionSpotlightId = "";
+let agentActionSpotlightTimer = null;
 
 const elements = {
   loadingView: document.querySelector("#loadingView"),
@@ -1346,6 +1348,7 @@ const elements = {
   agentAddToolBackdrop: document.querySelector("#agentAddToolBackdrop"),
   agentAddToolMenu: document.querySelector("#agentAddToolMenu"),
   agentActionsPanelBody: document.querySelector("#agentActionsPanelBody"),
+  agentPanelModeSwitch: document.querySelector("#agentPanelModeSwitch"),
   agentPanelActionsModeButton: document.querySelector("#agentPanelActionsModeButton"),
   agentPanelChatsModeButton: document.querySelector("#agentPanelChatsModeButton"),
   agentPanelFoldersModeButton: document.querySelector("#agentPanelFoldersModeButton"),
@@ -4620,18 +4623,176 @@ function isCalendarConnectionReady() {
   return getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected";
 }
 
+function isGoogleDriveConnectionReady() {
+  return isGoogleOAuthPlatformConnectionReady("drive", "google_drive");
+}
+
+function getAgentProposalPrimitiveText(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return Object.values(source)
+    .filter((item) => ["string", "number", "boolean"].includes(typeof item))
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function getAgentProposalConnectionContextText(proposal) {
+  return [
+    proposal?.type,
+    proposal?.requestText,
+    proposal?.summary,
+    ...getAgentProposalPrimitiveText(proposal?.fields),
+    ...getAgentProposalPrimitiveText(proposal?.details),
+    ...getAgentProposalPrimitiveText(proposal?.executionPlan),
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function agentTextSuggestsEmailSource(text = "") {
+  return /\b(?:gmail|google mail|mailbox|inbox|email account|mail account)\b/i.test(text)
+    || /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text);
+}
+
+function agentTextSuggestsDriveSource(text = "") {
+  return /\b(?:google drive|drive folder|drive file|google docs?|google sheets?|spreadsheet|pdf|document folder|receipt folder|invoice folder)\b/i
+    .test(text)
+    || /\b(?:docs|drive|sheets)\.google\.com\b/i.test(text);
+}
+
+function agentTextSuggestsGoogleWorkspaceBatch(text = "") {
+  return /\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|bookkeeping|reconciliation)\b/i.test(text)
+    && /\b(?:pull|fetch|find|collect|gather|get|export|search|summarize|summarise|prepare|reconcile)\b/i.test(text);
+}
+
+function createAgentConnectionRequirement(requirementId) {
+  if (requirementId === "gmail") {
+    return {
+      id: "gmail",
+      missingCredential: "Gmail access",
+      toolLabel: "Gmail",
+      actionLabel: "Connect Gmail",
+      setupPlatformId: "email",
+      capability: "read the mailbox for this action",
+    };
+  }
+  if (requirementId === "calendar") {
+    return {
+      id: "calendar",
+      missingCredential: "Calendar access",
+      toolLabel: "Google Calendar",
+      actionLabel: "Connect Google",
+      setupPlatformId: "calendar",
+      capability: "read the calendar for this action",
+    };
+  }
+  if (requirementId === "drive") {
+    return {
+      id: "drive",
+      missingCredential: "Google Drive access",
+      toolLabel: "Google Drive",
+      actionLabel: "Connect Google",
+      setupPlatformId: "calendar",
+      capability: "read the Drive source for this action",
+    };
+  }
+  if (requirementId === "google-workspace") {
+    return {
+      id: "google-workspace",
+      missingCredential: "Google access",
+      toolLabel: "Google",
+      actionLabel: "Connect Google",
+      setupPlatformId: "calendar",
+      capability: "read the Gmail or Drive source for this action",
+    };
+  }
+  return null;
+}
+
+function getAgentProposalRequiredConnection(proposal) {
+  if (!proposal) {
+    return null;
+  }
+
+  if (proposal.type === "email-digest") {
+    return createAgentConnectionRequirement("gmail");
+  }
+  if (proposal.type === "calendar-summary") {
+    return createAgentConnectionRequirement("calendar");
+  }
+
+  const contextText = getAgentProposalConnectionContextText(proposal);
+  if (proposal.type === "source-action" && agentTextSuggestsDriveSource(contextText)) {
+    return createAgentConnectionRequirement("drive");
+  }
+
+  if (proposal.type === "custom" && agentTextSuggestsGoogleWorkspaceBatch(contextText)) {
+    if (agentTextSuggestsEmailSource(contextText)) {
+      return createAgentConnectionRequirement("gmail");
+    }
+    if (agentTextSuggestsDriveSource(contextText)) {
+      return createAgentConnectionRequirement("drive");
+    }
+    return createAgentConnectionRequirement("google-workspace");
+  }
+
+  return null;
+}
+
+function isAgentProposalRequiredConnectionReady(requirement) {
+  if (!requirement) {
+    return true;
+  }
+  if (requirement.id === "gmail") {
+    return isGmailConnectionReady();
+  }
+  if (requirement.id === "calendar") {
+    return isCalendarConnectionReady();
+  }
+  if (requirement.id === "drive") {
+    return isGoogleDriveConnectionReady();
+  }
+  if (requirement.id === "google-workspace") {
+    return isGmailConnectionReady() || isGoogleDriveConnectionReady();
+  }
+  return true;
+}
+
+function syncAgentProposalRequiredConnection(proposal) {
+  if (!proposal) {
+    return null;
+  }
+  const requirement = getAgentProposalRequiredConnection(proposal);
+  const googleCredentialLabels = new Set([
+    "Gmail access",
+    "Calendar access",
+    "Google Drive access",
+    "Google access",
+  ]);
+  if (!requirement) {
+    if (googleCredentialLabels.has(proposal.missingCredential)) {
+      proposal.missingCredential = "";
+    }
+    return null;
+  }
+
+  if (isAgentProposalRequiredConnectionReady(requirement)) {
+    if (proposal.missingCredential === requirement.missingCredential) {
+      proposal.missingCredential = "";
+    }
+  } else {
+    proposal.missingCredential = requirement.missingCredential;
+  }
+  return requirement;
+}
+
 function clearGoogleConnectionMissingCredentials() {
-  const gmailConnected = isGmailConnectionReady();
-  const calendarConnected = isCalendarConnectionReady();
   let changed = false;
   for (const proposal of getAgentWorkspace().proposals) {
-    if (proposal.type === "email-digest" && proposal.missingCredential && gmailConnected) {
-      proposal.missingCredential = "";
-      proposal.updatedAt = new Date().toISOString();
-      changed = true;
-    }
-    if (proposal.type === "calendar-summary" && proposal.missingCredential && calendarConnected) {
-      proposal.missingCredential = "";
+    const previousCredential = proposal.missingCredential;
+    syncAgentProposalRequiredConnection(proposal);
+    if (proposal.missingCredential !== previousCredential) {
       proposal.updatedAt = new Date().toISOString();
       changed = true;
     }
@@ -6090,6 +6251,8 @@ function isWhatsAppConnectionReady(feature = getFeatureById(WHATSAPP_REPLY_ASSIS
 function buildAgentToolContext() {
   const whatsapp = getWhatsAppConnectionSetupState();
   const calendar = getPlatformConnectionByPlatform("calendar");
+  const gmail = getPlatformConnectionByPlatform("email");
+  const drive = getPlatformConnectionByPlatform("drive");
   return {
     whatsapp: {
       ready: whatsapp.ready,
@@ -6104,6 +6267,16 @@ function buildAgentToolContext() {
       platformConnected: Boolean(calendar),
       connectionStatus: getPlatformConnectionStatus(calendar).label.toLowerCase().replace(/\s+/g, "_"),
       validationStatus: String(calendar?.metadata?.validationStatus || "unknown").trim().toLowerCase() || "unknown",
+    },
+    gmail: {
+      platformConnected: Boolean(gmail),
+      connectionStatus: getPlatformConnectionStatus(gmail).label.toLowerCase().replace(/\s+/g, "_"),
+      validationStatus: String(gmail?.metadata?.validationStatus || "unknown").trim().toLowerCase() || "unknown",
+    },
+    drive: {
+      platformConnected: Boolean(drive),
+      connectionStatus: getPlatformConnectionStatus(drive).label.toLowerCase().replace(/\s+/g, "_"),
+      validationStatus: String(drive?.metadata?.validationStatus || "unknown").trim().toLowerCase() || "unknown",
     },
   };
 }
@@ -11971,7 +12144,7 @@ function formatAgentScheduledMessageChannel(channel) {
     return "email";
   }
   if (normalized === "portal") {
-    return "this workspace";
+    return "this chat";
   }
   return "the chosen channel";
 }
@@ -12029,6 +12202,18 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   const inferredFields = blueprint.type === "scheduled-message"
     ? {}
     : inferAgentProposalFieldsFromText(text, blueprint.type);
+  // Action results belong in the Assistyca conversation unless the user
+  // explicitly chooses another delivery channel. This keeps setup focused on
+  // the task instead of asking an avoidable "where should I notify you?"
+  // question, and gives every action a safe default destination.
+  if (
+    blueprint.type !== "scheduled-message"
+    && getAgentProposalFieldSchema({ type: blueprint.type, requestText: String(text || "") })
+      .some((field) => field?.key === "deliveryChannel")
+    && !inferredFields.deliveryChannel
+  ) {
+    inferredFields.deliveryChannel = "portal";
+  }
   if (blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
     inferredFields.whatsappNumber = inferredFields.whatsappNumber || "connected WhatsApp number";
     inferredFields.deliveryChannel = inferredFields.deliveryChannel || "portal";
@@ -12114,6 +12299,7 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     updateAgentProposalSummaryFromFields(proposal);
   }
 
+  syncAgentProposalRequiredConnection(proposal);
   return proposal;
 }
 
@@ -12162,6 +12348,7 @@ function switchAgentProposalToCalendarSummary(proposal, requestText) {
   }
   syncAgentProposalFieldCompatibility(replacement);
   updateAgentProposalSummaryFromFields(replacement);
+  syncAgentProposalRequiredConnection(replacement);
 
   Object.assign(proposal, replacement, {
     id: previousId,
@@ -12258,7 +12445,10 @@ function getAgentRenderableMessageActions(message, kind, proposal) {
   if (kind === "question" && proposal && !proposal.approved && proposal.status !== "rejected") {
     const questionIndex = Math.max(0, Number(message.metadata?.questionIndex || proposal.questionIndex || 0) || 0);
     const questionText = getAgentDisplayMessageText(message, kind, proposal);
-    const questionActions = getAgentQuestionActions(proposal, questionIndex, questionText);
+    const questionFieldKey = String(message.metadata?.fieldKey || "").trim();
+    const questionActions = questionFieldKey
+      ? getAgentQuestionActions(proposal, questionIndex, questionText, questionFieldKey)
+      : getAgentQuestionActions(proposal, questionIndex, message.text);
     if (questionActions.length) {
       return questionActions;
     }
@@ -12321,6 +12511,9 @@ function getAgentProposalFieldMap(proposal) {
 }
 
 function hasAgentProposalFieldValue(proposal, key) {
+  if (key === "deliveryChannel") {
+    return Boolean(getAgentProposalDeliveryChannel(proposal));
+  }
   return Boolean(String(getAgentProposalFieldMap(proposal)[key] || "").trim());
 }
 
@@ -12728,6 +12921,7 @@ function applyAgentFieldProposalRevision(proposal, changes = {}, options = {}) {
 
   syncAgentProposalFieldCompatibility(proposal);
   updateAgentProposalSummaryFromFields(proposal);
+  syncAgentProposalRequiredConnection(proposal);
   if (didChange && options.bumpRevision !== false) {
     proposal.revision = Math.max(1, Number(proposal.revision || 1)) + 1;
     proposal.updatedAt = new Date().toISOString();
@@ -12743,7 +12937,11 @@ function pushAgentProposalNextStep(proposal, reply = "") {
     pushAgentQuestion(proposal, missingIndex, reply);
     return;
   }
-  pushAgentApprovalPrompt(proposal, reply);
+  const deliveryChannel = getAgentProposalDeliveryChannel(proposal);
+  const nextStepReply = deliveryChannel === "portal" && isAgentDeliveryQuestionText(reply)
+    ? "I’ll bring the results to this chat. Shall I set it up?"
+    : reply;
+  pushAgentApprovalPrompt(proposal, nextStepReply);
 }
 
 function getAgentQuestionFieldIndexByKey(proposal, key) {
@@ -12770,20 +12968,6 @@ function getAgentQuestionContextText(proposal, questionText = "") {
 
 const AGENT_MONTH_NAME_PATTERN = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 const AGENT_MONTHLY_BATCH_OBJECT_PATTERN = "(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?|summar(?:y|ies|ize|ise)|digests?|bookkeeping|reconciliation)";
-const AGENT_MONTH_LABELS = {
-  jan: "January",
-  feb: "February",
-  mar: "March",
-  apr: "April",
-  may: "May",
-  jun: "June",
-  jul: "July",
-  aug: "August",
-  sep: "September",
-  oct: "October",
-  nov: "November",
-  dec: "December",
-};
 function isAgentRunModeQuestionText(value = "") {
   const text = String(value || "").toLowerCase();
   return (
@@ -12794,6 +12978,15 @@ function isAgentRunModeQuestionText(value = "") {
 
 function isAgentFrequencyQuestionText(value = "") {
   return /\b(?:how often|frequency|cadence|daily|weekly|monthly|hourly|every\s+\d+|every day|every week|every month)\b/i.test(String(value || ""));
+}
+
+function isAgentDeliveryQuestionText(value = "") {
+  const text = String(value || "");
+  return (
+    /\bwhere\b[\s\S]{0,100}\b(?:send|deliver|notify|alert|bring|review)\b/i.test(text)
+    || /\b(?:which|what)\s+(?:delivery\s+)?channel\b/i.test(text)
+    || /\bhow\s+should\s+i\s+(?:let you know|notify|send|deliver|bring)\b/i.test(text)
+  );
 }
 
 function isAgentMonthlyBatchCadenceConfirmationText(value = "") {
@@ -12815,93 +13008,6 @@ function agentContextSuggestsMonthlyBatchTask(proposal, questionText = "") {
   const hasMonthlyWindow = hasRelativeMonthlyWindow || hasNamedMonthWindow;
   const hasBatchVerb = /\b(?:collect|pull|gather|fetch|find|search|export|summarize|summarise|prepare|get|send)\b/.test(text);
   return hasBatchObject && hasMonthlyWindow && hasBatchVerb;
-}
-
-function getAgentMonthlyBatchContextSources(proposal, questionText = "") {
-  const fields = getAgentProposalFieldMap(proposal);
-  return [
-    proposal?.requestText,
-    proposal?.summary,
-    ...Object.values(fields),
-    questionText,
-  ]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-}
-
-function formatAgentMonthNameLabel(monthName = "", year = "") {
-  const normalized = String(monthName || "").trim().toLowerCase().slice(0, 3);
-  const label = AGENT_MONTH_LABELS[normalized] || String(monthName || "").trim();
-  return `${label}${year ? ` ${String(year).trim()}` : ""}`.trim();
-}
-
-function getAgentMonthlyBatchObjectLabel(proposal, questionText = "") {
-  const sources = getAgentMonthlyBatchContextSources(proposal, questionText);
-  const objectRegex = new RegExp(`\\b(${AGENT_MONTHLY_BATCH_OBJECT_PATTERN})\\b`, "i");
-  for (const source of sources) {
-    const match = source.match(objectRegex);
-    if (match?.[1]) {
-      const raw = match[1].toLowerCase();
-      if (raw === "receipt") return "receipts";
-      if (raw === "invoice") return "invoices";
-      if (raw === "statement") return "statements";
-      if (raw === "expense") return "expenses";
-      if (raw === "bill") return "bills";
-      if (raw === "transaction") return "transactions";
-      if (raw === "report") return "reports";
-      if (/^summar/.test(raw)) return "summaries";
-      if (raw === "digest") return "digests";
-      return raw;
-    }
-  }
-  return "items";
-}
-
-function getAgentMonthlyBatchOneTimeTarget(proposal, questionText = "") {
-  const sources = getAgentMonthlyBatchContextSources(proposal, questionText);
-  const objectLabel = getAgentMonthlyBatchObjectLabel(proposal, questionText);
-  const namedMonthRegexes = [
-    new RegExp(`\\b(?:from|for|during|in)\\s+(${AGENT_MONTH_NAME_PATTERN})(?:\\s+(\\d{4}))?\\b`, "i"),
-    new RegExp(`\\b(${AGENT_MONTH_NAME_PATTERN})(?:\\s+(\\d{4}))?\\s+(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?)\\b`, "i"),
-  ];
-  for (const source of sources) {
-    for (const regex of namedMonthRegexes) {
-      const match = source.match(regex);
-      if (match?.[1]) {
-        return `the ${formatAgentMonthNameLabel(match[1], match[2])} ${objectLabel}`;
-      }
-    }
-  }
-  const allText = sources.join(" ").toLowerCase();
-  if (/\blast month\b|\bprevious month\b/.test(allText)) {
-    return `last month's ${objectLabel}`;
-  }
-  if (/\bthis month\b|\bcurrent month\b/.test(allText)) {
-    return `this month's ${objectLabel}`;
-  }
-  if (/\bnext month\b/.test(allText)) {
-    return `next month's ${objectLabel}`;
-  }
-  return `these ${objectLabel}`;
-}
-
-function getAgentMonthlyBatchQuestionText(proposal, questionIndex = 0, questionText = "") {
-  const text = String(questionText || "").trim();
-  if (!proposal || proposal.type === "scheduled-message") {
-    return text;
-  }
-  const field = getAgentProposalFieldSchema(proposal)[Math.max(0, Number(questionIndex || 0))] || null;
-  if (
-    field?.key === "frequency"
-    && agentContextSuggestsMonthlyBatchTask(proposal, text)
-    && !isAgentMonthlyBatchCadenceConfirmationText(text)
-    && (isAgentRunModeQuestionText(text) || isAgentFrequencyQuestionText(text))
-  ) {
-    const oneTimeTarget = getAgentMonthlyBatchOneTimeTarget(proposal, text);
-    const objectLabel = getAgentMonthlyBatchObjectLabel(proposal, text);
-    return `Should I pull ${oneTimeTarget} once, or set this up so each month pulls the previous month's ${objectLabel}?`;
-  }
-  return text;
 }
 
 function getAgentMonthlyBatchScheduleActions(includeOneTime = false, options = {}) {
@@ -12950,7 +13056,7 @@ function getAgentContextualQuestionActions(proposal, questionIndex = 0, question
     if (isAgentMonthlyBatchCadenceConfirmationText(questionText)) {
       return getAgentMonthlyBatchScheduleActions(false, { confirmCadence: true });
     }
-    return getAgentMonthlyBatchScheduleActions(true);
+    return [];
   }
 
   return [];
@@ -12967,6 +13073,16 @@ function getAgentQuestionFieldIndexFromText(proposal, questionText = "") {
     const frequencyIndex = findKey("frequency");
     if (frequencyIndex >= 0) {
       return frequencyIndex;
+    }
+  }
+
+  // Check delivery wording before frequency wording. A delivery question
+  // can mention a cadence (for example, "after the monthly run"), but its
+  // answer choices must still be channels rather than Monthly/Weekly.
+  if (isAgentDeliveryQuestionText(text)) {
+    const deliveryIndex = findKey("deliveryChannel");
+    if (deliveryIndex >= 0) {
+      return deliveryIndex;
     }
   }
 
@@ -12995,13 +13111,6 @@ function getAgentQuestionFieldIndexFromText(proposal, questionText = "") {
     }
   }
 
-  if (/\b(?:where should i (?:send|deliver|notify|alert)|where should [\s\S]{0,80}\b(?:send|deliver|notify|alert)|how should i (?:let you know|send|deliver|notify|alert)|send|deliver|notify|alert)\b/.test(text)) {
-    const deliveryIndex = findKey("deliveryChannel");
-    if (deliveryIndex >= 0) {
-      return deliveryIndex;
-    }
-  }
-
   if (/\bcalendar\b/.test(text)) {
     const calendarIndex = findKey("calendar");
     if (calendarIndex >= 0) {
@@ -13019,7 +13128,11 @@ function getAgentQuestionFieldIndexFromText(proposal, questionText = "") {
   return -1;
 }
 
-function getAgentQuestionActionFieldIndex(proposal, questionIndex = 0, questionText = "") {
+function getAgentQuestionActionFieldIndex(proposal, questionIndex = 0, questionText = "", questionFieldKey = "") {
+  const explicitIndex = getAgentQuestionFieldIndexByKey(proposal, questionFieldKey);
+  if (explicitIndex >= 0) {
+    return explicitIndex;
+  }
   const inferredIndex = getAgentQuestionFieldIndexFromText(proposal, questionText);
   if (inferredIndex >= 0) {
     return inferredIndex;
@@ -13027,8 +13140,8 @@ function getAgentQuestionActionFieldIndex(proposal, questionIndex = 0, questionT
   return Math.max(0, Number(questionIndex || 0));
 }
 
-function getAgentQuestionActions(proposal, questionIndex = 0, questionText = "") {
-  const index = getAgentQuestionActionFieldIndex(proposal, questionIndex, questionText);
+function getAgentQuestionActions(proposal, questionIndex = 0, questionText = "", questionFieldKey = "") {
+  const index = getAgentQuestionActionFieldIndex(proposal, questionIndex, questionText, questionFieldKey);
 
   if (proposal?.type === "scheduled-message") {
     const questionKey = proposal.questionKeys?.[index] || "";
@@ -13105,18 +13218,20 @@ function pushAgentQuestion(proposal, questionIndex = 0, questionOverride = "") {
   if (!messageText) {
     return null;
   }
-  const actionIndex = getAgentQuestionActionFieldIndex(proposal, index, messageText);
-  const displayText = getAgentMonthlyBatchQuestionText(proposal, actionIndex, messageText);
+  const requestedFieldKey = proposal?.type === "scheduled-message"
+    ? (proposal.questionKeys?.[index] || "")
+    : (getAgentProposalFieldSchema(proposal)[index]?.key || "");
+  const actionIndex = getAgentQuestionActionFieldIndex(proposal, index, messageText, requestedFieldKey);
   proposal.questionIndex = actionIndex;
   const field = proposal?.type === "scheduled-message"
     ? null
     : getAgentProposalFieldSchema(proposal)[actionIndex] || null;
-  return pushAgentMessage("assistant", displayText, {
+  return pushAgentMessage("assistant", messageText, {
     kind: "question",
     proposalId: proposal.id,
     questionIndex: actionIndex,
     fieldKey: field?.key || "",
-    actions: getAgentQuestionActions(proposal, actionIndex, displayText),
+    actions: getAgentQuestionActions(proposal, actionIndex, messageText, field?.key || requestedFieldKey),
   });
 }
 
@@ -13155,6 +13270,11 @@ function getProposalReadinessLabel(proposal) {
     return "Updating plan";
   }
 
+  const requirement = getAgentProposalRequiredConnection(proposal);
+  if (requirement && !isAgentProposalRequiredConnectionReady(requirement)) {
+    return "Needs setup";
+  }
+
   if (proposal.missingCredential) {
     return "Needs credential";
   }
@@ -13168,6 +13288,11 @@ function getProposalReadinessLabel(proposal) {
 }
 
 function getProposalSetupLabel(proposal) {
+  const requirement = getAgentProposalRequiredConnection(proposal);
+  if (requirement && !isAgentProposalRequiredConnectionReady(requirement)) {
+    return requirement.actionLabel || "Open setup";
+  }
+
   if (!proposal?.relatedFeatureId) {
     return "Review skills";
   }
@@ -13182,6 +13307,16 @@ function getProposalSetupLabel(proposal) {
   }
 
   return proposal.setupActionLabel || "Open setup";
+}
+
+function getAgentRequiredConnectionCalloutText(requirement) {
+  if (!requirement) {
+    return "";
+  }
+  if (requirement.id === "google-workspace") {
+    return "Google needs to be connected with Gmail or Drive read access before I can create this action. No API key is needed.";
+  }
+  return `${requirement.missingCredential} is required before I can create this action.`;
 }
 
 function normalizeAgentErrorTechnicalInfo(technical = {}) {
@@ -13544,13 +13679,77 @@ async function handleAgentWhatsAppApprovalAction(button) {
 }
 
 function getAgentDisplayMessageText(message, kind, proposal) {
-  const text = String(message?.text || "");
-  if (kind === "question" && proposal && !proposal.approved && proposal.status !== "rejected") {
-    const questionIndex = Math.max(0, Number(message.metadata?.questionIndex || proposal.questionIndex || 0) || 0);
-    const actionIndex = getAgentQuestionActionFieldIndex(proposal, questionIndex, text);
-    return getAgentMonthlyBatchQuestionText(proposal, actionIndex, text);
+  return String(message?.text || "");
+}
+
+function getAgentProposalResultActionId(proposalId) {
+  const id = String(proposalId || "").trim();
+  if (!id) {
+    return "";
   }
-  return text;
+  const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === id);
+  if (!proposal) {
+    return "";
+  }
+  const backendActionId = String(proposal.executionPlan?.backendActionId || "").trim();
+  if (proposal.type === "scheduled-message") {
+    return backendActionId;
+  }
+  if (proposal.type === "source-action" && backendActionId) {
+    return `source:${backendActionId}`;
+  }
+  return `proposal:${proposal.id}`;
+}
+
+function getAgentResultActionLinkId(message, proposal) {
+  if (!message?.metadata?.showActionLink) {
+    return "";
+  }
+  return String(message.metadata?.actionId || "").trim()
+    || getAgentProposalResultActionId(proposal?.id || message.metadata?.proposalId || "");
+}
+
+function appendAgentResultActionLink(bubble, message, displayText, proposal) {
+  const actionId = getAgentResultActionLinkId(message, proposal);
+  if (!actionId) {
+    bubble.textContent = displayText;
+    return;
+  }
+
+  const text = String(displayText || "").trim();
+  bubble.append(document.createTextNode(text));
+  bubble.append(document.createTextNode(/[.!?]$/.test(text) ? " View it " : ". View it "));
+  const linkButton = document.createElement("button");
+  linkButton.type = "button";
+  linkButton.className = "agent-action-inline-link";
+  linkButton.dataset.agentShowAction = actionId;
+  linkButton.dataset.agentActionProposal = message.metadata?.proposalId || "";
+  linkButton.textContent = "here";
+  linkButton.setAttribute("aria-label", "Show this action in the Actions panel");
+  bubble.append(linkButton, document.createTextNode("."));
+}
+
+function renderAgentMessageBubbleContent(bubble, message, kind, proposal, displayText) {
+  if (kind === "thinking") {
+    const progressText = agentTurnProgressText || "Thinking";
+    bubble.setAttribute("aria-label", `Assistyca is ${progressText.toLowerCase()}`);
+    bubble.append(document.createTextNode(progressText));
+    const dots = document.createElement("span");
+    dots.className = "agent-thinking-dots";
+    dots.setAttribute("aria-hidden", "true");
+    for (let index = 0; index < 3; index += 1) {
+      dots.append(document.createElement("span"));
+    }
+    bubble.append(dots);
+    return;
+  }
+
+  if (kind === "result" && message?.metadata?.showActionLink) {
+    appendAgentResultActionLink(bubble, message, displayText, proposal);
+    return;
+  }
+
+  bubble.textContent = displayText;
 }
 
 function renderAgentMessage(message) {
@@ -13563,20 +13762,7 @@ function renderAgentMessage(message) {
 
   const bubble = document.createElement("div");
   bubble.className = "agent-message-bubble";
-  if (kind === "thinking") {
-    const progressText = agentTurnProgressText || "Thinking";
-    bubble.setAttribute("aria-label", `Assistyca is ${progressText.toLowerCase()}`);
-    bubble.append(document.createTextNode(progressText));
-    const dots = document.createElement("span");
-    dots.className = "agent-thinking-dots";
-    dots.setAttribute("aria-hidden", "true");
-    for (let index = 0; index < 3; index += 1) {
-      dots.append(document.createElement("span"));
-    }
-    bubble.append(dots);
-  } else {
-    bubble.textContent = displayText;
-  }
+  renderAgentMessageBubbleContent(bubble, message, kind, proposal, displayText);
 
   const messageLine = document.createElement("div");
   messageLine.className = "agent-message-line";
@@ -13645,6 +13831,8 @@ function getAgentMessageRenderSignature(messages) {
     message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approvalError || "") : "",
     message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.suggested_reply || "") : "",
     message.metadata?.proposalId || "",
+    message.metadata?.actionId || "",
+    message.metadata?.showActionLink ? "show-action-link" : "",
     message.metadata?.proposalRevision || "",
     message.metadata?.actionsResolvedAt || "",
     message.metadata?.actionsResolvedBy || "",
@@ -13959,6 +14147,7 @@ function syncAgentPanelModeControls() {
   elements.agentChatsListView?.classList.toggle("is-hidden", mode !== "chats");
   elements.agentFoldersListView?.classList.toggle("is-hidden", mode !== "folders");
   elements.agentActionDetailView?.classList.add("is-hidden");
+  elements.agentPanelModeSwitch?.setAttribute("data-agent-panel-current-mode", mode);
 
   for (const [button, buttonMode] of getAgentPanelModeControls()) {
     if (!button) {
@@ -14089,15 +14278,23 @@ function renderAgentProposalCard() {
   actions.append(approveButton, setupButton, changeButton);
 
   if (proposal.missingCredential) {
+    const requirement = getAgentProposalRequiredConnection(proposal);
     const credential = document.createElement("div");
     credential.className = "agent-credential-callout";
     const credentialCopy = document.createElement("p");
-    credentialCopy.textContent = `${proposal.missingCredential} may be required. If you do not know how to get it, I can help.`;
+    credentialCopy.textContent = requirement && !isAgentProposalRequiredConnectionReady(requirement)
+      ? getAgentRequiredConnectionCalloutText(requirement)
+      : `${proposal.missingCredential} may be required. If you do not know how to get it, I can help.`;
     const helpButton = document.createElement("button");
     helpButton.className = "ghost-button small";
     helpButton.type = "button";
-    helpButton.dataset.agentCredentialHelp = proposal.id;
-    helpButton.textContent = "Help me get it";
+    if (requirement && !isAgentProposalRequiredConnectionReady(requirement)) {
+      helpButton.dataset.agentOpenSetup = proposal.id;
+      helpButton.textContent = requirement.actionLabel || "Open setup";
+    } else {
+      helpButton.dataset.agentCredentialHelp = proposal.id;
+      helpButton.textContent = "Help me get it";
+    }
     credential.append(credentialCopy, helpButton);
     elements.agentProposalCard.replaceChildren(head, skillsTitle, skills, helpersTitle, helpers, questions, credential, actions);
     return;
@@ -14593,7 +14790,8 @@ function getAgentProposalDeliveryChannel(proposal) {
   const settings = getAgentProposalExecutionSettings(proposal);
   return normalizeAgentDeliveryChannel(settings.deliveryChannel)
     || normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
-    || normalizeAgentDeliveryChannel(proposal?.requestText || "");
+    || normalizeAgentDeliveryChannel(proposal?.requestText || "")
+    || "portal";
 }
 
 function getAgentProposalDeliveryTarget(proposal, deliveryChannel = "") {
@@ -15123,6 +15321,9 @@ function renderScheduledActionItemContent(item, action) {
   item.className = `agent-action-item is-${statusClass}`;
   item.dataset.agentScheduledActionId = String(action.id || "");
   item.dataset.agentActionItemSignature = getScheduledActionItemSignature(action);
+  if (agentActionSpotlightId && String(action.id || "") === agentActionSpotlightId) {
+    item.classList.add("is-spotlighted");
+  }
 
   const isExpanded = state.selectedScheduledActionId === String(action.id);
   if (isExpanded) {
@@ -15311,6 +15512,102 @@ function selectScheduledAction(actionId) {
 
   renderAgentActions();
   preserveAgentActionsScrollPosition(scrollTop);
+}
+
+function shouldReduceAgentMotion() {
+  return Boolean(
+    window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+}
+
+function findAgentActionItem(actionId) {
+  const normalizedActionId = String(actionId || "").trim();
+  if (!normalizedActionId) {
+    return null;
+  }
+  return Array.from(document.querySelectorAll("[data-agent-scheduled-action-id]"))
+    .find((item) => item.dataset.agentScheduledActionId === normalizedActionId) || null;
+}
+
+function clearAgentActionSpotlight() {
+  agentActionSpotlightId = "";
+  if (agentActionSpotlightTimer !== null) {
+    window.clearTimeout(agentActionSpotlightTimer);
+    agentActionSpotlightTimer = null;
+  }
+  for (const item of document.querySelectorAll(".agent-action-item.is-spotlighted")) {
+    item.classList.remove("is-spotlighted");
+  }
+  elements.agentPanelActionsModeButton?.classList.remove("is-guided");
+}
+
+function applyAgentActionSpotlight(actionId) {
+  const normalizedActionId = String(actionId || "").trim();
+  const item = findAgentActionItem(normalizedActionId);
+  if (!item) {
+    return false;
+  }
+
+  item.classList.remove("is-spotlighted");
+  // Restart the pulse when the user taps the same "here" link twice.
+  void item.offsetWidth;
+  item.classList.add("is-spotlighted");
+  const focusTarget = item.querySelector("[data-agent-scheduled-action-trigger]") || item;
+  if (typeof focusTarget.focus === "function") {
+    focusTarget.focus({ preventScroll: true });
+  }
+
+  if (agentActionSpotlightTimer !== null) {
+    window.clearTimeout(agentActionSpotlightTimer);
+  }
+  agentActionSpotlightTimer = window.setTimeout(clearAgentActionSpotlight, shouldReduceAgentMotion() ? 1800 : 4300);
+  return true;
+}
+
+function guideAgentActionsTab() {
+  elements.agentPanelActionsModeButton?.classList.remove("is-guided");
+  void elements.agentPanelActionsModeButton?.offsetWidth;
+  elements.agentPanelActionsModeButton?.classList.add("is-guided");
+  if (agentActionSpotlightTimer !== null) {
+    window.clearTimeout(agentActionSpotlightTimer);
+  }
+  agentActionSpotlightTimer = window.setTimeout(clearAgentActionSpotlight, shouldReduceAgentMotion() ? 1800 : 3600);
+}
+
+function showAgentActionInPanel(actionId) {
+  const normalizedActionId = String(actionId || "").trim();
+  if (!normalizedActionId) {
+    return false;
+  }
+
+  const targetAction = getRenderableAgentActions()
+    .find((action) => String(action.id || "") === normalizedActionId);
+  agentActionSpotlightId = normalizedActionId;
+  state.selectedScheduledActionId = normalizedActionId;
+  if (targetAction && !isActiveAgentActionStatus(targetAction.status)) {
+    state.agentHistoryExpanded = true;
+  }
+
+  setAgentToolsOpen(true);
+  setAgentPanelMode("actions");
+
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      const item = findAgentActionItem(normalizedActionId);
+      if (!item) {
+        guideAgentActionsTab();
+        return;
+      }
+      item.scrollIntoView({
+        behavior: shouldReduceAgentMotion() ? "auto" : "smooth",
+        block: "center",
+        inline: "nearest",
+      });
+      applyAgentActionSpotlight(normalizedActionId);
+    });
+  });
+  return true;
 }
 
 function handleScheduledActionListClick(event) {
@@ -16288,7 +16585,11 @@ function createAgentLocalActionEditor(action) {
 
   const draft = {
     frequency: getAgentLocalActionFrequencyValue(action, proposal),
-    deliveryChannel: getAgentProposalDeliveryChannel(proposal) || normalizeAgentDeliveryChannel(action.channel) || "portal",
+    // Preserve an action's already-selected channel (including older saved
+    // actions) before applying the new chat default.
+    deliveryChannel: normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel)
+      || getAgentProposalDeliveryChannel(proposal)
+      || "portal",
   };
   const form = document.createElement("form");
   form.className = "agent-action-editor";
@@ -16490,18 +16791,12 @@ function createScheduledActionDetail(action) {
       if (sourceControls) card.append(sourceControls);
       return card;
     }
-    const deliveryRow = createScheduledActionDetailRow("Delivery", String(
-      payload.deliveryLabel
-      || formatAgentDeliveryTargetDetail(payload.deliveryChannel || action.channel, payload.deliveryTarget || action.recipientRef)
-      || "As configured",
-    ).trim());
-
     if (isFeatureAction) {
-      const primaryDetails = document.createElement("dl");
-      primaryDetails.className = "agent-action-detail-grid agent-action-primary-details";
-      primaryDetails.append(deliveryRow);
-      card.append(primaryDetails);
-    } else {
+      const deliveryRow = createScheduledActionDetailRow("Delivery", String(
+        payload.deliveryLabel
+        || formatAgentDeliveryTargetDetail(payload.deliveryChannel || action.channel, payload.deliveryTarget || action.recipientRef)
+        || "As configured",
+      ).trim());
       const primaryDetails = document.createElement("dl");
       primaryDetails.className = "agent-action-detail-grid agent-action-primary-details";
       primaryDetails.append(deliveryRow);
@@ -17075,6 +17370,24 @@ function handleAgentMessageAction(event) {
   return false;
 }
 
+function handleAgentActionReferenceClick(event) {
+  const target = getEventTargetElement(event);
+  const link = target?.closest("[data-agent-show-action]");
+  if (!link) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const actionId = link.dataset.agentShowAction || "";
+  const proposalId = link.dataset.agentActionProposal || "";
+  const resolvedActionId = actionId || getAgentProposalResultActionId(proposalId);
+  if (showAgentActionInPanel(resolvedActionId)) {
+    setStatus("Action highlighted.");
+  }
+  return true;
+}
+
 function startAgentProposalApproval(proposalId, expectedRevision = 0) {
   if (agentTurnBusy) {
     return;
@@ -17102,16 +17415,68 @@ function startAgentProposalApproval(proposalId, expectedRevision = 0) {
     });
 }
 
-function pushAgentProposalResult(proposalId, text, kind = "result") {
+function pushAgentProposalResult(proposalId, text, kind = "result", options = {}) {
   const message = String(text || "").trim();
   if (!message) {
     return null;
   }
+  const showActionLink = Boolean(options.showActionLink);
+  const actionId = showActionLink
+    ? String(options.actionId || getAgentProposalResultActionId(proposalId)).trim()
+    : "";
 
   return pushAgentMessage("assistant", message, {
     kind,
     ...(proposalId ? { proposalId } : {}),
+    ...(showActionLink && actionId ? { showActionLink: true, actionId } : {}),
   });
+}
+
+function getAgentRequiredConnectionApprovalMessage(requirement) {
+  if (!requirement) {
+    return "Connect the required tool before I create this action.";
+  }
+  if (requirement.id === "google-workspace") {
+    return "Before I create this action, connect Google with Gmail or Drive read access so I can find the source items. No API key is needed.";
+  }
+  return `Before I create this action, connect ${requirement.toolLabel} so I can ${requirement.capability}.`;
+}
+
+function pushAgentRequiredConnectionSetupPrompt(proposal, requirement) {
+  const message = getAgentRequiredConnectionApprovalMessage(requirement);
+  return pushAgentMessage("assistant", message, {
+    kind: "credential",
+    proposalId: proposal?.id || "",
+    requiredConnectionId: requirement?.id || "",
+    actions: [
+      createAgentAction(
+        "open-setup",
+        requirement?.actionLabel || "Open setup",
+        proposal?.id || "",
+        "primary",
+      ),
+    ],
+  });
+}
+
+function ensureAgentProposalRequiredConnectionReady(proposal) {
+  if (!proposal) {
+    return false;
+  }
+  const requirement = syncAgentProposalRequiredConnection(proposal);
+  if (!requirement || isAgentProposalRequiredConnectionReady(requirement)) {
+    return true;
+  }
+
+  proposal.status = "needs-approval";
+  proposal.approved = false;
+  proposal.updatedAt = new Date().toISOString();
+  pushAgentRequiredConnectionSetupPrompt(proposal, requirement);
+  const statusMessage = `${requirement.missingCredential} is required before I can create this action.`;
+  persistAgentWorkspace(statusMessage);
+  openAgentProposalSetup(proposal.id);
+  renderApp({ preserveStatus: true });
+  return false;
 }
 
 function buildAgentTurnActiveProposal(proposal) {
@@ -18063,6 +18428,10 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
   }
 
+  if (!ensureAgentProposalRequiredConnectionReady(proposal)) {
+    return;
+  }
+
   if (proposal.type === "scheduled-message" && proposal.missingCredential) {
     const message = `${proposal.missingCredential} setup is required before I can finish this.`;
     pushAgentProposalResult(proposal.id, message, "credential");
@@ -18193,36 +18562,50 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     openAgentProposalSetup(proposal.id);
   } else if (proposal.type === "scheduled-message") {
     const message = "Scheduled message created.";
-    pushAgentProposalResult(proposal.id, message);
+    pushAgentProposalResult(proposal.id, message, "result", {
+      showActionLink: true,
+      actionId: scheduledAction?.id || getAgentProposalResultActionId(proposal.id),
+    });
     persistAgentWorkspace(message);
   } else if (proposal.type === "web-monitor") {
     const runMessage = monitorActivation?.initialRun?.message || "";
     const runError = monitorActivation?.initialRunError || "";
     const message = runMessage || runError || "Web monitor activated.";
-    pushAgentProposalResult(proposal.id, message);
+    pushAgentProposalResult(proposal.id, message, "result", {
+      showActionLink: true,
+    });
     persistAgentWorkspace(message);
   } else if (proposal.type === "whatsapp-replies") {
     const deliveryChannel = formatAgentScheduledMessageChannel(
       getAgentProposalDeliveryChannel(proposal) || whatsappActivation?.settings?.deliveryChannels?.[0] || "portal",
     );
-    const message = deliveryChannel === "this workspace"
+    const message = deliveryChannel === "this chat"
       ? "WhatsApp reply assistant is active. New drafts will appear here for review."
       : `WhatsApp reply assistant is active. New drafts will be brought to you by ${deliveryChannel}.`;
-    pushAgentProposalResult(proposal.id, message);
+    pushAgentProposalResult(proposal.id, message, "result", {
+      showActionLink: true,
+    });
     persistAgentWorkspace(message);
   } else if (proposal.type === "source-action") {
     const details = proposal.executionPlan?.source || buildAgentSourceActionDetails(proposal.requestText, proposal);
     const sourceLabel = details.sourceType === "file" ? (details.fileName || "the attached file") : (details.sourceUrl || "the URL");
     const message = `Source action is active. I’ll check ${sourceLabel} ${details.frequency || "on its schedule"} and record each run. I’m not interpreting the content yet.`;
-    pushAgentProposalResult(proposal.id, message);
+    pushAgentProposalResult(proposal.id, message, "result", {
+      showActionLink: true,
+      actionId: sourceAction?.id ? `source:${sourceAction.id}` : getAgentProposalResultActionId(proposal.id),
+    });
     persistAgentWorkspace(message);
   } else if (proposal.type === "calendar-summary") {
     const message = "Meeting summary action is active. I’ll use your calendar for the selected date range and deliver the summary through the chosen channel.";
-    pushAgentProposalResult(proposal.id, message);
+    pushAgentProposalResult(proposal.id, message, "result", {
+      showActionLink: true,
+    });
     persistAgentWorkspace(message);
   } else {
     const message = "Agent helper created.";
-    pushAgentProposalResult(proposal.id, message);
+    pushAgentProposalResult(proposal.id, message, "result", {
+      showActionLink: true,
+    });
     persistAgentWorkspace(message);
   }
   renderApp({ preserveStatus: true });
@@ -18250,6 +18633,11 @@ function requestAgentProposalChanges(proposalId, expectedRevision = 0) {
 
 function openAgentProposalSetup(proposalId) {
   const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
+  const requirement = getAgentProposalRequiredConnection(proposal);
+  if (requirement && !isAgentProposalRequiredConnectionReady(requirement)) {
+    openPlatformConnection(requirement.setupPlatformId || "calendar");
+    return;
+  }
   if (proposal?.type === "email-digest" && proposal.missingCredential) {
     openPlatformConnection("email");
     return;
@@ -18672,6 +19060,10 @@ async function runAgentProposalLocalActionNow(actionId) {
     return false;
   }
 
+  if (!ensureAgentProposalRequiredConnectionReady(proposal)) {
+    return true;
+  }
+
   if (proposal.missingCredential) {
     const message = `${proposal.missingCredential} setup is required before this action can run.`;
     pushAgentMessage("assistant", message, { kind: "credential", proposalId: proposal.id });
@@ -18808,6 +19200,10 @@ function handleAgentWorkspaceClick(event) {
   const whatsappApprovalButton = getEventTargetElement(event)?.closest("[data-agent-whatsapp-action]");
   if (whatsappApprovalButton) {
     void handleAgentWhatsAppApprovalAction(whatsappApprovalButton);
+    return;
+  }
+
+  if (handleAgentActionReferenceClick(event)) {
     return;
   }
 

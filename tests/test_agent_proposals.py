@@ -181,6 +181,35 @@ class AgentProposalRevisionTests(unittest.TestCase):
         })
         self.assertNotIn("must-not-be-forwarded", json.dumps(context))
 
+    def test_agent_tool_context_includes_gmail_and_drive_health_without_credentials(self) -> None:
+        context = normalize_agent_tool_context({
+            "gmail": {
+                "platformConnected": True,
+                "connectionStatus": "connected",
+                "validationStatus": "verified",
+                "refreshToken": "must-not-be-forwarded",
+            },
+            "drive": {
+                "platformConnected": False,
+                "connectionStatus": "needs_verification",
+                "validationStatus": "pending",
+                "accessToken": "also-secret",
+            },
+        })
+
+        self.assertEqual(context["gmail"], {
+            "platformConnected": True,
+            "connectionStatus": "connected",
+            "validationStatus": "verified",
+        })
+        self.assertEqual(context["drive"], {
+            "platformConnected": False,
+            "connectionStatus": "needs_verification",
+            "validationStatus": "pending",
+        })
+        self.assertNotIn("must-not-be-forwarded", json.dumps(context))
+        self.assertNotIn("also-secret", json.dumps(context))
+
     def test_conversational_turn_prompt_discourages_repeated_plan_summaries(self) -> None:
         prompt = build_agent_turn_prompt(
             user_message="Please check the web every 5 minutes for fun events to do with kids in August. When you have the results send me an email with the top most relevant results",
@@ -240,6 +269,8 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("beginning of each month for the previous month", prompt)
         self.assertIn("Do not ask a generic daily/weekly/monthly frequency question", prompt)
         self.assertIn("Do not phrase recurring work as repeatedly pulling the same named month", prompt)
+        self.assertIn("ask the user to connect Google with Gmail or Drive read access before approval", prompt)
+        self.assertIn("For web-monitor, use the built-in public web monitoring action", prompt)
 
     def test_conversational_turn_response_removes_duplicate_preface(self) -> None:
         turn = normalize_agent_turn_response({

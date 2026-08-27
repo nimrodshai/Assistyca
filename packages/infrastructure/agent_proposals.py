@@ -22,6 +22,8 @@ AGENT_TURN_INSTRUCTIONS = (
     "Understand each message in the context of the recent conversation and any pending proposal. "
     "Write the visible reply like a capable assistant in a real chat: concise, context-aware, and varied. "
     "Do not mirror the user's full request back to them, and do not reuse the same wording from recent replies. "
+    "For action results, use the Assistyca chat as the default delivery destination unless the user explicitly "
+    "chooses another channel. "
     "Never claim an external action was completed unless application state says so. "
     "Return valid JSON only, with no markdown or explanatory wrapper."
 )
@@ -102,6 +104,27 @@ def _single_line(value: Any, max_length: int) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:max_length].strip()
 
 
+def _normalize_safe_google_tool_context(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    connection_status = _single_line(
+        source.get("connectionStatus") or source.get("connection_status"),
+        40,
+    ).lower() or "not_connected"
+    validation_status = _single_line(
+        source.get("validationStatus") or source.get("validation_status"),
+        40,
+    ).lower() or "unknown"
+    return {
+        "platformConnected": bool(
+            source.get("platformConnected") is True
+            if "platformConnected" in source
+            else source.get("platform_connected") is True
+        ),
+        "connectionStatus": connection_status,
+        "validationStatus": validation_status,
+    }
+
+
 def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
     """Keep only safe, non-secret integration state for the agent prompt."""
     source = value if isinstance(value, dict) else {}
@@ -134,23 +157,13 @@ def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
     }
     raw_calendar = source.get("calendar") if isinstance(source.get("calendar"), dict) else None
     if raw_calendar is not None:
-        calendar_status = _single_line(
-            raw_calendar.get("connectionStatus") or raw_calendar.get("connection_status"),
-            40,
-        ).lower() or "not_connected"
-        validation_status = _single_line(
-            raw_calendar.get("validationStatus") or raw_calendar.get("validation_status"),
-            40,
-        ).lower() or "unknown"
-        context["calendar"] = {
-            "platformConnected": bool(
-                raw_calendar.get("platformConnected") is True
-                if "platformConnected" in raw_calendar
-                else raw_calendar.get("platform_connected") is True
-            ),
-            "connectionStatus": calendar_status,
-            "validationStatus": validation_status,
-        }
+        context["calendar"] = _normalize_safe_google_tool_context(raw_calendar)
+    raw_gmail = source.get("gmail") if isinstance(source.get("gmail"), dict) else None
+    if raw_gmail is not None:
+        context["gmail"] = _normalize_safe_google_tool_context(raw_gmail)
+    raw_drive = source.get("drive") if isinstance(source.get("drive"), dict) else None
+    if raw_drive is not None:
+        context["drive"] = _normalize_safe_google_tool_context(raw_drive)
     return context
 
 
@@ -363,6 +376,9 @@ def build_agent_turn_prompt(
         "exactly one missing detail in reply. When activeProposal exists and the user answers or corrects a detail, "
         "return outcome=revise_proposal with changes.fields containing the new or corrected field values. Do not "
         "restart questions whose values are already present in activeProposal.fields.\n"
+        "For action result notifications, default deliveryChannel to portal (the Assistyca chat) when the user has "
+        "not explicitly chosen another channel. Do not ask where to notify merely to choose this default. If the "
+        "user explicitly requests email, WhatsApp, Telegram, or another supported channel, preserve that choice.\n"
         "For month-based batch jobs such as pulling receipts, invoices, statements, expenses, bills, transactions, "
         "reports, summaries, or digests for a named month or for last/previous month, treat the month as the "
         "reporting window. If the user chooses a schedule for that job, infer frequency/schedule as monthly, at "
@@ -370,14 +386,21 @@ def build_agent_turn_prompt(
         "question for these jobs. If you still need confirmation, ask whether that monthly beginning-of-month "
         "cadence is okay. If the user must choose between one-time and recurring, make the wording explicit: the "
         "one-time choice is for the named/requested month, while the recurring choice pulls the previous month's "
-        "items each month. Do not phrase recurring work as repeatedly pulling the same named month.\n"
+        "items each month. Do not phrase recurring work as repeatedly pulling the same named month. If the task "
+        "requires finding receipts, invoices, statements, expenses, bills, transactions, or bookkeeping records in "
+        "Gmail or Google Drive, treat that as Google source access. If toolContext.gmail and toolContext.drive are "
+        "not connected, ask the user to connect Google with Gmail or Drive read access before approval; do not imply "
+        "the action can be created yet.\n"
         "For source-action, use sourceContext when present. This first phase only fetches a URL or stores a file "
         "snapshot on a recurring schedule; it does not understand, summarize, or interpret source content yet. "
         "Ask only for a missing source or frequency. Use sourceType=url or sourceType=file, and never request file "
         "bytes or credentials in chat.\n"
+        "For web-monitor, use the built-in public web monitoring action. Do not ask for a platform API key or a "
+        "Google connection just because the user wants to monitor the public web.\n"
         "For calendar-summary, use the connected calendar as the meeting source. Never ask for Gmail or mailbox "
         "access for this proposal. Delivery (such as email) is separate from calendar access. Ask only for a missing "
-        "calendar, date range, or delivery channel.\n"
+        "calendar or date range; use the Assistyca chat for delivery unless the user explicitly chooses another "
+        "channel.\n"
         "For questions about getting Calendar access, answer the user's practical question directly using the "
         "calendar status in toolContext. Explain that Calendar should be connected with the Google sign-in button "
         "in the secure setup form; a Google API key is not sufficient, and tokens must never be pasted into chat. "
