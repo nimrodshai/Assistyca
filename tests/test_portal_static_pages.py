@@ -479,6 +479,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".calendar-oauth-permission-badge", styles)
         self.assertIn("--calendar-oauth-column-offset", styles)
         self.assertIn(".calendar-oauth-status", styles)
+        calendar_oauth_dark_styles = styles[
+            styles.index(':root[data-theme="dark"] .calendar-oauth-permissions {'):
+            styles.index(':root[data-theme="dark"] .agent-composer textarea {')
+        ]
+        self.assertIn("background: transparent;", calendar_oauth_dark_styles)
+        self.assertIn("border-color: var(--line-strong);", calendar_oauth_dark_styles)
         self.assertNotIn(".calendar-oauth-steps", styles)
         self.assertNotIn(".calendar-oauth-provider", styles)
         self.assertIn(".calendar-oauth-button-logo", styles)

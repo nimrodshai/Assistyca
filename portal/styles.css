@@ -10076,10 +10076,14 @@ body.is-chat-view {
 :root[data-theme="dark"] .agent-action-error,
 :root[data-theme="dark"] .agent-action-note,
 :root[data-theme="dark"] .feature-activation-customer-number,
-:root[data-theme="dark"] .calendar-oauth-permissions,
 :root[data-theme="dark"] .calendar-oauth-status {
   border-color: var(--line-strong);
   background: rgba(10, 16, 22, 0.7);
+}
+
+:root[data-theme="dark"] .calendar-oauth-permissions {
+  border-color: var(--line-strong);
+  background: transparent;
 }
 
 :root[data-theme="dark"] .agent-composer textarea {
