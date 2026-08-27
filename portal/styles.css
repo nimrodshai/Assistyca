@@ -5144,10 +5144,6 @@ body[data-modal="billing"] .app-shell {
   margin: 0;
 }
 
-.agent-action-primary-details {
-  padding-top: 0.05rem;
-}
-
 .agent-action-detail-row {
   display: grid;
   grid-template-columns: minmax(5rem, 0.75fr) minmax(0, 1fr);

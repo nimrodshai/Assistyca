@@ -213,6 +213,17 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('title.textContent = "Edit source action";', script)
         self.assertNotIn("agent-action-editor-heading", script)
         self.assertNotIn(".agent-action-editor-heading", styles)
+        monitor_editor = script[
+            script.index("function createAgentMonitorEditor"):
+            script.index("async function saveAgentMonitorActionSettings")
+        ]
+        self.assertIn("function getAgentMonitorDeliveryOptionItems", script)
+        self.assertIn("normalizeAgentMonitorDeliveryChannel", monitor_editor)
+        self.assertIn('"Delivery",', monitor_editor)
+        self.assertIn("options: getAgentMonitorDeliveryOptionItems()", monitor_editor)
+        self.assertIn("draft.deliveryChannel = normalizeAgentMonitorDeliveryChannel", monitor_editor)
+        self.assertIn("deliverySelect: delivery.input", monitor_editor)
+        self.assertIn("createAgentActionEditorStatusElement(\"agent-action-editor-status\", \"p\")", monitor_editor)
         detail_card_styles = styles[
             styles.index(".agent-action-detail-card {"):
             styles.index(".agent-action-editor {")
@@ -279,8 +290,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('createScheduledActionDetailRow("Watching"', script)
         self.assertNotIn("function createScheduledActionMoreDetails", script)
         self.assertNotIn('summary.textContent = "More details";', script)
-        self.assertIn("agent-action-primary-details", script)
+        self.assertNotIn("agent-action-primary-details", script)
         self.assertNotIn("agent-action-more-details", script)
+        self.assertNotIn(".agent-action-primary-details", styles)
         self.assertNotIn(".agent-action-more-details", styles)
         self.assertIn("agent-action-item-expansion", script)
         self.assertIn("grid-template-rows: 0fr", styles)
@@ -335,9 +347,15 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("if (isAgentLocalAction(action))"):
             script.index("if (payload.initialRunError)")
         ]
-        self.assertIn('if (isFeatureAction) {', local_action_detail)
-        self.assertIn('createScheduledActionDetailRow("Delivery"', local_action_detail)
+        self.assertNotIn('createScheduledActionDetailRow("Delivery"', local_action_detail)
         self.assertNotIn('} else {\n      const primaryDetails = document.createElement("dl");', local_action_detail)
+        save_monitor_action = script[
+            script.index("async function saveAgentMonitorActionSettings"):
+            script.index("function getAgentLocalActionProposal")
+        ]
+        self.assertIn("deliveryChannel: normalizeAgentMonitorDeliveryChannel", save_monitor_action)
+        self.assertIn("action.payload.deliveryChannel = deliveryChannel", save_monitor_action)
+        self.assertIn("action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget)", save_monitor_action)
         self.assertIn("→", script)
         self.assertIn("by ${channelLabel} to ${targetLabel}", script)
         self.assertIn('action: "activate"', script)
