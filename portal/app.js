@@ -410,6 +410,7 @@ const DEFAULT_SIMULATOR = {
 
 const AGENT_INITIAL_MESSAGE = "";
 const AGENT_MAX_MESSAGES = 40;
+const AGENT_MAX_NOTIFICATIONS = 100;
 const AGENT_MAX_CHATS = 30;
 const AGENT_MAX_FOLDERS = 80;
 const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
@@ -452,13 +453,6 @@ const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
   },
 ];
 const AGENT_ADD_TOOL_OPTIONS = [
-  {
-    id: "email",
-    label: "Email",
-    detail: "Connect Gmail summaries",
-    icon: "email",
-    platformId: "email",
-  },
   {
     id: "calendar",
     label: "Google",
@@ -503,6 +497,14 @@ const PLATFORM_CONNECTION_OPTIONS = [
         ? "Slack bot token"
         : (["calendar", "email"].includes(option.id) ? "Google access" : `${option.label} token`),
     })),
+  {
+    id: "email",
+    label: "Email",
+    detail: "Connect Gmail summaries",
+    icon: "email",
+    authType: "oauth",
+    credentialLabel: "Google access",
+  },
   {
     id: "drive",
     label: "Drive",
@@ -1168,6 +1170,7 @@ const state = {
   requestCountryCode: "",
   authAlertOpen: false,
   menuOpen: false,
+  notificationCenterOpen: false,
   selectedFeatureId: null,
   featureStudioView: "overview",
   featureActivationNotice: "",
@@ -1491,6 +1494,12 @@ const elements = {
   whatsappHistoryMessages: document.querySelector("#whatsappHistoryMessages"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
+  notificationCenterButton: document.querySelector("#notificationCenterButton"),
+  notificationCenterBadge: document.querySelector("#notificationCenterBadge"),
+  notificationCenterPopover: document.querySelector("#notificationCenterPopover"),
+  notificationCenterList: document.querySelector("#notificationCenterList"),
+  notificationCenterEmpty: document.querySelector("#notificationCenterEmpty"),
+  notificationCenterMarkReadButton: document.querySelector("#notificationCenterMarkReadButton"),
   accountAvatar: document.querySelector("#accountAvatar"),
   accountLabel: document.querySelector("#accountLabel"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
@@ -3165,6 +3174,7 @@ function loadClientState(email) {
   const settings = { ...DEFAULT_SETTINGS, ...(saved.settings || {}) };
   const simulator = normalizeSimulatorState(savedSimulator, savedPrompt);
   const agent = normalizeAgentWorkspace(saved.agent || {});
+  const notifications = normalizeAgentNotifications(saved.notifications || []);
 
   if (!settings.workspaceName || isLegacyWorkspaceName(settings.workspaceName)) {
     settings.workspaceName = DEFAULT_SETTINGS.workspaceName;
@@ -3178,6 +3188,7 @@ function loadClientState(email) {
       features,
       simulator,
       agent,
+      notifications,
     });
   }
 
@@ -3187,11 +3198,304 @@ function loadClientState(email) {
     features,
     simulator,
     agent,
+    notifications,
   };
 }
 
 function createAgentId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeAgentNotificationHref(value) {
+  const href = String(value || "").trim();
+  if (!href) {
+    return "";
+  }
+  try {
+    const parsed = new URL(href, window.location.origin);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return "";
+    }
+    return parsed.href;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeAgentNotification(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const message = normalizeAgentTextItem(source.message || source.body || source.text, "");
+  if (!message) {
+    return null;
+  }
+  const tone = String(source.tone || "info").trim().toLowerCase();
+  const normalizedTone = ["success", "info", "warning", "error"].includes(tone) ? tone : "info";
+  const createdAt = normalizeAgentTextItem(source.createdAt || source.created_at, new Date().toISOString());
+  const readAt = normalizeAgentTextItem(source.readAt || source.read_at, "");
+  const metadata = source.metadata && typeof source.metadata === "object" && !Array.isArray(source.metadata)
+    ? { ...source.metadata }
+    : {};
+  return {
+    id: normalizeAgentTextItem(source.id, createAgentId("agent-notification")),
+    title: normalizeAgentTextItem(source.title, "Action update"),
+    message: message.slice(0, 1200),
+    createdAt,
+    readAt,
+    tone: normalizedTone,
+    source: normalizeAgentTextItem(source.source, "assistant"),
+    actionId: normalizeAgentTextItem(source.actionId || source.action_id, ""),
+    proposalId: normalizeAgentTextItem(source.proposalId || source.proposal_id, ""),
+    href: normalizeAgentNotificationHref(source.href || source.url || source.resultUrl || source.result_url),
+    hrefLabel: normalizeAgentTextItem(source.hrefLabel || source.href_label, "View results"),
+    dedupeKey: normalizeAgentTextItem(source.dedupeKey || source.dedupe_key, ""),
+    metadata,
+  };
+}
+
+function normalizeAgentNotifications(value) {
+  const source = Array.isArray(value) ? value : [];
+  return source
+    .map(normalizeAgentNotification)
+    .filter(Boolean)
+    .sort((a, b) => parseAgentTimestamp(b.createdAt) - parseAgentTimestamp(a.createdAt))
+    .slice(0, AGENT_MAX_NOTIFICATIONS);
+}
+
+function formatAgentNotificationDate(value) {
+  const timestamp = parseAgentTimestamp(value);
+  if (!timestamp) {
+    return "Just now";
+  }
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(timestamp));
+  } catch {
+    return "Just now";
+  }
+}
+
+function getAgentNotifications() {
+  clientState.notifications = normalizeAgentNotifications(clientState.notifications || []);
+  return clientState.notifications;
+}
+
+function getAgentNotificationById(notificationId) {
+  const id = String(notificationId || "").trim();
+  return getAgentNotifications().find((notification) => notification.id === id) || null;
+}
+
+function addAgentNotification(options = {}) {
+  const notification = normalizeAgentNotification(options);
+  if (!notification) {
+    return null;
+  }
+  const notifications = getAgentNotifications();
+  if (notification.dedupeKey) {
+    const existing = notifications.find((candidate) => candidate.dedupeKey === notification.dedupeKey);
+    if (existing) {
+      Object.assign(existing, notification, { id: existing.id, readAt: existing.readAt });
+      clientState.notifications = normalizeAgentNotifications(notifications);
+      persistClientState();
+      renderNotificationCenter();
+      return existing;
+    }
+  }
+  notifications.unshift(notification);
+  clientState.notifications = normalizeAgentNotifications(notifications);
+  persistClientState();
+  renderNotificationCenter();
+  return notification;
+}
+
+function markAgentNotificationRead(notificationId) {
+  const notification = getAgentNotificationById(notificationId);
+  if (!notification || notification.readAt) {
+    return false;
+  }
+  notification.readAt = new Date().toISOString();
+  persistClientState();
+  renderNotificationCenter();
+  return true;
+}
+
+function markAllAgentNotificationsRead() {
+  const notifications = getAgentNotifications();
+  const now = new Date().toISOString();
+  let changed = false;
+  notifications.forEach((notification) => {
+    if (!notification.readAt) {
+      notification.readAt = now;
+      changed = true;
+    }
+  });
+  if (changed) {
+    persistClientState();
+  }
+  renderNotificationCenter();
+  return changed;
+}
+
+function renderNotificationCenter() {
+  const list = elements.notificationCenterList;
+  const empty = elements.notificationCenterEmpty;
+  const badge = elements.notificationCenterBadge;
+  const button = elements.notificationCenterButton;
+  if (!list || !empty || !badge || !button) {
+    return;
+  }
+
+  const notifications = getAgentNotifications();
+  const unreadCount = notifications.filter((notification) => !notification.readAt).length;
+  badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+  badge.hidden = unreadCount === 0;
+  button.setAttribute("aria-label", unreadCount ? `Notifications (${unreadCount} unread)` : "Notifications");
+  if (elements.notificationCenterMarkReadButton) {
+    elements.notificationCenterMarkReadButton.disabled = unreadCount === 0;
+  }
+
+  list.replaceChildren();
+  list.hidden = notifications.length === 0;
+  empty.hidden = notifications.length !== 0;
+  for (const notification of notifications) {
+    const item = document.createElement("article");
+    item.className = `notification-center-item is-${notification.tone}${notification.readAt ? "" : " is-unread"}`;
+    item.dataset.notificationId = notification.id;
+    item.setAttribute("role", "listitem");
+
+    const icon = document.createElement("span");
+    icon.className = "notification-center-item-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = notification.tone === "success" ? "✓" : notification.tone === "error" ? "!" : notification.tone === "warning" ? "!" : "i";
+
+    const content = document.createElement("div");
+    content.className = "notification-center-item-content";
+    const title = document.createElement("h3");
+    title.textContent = notification.title;
+    const message = document.createElement("p");
+    message.textContent = notification.message;
+    const time = document.createElement("time");
+    time.dateTime = notification.createdAt;
+    time.textContent = formatAgentNotificationDate(notification.createdAt);
+    content.append(title, message, time);
+
+    const actions = document.createElement("div");
+    actions.className = "notification-center-item-actions";
+    if (notification.href) {
+      const link = document.createElement("a");
+      link.className = "notification-center-item-link";
+      link.href = notification.href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.dataset.notificationLink = notification.id;
+      link.textContent = notification.hrefLabel;
+      actions.append(link);
+    }
+    const openButton = document.createElement("button");
+    openButton.className = "notification-center-item-open";
+    openButton.type = "button";
+    openButton.dataset.notificationOpen = notification.id;
+    openButton.textContent = notification.actionId ? "Open action" : "Mark read";
+    if (!notification.actionId && notification.readAt) {
+      openButton.hidden = true;
+    }
+    actions.append(openButton);
+    item.append(icon, content, actions);
+    list.append(item);
+  }
+}
+
+function toggleNotificationCenter(force) {
+  const nextOpen = typeof force === "boolean" ? force : !state.notificationCenterOpen;
+  state.notificationCenterOpen = nextOpen;
+  if (nextOpen) {
+    closeMenu();
+  }
+  elements.notificationCenterPopover?.classList.toggle("is-hidden", !nextOpen);
+  elements.notificationCenterButton?.setAttribute("aria-expanded", String(nextOpen));
+  elements.notificationCenterPopover?.setAttribute("aria-hidden", String(!nextOpen));
+}
+
+function closeNotificationCenter() {
+  toggleNotificationCenter(false);
+}
+
+function getAgentResponseResultHref(response = {}) {
+  const candidates = [
+    response?.resultUrl,
+    response?.result_url,
+    response?.url,
+    response?.link,
+    response?.result?.resultUrl,
+    response?.result?.url,
+    response?.result?.link,
+    Array.isArray(response?.links) ? response.links[0] : "",
+  ];
+  for (const candidate of candidates) {
+    const href = typeof candidate === "object" ? candidate?.url || candidate?.href : candidate;
+    const normalized = normalizeAgentNotificationHref(href);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
+function notifyScheduledActionTransitions(previousActions, nextActions) {
+  if (!state.scheduledActionsLoadedAt || !Array.isArray(previousActions) || !previousActions.length) {
+    return;
+  }
+  const previousById = new Map(previousActions.map((action) => [String(action.id), action]));
+  for (const action of nextActions) {
+    const previous = previousById.get(String(action.id));
+    const status = String(action.status || "").trim().toLowerCase();
+    if (!previous || String(previous.status || "").trim().toLowerCase() === status) {
+      continue;
+    }
+    if (!["sent", "delivered", "read", "failed"].includes(status)) {
+      continue;
+    }
+    const title = getScheduledActionTitle(action);
+    const completed = status === "failed" ? "failed" : status === "read" ? "was read" : status === "delivered" ? "was delivered" : "was sent";
+    addAgentNotification({
+      title: status === "failed" ? `${title} failed` : `${title} complete`,
+      message: status === "failed" ? (action.lastError || `${title} could not be delivered.`) : `${title} ${completed}.`,
+      tone: status === "failed" ? "error" : "success",
+      source: "scheduled-action",
+      actionId: String(action.id || ""),
+      dedupeKey: `scheduled:${action.id}:${status}:${action.completedAt || action.updatedAt || ""}`,
+    });
+  }
+}
+
+function notifySourceActionTransitions(previousActions, nextActions) {
+  if (!state.sourceActionsLoadedAt || !Array.isArray(previousActions) || !previousActions.length) {
+    return;
+  }
+  const previousById = new Map(previousActions.map((action) => [String(action.id), action]));
+  for (const action of nextActions) {
+    const previous = previousById.get(String(action.id));
+    const lastRunAt = String(action.lastRunAt || "").trim();
+    const lastRunStatus = String(action.lastRunStatus || "").trim().toLowerCase();
+    if (!previous || !lastRunAt || lastRunAt === String(previous.lastRunAt || "").trim() || !lastRunStatus) {
+      continue;
+    }
+    const sourceLabel = String(action.fileName || action.sourceUrl || "Source").trim();
+    const failed = lastRunStatus === "failed";
+    addAgentNotification({
+      title: failed ? "Source check failed" : "Source check complete",
+      message: failed
+        ? String(action.lastError || `I couldn’t check ${sourceLabel}.`).trim()
+        : `${sourceLabel} was checked successfully.`,
+      tone: failed ? "error" : "success",
+      source: "source-action",
+      actionId: `source:${action.id}`,
+      dedupeKey: `source:${action.id}:run:${lastRunAt}:${lastRunStatus}`,
+    });
+  }
 }
 
 function createAgentMessage(role, text, metadata = {}) {
@@ -5332,10 +5636,13 @@ function createGoogleOAuthPermissionList(option) {
     row.className = "calendar-oauth-permission-row";
     const label = document.createElement("strong");
     label.textContent = scopeOption.label;
-    const stateLabel = document.createElement("span");
-    stateLabel.className = "calendar-oauth-permission-badge";
-    stateLabel.textContent = permissionState.stateLabel;
-    row.append(label, stateLabel);
+    row.append(label);
+    if (permissionState.stateLabel && permissionState.stateLabel !== "Selected") {
+      const stateLabel = document.createElement("span");
+      stateLabel.className = "calendar-oauth-permission-badge";
+      stateLabel.textContent = permissionState.stateLabel;
+      row.append(stateLabel);
+    }
 
     const detail = document.createElement("span");
     detail.textContent = scopeOption.detail;
@@ -5359,6 +5666,7 @@ function getSelectedGoogleOAuthScopeIds(container) {
 function openCalendarOAuthConnection(option) {
   const connection = getPlatformConnectionByPlatform(option.id);
   const connectionStatus = getPlatformConnectionStatus(connection);
+  const isConnected = isPlatformConnectionConnected(connection);
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const body = document.createElement("div");
@@ -5398,7 +5706,7 @@ function openCalendarOAuthConnection(option) {
       elements.authAlertMessage.textContent = "Choose the Google access Assistyca can use.";
     }
     if (elements.authAlertIcon) {
-      elements.authAlertIcon.dataset.tone = connectionStatus.label === "Connected" ? "success" : "progress";
+      elements.authAlertIcon.dataset.tone = isConnected ? "success" : "progress";
       elements.authAlertIcon.classList.remove("is-spinner");
       elements.authAlertIcon.replaceChildren(createAgentAddToolLogo(option));
     }
@@ -5554,18 +5862,20 @@ function openCalendarOAuthConnection(option) {
     {
       eyebrow: "Google",
       iconNode: createAgentAddToolLogo(option),
-      tone: connectionStatus.label === "Connected" ? "success" : "progress",
+      tone: isConnected ? "success" : "progress",
       variant: "calendar-oauth",
       bodyNode: body,
       buttonLabel: primaryLabel,
-      secondaryButtonLabel: "Cancel",
+      hidePrimaryButton: isConnected,
       primaryDisabled: !storageAvailable,
       closeOnPrimary: false,
       returnFocus: elements.agentAddToolButton,
-      onPrimary: startOAuth,
+      onPrimary: isConnected ? null : startOAuth,
     },
   );
-  setCalendarOAuthPrimaryButton(primaryLabel);
+  if (!isConnected) {
+    setCalendarOAuthPrimaryButton(primaryLabel);
+  }
 }
 
 function openPlatformConnection(optionId) {
@@ -7708,6 +8018,7 @@ function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getS
 }
 
 function persistClientState() {
+  clientState.notifications = normalizeAgentNotifications(clientState.notifications || []);
   const persistedFeatures = clientState.features.map((feature) => ({
     ...feature,
     setupComplete: Boolean(feature.setupComplete),
@@ -8952,7 +9263,11 @@ function setSettingsMode(mode, options = {}) {
 }
 
 function toggleMenu(force) {
-  state.menuOpen = typeof force === "boolean" ? force : !state.menuOpen;
+  const nextOpen = typeof force === "boolean" ? force : !state.menuOpen;
+  if (nextOpen) {
+    closeNotificationCenter();
+  }
+  state.menuOpen = nextOpen;
   elements.accountMenu.classList.toggle("is-hidden", !state.menuOpen);
   elements.accountMenuButton.setAttribute("aria-expanded", String(state.menuOpen));
 }
@@ -17056,9 +17371,12 @@ async function refreshScheduledActions(options = {}) {
       if (requestToken !== String(authSession?.token || "")) {
         return null;
       }
-      state.scheduledActions = Array.isArray(response.actions)
+      const previousActions = state.scheduledActions;
+      const nextActions = Array.isArray(response.actions)
         ? response.actions.map(normalizeScheduledAction).filter((action) => action.id > 0)
         : [];
+      notifyScheduledActionTransitions(previousActions, nextActions);
+      state.scheduledActions = nextActions;
       markScheduledActionsRefreshSuccess();
       return state.scheduledActions;
     } catch (error) {
@@ -17092,7 +17410,10 @@ async function refreshSourceActions() {
     try {
       const response = await apiRequest("/api/source-actions?limit=100", { headers: getSessionAuthHeaders() });
       if (requestToken !== String(authSession?.token || "")) return null;
-      state.sourceActions = Array.isArray(response.actions) ? response.actions : [];
+      const previousActions = state.sourceActions;
+      const nextActions = Array.isArray(response.actions) ? response.actions : [];
+      notifySourceActionTransitions(previousActions, nextActions);
+      state.sourceActions = nextActions;
       state.sourceActionsLoadedAt = Date.now();
       return state.sourceActions;
     } catch {
@@ -19049,16 +19370,37 @@ async function runSourceActionNow(actionId) {
   if (!id) return false;
   setStatus("Checking source…");
   try {
-    await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}/run`, {
+    const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}/run`, {
       method: "POST",
       headers: getSessionAuthHeaders(),
       timeoutMs: 90000,
     });
+    if (response?.action) {
+      notifySourceActionTransitions(state.sourceActions, [response.action]);
+    } else {
+      addAgentNotification({
+        title: "Source check complete",
+        message: "The source was checked successfully.",
+        tone: "success",
+        source: "source-action",
+        actionId: `source:${id}`,
+        dedupeKey: `source:${id}:manual:${Date.now()}`,
+      });
+    }
     await refreshSourceActions();
     setStatus("Source checked.");
     return true;
   } catch (error) {
-    setStatus(formatApiErrorMessage(error, "Couldn’t check that source."));
+    const message = formatApiErrorMessage(error, "Couldn’t check that source.");
+    addAgentNotification({
+      title: "Source check failed",
+      message,
+      tone: "error",
+      source: "source-action",
+      actionId: `source:${id}`,
+      dedupeKey: `source:${id}:manual-error:${message}`,
+    });
+    setStatus(message);
     await refreshSourceActions();
     return false;
   }
@@ -19145,9 +19487,15 @@ async function runAgentProposalLocalActionNow(actionId) {
         timeoutMs: 90000,
       });
       const message = String(response.message || response.summary || "Meeting summary complete.").trim();
-      pushAgentMessage("assistant", message, {
-        kind: "result",
+      addAgentNotification({
+        title: "Meeting summary ready",
+        message,
+        tone: "success",
+        source: "calendar-summary",
+        actionId: String(action.id || ""),
         proposalId: proposal.id,
+        href: getAgentResponseResultHref(response),
+        dedupeKey: `proposal:${proposal.id}:run:${response?.runId || response?.completedAt || Date.now()}`,
       });
       persistAgentWorkspace(message);
       return true;
@@ -19156,9 +19504,14 @@ async function runAgentProposalLocalActionNow(actionId) {
         error,
         "I couldn’t read the connected calendar. Check Calendar setup and try again.",
       );
-      pushAgentMessage("assistant", message, {
-        kind: "error",
+      addAgentNotification({
+        title: "Meeting summary failed",
+        message,
+        tone: "error",
+        source: "calendar-summary",
+        actionId: String(action.id || ""),
         proposalId: proposal.id,
+        dedupeKey: `proposal:${proposal.id}:error:${message}`,
       });
       persistAgentWorkspace(message);
       return false;
@@ -19188,9 +19541,15 @@ async function runAgentProposalLocalActionNow(actionId) {
         timeoutMs: 90000,
       });
       const message = String(response.message || response.summary || "Gmail digest complete.").trim();
-      pushAgentMessage("assistant", message, {
-        kind: "result",
+      addAgentNotification({
+        title: "Email digest ready",
+        message,
+        tone: "success",
+        source: "email-digest",
+        actionId: String(action.id || ""),
         proposalId: proposal.id,
+        href: getAgentResponseResultHref(response),
+        dedupeKey: `proposal:${proposal.id}:run:${response?.runId || response?.completedAt || Date.now()}`,
       });
       persistAgentWorkspace(message);
       return true;
@@ -19199,9 +19558,14 @@ async function runAgentProposalLocalActionNow(actionId) {
         error,
         "I couldn’t read the connected Gmail inbox. Check Email setup and try again.",
       );
-      pushAgentMessage("assistant", message, {
-        kind: "error",
+      addAgentNotification({
+        title: "Email digest failed",
+        message,
+        tone: "error",
+        source: "email-digest",
+        actionId: String(action.id || ""),
         proposalId: proposal.id,
+        dedupeKey: `proposal:${proposal.id}:error:${message}`,
       });
       persistAgentWorkspace(message);
       return false;
@@ -19216,9 +19580,14 @@ async function runAgentProposalLocalActionNow(actionId) {
   const message = proposal.type === "calendar-summary"
     ? "This action does not have a connected runner yet. Nothing was sent."
     : `The manual run button is ready for ${title}, but its execution service is not connected yet. Nothing was sent.`;
-  pushAgentMessage("assistant", message, {
-    kind: "result",
+  addAgentNotification({
+    title: `${title} unavailable`,
+    message,
+    tone: "warning",
+    source: "agent-action",
+    actionId: String(action.id || ""),
     proposalId: proposal.id,
+    dedupeKey: `proposal:${proposal.id}:unavailable`,
   });
   persistAgentWorkspace(message);
   renderApp({ preserveStatus: true });
@@ -19825,15 +20194,44 @@ function shouldRenderAgentToolShelfFeature(feature) {
 }
 
 const ACTION_ONLY_PLATFORM_CONNECTION_IDS = new Set([
+  "drive",
+  "email",
   "web-monitor",
   "web-monitoring",
   "monitor",
   MONITOR_FEATURE_ID,
 ]);
 
+const GOOGLE_TOOL_PLATFORM_CONNECTION_IDS = new Set([
+  "calendar",
+  "drive",
+  "email",
+]);
+
 function shouldRenderAgentToolShelfConnection(connection) {
   const platform = String(connection?.platform || connection?.id || "").trim().toLowerCase();
   return Boolean(connection && platform && !ACTION_ONLY_PLATFORM_CONNECTION_IDS.has(platform));
+}
+
+function getAgentToolShelfConnections(connections = []) {
+  const source = Array.isArray(connections) ? connections : [];
+  const visibleConnections = source.filter(shouldRenderAgentToolShelfConnection);
+  const hasVisibleGoogle = visibleConnections.some((connection) => (
+    String(connection?.platform || connection?.id || "").trim().toLowerCase() === "calendar"
+  ));
+  if (!hasVisibleGoogle) {
+    const googleConnection = source.find((connection) => (
+      GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(String(connection?.platform || connection?.id || "").trim().toLowerCase())
+    ));
+    if (googleConnection) {
+      visibleConnections.push({
+        ...googleConnection,
+        platform: "calendar",
+        label: "Google",
+      });
+    }
+  }
+  return visibleConnections;
 }
 
 function sortAgentToolShelfConnections(connections = []) {
@@ -19878,7 +20276,7 @@ function createAgentPlatformConnectionItem(connection) {
 function updateFeatureList() {
   const features = clientState.features.length ? sortFeaturesByDisplayOrder(clientState.features) : [];
   const connections = Array.isArray(state.platformConnections) ? state.platformConnections : [];
-  const visibleConnections = sortAgentToolShelfConnections(connections.filter(shouldRenderAgentToolShelfConnection));
+  const visibleConnections = sortAgentToolShelfConnections(getAgentToolShelfConnections(connections));
   const target = elements.agentToolShelf || elements.featureList;
   renderAgentAddToolMenu();
   if (!target) {
@@ -20688,7 +21086,15 @@ async function runMonitorActionNow(featureId) {
     });
     const completionMessage = String(response.message || "The monitor finished.");
     await refreshFeatureActivationStates({ render: false });
-    pushAgentMessage("assistant", completionMessage, { kind: "result" });
+    addAgentNotification({
+      title: getManualMonitorRunAlertTitle(response.run),
+      message: getManualMonitorRunAlertMessage(response.run, completionMessage),
+      tone: getManualMonitorRunAlertTone(response.run),
+      source: "web-monitor",
+      actionId: `feature:${normalizedFeatureId}`,
+      href: getAgentResponseResultHref(response),
+      dedupeKey: `monitor:${normalizedFeatureId}:run:${response?.run?.id || response?.run?.completedAt || Date.now()}`,
+    });
     persistAgentWorkspace(completionMessage);
     renderApp({ preserveStatus: true });
     openAuthAlert(
@@ -20704,7 +21110,14 @@ async function runMonitorActionNow(featureId) {
     );
   } catch (error) {
     const message = formatApiErrorMessage(error, "We couldn’t run the monitor right now.");
-    pushAgentMessage("assistant", message, { kind: "error" });
+    addAgentNotification({
+      title: "Monitor run failed",
+      message,
+      tone: "error",
+      source: "web-monitor",
+      actionId: `feature:${normalizedFeatureId}`,
+      dedupeKey: `monitor:${normalizedFeatureId}:error:${message}`,
+    });
     persistAgentWorkspace(message);
     renderApp({ preserveStatus: true });
     openFeatureActivationAlert("Couldn’t run the monitor", message, {
@@ -20801,7 +21214,15 @@ async function runSelectedMonitorNow() {
 
     const completionMessage = String(response.message || "Manual run finished.");
     monitorManualRunOverlayVisible = false;
-    pushAgentMessage("assistant", completionMessage, { kind: "result" });
+    addAgentNotification({
+      title: getManualMonitorRunAlertTitle(response.run),
+      message: getManualMonitorRunAlertMessage(response.run, completionMessage),
+      tone: getManualMonitorRunAlertTone(response.run),
+      source: "web-monitor",
+      actionId: `feature:${feature.id}`,
+      href: getAgentResponseResultHref(response),
+      dedupeKey: `monitor:${feature.id}:run:${response?.run?.id || response?.run?.completedAt || Date.now()}`,
+    });
     setStatus(completionMessage);
     openAuthAlert(
       getManualMonitorRunAlertTitle(response.run),
@@ -20843,9 +21264,18 @@ async function runSelectedMonitorNow() {
     }
 
     monitorManualRunOverlayVisible = false;
+    const message = formatApiErrorMessage(error, "We couldn’t run the manual monitor right now.");
+    addAgentNotification({
+      title: "Monitor run failed",
+      message,
+      tone: "error",
+      source: "web-monitor",
+      actionId: `feature:${feature.id}`,
+      dedupeKey: `monitor:${feature.id}:error:${message}`,
+    });
     openFeatureActivationAlert(
       "Couldn’t run the monitor",
-      formatApiErrorMessage(error, "We couldn’t run the manual monitor right now."),
+      message,
       {
         eyebrow: "Try again",
         returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
@@ -23152,6 +23582,7 @@ function renderApp(options = {}) {
   updateOpportunityNavigation();
   updateClientNavigation();
   updateHeader();
+  renderNotificationCenter();
   updateTabButtons();
   updateFeatureStudioHeader();
   updatePanelVisibility();
@@ -24946,6 +25377,45 @@ function bindEvents() {
     toggleMenu();
   });
 
+  if (elements.notificationCenterButton) {
+    elements.notificationCenterButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleNotificationCenter();
+    });
+  }
+
+  if (elements.notificationCenterPopover) {
+    elements.notificationCenterPopover.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const target = getEventTargetElement(event);
+      const link = target?.closest("[data-notification-link]");
+      if (link) {
+        markAgentNotificationRead(link.dataset.notificationLink || "");
+        return;
+      }
+      const item = target?.closest("[data-notification-id]");
+      if (!item) {
+        return;
+      }
+      const notification = getAgentNotificationById(item.dataset.notificationId || "");
+      if (!notification) {
+        return;
+      }
+      markAgentNotificationRead(notification.id);
+      if (notification.actionId) {
+        closeNotificationCenter();
+        showAgentActionInPanel(notification.actionId);
+      }
+    });
+  }
+
+  if (elements.notificationCenterMarkReadButton) {
+    elements.notificationCenterMarkReadButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      markAllAgentNotificationsRead();
+    });
+  }
+
   for (const button of elements.tabButtons) {
     button.addEventListener("click", () => {
       setActiveTab(button.dataset.tab || "features");
@@ -25258,6 +25728,15 @@ function bindEvents() {
     if (!elements.accountMenu.contains(event.target) && !elements.accountMenuButton.contains(event.target)) {
       closeMenu();
     }
+
+    if (
+      elements.notificationCenterPopover
+      && elements.notificationCenterButton
+      && !elements.notificationCenterPopover.contains(event.target)
+      && !elements.notificationCenterButton.contains(event.target)
+    ) {
+      closeNotificationCenter();
+    }
   });
 
   window.addEventListener("keydown", (event) => {
@@ -25286,6 +25765,11 @@ function bindEvents() {
 
       if (elements.deliveryPlatformMenu && !elements.deliveryPlatformMenu.hidden) {
         setDeliveryPlatformMenuOpen(false);
+        return;
+      }
+
+      if (state.notificationCenterOpen) {
+        closeNotificationCenter();
         return;
       }
 

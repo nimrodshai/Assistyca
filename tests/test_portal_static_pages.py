@@ -47,6 +47,18 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertLess(snippet.index("select.append(option);"), snippet.index("select.value = selectedClientType;"))
         self.assertIn("select.dataset.adminClientTypeValue = selectedClientType;", snippet)
 
+    def test_clients_admin_surfaces_have_dark_mode_treatment(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("styles.css?v=132", html)
+        self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
+        self.assertIn(':root[data-theme="dark"] .client-metric', styles)
+        self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
+        self.assertIn(':root[data-theme="dark"] .admin-users-table th', styles)
+        self.assertIn(':root[data-theme="dark"] .admin-users-table td', styles)
+        self.assertIn(':root[data-theme="dark"] .admin-client-type-select[data-admin-client-type-value="demo"]', styles)
+
     def test_reengagement_demo_results_use_completion_popup_not_editor_card(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -296,7 +308,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn(".agent-action-more-details", styles)
         self.assertIn("agent-action-item-expansion", script)
         self.assertIn("grid-template-rows: 0fr", styles)
-        self.assertIn('pushAgentMessage("assistant", completionMessage, { kind: "result" });', script)
+        self.assertIn("addAgentNotification({", script)
+        self.assertIn('source: "web-monitor",', script)
+        self.assertIn("href: getAgentResponseResultHref(response),", script)
         self.assertIn('manualOnly: true', script)
         self.assertIn('runMode: "manual"', script)
         self.assertIn('runMode: manualOnly ? "manual" : "recurring"', script)
@@ -519,7 +533,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("overflow: visible;", styles)
         self.assertNotIn(".app-shell.is-chat-workspace .agent-tool-shelf {\n  min-height: 0;\n  overflow-y: auto;", styles)
         self.assertIn("AGENT_ADD_TOOL_OPTIONS", script)
-        self.assertIn('label: "Email"', script)
+        add_tool_options = script[
+            script.index("const AGENT_ADD_TOOL_OPTIONS"):
+            script.index("const PLATFORM_CONNECTION_OPTIONS")
+        ]
+        self.assertNotIn('label: "Email"', add_tool_options)
         self.assertIn('label: "Google"', script)
         self.assertIn("GOOGLE_CONNECTION_SCOPE_OPTIONS", script)
         self.assertIn("https://www.googleapis.com/auth/calendar.events.readonly", script)
@@ -539,6 +557,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".platform-connection-status", styles)
         self.assertIn(".platform-connection-status[hidden]", styles)
         self.assertIn("function openCalendarOAuthConnection", script)
+        calendar_oauth_flow = script[
+            script.index("function openCalendarOAuthConnection"):
+            script.index("function openPlatformConnection(optionId)")
+        ]
+        self.assertIn("const isConnected = isPlatformConnectionConnected(connection);", calendar_oauth_flow)
+        self.assertIn("hidePrimaryButton: isConnected,", calendar_oauth_flow)
+        self.assertIn("onPrimary: isConnected ? null : startOAuth,", calendar_oauth_flow)
+        self.assertIn("if (!isConnected) {\n    setCalendarOAuthPrimaryButton(primaryLabel);\n  }", calendar_oauth_flow)
+        self.assertNotIn('secondaryButtonLabel: "Cancel"', calendar_oauth_flow)
         self.assertIn("/api/oauth/google/calendar/start?scopes=", script)
         self.assertIn("/api/oauth/google/calendar/code", script)
         self.assertIn("body: { code: authorization.code, scopes: selectedScopeIds }", script)
@@ -624,14 +651,22 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("return Boolean(feature && !isMonitorFeature(feature));", script)
         self.assertIn("if (!shouldRenderAgentToolShelfFeature(feature))", script)
         self.assertIn("ACTION_ONLY_PLATFORM_CONNECTION_IDS", script)
+        action_only_connection_ids = script[
+            script.index("const ACTION_ONLY_PLATFORM_CONNECTION_IDS"):
+            script.index("function shouldRenderAgentToolShelfConnection")
+        ]
+        self.assertIn('"email"', action_only_connection_ids)
+        self.assertIn('"drive"', action_only_connection_ids)
+        self.assertIn("GOOGLE_TOOL_PLATFORM_CONNECTION_IDS", script)
         self.assertIn("function shouldRenderAgentToolShelfConnection", script)
+        self.assertIn("function getAgentToolShelfConnections", script)
         self.assertIn("function isAgentToolsInitialLoading", script)
         self.assertIn("featureActivationInitialLoadPending", script)
         self.assertIn("platformConnectionsInitialLoadPending", script)
         self.assertIn("function sortFeaturesByDisplayOrder", script)
         self.assertIn("function sortAgentToolShelfConnections", script)
         self.assertIn('target.replaceChildren(createAgentLoadingRow("Loading tools…"));', script)
-        self.assertIn("const visibleConnections = sortAgentToolShelfConnections(connections.filter(shouldRenderAgentToolShelfConnection));", script)
+        self.assertIn("const visibleConnections = sortAgentToolShelfConnections(getAgentToolShelfConnections(connections));", script)
         self.assertIn("if (!visibleFeatures.length && !visibleConnections.length)", script)
         self.assertIn("item.dataset.agentToolFeatureId = feature.id;", script)
         self.assertIn('const toolButton = target?.closest("[data-agent-tool-feature-id]");', script)
@@ -669,8 +704,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=131", html)
-        self.assertIn("app.js?v=162", html)
+        self.assertIn("styles.css?v=132", html)
+        self.assertIn("app.js?v=164", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

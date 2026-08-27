@@ -24,7 +24,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="./styles.css?v=131" />
+    <link rel="stylesheet" href="./styles.css?v=132" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -153,6 +153,44 @@
         </nav>
 
         <div class="topbar-actions">
+          <div class="notification-center-wrap">
+            <button
+              id="notificationCenterButton"
+              class="notification-center-button"
+              type="button"
+              aria-label="Notifications"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="notificationCenterPopover"
+              title="Notifications"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+              </svg>
+              <span id="notificationCenterBadge" class="notification-center-badge" hidden>0</span>
+            </button>
+            <div
+              id="notificationCenterPopover"
+              class="notification-center-popover is-hidden"
+              role="dialog"
+              aria-labelledby="notificationCenterTitle"
+              aria-describedby="notificationCenterEmpty"
+            >
+              <div class="notification-center-head">
+                <div>
+                  <p class="eyebrow">Updates</p>
+                  <h2 id="notificationCenterTitle">Notifications</h2>
+                </div>
+                <button id="notificationCenterMarkReadButton" class="notification-center-mark-read" type="button">
+                  Mark all read
+                </button>
+              </div>
+              <div id="notificationCenterList" class="notification-center-list" role="list"></div>
+              <p id="notificationCenterEmpty" class="notification-center-empty" hidden>
+                You’re all caught up. Completed actions and results will appear here.
+              </p>
+            </div>
+          </div>
           <div class="menu-wrap">
             <button
               id="accountMenuButton"
@@ -1688,6 +1726,6 @@ Owner said afternoons are easier."
     </section>
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
-    <script src="./app.js?v=162"></script>
+    <script src="./app.js?v=164"></script>
   </body>
 </html>
