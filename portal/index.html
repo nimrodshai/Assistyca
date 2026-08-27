@@ -269,16 +269,33 @@
             </form>
           </section>
 
-          <aside id="agentActionsPanel" class="agent-tools-panel agent-actions-panel" aria-labelledby="agentActionsTitle">
-            <div class="agent-tools-head agent-actions-head">
-              <div>
-                <p class="eyebrow">Action center</p>
-                <h2 id="agentActionsTitle">Actions</h2>
+          <aside id="agentActionsPanel" class="agent-tools-panel agent-actions-panel" aria-label="Agent side panel">
+            <div class="agent-tools-head agent-actions-head agent-panel-mode-head">
+              <div class="agent-panel-mode-switch" role="tablist" aria-label="Agent panel mode">
+                <button
+                  id="agentPanelActionsModeButton"
+                  class="agent-panel-mode-button is-active"
+                  type="button"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="agentActionsListView"
+                  data-agent-panel-mode="actions"
+                >
+                  Actions
+                </button>
+                <button
+                  id="agentPanelChatsModeButton"
+                  class="agent-panel-mode-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="agentChatsListView"
+                  data-agent-panel-mode="chats"
+                >
+                  Chats
+                </button>
               </div>
-              <div class="agent-actions-head-buttons">
-                <button id="agentActionsRefreshButton" class="agent-actions-icon-button" type="button" aria-label="Refresh actions">↻</button>
-                <button id="agentToolsCloseButton" class="agent-actions-icon-button agent-tools-close" type="button" aria-label="Close actions">×</button>
-              </div>
+              <button id="agentToolsCloseButton" class="agent-actions-icon-button agent-tools-close" type="button" aria-label="Close panel">×</button>
             </div>
 
             <div id="agentActionsPanelBody" class="agent-actions-panel-body">
@@ -323,6 +340,19 @@
                   </div>
                   <div id="agentToolShelf" class="agent-tool-shelf"></div>
                 </section>
+              </div>
+
+              <div id="agentChatsListView" class="agent-chats-list-view is-hidden" aria-labelledby="agentChatsTitle">
+                <div class="agent-chats-list-head">
+                  <div>
+                    <p class="eyebrow">Chat history</p>
+                    <h3 id="agentChatsTitle">Chats</h3>
+                  </div>
+                  <button id="agentNewChatButton" class="primary-button small" type="button">
+                    New chat
+                  </button>
+                </div>
+                <div id="agentChatList" class="agent-chat-list" role="list"></div>
               </div>
 
               <div id="agentActionDetailView" class="agent-action-detail-view is-hidden" aria-live="polite">

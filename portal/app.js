@@ -409,7 +409,10 @@ const DEFAULT_SIMULATOR = {
 
 const AGENT_INITIAL_MESSAGE = "";
 const AGENT_MAX_MESSAGES = 40;
+const AGENT_MAX_CHATS = 30;
+const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
 const AGENT_COMPOSER_MAX_LINES = 5;
+const VALID_AGENT_PANEL_MODES = new Set(["actions", "chats"]);
 const GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly";
 const GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
@@ -1170,6 +1173,7 @@ const state = {
   featureActivationInitialLoadPending: false,
   featureActivationLoadedAt: 0,
   selectedScheduledActionId: "",
+  agentPanelMode: "actions",
   agentHistoryExpanded: false,
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
@@ -1309,7 +1313,12 @@ const elements = {
   agentAddToolBackdrop: document.querySelector("#agentAddToolBackdrop"),
   agentAddToolMenu: document.querySelector("#agentAddToolMenu"),
   agentActionsPanelBody: document.querySelector("#agentActionsPanelBody"),
+  agentPanelActionsModeButton: document.querySelector("#agentPanelActionsModeButton"),
+  agentPanelChatsModeButton: document.querySelector("#agentPanelChatsModeButton"),
   agentActionsListView: document.querySelector("#agentActionsListView"),
+  agentChatsListView: document.querySelector("#agentChatsListView"),
+  agentChatList: document.querySelector("#agentChatList"),
+  agentNewChatButton: document.querySelector("#agentNewChatButton"),
   agentActionsStatus: document.querySelector("#agentActionsStatus"),
   agentActionsRefreshButton: document.querySelector("#agentActionsRefreshButton"),
   agentPendingActionsCount: document.querySelector("#agentPendingActionsCount"),
@@ -1544,6 +1553,7 @@ let authBusy = false;
 let activeEmail = normalizeEmail(initialAuthSession?.email || authChallenge?.email || "");
 let clientState = loadClientState("");
 state.selectedSimulatorId = clientState.simulator.selectedApprovalId || null;
+syncAgentStateFromClientState();
 
 if (storedAuthSession && !initialAuthSession) {
   persistJson(AUTH_SESSION_KEY, null);
@@ -3218,6 +3228,78 @@ function normalizeAgentMessage(value = {}) {
   };
 }
 
+function normalizeAgentPanelMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return VALID_AGENT_PANEL_MODES.has(mode) ? mode : "actions";
+}
+
+function parseAgentTimestamp(value) {
+  const timestamp = Date.parse(String(value || ""));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getLatestAgentChatActivityAt(messages = []) {
+  return messages.reduce((latest, message) => {
+    const timestamp = parseAgentTimestamp(message?.createdAt);
+    return timestamp > latest ? timestamp : latest;
+  }, 0);
+}
+
+function getLatestAgentChatUserActivityAt(messages = []) {
+  return messages.reduce((latest, message) => {
+    if (message?.role !== "user") {
+      return latest;
+    }
+    const timestamp = parseAgentTimestamp(message.createdAt);
+    return timestamp > latest ? timestamp : latest;
+  }, 0);
+}
+
+function normalizeAgentChatStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  return status === "historical" ? "historical" : "active";
+}
+
+function createAgentChat(messages = [], options = {}) {
+  const source = options && typeof options === "object" ? options : {};
+  const now = new Date().toISOString();
+  const normalizedMessages = Array.isArray(messages)
+    ? messages.map(normalizeAgentMessage).filter(Boolean).slice(-AGENT_MAX_MESSAGES)
+    : [];
+  const latestActivity = getLatestAgentChatActivityAt(normalizedMessages);
+  const latestUserActivity = getLatestAgentChatUserActivityAt(normalizedMessages);
+  const fallbackActivityAt = latestActivity ? new Date(latestActivity).toISOString() : now;
+  const fallbackUserActivityAt = latestUserActivity ? new Date(latestUserActivity).toISOString() : fallbackActivityAt;
+
+  return {
+    id: normalizeAgentTextItem(source.id, createAgentId("agent-chat")),
+    title: normalizeAgentTextItem(source.title, ""),
+    status: normalizeAgentChatStatus(source.status),
+    messages: normalizedMessages,
+    createdAt: normalizeAgentTextItem(source.createdAt || source.created_at, normalizedMessages[0]?.createdAt || now),
+    updatedAt: normalizeAgentTextItem(source.updatedAt || source.updated_at, fallbackActivityAt),
+    lastClientActivityAt: normalizeAgentTextItem(
+      source.lastClientActivityAt || source.last_client_activity_at,
+      fallbackUserActivityAt,
+    ),
+    lastOpenedAt: normalizeAgentTextItem(source.lastOpenedAt || source.last_opened_at, ""),
+    archivedAt: normalizeAgentTextItem(source.archivedAt || source.archived_at, ""),
+  };
+}
+
+function normalizeAgentChat(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return createAgentChat(source.messages || [], source);
+}
+
+function sortAgentChats(chats = []) {
+  return [...chats].sort((a, b) => {
+    const bTime = parseAgentTimestamp(b?.updatedAt || b?.createdAt);
+    const aTime = parseAgentTimestamp(a?.updatedAt || a?.createdAt);
+    return bTime - aTime;
+  });
+}
+
 function normalizeAgentProposal(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const title = normalizeAgentTextItem(source.title, "Task plan");
@@ -3280,8 +3362,15 @@ function normalizeAgentHelper(value = {}) {
 }
 
 function createDefaultAgentWorkspace() {
+  const defaultChat = createAgentChat([], {
+    title: "New chat",
+    status: "active",
+  });
   return {
-    messages: [],
+    messages: defaultChat.messages,
+    chats: [defaultChat],
+    activeChatId: defaultChat.id,
+    panelMode: "actions",
     proposals: [],
     helpers: [],
     activeProposalId: "",
@@ -3297,6 +3386,29 @@ function normalizeAgentWorkspace(agent = {}) {
       .filter((message) => message && message.metadata?.kind !== "welcome")
       .slice(-AGENT_MAX_MESSAGES)
     : [];
+  const savedChats = Array.isArray(source.chats)
+    ? source.chats.map(normalizeAgentChat).filter(Boolean)
+    : [];
+  const chats = savedChats.length
+    ? savedChats.slice(0, AGENT_MAX_CHATS)
+    : [createAgentChat(messages, {
+      title: messages.length ? "" : "New chat",
+      status: "active",
+    })];
+  let activeChatId = normalizeAgentTextItem(source.activeChatId || source.active_chat_id, "");
+  if (!activeChatId || !chats.some((chat) => chat.id === activeChatId)) {
+    activeChatId = chats.find((chat) => chat.status === "active")?.id || chats[0]?.id || "";
+  }
+  const activeChat = chats.find((chat) => chat.id === activeChatId) || chats[0] || fallback.chats[0];
+  if (activeChat && messages.length) {
+    const sourceMessageIds = messages.map((message) => message.id).join("|");
+    const activeMessageIds = activeChat.messages.map((message) => message.id).join("|");
+    if (sourceMessageIds !== activeMessageIds) {
+      activeChat.messages = messages;
+      activeChat.updatedAt = messages.at(-1)?.createdAt || activeChat.updatedAt;
+      activeChat.lastClientActivityAt = new Date(getLatestAgentChatUserActivityAt(messages) || Date.now()).toISOString();
+    }
+  }
   const proposals = Array.isArray(source.proposals)
     ? source.proposals.map(normalizeAgentProposal).filter(Boolean)
     : [];
@@ -3308,7 +3420,10 @@ function normalizeAgentWorkspace(agent = {}) {
     || "";
 
   return {
-    messages: messages.length ? messages : fallback.messages,
+    messages: activeChat?.messages || fallback.messages,
+    chats,
+    activeChatId: activeChat?.id || activeChatId || fallback.activeChatId,
+    panelMode: normalizeAgentPanelMode(source.panelMode || source.panel_mode),
     proposals,
     helpers,
     activeProposalId,
@@ -7029,8 +7144,10 @@ function persistClientState() {
     whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
     savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   }));
+  const persistedAgent = prepareAgentWorkspaceForPersistence(clientState.agent);
   persistJson(getClientKey(activeEmail), {
     ...clientState,
+    agent: persistedAgent,
     features: persistedFeatures,
   });
 }
@@ -10900,6 +11017,173 @@ function getAgentWorkspace() {
   return clientState.agent;
 }
 
+function getActiveAgentChat(agent = getAgentWorkspace()) {
+  return agent.chats.find((chat) => chat.id === agent.activeChatId) || agent.chats[0] || null;
+}
+
+function syncActiveAgentChatFromWorkspace(agent = getAgentWorkspace(), options = {}) {
+  const chat = getActiveAgentChat(agent);
+  if (!chat) {
+    return null;
+  }
+
+  const messages = Array.isArray(agent.messages)
+    ? agent.messages.map(normalizeAgentMessage).filter(Boolean).slice(-AGENT_MAX_MESSAGES)
+    : [];
+  chat.messages = messages;
+  chat.updatedAt = messages.at(-1)?.createdAt || options.updatedAt || chat.updatedAt || new Date().toISOString();
+  if (options.clientActivity === true) {
+    chat.lastClientActivityAt = options.at || chat.updatedAt;
+  }
+  return chat;
+}
+
+function prepareAgentWorkspaceForPersistence(agent = getAgentWorkspace()) {
+  syncActiveAgentChatFromWorkspace(agent);
+  agent.chats = sortAgentChats(agent.chats).slice(0, AGENT_MAX_CHATS);
+  if (!agent.chats.some((chat) => chat.id === agent.activeChatId)) {
+    agent.activeChatId = agent.chats[0]?.id || "";
+  }
+  clientState.agent = normalizeAgentWorkspace(agent);
+  return clientState.agent;
+}
+
+function getAgentChatIdleReferenceAt(chat) {
+  return Math.max(
+    parseAgentTimestamp(chat?.lastClientActivityAt),
+    parseAgentTimestamp(chat?.lastOpenedAt),
+    parseAgentTimestamp(chat?.updatedAt),
+    parseAgentTimestamp(chat?.createdAt),
+  );
+}
+
+function archiveAgentChat(chat, archivedAt = new Date().toISOString()) {
+  if (!chat) {
+    return;
+  }
+
+  chat.status = "historical";
+  chat.archivedAt = chat.archivedAt || archivedAt;
+}
+
+function createAndActivateAgentChat(agent = getAgentWorkspace(), options = {}) {
+  syncActiveAgentChatFromWorkspace(agent);
+  const chat = createAgentChat([], {
+    title: options.title || "New chat",
+    status: "active",
+    lastOpenedAt: new Date().toISOString(),
+  });
+  agent.chats.unshift(chat);
+  agent.chats = sortAgentChats(agent.chats).slice(0, AGENT_MAX_CHATS);
+  agent.activeChatId = chat.id;
+  agent.messages = chat.messages;
+  return chat;
+}
+
+function rollOverIdleAgentChatIfNeeded(agent = getAgentWorkspace(), nowMs = Date.now()) {
+  const chat = getActiveAgentChat(agent);
+  if (!chat) {
+    return false;
+  }
+
+  const now = new Date(nowMs).toISOString();
+  const idleReferenceAt = getAgentChatIdleReferenceAt(chat);
+  if (!chat.messages.length || !idleReferenceAt || nowMs - idleReferenceAt < AGENT_CHAT_IDLE_MS) {
+    chat.lastOpenedAt = now;
+    return false;
+  }
+
+  archiveAgentChat(chat, now);
+  createAndActivateAgentChat(agent, { title: "New chat" });
+  return true;
+}
+
+function recordAgentPortalOpened(options = {}) {
+  if (!clientState?.agent) {
+    return false;
+  }
+
+  const agent = getAgentWorkspace();
+  const didRollOver = rollOverIdleAgentChatIfNeeded(agent);
+  if (options.persist !== false) {
+    persistClientState();
+  }
+  return didRollOver;
+}
+
+function syncAgentStateFromClientState(options = {}) {
+  const agent = getAgentWorkspace();
+  state.agentPanelMode = normalizeAgentPanelMode(agent.panelMode || state.agentPanelMode);
+  if (options.recordOpen) {
+    recordAgentPortalOpened({ persist: options.persistOpen !== false });
+  }
+}
+
+function touchActiveAgentChat(options = {}) {
+  const agent = getAgentWorkspace();
+  const now = options.at || new Date().toISOString();
+  const chat = syncActiveAgentChatFromWorkspace(agent, {
+    at: now,
+    clientActivity: options.clientActivity === true,
+    updatedAt: now,
+  });
+  if (chat && options.opened === true) {
+    chat.lastOpenedAt = now;
+  }
+  return chat;
+}
+
+function startNewAgentChat() {
+  const agent = getAgentWorkspace();
+  const activeChat = getActiveAgentChat(agent);
+  if (activeChat) {
+    archiveAgentChat(activeChat);
+  }
+  createAndActivateAgentChat(agent, { title: "New chat" });
+  state.agentPanelMode = "chats";
+  agent.panelMode = "chats";
+  elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
+  persistClientState();
+  renderApp({ preserveStatus: true });
+  window.requestAnimationFrame(() => {
+    elements.agentComposerInput?.focus();
+  });
+}
+
+function selectAgentChat(chatId) {
+  const agent = getAgentWorkspace();
+  const chat = agent.chats.find((candidate) => candidate.id === chatId);
+  if (!chat) {
+    return;
+  }
+
+  syncActiveAgentChatFromWorkspace(agent);
+  const previousChat = getActiveAgentChat(agent);
+  if (previousChat && previousChat.id !== chat.id) {
+    archiveAgentChat(previousChat);
+  }
+  agent.activeChatId = chat.id;
+  agent.messages = chat.messages;
+  chat.status = "active";
+  chat.lastOpenedAt = new Date().toISOString();
+  state.agentPanelMode = "chats";
+  agent.panelMode = "chats";
+  elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
+  persistClientState();
+  renderApp({ preserveStatus: true });
+}
+
+function setAgentPanelMode(mode, options = {}) {
+  const nextMode = normalizeAgentPanelMode(mode);
+  state.agentPanelMode = nextMode;
+  const agent = getAgentWorkspace();
+  agent.panelMode = nextMode;
+  if (options.persist !== false) {
+    persistClientState();
+  }
+  updateAgentWorkspace();
+}
+
 function normalizeAgentDeliveryChannel(value) {
   const text = String(value || "").toLowerCase();
   if (/\bwhats\s*app\b|\bwhatsapp\b/.test(text)) {
@@ -11369,6 +11653,11 @@ function pushAgentMessage(role, text, metadata = {}) {
 
   agent.messages.push(message);
   agent.messages = agent.messages.slice(-AGENT_MAX_MESSAGES);
+  syncActiveAgentChatFromWorkspace(agent, {
+    at: message.createdAt,
+    clientActivity: message.role === "user",
+    updatedAt: message.createdAt,
+  });
   return message;
 }
 
@@ -12572,6 +12861,120 @@ function renderAgentMessages() {
   elements.agentMessageList.replaceChildren(...visibleMessages.map(renderAgentMessage));
   if (shouldPinToBottom) {
     window.requestAnimationFrame(scrollAgentMessagesToBottom);
+  }
+}
+
+function getAgentChatTitle(chat) {
+  const explicitTitle = String(chat?.title || "").trim();
+  if (explicitTitle && explicitTitle.toLowerCase() !== "new chat") {
+    return explicitTitle;
+  }
+
+  const firstUserMessage = chat?.messages?.find((message) => message.role === "user");
+  const sourceText = String(firstUserMessage?.text || chat?.messages?.[0]?.text || "").trim();
+  if (!sourceText) {
+    return "New chat";
+  }
+  return sourceText.length > 46 ? `${sourceText.slice(0, 43).trim()}…` : sourceText;
+}
+
+function getAgentChatPreview(chat) {
+  const latestMessage = Array.isArray(chat?.messages) ? chat.messages.at(-1) : null;
+  const text = String(latestMessage?.text || "").trim();
+  if (!text) {
+    return "No messages yet.";
+  }
+  const speaker = latestMessage.role === "user" ? "You" : "Assistyca";
+  const preview = text.replace(/\s+/g, " ");
+  return `${speaker}: ${preview.length > 72 ? `${preview.slice(0, 69).trim()}…` : preview}`;
+}
+
+function formatAgentChatTime(chat) {
+  const timestamp = parseAgentTimestamp(chat?.updatedAt || chat?.createdAt);
+  if (!timestamp) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function createAgentChatItem(chat, activeChatId) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "agent-chat-item";
+  item.dataset.agentChatId = chat.id;
+  item.setAttribute("role", "listitem");
+  const isActive = chat.id === activeChatId;
+  item.classList.toggle("is-active", isActive);
+  item.setAttribute("aria-current", isActive ? "true" : "false");
+  item.setAttribute("aria-label", `${isActive ? "Current chat" : "Open chat"}: ${getAgentChatTitle(chat)}`);
+
+  const head = document.createElement("div");
+  head.className = "agent-chat-item-head";
+  const title = document.createElement("strong");
+  title.textContent = getAgentChatTitle(chat);
+  const badge = document.createElement("span");
+  badge.className = "agent-chat-status";
+  badge.textContent = isActive ? "Current" : "Saved";
+  head.append(title, badge);
+
+  const time = document.createElement("p");
+  time.className = "agent-chat-time";
+  time.textContent = formatAgentChatTime(chat);
+
+  const preview = document.createElement("p");
+  preview.className = "agent-chat-preview";
+  preview.textContent = getAgentChatPreview(chat);
+
+  item.append(head, time, preview);
+  return item;
+}
+
+function renderAgentChats() {
+  if (!elements.agentChatList) {
+    return;
+  }
+
+  const agent = getAgentWorkspace();
+  syncActiveAgentChatFromWorkspace(agent);
+  const chats = sortAgentChats(agent.chats);
+  if (!chats.length) {
+    const empty = document.createElement("p");
+    empty.className = "agent-action-empty";
+    empty.textContent = "Your chats will appear here.";
+    elements.agentChatList.replaceChildren(empty);
+    return;
+  }
+
+  elements.agentChatList.replaceChildren(
+    ...chats.map((chat) => createAgentChatItem(chat, agent.activeChatId)),
+  );
+}
+
+function syncAgentPanelModeControls() {
+  const mode = normalizeAgentPanelMode(state.agentPanelMode);
+  const isActions = mode === "actions";
+  elements.agentActionsListView?.classList.toggle("is-hidden", !isActions);
+  elements.agentChatsListView?.classList.toggle("is-hidden", isActions);
+  elements.agentActionDetailView?.classList.add("is-hidden");
+
+  const controls = [
+    [elements.agentPanelActionsModeButton, "actions"],
+    [elements.agentPanelChatsModeButton, "chats"],
+  ];
+  for (const [button, buttonMode] of controls) {
+    if (!button) {
+      continue;
+    }
+    const selected = mode === buttonMode;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
   }
 }
 
@@ -15318,6 +15721,8 @@ function updateAgentWorkspace() {
 
   renderAgentMessages();
   renderAgentActions();
+  renderAgentChats();
+  syncAgentPanelModeControls();
   if (elements.agentComposerInput) {
     elements.agentComposerInput.disabled = agentTurnBusy;
     elements.agentComposerInput.setAttribute("aria-busy", String(agentTurnBusy));
@@ -17119,9 +17524,12 @@ function setAgentToolsOpen(open) {
   elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
   if (elements.agentToolsToggleButton) {
     const upcomingCount = getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status)).length;
-    elements.agentToolsToggleButton.textContent = isOpen
-      ? "Close actions"
+    const closedLabel = state.agentPanelMode === "chats"
+      ? "View chats"
       : (upcomingCount ? `Actions (${upcomingCount})` : "View actions");
+    elements.agentToolsToggleButton.textContent = isOpen
+      ? "Close panel"
+      : closedLabel;
   }
 }
 
@@ -20932,7 +21340,13 @@ function refreshView() {
     }
 
     setView("app");
+    if (state.activeTab === "features" && !state.selectedFeatureId) {
+      recordAgentPortalOpened({ persist: false });
+    }
     renderApp();
+    if (state.activeTab === "features" && !state.selectedFeatureId) {
+      persistClientState();
+    }
     if (state.activeTab === "billing") {
       void refreshBillingReportForActiveTab();
     }
@@ -21208,6 +21622,7 @@ function completeSignIn(session) {
   clientState = loadClientState(activeEmail);
   applyRemoteAccountProfile(session);
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+  syncAgentStateFromClientState({ recordOpen: true, persistOpen: false });
   authSession = {
     email: activeEmail,
     token,
@@ -21356,6 +21771,7 @@ async function signOut() {
   activeEmail = "";
   clientState = loadClientState(activeEmail);
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+  syncAgentStateFromClientState();
   state.billingReport = null;
   state.billingLoading = false;
   state.billingError = "";
@@ -22065,6 +22481,7 @@ async function bootstrapAuthState() {
   activeEmail = normalizeEmail(storedSession?.email || authChallenge?.email || "");
   clientState = loadClientState("");
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+  syncAgentStateFromClientState();
 
   const applyRestoredSession = (response, fallbackSession = null) => {
     authSession = normalizeStoredSession({
@@ -22078,6 +22495,7 @@ async function bootstrapAuthState() {
     state.requestCountryCode = normalizeCountryCode(response.requestCountry || authSession?.requestCountry);
     activeEmail = normalizeEmail(authSession?.email || "");
     clientState = loadClientState(activeEmail);
+    syncAgentStateFromClientState({ recordOpen: true, persistOpen: false });
     resetAgentWorkspaceRemoteState({ loading: true });
     applyRemoteAccountProfile(response);
     state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
@@ -22168,6 +22586,7 @@ async function bootstrapAuthState() {
   state.requestCountryCode = normalizeCountryCode(storedSession?.requestCountry);
   clientState = loadClientState(activeEmail);
   state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
+  syncAgentStateFromClientState();
   state.billingReport = null;
   state.billingLoading = false;
   state.billingError = "";
@@ -22702,6 +23121,42 @@ function bindEvents() {
     });
   }
 
+  for (const button of [elements.agentPanelActionsModeButton, elements.agentPanelChatsModeButton]) {
+    if (!button) {
+      continue;
+    }
+    button.addEventListener("click", () => {
+      setAgentPanelMode(button.dataset.agentPanelMode || "actions");
+    });
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key)) {
+        return;
+      }
+      event.preventDefault();
+      const nextMode = event.key === "ArrowRight" ? "chats" : "actions";
+      setAgentPanelMode(nextMode);
+      const focusTarget = nextMode === "chats"
+        ? elements.agentPanelChatsModeButton
+        : elements.agentPanelActionsModeButton;
+      focusTarget?.focus();
+    });
+  }
+
+  if (elements.agentNewChatButton) {
+    elements.agentNewChatButton.addEventListener("click", startNewAgentChat);
+  }
+
+  if (elements.agentChatList) {
+    elements.agentChatList.addEventListener("click", (event) => {
+      const target = getEventTargetElement(event);
+      const item = target?.closest("[data-agent-chat-id]");
+      if (!item) {
+        return;
+      }
+      selectAgentChat(item.dataset.agentChatId || "");
+    });
+  }
+
   if (elements.agentAddToolButton) {
     elements.agentAddToolButton.addEventListener("click", () => {
       setAgentAddToolMenuOpen(!state.agentAddToolMenuOpen);
@@ -22740,6 +23195,9 @@ function bindEvents() {
   document.addEventListener("visibilitychange", () => {
     syncScheduledActionsPolling();
     if (document.visibilityState === "visible" && isSignedIn()) {
+      recordAgentPortalOpened();
+      renderAgentMessages();
+      renderAgentChats();
       void refreshScheduledActions();
     }
   });
