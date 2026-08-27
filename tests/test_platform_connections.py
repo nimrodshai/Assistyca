@@ -14,6 +14,7 @@ from unittest import mock
 
 from packages.infrastructure.credential_vault import CredentialVault
 from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_OAUTH_SCOPE
+from packages.infrastructure.portal_auth.server import GOOGLE_GMAIL_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_REVOKE_URL
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_TOKEN_URL
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -373,6 +374,88 @@ class PlatformConnectionTests(unittest.TestCase):
             decrypted = server.credential_vault.decrypt(raw)  # type: ignore[union-attr]
             self.assertIn("popup-refresh-token-that-stays-encrypted", decrypted)
             self.assertNotIn("popup-google-access-token", decrypted)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_gmail_oauth_code_post_saves_verified_email_connection(self) -> None:
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
+        except ImportError:
+            self.skipTest("cryptography is installed in deployment, not this minimal test environment")
+
+        db_path = Path(self.temp_dir.name) / "oauth-gmail-code.db"
+        key = base64.urlsafe_b64encode(b"0123456789abcdef0123456789abcdef").decode("ascii")
+        server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(
+                db_path=db_path,
+                credential_encryption_key=key,
+                google_oauth_client_id="google-client-id.apps.googleusercontent.com",
+                google_oauth_client_secret="google-client-secret",
+            ),
+        )
+        server.database.register_user("owner@example.com")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            cookie = self._cookie_for(server, base_url)
+
+            def fake_token_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+                self.assertEqual(timeout, 20)
+                self.assertEqual(request.full_url, GOOGLE_OAUTH_TOKEN_URL)
+                fields = urllib_parse.parse_qs(request.data.decode("utf-8"))  # type: ignore[union-attr]
+                self.assertEqual(fields["grant_type"], ["authorization_code"])
+                self.assertEqual(fields["code"], ["popup-gmail-code"])
+                self.assertEqual(fields["redirect_uri"], [base_url])
+                return _JsonResponse({
+                    "access_token": "popup-google-gmail-access-token",
+                    "refresh_token": "popup-gmail-refresh-token-that-stays-encrypted",
+                    "scope": GOOGLE_GMAIL_OAUTH_SCOPE,
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                })
+
+            def fake_gmail_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+                self.assertEqual(timeout, 20)
+                self.assertTrue(request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"))
+                self.assertEqual(request.get_header("Authorization"), "Bearer popup-google-gmail-access-token")
+                return _JsonResponse({"messages": [], "resultSizeEstimate": 0})
+
+            request = urllib_request.Request(
+                f"{base_url}/api/oauth/google/calendar/code",
+                data=json.dumps({"code": "popup-gmail-code", "scopes": ["gmail"]}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Cookie": cookie,
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                method="POST",
+            )
+            opener = urllib_request.build_opener()
+            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_token_urlopen):
+                with mock.patch("packages.infrastructure.gmail_summary.urllib_request.urlopen", side_effect=fake_gmail_urlopen):
+                    with opener.open(request, timeout=5) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertTrue(payload["ok"])
+            self.assertIn("Gmail connected", payload["message"])
+            self.assertEqual(payload["connection"]["platform"], "email")
+            self.assertEqual(payload["connection"]["authType"], "oauth")
+            self.assertEqual(payload["connection"]["connectionStatus"], "connected")
+            self.assertEqual(payload["connection"]["metadata"]["provider"], "google_gmail")
+            self.assertEqual(payload["connection"]["metadata"]["scope"], GOOGLE_GMAIL_OAUTH_SCOPE)
+            self.assertNotIn("popup-gmail-refresh-token-that-stays-encrypted", json.dumps(payload))
+
+            with sqlite3.connect(str(db_path)) as database:
+                raw = database.execute("SELECT secret_ciphertext FROM platform_connections").fetchone()[0]
+            decrypted = server.credential_vault.decrypt(raw)  # type: ignore[union-attr]
+            self.assertIn("popup-gmail-refresh-token-that-stays-encrypted", decrypted)
+            self.assertNotIn("popup-google-gmail-access-token", decrypted)
         finally:
             server.shutdown()
             server.server_close()

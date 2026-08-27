@@ -64,6 +64,10 @@ from packages.infrastructure.credential_vault import credential_hint
 from packages.infrastructure.credential_vault import normalize_platform_connection_metadata
 from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
 from packages.infrastructure.feature_activation import FeatureActivationService
+from packages.infrastructure.gmail_summary import GmailAccessValidator
+from packages.infrastructure.gmail_summary import GmailAuthorizationError
+from packages.infrastructure.gmail_summary import GmailDigestRunner
+from packages.infrastructure.gmail_summary import GmailSummaryError
 from packages.infrastructure.openai_api import OpenAIConfigurationError
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import call_openai_response
@@ -182,12 +186,29 @@ PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is 
 GOOGLE_CALENDAR_OAUTH_PLATFORM = "calendar"
 GOOGLE_CALENDAR_OAUTH_PROVIDER = "google_calendar"
 GOOGLE_CALENDAR_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
+GOOGLE_GMAIL_OAUTH_PLATFORM = "email"
+GOOGLE_GMAIL_OAUTH_PROVIDER = "google_gmail"
+GOOGLE_GMAIL_OAUTH_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GOOGLE_OAUTH_SCOPE_BY_ID = {
+    "calendar": GOOGLE_CALENDAR_OAUTH_SCOPE,
+    "gmail": GOOGLE_GMAIL_OAUTH_SCOPE,
+    "email": GOOGLE_GMAIL_OAUTH_SCOPE,
+}
+GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID = {
+    "calendar": GOOGLE_CALENDAR_OAUTH_PLATFORM,
+    "gmail": GOOGLE_GMAIL_OAUTH_PLATFORM,
+}
+GOOGLE_OAUTH_PROVIDER_BY_SCOPE_ID = {
+    "calendar": GOOGLE_CALENDAR_OAUTH_PROVIDER,
+    "gmail": GOOGLE_GMAIL_OAUTH_PROVIDER,
+}
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_OAUTH_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60
 GOOGLE_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
-GOOGLE_OAUTH_SECRET_TYPE = "google_calendar_refresh_token"
+GOOGLE_OAUTH_SECRET_TYPE = "google_refresh_token"
+GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE = "google_calendar_refresh_token"
 AGENT_SECRET_PATTERNS = (
     re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._-]{24,}\b", re.IGNORECASE),
@@ -2335,7 +2356,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/oauth/google/calendar/start":
-            self._handle_google_calendar_oauth_start()
+            self._handle_google_calendar_oauth_start(parsed)
             return
 
         if path == "/api/oauth/google/calendar/callback":
@@ -2519,11 +2540,108 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def _handle_google_calendar_oauth_start(self) -> None:
+    def _normalize_google_oauth_scope_ids(
+        self,
+        value: Any,
+        *,
+        default: tuple[str, ...] = ("calendar",),
+    ) -> tuple[str, ...]:
+        raw_tokens: list[str] = []
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                raw_tokens.extend(re.split(r"[\s,]+", normalize_text(item)))
+        else:
+            raw_tokens.extend(re.split(r"[\s,]+", normalize_text(value)))
+
+        aliases = {
+            "calendar": "calendar",
+            "calendar-events": "calendar",
+            "calendar-events-readonly": "calendar",
+            GOOGLE_CALENDAR_OAUTH_SCOPE: "calendar",
+            "email": "gmail",
+            "gmail": "gmail",
+            "gmail-readonly": "gmail",
+            GOOGLE_GMAIL_OAUTH_SCOPE: "gmail",
+        }
+        scope_ids: list[str] = []
+        for token in raw_tokens:
+            normalized = aliases.get(normalize_text(token).lower())
+            if normalized and normalized not in scope_ids:
+                scope_ids.append(normalized)
+
+        if not scope_ids:
+            scope_ids = [
+                scope_id
+                for scope_id in default
+                if scope_id in GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID
+            ]
+        return tuple(scope_ids or ("calendar",))
+
+    def _google_oauth_scope_ids_from_query(
+        self,
+        parsed: urllib_parse.ParseResult,
+        *,
+        default: tuple[str, ...] = ("calendar",),
+    ) -> tuple[str, ...]:
+        query = urllib_parse.parse_qs(parsed.query)
+        raw_scopes = (
+            query.get("scopes")
+            or query.get("scopeIds")
+            or query.get("scope_ids")
+            or query.get("scope")
+            or []
+        )
+        return self._normalize_google_oauth_scope_ids(raw_scopes, default=default)
+
+    def _google_oauth_scope_text(self, scope_ids: tuple[str, ...]) -> str:
+        scopes = [
+            GOOGLE_OAUTH_SCOPE_BY_ID[scope_id]
+            for scope_id in scope_ids
+            if scope_id in GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID
+        ]
+        return " ".join(scopes)
+
+    def _granted_google_oauth_scope_ids(
+        self,
+        granted_scope: str,
+        requested_scope_ids: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        granted_scopes = {
+            normalize_text(scope)
+            for scope in re.split(r"\s+", normalize_text(granted_scope))
+            if normalize_text(scope)
+        }
+        # Google can omit `scope` from token responses in some mocked or
+        # provider-edge cases; trust the just-requested set then.
+        if not granted_scopes:
+            return requested_scope_ids
+        return tuple(
+            scope_id
+            for scope_id in requested_scope_ids
+            if GOOGLE_OAUTH_SCOPE_BY_ID.get(scope_id) in granted_scopes
+        )
+
+    def _google_oauth_connected_message(self, connections: list[dict[str, Any]]) -> str:
+        platforms = {
+            normalize_text(connection.get("platform")).lower()
+            for connection in connections
+            if isinstance(connection, dict)
+        }
+        if GOOGLE_CALENDAR_OAUTH_PLATFORM in platforms and GOOGLE_GMAIL_OAUTH_PLATFORM in platforms:
+            return "Google Calendar and Gmail connected with read-only access."
+        if GOOGLE_GMAIL_OAUTH_PLATFORM in platforms:
+            return "Gmail connected with read-only access. You can use it for email digest actions."
+        if GOOGLE_CALENDAR_OAUTH_PLATFORM in platforms:
+            return "Calendar connected. You can run meeting summaries with read-only Google Calendar access."
+        return "Google connected with the selected read-only access."
+
+    def _handle_google_calendar_oauth_start(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
         if session is None:
             return
 
+        scope_ids = self._google_oauth_scope_ids_from_query(parsed)
+        scope_text = self._google_oauth_scope_text(scope_ids)
         config_error = self._google_calendar_oauth_config_error()
         redirect_uri = self._google_calendar_oauth_redirect_uri()
         if config_error:
@@ -2533,20 +2651,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "message": config_error,
                 "redirectUri": redirect_uri,
                 "popupRedirectUri": self._google_calendar_oauth_popup_redirect_uri(),
-                "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
+                "scope": scope_text,
+                "scopeIds": list(scope_ids),
             })
             return
 
         try:
-            state = self._build_google_calendar_oauth_state(session)
+            state = self._build_google_calendar_oauth_state(session, scope_ids=scope_ids)
         except ValueError:
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
                 "ok": False,
                 "error": "google_oauth_not_configured",
-                "message": "Session signing is not configured, so Google Calendar cannot be connected yet.",
+                "message": "Session signing is not configured, so Google cannot be connected yet.",
                 "redirectUri": redirect_uri,
                 "popupRedirectUri": self._google_calendar_oauth_popup_redirect_uri(),
-                "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
+                "scope": scope_text,
+                "scopeIds": list(scope_ids),
             })
             return
 
@@ -2554,7 +2674,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "client_id": normalize_text(self.config.google_oauth_client_id),
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
+            "scope": scope_text,
             "access_type": "offline",
             "include_granted_scopes": "true",
             "prompt": "consent",
@@ -2568,7 +2688,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "mode": "google_identity_services",
             "popupRedirectUri": self._google_calendar_oauth_popup_redirect_uri(),
             "redirectUri": redirect_uri,
-            "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
+            "scope": scope_text,
+            "scopeIds": list(scope_ids),
         })
 
     def _handle_google_calendar_oauth_callback(self, parsed: urllib_parse.ParseResult) -> None:
@@ -2594,13 +2715,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._redirect(self._google_calendar_oauth_return_url("error", config_error))
             return
 
-        _, state_error = self._verify_google_calendar_oauth_state(
+        state_payload, state_error = self._verify_google_calendar_oauth_state(
             (query.get("state") or [""])[0],
             session,
         )
         if state_error:
             self._redirect(self._google_calendar_oauth_return_url("error", state_error))
             return
+        scope_ids = self._normalize_google_oauth_scope_ids(
+            state_payload.get("scopeIds") if isinstance(state_payload, dict) else "",
+            default=("calendar",),
+        )
 
         code = normalize_text((query.get("code") or [""])[0])
         if not code:
@@ -2612,26 +2737,30 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         try:
             token_payload = self._exchange_google_calendar_oauth_code(code)
-            connection = self._save_google_calendar_oauth_connection(session, token_payload)
+            connections = self._save_google_oauth_connections(session, token_payload, scope_ids=scope_ids)
             print(json.dumps({
-                "event": "google_calendar_oauth_connected",
+                "event": "google_oauth_connected",
                 "userEmail": session.email,
-                "connectionId": normalize_text(connection.get("id")) if isinstance(connection, dict) else "",
+                "connectionIds": [
+                    normalize_text(connection.get("id"))
+                    for connection in connections
+                    if isinstance(connection, dict)
+                ],
                 "source": "redirect_callback",
             }))
-        except (CredentialVaultError, CalendarAuthorizationError, CalendarSummaryError) as exc:
+        except (CredentialVaultError, CalendarAuthorizationError, CalendarSummaryError, GmailAuthorizationError, GmailSummaryError) as exc:
             self._redirect(self._google_calendar_oauth_return_url("error", str(exc)))
             return
         except Exception:
             self._redirect(self._google_calendar_oauth_return_url(
                 "error",
-                "Calendar could not be connected right now. Try again in a moment.",
+                "Google could not be connected right now. Try again in a moment.",
             ))
             return
 
         self._redirect(self._google_calendar_oauth_return_url(
             "success",
-            "Calendar connected. You can run meeting summaries with read-only Google Calendar access.",
+            self._google_oauth_connected_message(connections),
         ))
 
     def _handle_google_calendar_oauth_code_post(self) -> None:
@@ -2680,6 +2809,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        scope_ids = self._normalize_google_oauth_scope_ids(
+            payload.get("scopes")
+            or payload.get("scopeIds")
+            or payload.get("scope_ids")
+            or payload.get("scope"),
+            default=("calendar",),
+        )
         code = normalize_text(payload.get("code"))
         if not code:
             json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -2694,71 +2830,113 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 code,
                 redirect_uri=self._google_calendar_oauth_popup_redirect_uri(),
             )
-            connection = self._save_google_calendar_oauth_connection(session, token_payload)
-        except (CredentialVaultError, CalendarAuthorizationError, CalendarSummaryError) as exc:
+            connections = self._save_google_oauth_connections(session, token_payload, scope_ids=scope_ids)
+        except (CredentialVaultError, CalendarAuthorizationError, CalendarSummaryError, GmailAuthorizationError, GmailSummaryError) as exc:
             json_response(self, HTTPStatus.BAD_GATEWAY, {
                 "ok": False,
-                "error": exc.code if isinstance(exc, CalendarSummaryError) else "google_calendar_oauth_failed",
+                "error": normalize_text(getattr(exc, "code", "")) or "google_oauth_failed",
                 "message": str(exc),
             })
             return
         except Exception:
             json_response(self, HTTPStatus.BAD_GATEWAY, {
                 "ok": False,
-                "error": "google_calendar_oauth_failed",
-                "message": "Calendar could not be connected right now. Try again in a moment.",
+                "error": "google_oauth_failed",
+                "message": "Google could not be connected right now. Try again in a moment.",
             })
             return
 
         print(json.dumps({
-            "event": "google_calendar_oauth_connected",
+            "event": "google_oauth_connected",
             "userEmail": session.email,
-            "connectionId": normalize_text(connection.get("id")) if isinstance(connection, dict) else "",
+            "connectionIds": [
+                normalize_text(connection.get("id"))
+                for connection in connections
+                if isinstance(connection, dict)
+            ],
             "source": "gis_popup_code",
         }))
+        connection = connections[0] if connections else {}
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "message": "Calendar connected. You can run meeting summaries with read-only Google Calendar access.",
+            "message": self._google_oauth_connected_message(connections),
             "connection": connection,
+            "connections": connections,
         })
+
+    def _save_google_oauth_connections(
+        self,
+        session: PortalSession,
+        token_payload: dict[str, Any],
+        *,
+        scope_ids: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        requested_scope_ids = self._normalize_google_oauth_scope_ids(scope_ids, default=("calendar",))
+        access_token = normalize_text(token_payload.get("access_token"))
+        refresh_token = normalize_text(token_payload.get("refresh_token"))
+        granted_scope = normalize_text(token_payload.get("scope"))
+        if not access_token:
+            raise CalendarAuthorizationError("Google did not return a usable access token. Try connecting Google again.")
+        if not refresh_token:
+            raise CalendarAuthorizationError(
+                "Google did not return long-lived access. Try connecting again and approve offline access."
+            )
+
+        granted_scope_ids = self._granted_google_oauth_scope_ids(granted_scope, requested_scope_ids)
+        if not granted_scope_ids:
+            raise CalendarAuthorizationError("Google did not grant the selected read-only access. Try connecting Google again.")
+
+        validation_results: dict[str, dict[str, Any]] = {}
+        if "calendar" in granted_scope_ids:
+            CalendarSummaryRunner().run(access_token, time_window="today", timezone_name="UTC")
+            validation_results["calendar"] = {"calendarValidation": "ok"}
+        if "gmail" in granted_scope_ids:
+            validation_results["gmail"] = GmailAccessValidator().validate(access_token)
+
+        if self.credential_vault is None:
+            raise CredentialVaultError("Secure connection storage is not available, so Google could not be saved.")
+
+        secret_payload = self._build_google_oauth_secret(refresh_token)
+        encrypted_secret = self.credential_vault.encrypt(secret_payload)
+        secret_fingerprint = self.credential_vault.fingerprint(refresh_token)
+        now = datetime.now(timezone.utc).isoformat()
+        connections: list[dict[str, Any]] = []
+        for scope_id in granted_scope_ids:
+            platform = GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID[scope_id]
+            provider = GOOGLE_OAUTH_PROVIDER_BY_SCOPE_ID[scope_id]
+            connection = self.database.save_platform_connection(
+                session.email,
+                platform=platform,
+                auth_type="oauth",
+                secret_ciphertext=encrypted_secret,
+                secret_hint="Google OAuth",
+                key_version=self.credential_vault.key_version,
+                secret_fingerprint=secret_fingerprint,
+                metadata={
+                    "provider": provider,
+                    "authFlow": "google_oauth",
+                    "validationStatus": "verified",
+                    "scope": GOOGLE_OAUTH_SCOPE_BY_ID[scope_id],
+                    "grantedScope": granted_scope,
+                    "validatedAt": now,
+                    **validation_results.get(scope_id, {}),
+                },
+                connection_status="connected",
+            )
+            connections.append(connection)
+        return connections
 
     def _save_google_calendar_oauth_connection(
         self,
         session: PortalSession,
         token_payload: dict[str, Any],
     ) -> dict[str, Any]:
-        access_token = normalize_text(token_payload.get("access_token"))
-        refresh_token = normalize_text(token_payload.get("refresh_token"))
-        granted_scope = normalize_text(token_payload.get("scope"))
-        if not access_token:
-            raise CalendarAuthorizationError("Google did not return a usable Calendar access token. Try connecting Calendar again.")
-        if not refresh_token:
-            raise CalendarAuthorizationError(
-                "Google did not return long-lived Calendar access. Try connecting again and approve offline access."
-            )
-        CalendarSummaryRunner().run(access_token, time_window="today", timezone_name="UTC")
-        if self.credential_vault is None:
-            raise CredentialVaultError("Secure connection storage is not available, so Calendar could not be saved.")
-        secret_payload = self._build_google_calendar_oauth_secret(refresh_token)
-        encrypted_secret = self.credential_vault.encrypt(secret_payload)
-        return self.database.save_platform_connection(
-            session.email,
-            platform=GOOGLE_CALENDAR_OAUTH_PLATFORM,
-            auth_type="oauth",
-            secret_ciphertext=encrypted_secret,
-            secret_hint="Google OAuth",
-            key_version=self.credential_vault.key_version,
-            secret_fingerprint=self.credential_vault.fingerprint(refresh_token),
-            metadata={
-                "provider": GOOGLE_CALENDAR_OAUTH_PROVIDER,
-                "authFlow": "google_oauth",
-                "validationStatus": "verified",
-                "scope": GOOGLE_CALENDAR_OAUTH_SCOPE,
-                "grantedScope": granted_scope,
-                "validatedAt": datetime.now(timezone.utc).isoformat(),
-            },
-            connection_status="connected",
+        connections = self._save_google_oauth_connections(
+            session,
+            token_payload,
+            scope_ids=("calendar",),
         )
+        return connections[0] if connections else {}
 
     def _handle_platform_connection_post(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -2890,10 +3068,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         revocation_warning = ""
         provider_revoked = False
-        if (
-            connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM
+        google_oauth_platforms = {GOOGLE_CALENDAR_OAUTH_PLATFORM, GOOGLE_GMAIL_OAUTH_PLATFORM}
+        is_google_oauth_connection = (
+            connection_record.get("platform") in google_oauth_platforms
             and connection_record.get("authType") == "oauth"
-        ):
+        )
+        shared_google_grant_count = self.database.count_platform_connections_with_secret_fingerprint(
+            session.email,
+            connection_record.get("secretFingerprint", ""),
+        ) if is_google_oauth_connection else 0
+        if is_google_oauth_connection and shared_google_grant_count <= 1:
             provider_revoked, revocation_warning = self._revoke_google_calendar_connection(
                 connection_record.get("secretCiphertext", ""),
             )
@@ -2910,21 +3094,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        message = (
-            "Google Calendar was disconnected and its saved credential was removed."
-            if connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM
-            else f"{connection_record.get('platform', 'App').replace('_', ' ').title()} was disconnected."
-        )
+        if connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM:
+            message = "Google Calendar was disconnected and its saved credential was removed."
+        elif connection_record.get("platform") == GOOGLE_GMAIL_OAUTH_PLATFORM and connection_record.get("authType") == "oauth":
+            message = "Gmail was disconnected and its saved credential was removed."
+        else:
+            message = f"{connection_record.get('platform', 'App').replace('_', ' ').title()} was disconnected."
         if revocation_warning:
             message = f"{message} {revocation_warning}"
         response_payload: dict[str, Any] = {
             "ok": True,
             "message": message,
         }
-        if (
-            connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM
-            and connection_record.get("authType") == "oauth"
-        ):
+        if is_google_oauth_connection:
             response_payload["providerRevoked"] = provider_revoked
         json_response(self, HTTPStatus.OK, response_payload)
 
@@ -3390,7 +3572,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         proposal_type = normalize_text(payload.get("proposalType") or payload.get("proposal_type")).lower()
-        if proposal_type != "calendar-summary":
+        if proposal_type not in {"calendar-summary", "email-digest"}:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
                 "error": "proposal_runner_not_found",
@@ -3399,11 +3581,117 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-        time_window = normalize_text(fields.get("timeWindow") or payload.get("timeWindow")) or "next week"
-        calendar_label = normalize_text(fields.get("calendar") or payload.get("calendar")) or "connected calendar"
         delivery_channel = normalize_text(
             payload.get("deliveryChannel") or fields.get("deliveryChannel")
         ).lower()
+        if proposal_type == "email-digest":
+            if delivery_channel and delivery_channel not in {"portal", "chat", "this chat", "workspace"}:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "delivery_not_supported",
+                    "message": "This Gmail digest runner currently delivers into this chat. Choose “This chat” in the action editor and run it again.",
+                })
+                return
+
+            ciphertext = self.database.get_platform_connection_ciphertext(
+                session.email,
+                GOOGLE_GMAIL_OAUTH_PLATFORM,
+                include_statuses=("connected", "needs_attention"),
+            )
+            vault = self.credential_vault
+            if not ciphertext or vault is None:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "gmail_setup_required",
+                    "message": "Gmail is not ready for reading messages. Open Email setup and reconnect Gmail with read-only access, then try again.",
+                })
+                return
+
+            try:
+                stored_gmail_secret = vault.decrypt(ciphertext)
+                access_token, credential_source = self._resolve_gmail_access_token(stored_gmail_secret)
+            except CredentialVaultError:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "gmail_setup_required",
+                    "message": "The saved Gmail connection could not be opened securely. Reconnect Gmail and try again.",
+                })
+                return
+            except GmailAuthorizationError as exc:
+                self.database.update_platform_connection_status(
+                    session.email,
+                    platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
+                    connection_status="needs_attention",
+                    metadata_updates={
+                        "provider": GOOGLE_GMAIL_OAUTH_PROVIDER,
+                        "validationStatus": "failed",
+                        "validatedAt": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": exc.code,
+                    "message": str(exc),
+                })
+                return
+
+            gmail_query = normalize_text(
+                fields.get("gmailQuery")
+                or fields.get("query")
+                or payload.get("gmailQuery")
+                or payload.get("query")
+                or "in:inbox newer_than:1d"
+            ) or "in:inbox newer_than:1d"
+            try:
+                result = GmailDigestRunner().run(access_token, query=gmail_query)
+            except GmailAuthorizationError as exc:
+                self.database.update_platform_connection_status(
+                    session.email,
+                    platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
+                    connection_status="needs_attention",
+                    metadata_updates={
+                        "provider": GOOGLE_GMAIL_OAUTH_PROVIDER,
+                        "validationStatus": "failed",
+                        "validatedAt": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": exc.code,
+                    "message": str(exc),
+                })
+                return
+            except GmailSummaryError as exc:
+                json_response(self, HTTPStatus.BAD_GATEWAY, {
+                    "ok": False,
+                    "error": exc.code,
+                    "message": str(exc),
+                })
+                return
+
+            self.database.update_platform_connection_status(
+                session.email,
+                platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
+                connection_status="connected",
+                metadata_updates={
+                    "provider": GOOGLE_GMAIL_OAUTH_PROVIDER,
+                    "validationStatus": "verified",
+                    "credentialSource": credential_source,
+                    "validatedAt": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": str(result.get("message") or "Gmail digest complete."),
+                "summary": str(result.get("summary") or result.get("message") or ""),
+                "messageCount": int(result.get("messageCount") or 0),
+                "items": result.get("items") if isinstance(result.get("items"), list) else [],
+                "mailbox": "Gmail",
+            })
+            return
+
+        time_window = normalize_text(fields.get("timeWindow") or payload.get("timeWindow")) or "next week"
+        calendar_label = normalize_text(fields.get("calendar") or payload.get("calendar")) or "connected calendar"
         # The portal is the only delivery target implemented by this runner;
         # external delivery should be added as an explicit provider integration.
         if delivery_channel and delivery_channel not in {"portal", "chat", "this chat", "workspace"}:
@@ -4937,7 +5225,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def _google_calendar_oauth_config_error(self) -> str:
         if self.credential_vault is None:
-            return "Secure connection storage is not available, so Google Calendar cannot be connected yet."
+            return "Secure connection storage is not available, so Google cannot be connected yet."
         if not normalize_text(self.config.google_oauth_client_id):
             return "Google OAuth client ID is not configured yet."
         if not normalize_text(self.config.google_oauth_client_secret):
@@ -4962,11 +5250,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
         return f"{self._base64url_encode(body)}.{self._base64url_encode(signature)}"
 
-    def _build_google_calendar_oauth_state(self, session: PortalSession) -> str:
+    def _build_google_calendar_oauth_state(
+        self,
+        session: PortalSession,
+        *,
+        scope_ids: tuple[str, ...] = ("calendar",),
+    ) -> str:
         token_hash = hashlib.sha256(session.token.encode("utf-8")).hexdigest()
         return self._sign_google_calendar_oauth_state({
             "version": 1,
-            "provider": GOOGLE_CALENDAR_OAUTH_PROVIDER,
+            "provider": "google",
+            "scopeIds": list(self._normalize_google_oauth_scope_ids(scope_ids)),
             "email": session.email,
             "sessionHash": token_hash,
             "issuedAt": int(time.time()),
@@ -4994,7 +5288,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None, "The Google sign-in response could not be read."
         if not isinstance(payload, dict):
             return None, "The Google sign-in response was invalid."
-        if normalize_text(payload.get("provider")) != GOOGLE_CALENDAR_OAUTH_PROVIDER:
+        if normalize_text(payload.get("provider")) not in {"google", GOOGLE_CALENDAR_OAUTH_PROVIDER}:
             return None, "The Google sign-in response was for another connection."
         if normalize_email(payload.get("email")) != normalize_email(session.email):
             return None, "The Google sign-in response was for another user."
@@ -5081,7 +5375,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "your Google Account permissions to finish."
             )
 
-        if not isinstance(parsed, dict) or normalize_text(parsed.get("type")) != GOOGLE_OAUTH_SECRET_TYPE:
+        if (
+            not isinstance(parsed, dict)
+            or normalize_text(parsed.get("type")) not in {GOOGLE_OAUTH_SECRET_TYPE, GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE}
+        ):
             return False, (
                 "Google could not confirm revocation automatically. Remove Assistyca from "
                 "your Google Account permissions to finish."
@@ -5135,10 +5432,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "grant_type": "authorization_code",
         })
 
-    def _refresh_google_calendar_access_token(self, refresh_token: str) -> str:
+    def _refresh_google_access_token(self, refresh_token: str, *, access_label: str = "Google") -> str:
         if not normalize_text(self.config.google_oauth_client_id) or not normalize_text(self.config.google_oauth_client_secret):
             raise CalendarAuthorizationError(
-                "Calendar access needs attention: Google OAuth is not configured on the server. Add the Google client ID and secret, then reconnect Calendar."
+                f"{access_label} access needs attention: Google OAuth is not configured on the server. Add the Google client ID and secret, then reconnect Google."
             )
         payload = self._post_google_oauth_token_request({
             "refresh_token": normalize_text(refresh_token),
@@ -5148,15 +5445,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
         access_token = normalize_text(payload.get("access_token"))
         if not access_token:
-            raise CalendarAuthorizationError("Google did not return a usable Calendar access token. Reconnect Calendar and try again.")
+            raise CalendarAuthorizationError(f"Google did not return a usable {access_label} access token. Reconnect Google and try again.")
         return access_token
 
-    def _build_google_calendar_oauth_secret(self, refresh_token: str) -> str:
+    def _refresh_google_calendar_access_token(self, refresh_token: str) -> str:
+        return self._refresh_google_access_token(refresh_token, access_label="Calendar")
+
+    def _build_google_oauth_secret(self, refresh_token: str) -> str:
         return json.dumps({
             "type": GOOGLE_OAUTH_SECRET_TYPE,
-            "provider": GOOGLE_CALENDAR_OAUTH_PROVIDER,
+            "provider": "google",
             "refreshToken": normalize_text(refresh_token),
         }, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    def _build_google_calendar_oauth_secret(self, refresh_token: str) -> str:
+        return self._build_google_oauth_secret(refresh_token)
 
     def _resolve_calendar_access_token(self, decrypted_secret: str) -> tuple[str, str]:
         value = normalize_text(decrypted_secret)
@@ -5170,12 +5473,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return value, "manual_access_token"
         if not isinstance(parsed, dict):
             return value, "manual_access_token"
-        if normalize_text(parsed.get("type")) != GOOGLE_OAUTH_SECRET_TYPE:
+        if normalize_text(parsed.get("type")) not in {GOOGLE_OAUTH_SECRET_TYPE, GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE}:
             return value, "manual_access_token"
         refresh_token = normalize_text(parsed.get("refreshToken") or parsed.get("refresh_token"))
         if not refresh_token:
             raise CalendarAuthorizationError("Calendar access needs attention: the saved Google refresh token is missing. Reconnect Calendar.")
         return self._refresh_google_calendar_access_token(refresh_token), "google_oauth_refresh_token"
+
+    def _resolve_gmail_access_token(self, decrypted_secret: str) -> tuple[str, str]:
+        value = normalize_text(decrypted_secret)
+        if not value:
+            raise GmailAuthorizationError(
+                "Gmail access needs attention: no usable credential is saved. Reconnect Gmail with Google, then run it again."
+            )
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value, "manual_access_token"
+        if not isinstance(parsed, dict):
+            return value, "manual_access_token"
+        if normalize_text(parsed.get("type")) not in {GOOGLE_OAUTH_SECRET_TYPE, GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE}:
+            return value, "manual_access_token"
+        refresh_token = normalize_text(parsed.get("refreshToken") or parsed.get("refresh_token"))
+        if not refresh_token:
+            raise GmailAuthorizationError("Gmail access needs attention: the saved Google refresh token is missing. Reconnect Gmail.")
+        try:
+            return self._refresh_google_access_token(refresh_token, access_label="Gmail"), "google_oauth_refresh_token"
+        except CalendarAuthorizationError as exc:
+            raise GmailAuthorizationError(str(exc)) from exc
 
     def _normalize_digits(self, value: Any) -> str:
         return re.sub(r"\D+", "", str(value or ""))

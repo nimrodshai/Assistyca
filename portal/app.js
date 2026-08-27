@@ -140,6 +140,7 @@ const DEFAULT_MONITOR_SETTINGS = {
   watchItems: [],
   manualOnly: true,
   runMode: "manual",
+  actionLifecycleStatus: "active",
   intervalDays: 7,
   intervalMinutes: 0,
   scheduleTimeLocal: "",
@@ -417,36 +418,36 @@ const GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE = "https://www.googleapis.com/auth/c
 const GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
   {
-    id: "calendar-events-readonly",
+    id: "calendar",
+    platformId: "calendar",
     label: "Calendar events",
     detail: "Read event titles, times, attendees, and locations when an action runs.",
     scope: GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE,
-    stateLabel: "Requested now",
-    checked: true,
-    disabled: true,
+    stateLabel: "Optional",
+    requiredFor: ["calendar"],
   },
   {
-    id: "gmail-readonly",
+    id: "gmail",
+    platformId: "email",
     label: "Email summaries",
-    detail: "Read email for digest actions. Add this later when the email summary flow is ready.",
+    detail: "Read Gmail messages for digest actions.",
     scope: GOOGLE_GMAIL_READONLY_SCOPE,
-    stateLabel: "Available later",
-    checked: false,
-    disabled: true,
+    stateLabel: "Optional",
+    requiredFor: ["email"],
   },
 ];
 const AGENT_ADD_TOOL_OPTIONS = [
   {
     id: "email",
     label: "Email",
-    detail: "Connect your email account",
+    detail: "Connect Gmail summaries",
     icon: "email",
     platformId: "email",
   },
   {
     id: "calendar",
     label: "Google",
-    detail: "Calendar now; more access later",
+    detail: "Connect Calendar or Gmail",
     icon: "google",
     platformId: "calendar",
   },
@@ -481,10 +482,10 @@ const PLATFORM_CONNECTION_OPTIONS = AGENT_ADD_TOOL_OPTIONS
     icon: option.icon,
     authType: option.id === "telegram"
       ? "bot_token"
-      : (option.id === "calendar" ? "oauth" : "api_token"),
+      : (["calendar", "email"].includes(option.id) ? "oauth" : "api_token"),
     credentialLabel: option.id === "slack"
       ? "Slack bot token"
-      : (option.id === "calendar" ? "Google access" : `${option.label} token`),
+      : (["calendar", "email"].includes(option.id) ? "Google access" : `${option.label} token`),
   }));
 const PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is not available yet, so no token was saved.";
 const AGENT_BLUEPRINTS = {
@@ -1235,6 +1236,7 @@ let monitorManualRunCancellationError = "";
 let monitorManualRunOverlayVisible = false;
 const monitorActionRunBusy = new Set();
 const localActionRunBusy = new Set();
+const agentActionLifecycleBusy = new Set();
 let reengagementDemoRunBusy = false;
 let reengagementDemoRunTargetId = "";
 let reengagementDemoRunRequestId = "";
@@ -3630,6 +3632,24 @@ function normalizeMonitorManualOnly(value, fallback = DEFAULT_MONITOR_SETTINGS.m
   return Boolean(fallback);
 }
 
+function normalizeMonitorActionLifecycleStatus(value, fallback = DEFAULT_MONITOR_SETTINGS.actionLifecycleStatus) {
+  const fallbackText = String(fallback || DEFAULT_MONITOR_SETTINGS.actionLifecycleStatus).trim().toLowerCase();
+  const safeFallback = ["active", "paused", "removed"].includes(fallbackText)
+    ? fallbackText
+    : DEFAULT_MONITOR_SETTINGS.actionLifecycleStatus;
+  const text = String(value ?? "").trim().toLowerCase();
+  if (["active", "running", "live", "enabled", "on"].includes(text)) {
+    return "active";
+  }
+  if (["paused", "stopped", "inactive", "disabled", "off", "halted"].includes(text)) {
+    return "paused";
+  }
+  if (["removed", "deleted", "cancelled", "canceled", "hidden"].includes(text)) {
+    return "removed";
+  }
+  return safeFallback;
+}
+
 function normalizeMonitorIntervalDays(value, fallback = DEFAULT_MONITOR_SETTINGS.intervalDays) {
   const parsedFallback = Number.parseInt(fallback, 10);
   const safeFallback = Number.isFinite(parsedFallback)
@@ -3895,6 +3915,12 @@ function normalizeFeatureMonitorSettings(settings = {}) {
     watchItems: normalizeMonitorWatchItems(source.watchItems || source.searchPrompt || ""),
     manualOnly,
     runMode: manualOnly ? "manual" : "recurring",
+    actionLifecycleStatus: normalizeMonitorActionLifecycleStatus(
+      source.actionLifecycleStatus
+        || source.action_lifecycle_status
+        || source.lifecycleStatus
+        || source.lifecycle_status,
+    ),
     intervalMinutes,
     intervalDays: Number.isFinite(intervalDays)
       ? normalizeMonitorIntervalDays(intervalDays)
@@ -4451,6 +4477,47 @@ function getPlatformConnectionByPlatform(platform) {
   return state.platformConnections.find((connection) => connection.platform === normalized) || null;
 }
 
+function isGoogleOAuthPlatformConnectionReady(platform, provider = "") {
+  const connection = getPlatformConnectionByPlatform(platform);
+  const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
+  return Boolean(
+    connection
+    && connection.connectionStatus === "connected"
+    && connection.authType === "oauth"
+    && (!provider || metadata.provider === provider)
+  );
+}
+
+function isGmailConnectionReady() {
+  return isGoogleOAuthPlatformConnectionReady("email", "google_gmail");
+}
+
+function isCalendarConnectionReady() {
+  return getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected";
+}
+
+function clearGoogleConnectionMissingCredentials() {
+  const gmailConnected = isGmailConnectionReady();
+  const calendarConnected = isCalendarConnectionReady();
+  let changed = false;
+  for (const proposal of getAgentWorkspace().proposals) {
+    if (proposal.type === "email-digest" && proposal.missingCredential && gmailConnected) {
+      proposal.missingCredential = "";
+      proposal.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+    if (proposal.type === "calendar-summary" && proposal.missingCredential && calendarConnected) {
+      proposal.missingCredential = "";
+      proposal.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) {
+    persistClientState();
+  }
+  return changed;
+}
+
 async function refreshPlatformConnections(options = {}) {
   if (!isSignedIn()) {
     state.platformConnections = [];
@@ -4479,6 +4546,7 @@ async function refreshPlatformConnections(options = {}) {
       ? response.connections.map(normalizePlatformConnection).filter((connection) => connection.platform)
       : [];
     state.platformConnectionsLoadedAt = Date.now();
+    clearGoogleConnectionMissingCredentials();
     return state.platformConnections;
   } finally {
     if (requestToken === String(authSession?.token || "")) {
@@ -4940,7 +5008,18 @@ function createCalendarOAuthStatusNode() {
   return { status, setStatus };
 }
 
-function createGoogleOAuthPermissionList() {
+function getGoogleOAuthPermissionState(scopeOption, option) {
+  const optionId = String(option?.id || "").trim().toLowerCase();
+  const required = Array.isArray(scopeOption.requiredFor) && scopeOption.requiredFor.includes(optionId);
+  const connected = getPlatformConnectionByPlatform(scopeOption.platformId)?.connectionStatus === "connected";
+  return {
+    checked: required || connected,
+    disabled: required,
+    stateLabel: required ? "Required" : (connected ? "Connected" : "Optional"),
+  };
+}
+
+function createGoogleOAuthPermissionList(option) {
   const wrapper = document.createElement("div");
   wrapper.className = "calendar-oauth-permissions";
 
@@ -4951,14 +5030,16 @@ function createGoogleOAuthPermissionList() {
   list.className = "calendar-oauth-permission-list";
 
   for (const scopeOption of GOOGLE_CONNECTION_SCOPE_OPTIONS) {
+    const permissionState = getGoogleOAuthPermissionState(scopeOption, option);
     const item = document.createElement("label");
     item.className = "calendar-oauth-permission";
-    item.classList.toggle("is-disabled", Boolean(scopeOption.disabled && !scopeOption.checked));
+    item.classList.toggle("is-disabled", Boolean(permissionState.disabled && !permissionState.checked));
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = Boolean(scopeOption.checked);
-    checkbox.disabled = Boolean(scopeOption.disabled);
+    checkbox.checked = Boolean(permissionState.checked);
+    checkbox.disabled = Boolean(permissionState.disabled);
+    checkbox.dataset.googleScopeId = scopeOption.id;
     checkbox.dataset.googleScope = scopeOption.scope;
 
     const copy = document.createElement("span");
@@ -4970,7 +5051,7 @@ function createGoogleOAuthPermissionList() {
     label.textContent = scopeOption.label;
     const stateLabel = document.createElement("span");
     stateLabel.className = "calendar-oauth-permission-badge";
-    stateLabel.textContent = scopeOption.stateLabel;
+    stateLabel.textContent = permissionState.stateLabel;
     row.append(label, stateLabel);
 
     const detail = document.createElement("span");
@@ -4985,6 +5066,13 @@ function createGoogleOAuthPermissionList() {
   return wrapper;
 }
 
+function getSelectedGoogleOAuthScopeIds(container) {
+  return Array.from(container?.querySelectorAll("input[data-google-scope-id]") || [])
+    .filter((input) => input.checked)
+    .map((input) => String(input.dataset.googleScopeId || "").trim())
+    .filter(Boolean);
+}
+
 function openCalendarOAuthConnection(option) {
   const connection = getPlatformConnectionByPlatform(option.id);
   const connectionStatus = getPlatformConnectionStatus(connection);
@@ -4993,17 +5081,25 @@ function openCalendarOAuthConnection(option) {
   const body = document.createElement("div");
   body.className = "calendar-oauth-flow";
   const primaryLabel = "Sign in with Google";
+  const isEmailConnection = option.id === "email";
+  const setupTitle = isEmailConnection ? "Connect Gmail" : "Connect Google";
+  const assistantSuccessMessage = isEmailConnection
+    ? "Gmail is connected with read-only access. You can use it for email digest actions."
+    : "Google is connected with the selected read-only access. You can use it in actions.";
 
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
-  intro.textContent = "Sign in with Google so Assistyca can use the permissions shown below. Today it only asks for read-only Calendar events; more Google permissions can be added later.";
+  intro.textContent = isEmailConnection
+    ? "Sign in with Google so Assistyca can read Gmail for email digest actions."
+    : "Sign in with Google so Assistyca can use the selected read-only Google permissions.";
 
   const { status, setStatus } = createCalendarOAuthStatusNode();
   if (!storageAvailable) {
     setStatus("error", "Storage unavailable", storageMessage);
   }
 
-  body.append(intro, createGoogleOAuthPermissionList(), status);
+  const permissionList = createGoogleOAuthPermissionList(option);
+  body.append(intro, permissionList, status);
   const disconnectButton = createPlatformConnectionDisconnectButton(option, connection);
   if (disconnectButton) {
     body.append(disconnectButton);
@@ -5013,7 +5109,7 @@ function openCalendarOAuthConnection(option) {
   let fallbackAuthUrl = "";
   const restoreInitialAlertChrome = () => {
     if (elements.authAlertTitle) {
-      elements.authAlertTitle.textContent = "Connect Google";
+      elements.authAlertTitle.textContent = setupTitle;
     }
     if (elements.authAlertMessage) {
       elements.authAlertMessage.textContent = "Choose the Google access Assistyca can use.";
@@ -5026,6 +5122,11 @@ function openCalendarOAuthConnection(option) {
   };
   const startOAuth = async () => {
     if (starting || !storageAvailable) {
+      return;
+    }
+    const selectedScopeIds = getSelectedGoogleOAuthScopeIds(permissionList);
+    if (!selectedScopeIds.length) {
+      setStatus("error", "Choose access", "Select at least one Google permission to continue.");
       return;
     }
     starting = true;
@@ -5052,7 +5153,8 @@ function openCalendarOAuthConnection(option) {
     }
     setCalendarOAuthPrimaryButton("Opening Google", { loading: true });
     try {
-      const response = await apiRequest("/api/oauth/google/calendar/start", {
+      const query = encodeURIComponent(selectedScopeIds.join(","));
+      const response = await apiRequest(`/api/oauth/google/calendar/start?scopes=${query}`, {
         method: "GET",
         headers: getSessionAuthHeaders(),
         timeoutMs: 20000,
@@ -5089,14 +5191,21 @@ function openCalendarOAuthConnection(option) {
       const saveResponse = await apiRequest("/api/oauth/google/calendar/code", {
         method: "POST",
         headers: exchangeHeaders,
-        body: { code: authorization.code },
+        body: { code: authorization.code, scopes: selectedScopeIds },
         timeoutMs: 30000,
       });
-      if (saveResponse.connection) {
+      const savedConnections = Array.isArray(saveResponse.connections)
+        ? saveResponse.connections.map(normalizePlatformConnection).filter((savedConnection) => savedConnection.platform)
+        : saveResponse.connection
+          ? [normalizePlatformConnection(saveResponse.connection)].filter((savedConnection) => savedConnection.platform)
+          : [];
+      if (savedConnections.length) {
+        const savedPlatforms = new Set(savedConnections.map((savedConnection) => savedConnection.platform));
         state.platformConnections = [
-          normalizePlatformConnection(saveResponse.connection),
-          ...state.platformConnections.filter((savedConnection) => savedConnection.platform !== "calendar"),
+          ...savedConnections,
+          ...state.platformConnections.filter((savedConnection) => !savedPlatforms.has(savedConnection.platform)),
         ];
+        clearGoogleConnectionMissingCredentials();
       }
       try {
         await refreshPlatformConnections({ render: false });
@@ -5114,7 +5223,7 @@ function openCalendarOAuthConnection(option) {
           returnFocus: elements.agentAddToolButton,
         },
       );
-      pushAgentMessage("assistant", "Google is connected with read-only Calendar access. You can ask me to summarize meetings or use Calendar in actions.");
+      pushAgentMessage("assistant", saveResponse.message || assistantSuccessMessage);
       persistAgentWorkspace("Google connected through OAuth.");
     } catch (requestError) {
       const errorCode = normalizeText(requestError?.code);
@@ -5134,7 +5243,7 @@ function openCalendarOAuthConnection(option) {
         : {};
       const redirectUri = normalizeText(payload.redirectUri);
       const popupRedirectUri = normalizeText(payload.popupRedirectUri);
-      const message = formatApiErrorMessage(requestError, "Google Calendar OAuth is not configured yet.");
+      const message = formatApiErrorMessage(requestError, "Google OAuth is not configured yet.");
       const lowerMessage = message.toLowerCase();
       const needsServerEnv = lowerMessage.includes("client id") || lowerMessage.includes("client secret");
       const setupHint = needsServerEnv
@@ -5157,7 +5266,7 @@ function openCalendarOAuthConnection(option) {
   };
 
   openAuthAlert(
-    "Connect Google",
+    setupTitle,
     "Choose the Google access Assistyca can use.",
     {
       eyebrow: "Google",
@@ -5182,7 +5291,7 @@ function openPlatformConnection(optionId) {
     return;
   }
 
-  if (option.id === "calendar") {
+  if (option.id === "calendar" || option.id === "email") {
     openCalendarOAuthConnection(option);
     return;
   }
@@ -8393,7 +8502,7 @@ function consumeCalendarOAuthReturn() {
 
   const succeeded = status === "success";
   const message = rawMessage || (succeeded
-    ? "Google is connected with read-only Calendar access."
+    ? "Google is connected with the selected read-only access."
     : "Google could not be connected. Try again from Google setup.");
 
   openAuthAlert(
@@ -8409,7 +8518,7 @@ function consumeCalendarOAuthReturn() {
   );
 
   if (succeeded) {
-    pushAgentMessage("assistant", "Google is connected with read-only Calendar access. You can ask me to summarize meetings or use Calendar in actions.");
+    pushAgentMessage("assistant", message);
     persistAgentWorkspace("Google connected through OAuth.");
   }
 }
@@ -11673,7 +11782,8 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   const relatedFeatureId = blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp"
     ? WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
     : blueprint.relatedFeatureId;
-  const calendarConnected = getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected";
+  const calendarConnected = isCalendarConnectionReady();
+  const gmailConnected = isGmailConnectionReady();
   let missingCredential = blueprint.missingCredential;
   if (blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp") {
     missingCredential = isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
@@ -11682,6 +11792,8 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   } else if (blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
     missingCredential = "";
   } else if (blueprint.type === "calendar-summary" && calendarConnected) {
+    missingCredential = "";
+  } else if (blueprint.type === "email-digest" && gmailConnected) {
     missingCredential = "";
   }
   const proposal = normalizeAgentProposal({
@@ -11713,7 +11825,7 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   });
 
   const requestedManualOnly = agentWebMonitorTextSuggestsManualOnly(text)
-    || (blueprint.type === "calendar-summary" && !extractAgentFrequencyField(text));
+    || (["calendar-summary", "email-digest"].includes(blueprint.type) && !extractAgentFrequencyField(text));
   if (requestedManualOnly) {
     proposal.details = {
       ...proposal.details,
@@ -12349,12 +12461,92 @@ function getAgentQuestionFieldIndexByKey(proposal, key) {
   return schema.findIndex((field) => field?.key === key);
 }
 
+function getAgentQuestionContextText(proposal, questionText = "") {
+  const fields = getAgentProposalFieldMap(proposal);
+  const fieldText = Object.values(fields)
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return [
+    proposal?.requestText,
+    proposal?.summary,
+    ...fieldText,
+    questionText,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function isAgentRunModeQuestionText(value = "") {
+  const text = String(value || "").toLowerCase();
+  return (
+    /\b(?:just once|one[-\s]?time|run once|once)\b/.test(text)
+    && /\b(?:schedule|repeat|recur|recurring|again)\b/.test(text)
+  );
+}
+
+function agentContextSuggestsMonthlyBatchTask(proposal, questionText = "") {
+  const text = getAgentQuestionContextText(proposal, questionText);
+  const monthNamePattern = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+  const hasBatchObject = /\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?|summar(?:y|ies|ize|ise)|digests?|bookkeeping|reconciliation)\b/.test(text);
+  const hasRelativeMonthlyWindow = /\b(?:monthly|month|last month|this month|next month|previous month|current month)\b/.test(text);
+  const hasNamedMonthWindow = new RegExp(`\\b(?:from|for|during|in)\\s+${monthNamePattern}(?:\\s+\\d{4})?\\b`).test(text)
+    || new RegExp(`\\b${monthNamePattern}(?:\\s+\\d{4})?\\s+(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|reports?)\\b`).test(text);
+  const hasMonthlyWindow = hasRelativeMonthlyWindow || hasNamedMonthWindow;
+  const hasBatchVerb = /\b(?:collect|pull|gather|fetch|find|search|export|summarize|summarise|prepare|get|send)\b/.test(text);
+  return hasBatchObject && hasMonthlyWindow && hasBatchVerb;
+}
+
+function getAgentMonthlyBatchScheduleActions(includeOneTime = false) {
+  const actions = includeOneTime
+    ? [createAgentAction("choose", "Just once", "just once")]
+    : [];
+  actions.push(createAgentAction(
+    "choose",
+    "Monthly",
+    "monthly, at the beginning of the next month",
+  ));
+  return actions;
+}
+
+function getAgentContextualQuestionActions(proposal, questionIndex = 0, questionText = "") {
+  if (proposal?.type === "scheduled-message") {
+    return [];
+  }
+  const schema = getAgentProposalFieldSchema(proposal);
+  const field = schema[Math.max(0, Number(questionIndex || 0))];
+  const isMonthlyBatchTask = agentContextSuggestsMonthlyBatchTask(proposal, questionText);
+
+  if (isAgentRunModeQuestionText(questionText)) {
+    return isMonthlyBatchTask
+      ? getAgentMonthlyBatchScheduleActions(true)
+      : [
+        createAgentAction("choose", "Just once", "just once"),
+        createAgentAction("choose", "On a schedule", "on a schedule"),
+      ];
+  }
+
+  if (field?.key === "frequency" && isMonthlyBatchTask) {
+    return getAgentMonthlyBatchScheduleActions(false);
+  }
+
+  return [];
+}
+
 function getAgentQuestionFieldIndexFromText(proposal, questionText = "") {
   if (proposal?.type === "scheduled-message") {
     return -1;
   }
   const text = String(questionText || "").toLowerCase();
   const findKey = (key) => getAgentQuestionFieldIndexByKey(proposal, key);
+
+  if (isAgentRunModeQuestionText(text)) {
+    const frequencyIndex = findKey("frequency");
+    if (frequencyIndex >= 0) {
+      return frequencyIndex;
+    }
+  }
 
   if (/\b(?:how often|frequency|cadence|daily|weekly|monthly|hourly|every\s+\d+|every day|every week|every month)\b/.test(text)) {
     const frequencyIndex = findKey("frequency");
@@ -12435,6 +12627,10 @@ function getAgentQuestionActions(proposal, questionIndex = 0, questionText = "")
   }
 
   const field = getAgentProposalFieldSchema(proposal)[index];
+  const contextualActions = getAgentContextualQuestionActions(proposal, index, questionText);
+  if (contextualActions.length) {
+    return contextualActions;
+  }
   return Array.isArray(field?.actions)
     ? field.actions.map((action) => (
       typeof action === "string"
@@ -13411,6 +13607,12 @@ function normalizeScheduledAction(action = {}) {
 function normalizeSourceAction(action = {}) {
   const sourceType = String(action.sourceType || "").trim().toLowerCase();
   const id = Math.max(0, Number(action.id || 0));
+  const statusText = String(action.status || "active").trim().toLowerCase();
+  const normalizedStatus = statusText === "cancelled" || statusText === "canceled"
+    ? "cancelled"
+    : statusText === "paused" || statusText === "stopped"
+      ? "paused"
+      : "running";
   const payload = {
     source: "source_action",
     sourceActionId: id,
@@ -13436,14 +13638,14 @@ function normalizeSourceAction(action = {}) {
     recipientRef: "",
     runAt: String(action.nextRunAt || "").trim(),
     timezone: String(action.timezone || getWorkspaceTimeZone()).trim(),
-    status: String(action.status || "active").trim().toLowerCase() === "cancelled" ? "cancelled" : (String(action.status || "active").trim().toLowerCase() === "running" ? "running" : "pending"),
+    status: normalizedStatus,
     attemptCount: Number(action.runCount || 0),
     providerMessageId: "",
     payload,
     local: true,
     lastError: String(action.lastError || "").trim(),
     claimedAt: String(action.claimedAt || "").trim(),
-    completedAt: String(action.status || "").trim().toLowerCase() === "cancelled" ? String(action.updatedAt || "") : "",
+    completedAt: normalizedStatus === "cancelled" ? String(action.updatedAt || "") : "",
     createdAt: String(action.createdAt || "").trim(),
     updatedAt: String(action.updatedAt || "").trim(),
   };
@@ -13492,6 +13694,51 @@ function isAgentLocalAction(action) {
   );
 }
 
+function getAgentActionSourceActionId(action) {
+  return Math.max(0, Number(action?.payload?.sourceActionId || 0));
+}
+
+function getAgentActionBackendFeatureId(action) {
+  return String(action?.payload?.backendFeatureId || "").trim()
+    || getAgentFeatureIdFromLocalActionId(action?.id);
+}
+
+function getAgentActionLifecycleBusyKey(action) {
+  const sourceActionId = getAgentActionSourceActionId(action);
+  if (sourceActionId) {
+    return `source:${sourceActionId}`;
+  }
+  const featureId = getAgentActionBackendFeatureId(action);
+  if (featureId) {
+    return `feature:${featureId}`;
+  }
+  return String(action?.id || "").trim();
+}
+
+function isAgentActionLifecycleBusy(action) {
+  const key = getAgentActionLifecycleBusyKey(action);
+  return Boolean(key && agentActionLifecycleBusy.has(key));
+}
+
+function isAgentLifecycleActionPaused(action) {
+  return getScheduledActionStatusClass(action?.status) === "paused";
+}
+
+function canToggleAgentActionLifecycle(action) {
+  if (!isAgentLocalAction(action) || normalizeMonitorManualOnly(action?.payload?.manualOnly, false)) {
+    return false;
+  }
+  const statusClass = getScheduledActionStatusClass(action?.status);
+  if (!["running", "paused"].includes(statusClass)) {
+    return false;
+  }
+  return Boolean(
+    getAgentActionSourceActionId(action)
+    || getAgentActionBackendFeatureId(action)
+    || isAgentProposalLocalAction(action)
+  );
+}
+
 function getAgentProposalFieldValue(proposal, key) {
   const fields = proposal?.fields && typeof proposal.fields === "object" ? proposal.fields : {};
   return String(fields[key] || "").trim();
@@ -13501,6 +13748,40 @@ function getAgentProposalExecutionSettings(proposal) {
   return proposal?.executionPlan?.settings && typeof proposal.executionPlan.settings === "object"
     ? proposal.executionPlan.settings
     : {};
+}
+
+function getAgentProposalLifecycleStatus(proposal) {
+  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
+  const executionPlan = proposal?.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {};
+  const settings = executionPlan.settings && typeof executionPlan.settings === "object" ? executionPlan.settings : {};
+  return normalizeMonitorActionLifecycleStatus(
+    details.actionLifecycleStatus
+      || details.action_lifecycle_status
+      || executionPlan.actionLifecycleStatus
+      || executionPlan.action_lifecycle_status
+      || settings.actionLifecycleStatus
+      || settings.action_lifecycle_status,
+  );
+}
+
+function setAgentProposalLifecycleStatus(proposal, lifecycleStatus) {
+  if (!proposal) {
+    return;
+  }
+  const normalizedStatus = normalizeMonitorActionLifecycleStatus(lifecycleStatus);
+  proposal.details = {
+    ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
+    actionLifecycleStatus: normalizedStatus,
+  };
+  proposal.executionPlan = {
+    ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
+    actionLifecycleStatus: normalizedStatus,
+    settings: {
+      ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
+      actionLifecycleStatus: normalizedStatus,
+    },
+  };
+  proposal.updatedAt = new Date().toISOString();
 }
 
 function agentWebMonitorTextSuggestsManualOnly(value) {
@@ -13797,9 +14078,16 @@ function createAgentProposalLocalAction(proposal) {
   const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
   const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
   const manualOnly = getAgentProposalManualOnly(proposal, backendFeature);
+  const lifecycleStatus = getAgentProposalLifecycleStatus(proposal);
   const status = backendFeatureId
-    ? (backendFeatureActive ? (manualOnly ? "manual_only" : "running") : "cancelled")
-    : (proposal.missingCredential ? "pending" : (manualOnly ? "manual_only" : "running"));
+    ? (backendFeatureActive ? (manualOnly ? "manual_only" : "running") : (manualOnly ? "cancelled" : "paused"))
+    : (
+      lifecycleStatus === "removed"
+        ? "cancelled"
+        : lifecycleStatus === "paused" && !manualOnly
+          ? "paused"
+          : (proposal.missingCredential ? "pending" : (manualOnly ? "manual_only" : "running"))
+    );
   return {
     id: `proposal:${proposal.id}`,
     actionType: `agent_${String(proposal.type || "helper").replace(/[^a-zA-Z0-9]+/g, "_")}`,
@@ -13826,6 +14114,7 @@ function createAgentProposalLocalAction(proposal) {
         ? "manual only"
         : (proposal.executionPlan?.frequency || getAgentProposalFieldValue(proposal, "frequency")),
       manualOnly,
+      actionLifecycleStatus: lifecycleStatus,
       deliveryChannel,
       deliveryTarget,
       deliveryLabel,
@@ -13834,9 +14123,9 @@ function createAgentProposalLocalAction(proposal) {
       initialRunError: String(proposal.executionPlan?.initialRunError || "").trim(),
     },
     local: true,
-    lastError: backendFeatureId && !backendFeatureActive ? "The connected tool is turned off." : "",
+    lastError: backendFeatureId && !backendFeatureActive && manualOnly ? "The connected tool is turned off." : "",
     claimedAt: "",
-    completedAt: backendFeatureId && !backendFeatureActive ? String(backendFeature?.deactivatedAt || proposal.updatedAt || approvedAt) : "",
+    completedAt: backendFeatureId && !backendFeatureActive && manualOnly ? String(backendFeature?.deactivatedAt || proposal.updatedAt || approvedAt) : "",
     createdAt: approvedAt,
     updatedAt: String(proposal.updatedAt || approvedAt),
   };
@@ -13870,12 +14159,34 @@ function getMonitorFeatureDeliveryTarget(settings = {}, deliveryChannel = "") {
   return getConnectedPlatformAddress(deliveryChannel);
 }
 
+function getMonitorFeatureActionLifecycleStatus(settings = {}) {
+  return normalizeMonitorActionLifecycleStatus(
+    settings.actionLifecycleStatus
+      || settings.action_lifecycle_status
+      || settings.lifecycleStatus
+      || settings.lifecycle_status,
+  );
+}
+
+function hasMonitorFeatureActionSettings(feature, settings = getSavedFeatureSettings(feature)) {
+  return Boolean(
+    normalizeMonitorWatchItems(settings.watchItems).length
+    || String(feature?.settingsSavedAt || feature?.setupStatus?.settingsSavedAt || "").trim()
+    || String(feature?.activatedAt || feature?.deactivatedAt || "").trim()
+  );
+}
+
 function createMonitorFeatureLiveAction(feature) {
-  if (!feature || !isMonitorFeature(feature) || !isFeatureActivated(feature)) {
+  if (!feature || !isMonitorFeature(feature)) {
     return null;
   }
 
   const settings = getSavedFeatureSettings(feature);
+  const lifecycleStatus = getMonitorFeatureActionLifecycleStatus(settings);
+  const backendFeatureActive = isFeatureActivated(feature);
+  if (!backendFeatureActive && (lifecycleStatus === "removed" || !hasMonitorFeatureActionSettings(feature, settings))) {
+    return null;
+  }
   const manualOnly = normalizeMonitorManualOnly(settings.manualOnly);
   const deliveryChannel = normalizeAgentDeliveryChannel(settings.deliveryChannel) || "email";
   const deliveryTarget = getMonitorFeatureDeliveryTarget(settings, deliveryChannel);
@@ -13900,19 +14211,20 @@ function createMonitorFeatureLiveAction(feature) {
     recipientRef: deliveryTarget || deliveryChannel,
     runAt: nextRunAt,
     timezone: getMonitorScheduleTimezone(feature),
-    status: manualOnly ? "manual_only" : "running",
+    status: manualOnly ? "manual_only" : (backendFeatureActive ? "running" : "paused"),
     attemptCount: 0,
     providerMessageId: "",
     payload: {
       source: "feature",
       backendFeatureId: feature.id,
-      backendFeatureActive: true,
+      backendFeatureActive,
       title: "Web monitor",
       preview: getMonitorFeatureLiveActionPreview(feature, settings),
       summary: String(feature.description || "").trim(),
       watchItems,
       frequency: formatAgentWebMonitorFrequency(settings),
       manualOnly,
+      actionLifecycleStatus: lifecycleStatus,
       deliveryChannel,
       deliveryTarget,
       deliveryLabel,
@@ -13921,7 +14233,7 @@ function createMonitorFeatureLiveAction(feature) {
       nextRunAt,
     },
     local: true,
-    lastError: "",
+    lastError: backendFeatureActive ? "" : "This action is paused.",
     claimedAt: "",
     completedAt: "",
     createdAt,
@@ -13955,11 +14267,29 @@ function getRenderableAgentActions() {
 }
 
 function isActiveAgentActionStatus(status) {
-  return ["pending", "running", "manual_only"].includes(String(status || "").trim().toLowerCase());
+  return ["pending", "running", "manual_only", "paused"].includes(String(status || "").trim().toLowerCase());
 }
 
 function canCancelAgentAction(action) {
   return isActiveAgentActionStatus(action?.status);
+}
+
+function appendAgentActionButton(actions, options = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = String(options.className || "ghost-button small").trim();
+  button.textContent = String(options.text || "").trim();
+  button.disabled = Boolean(options.disabled);
+  button.setAttribute("aria-busy", String(Boolean(options.busy)));
+  if (options.ariaLabel) {
+    button.setAttribute("aria-label", options.ariaLabel);
+  }
+  const dataset = options.dataset && typeof options.dataset === "object" ? options.dataset : {};
+  Object.entries(dataset).forEach(([key, value]) => {
+    button.dataset[key] = String(value);
+  });
+  actions.append(button);
+  return button;
 }
 
 function createAgentActionDetailActions(action) {
@@ -13969,72 +14299,94 @@ function createAgentActionDetailActions(action) {
 
   const actions = document.createElement("div");
   actions.className = "agent-action-detail-actions";
-  const featureId = String(action?.payload?.backendFeatureId || "").trim();
-  const sourceActionId = Number(action?.payload?.sourceActionId || 0);
-  if (sourceActionId) {
-    const runButton = document.createElement("button");
-    runButton.type = "button";
-    runButton.className = "primary-button small agent-action-run-button";
-    runButton.dataset.agentRunSourceAction = String(sourceActionId);
-    runButton.textContent = "Run now";
-    runButton.setAttribute("aria-label", "Run source action now");
-    actions.append(runButton);
+  const featureId = getAgentActionBackendFeatureId(action);
+  const sourceActionId = getAgentActionSourceActionId(action);
+  const paused = isAgentLifecycleActionPaused(action);
+  const lifecycleBusy = isAgentActionLifecycleBusy(action);
+  if (sourceActionId && !paused) {
+    appendAgentActionButton(actions, {
+      className: "primary-button small agent-action-run-button",
+      text: "Run now",
+      ariaLabel: "Run source action now",
+      dataset: { agentRunSourceAction: sourceActionId },
+    });
   }
   if (isAgentProposalLocalAction(action) && action.payload?.manualOnly) {
-    const runButton = document.createElement("button");
-    runButton.type = "button";
-    runButton.className = "primary-button small agent-action-run-button";
     const actionId = String(action.id || "");
     const isBusy = localActionRunBusy.has(actionId);
     const backendFeatureId = String(action.payload?.backendFeatureId || "").trim();
+    const dataset = {};
     if (backendFeatureId && action.actionType === "agent_web_monitor") {
-      runButton.dataset.agentRunMonitorAction = backendFeatureId;
+      dataset.agentRunMonitorAction = backendFeatureId;
     } else {
-      runButton.dataset.agentRunLocalAction = actionId;
+      dataset.agentRunLocalAction = actionId;
     }
-    runButton.textContent = isBusy ? "Running…" : "Run now";
-    runButton.disabled = isBusy;
-    runButton.setAttribute("aria-busy", String(isBusy));
-    runButton.setAttribute("aria-label", `Run ${getScheduledActionTitle(action)} now`);
-    actions.append(runButton);
+    appendAgentActionButton(actions, {
+      className: "primary-button small agent-action-run-button",
+      text: isBusy ? "Running…" : "Run now",
+      disabled: isBusy,
+      busy: isBusy,
+      ariaLabel: `Run ${getScheduledActionTitle(action)} now`,
+      dataset,
+    });
   }
-  if (isAgentFeatureLiveAction(action) && action.actionType === "agent_web_monitor" && featureId) {
-    const runButton = document.createElement("button");
-    runButton.type = "button";
-    runButton.className = "primary-button small agent-action-run-button";
-    runButton.dataset.agentRunMonitorAction = featureId;
+  if (isAgentFeatureLiveAction(action) && action.actionType === "agent_web_monitor" && featureId && !paused) {
     const isBusy = monitorActionRunBusy.has(featureId);
-    runButton.textContent = isBusy ? "Running…" : "Run now";
-    runButton.disabled = isBusy;
-    runButton.setAttribute("aria-busy", String(isBusy));
-    runButton.setAttribute("aria-label", `${isBusy ? "Running" : "Run"} ${getScheduledActionTitle(action)} now`);
-    actions.append(runButton);
+    appendAgentActionButton(actions, {
+      className: "primary-button small agent-action-run-button",
+      text: isBusy ? "Running…" : "Run now",
+      disabled: isBusy,
+      busy: isBusy,
+      ariaLabel: `${isBusy ? "Running" : "Run"} ${getScheduledActionTitle(action)} now`,
+      dataset: { agentRunMonitorAction: featureId },
+    });
   }
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ghost-button small agent-action-danger-button";
+
+  if (canToggleAgentActionLifecycle(action)) {
+    const actionId = String(action.id || "");
+    const nextLabel = paused ? "Resume" : "Stop";
+    const busyText = paused ? "Resuming…" : "Stopping…";
+    const dataset = {};
+    if (sourceActionId) {
+      dataset[paused ? "agentResumeSourceAction" : "agentStopSourceAction"] = sourceActionId;
+    } else {
+      dataset[paused ? "agentResumeLocalAction" : "agentStopLocalAction"] = actionId;
+    }
+    appendAgentActionButton(actions, {
+      className: `${paused ? "primary-button" : "ghost-button"} small agent-action-stop-button`,
+      text: lifecycleBusy ? busyText : nextLabel,
+      disabled: lifecycleBusy,
+      busy: lifecycleBusy,
+      ariaLabel: `${nextLabel} ${getScheduledActionTitle(action)}`,
+      dataset,
+    });
+  }
 
   if (isAgentLocalAction(action)) {
-    button.dataset.agentRemoveLocalAction = String(action.id || "");
-    const hasBackendFeature = Boolean(String(action.payload?.backendFeatureId || "").trim());
     if (sourceActionId) {
-      button.dataset.agentRemoveSourceAction = String(sourceActionId);
-      button.textContent = "Remove action";
-      button.setAttribute("aria-label", "Remove source action");
-      actions.append(button);
+      appendAgentActionButton(actions, {
+        className: "ghost-button small agent-action-danger-button",
+        text: "Remove action",
+        ariaLabel: "Remove source action",
+        dataset: { agentRemoveSourceAction: sourceActionId },
+      });
       return actions;
     }
-    const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(action.payload?.manualOnly, false);
-    const removeAction = !hasBackendFeature || isManualOnly;
-    button.textContent = removeAction ? "Remove action" : "Turn off action";
-    button.setAttribute("aria-label", `${removeAction ? "Remove" : "Turn off"} ${getScheduledActionTitle(action)}`);
+    appendAgentActionButton(actions, {
+      className: "ghost-button small agent-action-danger-button",
+      text: "Remove action",
+      ariaLabel: `Remove ${getScheduledActionTitle(action)}`,
+      dataset: { agentRemoveLocalAction: String(action.id || "") },
+    });
   } else {
-    button.dataset.agentCancelScheduledAction = String(action.id || "");
-    button.textContent = "Cancel action";
-    button.setAttribute("aria-label", `Cancel ${getScheduledActionTitle(action)}`);
+    appendAgentActionButton(actions, {
+      className: "ghost-button small agent-action-danger-button",
+      text: "Cancel action",
+      ariaLabel: `Cancel ${getScheduledActionTitle(action)}`,
+      dataset: { agentCancelScheduledAction: String(action.id || "") },
+    });
   }
 
-  actions.append(button);
   return actions;
 }
 
@@ -14042,6 +14394,7 @@ function getScheduledActionStatusLabel(status, action = null) {
   const labels = {
     pending: "Scheduled",
     running: "Sending",
+    paused: "Paused",
     sent: "Sent",
     delivered: "Delivered",
     read: "Read",
@@ -14054,7 +14407,10 @@ function getScheduledActionStatusLabel(status, action = null) {
       return "Manual";
     }
     if (normalized === "running") {
-      return "Working";
+      return "Live";
+    }
+    if (normalized === "paused") {
+      return "Paused";
     }
     if (normalized === "pending") {
       return "Ready";
@@ -14065,7 +14421,7 @@ function getScheduledActionStatusLabel(status, action = null) {
 
 function getScheduledActionStatusClass(status) {
   const normalized = String(status || "pending").trim().toLowerCase();
-  return ["pending", "running", "manual_only", "sent", "delivered", "read", "failed", "cancelled"].includes(normalized)
+  return ["pending", "running", "paused", "manual_only", "sent", "delivered", "read", "failed", "cancelled"].includes(normalized)
     ? normalized
     : "unknown";
 }
@@ -14116,8 +14472,13 @@ function createScheduledActionStatus(action) {
     && action.actionType === "agent_web_monitor"
     && featureId
     && monitorActionRunBusy.has(featureId);
-  status.className = `agent-action-status is-${isRunBusy ? "run-busy" : statusClass}`;
-  status.textContent = isRunBusy ? "Running" : getScheduledActionStatusLabel(action.status, action);
+  const isLifecycleBusy = isAgentActionLifecycleBusy(action);
+  status.className = `agent-action-status is-${isRunBusy ? "run-busy" : isLifecycleBusy ? "lifecycle-busy" : statusClass}`;
+  status.textContent = isRunBusy
+    ? "Running"
+    : isLifecycleBusy
+      ? (isAgentLifecycleActionPaused(action) ? "Resuming" : "Stopping")
+      : getScheduledActionStatusLabel(action.status, action);
   return status;
 }
 
@@ -14145,12 +14506,13 @@ function sortScheduledActionsByCreatedAt(actions) {
 
 function getScheduledActionItemSignature(action) {
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
+  const hideTime = Boolean(action.payload?.manualOnly) || getScheduledActionStatusClass(action.status) === "paused";
   return JSON.stringify([
     action.id,
     getScheduledActionTitle(action),
     getScheduledActionStatusClass(action.status),
     getScheduledActionStatusLabel(action.status, action),
-    action.payload?.manualOnly ? "manual" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
+    hideTime ? "" : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone),
     String(action.payload?.frequency || ""),
     String(action.payload?.lastRunAt || ""),
     String(action.payload?.lastRunStatus || ""),
@@ -14158,6 +14520,7 @@ function getScheduledActionItemSignature(action) {
     Array.isArray(action.payload?.watchItems) ? action.payload.watchItems.join("|") : "",
     getAgentDeliveryOptionsSignature(),
     String(monitorActionRunBusy.has(featureId)),
+    String(isAgentActionLifecycleBusy(action)),
   ]);
 }
 
@@ -14221,13 +14584,14 @@ function renderScheduledActionItemContent(item, action) {
 
   const time = document.createElement("span");
   time.className = "agent-action-item-time";
-  time.textContent = action.payload?.manualOnly
+  const hideTime = Boolean(action.payload?.manualOnly) || statusClass === "paused";
+  time.textContent = hideTime
     ? ""
     : formatScheduledActionDate(
       getScheduledActionItemTimeValue(action),
       action.timezone,
     );
-  time.hidden = Boolean(action.payload?.manualOnly);
+  time.hidden = hideTime;
 
   trigger.append(head, time);
 
@@ -14713,10 +15077,16 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
   }
 
   const currentSettings = getSelectedFeatureSettings(feature);
+  const currentLifecycleStatus = normalizeMonitorActionLifecycleStatus(
+    action?.payload?.actionLifecycleStatus
+      || currentSettings.actionLifecycleStatus
+      || currentSettings.action_lifecycle_status,
+  );
   const nextSettings = buildMonitorSettingsForSave(feature, {
     ...currentSettings,
     watchItems,
     ...getAgentMonitorEditorFrequencySettings(editor.frequencySelect?.value, currentSettings),
+    actionLifecycleStatus: currentLifecycleStatus,
   });
   setAgentMonitorEditorStatus(editor, "Saving changes…");
 
@@ -14735,6 +15105,13 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
       applyServerFeatureStates([response.feature || {}], { persist: true });
       state.paymentStatus = response.paymentStatus || state.paymentStatus;
       updateAgentMonitorActionFrequency(action, nextSettings);
+      if (action?.payload) {
+        action.payload.actionLifecycleStatus = nextSettings.actionLifecycleStatus;
+        action.payload.manualOnly = normalizeMonitorManualOnly(nextSettings.manualOnly);
+        action.status = action.payload.manualOnly
+          ? "manual_only"
+          : (nextSettings.actionLifecycleStatus === "paused" ? "paused" : "running");
+      }
       setAgentMonitorEditorStatus(editor, "Saved");
       setStatus("Monitor settings saved.");
       return response;
@@ -15207,16 +15584,20 @@ function updateAgentLocalActionDom(action) {
   const statusClass = getScheduledActionStatusClass(action.status);
   item.className = `agent-action-item is-${statusClass}${state.selectedScheduledActionId === String(action.id) ? " is-expanded" : ""}`;
   const status = item.querySelector(".agent-action-status");
+  const lifecycleBusy = isAgentActionLifecycleBusy(action);
   if (status) {
-    status.className = `agent-action-status is-${statusClass}`;
-    status.textContent = getScheduledActionStatusLabel(action.status, action);
+    status.className = `agent-action-status is-${lifecycleBusy ? "lifecycle-busy" : statusClass}`;
+    status.textContent = lifecycleBusy
+      ? (isAgentLifecycleActionPaused(action) ? "Resuming" : "Stopping")
+      : getScheduledActionStatusLabel(action.status, action);
   }
   const time = item.querySelector(".agent-action-item-time");
   if (time) {
-    time.textContent = action.payload?.manualOnly
+    const hideTime = Boolean(action.payload?.manualOnly) || statusClass === "paused";
+    time.textContent = hideTime
       ? ""
       : formatScheduledActionDate(getScheduledActionItemTimeValue(action), action.timezone);
-    time.hidden = Boolean(action.payload?.manualOnly);
+    time.hidden = hideTime;
   }
   for (const term of item.querySelectorAll("dt")) {
     const label = String(term.textContent || "").trim();
@@ -15270,6 +15651,9 @@ function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = nu
     }
     const fields = { ...getAgentProposalFieldMap(proposal) };
     const frequencyLabel = formatAgentLocalActionFrequency(draft.frequency);
+    const manualOnly = draft.frequency === "manual";
+    const previousLifecycleStatus = getAgentProposalLifecycleStatus(proposal);
+    const lifecycleStatus = manualOnly ? "active" : previousLifecycleStatus;
     if (draft.frequency === "manual") {
       fields.frequency = "manual only";
       fields.schedule = "manual only";
@@ -15287,19 +15671,22 @@ function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = nu
     proposal.fields = normalizeAgentFieldValues(fields);
     proposal.details = {
       ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
-      manualOnly: draft.frequency === "manual",
-      runMode: draft.frequency === "manual" ? "manual" : "recurring",
+      manualOnly,
+      runMode: manualOnly ? "manual" : "recurring",
       frequency: frequencyLabel,
+      actionLifecycleStatus: lifecycleStatus,
     };
     proposal.executionPlan = {
       ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
-      manualOnly: draft.frequency === "manual",
-      runMode: draft.frequency === "manual" ? "manual" : "recurring",
+      manualOnly,
+      runMode: manualOnly ? "manual" : "recurring",
       frequency: frequencyLabel,
+      actionLifecycleStatus: lifecycleStatus,
       settings: {
         ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
-        manualOnly: draft.frequency === "manual",
-        runMode: draft.frequency === "manual" ? "manual" : "recurring",
+        manualOnly,
+        runMode: manualOnly ? "manual" : "recurring",
+        actionLifecycleStatus: lifecycleStatus,
       },
     };
     const previousDeliveryChannel = normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel);
@@ -15314,8 +15701,9 @@ function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = nu
     };
     proposal.updatedAt = new Date().toISOString();
     updateAgentProposalSummaryFromFields(proposal);
-    action.payload.manualOnly = draft.frequency === "manual";
-    action.payload.frequency = draft.frequency === "manual" ? "manual only" : frequencyLabel;
+    action.payload.manualOnly = manualOnly;
+    action.payload.actionLifecycleStatus = lifecycleStatus;
+    action.payload.frequency = manualOnly ? "manual only" : frequencyLabel;
     action.payload.summary = proposal.summary;
     action.payload.preview = getAgentProposalLocalActionPreview(proposal);
     action.payload.deliveryChannel = draft.deliveryChannel;
@@ -15326,7 +15714,7 @@ function scheduleAgentLocalActionAutoSave(action, draft, form, changedField = nu
       if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
     }
     action.channel = draft.deliveryChannel || action.channel;
-    action.status = draft.frequency === "manual" ? "manual_only" : "running";
+    action.status = manualOnly ? "manual_only" : (lifecycleStatus === "paused" ? "paused" : "running");
     persistClientState();
     updateAgentLocalActionDom(action);
     setAgentLocalActionEditorStatus(editor, "Saved");
@@ -17292,6 +17680,10 @@ function requestAgentProposalChanges(proposalId, expectedRevision = 0) {
 
 function openAgentProposalSetup(proposalId) {
   const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
+  if (proposal?.type === "email-digest" && proposal.missingCredential) {
+    openPlatformConnection("email");
+    return;
+  }
   if (proposal?.type === "calendar-summary" && proposal.missingCredential) {
     openPlatformConnection("calendar");
     return;
@@ -17368,31 +17760,203 @@ async function deactivateAgentProposalBackendFeature(proposal) {
   return deactivateAgentBackendFeature(backendFeatureId);
 }
 
+async function activateAgentBackendFeature(backendFeatureId) {
+  const featureId = String(backendFeatureId || "").trim();
+  if (!featureId) {
+    return null;
+  }
+
+  const feature = getFeatureById(featureId);
+  if (!feature || isFeatureActivated(feature)) {
+    return null;
+  }
+
+  const response = await apiRequest(`/api/features/${encodeURIComponent(featureId)}/activation`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      action: "activate",
+      featureName: feature.name,
+      channel: feature.channel,
+    },
+  });
+  applyServerFeatureStates([response.feature || {}], { persist: true });
+  state.paymentStatus = response.paymentStatus || state.paymentStatus;
+  return response;
+}
+
+async function saveAgentMonitorLifecycleStatus(backendFeatureId, lifecycleStatus) {
+  const featureId = String(backendFeatureId || "").trim();
+  const feature = getFeatureById(featureId);
+  if (!feature || !isMonitorFeature(feature)) {
+    return null;
+  }
+
+  const normalizedStatus = normalizeMonitorActionLifecycleStatus(lifecycleStatus);
+  const currentSettings = getSavedFeatureSettings(feature);
+  const nextSettings = buildMonitorSettingsForSave(feature, {
+    ...currentSettings,
+    actionLifecycleStatus: normalizedStatus,
+  });
+  if (featureConfigBusy && featureConfigSavePromise) {
+    try {
+      await featureConfigSavePromise;
+    } catch {
+      // Continue with the lifecycle update after the previous save settles.
+    }
+  }
+
+  featureConfigBusy = true;
+  let response;
+  try {
+    response = await apiRequest(`/api/features/${encodeURIComponent(featureId)}/config`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+      body: {
+        prompt: { ...feature.prompt },
+        settings: nextSettings,
+      },
+    });
+  } finally {
+    featureConfigBusy = false;
+  }
+  applyServerFeatureStates([response.feature || {}], { persist: true });
+  state.paymentStatus = response.paymentStatus || state.paymentStatus;
+  return response;
+}
+
+function setLocalActionLifecycleBusy(action, busy = true) {
+  const key = getAgentActionLifecycleBusyKey(action);
+  if (!key) {
+    return;
+  }
+  if (busy) {
+    agentActionLifecycleBusy.add(key);
+  } else {
+    agentActionLifecycleBusy.delete(key);
+  }
+}
+
+function syncProposalActionLifecycleToAction(action, lifecycleStatus) {
+  const proposal = getAgentLocalActionProposal(action);
+  if (!proposal) {
+    return;
+  }
+  setAgentProposalLifecycleStatus(proposal, lifecycleStatus);
+  const normalizedStatus = normalizeMonitorActionLifecycleStatus(lifecycleStatus);
+  if (action?.payload) {
+    action.payload.actionLifecycleStatus = normalizedStatus;
+    action.payload.backendFeatureActive = normalizedStatus !== "paused";
+  }
+  if (!normalizeMonitorManualOnly(action?.payload?.manualOnly, false)) {
+    action.status = normalizedStatus === "paused" ? "paused" : "running";
+  }
+  persistClientState();
+}
+
+function updateFeatureLocalActionLifecycle(action, lifecycleStatus) {
+  const normalizedStatus = normalizeMonitorActionLifecycleStatus(lifecycleStatus);
+  if (action?.payload) {
+    action.payload.actionLifecycleStatus = normalizedStatus;
+    action.payload.backendFeatureActive = normalizedStatus !== "paused";
+  }
+  if (!normalizeMonitorManualOnly(action?.payload?.manualOnly, false)) {
+    action.status = normalizedStatus === "paused" ? "paused" : "running";
+  }
+}
+
+function updateProposalLocalActionLifecycle(action, lifecycleStatus) {
+  syncProposalActionLifecycleToAction(action, lifecycleStatus);
+}
+
+async function stopAgentLocalAction(actionId) {
+  const action = getRenderableAgentActions().find((candidate) => String(candidate?.id || "") === String(actionId || ""));
+  if (!action || !canToggleAgentActionLifecycle(action) || isAgentLifecycleActionPaused(action)) {
+    return false;
+  }
+  const backendFeatureId = getAgentActionBackendFeatureId(action);
+  setLocalActionLifecycleBusy(action, true);
+  persistAgentWorkspace("Stopping action...");
+  renderApp({ preserveStatus: true });
+  try {
+    if (backendFeatureId) {
+      await saveAgentMonitorLifecycleStatus(backendFeatureId, "paused");
+      await deactivateAgentBackendFeature(backendFeatureId);
+      updateFeatureLocalActionLifecycle(action, "paused");
+    }
+    if (isAgentProposalLocalAction(action)) {
+      updateProposalLocalActionLifecycle(action, "paused");
+    }
+    state.selectedScheduledActionId = String(action.id || "");
+    persistAgentWorkspace("Action stopped.");
+    renderApp({ preserveStatus: true });
+    return true;
+  } catch (error) {
+    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t stop that action."));
+    renderApp({ preserveStatus: true });
+    return false;
+  } finally {
+    setLocalActionLifecycleBusy(action, false);
+    renderApp({ preserveStatus: true });
+  }
+}
+
+async function resumeAgentLocalAction(actionId) {
+  const action = getRenderableAgentActions().find((candidate) => String(candidate?.id || "") === String(actionId || ""));
+  if (!action || !canToggleAgentActionLifecycle(action) || !isAgentLifecycleActionPaused(action)) {
+    return false;
+  }
+  const backendFeatureId = getAgentActionBackendFeatureId(action);
+  setLocalActionLifecycleBusy(action, true);
+  persistAgentWorkspace("Resuming action...");
+  renderApp({ preserveStatus: true });
+  try {
+    if (backendFeatureId) {
+      await saveAgentMonitorLifecycleStatus(backendFeatureId, "active");
+      await activateAgentBackendFeature(backendFeatureId);
+      updateFeatureLocalActionLifecycle(action, "active");
+    }
+    if (isAgentProposalLocalAction(action)) {
+      updateProposalLocalActionLifecycle(action, "active");
+    }
+    state.selectedScheduledActionId = String(action.id || "");
+    persistAgentWorkspace("Action resumed.");
+    renderApp({ preserveStatus: true });
+    return true;
+  } catch (error) {
+    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t resume that action."));
+    renderApp({ preserveStatus: true });
+    return false;
+  } finally {
+    setLocalActionLifecycleBusy(action, false);
+    renderApp({ preserveStatus: true });
+  }
+}
+
 async function removeAgentProposalLocalAction(actionId) {
   const localAction = getRenderableAgentActions()
     .find((action) => String(action?.id || "") === String(actionId || ""));
   const hasBackendFeature = Boolean(String(localAction?.payload?.backendFeatureId || "").trim());
-  const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(localAction?.payload?.manualOnly, false);
-  const actionVerb = !hasBackendFeature || isManualOnly ? "remove" : "turn off";
   const featureId = getAgentFeatureIdFromLocalActionId(actionId);
   if (featureId) {
     const feature = getFeatureById(featureId);
-    if (!feature || !isFeatureActivated(feature)) {
+    if (!feature) {
       return false;
     }
 
-    persistAgentWorkspace(`${capitalizeWords(actionVerb)} action...`);
+    persistAgentWorkspace("Removing action...");
     renderApp({ preserveStatus: true });
     try {
+      await saveAgentMonitorLifecycleStatus(featureId, "removed");
       await deactivateAgentBackendFeature(featureId);
     } catch (error) {
-      persistAgentWorkspace(formatApiErrorMessage(error, `Couldn’t ${actionVerb} that action.`));
+      persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t remove that action."));
       renderApp({ preserveStatus: true });
       return false;
     }
 
     state.selectedScheduledActionId = "";
-    persistAgentWorkspace(isManualOnly ? "Action removed." : "Action turned off.");
+    persistAgentWorkspace("Action removed.");
     renderApp({ preserveStatus: true });
     return true;
   }
@@ -17407,12 +17971,16 @@ async function removeAgentProposalLocalAction(actionId) {
     return false;
   }
 
-  persistAgentWorkspace(`${capitalizeWords(actionVerb)} action...`);
+  persistAgentWorkspace("Removing action...");
   renderApp({ preserveStatus: true });
   try {
+    const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || "").trim();
+    if (hasBackendFeature && backendFeatureId) {
+      await saveAgentMonitorLifecycleStatus(backendFeatureId, "removed");
+    }
     await deactivateAgentProposalBackendFeature(proposal);
   } catch (error) {
-    persistAgentWorkspace(formatApiErrorMessage(error, `Couldn’t ${actionVerb} that action.`));
+    persistAgentWorkspace(formatApiErrorMessage(error, "Couldn’t remove that action."));
     renderApp({ preserveStatus: true });
     return false;
   }
@@ -17485,6 +18053,43 @@ async function runSourceActionNow(actionId) {
   }
 }
 
+async function updateSourceActionLifecycle(actionId, lifecycleStatus) {
+  const id = Math.max(0, Number(actionId || 0));
+  const endpoint = normalizeMonitorActionLifecycleStatus(lifecycleStatus) === "paused" ? "pause" : "resume";
+  if (!id) return false;
+  const currentAction = getRenderableAgentActions().find((candidate) => getAgentActionSourceActionId(candidate) === String(id));
+  if (currentAction) {
+    setLocalActionLifecycleBusy(currentAction, true);
+    renderAgentActions();
+  }
+  setStatus(endpoint === "pause" ? "Stopping source action…" : "Resuming source action…");
+  try {
+    const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}/${endpoint}`, {
+      method: "POST",
+      headers: getSessionAuthHeaders(),
+    });
+    await refreshSourceActions();
+    if (response.action) {
+      state.sourceActions = state.sourceActions.map((candidate) => (
+        Number(candidate.id || 0) === id ? response.action : candidate
+      ));
+    }
+    state.selectedScheduledActionId = `source:${id}`;
+    renderAgentActions();
+    setStatus(endpoint === "pause" ? "Source action stopped." : "Source action resumed.");
+    return true;
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, endpoint === "pause" ? "Couldn’t stop that source action." : "Couldn’t resume that source action."));
+    await refreshSourceActions();
+    return false;
+  } finally {
+    if (currentAction) {
+      setLocalActionLifecycleBusy(currentAction, false);
+      renderAgentActions();
+    }
+  }
+}
+
 async function runAgentProposalLocalActionNow(actionId) {
   const action = getRenderableAgentActions().find((candidate) => String(candidate.id) === String(actionId || ""));
   const proposal = getAgentLocalActionProposal(action);
@@ -17549,6 +18154,49 @@ async function runAgentProposalLocalActionNow(actionId) {
     }
   }
 
+  if (proposal.type === "email-digest") {
+    localActionRunBusy.add(normalizedActionId);
+    const runningMessage = "I’m checking your connected Gmail inbox and preparing the digest…";
+    persistAgentWorkspace(runningMessage);
+    renderApp({ preserveStatus: true });
+    try {
+      const response = await apiRequest("/api/agent/proposals/run", {
+        method: "POST",
+        headers: getSessionAuthHeaders(),
+        body: {
+          proposalId: proposal.id,
+          proposalType: proposal.type,
+          fields: { ...getAgentProposalFieldMap(proposal) },
+          deliveryChannel: getAgentProposalDeliveryChannel(proposal) || "portal",
+          timezone: getWorkspaceTimeZone(),
+        },
+        timeoutMs: 90000,
+      });
+      const message = String(response.message || response.summary || "Gmail digest complete.").trim();
+      pushAgentMessage("assistant", message, {
+        kind: "result",
+        proposalId: proposal.id,
+      });
+      persistAgentWorkspace(message);
+      return true;
+    } catch (error) {
+      const message = formatApiErrorMessage(
+        error,
+        "I couldn’t read the connected Gmail inbox. Check Email setup and try again.",
+      );
+      pushAgentMessage("assistant", message, {
+        kind: "error",
+        proposalId: proposal.id,
+      });
+      persistAgentWorkspace(message);
+      return false;
+    } finally {
+      localActionRunBusy.delete(normalizedActionId);
+      await refreshPlatformConnections({ render: false });
+      renderApp({ preserveStatus: true });
+    }
+  }
+
   const title = getScheduledActionTitle(action);
   const message = proposal.type === "calendar-summary"
     ? "This action does not have a connected runner yet. Nothing was sent."
@@ -17593,6 +18241,38 @@ function handleAgentWorkspaceClick(event) {
   }
 
   const target = getEventTargetElement(event);
+  const stopSourceActionButton = target?.closest("[data-agent-stop-source-action]");
+  if (stopSourceActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void updateSourceActionLifecycle(stopSourceActionButton.dataset.agentStopSourceAction || "", "paused");
+    return;
+  }
+
+  const resumeSourceActionButton = target?.closest("[data-agent-resume-source-action]");
+  if (resumeSourceActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void updateSourceActionLifecycle(resumeSourceActionButton.dataset.agentResumeSourceAction || "", "active");
+    return;
+  }
+
+  const stopLocalActionButton = target?.closest("[data-agent-stop-local-action]");
+  if (stopLocalActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void stopAgentLocalAction(stopLocalActionButton.dataset.agentStopLocalAction || "");
+    return;
+  }
+
+  const resumeLocalActionButton = target?.closest("[data-agent-resume-local-action]");
+  if (resumeLocalActionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    void resumeAgentLocalAction(resumeLocalActionButton.dataset.agentResumeLocalAction || "");
+    return;
+  }
+
   const removeLocalActionButton = target?.closest("[data-agent-remove-local-action]");
   if (removeLocalActionButton) {
     event.preventDefault();

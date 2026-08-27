@@ -2905,7 +2905,7 @@ class PortalDatabase:
                 return None
             row = conn.execute(
                 """
-                SELECT id, platform, auth_type, secret_ciphertext, connection_status
+                SELECT id, platform, auth_type, secret_ciphertext, secret_fingerprint, connection_status
                 FROM platform_connections
                 WHERE user_id = ? AND id = ?
                 LIMIT 1
@@ -2919,8 +2919,34 @@ class PortalDatabase:
                 "platform": normalize_text(row["platform"]).lower(),
                 "authType": normalize_text(row["auth_type"]).lower() or "api_token",
                 "secretCiphertext": normalize_text(row["secret_ciphertext"]),
+                "secretFingerprint": normalize_text(row["secret_fingerprint"]),
                 "connectionStatus": normalize_text(row["connection_status"]).lower() or "connected",
             }
+
+    def count_platform_connections_with_secret_fingerprint(
+        self,
+        email: str,
+        secret_fingerprint: str,
+    ) -> int:
+        normalized_email = normalize_email(email)
+        normalized_fingerprint = normalize_text(secret_fingerprint)
+        if not normalized_email or not normalized_fingerprint:
+            return 0
+
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                return 0
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS connection_count
+                FROM platform_connections
+                WHERE user_id = ? AND secret_fingerprint = ?
+                """,
+                (user_id, normalized_fingerprint),
+            ).fetchone()
+            return int(row["connection_count"] or 0) if row else 0
 
     def save_platform_connection(
         self,
