@@ -184,6 +184,7 @@ GOOGLE_CALENDAR_OAUTH_PROVIDER = "google_calendar"
 GOOGLE_CALENDAR_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_OAUTH_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60
 GOOGLE_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
 GOOGLE_OAUTH_SECRET_TYPE = "google_calendar_refresh_token"
@@ -2219,6 +2220,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             path.startswith("/api/admin/")
             or path.startswith("/api/features/")
             or path.startswith("/api/platform-connections/")
+            or path == "/api/whatsapp/connection"
             or path.startswith("/api/scheduled-actions/")
             or path.startswith("/api/source-actions/")
             or path.startswith("/api/whatsapp/history/")
@@ -2498,6 +2500,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/platform-connections/"):
             self._handle_platform_connection_delete(parsed)
+            return
+        if path == "/api/whatsapp/connection":
+            self._handle_whatsapp_connection_delete()
             return
         if path.startswith("/api/scheduled-actions/"):
             self._handle_scheduled_actions_delete(parsed)
@@ -2871,6 +2876,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        connection_record = self.database.get_platform_connection_secret_record(
+            session.email,
+            connection_id,
+        )
+        if connection_record is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "connection_not_found",
+                "message": "That connection could not be found.",
+            })
+            return
+
+        revocation_warning = ""
+        provider_revoked = False
+        if (
+            connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM
+            and connection_record.get("authType") == "oauth"
+        ):
+            provider_revoked, revocation_warning = self._revoke_google_calendar_connection(
+                connection_record.get("secretCiphertext", ""),
+            )
+
         deleted = self.database.delete_platform_connection(
             session.email,
             connection_id=connection_id,
@@ -2883,10 +2910,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        json_response(self, HTTPStatus.OK, {
+        message = (
+            "Google Calendar was disconnected and its saved credential was removed."
+            if connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM
+            else f"{connection_record.get('platform', 'App').replace('_', ' ').title()} was disconnected."
+        )
+        if revocation_warning:
+            message = f"{message} {revocation_warning}"
+        response_payload: dict[str, Any] = {
             "ok": True,
-            "message": "Connection removed.",
-        })
+            "message": message,
+        }
+        if (
+            connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM
+            and connection_record.get("authType") == "oauth"
+        ):
+            response_payload["providerRevoked"] = provider_revoked
+        json_response(self, HTTPStatus.OK, response_payload)
 
     def _manual_feature_run_key(
         self,
@@ -5017,6 +5057,75 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         return parsed
 
+    def _revoke_google_calendar_connection(self, encrypted_secret: str) -> tuple[bool, str]:
+        """Best-effort revoke of a stored Google OAuth grant before deletion.
+
+        Local credential deletion must not be blocked by a provider outage. A
+        warning is returned for the UI when the server cannot prove that Google
+        accepted the revocation, without ever including the token itself.
+        """
+
+        vault = self.credential_vault
+        if vault is None:
+            return False, (
+                "Google could not confirm revocation automatically. Remove Assistyca from "
+                "your Google Account permissions to finish."
+            )
+
+        try:
+            stored_secret = vault.decrypt(normalize_text(encrypted_secret))
+            parsed = json.loads(stored_secret)
+        except (CredentialVaultError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return False, (
+                "Google could not confirm revocation automatically. Remove Assistyca from "
+                "your Google Account permissions to finish."
+            )
+
+        if not isinstance(parsed, dict) or normalize_text(parsed.get("type")) != GOOGLE_OAUTH_SECRET_TYPE:
+            return False, (
+                "Google could not confirm revocation automatically. Remove Assistyca from "
+                "your Google Account permissions to finish."
+            )
+        refresh_token = normalize_text(parsed.get("refreshToken") or parsed.get("refresh_token"))
+        if not refresh_token:
+            return False, (
+                "Google could not confirm revocation automatically. Remove Assistyca from "
+                "your Google Account permissions to finish."
+            )
+
+        request = urllib_request.Request(
+            GOOGLE_OAUTH_REVOKE_URL,
+            data=urllib_parse.urlencode({"token": refresh_token}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=GOOGLE_OAUTH_TOKEN_TIMEOUT_SECONDS) as response:
+                response.read()
+        except urllib_error.HTTPError as exc:
+            # Google may return 400 when the grant has already been revoked or
+            # the refresh token is no longer valid. The local credential is
+            # still removed, but we do not claim provider revocation succeeded.
+            if exc.code == HTTPStatus.BAD_REQUEST:
+                return False, (
+                    "Google did not confirm revocation. If needed, remove Assistyca from "
+                    "your Google Account permissions to finish."
+                )
+            return False, (
+                "Google could not confirm revocation automatically. Remove Assistyca from "
+                "your Google Account permissions to finish."
+            )
+        except (urllib_error.URLError, TimeoutError, OSError):
+            return False, (
+                "Google could not confirm revocation automatically. Remove Assistyca from "
+                "your Google Account permissions to finish."
+            )
+
+        return True, ""
+
     def _exchange_google_calendar_oauth_code(self, code: str, *, redirect_uri: str = "") -> dict[str, Any]:
         return self._post_google_oauth_token_request({
             "code": normalize_text(code),
@@ -5487,6 +5596,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "hasAccessToken": bool(saved_access_token),
             "workspaceAccessTokenConfigured": bool(saved_access_token),
             "backendAccessTokenConfigured": bool(sender_access_token),
+        })
+
+    def _handle_whatsapp_connection_delete(self) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        connection = self.database.get_whatsapp_connection(session.email)
+        if connection is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "connection_not_found",
+                "message": "WhatsApp is not connected.",
+            })
+            return
+
+        if not self.database.delete_whatsapp_connection(session.email):
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "connection_not_found",
+                "message": "WhatsApp is not connected.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": (
+                "WhatsApp was disconnected and its saved credentials were removed from Assistyca. "
+                "Revoke the token in Meta too if you no longer need it."
+            ),
         })
 
     def _handle_whatsapp_connection_post(self) -> None:

@@ -14,6 +14,7 @@ from unittest import mock
 
 from packages.infrastructure.credential_vault import CredentialVault
 from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_OAUTH_SCOPE
+from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_REVOKE_URL
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_TOKEN_URL
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import SESSION_COOKIE_NAME
@@ -94,6 +95,119 @@ class PlatformConnectionTests(unittest.TestCase):
         self.assertFalse(payload["credentialStorageAvailable"])
         self.assertIn("no token was saved", payload["credentialStorageMessage"])
         self.assertEqual(payload["connections"], [])
+
+    def test_platform_connection_delete_removes_only_the_authenticated_connection(self) -> None:
+        saved = self.server.database.save_platform_connection(
+            "owner@example.com",
+            platform="slack",
+            auth_type="bot_token",
+            secret_ciphertext="ciphertext-that-stays-server-side",
+            secret_hint="••••side",
+        )
+        self.server.database.register_user("other@example.com")
+        other = self.server.database.save_platform_connection(
+            "other@example.com",
+            platform="slack",
+            auth_type="bot_token",
+            secret_ciphertext="other-ciphertext",
+            secret_hint="••••text",
+        )
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/platform-connections/{urllib_parse.quote(saved['id'])}",
+            headers={"Cookie": self._cookie()},
+            method="DELETE",
+        )
+        with urllib_request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("disconnected", payload["message"].lower())
+        self.assertNotIn("ciphertext-that-stays-server-side", json.dumps(payload))
+        self.assertEqual(self.server.database.list_platform_connections("owner@example.com"), [])
+        self.assertEqual(self.server.database.list_platform_connections("other@example.com")[0]["id"], other["id"])
+
+    def test_google_calendar_delete_revokes_refresh_token_before_local_removal(self) -> None:
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: F401
+        except ImportError:
+            self.skipTest("cryptography is installed in deployment, not this minimal test environment")
+
+        db_path = Path(self.temp_dir.name) / "oauth-delete.db"
+        key = base64.urlsafe_b64encode(b"0123456789abcdef0123456789abcdef").decode("ascii")
+        server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(db_path=db_path, credential_encryption_key=key),
+        )
+        server.database.register_user("owner@example.com")
+        encrypted = server.credential_vault.encrypt(json.dumps({
+            "type": "google_calendar_refresh_token",
+            "provider": "google_calendar",
+            "refreshToken": "refresh-token-to-revoke",
+        }))
+        saved = server.database.save_platform_connection(
+            "owner@example.com",
+            platform="calendar",
+            auth_type="oauth",
+            secret_ciphertext=encrypted,
+            secret_hint="Google OAuth",
+            metadata={"validationStatus": "verified"},
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            cookie = self._cookie_for(server, base_url)
+
+            def fake_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+                self.assertEqual(timeout, 20)
+                self.assertEqual(request.full_url, GOOGLE_OAUTH_REVOKE_URL)
+                self.assertEqual(request.get_method(), "POST")
+                fields = urllib_parse.parse_qs(request.data.decode("utf-8"))  # type: ignore[union-attr]
+                self.assertEqual(fields["token"], ["refresh-token-to-revoke"])
+                return _JsonResponse({})
+
+            request = urllib_request.Request(
+                f"{base_url}/api/platform-connections/{urllib_parse.quote(saved['id'])}",
+                headers={"Cookie": cookie},
+                method="DELETE",
+            )
+            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+                with urllib_request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["providerRevoked"])
+            self.assertNotIn("refresh-token-to-revoke", json.dumps(payload))
+            self.assertEqual(server.database.list_platform_connections("owner@example.com"), [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_whatsapp_connection_delete_removes_saved_credentials(self) -> None:
+        self.server.database.save_whatsapp_connection(
+            "owner@example.com",
+            business_account_id="waba-123",
+            phone_number_id="phone-456",
+            access_token="whatsapp-secret-that-stays-server-side",
+            owner_wa_id="15551234567",
+            connection_status="connected",
+        )
+        request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/connection",
+            headers={"Cookie": self._cookie()},
+            method="DELETE",
+        )
+        with urllib_request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("disconnected", payload["message"].lower())
+        self.assertNotIn("whatsapp-secret-that-stays-server-side", json.dumps(payload))
+        self.assertIsNone(self.server.database.get_whatsapp_connection("owner@example.com"))
 
     def test_platform_connection_write_fails_closed_without_encryption_key(self) -> None:
         request = urllib_request.Request(

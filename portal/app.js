@@ -1343,6 +1343,7 @@ const elements = {
   featureStudioStatus: document.querySelector("#featureStudioStatus"),
   featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
   featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
+  featureActivationDisconnectButton: document.querySelector("#featureActivationDisconnectButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
   featureStudioWhatsAppSampleButton: document.querySelector("#featureStudioWhatsAppSampleButton"),
@@ -4107,6 +4108,76 @@ function buildWhatsAppConfigHint() {
   return "Connect the client's WhatsApp Business Platform account, then save the WABA ID, Phone Number ID, access token, and approval phone.";
 }
 
+function isWhatsAppConnectionConnected(feature = getSelectedFeature()) {
+  return Boolean(
+    feature
+    && isWhatsAppFeature(feature)
+    && getSelectedFeatureWhatsApp(feature).connection_status === "connected",
+  );
+}
+
+function openWhatsAppDisconnectConfirmation() {
+  if (!isWhatsAppConnectionConnected()) {
+    return;
+  }
+
+  openAuthAlert(
+    "Disconnect WhatsApp?",
+    "This removes the saved WhatsApp credentials from Assistyca. WhatsApp actions will need setup again before they can run.",
+    {
+      eyebrow: "Disconnect app",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Disconnect",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Keep connected",
+      returnFocus: elements.featureActivationDisconnectButton,
+      onPrimary: () => {
+        void disconnectWhatsAppConnection();
+      },
+    },
+  );
+}
+
+async function disconnectWhatsAppConnection() {
+  try {
+    const response = await apiRequest("/api/whatsapp/connection", {
+      method: "DELETE",
+      headers: getSessionAuthHeaders(),
+      timeoutMs: 20000,
+    });
+    clearWhatsAppConnectionPollTimer();
+    applyWhatsAppConnectionToFeatures(null, { persist: true });
+    const message = normalizeText(response.message) || "WhatsApp was disconnected.";
+    pushAgentMessage("assistant", message, { kind: "result" });
+    persistAgentWorkspace(message);
+    renderApp({ preserveStatus: true });
+    openAuthAlert(
+      "WhatsApp disconnected",
+      message,
+      {
+        eyebrow: "Connection removed",
+        icon: "✓",
+        tone: "success",
+        buttonLabel: "Done",
+        returnFocus: elements.featureStudioLaunchButton,
+      },
+    );
+  } catch (error) {
+    openAuthAlert(
+      "Couldn’t disconnect WhatsApp",
+      formatApiErrorMessage(error, "I couldn’t disconnect WhatsApp right now. Please try again."),
+      {
+        eyebrow: "Connection issue",
+        icon: "!",
+        tone: "warning",
+        buttonLabel: "Close",
+        returnFocus: elements.featureActivationDisconnectButton,
+      },
+    );
+  }
+}
+
 function applyWhatsAppConnectionToFeatures(connection, options = {}) {
   const normalizedConnection = normalizeFeatureWhatsApp(connection || {});
   state.whatsappConnection = normalizedConnection.configured || normalizedConnection.connection_status === "connected"
@@ -4421,6 +4492,95 @@ async function refreshPlatformConnections(options = {}) {
   }
 }
 
+function isPlatformConnectionConnected(connection) {
+  return Boolean(
+    connection
+    && getPlatformConnectionStatus(connection).label === "Connected",
+  );
+}
+
+function createPlatformConnectionDisconnectButton(option, connection) {
+  if (!option || !isPlatformConnectionConnected(connection)) {
+    return null;
+  }
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost-button danger small platform-connection-disconnect";
+  button.textContent = `Disconnect ${option.label}`;
+  button.setAttribute("aria-label", `Disconnect ${option.label}`);
+  button.addEventListener("click", () => {
+    openPlatformConnectionDisconnectConfirmation(option, connection);
+  });
+  return button;
+}
+
+function openPlatformConnectionDisconnectConfirmation(option, connection) {
+  if (!option || !connection?.id) {
+    return;
+  }
+
+  openAuthAlert(
+    `Disconnect ${option.label}?`,
+    `This removes the saved ${option.label} connection from Assistyca. Any actions that use it will need setup again before they can run.`,
+    {
+      eyebrow: "Disconnect app",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Disconnect",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Keep connected",
+      returnFocus: elements.agentAddToolButton,
+      onPrimary: () => {
+        void disconnectPlatformConnection(option, connection);
+      },
+    },
+  );
+}
+
+async function disconnectPlatformConnection(option, connection) {
+  try {
+    const response = await apiRequest(
+      `/api/platform-connections/${encodeURIComponent(connection.id)}`,
+      {
+        method: "DELETE",
+        headers: getSessionAuthHeaders(),
+        timeoutMs: 20000,
+      },
+    );
+    state.platformConnections = state.platformConnections.filter(
+      (candidate) => candidate.id !== connection.id,
+    );
+    const message = normalizeText(response.message) || `${option.label} was disconnected.`;
+    pushAgentMessage("assistant", message, { kind: "result" });
+    persistAgentWorkspace(message);
+    renderApp({ preserveStatus: true });
+    openAuthAlert(
+      `${option.label} disconnected`,
+      message,
+      {
+        eyebrow: "Connection removed",
+        icon: "✓",
+        tone: "success",
+        buttonLabel: "Done",
+        returnFocus: elements.agentAddToolButton,
+      },
+    );
+  } catch (error) {
+    openAuthAlert(
+      `Couldn’t disconnect ${option.label}`,
+      formatApiErrorMessage(error, `I couldn’t disconnect ${option.label} right now. Please try again.`),
+      {
+        eyebrow: "Connection issue",
+        icon: "!",
+        tone: "warning",
+        buttonLabel: "Close",
+        returnFocus: elements.agentAddToolButton,
+      },
+    );
+  }
+}
+
 function createPlatformConnectionForm(option) {
   const connection = getPlatformConnectionByPlatform(option.id);
   const connectionStatus = getPlatformConnectionStatus(connection);
@@ -4540,6 +4700,8 @@ function createPlatformConnectionForm(option) {
     ? "Your token is encrypted before it is stored. You can replace it here or revoke it with the provider at any time."
     : "Nothing was stored. Ask me to configure secure connection storage, then add this app again.";
 
+  const disconnectButton = createPlatformConnectionDisconnectButton(option, connection);
+
   const helpButton = document.createElement("button");
   helpButton.type = "button";
   helpButton.className = "ghost-button small platform-connection-help";
@@ -4563,10 +4725,14 @@ function createPlatformConnectionForm(option) {
     docsLink.target = "_blank";
     docsLink.rel = "noopener noreferrer";
     docsLink.textContent = "See Google’s Calendar permission guide";
-    form.append(intro, status, field, docsLink, securityNote, helpButton);
+    form.append(intro, status, field, docsLink, securityNote);
   } else {
-    form.append(intro, status, field, securityNote, helpButton);
+    form.append(intro, status, field, securityNote);
   }
+  if (disconnectButton) {
+    form.append(disconnectButton);
+  }
+  form.append(helpButton);
   return { form, input, error, field, reveal, securityNote, help, setStatus, storageAvailable, connection };
 }
 
@@ -4842,6 +5008,10 @@ function openCalendarOAuthConnection(option) {
   }
 
   body.append(intro, createGoogleOAuthPermissionList(), status);
+  const disconnectButton = createPlatformConnectionDisconnectButton(option, connection);
+  if (disconnectButton) {
+    body.append(disconnectButton);
+  }
 
   let starting = false;
   let fallbackAuthUrl = "";
@@ -20523,6 +20693,11 @@ function updateFeatureStudioHeader() {
   updateFeatureActivationResult(feature);
   updateFeatureStudioWhatsAppHealthNotice(feature);
   renderFeatureActivationFieldErrors();
+  if (elements.featureActivationDisconnectButton) {
+    const showDisconnectButton = isWhatsAppConnectionConnected(feature) && !activationBusy;
+    elements.featureActivationDisconnectButton.hidden = !showDisconnectButton;
+    elements.featureActivationDisconnectButton.disabled = activationBusy;
+  }
   if (elements.featureStudioActivationButton) {
     const showActivationSaveButton = activationBusy || hasActivationChanges || canRefreshWebhook;
     const activationActions = elements.featureStudioActivationButton.closest(".feature-activation-actions");
@@ -22677,6 +22852,11 @@ function bindEvents() {
   if (elements.featureStudioActivationButton) {
     elements.featureStudioActivationButton.addEventListener("click", () => {
       void activateSelectedFeature();
+    });
+  }
+  if (elements.featureActivationDisconnectButton) {
+    elements.featureActivationDisconnectButton.addEventListener("click", () => {
+      openWhatsAppDisconnectConfirmation();
     });
   }
   if (elements.featureStudioOverviewButton) {

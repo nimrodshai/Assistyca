@@ -2720,6 +2720,10 @@ body[data-modal="billing"] .app-shell {
   color: var(--accent);
 }
 
+.platform-connection-disconnect {
+  justify-self: start;
+}
+
 .auth-alert-actions {
   display: flex;
   gap: 0.65rem;

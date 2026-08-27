@@ -2740,6 +2740,26 @@ class PortalDatabase:
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, email=normalized_email)
 
+    def delete_whatsapp_connection(self, email: str) -> bool:
+        """Remove the authenticated user's WhatsApp credentials and metadata."""
+
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return False
+
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                user_id = 0
+            if user_id <= 0:
+                return False
+            cursor = conn.execute(
+                "DELETE FROM whatsapp_connections WHERE user_id = ?",
+                (user_id,),
+            )
+            return cursor.rowcount > 0
+
     def migrate_whatsapp_access_tokens(self) -> int:
         """Move legacy plaintext WhatsApp tokens into the configured vault."""
 
@@ -2857,6 +2877,50 @@ class PortalDatabase:
                 (user_id, normalized_platform, *statuses),
             ).fetchone()
             return normalize_text(row["secret_ciphertext"]) if row else None
+
+    def get_platform_connection_secret_record(
+        self,
+        email: str,
+        connection_id: str,
+    ) -> dict[str, str] | None:
+        """Return one connection's encrypted secret for server-side lifecycle work.
+
+        This method is intentionally separate from the public connection
+        serializer. Callers must keep ``secretCiphertext`` inside the server;
+        it is only used to revoke a provider credential before the row is
+        removed.
+        """
+
+        normalized_email = normalize_email(email)
+        normalized_id = normalize_text(connection_id)
+        if not normalized_email or not normalized_id:
+            return None
+
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                return None
+            if user_id <= 0:
+                return None
+            row = conn.execute(
+                """
+                SELECT id, platform, auth_type, secret_ciphertext, connection_status
+                FROM platform_connections
+                WHERE user_id = ? AND id = ?
+                LIMIT 1
+                """,
+                (user_id, normalized_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "id": normalize_text(row["id"]),
+                "platform": normalize_text(row["platform"]).lower(),
+                "authType": normalize_text(row["auth_type"]).lower() or "api_token",
+                "secretCiphertext": normalize_text(row["secret_ciphertext"]),
+                "connectionStatus": normalize_text(row["connection_status"]).lower() or "connected",
+            }
 
     def save_platform_connection(
         self,
