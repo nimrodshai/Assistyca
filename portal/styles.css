@@ -3790,29 +3790,6 @@ body[data-modal="billing"] .app-shell {
   white-space: nowrap;
 }
 
-.agent-actions-sync-row {
-  display: flex;
-  gap: 0.45rem;
-  align-items: center;
-  min-height: 1.25rem;
-  color: var(--muted-strong);
-  font-size: 0.72rem;
-}
-
-.agent-actions-live-dot {
-  width: 0.45rem;
-  height: 0.45rem;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: #2c9c72;
-  box-shadow: 0 0 0 4px rgba(44, 156, 114, 0.1);
-}
-
-.agent-actions-sync-row.is-error .agent-actions-live-dot {
-  background: #bd4f4f;
-  box-shadow: 0 0 0 4px rgba(189, 79, 79, 0.1);
-}
-
 .agent-actions-section,
 .agent-tools-secondary {
   display: grid;

@@ -1319,8 +1319,6 @@ const elements = {
   agentChatsListView: document.querySelector("#agentChatsListView"),
   agentChatList: document.querySelector("#agentChatList"),
   agentNewChatButton: document.querySelector("#agentNewChatButton"),
-  agentActionsStatus: document.querySelector("#agentActionsStatus"),
-  agentActionsRefreshButton: document.querySelector("#agentActionsRefreshButton"),
   agentPendingActionsCount: document.querySelector("#agentPendingActionsCount"),
   agentCompletedActionsCount: document.querySelector("#agentCompletedActionsCount"),
   agentHistoryToggleButton: document.querySelector("#agentHistoryToggleButton"),
@@ -15658,32 +15656,6 @@ function renderAgentActions() {
     renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
   }
 
-  const statusRow = elements.agentActionsStatus?.closest(".agent-actions-sync-row");
-  statusRow?.classList.toggle("is-error", Boolean(state.scheduledActionsError));
-  statusRow?.classList.toggle("is-syncing", Boolean(initialLoading || (state.scheduledActionsLoading && state.scheduledActionsLoadedAt)));
-  if (elements.agentActionsStatus) {
-    if (initialLoading || (state.scheduledActionsLoading && !state.scheduledActionsLoadedAt)) {
-      elements.agentActionsStatus.textContent = "Checking actions…";
-    } else if (state.scheduledActionsError) {
-      elements.agentActionsStatus.textContent = "Couldn’t refresh actions";
-    } else if (state.scheduledActionsLastError && !state.scheduledActionsLoadedAt) {
-      elements.agentActionsStatus.textContent = "Retrying actions refresh…";
-    } else if (state.scheduledActionsLoadedAt) {
-      elements.agentActionsStatus.textContent = `Updated ${new Intl.DateTimeFormat(undefined, {
-        hour: "numeric",
-        minute: "2-digit",
-        second: "2-digit",
-      }).format(new Date(state.scheduledActionsLoadedAt))}`;
-    } else {
-      elements.agentActionsStatus.textContent = "Waiting to check";
-    }
-  }
-  const actionsBusy = initialLoading || state.scheduledActionsLoading;
-  elements.agentActionsRefreshButton?.classList.toggle("is-loading", actionsBusy);
-  if (elements.agentActionsRefreshButton) {
-    elements.agentActionsRefreshButton.disabled = actionsBusy;
-  }
-
   const selectedAction = actions.find((action) => String(action.id) === String(state.selectedScheduledActionId));
   if (state.selectedScheduledActionId && !selectedAction) {
     state.selectedScheduledActionId = "";
@@ -23345,12 +23317,6 @@ function bindEvents() {
   if (elements.agentAddToolBackdrop) {
     elements.agentAddToolBackdrop.addEventListener("click", () => {
       setAgentAddToolMenuOpen(false);
-    });
-  }
-
-  if (elements.agentActionsRefreshButton) {
-    elements.agentActionsRefreshButton.addEventListener("click", () => {
-      void refreshScheduledActions({ userInitiated: true });
     });
   }
 
