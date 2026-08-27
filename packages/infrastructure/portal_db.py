@@ -5345,7 +5345,11 @@ class PortalDatabase:
                 """
                 SELECT * FROM source_actions
                 WHERE user_id = ?
-                ORDER BY CASE WHEN status IN ('active', 'running') THEN 0 ELSE 1 END, next_run_at ASC, id DESC
+                ORDER BY CASE
+                  WHEN status IN ('active', 'running') THEN 0
+                  WHEN status = 'paused' THEN 1
+                  ELSE 2
+                END, next_run_at ASC, id DESC
                 LIMIT ?
                 """,
                 (int(user_id), max(1, min(250, int(limit or 100)))),
@@ -5402,8 +5406,9 @@ class PortalDatabase:
             raise ValueError("Source action status must be active or cancelled.")
         now = now_iso()
         next_run = parse_datetime(next_run_at).astimezone(timezone.utc).isoformat() if next_run_at else None
+        status_field = "status = CASE WHEN status IN ('paused', 'cancelled') THEN status ELSE ? END"
         fields = [
-            "status = ?", "last_run_at = ?", "last_run_status = ?", "last_error = ?",
+            status_field, "last_run_at = ?", "last_run_status = ?", "last_error = ?",
             "last_http_status = ?", "last_content_type = ?", "last_content_hash = ?",
             "last_content_size = ?", "run_count = run_count + 1", "claimed_at = NULL", "updated_at = ?",
         ]
@@ -5427,6 +5432,42 @@ class PortalDatabase:
             row = conn.execute("SELECT * FROM source_actions WHERE id = ? AND user_id = ? LIMIT 1", (int(action_id), int(user_id))).fetchone()
         return self._load_source_action_row(row)
 
+    def pause_source_action(self, action_id: int, *, user_id: int) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0 or int(user_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE source_actions
+                SET status = 'paused', claimed_at = NULL, last_error = '', updated_at = ?
+                WHERE id = ? AND user_id = ? AND status IN ('active', 'running')
+                """,
+                (now_iso(), int(action_id), int(user_id)),
+            )
+            row = conn.execute(
+                "SELECT * FROM source_actions WHERE id = ? AND user_id = ? LIMIT 1",
+                (int(action_id), int(user_id)),
+            ).fetchone()
+        return self._load_source_action_row(row)
+
+    def resume_source_action(self, action_id: int, *, user_id: int) -> dict[str, Any] | None:
+        if int(action_id or 0) <= 0 or int(user_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE source_actions
+                SET status = 'active', claimed_at = NULL, last_error = '', updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'paused'
+                """,
+                (now_iso(), int(action_id), int(user_id)),
+            )
+            row = conn.execute(
+                "SELECT * FROM source_actions WHERE id = ? AND user_id = ? LIMIT 1",
+                (int(action_id), int(user_id)),
+            ).fetchone()
+        return self._load_source_action_row(row)
+
     def update_source_action_schedule(
         self,
         *,
@@ -5446,7 +5487,7 @@ class PortalDatabase:
                 """
                 UPDATE source_actions
                 SET interval_minutes = ?, next_run_at = ?,
-                    status = CASE WHEN status = 'cancelled' THEN status ELSE 'active' END,
+                    status = CASE WHEN status IN ('cancelled', 'paused') THEN status ELSE 'active' END,
                     claimed_at = NULL, updated_at = ?
                 WHERE id = ? AND user_id = ?
                 """,

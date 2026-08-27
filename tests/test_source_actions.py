@@ -49,6 +49,34 @@ class SourceActionTests(unittest.TestCase):
             self.assertIsNone(database.cancel_source_action(int(action["id"]), user_id=int(other["id"])))
             self.assertEqual(database.get_source_action(int(action["id"]))["status"], "active")
 
+    def test_source_action_can_pause_and_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = PortalDatabase(Path(directory) / "portal.db", bootstrap_registered_emails=["owner@example.com"])
+            user = database.get_user("owner@example.com")
+            action = database.create_source_action(
+                user_id=int(user["id"]),
+                source_type="file",
+                file_name="notes.txt",
+                file_bytes=b"notes",
+                interval_minutes=60,
+            )
+
+            paused = database.pause_source_action(int(action["id"]), user_id=int(user["id"]))
+
+            self.assertEqual(paused["status"], "paused")
+            self.assertEqual(database.list_due_source_actions(now=paused["nextRunAt"]), [])
+
+            rescheduled = database.update_source_action_schedule(
+                action_id=int(action["id"]),
+                user_id=int(user["id"]),
+                interval_minutes=1440,
+            )
+            self.assertEqual(rescheduled["status"], "paused")
+
+            resumed = database.resume_source_action(int(action["id"]), user_id=int(user["id"]))
+
+            self.assertEqual(resumed["status"], "active")
+
 
 if __name__ == "__main__":
     unittest.main()

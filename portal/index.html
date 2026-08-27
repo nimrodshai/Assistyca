@@ -24,7 +24,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="./styles.css?v=127" />
+    <link rel="stylesheet" href="./styles.css?v=129" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -297,6 +297,17 @@
                 >
                   Chats
                 </button>
+                <button
+                  id="agentPanelFoldersModeButton"
+                  class="agent-panel-mode-button"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="agentFoldersListView"
+                  data-agent-panel-mode="folders"
+                >
+                  Folders
+                </button>
               </div>
               <button id="agentToolsCloseButton" class="agent-actions-icon-button agent-tools-close" type="button" aria-label="Close panel">×</button>
             </div>
@@ -351,6 +362,43 @@
                   </button>
                 </div>
                 <div id="agentChatList" class="agent-chat-list" role="list"></div>
+              </div>
+
+              <div id="agentFoldersListView" class="agent-folders-list-view is-hidden" aria-labelledby="agentFoldersTitle">
+                <div class="agent-folders-list-head">
+                  <div>
+                    <p class="eyebrow">Workspace</p>
+                    <h3 id="agentFoldersTitle">Folders</h3>
+                  </div>
+                  <span id="agentFolderCount" class="agent-actions-count">0</span>
+                </div>
+
+                <form id="agentFolderCreateForm" class="agent-folder-create">
+                  <label class="sr-only" for="agentFolderNameInput">Folder name</label>
+                  <input id="agentFolderNameInput" type="text" maxlength="64" autocomplete="off" placeholder="Folder name" />
+                  <label class="sr-only" for="agentFolderTypeSelect">Folder type</label>
+                  <select id="agentFolderTypeSelect" aria-label="Folder type">
+                    <option value="general">General</option>
+                    <option value="reports">Reports</option>
+                    <option value="receipts">Receipts</option>
+                    <option value="sources">Sources</option>
+                  </select>
+                  <button class="primary-button small" type="submit">Create</button>
+                </form>
+
+                <div class="agent-folder-controls">
+                  <label class="sr-only" for="agentFolderSearchInput">Filter folders</label>
+                  <input id="agentFolderSearchInput" type="search" autocomplete="off" placeholder="Filter folders" />
+                  <label class="sr-only" for="agentFolderSortSelect">Sort folders</label>
+                  <select id="agentFolderSortSelect" aria-label="Sort folders">
+                    <option value="recent">Recent</option>
+                    <option value="name">Name</option>
+                    <option value="type">Type</option>
+                    <option value="count">Items</option>
+                  </select>
+                </div>
+
+                <div id="agentFolderList" class="agent-folder-list" role="list"></div>
               </div>
 
               <div id="agentActionDetailView" class="agent-action-detail-view is-hidden" aria-live="polite">
@@ -1612,6 +1660,6 @@ Owner said afternoons are easier."
     </section>
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
-    <script src="./app.js?v=154"></script>
+    <script src="./app.js?v=156"></script>
   </body>
 </html>

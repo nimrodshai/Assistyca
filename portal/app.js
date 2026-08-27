@@ -411,11 +411,20 @@ const DEFAULT_SIMULATOR = {
 const AGENT_INITIAL_MESSAGE = "";
 const AGENT_MAX_MESSAGES = 40;
 const AGENT_MAX_CHATS = 30;
+const AGENT_MAX_FOLDERS = 80;
 const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
 const AGENT_COMPOSER_MAX_LINES = 5;
-const VALID_AGENT_PANEL_MODES = new Set(["actions", "chats"]);
+const VALID_AGENT_PANEL_MODES = new Set(["actions", "chats", "folders"]);
+const VALID_AGENT_FOLDER_SORTS = new Set(["recent", "name", "type", "count"]);
+const AGENT_FOLDER_TYPES = [
+  { value: "general", label: "General" },
+  { value: "reports", label: "Reports" },
+  { value: "receipts", label: "Receipts" },
+  { value: "sources", label: "Sources" },
+];
 const GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly";
 const GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+const GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
   {
     id: "calendar",
@@ -423,8 +432,7 @@ const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
     label: "Calendar events",
     detail: "Read event titles, times, attendees, and locations when an action runs.",
     scope: GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE,
-    stateLabel: "Optional",
-    requiredFor: ["calendar"],
+    stateLabel: "Selected",
   },
   {
     id: "gmail",
@@ -432,8 +440,15 @@ const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
     label: "Email summaries",
     detail: "Read Gmail messages for digest actions.",
     scope: GOOGLE_GMAIL_READONLY_SCOPE,
-    stateLabel: "Optional",
-    requiredFor: ["email"],
+    stateLabel: "Selected",
+  },
+  {
+    id: "drive",
+    platformId: "drive",
+    label: "Drive files",
+    detail: "Read Google Drive files for document-based actions.",
+    scope: GOOGLE_DRIVE_READONLY_SCOPE,
+    stateLabel: "Selected",
   },
 ];
 const AGENT_ADD_TOOL_OPTIONS = [
@@ -447,7 +462,7 @@ const AGENT_ADD_TOOL_OPTIONS = [
   {
     id: "calendar",
     label: "Google",
-    detail: "Connect Calendar or Gmail",
+    detail: "Connect Calendar, Gmail, or Drive",
     icon: "google",
     platformId: "calendar",
   },
@@ -473,20 +488,30 @@ const AGENT_ADD_TOOL_OPTIONS = [
     prompt: "Help me connect another app.",
   },
 ];
-const PLATFORM_CONNECTION_OPTIONS = AGENT_ADD_TOOL_OPTIONS
-  .filter((option) => option.platformId)
-  .map((option) => ({
-    id: option.platformId,
-    label: option.label,
-    detail: option.detail,
-    icon: option.icon,
-    authType: option.id === "telegram"
-      ? "bot_token"
-      : (["calendar", "email"].includes(option.id) ? "oauth" : "api_token"),
-    credentialLabel: option.id === "slack"
-      ? "Slack bot token"
-      : (["calendar", "email"].includes(option.id) ? "Google access" : `${option.label} token`),
-  }));
+const PLATFORM_CONNECTION_OPTIONS = [
+  ...AGENT_ADD_TOOL_OPTIONS
+    .filter((option) => option.platformId)
+    .map((option) => ({
+      id: option.platformId,
+      label: option.label,
+      detail: option.detail,
+      icon: option.icon,
+      authType: option.id === "telegram"
+        ? "bot_token"
+        : (["calendar", "email"].includes(option.id) ? "oauth" : "api_token"),
+      credentialLabel: option.id === "slack"
+        ? "Slack bot token"
+        : (["calendar", "email"].includes(option.id) ? "Google access" : `${option.label} token`),
+    })),
+  {
+    id: "drive",
+    label: "Drive",
+    detail: "Connect Google Drive",
+    icon: "google",
+    authType: "oauth",
+    credentialLabel: "Google access",
+  },
+];
 const PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is not available yet, so no token was saved.";
 const AGENT_BLUEPRINTS = {
   emailDigest: {
@@ -1176,6 +1201,8 @@ const state = {
   featureActivationLoadedAt: 0,
   selectedScheduledActionId: "",
   agentPanelMode: "actions",
+  agentFolderSearch: "",
+  agentFolderSort: "recent",
   agentHistoryExpanded: false,
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
@@ -1318,10 +1345,19 @@ const elements = {
   agentActionsPanelBody: document.querySelector("#agentActionsPanelBody"),
   agentPanelActionsModeButton: document.querySelector("#agentPanelActionsModeButton"),
   agentPanelChatsModeButton: document.querySelector("#agentPanelChatsModeButton"),
+  agentPanelFoldersModeButton: document.querySelector("#agentPanelFoldersModeButton"),
   agentActionsListView: document.querySelector("#agentActionsListView"),
   agentChatsListView: document.querySelector("#agentChatsListView"),
+  agentFoldersListView: document.querySelector("#agentFoldersListView"),
   agentChatList: document.querySelector("#agentChatList"),
   agentNewChatButton: document.querySelector("#agentNewChatButton"),
+  agentFolderCreateForm: document.querySelector("#agentFolderCreateForm"),
+  agentFolderNameInput: document.querySelector("#agentFolderNameInput"),
+  agentFolderTypeSelect: document.querySelector("#agentFolderTypeSelect"),
+  agentFolderSearchInput: document.querySelector("#agentFolderSearchInput"),
+  agentFolderSortSelect: document.querySelector("#agentFolderSortSelect"),
+  agentFolderList: document.querySelector("#agentFolderList"),
+  agentFolderCount: document.querySelector("#agentFolderCount"),
   agentPendingActionsCount: document.querySelector("#agentPendingActionsCount"),
   agentCompletedActionsCount: document.querySelector("#agentCompletedActionsCount"),
   agentHistoryToggleButton: document.querySelector("#agentHistoryToggleButton"),
@@ -3294,11 +3330,84 @@ function normalizeAgentChat(value = {}) {
   return createAgentChat(source.messages || [], source);
 }
 
+function normalizeAgentFolderType(value) {
+  const text = String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, "-");
+  if (["report", "reports"].includes(text)) {
+    return "reports";
+  }
+  if (["receipt", "receipts", "invoice", "invoices"].includes(text)) {
+    return "receipts";
+  }
+  if (["source", "sources", "reference", "references"].includes(text)) {
+    return "sources";
+  }
+  return "general";
+}
+
+function normalizeAgentFolderName(value, fallback = "Untitled folder") {
+  return normalizeAgentTextItem(value, fallback).replace(/\s+/g, " ").slice(0, 64).trim() || fallback;
+}
+
+function normalizeAgentFolderSort(value) {
+  const sort = String(value || "").trim().toLowerCase();
+  return VALID_AGENT_FOLDER_SORTS.has(sort) ? sort : "recent";
+}
+
+function getAgentFolderTypeOption(type) {
+  const normalizedType = normalizeAgentFolderType(type);
+  return AGENT_FOLDER_TYPES.find((option) => option.value === normalizedType) || AGENT_FOLDER_TYPES[0];
+}
+
+function createAgentFolderRecord(name, type = "general", options = {}) {
+  const source = options && typeof options === "object" ? options : {};
+  const now = new Date().toISOString();
+  const createdAt = normalizeAgentTextItem(source.createdAt || source.created_at, now);
+  return {
+    id: normalizeAgentTextItem(source.id, createAgentId("agent-folder")),
+    name: normalizeAgentFolderName(name || source.name || source.title),
+    type: normalizeAgentFolderType(type || source.type || source.category),
+    itemCount: Math.max(0, Number.parseInt(
+      source.itemCount ?? source.item_count ?? source.count ?? 0,
+      10,
+    ) || 0),
+    createdAt,
+    updatedAt: normalizeAgentTextItem(source.updatedAt || source.updated_at, createdAt),
+  };
+}
+
+function normalizeAgentFolder(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return createAgentFolderRecord(source.name || source.title, source.type || source.category, source);
+}
+
 function sortAgentChats(chats = []) {
   return [...chats].sort((a, b) => {
     const bTime = parseAgentTimestamp(b?.updatedAt || b?.createdAt);
     const aTime = parseAgentTimestamp(a?.updatedAt || a?.createdAt);
     return bTime - aTime;
+  });
+}
+
+function sortAgentFolders(folders = [], sortMode = state.agentFolderSort) {
+  const mode = normalizeAgentFolderSort(sortMode);
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  return [...folders].sort((a, b) => {
+    if (mode === "name") {
+      return byName(a, b);
+    }
+    if (mode === "type") {
+      return getAgentFolderTypeOption(a.type).label.localeCompare(
+        getAgentFolderTypeOption(b.type).label,
+        undefined,
+        { sensitivity: "base" },
+      ) || byName(a, b);
+    }
+    if (mode === "count") {
+      return (Number(b.itemCount || 0) - Number(a.itemCount || 0)) || byName(a, b);
+    }
+    const bTime = parseAgentTimestamp(b?.updatedAt || b?.createdAt);
+    const aTime = parseAgentTimestamp(a?.updatedAt || a?.createdAt);
+    return (bTime - aTime) || byName(a, b);
   });
 }
 
@@ -3371,8 +3480,10 @@ function createDefaultAgentWorkspace() {
   return {
     messages: defaultChat.messages,
     chats: [defaultChat],
+    folders: [],
     activeChatId: defaultChat.id,
     panelMode: "actions",
+    folderSort: "recent",
     proposals: [],
     helpers: [],
     activeProposalId: "",
@@ -3397,6 +3508,9 @@ function normalizeAgentWorkspace(agent = {}) {
       title: messages.length ? "" : "New chat",
       status: "active",
     })];
+  const folders = Array.isArray(source.folders)
+    ? source.folders.map(normalizeAgentFolder).filter(Boolean).slice(0, AGENT_MAX_FOLDERS)
+    : [];
   let activeChatId = normalizeAgentTextItem(source.activeChatId || source.active_chat_id, "");
   if (!activeChatId || !chats.some((chat) => chat.id === activeChatId)) {
     activeChatId = chats.find((chat) => chat.status === "active")?.id || chats[0]?.id || "";
@@ -3424,8 +3538,10 @@ function normalizeAgentWorkspace(agent = {}) {
   return {
     messages: activeChat?.messages || fallback.messages,
     chats,
+    folders,
     activeChatId: activeChat?.id || activeChatId || fallback.activeChatId,
     panelMode: normalizeAgentPanelMode(source.panelMode || source.panel_mode),
+    folderSort: normalizeAgentFolderSort(source.folderSort || source.folder_sort),
     proposals,
     helpers,
     activeProposalId,
@@ -5008,14 +5124,12 @@ function createCalendarOAuthStatusNode() {
   return { status, setStatus };
 }
 
-function getGoogleOAuthPermissionState(scopeOption, option) {
-  const optionId = String(option?.id || "").trim().toLowerCase();
-  const required = Array.isArray(scopeOption.requiredFor) && scopeOption.requiredFor.includes(optionId);
+function getGoogleOAuthPermissionState(scopeOption) {
   const connected = getPlatformConnectionByPlatform(scopeOption.platformId)?.connectionStatus === "connected";
   return {
-    checked: required || connected,
-    disabled: required,
-    stateLabel: required ? "Required" : (connected ? "Connected" : "Optional"),
+    checked: true,
+    disabled: false,
+    stateLabel: connected ? "Connected" : (scopeOption.stateLabel || "Selected"),
   };
 }
 
@@ -5030,7 +5144,7 @@ function createGoogleOAuthPermissionList(option) {
   list.className = "calendar-oauth-permission-list";
 
   for (const scopeOption of GOOGLE_CONNECTION_SCOPE_OPTIONS) {
-    const permissionState = getGoogleOAuthPermissionState(scopeOption, option);
+    const permissionState = getGoogleOAuthPermissionState(scopeOption);
     const item = document.createElement("label");
     item.className = "calendar-oauth-permission";
     item.classList.toggle("is-disabled", Boolean(permissionState.disabled && !permissionState.checked));
@@ -5291,7 +5405,7 @@ function openPlatformConnection(optionId) {
     return;
   }
 
-  if (option.id === "calendar" || option.id === "email") {
+  if (["calendar", "email", "drive"].includes(option.id)) {
     openCalendarOAuthConnection(option);
     return;
   }
@@ -11316,6 +11430,8 @@ function syncActiveAgentChatFromWorkspace(agent = getAgentWorkspace(), options =
 function prepareAgentWorkspaceForPersistence(agent = getAgentWorkspace()) {
   syncActiveAgentChatFromWorkspace(agent);
   agent.chats = sortAgentChats(agent.chats).slice(0, AGENT_MAX_CHATS);
+  agent.folders = sortAgentFolders(agent.folders, agent.folderSort).slice(0, AGENT_MAX_FOLDERS);
+  agent.folderSort = normalizeAgentFolderSort(agent.folderSort || state.agentFolderSort);
   if (!agent.chats.some((chat) => chat.id === agent.activeChatId)) {
     agent.activeChatId = agent.chats[0]?.id || "";
   }
@@ -11389,6 +11505,7 @@ function recordAgentPortalOpened(options = {}) {
 function syncAgentStateFromClientState(options = {}) {
   const agent = getAgentWorkspace();
   state.agentPanelMode = normalizeAgentPanelMode(agent.panelMode || state.agentPanelMode);
+  state.agentFolderSort = normalizeAgentFolderSort(agent.folderSort || state.agentFolderSort);
   if (options.recordOpen) {
     recordAgentPortalOpened({ persist: options.persistOpen !== false });
   }
@@ -11448,6 +11565,25 @@ function selectAgentChat(chatId) {
   renderApp({ preserveStatus: true });
 }
 
+function deleteAgentChat(chatId) {
+  const agent = getAgentWorkspace();
+  const chat = agent.chats.find((candidate) => candidate.id === chatId);
+  if (!chat || chat.id === agent.activeChatId || chat.status === "active") {
+    return;
+  }
+
+  const title = getAgentChatTitle(chat);
+  const confirmed = window.confirm(`Delete “${title}”? This conversation will be removed from your chat history.`);
+  if (!confirmed) {
+    return;
+  }
+
+  agent.chats = agent.chats.filter((candidate) => candidate.id !== chat.id);
+  persistClientState();
+  renderAgentChats();
+  setStatus("Conversation deleted");
+}
+
 function setAgentPanelMode(mode, options = {}) {
   const nextMode = normalizeAgentPanelMode(mode);
   state.agentPanelMode = nextMode;
@@ -11457,6 +11593,52 @@ function setAgentPanelMode(mode, options = {}) {
     persistClientState();
   }
   updateAgentWorkspace();
+}
+
+function getAgentPanelModeControls() {
+  return [
+    [elements.agentPanelActionsModeButton, "actions"],
+    [elements.agentPanelChatsModeButton, "chats"],
+    [elements.agentPanelFoldersModeButton, "folders"],
+  ].filter(([button]) => Boolean(button));
+}
+
+function setAgentFolderSearch(value) {
+  state.agentFolderSearch = normalizeAgentTextItem(value, "").slice(0, 80);
+  renderAgentFolders();
+}
+
+function setAgentFolderSort(value, options = {}) {
+  const sort = normalizeAgentFolderSort(value);
+  state.agentFolderSort = sort;
+  const agent = getAgentWorkspace();
+  agent.folderSort = sort;
+  if (options.persist !== false) {
+    persistClientState();
+  }
+  renderAgentFolders();
+}
+
+function addAgentFolder(name, type = "general") {
+  const folderName = normalizeAgentFolderName(name, "");
+  if (!folderName) {
+    return null;
+  }
+
+  const agent = getAgentWorkspace();
+  const duplicate = agent.folders.some((folder) => folder.name.toLowerCase() === folderName.toLowerCase());
+  if (duplicate) {
+    return null;
+  }
+
+  const folder = createAgentFolderRecord(folderName, type);
+  agent.folders.unshift(folder);
+  agent.folders = sortAgentFolders(agent.folders, state.agentFolderSort).slice(0, AGENT_MAX_FOLDERS);
+  agent.panelMode = "folders";
+  state.agentPanelMode = "folders";
+  persistClientState();
+  updateAgentWorkspace();
+  return folder;
 }
 
 function normalizeAgentDeliveryChannel(value) {
@@ -11979,6 +12161,37 @@ function areAgentMessageActionsResolved(message, messages = []) {
 
   const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
   return messageIndex >= 0 && messageIndex < messages.length - 1;
+}
+
+function getAgentStoredMessageActions(message) {
+  return Array.isArray(message?.metadata?.actions) ? message.metadata.actions : [];
+}
+
+function getAgentMessageProposal(message, agent = getAgentWorkspace()) {
+  const proposalId = message?.metadata?.proposalId || "";
+  return proposalId
+    ? agent.proposals.find((candidate) => candidate.id === proposalId) || null
+    : null;
+}
+
+function getAgentRenderableMessageActions(message, kind, proposal) {
+  if (!message || message.role === "user" || kind === "connection-setup") {
+    return [];
+  }
+
+  if (kind === "question" && proposal && !proposal.approved && proposal.status !== "rejected") {
+    const questionIndex = Math.max(0, Number(message.metadata?.questionIndex || proposal.questionIndex || 0) || 0);
+    const questionActions = getAgentQuestionActions(proposal, questionIndex, message.text);
+    if (questionActions.length) {
+      return questionActions;
+    }
+  }
+
+  if (kind === "approval" && proposal) {
+    return getAgentApprovalPromptActions(proposal, message.text);
+  }
+
+  return getAgentStoredMessageActions(message);
 }
 
 function normalizeAgentProposalFieldKey(key) {
@@ -13164,20 +13377,10 @@ function renderAgentMessage(message) {
     row.append(createAgentWhatsAppReplyCard(message));
   }
 
-  const rawActions = kind === "connection-setup"
-    ? []
-    : (Array.isArray(message.metadata?.actions) ? message.metadata.actions : []);
-  if (rawActions.length && message.role !== "user") {
-    const agent = getAgentWorkspace();
-    const proposal = message.metadata?.proposalId
-      ? agent.proposals.find((candidate) => candidate.id === message.metadata.proposalId)
-      : null;
-    const actions = kind === "approval" && !shouldAttachAgentApprovalActions(proposal, message.text)
-      ? []
-      : rawActions;
-    if (!actions.length) {
-      return row;
-    }
+  const agent = getAgentWorkspace();
+  const proposal = getAgentMessageProposal(message, agent);
+  const actions = getAgentRenderableMessageActions(message, kind, proposal);
+  if (actions.length && message.role !== "user") {
     const messageRevision = Math.max(0, Number(message.metadata?.proposalRevision || 0));
     const isStaleApproval = kind === "approval"
       && proposal
@@ -13206,6 +13409,7 @@ function renderAgentMessage(message) {
 }
 
 function getAgentMessageRenderSignature(messages) {
+  const agent = getAgentWorkspace();
   return JSON.stringify(messages.map((message) => [
     message.id,
     message.role,
@@ -13224,14 +13428,16 @@ function getAgentMessageRenderSignature(messages) {
     Array.isArray(message.metadata?.connectionSetup?.missingFields)
       ? message.metadata.connectionSetup.missingFields.map((field) => field?.key || field?.label || "")
       : [],
-    Array.isArray(message.metadata?.actions)
-      ? message.metadata.actions.map((action) => [
+    (() => {
+      const kind = String(message.metadata?.kind || (message.role === "user" ? "user" : "text"));
+      const proposal = getAgentMessageProposal(message, agent);
+      return getAgentRenderableMessageActions(message, kind, proposal).map((action) => [
         action.id || "",
         action.label || "",
         action.value || "",
         action.tone || "",
-      ])
-      : [],
+      ]);
+    })(),
   ]));
 }
 
@@ -13336,15 +13542,18 @@ function formatAgentChatTime(chat) {
 }
 
 function createAgentChatItem(chat, activeChatId) {
-  const item = document.createElement("button");
-  item.type = "button";
+  const item = document.createElement("article");
   item.className = "agent-chat-item";
   item.dataset.agentChatId = chat.id;
   item.setAttribute("role", "listitem");
   const isActive = chat.id === activeChatId;
   item.classList.toggle("is-active", isActive);
-  item.setAttribute("aria-current", isActive ? "true" : "false");
-  item.setAttribute("aria-label", `${isActive ? "Current chat" : "Open chat"}: ${getAgentChatTitle(chat)}`);
+
+  const openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.className = "agent-chat-item-open";
+  openButton.setAttribute("aria-current", isActive ? "true" : "false");
+  openButton.setAttribute("aria-label", `${isActive ? "Current chat" : "Open chat"}: ${getAgentChatTitle(chat)}`);
 
   const head = document.createElement("div");
   head.className = "agent-chat-item-head";
@@ -13363,7 +13572,20 @@ function createAgentChatItem(chat, activeChatId) {
   preview.className = "agent-chat-preview";
   preview.textContent = getAgentChatPreview(chat);
 
-  item.append(head, time, preview);
+  openButton.append(head, time, preview);
+  item.append(openButton);
+
+  if (!isActive) {
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "agent-chat-delete";
+    deleteButton.dataset.agentChatDelete = chat.id;
+    deleteButton.setAttribute("aria-label", `Delete conversation: ${getAgentChatTitle(chat)}`);
+    deleteButton.title = "Delete conversation";
+    deleteButton.textContent = "Delete";
+    item.append(deleteButton);
+  }
+
   return item;
 }
 
@@ -13388,18 +13610,112 @@ function renderAgentChats() {
   );
 }
 
+function formatAgentFolderItemCount(count) {
+  const total = Math.max(0, Number.parseInt(count, 10) || 0);
+  return `${total} item${total === 1 ? "" : "s"}`;
+}
+
+function formatAgentFolderTime(folder) {
+  const timestamp = parseAgentTimestamp(folder?.updatedAt || folder?.createdAt);
+  if (!timestamp) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function getAgentFolderSearchText(folder) {
+  const type = getAgentFolderTypeOption(folder?.type);
+  return [
+    folder?.name,
+    type.value,
+    type.label,
+    formatAgentFolderItemCount(folder?.itemCount),
+  ].join(" ").toLowerCase();
+}
+
+function getFilteredAgentFolders(agent = getAgentWorkspace()) {
+  const query = normalizeAgentTextItem(state.agentFolderSearch, "").toLowerCase();
+  const folders = Array.isArray(agent.folders) ? agent.folders : [];
+  const filtered = query
+    ? folders.filter((folder) => getAgentFolderSearchText(folder).includes(query))
+    : folders;
+  return sortAgentFolders(filtered, state.agentFolderSort);
+}
+
+function createAgentFolderItem(folder) {
+  const item = document.createElement("article");
+  const type = getAgentFolderTypeOption(folder?.type);
+  item.className = `agent-folder-item is-${type.value}`;
+  item.setAttribute("role", "listitem");
+
+  const icon = document.createElement("span");
+  icon.className = "agent-folder-icon";
+  icon.setAttribute("aria-hidden", "true");
+
+  const copy = document.createElement("span");
+  copy.className = "agent-folder-copy";
+  const title = document.createElement("strong");
+  title.textContent = folder.name;
+
+  const meta = document.createElement("span");
+  meta.className = "agent-folder-meta";
+  meta.textContent = `${type.label} · ${formatAgentFolderItemCount(folder.itemCount)}`;
+  copy.append(title, meta);
+
+  const time = document.createElement("span");
+  time.className = "agent-folder-time";
+  time.textContent = formatAgentFolderTime(folder);
+
+  item.append(icon, copy, time);
+  return item;
+}
+
+function renderAgentFolders() {
+  if (!elements.agentFolderList) {
+    return;
+  }
+
+  const agent = getAgentWorkspace();
+  agent.folderSort = normalizeAgentFolderSort(agent.folderSort || state.agentFolderSort);
+  state.agentFolderSort = normalizeAgentFolderSort(state.agentFolderSort || agent.folderSort);
+  const folders = getFilteredAgentFolders(agent);
+  const totalFolders = Array.isArray(agent.folders) ? agent.folders.length : 0;
+
+  if (elements.agentFolderCount) {
+    elements.agentFolderCount.textContent = String(totalFolders);
+  }
+  if (elements.agentFolderSearchInput && elements.agentFolderSearchInput.value !== state.agentFolderSearch) {
+    elements.agentFolderSearchInput.value = state.agentFolderSearch;
+  }
+  if (elements.agentFolderSortSelect && elements.agentFolderSortSelect.value !== state.agentFolderSort) {
+    elements.agentFolderSortSelect.value = state.agentFolderSort;
+  }
+
+  if (!folders.length) {
+    const empty = document.createElement("p");
+    empty.className = "agent-action-empty";
+    empty.textContent = state.agentFolderSearch ? "No matching folders." : "No folders yet.";
+    elements.agentFolderList.replaceChildren(empty);
+    return;
+  }
+
+  elements.agentFolderList.replaceChildren(
+    ...folders.map(createAgentFolderItem),
+  );
+}
+
 function syncAgentPanelModeControls() {
   const mode = normalizeAgentPanelMode(state.agentPanelMode);
-  const isActions = mode === "actions";
-  elements.agentActionsListView?.classList.toggle("is-hidden", !isActions);
-  elements.agentChatsListView?.classList.toggle("is-hidden", isActions);
+  elements.agentActionsListView?.classList.toggle("is-hidden", mode !== "actions");
+  elements.agentChatsListView?.classList.toggle("is-hidden", mode !== "chats");
+  elements.agentFoldersListView?.classList.toggle("is-hidden", mode !== "folders");
   elements.agentActionDetailView?.classList.add("is-hidden");
 
-  const controls = [
-    [elements.agentPanelActionsModeButton, "actions"],
-    [elements.agentPanelChatsModeButton, "chats"],
-  ];
-  for (const [button, buttonMode] of controls) {
+  for (const [button, buttonMode] of getAgentPanelModeControls()) {
     if (!button) {
       continue;
     }
@@ -14123,7 +14439,7 @@ function createAgentProposalLocalAction(proposal) {
       initialRunError: String(proposal.executionPlan?.initialRunError || "").trim(),
     },
     local: true,
-    lastError: backendFeatureId && !backendFeatureActive && manualOnly ? "The connected tool is turned off." : "",
+    lastError: backendFeatureId && !backendFeatureActive && manualOnly ? "This manual action is available when you choose Run now." : "",
     claimedAt: "",
     completedAt: backendFeatureId && !backendFeatureActive && manualOnly ? String(backendFeature?.deactivatedAt || proposal.updatedAt || approvedAt) : "",
     createdAt: approvedAt,
@@ -15896,7 +16212,12 @@ function createScheduledActionDetail(action) {
       sourceDetails.append(
         createScheduledActionDetailRow("Source", payload.sourceType === "file" ? (payload.fileName || "Attached file") : (payload.sourceUrl || "URL")),
         createScheduledActionDetailRow("Frequency", payload.frequency || "As configured"),
-        createScheduledActionDetailRow("Next check", formatScheduledActionDate(payload.nextRunAt || action.runAt, action.timezone)),
+        createScheduledActionDetailRow(
+          getScheduledActionStatusClass(action.status) === "paused" ? "Status" : "Next check",
+          getScheduledActionStatusClass(action.status) === "paused"
+            ? "Stopped until resumed"
+            : formatScheduledActionDate(payload.nextRunAt || action.runAt, action.timezone),
+        ),
       );
       if (payload.lastRunAt) {
         sourceDetails.append(createScheduledActionDetailRow("Last check", `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(payload.lastRunStatus || "success")}`));
@@ -15904,7 +16225,9 @@ function createScheduledActionDetail(action) {
       card.append(sourceDetails);
       const note = document.createElement("p");
       note.className = "agent-action-note";
-      note.textContent = "This phase checks and records the source. Content interpretation will be added next.";
+      note.textContent = getScheduledActionStatusClass(action.status) === "paused"
+        ? "This source action is stopped. Resume it when you want it to continue checking on its schedule."
+        : "This phase checks and records the source. Content interpretation will be added next.";
       card.append(note);
       const editor = createSourceActionEditor(action);
       if (editor) card.append(editor);
@@ -16009,6 +16332,7 @@ function createScheduledActionDetail(action) {
     const notes = {
       pending: ["Waiting to run", "This action is queued and will run automatically at the scheduled time."],
       running: ["Sending now", "The action has started and is waiting for WhatsApp to respond."],
+      paused: ["Paused", "This action is stopped until you resume it."],
       sent: ["Accepted by WhatsApp", "WhatsApp accepted the message. Waiting for a delivery update."],
       delivered: ["Delivered", "WhatsApp confirmed that the message reached the recipient."],
       read: ["Read", "WhatsApp confirmed that the message was opened."],
@@ -16320,6 +16644,7 @@ function updateAgentWorkspace() {
   renderAgentMessages();
   renderAgentActions();
   renderAgentChats();
+  renderAgentFolders();
   syncAgentPanelModeControls();
   if (elements.agentComposerInput) {
     elements.agentComposerInput.disabled = agentTurnBusy;
@@ -17806,19 +18131,24 @@ async function saveAgentMonitorLifecycleStatus(backendFeatureId, lifecycleStatus
     }
   }
 
+  const savePromise = apiRequest(`/api/features/${encodeURIComponent(featureId)}/config`, {
+    method: "POST",
+    headers: getSessionAuthHeaders(),
+    body: {
+      prompt: { ...feature.prompt },
+      settings: nextSettings,
+    },
+  });
   featureConfigBusy = true;
+  featureConfigSavePromise = savePromise;
   let response;
   try {
-    response = await apiRequest(`/api/features/${encodeURIComponent(featureId)}/config`, {
-      method: "POST",
-      headers: getSessionAuthHeaders(),
-      body: {
-        prompt: { ...feature.prompt },
-        settings: nextSettings,
-      },
-    });
+    response = await savePromise;
   } finally {
     featureConfigBusy = false;
+    if (featureConfigSavePromise === savePromise) {
+      featureConfigSavePromise = null;
+    }
   }
   applyServerFeatureStates([response.feature || {}], { persist: true });
   state.paymentStatus = response.paymentStatus || state.paymentStatus;
@@ -18414,9 +18744,12 @@ function setAgentToolsOpen(open) {
   elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
   if (elements.agentToolsToggleButton) {
     const upcomingCount = getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status)).length;
+    const folderCount = getAgentWorkspace().folders.length;
     const closedLabel = state.agentPanelMode === "chats"
       ? "View chats"
-      : (upcomingCount ? `Actions (${upcomingCount})` : "View actions");
+      : (state.agentPanelMode === "folders"
+        ? (folderCount ? `Folders (${folderCount})` : "View folders")
+        : (upcomingCount ? `Actions (${upcomingCount})` : "View actions"));
     elements.agentToolsToggleButton.textContent = isOpen
       ? "Close panel"
       : closedLabel;
@@ -24021,23 +24354,28 @@ function bindEvents() {
     });
   }
 
-  for (const button of [elements.agentPanelActionsModeButton, elements.agentPanelChatsModeButton]) {
-    if (!button) {
-      continue;
-    }
+  for (const [button] of getAgentPanelModeControls()) {
     button.addEventListener("click", () => {
       setAgentPanelMode(button.dataset.agentPanelMode || "actions");
     });
     button.addEventListener("keydown", (event) => {
-      if (!["ArrowLeft", "ArrowRight"].includes(event.key)) {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
         return;
       }
       event.preventDefault();
-      const nextMode = event.key === "ArrowRight" ? "chats" : "actions";
+      const controls = getAgentPanelModeControls();
+      const currentIndex = Math.max(0, controls.findIndex(([candidate]) => candidate === button));
+      let nextIndex = currentIndex;
+      if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = controls.length - 1;
+      } else {
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        nextIndex = (currentIndex + direction + controls.length) % controls.length;
+      }
+      const [focusTarget, nextMode] = controls[nextIndex] || controls[0] || [];
       setAgentPanelMode(nextMode);
-      const focusTarget = nextMode === "chats"
-        ? elements.agentPanelChatsModeButton
-        : elements.agentPanelActionsModeButton;
       focusTarget?.focus();
     });
   }
@@ -24049,11 +24387,60 @@ function bindEvents() {
   if (elements.agentChatList) {
     elements.agentChatList.addEventListener("click", (event) => {
       const target = getEventTargetElement(event);
-      const item = target?.closest("[data-agent-chat-id]");
+      const deleteButton = target?.closest("[data-agent-chat-delete]");
+      if (deleteButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteAgentChat(deleteButton.dataset.agentChatDelete || "");
+        return;
+      }
+
+      const openButton = target?.closest(".agent-chat-item-open");
+      const item = openButton?.closest("[data-agent-chat-id]");
       if (!item) {
         return;
       }
       selectAgentChat(item.dataset.agentChatId || "");
+    });
+  }
+
+  if (elements.agentFolderCreateForm) {
+    elements.agentFolderCreateForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const nameInput = elements.agentFolderNameInput;
+      const typeSelect = elements.agentFolderTypeSelect;
+      const folder = addAgentFolder(nameInput?.value || "", typeSelect?.value || "general");
+      if (!folder) {
+        nameInput?.setCustomValidity("Choose a unique folder name.");
+        nameInput?.reportValidity();
+        return;
+      }
+      if (nameInput) {
+        nameInput.value = "";
+        nameInput.setCustomValidity("");
+      }
+      setStatus(`Created ${folder.name}.`);
+      window.requestAnimationFrame(() => {
+        nameInput?.focus();
+      });
+    });
+  }
+
+  if (elements.agentFolderNameInput) {
+    elements.agentFolderNameInput.addEventListener("input", () => {
+      elements.agentFolderNameInput.setCustomValidity("");
+    });
+  }
+
+  if (elements.agentFolderSearchInput) {
+    elements.agentFolderSearchInput.addEventListener("input", (event) => {
+      setAgentFolderSearch(event.target.value);
+    });
+  }
+
+  if (elements.agentFolderSortSelect) {
+    elements.agentFolderSortSelect.addEventListener("change", (event) => {
+      setAgentFolderSort(event.target.value);
     });
   }
 

@@ -131,6 +131,7 @@ class FeatureActivationTests(unittest.TestCase):
                     "scheduleTimeLocal": "09:15",
                     "scheduleTimezone": "Asia/Jerusalem",
                     "deliveryChannel": "email",
+                    "actionLifecycleStatus": "paused",
                 },
             )
 
@@ -147,6 +148,7 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertEqual(result["feature"]["settings"]["intervalDays"], 7)
         self.assertEqual(result["feature"]["settings"]["scheduleTimeLocal"], "09:15")
         self.assertEqual(result["feature"]["settings"]["scheduleTimezone"], "Asia/Jerusalem")
+        self.assertEqual(result["feature"]["settings"]["actionLifecycleStatus"], "paused")
         self.assertEqual(result["feature"]["prompt"]["scenario"], "monitor")
         self.assertTrue(result["feature"]["setupStatus"]["settingsSavedAt"])
 
@@ -161,6 +163,7 @@ class FeatureActivationTests(unittest.TestCase):
         )
         self.assertEqual(assignment["metadata"]["settings"]["scheduleTimeLocal"], "09:15")
         self.assertEqual(assignment["metadata"]["settings"]["scheduleTimezone"], "Asia/Jerusalem")
+        self.assertEqual(assignment["metadata"]["settings"]["actionLifecycleStatus"], "paused")
 
     def test_legacy_monitor_settings_without_run_mode_display_as_manual(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())

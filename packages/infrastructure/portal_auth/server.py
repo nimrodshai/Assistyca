@@ -171,6 +171,10 @@ PLATFORM_CONNECTIONS = {
         "label": "Calendar",
         "authTypes": {"api_token", "oauth"},
     },
+    "drive": {
+        "label": "Google Drive",
+        "authTypes": {"oauth"},
+    },
     "telegram": {
         "label": "Telegram",
         "authTypes": {"api_token", "bot_token"},
@@ -189,18 +193,24 @@ GOOGLE_CALENDAR_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.events.r
 GOOGLE_GMAIL_OAUTH_PLATFORM = "email"
 GOOGLE_GMAIL_OAUTH_PROVIDER = "google_gmail"
 GOOGLE_GMAIL_OAUTH_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GOOGLE_DRIVE_OAUTH_PLATFORM = "drive"
+GOOGLE_DRIVE_OAUTH_PROVIDER = "google_drive"
+GOOGLE_DRIVE_OAUTH_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GOOGLE_OAUTH_SCOPE_BY_ID = {
     "calendar": GOOGLE_CALENDAR_OAUTH_SCOPE,
     "gmail": GOOGLE_GMAIL_OAUTH_SCOPE,
     "email": GOOGLE_GMAIL_OAUTH_SCOPE,
+    "drive": GOOGLE_DRIVE_OAUTH_SCOPE,
 }
 GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID = {
     "calendar": GOOGLE_CALENDAR_OAUTH_PLATFORM,
     "gmail": GOOGLE_GMAIL_OAUTH_PLATFORM,
+    "drive": GOOGLE_DRIVE_OAUTH_PLATFORM,
 }
 GOOGLE_OAUTH_PROVIDER_BY_SCOPE_ID = {
     "calendar": GOOGLE_CALENDAR_OAUTH_PROVIDER,
     "gmail": GOOGLE_GMAIL_OAUTH_PROVIDER,
+    "drive": GOOGLE_DRIVE_OAUTH_PROVIDER,
 }
 GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -2562,6 +2572,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "gmail": "gmail",
             "gmail-readonly": "gmail",
             GOOGLE_GMAIL_OAUTH_SCOPE: "gmail",
+            "drive": "drive",
+            "google-drive": "drive",
+            "drive-readonly": "drive",
+            GOOGLE_DRIVE_OAUTH_SCOPE: "drive",
         }
         scope_ids: list[str] = []
         for token in raw_tokens:
@@ -2627,12 +2641,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             for connection in connections
             if isinstance(connection, dict)
         }
-        if GOOGLE_CALENDAR_OAUTH_PLATFORM in platforms and GOOGLE_GMAIL_OAUTH_PLATFORM in platforms:
-            return "Google Calendar and Gmail connected with read-only access."
-        if GOOGLE_GMAIL_OAUTH_PLATFORM in platforms:
-            return "Gmail connected with read-only access. You can use it for email digest actions."
+        labels = []
         if GOOGLE_CALENDAR_OAUTH_PLATFORM in platforms:
-            return "Calendar connected. You can run meeting summaries with read-only Google Calendar access."
+            labels.append("Google Calendar")
+        if GOOGLE_GMAIL_OAUTH_PLATFORM in platforms:
+            labels.append("Gmail")
+        if GOOGLE_DRIVE_OAUTH_PLATFORM in platforms:
+            labels.append("Drive")
+        if len(labels) == 1:
+            return f"{labels[0]} connected with read-only access."
+        if len(labels) == 2:
+            return f"{labels[0]} and {labels[1]} connected with read-only access."
+        if len(labels) > 2:
+            return f"{', '.join(labels[:-1])}, and {labels[-1]} connected with read-only access."
         return "Google connected with the selected read-only access."
 
     def _handle_google_calendar_oauth_start(self, parsed: urllib_parse.ParseResult) -> None:
@@ -3068,7 +3089,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         revocation_warning = ""
         provider_revoked = False
-        google_oauth_platforms = {GOOGLE_CALENDAR_OAUTH_PLATFORM, GOOGLE_GMAIL_OAUTH_PLATFORM}
+        google_oauth_platforms = {
+            GOOGLE_CALENDAR_OAUTH_PLATFORM,
+            GOOGLE_GMAIL_OAUTH_PLATFORM,
+            GOOGLE_DRIVE_OAUTH_PLATFORM,
+        }
         is_google_oauth_connection = (
             connection_record.get("platform") in google_oauth_platforms
             and connection_record.get("authType") == "oauth"
@@ -3098,6 +3123,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             message = "Google Calendar was disconnected and its saved credential was removed."
         elif connection_record.get("platform") == GOOGLE_GMAIL_OAUTH_PLATFORM and connection_record.get("authType") == "oauth":
             message = "Gmail was disconnected and its saved credential was removed."
+        elif connection_record.get("platform") == GOOGLE_DRIVE_OAUTH_PLATFORM and connection_record.get("authType") == "oauth":
+            message = "Google Drive was disconnected and its saved credential was removed."
         else:
             message = f"{connection_record.get('platform', 'App').replace('_', ' ').title()} was disconnected."
         if revocation_warning:
@@ -4127,7 +4154,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     if not SOURCE_ACTION_MIN_INTERVAL_MINUTES <= interval_minutes <= SOURCE_ACTION_MAX_INTERVAL_MINUTES:
                         raise ValueError("Choose a frequency between every 5 minutes and every 30 days.")
                     updated = self.database.update_source_action_schedule(
-                        action_id,
+                        action_id=action_id,
                         user_id=int(user.get("id") or 0),
                         interval_minutes=interval_minutes,
                     )
@@ -4148,6 +4175,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, {
                     "ok": True,
                     "message": "Source action settings saved.",
+                    "action": self._serialize_source_action_for_client(updated),
+                })
+                return
+            if parsed.path.rstrip("/").endswith("/pause"):
+                updated = self.database.pause_source_action(action_id, user_id=int(user.get("id") or 0))
+                if updated is None:
+                    json_response(self, HTTPStatus.NOT_FOUND, {
+                        "ok": False,
+                        "error": "source_action_not_found",
+                        "message": "Source action not found.",
+                    })
+                    return
+                json_response(self, HTTPStatus.OK, {
+                    "ok": True,
+                    "message": "Source action stopped.",
+                    "action": self._serialize_source_action_for_client(updated),
+                })
+                return
+            if parsed.path.rstrip("/").endswith("/resume"):
+                updated = self.database.resume_source_action(action_id, user_id=int(user.get("id") or 0))
+                if updated is None:
+                    json_response(self, HTTPStatus.NOT_FOUND, {
+                        "ok": False,
+                        "error": "source_action_not_found",
+                        "message": "Source action not found.",
+                    })
+                    return
+                json_response(self, HTTPStatus.OK, {
+                    "ok": True,
+                    "message": "Source action resumed.",
                     "action": self._serialize_source_action_for_client(updated),
                 })
                 return

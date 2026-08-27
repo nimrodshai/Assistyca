@@ -3569,9 +3569,9 @@ body[data-modal="billing"] .app-shell {
 
 .agent-panel-mode-switch {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.18rem;
-  width: min(100%, 15rem);
+  width: min(100%, 20rem);
   justify-self: center;
   padding: 0.2rem;
   background: rgba(20, 28, 38, 0.055);
@@ -3671,6 +3671,7 @@ body[data-modal="billing"] .app-shell {
 
 .agent-actions-list-view,
 .agent-chats-list-view,
+.agent-folders-list-view,
 .agent-action-detail-view {
   display: grid;
   gap: 1rem;
@@ -3678,31 +3679,161 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-chats-list-view.is-hidden,
+.agent-folders-list-view.is-hidden,
 .agent-actions-list-view.is-hidden {
   display: none;
 }
 
-.agent-chats-list-head {
+.agent-chats-list-head,
+.agent-folders-list-head {
   display: flex;
   justify-content: space-between;
   gap: 0.8rem;
   align-items: center;
 }
 
-.agent-chats-list-head .eyebrow {
+.agent-chats-list-head .eyebrow,
+.agent-folders-list-head .eyebrow {
   margin: 0 0 0.15rem;
   color: var(--muted-strong);
   font-size: 0.64rem;
   letter-spacing: 0.13em;
 }
 
-.agent-chats-list-head h3 {
+.agent-chats-list-head h3,
+.agent-folders-list-head h3 {
   margin: 0;
   color: var(--text);
   font-family: var(--font-display);
   font-size: 1.08rem;
   line-height: 1.05;
   letter-spacing: -0.035em;
+}
+
+.agent-folder-create,
+.agent-folder-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(6.6rem, 0.58fr) auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.agent-folder-controls {
+  grid-template-columns: minmax(0, 1fr) minmax(7rem, 0.64fr);
+}
+
+.agent-folder-create input,
+.agent-folder-create select,
+.agent-folder-controls input,
+.agent-folder-controls select {
+  width: 100%;
+  min-width: 0;
+  height: 2.35rem;
+  padding: 0.5rem 0.62rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(20, 28, 38, 0.09);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.76rem;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.62) inset;
+}
+
+.agent-folder-create input:focus,
+.agent-folder-create select:focus,
+.agent-folder-controls input:focus,
+.agent-folder-controls select:focus {
+  outline: 0;
+  border-color: rgba(15, 118, 110, 0.34);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.agent-folder-list {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.agent-folder-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.68rem;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 0.78rem 0.82rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(20, 28, 38, 0.075);
+  border-radius: 14px;
+  box-shadow: 0 5px 14px rgba(25, 38, 54, 0.025);
+}
+
+.agent-folder-icon {
+  position: relative;
+  width: 2.35rem;
+  height: 1.82rem;
+  color: #177a72;
+  background: linear-gradient(145deg, rgba(112, 178, 172, 0.34), rgba(236, 246, 242, 0.94));
+  border: 1px solid rgba(23, 122, 114, 0.18);
+  border-radius: 8px;
+  box-shadow: 0 7px 16px rgba(23, 122, 114, 0.08);
+}
+
+.agent-folder-icon::before {
+  content: "";
+  position: absolute;
+  left: 0.28rem;
+  top: -0.32rem;
+  width: 1.02rem;
+  height: 0.46rem;
+  background: inherit;
+  border: inherit;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+}
+
+.agent-folder-item.is-reports .agent-folder-icon {
+  color: #2f6eb7;
+  background: linear-gradient(145deg, rgba(83, 140, 203, 0.28), rgba(239, 246, 255, 0.95));
+  border-color: rgba(47, 110, 183, 0.18);
+}
+
+.agent-folder-item.is-receipts .agent-folder-icon {
+  color: #946118;
+  background: linear-gradient(145deg, rgba(212, 154, 58, 0.26), rgba(255, 248, 235, 0.95));
+  border-color: rgba(148, 97, 24, 0.18);
+}
+
+.agent-folder-item.is-sources .agent-folder-icon {
+  color: #596778;
+  background: linear-gradient(145deg, rgba(96, 112, 128, 0.22), rgba(244, 247, 249, 0.95));
+  border-color: rgba(96, 112, 128, 0.18);
+}
+
+.agent-folder-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+}
+
+.agent-folder-copy strong {
+  overflow: hidden;
+  font-size: 0.84rem;
+  line-height: 1.24;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-folder-meta,
+.agent-folder-time {
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.agent-folder-time {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .agent-chat-list {
@@ -3712,7 +3843,9 @@ body[data-modal="billing"] .app-shell {
 
 .agent-chat-item {
   display: grid;
-  gap: 0.32rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: start;
   width: 100%;
   min-width: 0;
   padding: 0.76rem 0.82rem;
@@ -3726,8 +3859,53 @@ body[data-modal="billing"] .app-shell {
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
 }
 
+.agent-chat-item-open {
+  display: grid;
+  gap: 0.32rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.agent-chat-item-open:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.48);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
+.agent-chat-delete {
+  align-self: start;
+  min-width: 4rem;
+  margin-top: 0.02rem;
+  padding: 0.4rem 0.52rem;
+  color: #8c2f14;
+  font-size: 0.66rem;
+  font-weight: 750;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid rgba(204, 92, 49, 0.22);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: transform 160ms ease, background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.agent-chat-delete:hover,
+.agent-chat-delete:focus-visible {
+  color: #7d2612;
+  background: rgba(204, 92, 49, 0.08);
+  border-color: rgba(204, 92, 49, 0.36);
+  outline: 0;
+  transform: translateY(-1px);
+}
+
 .agent-chat-item:hover,
 .agent-chat-item:focus-visible,
+.agent-chat-item:focus-within,
 .agent-chat-item.is-active {
   transform: translateY(-1px);
   background: rgba(255, 255, 255, 0.96);
@@ -3870,6 +4048,9 @@ body[data-modal="billing"] .app-shell {
 @media (prefers-reduced-motion: reduce) {
   .agent-panel-mode-button,
   .agent-chat-item,
+  .agent-chat-item-open,
+  .agent-chat-delete,
+  .agent-folder-item,
   .agent-history-toggle,
   .agent-history-chevron {
     transition: none;
@@ -3926,8 +4107,12 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-action-item.is-pending::before,
-.agent-action-item.is-running::before {
+.agent-action-item.is-paused::before {
   background: #d49a3a;
+}
+
+.agent-action-item.is-running::before {
+  background: #2db179;
 }
 
 .agent-action-item.is-manual_only::before {
@@ -4026,7 +4211,8 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-action-status.is-pending,
-.agent-action-status.is-running {
+.agent-action-status.is-paused,
+.agent-action-status.is-lifecycle-busy {
   color: #946118;
   background: rgba(212, 154, 58, 0.14);
 }
@@ -4034,6 +4220,11 @@ body[data-modal="billing"] .app-shell {
 .agent-action-status.is-run-busy {
   color: #946118;
   background: rgba(212, 154, 58, 0.16);
+}
+
+.agent-action-status.is-running {
+  color: #167556;
+  background: rgba(45, 177, 121, 0.14);
 }
 
 .agent-action-status.is-manual_only {
@@ -4630,8 +4821,21 @@ body[data-modal="billing"] .app-shell {
 
 .agent-action-detail-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+
+.agent-action-stop-button {
+  color: #946118;
+  border-color: rgba(212, 154, 58, 0.24);
+}
+
+.agent-action-stop-button:hover,
+.agent-action-stop-button:focus-visible {
+  color: #7b5013;
+  background: rgba(212, 154, 58, 0.1);
+  border-color: rgba(212, 154, 58, 0.34);
 }
 
 .agent-action-danger-button {
@@ -9416,6 +9620,8 @@ body[data-modal="billing"] .app-shell {
   #monitorDeliveryCard .monitor-settings-grid,
   #reengagementScheduleCard .monitor-settings-grid,
   .monitor-watch-input-row,
+  .agent-folder-create,
+  .agent-folder-controls,
   .pricing-intro,
   .pricing-banner,
   .pricing-banner-stats,
@@ -9857,6 +10063,7 @@ body.is-chat-view {
 :root[data-theme="dark"] .agent-message-whatsapp-card,
 :root[data-theme="dark"] .agent-action-item,
 :root[data-theme="dark"] .agent-chat-item,
+:root[data-theme="dark"] .agent-folder-item,
 :root[data-theme="dark"] .agent-action-detail-card,
 :root[data-theme="dark"] .agent-action-editor,
 :root[data-theme="dark"] .simulator-inbox-card,
@@ -9891,6 +10098,10 @@ body.is-chat-view {
 :root[data-theme="dark"] .field select,
 :root[data-theme="dark"] .agent-action-editor-input,
 :root[data-theme="dark"] .agent-action-editor-select,
+:root[data-theme="dark"] .agent-folder-create input,
+:root[data-theme="dark"] .agent-folder-create select,
+:root[data-theme="dark"] .agent-folder-controls input,
+:root[data-theme="dark"] .agent-folder-controls select,
 :root[data-theme="dark"] .agent-message-whatsapp-card-textarea,
 :root[data-theme="dark"] .simulator-reply,
 :root[data-theme="dark"] .admin-client-type-select {
@@ -9902,6 +10113,8 @@ body.is-chat-view {
 :root[data-theme="dark"] .field input::placeholder,
 :root[data-theme="dark"] .field textarea::placeholder,
 :root[data-theme="dark"] .agent-action-editor-input::placeholder,
+:root[data-theme="dark"] .agent-folder-create input::placeholder,
+:root[data-theme="dark"] .agent-folder-controls input::placeholder,
 :root[data-theme="dark"] .agent-message-whatsapp-card-textarea::placeholder {
   color: rgba(168, 182, 195, 0.58);
 }
@@ -9911,6 +10124,15 @@ body.is-chat-view {
 :root[data-theme="dark"] .field select:focus,
 :root[data-theme="dark"] .agent-action-editor-input:focus,
 :root[data-theme="dark"] .agent-action-editor-select:focus {
+  border-color: rgba(55, 184, 171, 0.52);
+  background: rgba(13, 21, 28, 0.94);
+  box-shadow: 0 0 0 4px rgba(55, 184, 171, 0.14);
+}
+
+:root[data-theme="dark"] .agent-folder-create input:focus,
+:root[data-theme="dark"] .agent-folder-create select:focus,
+:root[data-theme="dark"] .agent-folder-controls input:focus,
+:root[data-theme="dark"] .agent-folder-controls select:focus {
   border-color: rgba(55, 184, 171, 0.52);
   background: rgba(13, 21, 28, 0.94);
   box-shadow: 0 0 0 4px rgba(55, 184, 171, 0.14);
@@ -10018,6 +10240,36 @@ body.is-chat-view {
   background: rgba(24, 35, 44, 0.78);
 }
 
+:root[data-theme="dark"] .agent-action-status.is-running {
+  color: #7fe8bd;
+  background: rgba(45, 177, 121, 0.16);
+}
+
+:root[data-theme="dark"] .agent-action-status.is-pending,
+:root[data-theme="dark"] .agent-action-status.is-paused,
+:root[data-theme="dark"] .agent-action-status.is-run-busy,
+:root[data-theme="dark"] .agent-action-status.is-lifecycle-busy {
+  color: #f4cb7b;
+  background: rgba(212, 154, 58, 0.16);
+}
+
+:root[data-theme="dark"] .agent-action-status.is-manual_only {
+  color: #c7d3df;
+  background: rgba(96, 112, 128, 0.24);
+}
+
+:root[data-theme="dark"] .agent-action-stop-button {
+  color: #f4cb7b;
+  border-color: rgba(212, 154, 58, 0.32);
+}
+
+:root[data-theme="dark"] .agent-action-stop-button:hover,
+:root[data-theme="dark"] .agent-action-stop-button:focus-visible {
+  color: #ffdda0;
+  background: rgba(212, 154, 58, 0.13);
+  border-color: rgba(212, 154, 58, 0.44);
+}
+
 :root[data-theme="dark"] .menu-button:hover,
 :root[data-theme="dark"] .menu-button:focus-visible,
 :root[data-theme="dark"] .menu-item:hover,
@@ -10032,6 +10284,7 @@ body.is-chat-view {
 :root[data-theme="dark"] .agent-action-item:focus-visible,
 :root[data-theme="dark"] .agent-chat-item:hover,
 :root[data-theme="dark"] .agent-chat-item:focus-visible,
+:root[data-theme="dark"] .agent-chat-item:focus-within,
 :root[data-theme="dark"] .agent-chat-item.is-active,
 :root[data-theme="dark"] .simulator-queue-item:hover,
 :root[data-theme="dark"] .simulator-queue-item:focus-visible,
@@ -10040,6 +10293,18 @@ body.is-chat-view {
 :root[data-theme="dark"] .admin-feature-option:hover {
   border-color: rgba(55, 184, 171, 0.28);
   background: rgba(31, 45, 56, 0.94);
+}
+
+:root[data-theme="dark"] .agent-chat-delete {
+  color: #ffb09c;
+  border-color: rgba(255, 155, 105, 0.28);
+}
+
+:root[data-theme="dark"] .agent-chat-delete:hover,
+:root[data-theme="dark"] .agent-chat-delete:focus-visible {
+  color: #ffd0c4;
+  background: rgba(255, 155, 105, 0.12);
+  border-color: rgba(255, 155, 105, 0.42);
 }
 
 :root[data-theme="dark"] .settings-overlay.is-open {

@@ -93,6 +93,7 @@ DEFAULT_MONITOR_SETTINGS = {
     "scheduleTimezone": "",
     "deliveryChannel": "email",
     "telegramChatId": "",
+    "actionLifecycleStatus": "active",
 }
 
 SUPPORTED_DELIVERY_CHANNELS = frozenset({"email", "telegram", "whatsapp"})
@@ -266,6 +267,15 @@ def normalize_schedule_timezone(value: Any) -> str:
     return text
 
 
+def normalize_action_lifecycle_status(value: Any) -> str:
+    text = normalize_text(value).lower().replace("-", "_")
+    if text in {"paused", "stopped", "suspended"}:
+        return "paused"
+    if text in {"removed", "deleted", "cancelled", "canceled"}:
+        return "removed"
+    return "active"
+
+
 def parse_schedule_time_local(value: Any) -> tuple[int, int] | None:
     normalized = normalize_schedule_time_local(value)
     if not normalized:
@@ -322,6 +332,9 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
         "scheduleTimezone": schedule_timezone,
         "deliveryChannel": delivery_channel,
         "telegramChatId": normalize_text(source.get("telegramChatId")),
+        "actionLifecycleStatus": normalize_action_lifecycle_status(
+            source.get("actionLifecycleStatus") or source.get("action_lifecycle_status")
+        ),
     }
 
 
@@ -1900,6 +1913,7 @@ __all__ = [
     "ScheduledMonitorScheduler",
     "build_monitor_setup_status",
     "load_scheduled_monitor_config",
+    "normalize_action_lifecycle_status",
     "normalize_monitor_settings",
     "resolve_next_monitor_slot",
     "validate_monitor_settings",
