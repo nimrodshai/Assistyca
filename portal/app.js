@@ -13775,48 +13775,6 @@ function createScheduledActionDetailRow(label, value) {
   return row;
 }
 
-function createScheduledActionMoreDetails(rows) {
-  if (!Array.isArray(rows) || !rows.length) {
-    return null;
-  }
-
-  const disclosure = document.createElement("section");
-  disclosure.className = "agent-action-more-details";
-
-  const summary = document.createElement("button");
-  summary.type = "button";
-  summary.className = "agent-action-more-details-summary";
-  summary.textContent = "More details";
-  summary.setAttribute("aria-expanded", "false");
-
-  const content = document.createElement("div");
-  content.className = "agent-action-more-details-content";
-  content.id = createAgentId("agent-action-more-details");
-  content.setAttribute("aria-hidden", "true");
-  content.inert = true;
-  const details = document.createElement("dl");
-  details.className = "agent-action-detail-grid";
-  details.append(...rows);
-  const contentInner = document.createElement("div");
-  contentInner.className = "agent-action-more-details-content-inner";
-  contentInner.append(details);
-  content.append(contentInner);
-  summary.setAttribute("aria-controls", content.id);
-
-  const setOpen = (isOpen) => {
-    disclosure.classList.toggle("is-open", isOpen);
-    summary.setAttribute("aria-expanded", String(isOpen));
-    content.setAttribute("aria-hidden", String(!isOpen));
-    content.inert = !isOpen;
-  };
-  summary.addEventListener("click", () => {
-    setOpen(!disclosure.classList.contains("is-open"));
-  });
-
-  disclosure.append(summary, content);
-  return disclosure;
-}
-
 function getScheduledActionDetailSignature(action) {
   const messageText = String(
     action.payload?.preview
@@ -14943,39 +14901,16 @@ function createScheduledActionDetail(action) {
       || "As configured",
     ).trim());
 
-    let moreDetails = null;
     if (isFeatureAction) {
       const primaryDetails = document.createElement("dl");
       primaryDetails.className = "agent-action-detail-grid agent-action-primary-details";
       primaryDetails.append(deliveryRow);
       card.append(primaryDetails);
-
-      const moreRows = [
-        createScheduledActionDetailRow("Active since", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
-      ];
-      if (payload.location) {
-        moreRows.push(createScheduledActionDetailRow("Location", String(payload.location)));
-      }
-      if (payload.timeWindow) {
-        moreRows.push(createScheduledActionDetailRow("Date range", String(payload.timeWindow)));
-      }
-      if (payload.lastRunAt) {
-        const lastRunStatus = String(payload.lastRunStatus || "").trim();
-        const lastRunLabel = lastRunStatus
-          ? `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(lastRunStatus.replace(/[_-]+/g, " "))}`
-          : formatScheduledActionDate(payload.lastRunAt, action.timezone);
-        moreRows.push(createScheduledActionDetailRow("Last check", lastRunLabel));
-      }
-      if (payload.nextRunAt) {
-        moreRows.push(createScheduledActionDetailRow("Next check", formatScheduledActionDate(payload.nextRunAt, action.timezone)));
-      }
-      moreDetails = createScheduledActionMoreDetails(moreRows);
     } else {
-      const moreRows = [
-        createScheduledActionDetailRow("Approved", formatScheduledActionDate(action.createdAt || action.runAt, action.timezone)),
-        createScheduledActionDetailRow("Frequency", String(payload.frequency || "As configured").trim()),
-      ];
-      moreDetails = createScheduledActionMoreDetails(moreRows);
+      const primaryDetails = document.createElement("dl");
+      primaryDetails.className = "agent-action-detail-grid agent-action-primary-details";
+      primaryDetails.append(deliveryRow);
+      card.append(primaryDetails);
     }
 
     if (payload.initialRunError) {
@@ -15008,12 +14943,6 @@ function createScheduledActionDetail(action) {
       if (editor) {
         card.append(editor);
       }
-    }
-
-    // Keep secondary metadata below the editable delivery area. The disclosure
-    // itself stays in the card so opening it does not replace or re-anchor the list.
-    if (moreDetails) {
-      card.append(moreDetails);
     }
 
     const localActions = createAgentActionDetailActions(action);

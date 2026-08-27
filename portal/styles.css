@@ -4467,10 +4467,7 @@ body[data-modal="billing"] .app-shell {
 
   .agent-action-item,
   .agent-action-item-expansion,
-  .agent-action-item-expansion-inner,
-  .agent-action-more-details-summary,
-  .agent-action-more-details-summary::after,
-  .agent-action-more-details-content {
+  .agent-action-item-expansion-inner {
     transition: none;
   }
 }
@@ -4519,72 +4516,6 @@ body[data-modal="billing"] .app-shell {
 
 .agent-action-primary-details {
   padding-top: 0.05rem;
-}
-
-.agent-action-more-details {
-  margin: 0;
-}
-
-.agent-action-more-details-summary {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 2.65rem;
-  padding: 0.45rem 0;
-  color: var(--muted);
-  background: transparent;
-  border: 0;
-  font-size: 0.72rem;
-  font-weight: 750;
-  cursor: pointer;
-  font-family: inherit;
-  text-align: left;
-  list-style: none;
-  transition: color 160ms ease;
-}
-
-.agent-action-more-details-summary::after {
-  width: 0.48rem;
-  height: 0.48rem;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  transform: translateY(-0.12rem) rotate(45deg);
-  transition: transform 180ms ease;
-  content: "";
-}
-
-.agent-action-more-details.is-open .agent-action-more-details-summary::after {
-  transform: translateY(0.12rem) rotate(225deg);
-}
-
-.agent-action-more-details-summary:hover,
-.agent-action-more-details-summary:focus-visible {
-  color: var(--accent);
-}
-
-.agent-action-more-details-summary:focus-visible {
-  outline: 2px solid rgba(15, 118, 110, 0.45);
-  outline-offset: 3px;
-  border-radius: 6px;
-}
-
-.agent-action-more-details-content {
-  display: grid;
-  grid-template-rows: 0fr;
-  overflow: hidden;
-  opacity: 0;
-  transition: grid-template-rows 240ms ease, opacity 180ms ease;
-}
-
-.agent-action-more-details.is-open .agent-action-more-details-content {
-  grid-template-rows: 1fr;
-  opacity: 1;
-}
-
-.agent-action-more-details-content-inner {
-  min-height: 0;
-  overflow: hidden;
 }
 
 .agent-action-detail-row {

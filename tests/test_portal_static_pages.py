@@ -220,10 +220,6 @@ class PortalStaticPageTests(unittest.TestCase):
             styles.index(".agent-action-editor {"):
             styles.index(".agent-action-editor-delivery,")
         ]
-        more_details_styles = styles[
-            styles.index(".agent-action-more-details {"):
-            styles.index(".agent-action-more-details-summary {")
-        ]
         self.assertIn("background: transparent;", detail_card_styles)
         self.assertIn("box-shadow: none;", detail_card_styles)
         self.assertIn("border-top: 1px solid rgba(20, 28, 38, 0.065);", detail_card_styles)
@@ -231,8 +227,6 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("background: transparent;", editor_styles)
         self.assertIn("padding: 0;", editor_styles)
         self.assertNotIn("border-top:", editor_styles)
-        self.assertIn("margin: 0;", more_details_styles)
-        self.assertNotIn("border-top:", more_details_styles)
         self.assertIn("function resizeAgentActionEditorTextarea", script)
         self.assertIn("input.scrollHeight + borderBlock", script)
         self.assertIn("input.rows = Number(options.rows || 1);", script)
@@ -268,10 +262,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('button.textContent = removeAction ? "Remove action" : "Turn off action";', script)
         self.assertIn("const isManualOnly = hasBackendFeature && normalizeMonitorManualOnly(action.payload?.manualOnly, false);", script)
         self.assertNotIn('createScheduledActionDetailRow("Watching"', script)
-        self.assertIn("function createScheduledActionMoreDetails", script)
-        self.assertIn('summary.textContent = "More details";', script)
+        self.assertNotIn("function createScheduledActionMoreDetails", script)
+        self.assertNotIn('summary.textContent = "More details";', script)
         self.assertIn("agent-action-primary-details", script)
-        self.assertIn(".agent-action-more-details", styles)
+        self.assertNotIn("agent-action-more-details", script)
+        self.assertNotIn(".agent-action-more-details", styles)
         self.assertIn("agent-action-item-expansion", script)
         self.assertIn("grid-template-rows: 0fr", styles)
         self.assertIn('pushAgentMessage("assistant", completionMessage, { kind: "result" });', script)
