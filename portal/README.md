@@ -151,12 +151,16 @@ The browser no longer persists these WhatsApp setup fields in local storage; the
 For Scheduled Web Monitor delivery:
 
 - Clients add a simple watch list in the tool editor, one item per line, then choose how many days should pass between checks.
-- Email uses the workspace account email plus the same SMTP or Resend configuration as OTP delivery.
-- Telegram requires `TELEGRAM_BOT_TOKEN` plus a saved chat id in the tool editor.
-- WhatsApp requires the workspace's saved WhatsApp connection for the owner phone plus the Assistyca sender access token in the backend environment.
+- Findings land in the owner's in-app notification feed. Email, Telegram and WhatsApp owner alerting were removed in favour of that single durable surface, so no delivery credentials are needed.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.
 
 If you open the static portal from GitHub Pages, the UI falls back to `http://127.0.0.1:8000`
 unless you provide a different API base with `window.PORTAL_API_BASE`, the
 `portal-api-base` meta tag, or `?apiBase=...` in the URL.
+
+Signed-in requests authenticate with the `assistyca_portal_session` httpOnly cookie,
+which the browser only attaches to same-origin requests. A cross-origin API base can
+therefore serve the signed-out pages but cannot carry a session: to work against a
+local backend, open the portal from that backend directly (`http://127.0.0.1:8000/portal/`)
+rather than pointing a GitHub Pages copy at it.

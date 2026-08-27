@@ -67,6 +67,10 @@ services:
         value: gpt-5.5
       - key: OPENAI_API_KEY
         sync: false
+      # Required in practice: with no secret the server falls back to ephemeral
+      # in-memory sessions, so every restart signs all users out. At least 32 chars.
+      - key: PORTAL_SESSION_SECRET
+        sync: false
       - key: PORTAL_CREDENTIALS_KEY
         sync: false
       - key: PORTAL_CREDENTIALS_KEY_VERSION
@@ -79,8 +83,6 @@ services:
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
       - key: TELEGRAM_CONTACT_CHAT_ID
         sync: false
       - key: WHATSAPP_ACCESS_TOKEN
@@ -89,10 +91,6 @@ services:
         sync: false
       - key: ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID
         value: "1186653017865246"
-      - key: WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME
-        value: notification_message
-      - key: WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE
-        value: en_US
       - key: WHATSAPP_ALLOW_MOCK_SEND
         value: "0"
       - key: WHATSAPP_SAMPLE_TEMPLATE_NAME

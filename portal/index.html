@@ -9,21 +9,7 @@
       content="Tell Assistyca what you need and get help through a simple conversation."
     />
     <meta name="color-scheme" content="light dark" />
-    <script>
-      (() => {
-        try {
-          const storedTheme = window.localStorage.getItem("assistyca.portal.theme");
-          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const theme = storedTheme === "dark" || storedTheme === "light"
-            ? storedTheme
-            : systemDark ? "dark" : "light";
-          document.documentElement.dataset.theme = theme;
-          document.documentElement.style.colorScheme = theme;
-        } catch {
-          document.documentElement.dataset.theme = "light";
-        }
-      })();
-    </script>
+    <script src="./theme-init.js?v=1"></script>
     <link rel="stylesheet" href="./styles.css?v=138" />
   </head>
   <body data-view="loading">

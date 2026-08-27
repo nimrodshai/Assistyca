@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -30,6 +31,49 @@ class PortalStaticPageTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
+
+    def test_every_response_carries_the_hardening_headers(self) -> None:
+        for path in ("/portal/", "/about", "/portal/app.js", "/api/pricing"):
+            with self.subTest(path=path):
+                try:
+                    with urllib_request.urlopen(f"{self.base_url}{path}") as response:
+                        headers = response.headers
+                except urllib_error.HTTPError as exc:
+                    headers = exc.headers
+
+                self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+                self.assertEqual(headers.get("X-Frame-Options"), "DENY")
+                self.assertEqual(headers.get("Referrer-Policy"), "strict-origin-when-cross-origin")
+                self.assertEqual(headers.get("Cross-Origin-Opener-Policy"), "same-origin-allow-popups")
+                self.assertIn("geolocation=()", headers.get("Permissions-Policy", ""))
+
+                policy = headers.get("Content-Security-Policy", "")
+                self.assertIn("default-src 'self'", policy)
+                self.assertIn("frame-ancestors 'none'", policy)
+                self.assertIn("object-src 'none'", policy)
+                # The whole point of extracting the inline scripts: no 'unsafe-inline'
+                # and no 'unsafe-eval' anywhere in script-src.
+                script_src = next(part for part in policy.split("; ") if part.startswith("script-src"))
+                self.assertNotIn("unsafe-inline", script_src)
+                self.assertNotIn("unsafe-eval", script_src)
+                self.assertIn("https://accounts.google.com", script_src)
+
+    def test_hsts_is_sent_only_when_the_request_arrived_over_https(self) -> None:
+        with urllib_request.urlopen(f"{self.base_url}/portal/") as response:
+            self.assertIsNone(response.headers.get("Strict-Transport-Security"))
+
+        request = urllib_request.Request(
+            f"{self.base_url}/portal/",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        with urllib_request.urlopen(request) as response:
+            self.assertIn("max-age=31536000", response.headers.get("Strict-Transport-Security", ""))
+
+    def test_served_pages_carry_no_inline_scripts(self) -> None:
+        for relative in ("index.html", "privacy.html", "portal/index.html", "about/index.html"):
+            with self.subTest(page=relative):
+                markup = (self.root / relative).read_text(encoding="utf-8")
+                self.assertNotIn("<script>", markup)
 
     def test_resolve_static_page_alias_supports_about_with_or_without_trailing_slash(self) -> None:
         self.assertEqual(resolve_static_page_alias("/about"), Path("about/index.html"))
@@ -683,7 +727,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Opening Google", script)
         self.assertNotIn("OAuth setup", script)
         self.assertNotIn("Open Google sign-in", script)
-        self.assertIn("assistyca.portal.theme", html)
+        self.assertIn('src="./theme-init.js', html)
+        theme_script = (self.root / "portal" / "theme-init.js").read_text(encoding="utf-8")
+        self.assertIn("assistyca.portal.theme", theme_script)
         self.assertIn('id="themeToggleButton"', html)
         self.assertIn('role="switch"', html)
         self.assertIn("THEME_STORAGE_KEY", script)
@@ -1071,10 +1117,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn("Would you like me to schedule it?", script)
         self.assertIn(
             'apiRequest("/api/scheduled-actions", {\n'
-            '    method: "POST",\n'
-            '    headers: getSessionAuthHeaders(),',
+            '    method: "POST",\n',
             script,
         )
+        # Auth rides on the httpOnly session cookie, so no request builds an
+        # Authorization header and no token is readable from JavaScript.
+        self.assertNotIn("getSessionAuthHeaders", script)
+        self.assertNotIn("Authorization: `Bearer", script)
         handler = script[
             script.index("async function handleAgentUserText"):
             script.index("function handleAgentComposerSubmit")
@@ -1083,11 +1132,18 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('resolvePendingAgentMessageActions("user-message")', handler)
         self.assertNotIn("createAgentProposalFromRequest(cleanText)", handler)
 
+    def _fetch_about_script(self) -> str:
+        """The about page ships as HTML plus an extracted script file."""
+        with urllib_request.urlopen(f"{self.base_url}/about/page.js") as response:
+            return response.read().decode("utf-8")
+
     def test_about_pretty_route_serves_without_redirect(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")
             final_url = response.geturl()
             status_code = response.status
+
+        body = f"{body}\n{self._fetch_about_script()}"
 
         self.assertEqual(status_code, 200)
         self.assertEqual(final_url, f"{self.base_url}/about")
@@ -1104,6 +1160,8 @@ class PortalStaticPageTests(unittest.TestCase):
     def test_about_contact_modal_includes_mobile_keyboard_layout_hooks(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")
+
+        body = f"{body}\n{self._fetch_about_script()}"
 
         self.assertIn("--contact-keyboard-offset", body)
         self.assertIn("--contact-mobile-viewport-top", body)
@@ -1158,6 +1216,8 @@ class PortalStaticPageTests(unittest.TestCase):
     def test_about_contact_modal_supports_steering_while_agent_thinks(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/about") as response:
             body = response.read().decode("utf-8")
+
+        body = f"{body}\n{self._fetch_about_script()}"
 
         self.assertIn("contactAgentAbortController", body)
         self.assertIn("const contactTypingDelayMs = 1520", body)

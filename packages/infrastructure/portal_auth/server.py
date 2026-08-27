@@ -413,6 +413,35 @@ STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
 }
 
+# Every response carries these. The portal serves no inline scripts -- the theme
+# bootstrap and the about-page behaviour live in their own .js files -- so the
+# script-src stays strict, with Google Identity Services allowed because the
+# Google connect flow loads gsi/client and opens a popup on accounts.google.com.
+# style-src keeps 'unsafe-inline' because the marketing pages carry <style>
+# blocks and GSI injects its own styles; inline CSS is a far weaker vector than
+# inline script.
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+        "script-src 'self' https://accounts.google.com",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: https:",
+        "font-src 'self' data:",
+        "connect-src 'self' https://accounts.google.com https://www.googleapis.com",
+        "frame-src https://accounts.google.com",
+    )
+)
+# Popups, not same-origin isolation: the Google code client uses ux_mode "popup"
+# and needs window.opener to survive, so this is deliberately not "same-origin".
+CROSS_ORIGIN_OPENER_POLICY = "same-origin-allow-popups"
+PERMISSIONS_POLICY = "geolocation=(), microphone=(), camera=(), payment=(), usb=()"
+REFERRER_POLICY = "strict-origin-when-cross-origin"
+STRICT_TRANSPORT_SECURITY = "max-age=31536000; includeSubDomains"
+
 # Static serving is allowlisted rather than denylisted: the repository root holds
 # the SQLite database, the WhatsApp JSON stores, client configuration, and local
 # environment scripts, none of which may ever be reachable over HTTP. Anything not
@@ -2423,9 +2452,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
 
+        self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", REFERRER_POLICY)
+        self.send_header("Cross-Origin-Opener-Policy", CROSS_ORIGIN_OPENER_POLICY)
+        self.send_header("Permissions-Policy", PERMISSIONS_POLICY)
+        if self._request_is_https():
+            self.send_header("Strict-Transport-Security", STRICT_TRANSPORT_SECURITY)
+
         super().end_headers()
 
     def _request_is_https(self) -> bool:
+        # end_headers() calls this on every response, including error responses
+        # raised before the request headers were parsed.
+        headers = getattr(self, "headers", None)
+        if headers is None:
+            return normalize_text(os.getenv("PUBLIC_BASE_URL")).lower().startswith("https://")
+
         forwarded_proto = normalize_text(self.headers.get("X-Forwarded-Proto")).split(",", 1)[0].strip().lower()
         if forwarded_proto:
             return forwarded_proto == "https"
@@ -8247,6 +8291,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
 
     def _extract_session_tokens(self) -> list[str]:
+        """Session tokens arrive in the Authorization header or the httpOnly cookie.
+
+        Never in the query string: URLs leak into access logs, Referer headers and
+        browser history. The browser portal uses the cookie exclusively and never
+        holds a token in JavaScript; the header path remains for API clients.
+        """
         tokens: list[str] = []
 
         auth_header = str(self.headers.get("Authorization", "")).strip()
@@ -8254,17 +8304,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             bearer_token = auth_header[7:].strip()
             if bearer_token:
                 tokens.append(bearer_token)
-
-        query = self.path.split("?", 1)[1] if "?" in self.path else ""
-        if query:
-            from urllib.parse import parse_qs
-
-            params = parse_qs(query)
-            token_values = params.get("token") or []
-            if token_values:
-                query_token = str(token_values[0]).strip()
-                if query_token:
-                    tokens.append(query_token)
 
         raw_cookie = str(self.headers.get("Cookie", "")).strip()
         if raw_cookie:

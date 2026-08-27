@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -82,6 +83,70 @@ class PortalAuthSessionTests(unittest.TestCase):
 
         self.assertTrue(payload["signedIn"])
         self.assertEqual(payload["email"], "owner@example.com")
+
+    def test_session_cookie_is_http_only_and_same_site(self) -> None:
+        code, _ = self.server.store.issue_challenge("owner@example.com")
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/otp/verify",
+            data=json.dumps({"email": "owner@example.com", "code": code}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib_request.urlopen(request) as response:
+            cookie_header = response.headers.get("Set-Cookie", "")
+
+        self.assertIn("HttpOnly", cookie_header)
+        self.assertIn("SameSite=Lax", cookie_header)
+        self.assertIn("Path=/", cookie_header)
+
+    def test_session_token_in_the_query_string_is_ignored(self) -> None:
+        cookie_value = self._verify_otp_and_get_cookie()
+        token = cookie_value.split("=", 1)[1]
+
+        # A token that authenticates over the cookie must not authenticate when it
+        # is smuggled through the URL, where it would leak into logs and Referer.
+        request = urllib_request.Request(f"{self.base_url}/api/auth/session?token={token}")
+        try:
+            with urllib_request.urlopen(request) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            self.assertIn(exc.code, (401, 403))
+            payload = json.loads(exc.read().decode("utf-8"))
+
+        self.assertFalse(payload.get("signedIn"))
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/session",
+            headers={"Cookie": cookie_value},
+        )
+        with urllib_request.urlopen(request) as response:
+            self.assertTrue(json.loads(response.read().decode("utf-8"))["signedIn"])
+
+    def test_logout_revokes_the_session_named_by_the_cookie_alone(self) -> None:
+        cookie_value = self._verify_otp_and_get_cookie()
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/logout",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Cookie": cookie_value},
+            method="POST",
+        )
+        with urllib_request.urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("Max-Age=0", response.headers.get("Set-Cookie", ""))
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/session",
+            headers={"Cookie": cookie_value},
+        )
+        try:
+            with urllib_request.urlopen(request) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            self.assertIn(exc.code, (401, 403))
+            payload = json.loads(exc.read().decode("utf-8"))
+
+        self.assertFalse(payload.get("signedIn"))
 
     def test_opportunities_owner_can_manage_clients_without_admin_flag(self) -> None:
         owner_email = "nimrod.shai@gmail.com"

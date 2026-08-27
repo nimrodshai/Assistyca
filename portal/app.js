@@ -1652,6 +1652,13 @@ let clientState = loadClientState("");
 state.selectedSimulatorId = clientState.simulator.selectedApprovalId || null;
 syncAgentStateFromClientState();
 
+// Sessions used to be persisted with their bearer token alongside them. The token
+// now exists only in an httpOnly cookie, so drop any copy an earlier build of the
+// portal left in this browser rather than waiting for the record to expire.
+if (storedAuthSession && typeof storedAuthSession === "object" && "token" in storedAuthSession) {
+  persistJson(AUTH_SESSION_KEY, initialAuthSession);
+}
+
 if (storedAuthSession && !initialAuthSession) {
   persistJson(AUTH_SESSION_KEY, null);
 }
@@ -1814,6 +1821,9 @@ function migrateLegacyStorage() {
   }
 }
 
+// Signed-in requests authenticate with an httpOnly cookie, which the browser only
+// attaches to same-origin requests. A cross-origin base still serves the signed-out
+// pages, but no session travels with it -- run the portal from the backend origin.
 function resolvePortalApiBase() {
   const fromGlobal = window.PORTAL_API_BASE;
   if (typeof fromGlobal === "string" && fromGlobal.trim()) {
@@ -1846,8 +1856,7 @@ function normalizeStoredSession(value) {
   }
 
   const email = normalizeEmail(value.email || "");
-  const token = String(value.token || "").trim();
-  if (!token || !validateEmail(email)) {
+  if (!validateEmail(email)) {
     return null;
   }
 
@@ -1860,7 +1869,6 @@ function normalizeStoredSession(value) {
   const requestCountry = String(value.requestCountry || "").trim().toUpperCase();
   return {
     email,
-    token,
     signedIn: true,
     signedInAt: Number.isFinite(signedInAt) ? signedInAt : Date.now(),
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
@@ -1896,7 +1904,19 @@ function normalizeStoredChallenge(value) {
 }
 
 function isSignedIn() {
-  return Boolean(authSession?.token && authSession.email && activeEmail && normalizeEmail(authSession.email) === activeEmail);
+  return Boolean(authSession?.signedIn && authSession.email && activeEmail && normalizeEmail(authSession.email) === activeEmail);
+}
+
+// The session token lives in an httpOnly cookie the browser attaches to every
+// same-origin request, so it is deliberately unreadable from here. Async work
+// that must not apply its result to a session that changed underneath it keys
+// off this non-secret identity instead.
+function currentAuthSessionKey() {
+  if (!authSession?.signedIn) {
+    return "";
+  }
+
+  return `${normalizeEmail(authSession.email)}#${Number(authSession.signedInAt) || 0}`;
 }
 
 function isAdminUser() {
@@ -1956,11 +1976,6 @@ function clearAuthSession() {
 function clearAuthChallenge() {
   authChallenge = null;
   persistJson(AUTH_CHALLENGE_KEY, null);
-}
-
-function getSessionAuthHeaders() {
-  const token = String(authSession?.token || "").trim();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function normalizeSettingsMode(mode) {
@@ -3374,12 +3389,10 @@ async function refreshNotifications() {
   if (!isSignedIn()) {
     return null;
   }
-  const requestToken = String(authSession?.token || "");
+  const requestSessionKey = currentAuthSessionKey();
   try {
-    const response = await apiRequest("/api/notifications?limit=100", {
-      headers: getSessionAuthHeaders(),
-    });
-    if (requestToken !== String(authSession?.token || "")) {
+    const response = await apiRequest("/api/notifications?limit=100");
+    if (requestSessionKey !== currentAuthSessionKey()) {
       return null;
     }
     const rows = Array.isArray(response.notifications) ? response.notifications : [];
@@ -3403,7 +3416,7 @@ async function markAgentNotificationRead(notificationId) {
   try {
     await apiRequest("/api/notifications/read", {
       method: "POST",
-      headers: { ...getSessionAuthHeaders(), "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: Number(notificationId) }),
     });
   } catch (error) {
@@ -3427,7 +3440,7 @@ async function markAllAgentNotificationsRead() {
   try {
     await apiRequest("/api/notifications/read-all", {
       method: "POST",
-      headers: { ...getSessionAuthHeaders(), "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
   } catch (error) {
@@ -4716,7 +4729,6 @@ async function disconnectWhatsAppConnection() {
   try {
     const response = await apiRequest("/api/whatsapp/connection", {
       method: "DELETE",
-      headers: getSessionAuthHeaders(),
       timeoutMs: 20000,
     });
     clearWhatsAppConnectionPollTimer();
@@ -4930,14 +4942,13 @@ async function refreshFeatureActivationStates(options = {}) {
     return null;
   }
 
-  const requestToken = String(authSession?.token || "");
+  const requestSessionKey = currentAuthSessionKey();
   state.featureActivationLoading = true;
   try {
     const response = await apiRequest("/api/features", {
-      headers: getSessionAuthHeaders(),
       timeoutMs: options.timeoutMs || 15000,
     });
-    if (requestToken !== String(authSession?.token || "")) {
+    if (requestSessionKey !== currentAuthSessionKey()) {
       return null;
     }
     applyServerFeatureStates(response.features || [], { persist: true, resetMissing: true });
@@ -4945,7 +4956,7 @@ async function refreshFeatureActivationStates(options = {}) {
     state.featureActivationLoadedAt = Date.now();
     return response;
   } finally {
-    if (requestToken === String(authSession?.token || "")) {
+    if (requestSessionKey === currentAuthSessionKey()) {
       state.featureActivationLoading = false;
       state.featureActivationInitialLoadPending = false;
       if (options.render !== false && document.body.dataset.view === "app") {
@@ -5416,14 +5427,13 @@ async function refreshPlatformConnections(options = {}) {
     return [];
   }
 
-  const requestToken = String(authSession?.token || "");
+  const requestSessionKey = currentAuthSessionKey();
   state.platformConnectionsLoading = true;
   try {
     const response = await apiRequest("/api/platform-connections", {
-      headers: getSessionAuthHeaders(),
       timeoutMs: options.timeoutMs || 15000,
     });
-    if (requestToken !== String(authSession?.token || "")) {
+    if (requestSessionKey !== currentAuthSessionKey()) {
       return [];
     }
     state.platformConnectionStorageAvailable = response.credentialStorageAvailable !== false;
@@ -5437,7 +5447,7 @@ async function refreshPlatformConnections(options = {}) {
     clearGoogleConnectionMissingCredentials();
     return state.platformConnections;
   } finally {
-    if (requestToken === String(authSession?.token || "")) {
+    if (requestSessionKey === currentAuthSessionKey()) {
       state.platformConnectionsLoading = false;
       state.platformConnectionsInitialLoadPending = false;
       if (options.render !== false && document.body.dataset.view === "app") {
@@ -5535,7 +5545,6 @@ async function disconnectPlatformConnection(option, connection) {
       `/api/platform-connections/${encodeURIComponent(connection.id)}`,
       {
         method: "DELETE",
-        headers: getSessionAuthHeaders(),
         timeoutMs: 20000,
       },
     );
@@ -5609,7 +5618,6 @@ async function disconnectGoogleConnections(option, connections = []) {
         `/api/platform-connections/${encodeURIComponent(connection.id)}`,
         {
           method: "DELETE",
-          headers: getSessionAuthHeaders(),
           timeoutMs: 20000,
         },
       )
@@ -6177,7 +6185,6 @@ function openCalendarOAuthConnection(option) {
       const query = encodeURIComponent(selectedScopeIds.join(","));
       const response = await apiRequest(`/api/oauth/google/calendar/start?scopes=${query}`, {
         method: "GET",
-        headers: getSessionAuthHeaders(),
         timeoutMs: 20000,
       });
       const clientId = normalizeText(response.clientId);
@@ -6207,7 +6214,7 @@ function openCalendarOAuthConnection(option) {
         "Finishing connection",
         "Saving the encrypted Google connection in Assistyca.",
       );
-      const exchangeHeaders = new Headers(getSessionAuthHeaders());
+      const exchangeHeaders = new Headers();
       exchangeHeaders.set("X-Requested-With", "XMLHttpRequest");
       const saveResponse = await apiRequest("/api/oauth/google/calendar/code", {
         method: "POST",
@@ -6381,7 +6388,6 @@ function openPlatformConnection(optionId) {
     try {
       const response = await apiRequest("/api/platform-connections", {
         method: "POST",
-        headers: getSessionAuthHeaders(),
         timeoutMs: 20000,
         body: {
           platform: option.id,
@@ -6552,7 +6558,7 @@ function sendAccountProfileKeepalive() {
   }
 
   try {
-    const headers = new Headers(getSessionAuthHeaders());
+    const headers = new Headers();
     headers.set("Content-Type", "application/json");
     void fetch(buildApiUrl("/api/account/profile"), {
       method: "POST",
@@ -6581,7 +6587,6 @@ async function flushAccountProfileAutosave(options = {}) {
     try {
       const response = await apiRequest("/api/account/profile", {
         method: "POST",
-        headers: getSessionAuthHeaders(),
         body: {
           profile: normalizeAccountProfile(clientState.profile),
         },
@@ -6639,7 +6644,7 @@ function sendFeatureConfigKeepalive(feature = getSelectedFeature()) {
   }
 
   try {
-    const headers = new Headers(getSessionAuthHeaders());
+    const headers = new Headers();
     headers.set("Content-Type", "application/json");
     void fetch(buildApiUrl(`/api/features/${encodeURIComponent(feature.id)}/config`), {
       method: "POST",
@@ -6730,7 +6735,6 @@ async function saveSelectedFeatureConfig(options = {}) {
       setStatus(String(options.statusMessage || "Saving tool settings..."));
       const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
         method: "POST",
-        headers: getSessionAuthHeaders(),
         body: {
           prompt: { ...feature.prompt },
           settings: buildSettingsForSave(feature, feature.settings),
@@ -6782,7 +6786,6 @@ async function refreshWhatsAppConnection(options = {}) {
   }
 
   const response = await apiRequest("/api/whatsapp/connection", {
-    headers: getSessionAuthHeaders(),
     timeoutMs: options.timeoutMs || 15000,
   });
 
@@ -8041,7 +8044,6 @@ async function confirmWhatsAppHistoryConversationDelete(conversationId) {
   try {
     await apiRequest(`/api/whatsapp/history/conversations/${encodeURIComponent(normalizedId)}`, {
       method: "DELETE",
-      headers: getSessionAuthHeaders(),
     });
     removeWhatsAppConversationFromState(normalizedId);
     didSucceed = true;
@@ -8115,7 +8117,6 @@ async function importWhatsAppHistoryExports() {
 
     const response = await apiRequest("/api/whatsapp/history/import", {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       timeoutMs: 180000,
       body: {
         files: importFiles,
@@ -8175,7 +8176,6 @@ async function refreshWhatsAppHistory(options = {}) {
   whatsappHistoryRefreshPromise = (async () => {
     try {
       const response = await apiRequest("/api/whatsapp/history", {
-        headers: getSessionAuthHeaders(),
         timeoutMs: 20000,
       });
       const history = normalizeWhatsAppHistoryPayload(response);
@@ -10788,7 +10788,7 @@ function refreshBillingReportForActiveTab(options = {}) {
 }
 
 async function refreshBillingReport(options = {}) {
-  if (!authSession?.token) {
+  if (!authSession?.signedIn) {
     state.billingReport = null;
     state.billingLoading = false;
     state.billingError = "";
@@ -10809,20 +10809,16 @@ async function refreshBillingReport(options = {}) {
     return null;
   }
 
-  const requestToken = String(authSession.token);
+  const requestSessionKey = currentAuthSessionKey();
   state.billingLoading = true;
   state.billingError = "";
   renderApp();
 
   billingRefreshPromise = (async () => {
     try {
-      const response = await apiRequest("/api/billing", {
-        headers: {
-          Authorization: `Bearer ${requestToken}`,
-        },
-      });
+      const response = await apiRequest("/api/billing");
 
-      if (String(authSession?.token || "") !== requestToken) {
+      if (currentAuthSessionKey() !== requestSessionKey) {
         return null;
       }
 
@@ -10831,7 +10827,7 @@ async function refreshBillingReport(options = {}) {
       billingLastRefreshCompletedAt = Date.now();
       return state.billingReport;
     } catch (error) {
-      if (String(authSession?.token || "") !== requestToken) {
+      if (currentAuthSessionKey() !== requestSessionKey) {
         return null;
       }
       state.billingReport = null;
@@ -10839,7 +10835,7 @@ async function refreshBillingReport(options = {}) {
       return null;
     } finally {
       billingRefreshPromise = null;
-      if (String(authSession?.token || "") === requestToken) {
+      if (currentAuthSessionKey() === requestSessionKey) {
         state.billingLoading = false;
         renderApp();
       }
@@ -11053,7 +11049,7 @@ function updatePricingPanel() {
 }
 
 async function refreshPricingSnapshot(options = {}) {
-  if (!authSession?.token) {
+  if (!authSession?.signedIn) {
     state.pricingSnapshot = MANUAL_PRICING_SNAPSHOT;
     state.pricingLoading = false;
     state.pricingError = "";
@@ -11077,7 +11073,7 @@ async function refreshPricingSnapshot(options = {}) {
     return state.pricingSnapshot;
   }
 
-  const requestToken = String(authSession.token);
+  const requestSessionKey = currentAuthSessionKey();
   state.pricingLoading = true;
   state.pricingError = "";
   if (options.render !== false) {
@@ -11086,13 +11082,9 @@ async function refreshPricingSnapshot(options = {}) {
 
   pricingRefreshPromise = (async () => {
     try {
-      const response = await apiRequest("/api/pricing", {
-        headers: {
-          Authorization: `Bearer ${requestToken}`,
-        },
-      });
+      const response = await apiRequest("/api/pricing");
 
-      if (String(authSession?.token || "") !== requestToken) {
+      if (currentAuthSessionKey() !== requestSessionKey) {
         return null;
       }
 
@@ -11101,7 +11093,7 @@ async function refreshPricingSnapshot(options = {}) {
       pricingLastRefreshCompletedAt = Date.now();
       return state.pricingSnapshot;
     } catch (error) {
-      if (String(authSession?.token || "") !== requestToken) {
+      if (currentAuthSessionKey() !== requestSessionKey) {
         return null;
       }
       state.pricingSnapshot = MANUAL_PRICING_SNAPSHOT;
@@ -11109,7 +11101,7 @@ async function refreshPricingSnapshot(options = {}) {
       return state.pricingSnapshot;
     } finally {
       pricingRefreshPromise = null;
-      if (String(authSession?.token || "") === requestToken) {
+      if (currentAuthSessionKey() === requestSessionKey) {
         state.pricingLoading = false;
         if (options.render !== false) {
           renderApp();
@@ -11862,7 +11854,6 @@ async function refreshAdminUsers(options = {}) {
     const previousUsersByEmail = new Map(state.adminUsers.map((user) => [user.email, user]));
     const previousDrafts = state.adminUserDrafts;
     const response = await apiRequest("/api/admin/users", {
-      headers: getSessionAuthHeaders(),
       timeoutMs: options.timeoutMs || 15000,
     });
 
@@ -11936,7 +11927,6 @@ async function refreshOpportunities(options = {}) {
 
   try {
     const response = await apiRequest("/api/admin/opportunities?limit=200", {
-      headers: getSessionAuthHeaders(),
       timeoutMs: options.timeoutMs || 15000,
     });
     state.opportunities = sortOpportunitiesByUrgency(
@@ -11985,7 +11975,6 @@ async function addAdminUser() {
   try {
     const response = await apiRequest("/api/admin/users", {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         email,
         displayName,
@@ -12039,7 +12028,6 @@ async function saveAdminUserDetails() {
   try {
     const response = await apiRequest(`/api/admin/users/${encodeURIComponent(currentEmail)}`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         email: nextEmail,
         displayName: nextDisplayName,
@@ -12094,7 +12082,6 @@ async function saveAdminUserStatus(email, isActive) {
   try {
     const response = await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/status`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         isActive: Boolean(isActive),
       },
@@ -12150,7 +12137,6 @@ async function saveAdminUserClientType(email, clientType) {
   try {
     const response = await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/client-type`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         clientType: normalizedClientType,
       },
@@ -12201,7 +12187,6 @@ async function saveAdminUserFeatures(email) {
   try {
     await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/features`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         assignedFeatureIds: requestedFeatureIds,
       },
@@ -12304,7 +12289,6 @@ async function confirmAdminUserDelete(email) {
   try {
     await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}`, {
       method: "DELETE",
-      headers: getSessionAuthHeaders(),
     });
 
     persistJson(getClientKey(normalizedEmail), null);
@@ -14678,7 +14662,6 @@ async function handleAgentWhatsAppApprovalAction(button) {
   try {
     const response = await apiRequest(`/api/approvals/${encodeURIComponent(approvalId)}/${action}`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: action === "send" ? { reply_text: String(textarea?.value || "").trim() } : {},
     });
     message.metadata.approval = response.approval || {
@@ -17251,7 +17234,6 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
     try {
       const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/config`, {
         method: "POST",
-        headers: getSessionAuthHeaders(),
         body: {
           prompt: { ...feature.prompt },
           settings: nextSettings,
@@ -18291,7 +18273,6 @@ function createSourceActionEditor(action) {
       try {
         const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(sourceActionId))}/settings`, {
           method: "POST",
-          headers: getSessionAuthHeaders(),
           body: { intervalMinutes: selected.intervalMinutes },
         });
         setAgentActionEditorStatusElement(status, "Saved");
@@ -18568,15 +18549,13 @@ async function refreshScheduledActions(options = {}) {
     return scheduledActionsRefreshPromise;
   }
 
-  const requestToken = String(authSession?.token || "");
+  const requestSessionKey = currentAuthSessionKey();
   state.scheduledActionsLoading = true;
   renderAgentActions();
   scheduledActionsRefreshPromise = (async () => {
     try {
-      const response = await apiRequest("/api/scheduled-actions?limit=100", {
-        headers: getSessionAuthHeaders(),
-      });
-      if (requestToken !== String(authSession?.token || "")) {
+      const response = await apiRequest("/api/scheduled-actions?limit=100");
+      if (requestSessionKey !== currentAuthSessionKey()) {
         return null;
       }
       const previousActions = state.scheduledActions;
@@ -18588,12 +18567,12 @@ async function refreshScheduledActions(options = {}) {
       markScheduledActionsRefreshSuccess();
       return state.scheduledActions;
     } catch (error) {
-      if (requestToken === String(authSession?.token || "")) {
+      if (requestSessionKey === currentAuthSessionKey()) {
         markScheduledActionsRefreshFailure(error, options);
       }
       return null;
     } finally {
-      if (requestToken === String(authSession?.token || "")) {
+      if (requestSessionKey === currentAuthSessionKey()) {
         state.scheduledActionsLoading = false;
         state.scheduledActionsInitialLoadPending = false;
         renderAgentActions();
@@ -18612,12 +18591,12 @@ async function refreshSourceActions() {
     }
     return null;
   }
-  const requestToken = String(authSession?.token || "");
+  const requestSessionKey = currentAuthSessionKey();
   state.sourceActionsLoading = true;
   sourceActionsRefreshPromise = (async () => {
     try {
-      const response = await apiRequest("/api/source-actions?limit=100", { headers: getSessionAuthHeaders() });
-      if (requestToken !== String(authSession?.token || "")) return null;
+      const response = await apiRequest("/api/source-actions?limit=100");
+      if (requestSessionKey !== currentAuthSessionKey()) return null;
       const previousActions = state.sourceActions;
       const nextActions = Array.isArray(response.actions) ? response.actions : [];
       notifySourceActionTransitions(previousActions, nextActions);
@@ -18627,7 +18606,7 @@ async function refreshSourceActions() {
     } catch {
       return null;
     } finally {
-      if (requestToken === String(authSession?.token || "")) {
+      if (requestSessionKey === currentAuthSessionKey()) {
         state.sourceActionsLoading = false;
         state.sourceActionsInitialLoadPending = false;
         renderAgentActions();
@@ -18643,13 +18622,11 @@ async function refreshWhatsAppApprovals() {
     return null;
   }
 
-  const requestToken = String(authSession?.token || "");
+  const requestSessionKey = currentAuthSessionKey();
   whatsappApprovalsRefreshPromise = (async () => {
     try {
-      const response = await apiRequest("/api/approvals?status=pending&delivery=portal", {
-        headers: getSessionAuthHeaders(),
-      });
-      if (requestToken !== String(authSession?.token || "")) {
+      const response = await apiRequest("/api/approvals?status=pending&delivery=portal");
+      if (requestSessionKey !== currentAuthSessionKey()) {
         return null;
       }
 
@@ -19643,7 +19620,6 @@ async function scheduleAgentScheduledMessageProposal(proposal) {
   proposal.executionPlan = buildAgentScheduledMessageExecutionPlan(details);
   return apiRequest("/api/scheduled-actions", {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       actionType: "send_message",
       channel: details.channel,
@@ -19741,7 +19717,6 @@ function formatAgentWebMonitorFrequency(settings = {}) {
 async function runAgentWebMonitorInitialCheck() {
   const response = await apiRequest(`/api/features/${encodeURIComponent(MONITOR_FEATURE_ID)}/run`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       runRequestId: createManualMonitorRunRequestId(),
     },
@@ -19769,7 +19744,6 @@ async function saveAndActivateAgentWebMonitorProposal(proposal) {
   const prompt = feature.prompt && typeof feature.prompt === "object" ? { ...feature.prompt } : {};
   const configResponse = await apiRequest(`/api/features/${encodeURIComponent(MONITOR_FEATURE_ID)}/config`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       prompt,
       settings,
@@ -19781,7 +19755,6 @@ async function saveAndActivateAgentWebMonitorProposal(proposal) {
   const updatedFeature = getFeatureById(MONITOR_FEATURE_ID) || feature;
   const activationResponse = await apiRequest(`/api/features/${encodeURIComponent(MONITOR_FEATURE_ID)}/activation`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       action: "activate",
       featureName: updatedFeature.name,
@@ -19852,7 +19825,6 @@ async function saveAndActivateAgentWhatsAppProposal(proposal) {
   const prompt = feature.prompt && typeof feature.prompt === "object" ? { ...feature.prompt } : {};
   const configResponse = await apiRequest(`/api/features/${encodeURIComponent(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)}/config`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: { prompt, settings },
   });
   applyServerFeatureStates([configResponse.feature || {}], { persist: true });
@@ -19861,7 +19833,6 @@ async function saveAndActivateAgentWhatsAppProposal(proposal) {
   const updatedFeature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID) || feature;
   const activationResponse = await apiRequest(`/api/features/${encodeURIComponent(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)}/activation`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       action: "activate",
       featureName: updatedFeature.name,
@@ -19979,7 +19950,6 @@ async function createSourceActionFromProposal(proposal) {
   }
   const response = await apiRequest("/api/source-actions", {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       sourceType: details.sourceType,
       sourceUrl: details.sourceUrl,
@@ -20305,7 +20275,6 @@ async function deactivateAgentBackendFeature(backendFeatureId) {
 
   const response = await apiRequest(`/api/features/${encodeURIComponent(featureId)}/activation`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       action: "deactivate",
       featureName: feature.name,
@@ -20339,7 +20308,6 @@ async function activateAgentBackendFeature(backendFeatureId) {
 
   const response = await apiRequest(`/api/features/${encodeURIComponent(featureId)}/activation`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       action: "activate",
       featureName: feature.name,
@@ -20374,7 +20342,6 @@ async function saveAgentMonitorLifecycleStatus(backendFeatureId, lifecycleStatus
 
   const savePromise = apiRequest(`/api/features/${encodeURIComponent(featureId)}/config`, {
     method: "POST",
-    headers: getSessionAuthHeaders(),
     body: {
       prompt: { ...feature.prompt },
       settings: nextSettings,
@@ -20580,7 +20547,6 @@ async function cancelScheduledAction(actionId) {
   try {
     const response = await apiRequest(`/api/scheduled-actions/${encodeURIComponent(String(id))}`, {
       method: "DELETE",
-      headers: getSessionAuthHeaders(),
     });
     if (response.action) {
       const normalizedAction = normalizeScheduledAction(response.action);
@@ -20611,7 +20577,6 @@ async function runSourceActionNow(actionId) {
   try {
     const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}/run`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       timeoutMs: 90000,
     });
     if (response?.action) {
@@ -20658,7 +20623,6 @@ async function updateSourceActionLifecycle(actionId, lifecycleStatus) {
   try {
     const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}/${endpoint}`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
     });
     await refreshSourceActions();
     if (response.action) {
@@ -20715,7 +20679,6 @@ async function runAgentProposalLocalActionNow(actionId) {
     try {
       const response = await apiRequest("/api/agent/proposals/run", {
         method: "POST",
-        headers: getSessionAuthHeaders(),
         body: {
           proposalId: proposal.id,
           proposalType: proposal.type,
@@ -20769,7 +20732,6 @@ async function runAgentProposalLocalActionNow(actionId) {
     try {
       const response = await apiRequest("/api/agent/proposals/run", {
         method: "POST",
-        headers: getSessionAuthHeaders(),
         body: {
           proposalId: proposal.id,
           proposalType: proposal.type,
@@ -20853,7 +20815,6 @@ async function runAgentProposalLocalActionNow(actionId) {
     try {
       const response = await apiRequest("/api/agent/proposals/run", {
         method: "POST",
-        headers: getSessionAuthHeaders(),
         body: {
           proposalId: proposal.id,
           proposalType: proposal.type,
@@ -20924,7 +20885,6 @@ async function removeSourceAction(actionId) {
   try {
     await apiRequest(`/api/source-actions/${encodeURIComponent(String(id))}`, {
       method: "DELETE",
-      headers: getSessionAuthHeaders(),
     });
     state.sourceActions = state.sourceActions.filter((action) => Number(action.id || 0) !== id);
     state.selectedScheduledActionId = "";
@@ -21922,7 +21882,6 @@ async function activateSelectedFeature() {
     const accessToken = normalizePendingAccessToken(whatsapp.access_token);
     const response = await apiRequest("/api/whatsapp/connection", {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         business_account_id: whatsapp.business_account_id,
         phone_number_id: whatsapp.phone_number_id,
@@ -22066,7 +22025,6 @@ async function deactivateSelectedFeature(options = {}) {
     setStatus("Turning tool off...");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/activation`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         action: "deactivate",
         featureName: feature.name,
@@ -22329,7 +22287,6 @@ async function requestMonitorManualRunCancellation() {
   try {
     await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "DELETE",
-      headers: getSessionAuthHeaders(),
       body: {
         runRequestId: requestId,
       },
@@ -22398,7 +22355,6 @@ async function runMonitorActionNow(featureId) {
   try {
     const response = await apiRequest(`/api/features/${encodeURIComponent(normalizedFeatureId)}/run`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: { runRequestId: requestId },
       timeoutMs: 90000,
     });
@@ -22523,7 +22479,6 @@ async function runSelectedMonitorNow() {
     setStatus("Running the monitor now. Cancel it if you need to stop before anything is sent.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         runRequestId: monitorManualRunRequestId,
       },
@@ -23208,7 +23163,6 @@ async function requestReengagementDemoRunCancellation() {
   try {
     await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "DELETE",
-      headers: getSessionAuthHeaders(),
       body: {
         runRequestId: requestId,
       },
@@ -23266,7 +23220,6 @@ async function runSelectedReengagementDemo() {
     setStatus("Running the re-engagement demo and preparing results.");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         runRequestId: reengagementDemoRunRequestId,
       },
@@ -23528,7 +23481,6 @@ async function sendSelectedWhatsAppReplySample() {
     setStatus("Sending a sample WhatsApp alert...");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/sample`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {},
     });
 
@@ -23716,7 +23668,6 @@ async function toggleSelectedFeatureEditorActivation() {
     setStatus("Checking payment and activation...");
     const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/activation`, {
       method: "POST",
-      headers: getSessionAuthHeaders(),
       body: {
         action: "activate",
         featureName: feature.name,
@@ -25306,8 +25257,7 @@ async function startOtpFlow() {
 
 function completeSignIn(session) {
   const email = normalizeEmail(session?.email || elements.emailInput.value || authChallenge?.email || "");
-  const token = String(session?.sessionToken || "").trim();
-  if (!email || !token) {
+  if (!email) {
     return;
   }
 
@@ -25318,7 +25268,6 @@ function completeSignIn(session) {
   syncAgentStateFromClientState({ recordOpen: true, persistOpen: false });
   authSession = {
     email: activeEmail,
-    token,
     signedIn: true,
     signedInAt: Date.now(),
     issuedAt: session?.issuedAt || Date.now(),
@@ -25447,12 +25396,12 @@ async function verifyOtpFlow() {
 async function signOut() {
   persistClientState();
   const previousEmail = normalizeEmail(authSession?.email || activeEmail || "");
-  const token = String(authSession?.token || "").trim();
-  if (token) {
+  if (authSession?.signedIn) {
     try {
+      // The server revokes the session named by the cookie and clears it.
       await apiRequest("/api/auth/logout", {
         method: "POST",
-        body: { token },
+        body: {},
       });
     } catch {
       // Ignore logout failures; the local session is still cleared.
@@ -26179,7 +26128,6 @@ async function bootstrapAuthState() {
   const applyRestoredSession = (response, fallbackSession = null) => {
     authSession = normalizeStoredSession({
       email: response.email || fallbackSession?.email || "",
-      token: response.token || fallbackSession?.token || "",
       signedInAt: response.issuedAt || fallbackSession?.signedInAt || Date.now(),
       expiresAt: response.expiresAt || fallbackSession?.expiresAt || 0,
       requestCountry: response.requestCountry || fallbackSession?.requestCountry || "",
@@ -26214,52 +26162,16 @@ async function bootstrapAuthState() {
     }
   };
 
-  const tryRestoreSession = async (headers = {}, fallbackSession = null) => {
-    const response = await apiRequest("/api/auth/session", { headers });
+  const tryRestoreSession = async (fallbackSession = null) => {
+    // No credential is passed: the httpOnly session cookie travels with the
+    // same-origin request on its own. The stored record only supplies display
+    // fallbacks while the response is in flight.
+    const response = await apiRequest("/api/auth/session");
     applyRestoredSession(response, fallbackSession);
   };
 
-  if (storedSession?.token) {
-    try {
-      await tryRestoreSession({
-        Authorization: `Bearer ${storedSession.token}`,
-      }, storedSession);
-      return;
-    } catch (error) {
-      const status = Number(error?.status || 0);
-      if (status === 401 || status === 403) {
-        try {
-          await tryRestoreSession({}, storedSession);
-          return;
-        } catch (cookieError) {
-          const cookieStatus = Number(cookieError?.status || 0);
-          if (cookieStatus !== 401 && cookieStatus !== 403) {
-            authSession = null;
-            showAuthView(activeEmail);
-            openAuthAlert(
-              "Couldn’t verify session",
-              formatApiErrorMessage(cookieError, "We couldn’t verify your session. Please sign in again."),
-              { returnFocus: "email" },
-            );
-            return;
-          }
-          clearAuthSession();
-        }
-      } else {
-        authSession = null;
-        showAuthView(activeEmail);
-        openAuthAlert(
-          "Couldn’t verify session",
-          formatApiErrorMessage(error, "We couldn’t verify your session. Please sign in again."),
-          { returnFocus: "email" },
-        );
-        return;
-      }
-    }
-  }
-
   try {
-    await tryRestoreSession();
+    await tryRestoreSession(storedSession);
     return;
   } catch (error) {
     const status = Number(error?.status || 0);
