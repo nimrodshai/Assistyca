@@ -61,6 +61,7 @@ DEFAULT_MODEL_PRICES = (
     },
 )
 USER_OWNED_TABLES = (
+    "notifications",
     "feature_activation_events",
     "feature_activations",
     "feature_entitlements",
@@ -422,6 +423,25 @@ CREATE TABLE IF NOT EXISTS feature_monitor_notifications (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'info',
+    tone TEXT NOT NULL DEFAULT 'info',
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    feature_id TEXT NOT NULL DEFAULT '',
+    action_id TEXT NOT NULL DEFAULT '',
+    result_url TEXT NOT NULL DEFAULT '',
+    dedupe_key TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    read_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS scheduled_actions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -520,6 +540,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_monitor_notifications_user_item
 ON feature_monitor_notifications(user_id, feature_id, item_key);
 CREATE INDEX IF NOT EXISTS idx_feature_monitor_notifications_user_schedule
 ON feature_monitor_notifications(user_id, feature_id, scheduled_for DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created
+ON notifications(user_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
+ON notifications(user_id, read_at, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_user_dedupe
+ON notifications(user_id, dedupe_key) WHERE dedupe_key <> '';
 CREATE INDEX IF NOT EXISTS idx_scheduled_actions_due
 ON scheduled_actions(status, run_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_scheduled_actions_user_created
@@ -1711,6 +1737,31 @@ class PortalDatabase:
             "lastError": normalize_text(payload.get("last_error")),
             "claimedAt": payload.get("claimed_at"),
             "completedAt": payload.get("completed_at"),
+            "createdAt": payload.get("created_at"),
+            "updatedAt": payload.get("updated_at"),
+        }
+
+    def _load_notification_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        payload = _row_to_dict(row)
+        if not payload:
+            return None
+
+        read_at = payload.get("read_at")
+        return {
+            "id": int(payload.get("id") or 0),
+            "userId": int(payload.get("user_id") or 0),
+            "kind": normalize_text(payload.get("kind")) or "info",
+            "tone": normalize_text(payload.get("tone")) or "info",
+            "title": normalize_text(payload.get("title")),
+            "body": payload.get("body") or "",
+            "source": normalize_text(payload.get("source")),
+            "featureId": normalize_text(payload.get("feature_id")),
+            "actionId": normalize_text(payload.get("action_id")),
+            "resultUrl": normalize_text(payload.get("result_url")),
+            "dedupeKey": normalize_text(payload.get("dedupe_key")),
+            "metadata": _load_json_dict(payload.get("metadata_json")),
+            "readAt": read_at,
+            "read": bool(read_at),
             "createdAt": payload.get("created_at"),
             "updatedAt": payload.get("updated_at"),
         }
@@ -5208,6 +5259,222 @@ class PortalDatabase:
                 (int(action_id),),
             ).fetchone()
         return self._load_scheduled_action_row(row)
+
+    # ------------------------------------------------------------------
+    # In-app notifications
+    #
+    # This is the single delivery surface for everything an action produces.
+    # Rows are durable and server-side, so a notification survives a tab close
+    # and is visible from any device the owner signs in on.
+    # ------------------------------------------------------------------
+
+    def save_notification(
+        self,
+        *,
+        user_id: int,
+        title: str,
+        body: str = "",
+        kind: str = "info",
+        tone: str = "info",
+        source: str = "",
+        feature_id: str = "",
+        action_id: str = "",
+        result_url: str = "",
+        dedupe_key: str = "",
+        metadata: dict[str, Any] | None = None,
+        created_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        """Insert a notification, or refresh the existing one with the same key.
+
+        `dedupe_key` lets a caller be re-run safely -- a retried monitor run or a
+        replayed scheduled action updates its notification in place instead of
+        stacking duplicates in the feed. An updated notification is marked unread
+        again so the owner sees the new state.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+
+        normalized_title = normalize_text(title)
+        if not normalized_title:
+            raise ValueError("Notification title is required.")
+
+        now = parse_datetime(created_at or now_iso()).astimezone(timezone.utc).isoformat()
+        normalized_dedupe = normalize_text(dedupe_key)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
+
+        with self._connection() as conn:
+            if normalized_dedupe:
+                existing = conn.execute(
+                    "SELECT id FROM notifications WHERE user_id = ? AND dedupe_key = ? LIMIT 1",
+                    (int(user_id), normalized_dedupe),
+                ).fetchone()
+                if existing is not None:
+                    conn.execute(
+                        """
+                        UPDATE notifications
+                        SET kind = ?, tone = ?, title = ?, body = ?, source = ?,
+                            feature_id = ?, action_id = ?, result_url = ?,
+                            metadata_json = ?, read_at = NULL, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            normalize_text(kind) or "info",
+                            normalize_text(tone) or "info",
+                            normalized_title,
+                            body or "",
+                            normalize_text(source),
+                            normalize_text(feature_id),
+                            normalize_text(action_id),
+                            normalize_text(result_url),
+                            metadata_json,
+                            now,
+                            int(existing["id"]),
+                        ),
+                    )
+                    row = conn.execute(
+                        "SELECT * FROM notifications WHERE id = ? LIMIT 1",
+                        (int(existing["id"]),),
+                    ).fetchone()
+                    return self._load_notification_row(row) or {}
+
+            cursor = conn.execute(
+                """
+                INSERT INTO notifications (
+                    user_id, kind, tone, title, body, source, feature_id,
+                    action_id, result_url, dedupe_key, metadata_json,
+                    read_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                """,
+                (
+                    int(user_id),
+                    normalize_text(kind) or "info",
+                    normalize_text(tone) or "info",
+                    normalized_title,
+                    body or "",
+                    normalize_text(source),
+                    normalize_text(feature_id),
+                    normalize_text(action_id),
+                    normalize_text(result_url),
+                    normalized_dedupe,
+                    metadata_json,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE id = ? LIMIT 1",
+                (int(cursor.lastrowid or 0),),
+            ).fetchone()
+            return self._load_notification_row(row) or {}
+
+    def list_notifications(
+        self,
+        *,
+        user_id: int,
+        limit: int = 50,
+        unread_only: bool = False,
+        before_id: int = 0,
+    ) -> list[dict[str, Any]]:
+        if int(user_id or 0) <= 0:
+            return []
+
+        clauses = ["user_id = ?"]
+        values: list[Any] = [int(user_id)]
+        if unread_only:
+            clauses.append("read_at IS NULL")
+        if int(before_id or 0) > 0:
+            clauses.append("id < ?")
+            values.append(int(before_id))
+        values.append(max(1, min(200, int(limit or 50))))
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM notifications
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(values),
+            ).fetchall()
+        return [item for item in (self._load_notification_row(row) for row in rows) if item is not None]
+
+    def count_unread_notifications(self, *, user_id: int) -> int:
+        if int(user_id or 0) <= 0:
+            return 0
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM notifications WHERE user_id = ? AND read_at IS NULL",
+                (int(user_id),),
+            ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
+    def mark_notification_read(self, *, user_id: int, notification_id: int) -> dict[str, Any] | None:
+        """Mark one notification read. Scoped by user_id so an id alone is not enough."""
+
+        if int(user_id or 0) <= 0 or int(notification_id or 0) <= 0:
+            return None
+
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE notifications
+                SET read_at = COALESCE(read_at, ?), updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (now, now, int(notification_id), int(user_id)),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE id = ? LIMIT 1",
+                (int(notification_id),),
+            ).fetchone()
+            return self._load_notification_row(row)
+
+    def mark_all_notifications_read(self, *, user_id: int) -> int:
+        if int(user_id or 0) <= 0:
+            return 0
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "UPDATE notifications SET read_at = ?, updated_at = ? WHERE user_id = ? AND read_at IS NULL",
+                (now, now, int(user_id)),
+            )
+            return int(cursor.rowcount or 0)
+
+    def delete_notification(self, *, user_id: int, notification_id: int) -> bool:
+        if int(user_id or 0) <= 0 or int(notification_id or 0) <= 0:
+            return False
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM notifications WHERE id = ? AND user_id = ?",
+                (int(notification_id), int(user_id)),
+            )
+            return int(cursor.rowcount or 0) > 0
+
+    def prune_notifications(self, *, user_id: int, keep: int = 200) -> int:
+        """Trim a user's feed so it cannot grow without bound."""
+
+        if int(user_id or 0) <= 0:
+            return 0
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM notifications
+                WHERE user_id = ?
+                  AND id NOT IN (
+                    SELECT id FROM notifications
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                  )
+                """,
+                (int(user_id), int(user_id), max(1, int(keep or 200))),
+            )
+            return int(cursor.rowcount or 0)
 
     def requeue_stale_scheduled_actions(
         self,

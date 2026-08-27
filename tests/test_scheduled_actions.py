@@ -15,7 +15,6 @@ from urllib import request as urllib_request
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
-from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.scheduled_actions import ScheduledActionConfig
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 
@@ -49,17 +48,17 @@ class ScheduledActionTests(unittest.TestCase):
         self.assertEqual(claimed["status"], "running")
         self.assertEqual(claimed["attemptCount"], 1)
 
-    def test_scheduler_sends_due_whatsapp_template_with_platform_credentials(self) -> None:
+    def test_scheduler_delivers_due_action_to_the_in_app_feed(self) -> None:
         action = self.database.create_scheduled_action(
             user_id=int(self.user["id"]),
             action_type="send_message",
-            channel="whatsapp",
+            channel="portal",
             recipient_ref="owner",
             run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
             timezone_name="Asia/Jerusalem",
             payload={
                 "messageText": "It's 12:40.",
-                "recipientWaId": "972507322341",
+                "title": "Time check",
             },
         )
         scheduler = ScheduledActionScheduler(
@@ -67,68 +66,45 @@ class ScheduledActionTests(unittest.TestCase):
             config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
         )
 
-        with mock.patch(
-            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
-            return_value="wamid.test",
-        ) as send_whatsapp:
-            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+        summary = scheduler.run_pending(now=datetime.now(timezone.utc))
 
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
         self.assertEqual(summary["sent"], 1)
         self.assertEqual(saved["status"], "sent")
-        self.assertEqual(saved["providerMessageId"], "wamid.test")
-        send_whatsapp.assert_called_once_with(
-            recipient_wa_id="972507322341",
-            message_text="It's 12:40.",
-            template_name="notification_message",
-            template_language="en_US",
+        self.assertTrue(saved["providerMessageId"].startswith("portal-notification-"))
+
+        notifications = self.database.list_notifications(user_id=int(self.user["id"]))
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0]["title"], "Time check")
+        self.assertEqual(notifications[0]["body"], "It's 12:40.")
+        self.assertEqual(notifications[0]["kind"], "scheduled_action")
+        self.assertFalse(notifications[0]["read"])
+
+    def test_action_without_a_user_is_recorded_as_failed(self) -> None:
+        action = self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="portal",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "It's 12:40."},
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
         )
 
-    def test_whatsapp_template_notification_uses_platform_environment(self) -> None:
-        with (
-            mock.patch.dict(
-                "os.environ",
-                {
-                    "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
-                    "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": "platform-phone",
-                },
-                clear=True,
-            ),
-            mock.patch(
-                "packages.infrastructure.notification_delivery.send_whatsapp_message",
-                return_value="wamid.template",
-            ) as send_message,
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.deliver_portal_notification",
+            side_effect=RuntimeError("notification store down"),
         ):
-            result = send_whatsapp_notification(
-                recipient_wa_id="972507322341",
-                message_text="It's 12:40.",
-                template_name="notification_message",
-                template_language="en_US",
-            )
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
 
-        self.assertEqual(result, "wamid.template")
-        send_message.assert_called_once_with(
-            access_token="platform-token",
-            phone_number_id="platform-phone",
-            api_version="v20.0",
-            recipient_wa_id="972507322341",
-            message_text=None,
-            template={
-                "name": "notification_message",
-                "language": {"code": "en_US"},
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [
-                            {
-                                "type": "text",
-                                "text": "It's 12:40.",
-                            }
-                        ],
-                    }
-                ],
-            },
-        )
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(saved["status"], "failed")
+        self.assertIn("notification store down", saved["lastError"])
 
     def test_delivery_status_updates_saved_action_and_does_not_regress(self) -> None:
         action = self.database.create_scheduled_action(

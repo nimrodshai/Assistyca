@@ -15,6 +15,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
+from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_auth.server import describe_manual_reengagement_demo_run
 from packages.infrastructure.portal_auth.server import parse_whatsapp_export_messages
@@ -514,18 +515,19 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
         self.assertEqual(config.templates["owner_notification"]["first_name"], "whatsapp_reply_assistant_1")
         self.assertEqual(config.templates["owner_notification"]["repeat_name"], "whatsapp_reply_assistant_2")
 
-    def test_owner_notification_uses_template_when_configured(self) -> None:
-        service = self._build_service(
-            templates={
-                "owner_notification": {
-                    "name": "new_reply_for_review",
-                    "language": "en",
-                    "button_index": "0",
-                    "button_type": "url",
-                    "url_mode": "path",
-                },
-            },
-        )
+    def _build_notified_service(self):
+        """A service wired to a real database, as the portal builds it."""
+
+        database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        database.register_user("owner@example.com")
+        user_id = int((database.get_user("owner@example.com") or {})["id"])
+        service = self._build_service()
+        service.database = database
+        service.user_id = user_id
+        return service, database, user_id
+
+    def test_owner_notification_lands_in_the_portal_feed(self) -> None:
+        service, database, user_id = self._build_notified_service()
         approval = service.store.record_inbound_message(
             thread_id="15551230000",
             sender_name="John Doe",
@@ -539,240 +541,64 @@ class PortalWhatsAppTemplateTests(unittest.TestCase):
 
         with mock.patch(
             "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.template-2",
         ) as mocked_send:
             message_id = service.notify_owner_about_approval(approval)
 
-        self.assertEqual(message_id, "wamid.template-2")
-        mocked_send.assert_called_once()
-        self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "1186653017865246")
-        self.assertIsNone(mocked_send.call_args.kwargs["message_text"])
-        self.assertIsNone(mocked_send.call_args.kwargs["interactive"])
-        self.assertEqual(
-            mocked_send.call_args.kwargs["template"],
-            {
-                "name": "new_reply_for_review",
-                "language": {
-                    "code": "en",
-                },
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [
-                            {
-                                "type": "text",
-                                "text": "John Doe",
-                            }
-                        ],
-                    },
-                    {
-                        "type": "button",
-                        "sub_type": "url",
-                        "index": "0",
-                        "parameters": [
-                            {
-                                "type": "text",
-                                "text": f"approval/{approval['approval_id']}",
-                            }
-                        ],
-                    },
-                ],
-            },
-        )
+        # The owner alert never leaves the portal now.
+        mocked_send.assert_not_called()
+        self.assertTrue(message_id.startswith("portal-notification-"))
 
-    def test_owner_notification_falls_back_to_saved_connection_token(self) -> None:
-        service = self._build_service()
-        service.config.access_token = "client-token"
-        service.config.phone_number_id = "22222"
-        service.config.allow_mock_send = False
+        notifications = database.list_notifications(user_id=user_id)
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0]["kind"], "reply_approval")
+        self.assertIn("John Doe", notifications[0]["title"])
+        self.assertIn("Can you help tomorrow?", notifications[0]["body"])
+        self.assertEqual(notifications[0]["actionId"], approval["approval_id"])
+        self.assertFalse(notifications[0]["read"])
 
-        with mock.patch.dict(
-            os.environ,
-            {
-                "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "",
-                "WHATSAPP_SENDER_ACCESS_TOKEN": "",
-                "WHATSAPP_ACCESS_TOKEN": "",
-            },
-            clear=False,
-        ), mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.client-owner",
-        ) as mocked_send:
-            self.assertTrue(service.owner_send_enabled())
-            message_id = service.send_owner_message(None, message_text="Real owner alert")
-
-        self.assertEqual(message_id, "wamid.client-owner")
-        self.assertEqual(mocked_send.call_args.kwargs["access_token"], "client-token")
-        self.assertEqual(mocked_send.call_args.kwargs["phone_number_id"], "22222")
-        self.assertEqual(mocked_send.call_args.kwargs["recipient_wa_id"], "15551234567")
-
-    def test_owner_notification_ignores_telegram_delivery_settings(self) -> None:
-        service = self._build_service(
-            delivery_settings={
-                "deliveryChannels": ["telegram"],
-                "telegramChatId": "987654321",
-            },
-        )
-        approval = service.store.record_inbound_message(
-            thread_id="15551230000",
-            sender_name="John Doe",
-            sender_wa_id="15551230000",
-            message_text="Can you help tomorrow?",
-            source_message_id="wamid.inbound-telegram",
-            message_type="text",
-            raw_payload={"object": "whatsapp_business_account"},
-            config=service.config,
-        )
-
-        with mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.should-not-send",
-        ) as mocked_whatsapp, self.assertRaisesRegex(RuntimeError, "No owner delivery channel"):
-            service.notify_owner_about_approval(approval)
-
-        mocked_whatsapp.assert_not_called()
-        stored_approval = service.store.get_approval(approval["approval_id"])
-        self.assertFalse(stored_approval.get("owner_notification_message_id"))
-        self.assertFalse(stored_approval.get("owner_notification_telegram_message_id"))
-        self.assertEqual(stored_approval.get("owner_notification_delivery_channels", []), [])
-
-    def test_owner_notification_records_portal_delivery_without_external_send(self) -> None:
-        service = self._build_service(delivery_settings={"deliveryChannels": ["portal"]})
-        approval = service.store.record_inbound_message(
-            thread_id="15551230000",
-            sender_name="John Doe",
-            sender_wa_id="15551230000",
-            message_text="Can you help tomorrow?",
-            source_message_id="wamid.inbound-portal",
-            message_type="text",
-            raw_payload={"object": "whatsapp_business_account"},
-            config=service.config,
-        )
-
-        with mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-        ) as mocked_whatsapp:
-            message_id = service.notify_owner_about_approval(approval)
-
-        self.assertEqual(message_id, "")
-        mocked_whatsapp.assert_not_called()
         stored_approval = service.store.get_approval(approval["approval_id"])
         self.assertEqual(stored_approval.get("owner_notification_delivery_channels"), ["portal"])
         self.assertEqual(stored_approval.get("owner_state"), "pending")
+        # The public review page is gone, so no URL is recorded.
+        self.assertEqual(stored_approval.get("owner_notification_review_url"), "")
 
-    def test_owner_notification_uses_quick_reply_template_when_configured(self) -> None:
-        service = self._build_service(
-            templates={
-                "owner_notification": {
-                    "name": "whatsapp_reply_assistant",
-                    "language": "en",
-                    "button_index": "0",
-                    "button_type": "quick_reply",
-                    "button_action": "generate",
-                },
-            },
-        )
+    def test_repeat_notification_for_the_same_approval_is_deduped(self) -> None:
+        service, database, user_id = self._build_notified_service()
         approval = service.store.record_inbound_message(
             thread_id="15551230000",
             sender_name="John Doe",
             sender_wa_id="15551230000",
             message_text="Can you help tomorrow?",
-            source_message_id="wamid.inbound-1",
+            source_message_id="wamid.inbound-dedupe",
             message_type="text",
             raw_payload={"object": "whatsapp_business_account"},
             config=service.config,
         )
 
-        with mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.template-quick-reply",
-        ) as mocked_send:
-            message_id = service.notify_owner_about_approval(approval)
+        service.notify_owner_about_approval(approval)
+        service.notify_owner_about_approval(approval)
 
-        self.assertEqual(message_id, "wamid.template-quick-reply")
-        self.assertEqual(
-            mocked_send.call_args.kwargs["template"]["components"][1],
-            {
-                "type": "button",
-                "sub_type": "quick_reply",
-                "index": "0",
-                "parameters": [
-                    {
-                        "type": "payload",
-                        "payload": f"approval:{approval['approval_id']}:generate",
-                    }
-                ],
-            },
-        )
+        self.assertEqual(len(database.list_notifications(user_id=user_id)), 1)
 
-    def test_owner_notification_uses_first_then_repeat_reply_assistant_templates(self) -> None:
-        service = self._build_service(
-            templates={
-                "owner_notification": {
-                    "first_name": "whatsapp_reply_assistant_1",
-                    "repeat_name": "whatsapp_reply_assistant_2",
-                    "language": "en",
-                    "button_type": "quick_reply",
-                    "button_action": "generate",
-                    "disable_button_index": "1",
-                    "disable_button_action": "disable_contact",
-                },
-            },
-        )
-        first_approval = service.store.record_inbound_message(
+    def test_notification_failure_is_raised_rather_than_reported_as_sent(self) -> None:
+        service, _database, _user_id = self._build_notified_service()
+        approval = service.store.record_inbound_message(
             thread_id="15551230000",
             sender_name="John Doe",
             sender_wa_id="15551230000",
             message_text="Can you help tomorrow?",
-            source_message_id="wamid.inbound-1",
+            source_message_id="wamid.inbound-fail",
             message_type="text",
             raw_payload={"object": "whatsapp_business_account"},
             config=service.config,
         )
 
         with mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.template-first",
-        ) as mocked_first_send:
-            service.notify_owner_about_approval(first_approval)
-
-        first_template = mocked_first_send.call_args.kwargs["template"]
-        self.assertEqual(first_template["name"], "whatsapp_reply_assistant_1")
-        self.assertEqual(len(first_template["components"]), 3)
-        self.assertEqual(
-            first_template["components"][1]["parameters"][0]["payload"],
-            f"approval:{first_approval['approval_id']}:generate",
-        )
-        self.assertEqual(first_template["components"][2]["index"], "1")
-        self.assertEqual(
-            first_template["components"][2]["parameters"][0]["payload"],
-            f"approval:{first_approval['approval_id']}:disable_contact",
-        )
-
-        repeat_approval = service.store.record_inbound_message(
-            thread_id="15551230000",
-            sender_name="John Doe",
-            sender_wa_id="15551230000",
-            message_text="What about Friday?",
-            source_message_id="wamid.inbound-2",
-            message_type="text",
-            raw_payload={"object": "whatsapp_business_account"},
-            config=service.config,
-        )
-
-        with mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.template-repeat",
-        ) as mocked_repeat_send:
-            service.notify_owner_about_approval(repeat_approval)
-
-        repeat_template = mocked_repeat_send.call_args.kwargs["template"]
-        self.assertEqual(repeat_template["name"], "whatsapp_reply_assistant_2")
-        self.assertEqual(len(repeat_template["components"]), 2)
-        self.assertEqual(
-            repeat_template["components"][1]["parameters"][0]["payload"],
-            f"approval:{repeat_approval['approval_id']}:generate",
-        )
+            "packages.infrastructure.whatsapp_portal_service.deliver_portal_notification",
+            side_effect=RuntimeError("notification store down"),
+        ):
+            with self.assertRaises(RuntimeError):
+                service.notify_owner_about_approval(approval)
 
     def test_owner_quick_reply_generate_sends_hot_review_prompt(self) -> None:
         service = self._build_service()
@@ -1606,9 +1432,9 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(messages[0]["messageId"], "wamid.inbound-price-1")
         self.assertIn("couple of details", messages[0]["suggestedReply"])
         self.assertEqual(messages[0]["metadata"]["approvalStatus"], "pending")
-        self.assertTrue(messages[0]["metadata"]["approvalReviewUrl"].endswith(
-            f"/approval/{messages[0]['approvalId']}"
-        ))
+        # The public /approval/<id> review page is gone; approvals are reviewed in
+        # the signed-in portal, so no review URL is published on the message.
+        self.assertNotIn("approvalReviewUrl", messages[0]["metadata"])
 
     def test_hebrew_owner_approval_without_reply_context_sends_pending_suggestion(self) -> None:
         customer_request = urllib_request.Request(
@@ -2588,6 +2414,134 @@ class StaticFileExposureTests(unittest.TestCase):
         for path in ("/", "/portal/", "/portal/app.js", "/portal/styles.css", "/privacy.html"):
             with self.subTest(path=path):
                 self.assertEqual(self._status(path), 200)
+
+
+class NotificationsApiTests(unittest.TestCase):
+    """The in-app feed is the single delivery surface, so it must be scoped tightly."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db"),
+        )
+        self.tokens: dict[str, str] = {}
+        for email in ("owner@example.com", "other@example.com"):
+            self.server.database.register_user(email)
+            code, _ = self.server.store.issue_challenge(email)
+            ok, _, result = self.server.store.verify_code(email, code)
+            assert ok and result is not None
+            self.tokens[email] = result["token"]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def _user_id(self, email: str) -> int:
+        return int((self.server.database.get_user(email) or {})["id"])
+
+    def _request(self, method: str, path: str, email: str, payload=None):
+        request = urllib_request.Request(
+            f"{self.base_url}{path}",
+            data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.tokens[email]}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_feed_returns_only_the_callers_notifications(self) -> None:
+        self.server.database.save_notification(
+            user_id=self._user_id("owner@example.com"), title="Mine", body="visible"
+        )
+        self.server.database.save_notification(
+            user_id=self._user_id("other@example.com"), title="Theirs", body="hidden"
+        )
+
+        status, payload = self._request("GET", "/api/notifications", "owner@example.com")
+
+        self.assertEqual(status, 200)
+        self.assertEqual([item["title"] for item in payload["notifications"]], ["Mine"])
+        self.assertEqual(payload["unreadCount"], 1)
+
+    def test_feed_requires_authentication(self) -> None:
+        request = urllib_request.Request(f"{self.base_url}/api/notifications", method="GET")
+        try:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                status = response.status
+        except urllib_error.HTTPError as exc:
+            status = exc.code
+        self.assertEqual(status, 401)
+
+    def test_marking_read_updates_the_unread_count(self) -> None:
+        notification = self.server.database.save_notification(
+            user_id=self._user_id("owner@example.com"), title="Mine"
+        )
+
+        status, payload = self._request(
+            "POST", "/api/notifications/read", "owner@example.com", {"id": notification["id"]}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["notification"]["read"])
+        self.assertEqual(payload["unreadCount"], 0)
+
+    def test_cannot_mark_another_users_notification_read(self) -> None:
+        notification = self.server.database.save_notification(
+            user_id=self._user_id("other@example.com"), title="Theirs"
+        )
+
+        status, payload = self._request(
+            "POST", "/api/notifications/read", "owner@example.com", {"id": notification["id"]}
+        )
+
+        self.assertEqual(status, 404)
+        self.assertFalse(payload["ok"])
+        # And it is genuinely untouched.
+        self.assertEqual(
+            self.server.database.count_unread_notifications(user_id=self._user_id("other@example.com")),
+            1,
+        )
+
+    def test_read_all_clears_only_the_callers_feed(self) -> None:
+        owner_id = self._user_id("owner@example.com")
+        other_id = self._user_id("other@example.com")
+        for index in range(3):
+            self.server.database.save_notification(user_id=owner_id, title=f"Mine {index}")
+        self.server.database.save_notification(user_id=other_id, title="Theirs")
+
+        status, payload = self._request("POST", "/api/notifications/read-all", "owner@example.com", {})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["updated"], 3)
+        self.assertEqual(payload["unreadCount"], 0)
+        self.assertEqual(self.server.database.count_unread_notifications(user_id=other_id), 1)
+
+    def test_cannot_delete_another_users_notification(self) -> None:
+        notification = self.server.database.save_notification(
+            user_id=self._user_id("other@example.com"), title="Theirs"
+        )
+
+        status, _ = self._request(
+            "DELETE", f"/api/notifications/{notification['id']}", "owner@example.com"
+        )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(len(self.server.database.list_notifications(user_id=self._user_id("other@example.com"))), 1)
 
 
 if __name__ == "__main__":

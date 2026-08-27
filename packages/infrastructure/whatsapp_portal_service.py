@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib import parse as urllib_parse
 
+from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.portal_runtime_paths import resolve_portal_whatsapp_store_root
@@ -34,7 +35,6 @@ from packages.tools.whatsapp_reply_approval.server import normalize_text
 from packages.tools.whatsapp_reply_approval.server import normalize_whatsapp_id
 from packages.tools.whatsapp_reply_approval.server import is_owner_pending_approval_command
 from packages.tools.whatsapp_reply_approval.server import parse_owner_command_text
-from packages.tools.whatsapp_reply_approval.server import render_approval_page
 from packages.tools.whatsapp_reply_approval.server import render_dashboard
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 from packages.tools.whatsapp_reply_approval.server import short_ref
@@ -302,6 +302,7 @@ def build_portal_service_from_connection(
     base_url: str,
     store_cache: dict[str, BackendStore] | None = None,
     store_lock: Any | None = None,
+    database: Any | None = None,
 ) -> "PortalWhatsAppService":
     metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
     assistant = metadata.get("assistant") if isinstance(metadata.get("assistant"), dict) else None
@@ -323,8 +324,16 @@ def build_portal_service_from_connection(
         templates=templates,
     )
 
+    owner_user_id = int(connection.get("userId") or 0)
+
     if store_cache is None:
-        return PortalWhatsAppService(config, BackendStore(data_path), delivery_settings=settings)
+        return PortalWhatsAppService(
+            config,
+            BackendStore(data_path),
+            delivery_settings=settings,
+            database=database,
+            user_id=owner_user_id,
+        )
 
     resolved_path = data_path.resolve()
     cache_key = str(resolved_path)
@@ -340,7 +349,13 @@ def build_portal_service_from_connection(
                 store = BackendStore(resolved_path)
                 store_cache[cache_key] = store
 
-    return PortalWhatsAppService(config, store, delivery_settings=settings)
+    return PortalWhatsAppService(
+        config,
+        store,
+        delivery_settings=settings,
+        database=database,
+        user_id=owner_user_id,
+    )
 
 
 def build_sample_owner_notification_text(client_name: str) -> str:
@@ -365,10 +380,17 @@ class PortalWhatsAppService:
         config: RuntimeConfig,
         store: BackendStore,
         delivery_settings: dict[str, Any] | None = None,
+        *,
+        database: Any | None = None,
+        user_id: int = 0,
     ):
         self.config = config
         self.store = store
         self.delivery_settings = normalize_whatsapp_tool_delivery_settings(delivery_settings)
+        # Owner notifications are written to the portal notification feed, which
+        # needs the database handle and the owning account.
+        self.database = database
+        self.user_id = int(user_id or 0)
 
     def is_owner_sender(self, sender_wa_id: str) -> bool:
         owner_wa_id = normalize_whatsapp_id(self.config.owner_wa_id)
@@ -648,19 +670,6 @@ class PortalWhatsAppService:
             "reportId": normalize_text(report.get("reportId")),
         }
 
-    def build_approval_review_url(self, approval: dict[str, Any]) -> str:
-        approval_id = normalize_text(approval.get("approval_id"))
-        return f"{self.config.base_url.rstrip()}/approval/{urllib_parse.quote(approval_id)}"
-
-    def build_template_url_parameter(self, review_url: str, url_mode: str) -> str:
-        if normalize_text(url_mode).lower() not in {"full", "full_url", "absolute"}:
-            parsed = urllib_parse.urlparse(review_url)
-            url_parameter = parsed.path.lstrip("/")
-            if parsed.query:
-                url_parameter = f"{url_parameter}?{parsed.query}" if url_parameter else f"?{parsed.query}"
-            return url_parameter or review_url
-        return review_url
-
     def is_first_owner_notification_for_contact(self, approval: dict[str, Any]) -> bool:
         return (
             self.store.get_reply_assistant_notification_count(
@@ -691,160 +700,62 @@ class PortalWhatsAppService:
             return first_name or fallback_name
         return repeat_name or fallback_name or first_name
 
-    def get_owner_notification_template(self, approval: dict[str, Any]) -> dict[str, Any] | None:
-        templates = self.config.templates if isinstance(self.config.templates, dict) else {}
-        owner_template = (
-            templates.get("owner_notification")
-            if isinstance(templates.get("owner_notification"), dict)
-            else {}
-        )
-        is_first_contact_prompt = self.is_first_owner_notification_for_contact(approval)
-        template_name = self.resolve_owner_notification_template_name(
-            owner_template,
-            is_first_contact_prompt=is_first_contact_prompt,
-        )
-        if not template_name:
-            return None
-
-        template_language = (
-            normalize_text(owner_template.get("language") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE)
-            or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_LANGUAGE
-        )
-        button_index = (
-            normalize_text(owner_template.get("button_index") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX)
-            or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_INDEX
-        )
-        button_type = (
-            normalize_text(owner_template.get("button_type") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_TYPE)
-            or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_TYPE
-        ).lower().replace("-", "_")
-        sender_name = normalize_text(
-            approval.get("sender_name") or approval.get("sender_wa_id") or "Customer"
-        )
-        button_components: list[dict[str, Any]]
-        if button_type in {"quick_reply", "quickreply", "reply"}:
-            button_action = (
-                normalize_text(owner_template.get("button_action") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_ACTION)
-                or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_BUTTON_ACTION
-            ).lower()
-            approval_id = normalize_text(approval.get("approval_id"))
-            button_components = [
-                {
-                    "type": "button",
-                    "sub_type": "quick_reply",
-                    "index": button_index,
-                    "parameters": [
-                        {
-                            "type": "payload",
-                            "payload": f"approval:{approval_id}:{button_action}",
-                        }
-                    ],
-                }
-            ]
-            if is_first_contact_prompt:
-                disable_button_index = (
-                    normalize_text(owner_template.get("disable_button_index") or DEFAULT_OWNER_NOTIFICATION_DISABLE_BUTTON_INDEX)
-                    or DEFAULT_OWNER_NOTIFICATION_DISABLE_BUTTON_INDEX
-                )
-                disable_button_action = (
-                    normalize_text(owner_template.get("disable_button_action") or DEFAULT_OWNER_NOTIFICATION_DISABLE_BUTTON_ACTION)
-                    or DEFAULT_OWNER_NOTIFICATION_DISABLE_BUTTON_ACTION
-                ).lower()
-                button_components.append(
-                    {
-                        "type": "button",
-                        "sub_type": "quick_reply",
-                        "index": disable_button_index,
-                        "parameters": [
-                            {
-                                "type": "payload",
-                                "payload": f"approval:{approval_id}:{disable_button_action}",
-                            }
-                        ],
-                    }
-                )
-        else:
-            review_url = self.build_approval_review_url(approval)
-            url_parameter = self.build_template_url_parameter(
-                review_url,
-                normalize_text(owner_template.get("url_mode") or DEFAULT_OWNER_NOTIFICATION_TEMPLATE_URL_MODE),
-            )
-            button_components = [
-                {
-                    "type": "button",
-                    "sub_type": "url",
-                    "index": button_index,
-                    "parameters": [
-                        {
-                            "type": "text",
-                            "text": url_parameter,
-                        }
-                    ],
-                }
-            ]
-        components = [
-            {
-                "type": "body",
-                "parameters": [
-                    {
-                        "type": "text",
-                        "text": sender_name,
-                    }
-                ],
-            },
-        ]
-        components.extend(button_components)
-        return {
-            "name": template_name,
-            "language": {
-                "code": template_language,
-            },
-            "components": components,
-        }
-
     def notify_owner_about_approval(self, approval: dict[str, Any]) -> str:
+        """Tell the owner a drafted reply is waiting, in the portal.
+
+        The owner used to receive an interactive WhatsApp card linking to a
+        public /approval/<id> page. That flow is gone: the review happens in the
+        signed-in portal, which already polls /api/approvals, and a durable
+        notification now backs it so the owner still sees it after closing the
+        tab. The approved reply itself is still delivered to the customer over
+        WhatsApp -- only the owner-facing alert moved.
+        """
+
         notification_text = build_owner_notification_text(approval)
-        notification_template = self.get_owner_notification_template(approval)
-        review_url = self.build_approval_review_url(approval)
         delivery_channels: list[str] = []
         delivery_errors: list[str] = []
-        whatsapp_message_id = ""
+        message_id = ""
 
-        if whatsapp_tool_delivery_uses_whatsapp(self.delivery_settings):
+        if self.database is not None and int(self.user_id or 0) > 0:
             try:
-                interactive = None if notification_template is not None else build_owner_interactive_payload(approval)
-                whatsapp_message_id = self.send_owner_message(
-                    approval,
-                    message_text=None if notification_template is not None else notification_text,
-                    interactive=interactive,
-                    template=notification_template,
+                sender_name = normalize_text(approval.get("sender_name")) or normalize_text(approval.get("sender_wa_id"))
+                notification = deliver_portal_notification(
+                    self.database,
+                    user_id=int(self.user_id),
+                    title=(
+                        f"Reply ready for {sender_name}" if sender_name else "A drafted reply is ready for review"
+                    ),
+                    body=notification_text,
+                    kind="reply_approval",
+                    tone="info",
+                    source="whatsapp_reply_approval",
+                    action_id=str(approval.get("approval_id") or ""),
+                    dedupe_key=f"approval:{approval.get('approval_id')}",
+                    metadata={
+                        "senderWaId": normalize_text(approval.get("sender_wa_id")),
+                        "senderName": sender_name,
+                        "suggestedReply": normalize_text(approval.get("suggested_reply")),
+                    },
                 )
-                delivery_channels.append("whatsapp")
-            except Exception as exc:  # noqa: BLE001 - keep alternate owner channels available
-                delivery_errors.append(f"WhatsApp: {exc}")
+                message_id = f"portal-notification-{int(notification.get('id') or 0)}"
+                delivery_channels.append("portal")
+            except Exception as exc:  # noqa: BLE001 - recorded on the approval below
+                delivery_errors.append(f"Portal: {exc}")
 
-        if self.owner_portal_delivery_enabled():
-            # Portal delivery is intentionally recorded server-side only. The
-            # signed-in chat polls the approval API and renders the suggestion
-            # there, so no credential or customer content is sent to a second
-            # external channel.
-            delivery_channels.append("portal")
-
-        message_id = whatsapp_message_id
-        if not message_id and not delivery_channels:
-            raise RuntimeError("; ".join(delivery_errors) or "No owner delivery channel is configured.")
+        if not delivery_channels:
+            raise RuntimeError("; ".join(delivery_errors) or "The approval notification could not be delivered.")
 
         self.store.mark_owner_notification_sent(
             str(approval["approval_id"]),
             {
                 "owner_notification_message_id": message_id,
-                "owner_notification_whatsapp_message_id": whatsapp_message_id,
+                "owner_notification_whatsapp_message_id": "",
                 "owner_notification_telegram_message_id": "",
                 "owner_notification_delivery_channels": delivery_channels,
                 "owner_notification_delivery_errors": delivery_errors,
                 "owner_notification_text": notification_text,
-                "owner_notification_template": notification_template,
-                "owner_notification_review_url": review_url,
+                "owner_notification_template": None,
+                "owner_notification_review_url": "",
                 "owner_state": "pending",
             },
         )
@@ -1378,19 +1289,6 @@ class PortalWhatsAppService:
     def render_dashboard_html(self) -> str:
         approvals = self.store.list_approvals(status="pending")
         return render_dashboard(self.config, approvals)
-
-    def render_approval_page_html(
-        self,
-        approval_id: str,
-        *,
-        notice: str | None = None,
-        notice_kind: str = "success",
-    ) -> str:
-        approval = self.store.get_approval(approval_id)
-        if approval is None:
-            raise KeyError(f"Unknown approval id: {approval_id}")
-        thread = self.store.get_thread(str(approval.get("thread_id"))) or {"messages": []}
-        return render_approval_page(self.config, approval, thread, notice=notice, notice_kind=notice_kind)
 
     def send_approval(self, approval_id: str, reply_text: str) -> tuple[dict[str, Any], str]:
         approval = self.store.get_approval(approval_id)

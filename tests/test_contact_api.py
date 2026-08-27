@@ -121,95 +121,101 @@ class PortalContactApiTests(unittest.TestCase):
             "message": "Message is too short. Add a few more words before sending.",
         })
 
-    def test_missing_contact_chat_id_stores_opportunity_without_telegram(self) -> None:
-        with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "", "TELEGRAM_CHAT_ID": ""}):
-            with patch("packages.infrastructure.portal_auth.server.send_telegram_notification") as send_telegram:
-                status, payload = self._post_contact({
-                    "name": "Ada Lovelace",
-                    "email": "ada@example.com",
-                    "message": "I need help automating weekly client follow-ups.",
-                })
+    def _owner_notifications(self) -> list:
+        owner = self.server.database.get_user("nimrod.shai@gmail.com") or {}
+        owner_id = int(owner.get("id") or 0)
+        if owner_id <= 0:
+            return []
+        return self.server.database.list_notifications(user_id=owner_id)
+
+    def test_lead_is_stored_without_a_notification_when_owner_has_no_account(self) -> None:
+        status, payload = self._post_contact({
+            "name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "message": "I need help automating weekly client follow-ups.",
+        })
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertGreater(int(payload["opportunityId"]), 0)
+        # No owner account exists in this fixture, so there is nowhere to deliver.
         self.assertFalse(payload["notificationSent"])
-        send_telegram.assert_not_called()
         opportunities = self.server.database.list_contact_opportunities()
         self.assertEqual(len(opportunities), 1)
         self.assertEqual(opportunities[0]["name"], "Ada Lovelace")
 
-    def test_contact_stores_opportunity_when_telegram_delivery_fails(self) -> None:
-        with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "123456789"}):
-            with patch(
-                "packages.infrastructure.portal_auth.server.send_telegram_notification",
-                side_effect=RuntimeError("telegram down"),
-            ) as send_telegram:
-                status, payload = self._post_contact({
-                    "name": "Grace Hopper",
-                    "email": "grace@example.com",
-                    "business": "Compiler Co",
-                    "message": "I need help automating appointment reminders and client follow-ups.",
-                })
+    def test_lead_is_still_stored_when_notification_delivery_fails(self) -> None:
+        self.server.database.register_user("nimrod.shai@gmail.com")
+        with patch(
+            "packages.infrastructure.portal_auth.server.deliver_portal_notification",
+            side_effect=RuntimeError("notification store down"),
+        ) as deliver:
+            status, payload = self._post_contact({
+                "name": "Grace Hopper",
+                "email": "grace@example.com",
+                "business": "Compiler Co",
+                "message": "I need help automating appointment reminders and client follow-ups.",
+            })
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertGreater(int(payload["opportunityId"]), 0)
         self.assertFalse(payload["notificationSent"])
-        send_telegram.assert_called_once()
+        deliver.assert_called_once()
         opportunities = self.server.database.list_contact_opportunities()
         self.assertEqual(len(opportunities), 1)
         self.assertEqual(opportunities[0]["name"], "Grace Hopper")
 
-    def test_honeypot_submission_is_accepted_without_sending(self) -> None:
-        with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "123456789"}):
-            with patch("packages.infrastructure.portal_auth.server.send_telegram_notification") as send_telegram:
-                status, payload = self._post_contact({
-                    "name": "Bot",
-                    "email": "bot@example.com",
-                    "companyWebsite": "https://spam.example",
-                    "message": "This should not be delivered.",
-                })
+    def test_honeypot_submission_is_accepted_without_notifying(self) -> None:
+        self.server.database.register_user("nimrod.shai@gmail.com")
+        status, payload = self._post_contact({
+            "name": "Bot",
+            "email": "bot@example.com",
+            "companyWebsite": "https://spam.example",
+            "message": "This should not be delivered.",
+        })
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
-        send_telegram.assert_not_called()
+        self.assertEqual(self._owner_notifications(), [])
 
-    def test_valid_contact_request_sends_telegram_message(self) -> None:
-        with patch.dict(os.environ, {"TELEGRAM_CONTACT_CHAT_ID": "123456789"}):
-            with patch("packages.infrastructure.portal_auth.server.send_telegram_notification") as send_telegram:
-                status, payload = self._post_contact({
-                    "name": "Ada Lovelace",
-                    "email": "ada@example.com",
-                    "phone": "+44 20 0000 0000",
-                    "business": "Analytical Engines Ltd",
-                    "message": "I need help automating weekly client follow-ups.",
-                    "intake": {
-                        "businessSummary": "Analytical Engines helps clients with recurring research work.",
-                        "painSummary": "Weekly follow-ups are manual and easy to miss.",
-                        "suggestedTool": "Follow-up automation",
-                        "difficulty": "Medium",
-                        "urgency": "High",
-                        "urgencyScore": 82,
-                    },
-                    "messages": [
-                        {"author": "agent", "text": "Tell me about the business."},
-                        {"author": "user", "text": "We need help automating weekly client follow-ups."},
-                    ],
-                    "page": "http://127.0.0.1/about/index.html#home",
-                })
+    def test_valid_contact_request_creates_an_in_app_notification(self) -> None:
+        self.server.database.register_user("nimrod.shai@gmail.com")
+        status, payload = self._post_contact({
+            "name": "Ada Lovelace",
+            "email": "ada@example.com",
+            "phone": "+44 20 0000 0000",
+            "business": "Analytical Engines Ltd",
+            "message": "I need help automating weekly client follow-ups.",
+            "intake": {
+                "businessSummary": "Analytical Engines helps clients with recurring research work.",
+                "painSummary": "Weekly follow-ups are manual and easy to miss.",
+                "suggestedTool": "Follow-up automation",
+                "difficulty": "Medium",
+                "urgency": "High",
+                "urgencyScore": 82,
+            },
+            "messages": [
+                {"author": "agent", "text": "Tell me about the business."},
+                {"author": "user", "text": "We need help automating weekly client follow-ups."},
+            ],
+            "page": "http://127.0.0.1/about/index.html#home",
+        })
 
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertGreater(int(payload["opportunityId"]), 0)
         self.assertTrue(payload["notificationSent"])
-        send_telegram.assert_called_once()
-        call_kwargs = send_telegram.call_args.kwargs
-        self.assertEqual(call_kwargs["chat_id"], "123456789")
-        self.assertIn("New Assistyca contact request", call_kwargs["text"])
-        self.assertIn("Ada Lovelace", call_kwargs["text"])
-        self.assertIn("ada@example.com", call_kwargs["text"])
-        self.assertIn("Analytical Engines Ltd", call_kwargs["text"])
+
+        notifications = self._owner_notifications()
+        self.assertEqual(len(notifications), 1)
+        notification = notifications[0]
+        self.assertEqual(notification["kind"], "contact_opportunity")
+        self.assertIn("Ada Lovelace", notification["title"])
+        self.assertIn("ada@example.com", notification["body"])
+        self.assertIn("Analytical Engines Ltd", notification["body"])
+        self.assertFalse(notification["read"])
+
         opportunities = self.server.database.list_contact_opportunities()
         self.assertEqual(len(opportunities), 1)
         self.assertEqual(opportunities[0]["businessSummary"], "Analytical Engines helps clients with recurring research work.")

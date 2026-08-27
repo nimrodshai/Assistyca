@@ -8,16 +8,16 @@ import threading
 from typing import Any
 from typing import Callable
 
-from packages.infrastructure.notification_delivery import send_whatsapp_notification
+from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_text
 
 
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
-DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME = "notification_message"
-DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en_US"
-SUPPORTED_SEND_CHANNELS = {"whatsapp"}
+# Every scheduled action now delivers to the in-app notification feed. The
+# channel column is kept for history on existing rows but no longer routes.
+SUPPORTED_SEND_CHANNELS = {"portal"}
 OWNER_RECIPIENT_REFS = {"", "me", "owner", "you", "connected_owner", "account_owner"}
 
 
@@ -26,8 +26,6 @@ class ScheduledActionConfig:
     enabled: bool = True
     poll_seconds: int = DEFAULT_SCHEDULED_ACTION_POLL_SECONDS
     batch_size: int = DEFAULT_SCHEDULED_ACTION_BATCH_SIZE
-    whatsapp_template_name: str = DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME
-    whatsapp_template_language: str = DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE
 
 
 def parse_bool_env(value: str | None, default: bool = False) -> bool:
@@ -58,14 +56,6 @@ def load_scheduled_action_config() -> ScheduledActionConfig:
         batch_size=max(
             1,
             parse_int_env(os.getenv("PORTAL_SCHEDULED_ACTIONS_BATCH_SIZE"), DEFAULT_SCHEDULED_ACTION_BATCH_SIZE),
-        ),
-        whatsapp_template_name=(
-            normalize_text(os.getenv("WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME"))
-            or DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME
-        ),
-        whatsapp_template_language=(
-            normalize_text(os.getenv("WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE"))
-            or DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE
         ),
     )
 
@@ -142,43 +132,50 @@ class ScheduledActionScheduler:
 
     def _dispatch(self, action: dict[str, Any]) -> str:
         action_type = normalize_text(action.get("actionType")).lower()
-        channel = normalize_text(action.get("channel")).lower()
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         if action_type != "send_message":
             raise RuntimeError(f"Unsupported scheduled action type: {action_type}")
-        if channel not in SUPPORTED_SEND_CHANNELS:
-            raise RuntimeError(f"Unsupported scheduled send channel: {channel}")
 
         message_text = normalize_text(payload.get("messageText") or payload.get("text"))
         if not message_text:
             raise RuntimeError("Scheduled message text is missing.")
 
-        if channel == "whatsapp":
-            return self._dispatch_whatsapp(action, message_text)
+        return self._deliver_in_app(action, message_text)
 
-        raise RuntimeError(f"Unsupported scheduled send channel: {channel}")
+    def _deliver_in_app(self, action: dict[str, Any], message_text: str) -> str:
+        """Deliver the result to the owner's in-app notification feed.
 
-    def _dispatch_whatsapp(self, action: dict[str, Any], message_text: str) -> str:
+        The channel column is retained on the row for history, but every
+        scheduled action now lands in the portal regardless of what it says.
+        """
+
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
-        recipient_ref = normalize_text(payload.get("recipientWaId") or action.get("recipientRef"))
-        if recipient_ref.lower() in OWNER_RECIPIENT_REFS:
-            user_id = int(action.get("userId") or 0)
-            if user_id <= 0:
-                raise RuntimeError("Scheduled WhatsApp message is missing a user id.")
-            connection = self.database.get_whatsapp_connection_by_user_id(user_id)
-            if not connection:
-                raise RuntimeError("No WhatsApp notification recipient is configured for this account.")
-            recipient_ref = normalize_text(connection.get("ownerWaId"))
+        user_id = int(action.get("userId") or 0)
+        if user_id <= 0:
+            raise RuntimeError("Scheduled action is missing a user id.")
 
-        if not recipient_ref:
-            raise RuntimeError("WhatsApp recipient is missing.")
+        action_id = str(action.get("id") or "")
+        title = normalize_text(payload.get("title")) or normalize_text(payload.get("label")) or "Scheduled action completed"
 
-        return send_whatsapp_notification(
-            recipient_wa_id=recipient_ref,
-            message_text=message_text,
-            template_name=self.config.whatsapp_template_name,
-            template_language=self.config.whatsapp_template_language,
+        notification = deliver_portal_notification(
+            self.database,
+            user_id=user_id,
+            title=title,
+            body=message_text,
+            kind="scheduled_action",
+            tone="success",
+            source="scheduled_actions",
+            feature_id=normalize_text(payload.get("featureId")),
+            action_id=action_id,
+            result_url=normalize_text(payload.get("resultUrl")),
+            dedupe_key=f"scheduled-action:{action_id}" if action_id else "",
+            metadata={
+                "runAt": action.get("runAt"),
+                "timezone": normalize_text(action.get("timezone")),
+                "attemptCount": int(action.get("attemptCount") or 0),
+            },
         )
+        return f"portal-notification-{int(notification.get('id') or 0)}"
 
     def serve_forever(
         self,
@@ -203,8 +200,6 @@ class ScheduledActionScheduler:
 __all__ = [
     "DEFAULT_SCHEDULED_ACTION_BATCH_SIZE",
     "DEFAULT_SCHEDULED_ACTION_POLL_SECONDS",
-    "DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE",
-    "DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME",
     "ScheduledActionConfig",
     "ScheduledActionScheduler",
     "load_scheduled_action_config",

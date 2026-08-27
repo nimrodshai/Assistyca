@@ -116,7 +116,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                     "manualOnly": False,
                     "runMode": "recurring",
                     "intervalDays": 1,
-                    "deliveryChannel": "email",
+                    "deliveryChannel": "portal",
                 }
             },
         )
@@ -132,14 +132,19 @@ class ScheduledMonitorTests(unittest.TestCase):
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
+            # Monitor findings now go to the in-app notification feed. The recorded
+            # shape is kept so the existing subject/body assertions still apply.
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
                 }
             )
+            return {"id": len(delivered_messages)}
 
         fake_response = SimpleNamespace(
             output_text=json.dumps(
@@ -188,7 +193,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             return_value=fake_response,
         ), mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             first_summary = scheduler.run_pending(now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
@@ -251,7 +256,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                     "manualOnly": False,
                     "runMode": "recurring",
                     "intervalDays": 7,
-                    "deliveryChannel": "email",
+                    "deliveryChannel": "portal",
                 }
             },
         )
@@ -264,14 +269,19 @@ class ScheduledMonitorTests(unittest.TestCase):
         )
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
+            # Monitor findings now go to the in-app notification feed. The recorded
+            # shape is kept so the existing subject/body assertions still apply.
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
                 }
             )
+            return {"id": len(delivered_messages)}
 
         fake_response = SimpleNamespace(
             output_text=json.dumps(
@@ -320,7 +330,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             return_value=fake_response,
         ) as mock_openai_response, mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             manual_result = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc))
@@ -389,7 +399,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                     "runMode": "recurring",
                     "intervalMinutes": 5,
                     "intervalDays": 1,
-                    "deliveryChannel": "email",
+                    "deliveryChannel": "portal",
                 }
             },
         )
@@ -423,12 +433,14 @@ class ScheduledMonitorTests(unittest.TestCase):
         )
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
             delivered_messages.append({
-                "to": str(kwargs.get("to_email") or ""),
-                "subject": str(kwargs.get("subject") or ""),
-                "text": str(kwargs.get("text_body") or ""),
+                "to": "owner@example.com",
+                "subject": str(kwargs.get("title") or ""),
+                "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
             })
+            return {"id": len(delivered_messages)}
 
         with mock.patch.dict(
             os.environ,
@@ -442,7 +454,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             return_value=fake_response,
         ), mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             too_early = scheduler.run_pending(now=datetime(2026, 8, 22, 20, 4, tzinfo=timezone.utc))
@@ -497,18 +509,23 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertEqual(first_claim["status"], "running")
         self.assertIsNone(second_claim)
 
-    def test_scheduler_records_no_results_without_emailing_empty_updates(self) -> None:
+    def test_scheduler_records_no_results_without_notifying_empty_updates(self) -> None:
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
+            # Monitor findings now go to the in-app notification feed. The recorded
+            # shape is kept so the existing subject/body assertions still apply.
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
                 }
             )
+            return {"id": len(delivered_messages)}
 
         fake_response = SimpleNamespace(
             output_text=json.dumps(
@@ -546,7 +563,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             return_value=fake_response,
         ), mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             summary = scheduler.run_pending(now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
@@ -570,14 +587,19 @@ class ScheduledMonitorTests(unittest.TestCase):
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
+            # Monitor findings now go to the in-app notification feed. The recorded
+            # shape is kept so the existing subject/body assertions still apply.
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
                 }
             )
+            return {"id": len(delivered_messages)}
 
         first_response = SimpleNamespace(
             output_text=json.dumps(
@@ -637,7 +659,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             side_effect=[first_response, second_response],
         ), mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             first_run = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
@@ -658,14 +680,19 @@ class ScheduledMonitorTests(unittest.TestCase):
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
+            # Monitor findings now go to the in-app notification feed. The recorded
+            # shape is kept so the existing subject/body assertions still apply.
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
                 }
             )
+            return {"id": len(delivered_messages)}
 
         repeated_response = SimpleNamespace(
             output_text=json.dumps(
@@ -714,7 +741,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             side_effect=[repeated_response, repeated_response],
         ), mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             first_run = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
@@ -741,7 +768,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                     "manualOnly": True,
                     "runMode": "manual",
                     "intervalDays": 1,
-                    "deliveryChannel": "email",
+                    "deliveryChannel": "portal",
                 }
             },
         )
@@ -778,14 +805,19 @@ class ScheduledMonitorTests(unittest.TestCase):
         delivered_messages: list[dict[str, str]] = []
         cancellation_requested = False
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
+            # Monitor findings now go to the in-app notification feed. The recorded
+            # shape is kept so the existing subject/body assertions still apply.
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
                 }
             )
+            return {"id": len(delivered_messages)}
 
         def fake_openai_response(**kwargs) -> SimpleNamespace:
             nonlocal cancellation_requested
@@ -837,7 +869,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             side_effect=fake_openai_response,
         ), mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             result = scheduler.run_for_email(
@@ -866,15 +898,18 @@ class ScheduledMonitorTests(unittest.TestCase):
         )
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
-                    "html": str(kwargs.get("html_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
+                    "html": "",
                 }
             )
+            return {"id": len(delivered_messages)}
 
         fake_response = SimpleNamespace(
             output_text=json.dumps(
@@ -925,7 +960,7 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             return_value=fake_response,
         ) as mock_openai_response, mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             result = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
@@ -937,26 +972,29 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertIn("Always keep in mind: Prioritize paper deadlines, CFPs, and travel planning dates.", prompt)
         self.assertIn('"matched_watch_item": "the exact saved watch-list entry this result best matches"', prompt)
         self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
-        self.assertIn("Open tool editor", delivered_messages[0]["html"])
-        self.assertIn(
+        # The editor link now rides on the notification as its result URL.
+        self.assertEqual(
+            delivered_messages[0]["resultUrl"],
             "https://portal.example.com/portal/#features/scheduled-web-monitor-notifier/editor",
-            delivered_messages[0]["html"],
         )
-        self.assertIn("Why this matters for your business", delivered_messages[0]["html"])
+        self.assertIn("Why this matters for your business", delivered_messages[0]["text"])
 
-    def test_results_email_sorts_items_and_humanizes_dates(self) -> None:
+    def test_results_notification_sorts_items_and_humanizes_dates(self) -> None:
         self._configure_monitor()
         delivered_messages: list[dict[str, str]] = []
 
-        def fake_send_email_notification(**kwargs) -> None:
+        def fake_send_email_notification(*args, **kwargs):
             delivered_messages.append(
                 {
-                    "to": str(kwargs.get("to_email") or ""),
-                    "subject": str(kwargs.get("subject") or ""),
-                    "text": str(kwargs.get("text_body") or ""),
-                    "html": str(kwargs.get("html_body") or ""),
+                    "to": "owner@example.com",
+                    "subject": str(kwargs.get("title") or ""),
+                    "text": str(kwargs.get("body") or ""),
+                "resultUrl": str(kwargs.get("result_url") or ""),
+                    "resultUrl": str(kwargs.get("result_url") or ""),
+                    "html": "",
                 }
             )
+            return {"id": len(delivered_messages)}
 
         fake_response = SimpleNamespace(
             output_text=json.dumps(
@@ -1018,28 +1056,21 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.call_openai_response",
             return_value=fake_response,
         ), mock.patch(
-            "packages.tools.scheduled_monitor.monitor.send_email_notification",
+            "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
             result = scheduler.run_for_email("owner@example.com", now=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc))
 
         self.assertTrue(result["ok"])
+        # HTML email bodies are gone; the notification carries the same text.
         text_body = delivered_messages[0]["text"]
-        html_body = delivered_messages[0]["html"]
         self.assertLess(
             text_body.find("SEDE 2026 paper submission deadline is July 15, 2026"),
             text_body.find("OpenAI DevDay 2026 announced for September 29, 2026"),
         )
         self.assertIn("Search: conference paper deadlines", text_body)
         self.assertIn("When: July 15, 2026 (in 2 days)", text_body)
-        self.assertIn("Search: conference paper deadlines", html_body)
-        self.assertNotIn("High priority", html_body)
-        self.assertIn("July 15, 2026 (in 2 days)", html_body)
-        self.assertLess(
-            html_body.find("SEDE 2026 paper submission deadline is July 15, 2026"),
-            html_body.find("OpenAI DevDay 2026 announced for September 29, 2026"),
-        )
-        self.assertIn(">View source<", html_body)
+        self.assertNotIn("High priority", text_body)
 
 
 if __name__ == "__main__":

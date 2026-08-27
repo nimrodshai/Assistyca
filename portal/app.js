@@ -25,6 +25,7 @@ const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "You replied here - but the WhatsApp API
 const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const SCHEDULED_ACTIONS_POLL_MS = 5 * 1000;
 const WHATSAPP_APPROVALS_POLL_MS = 5 * 1000;
+const NOTIFICATIONS_POLL_MS = 15 * 1000;
 const SCHEDULED_ACTIONS_REFRESH_ERROR_THRESHOLD = 3;
 const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
 const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
@@ -1328,6 +1329,7 @@ let whatsappConnectionPollInFlight = false;
 let whatsappConnectionPollActive = false;
 let whatsappConnectionPollFeatureId = "";
 let scheduledActionsPollTimer = null;
+let notificationsPollTimer = null;
 let scheduledActionsRefreshPromise = null;
 let sourceActionsRefreshPromise = null;
 let whatsappApprovalsPollTimer = null;
@@ -3348,18 +3350,70 @@ function addAgentNotification(options = {}) {
   return notification;
 }
 
-function markAgentNotificationRead(notificationId) {
+// Notifications are server state. They are fetched from /api/notifications so
+// they survive a tab close and are visible on every device the owner signs in
+// on. The local list is a render cache, not the source of truth.
+function mapServerNotification(row) {
+  const source = row && typeof row === "object" ? row : {};
+  return {
+    id: String(source.id || ""),
+    title: source.title || "",
+    message: source.body || "",
+    createdAt: source.createdAt || "",
+    readAt: source.readAt || "",
+    tone: source.tone || "info",
+    source: source.source || "assistant",
+    actionId: source.actionId || "",
+    href: source.resultUrl || "",
+    dedupeKey: source.dedupeKey || "",
+    metadata: source.metadata && typeof source.metadata === "object" ? source.metadata : {},
+  };
+}
+
+async function refreshNotifications() {
+  if (!isSignedIn()) {
+    return null;
+  }
+  const requestToken = String(authSession?.token || "");
+  try {
+    const response = await apiRequest("/api/notifications?limit=100", {
+      headers: getSessionAuthHeaders(),
+    });
+    if (requestToken !== String(authSession?.token || "")) {
+      return null;
+    }
+    const rows = Array.isArray(response.notifications) ? response.notifications : [];
+    clientState.notifications = normalizeAgentNotifications(rows.map(mapServerNotification));
+    renderNotificationCenter();
+    return clientState.notifications;
+  } catch (error) {
+    // A failed poll must not clear the feed the owner is already looking at.
+    return null;
+  }
+}
+
+async function markAgentNotificationRead(notificationId) {
   const notification = getAgentNotificationById(notificationId);
   if (!notification || notification.readAt) {
     return false;
   }
+  // Optimistic: reflect it immediately, then confirm with the server.
   notification.readAt = new Date().toISOString();
-  persistClientState();
   renderNotificationCenter();
+  try {
+    await apiRequest("/api/notifications/read", {
+      method: "POST",
+      headers: { ...getSessionAuthHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ id: Number(notificationId) }),
+    });
+  } catch (error) {
+    await refreshNotifications();
+    return false;
+  }
   return true;
 }
 
-function markAllAgentNotificationsRead() {
+async function markAllAgentNotificationsRead() {
   const notifications = getAgentNotifications();
   const now = new Date().toISOString();
   let changed = false;
@@ -3369,10 +3423,17 @@ function markAllAgentNotificationsRead() {
       changed = true;
     }
   });
-  if (changed) {
-    persistClientState();
-  }
   renderNotificationCenter();
+  try {
+    await apiRequest("/api/notifications/read-all", {
+      method: "POST",
+      headers: { ...getSessionAuthHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  } catch (error) {
+    await refreshNotifications();
+    return false;
+  }
   return changed;
 }
 
@@ -3486,6 +3547,12 @@ function getAgentResponseResultHref(response = {}) {
 }
 
 function notifyScheduledActionTransitions(previousActions, nextActions) {
+  // The server now writes a durable notification when a scheduled action completes, so
+  // deriving one from a polling diff would double up. Kept as a no-op rather
+  // than removed so callers stay unchanged.
+  if (true) {
+    return;
+  }
   if (!state.scheduledActionsLoadedAt || !Array.isArray(previousActions) || !previousActions.length) {
     return;
   }
@@ -3513,6 +3580,12 @@ function notifyScheduledActionTransitions(previousActions, nextActions) {
 }
 
 function notifySourceActionTransitions(previousActions, nextActions) {
+  // The server now writes a durable notification when a source action completes, so
+  // deriving one from a polling diff would double up. Kept as a no-op rather
+  // than removed so callers stay unchanged.
+  if (true) {
+    return;
+  }
   if (!state.sourceActionsLoadedAt || !Array.isArray(previousActions) || !previousActions.length) {
     return;
   }
@@ -18646,7 +18719,32 @@ function syncWhatsAppApprovalsPolling() {
   }
 }
 
+// The notification feed is polled independently of the Actions view. Unlike the
+// scheduled-action poll it is not gated on a tab or a selected feature, because
+// a notification about an overnight run has to arrive wherever the owner is.
+function syncNotificationsPolling() {
+  const shouldPoll = Boolean(
+    isSignedIn()
+    && document.body.dataset.view === "app"
+    && document.visibilityState !== "hidden"
+  );
+  if (!shouldPoll) {
+    if (notificationsPollTimer !== null) {
+      window.clearInterval(notificationsPollTimer);
+      notificationsPollTimer = null;
+    }
+    return;
+  }
+  if (notificationsPollTimer === null) {
+    void refreshNotifications();
+    notificationsPollTimer = window.setInterval(() => {
+      void refreshNotifications();
+    }, NOTIFICATIONS_POLL_MS);
+  }
+}
+
 function syncScheduledActionsPolling() {
+  syncNotificationsPolling();
   const shouldPoll = Boolean(
     isSignedIn()
     && document.body.dataset.view === "app"

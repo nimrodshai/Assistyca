@@ -19,15 +19,9 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
-from packages.infrastructure.notification_delivery import email_delivery_available
-from packages.infrastructure.notification_delivery import load_mail_delivery_config
+from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import normalize_email
 from packages.infrastructure.notification_delivery import normalize_text
-from packages.infrastructure.notification_delivery import send_email_notification
-from packages.infrastructure.notification_delivery import send_telegram_notification
-from packages.infrastructure.notification_delivery import send_whatsapp_notification
-from packages.infrastructure.notification_delivery import telegram_delivery_available
-from packages.infrastructure.notification_delivery import whatsapp_delivery_available
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.portal_db import PortalDatabase
@@ -91,7 +85,7 @@ DEFAULT_MONITOR_SETTINGS = {
     "intervalMinutes": 0,
     "scheduleTimeLocal": "",
     "scheduleTimezone": "",
-    "deliveryChannel": "email",
+    "deliveryChannel": "portal",
     "telegramChatId": "",
     "actionLifecycleStatus": "active",
 }
@@ -364,33 +358,8 @@ def validate_monitor_settings(
             "message": "Scheduled Web Monitor is not configured on the backend yet. Add OPENAI_API_KEY to enable searches.",
         })
 
-    delivery_channel = normalized["deliveryChannel"]
-    email_enabled = email_delivery_available(load_mail_delivery_config()) if email_available is None else bool(email_available)
-    telegram_enabled = telegram_delivery_available() if telegram_available is None else bool(telegram_available)
-    whatsapp_enabled = whatsapp_delivery_available() if whatsapp_available is None else bool(whatsapp_available)
-    connection = whatsapp_connection if isinstance(whatsapp_connection, dict) else {}
-    recipient_email = normalize_email(user_email)
-
-    if delivery_channel == "email":
-        if not recipient_email:
-            issues.append({"field": "deliveryChannel", "message": "This workspace does not have a valid account email for alerts yet."})
-        if not email_enabled:
-            issues.append({"field": "deliveryChannel", "message": "Email delivery is not configured on the backend yet."})
-    elif delivery_channel == "telegram":
-        if not normalized["telegramChatId"]:
-            issues.append({"field": "telegramChatId", "message": "Add the Telegram chat id that should receive alerts."})
-        if not telegram_enabled:
-            issues.append({"field": "deliveryChannel", "message": "Telegram delivery is not configured on the backend yet."})
-    elif delivery_channel == "whatsapp":
-        if not whatsapp_enabled:
-            issues.append({"field": "deliveryChannel", "message": "WhatsApp delivery is not configured on the backend yet."})
-        if (
-            normalize_text(connection.get("connectionStatus")) != "connected"
-            or not normalize_text(connection.get("phoneNumberId"))
-            or not normalize_text(connection.get("ownerWaId"))
-        ):
-            issues.append({"field": "deliveryChannel", "message": "Connect WhatsApp before using WhatsApp alerts."})
-
+    # Delivery is always the in-app notification feed, which has no external
+    # dependency to validate, so there is nothing left to check here.
     return issues
 
 
@@ -1351,32 +1320,29 @@ class ScheduledMonitorScheduler:
         html_body: str = "",
         channel: str = "",
     ) -> tuple[str, str]:
-        resolved_channel = normalize_text(channel or target.get("deliveryChannel")).lower()
-        delivery_target = ""
-        delivery_message_id = ""
-        if resolved_channel == "email":
-            delivery_target = normalize_email(target.get("email"))
-            send_email_notification(
-                to_email=delivery_target,
-                subject=subject,
-                text_body=message_text,
-                html_body=html_body or build_fallback_notification_html(subject, message_text),
-            )
-        elif resolved_channel == "telegram":
-            delivery_target = normalize_text(target.get("telegramChatId"))
-            response = send_telegram_notification(chat_id=delivery_target, text=message_text)
-            result = response.get("result") if isinstance(response.get("result"), dict) else {}
-            delivery_message_id = normalize_text(result.get("message_id"))
-        elif resolved_channel == "whatsapp":
-            delivery_target = normalize_text(target.get("ownerWaId"))
-            delivery_message_id = send_whatsapp_notification(
-                recipient_wa_id=delivery_target,
-                message_text=message_text,
-            )
-        else:
-            raise RuntimeError(f"Unsupported delivery channel: {resolved_channel}")
+        # Monitor findings go to the owner's in-app notification feed. Email,
+        # Telegram and WhatsApp alerting were removed in favour of a single
+        # durable surface inside the portal.
+        user_id = int(target.get("userId") or 0)
+        if user_id <= 0:
+            raise RuntimeError("Monitor target is missing a user id.")
 
-        return delivery_target, delivery_message_id
+        notification = deliver_portal_notification(
+            self.database,
+            user_id=user_id,
+            title=subject,
+            body=message_text,
+            kind="monitor_finding",
+            tone="info",
+            source="scheduled_monitor",
+            feature_id=MONITOR_FEATURE_ID,
+            # Carries the "open the tool editor" link the HTML email used to have,
+            # rendered by the notification centre as its action button.
+            result_url=build_tool_editor_url(target),
+            metadata={"deliveryChannel": "portal"},
+        )
+        delivery_target = normalize_email(target.get("email"))
+        return delivery_target, f"portal-notification-{int(notification.get('id') or 0)}"
 
     def _deliver_items(
         self,

@@ -76,7 +76,8 @@ from packages.infrastructure.openai_pricing import OpenAIPricingError
 from packages.infrastructure.openai_pricing import build_pricing_snapshot_json
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
-from packages.infrastructure.notification_delivery import send_telegram_notification
+from packages.infrastructure.notification_delivery import deliver_portal_notification
+from packages.infrastructure.notification_delivery import resolve_notification_user_id
 from packages.infrastructure.portal_db import DEFAULT_CURRENCY
 from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
@@ -426,10 +427,6 @@ STATIC_ALLOWED_ROOT_FILES: tuple[str, ...] = (
     "privacy.html",
     "favicon.ico",
     "robots.txt",
-    # Legacy standalone approval page, kept as a debug fallback.
-    "approval.html",
-    "approval.css",
-    "approval.js",
 )
 # Directory membership alone is not enough: `portal/` also contains portal.db,
 # portal-whatsapp/, and billing.sample.json. Only these extensions are served.
@@ -2523,8 +2520,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/features/")
             or path == "/api/scheduled-actions"
             or path == "/api/source-actions"
+            or path == "/api/notifications"
             or path == "/webhooks/whatsapp"
-            or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
             or path.startswith("/api/threads")
@@ -2557,8 +2554,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/scheduled-actions"
             or path == "/api/source-actions"
             or path.startswith("/api/source-actions/")
+            or path.startswith("/api/notifications/")
             or path == "/webhooks/whatsapp"
-            or path.startswith("/approval/")
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
         ):
@@ -2584,6 +2581,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/whatsapp/connection"
             or path.startswith("/api/scheduled-actions/")
             or path.startswith("/api/source-actions/")
+            or path.startswith("/api/notifications/")
             or path.startswith("/api/whatsapp/history/")
         ):
             self._handle_api_delete(parsed)
@@ -2640,6 +2638,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/source-actions":
             self._handle_source_actions_get(parsed)
+            return
+
+        if path == "/api/notifications":
+            self._handle_notifications_get(parsed)
             return
 
         if path.startswith("/api/billing"):
@@ -2765,9 +2767,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_threads_get(parsed)
             return
 
-        if path.startswith("/approval/"):
-            self._handle_whatsapp_approval_page(parsed)
-            return
 
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -2837,6 +2836,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_source_actions_post(parsed)
             return
 
+        if path in {"/api/notifications/read", "/api/notifications/read-all"}:
+            self._handle_notifications_read_post(parsed)
+            return
+
         if path == "/api/admin/users" or path.startswith("/api/admin/users/"):
             self._handle_admin_users_post(parsed)
             return
@@ -2849,9 +2852,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_webhook_ingest()
             return
 
-        if path.startswith("/approval/"):
-            self._handle_whatsapp_approval_submit(parsed)
-            return
 
         if path.startswith("/api/approvals"):
             self._handle_whatsapp_approval_api_submit(parsed)
@@ -2875,6 +2875,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/source-actions/"):
             self._handle_source_actions_delete(parsed)
+            return
+        if path.startswith("/api/notifications/"):
+            self._handle_notifications_delete(parsed)
             return
         if path.startswith("/api/whatsapp/history/conversations/"):
             self._handle_whatsapp_history_conversation_delete(parsed)
@@ -3755,6 +3758,123 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "profile": normalize_user_profile(user.get("profile")),
         })
 
+    def _handle_notifications_get(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _, user = authenticated
+        query = urllib_parse.parse_qs(parsed.query)
+
+        def _int_param(name: str, default: int) -> int:
+            try:
+                return int(normalize_text(query.get(name, [""])[0]) or default)
+            except (TypeError, ValueError):
+                return default
+
+        notifications = self.database.list_notifications(
+            user_id=int(user.get("id") or 0),
+            limit=_int_param("limit", 50),
+            unread_only=normalize_text(query.get("unread", [""])[0]).lower() in {"1", "true", "yes"},
+            before_id=_int_param("beforeId", 0),
+        )
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "notifications": notifications,
+            "unreadCount": self.database.count_unread_notifications(user_id=int(user.get("id") or 0)),
+        })
+
+    def _handle_notifications_read_post(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _, user = authenticated
+        user_id = int(user.get("id") or 0)
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        path = parsed.path.rstrip("/") or "/"
+        if path == "/api/notifications/read-all":
+            updated = self.database.mark_all_notifications_read(user_id=user_id)
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "updated": updated,
+                "unreadCount": self.database.count_unread_notifications(user_id=user_id),
+            })
+            return
+
+        try:
+            notification_id = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            notification_id = 0
+        if notification_id <= 0:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_request",
+                "message": "A notification id is required.",
+            })
+            return
+
+        # Scoped by user_id, so knowing an id is not enough to touch someone
+        # else's feed. A miss is reported as not found rather than forbidden so
+        # the endpoint does not confirm that the id exists.
+        updated = self.database.mark_notification_read(
+            user_id=user_id,
+            notification_id=notification_id,
+        )
+        if updated is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": "Notification not found.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "notification": updated,
+            "unreadCount": self.database.count_unread_notifications(user_id=user_id),
+        })
+
+    def _handle_notifications_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _, user = authenticated
+        user_id = int(user.get("id") or 0)
+        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if len(parts) != 3 or parts[0] != "api" or parts[1] != "notifications":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            notification_id = int(urllib_parse.unquote(parts[2]))
+        except (TypeError, ValueError):
+            notification_id = 0
+
+        if not self.database.delete_notification(user_id=user_id, notification_id=notification_id):
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": "Notification not found.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "unreadCount": self.database.count_unread_notifications(user_id=user_id),
+        })
+
     def _handle_contact_agent_turn(self) -> None:
         # This endpoint is intentionally unauthenticated -- it powers the public
         # marketing chat -- but it calls OpenAI, so it is throttled per client and
@@ -4513,19 +4633,40 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             },
         )
 
+        # New leads used to page the operator over Telegram. They now land in the
+        # opportunities owner's in-app feed, alongside the Opportunities tab.
         notification_sent = False
-        chat_id = resolve_contact_chat_id()
-        if chat_id:
-            telegram_message = self._build_contact_telegram_message(
-                name=name,
-                email=email,
-                phone=phone,
-                business=business,
-                message=message,
-                page=page,
-            )
+        opportunity_id = int(opportunity.get("id") or 0)
+        owner_user_id = resolve_notification_user_id(
+            self.database,
+            email=self._contact_opportunities_owner_email(),
+        )
+        if owner_user_id > 0:
             try:
-                send_telegram_notification(chat_id=chat_id, text=telegram_message)
+                deliver_portal_notification(
+                    self.database,
+                    user_id=owner_user_id,
+                    title=f"New lead: {name or email or 'website visitor'}",
+                    body=self._build_contact_lead_summary(
+                        name=name,
+                        email=email,
+                        phone=phone,
+                        business=business,
+                        message=message,
+                        page=page,
+                    ),
+                    kind="contact_opportunity",
+                    tone="success",
+                    source="contact_form",
+                    action_id=str(opportunity_id),
+                    dedupe_key=f"opportunity:{opportunity_id}" if opportunity_id else "",
+                    metadata={
+                        "email": email,
+                        "phone": phone,
+                        "business": business,
+                        "page": page,
+                    },
+                )
                 notification_sent = True
             except Exception as exc:  # pragma: no cover - surfaced through logs, not the visitor UI
                 print(f"Contact notification failed for opportunity {opportunity.get('id')}: {exc}", flush=True)
@@ -4537,7 +4678,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "notificationSent": notification_sent,
         })
 
-    def _build_contact_telegram_message(
+    def _build_contact_lead_summary(
         self,
         *,
         name: str,
@@ -5150,51 +5291,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
         self.end_headers()
-
-    def _send_approval_sign_in_required(self, status: HTTPStatus, message: str) -> None:
-        """Render a minimal page for approval requests that fail authorization.
-
-        Deliberately does not reveal whether the approval exists or who owns it.
-        """
-
-        self._send_html(
-            status,
-            (
-                "<!doctype html><html lang=\"en\"><head>"
-                "<meta charset=\"utf-8\">"
-                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-                "<title>Assistyca</title>"
-                "<style>body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;"
-                "background:#0b1120;color:#e2e8f0;margin:0;display:flex;min-height:100vh;"
-                "align-items:center;justify-content:center;padding:24px}"
-                "main{max-width:26rem;text-align:center}"
-                "a{display:inline-block;margin-top:1.25rem;padding:.7rem 1.4rem;border-radius:999px;"
-                "background:#14b8a6;color:#04211d;font-weight:600;text-decoration:none}</style>"
-                "</head><body><main>"
-                f"<h1>Sign in required</h1><p>{escape(message)}</p>"
-                "<a href=\"/portal/\">Open Assistyca</a>"
-                "</main></body></html>"
-            ),
-        )
-
-    def _request_origin_is_same_site(self) -> bool:
-        """Reject cross-origin form posts (CSRF) on cookie-authenticated endpoints."""
-
-        origin = normalize_text(self.headers.get("Origin"))
-        referer = normalize_text(self.headers.get("Referer"))
-        candidate = origin or referer
-        if not candidate:
-            # Some WhatsApp in-app browsers omit both on same-document form posts.
-            # SameSite=Lax already blocks the cross-site cookie case here.
-            return True
-
-        try:
-            parsed = urllib_parse.urlparse(candidate)
-        except ValueError:
-            return False
-        if not parsed.netloc:
-            return False
-        return parsed.netloc.lower() == normalize_text(self._request_host()).lower()
 
     def _get_authenticated_session(self) -> PortalSession | None:
         for token in self._extract_session_tokens():
@@ -6195,6 +6291,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             base_url=self._public_base_url(),
             store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
             store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
+            database=self.database,
         )
 
     def _subscribe_whatsapp_business_webhook(
@@ -7605,12 +7702,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "approvalId": approval_id,
                 "approvalStatus": normalize_text(approval.get("status")) or "pending",
                 "approvalOwnerState": normalize_text(approval.get("owner_state")),
-                "approvalReviewUrl": service.build_approval_review_url(approval),
                 "suggestedReply": suggested_reply,
             }
             payload["approvalId"] = approval_id
             payload["approvalStatus"] = normalize_text(approval.get("status")) or "pending"
-            payload["approvalReviewUrl"] = service.build_approval_review_url(approval)
             payload["suggestedReply"] = suggested_reply
             enriched_messages.append(payload)
         return enriched_messages
@@ -7663,7 +7758,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if parts[3] == "skip":
             self._skip_whatsapp_approval(urllib_parse.unquote(parts[2]))
             return
-        self._send_whatsapp_approval(urllib_parse.unquote(parts[2]), as_json=True)
+        self._send_whatsapp_approval(urllib_parse.unquote(parts[2]))
 
     def _skip_whatsapp_approval(self, approval_id: str) -> None:
         resolved = self._resolve_whatsapp_service_for_approval(approval_id)
@@ -7726,169 +7821,63 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         json_response(self, HTTPStatus.OK, {"ok": True, "approval": updated})
 
-    def _handle_whatsapp_approval_page(self, parsed: urllib_parse.ParseResult) -> None:
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) != 2 or parts[0] != "approval":
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
+    def _send_whatsapp_approval(self, approval_id: str) -> None:
+        """Send an approved reply to the customer over WhatsApp.
 
-        approval_id = urllib_parse.unquote(parts[1])
+        JSON only. The old public /approval/<id> HTML page is gone; approvals are
+        reviewed in the signed-in portal. The reply itself still goes to the
+        customer over WhatsApp -- that is the product.
+        """
+
         resolved = self._resolve_whatsapp_service_for_approval(approval_id)
         if resolved is None:
-            self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
-            return
-
-        _, service, connection = resolved
-        if service.get_approval(approval_id) is None:
-            self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
-            return
-
-        # The page renders the customer's inbound message and the drafted reply,
-        # so it is gated on the same session/ownership check as the send endpoint.
-        session = self._get_authenticated_session()
-        if session is None:
-            self._send_approval_sign_in_required(
-                HTTPStatus.UNAUTHORIZED,
-                "Sign in to Assistyca on this device to review this conversation.",
-            )
-            return
-        if normalize_email(session.email) != normalize_email(connection.get("email")):
-            self._send_approval_sign_in_required(
-                HTTPStatus.FORBIDDEN,
-                "This approval belongs to another workspace.",
-            )
-            return
-
-        query = urllib_parse.parse_qs(parsed.query)
-        notice = None
-        notice_kind = "success"
-        if query.get("sent"):
-            notice = "Reply sent successfully."
-        elif query.get("error"):
-            notice = normalize_text(query.get("error", [""])[0]) or "Something went wrong."
-            notice_kind = "error"
-
-        self._send_html(
-            HTTPStatus.OK,
-            service.render_approval_page_html(
-                approval_id,
-                notice=notice,
-                notice_kind=notice_kind,
-            ),
-        )
-
-    def _handle_whatsapp_approval_submit(self, parsed: urllib_parse.ParseResult) -> None:
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) != 3 or parts[0] != "approval" or parts[2] != "send":
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        self._send_whatsapp_approval(urllib_parse.unquote(parts[1]), as_json=False)
-
-    def _send_whatsapp_approval(self, approval_id: str, *, as_json: bool) -> None:
-        resolved = self._resolve_whatsapp_service_for_approval(approval_id)
-        if resolved is None:
-            if as_json:
-                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
-            else:
-                self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
             return
 
         owner, service, connection = resolved
         approval = service.get_approval(approval_id)
         if approval is None:
-            if as_json:
-                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
-            else:
-                self.send_error(HTTPStatus.NOT_FOUND, "Approval not found")
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
             return
 
-        # Sending an approval delivers a real WhatsApp message from the owner's
-        # Business number, so both the JSON and form paths must be authenticated.
-        # The approval id is not a bearer capability: it appears in notification
-        # messages, rendered page HTML, and access logs.
         session = self._get_authenticated_session()
         if session is None:
-            if as_json:
-                json_response(self, HTTPStatus.UNAUTHORIZED, {
-                    "ok": False,
-                    "error": "unauthorized",
-                    "message": "Sign in again to continue.",
-                })
-            else:
-                self._send_approval_sign_in_required(
-                    HTTPStatus.UNAUTHORIZED,
-                    "Sign in to Assistyca on this device to review and send this reply.",
-                )
+            json_response(self, HTTPStatus.UNAUTHORIZED, {
+                "ok": False,
+                "error": "unauthorized",
+                "message": "Sign in again to continue.",
+            })
             return
 
         if normalize_email(session.email) != normalize_email(connection.get("email")):
-            if as_json:
-                json_response(self, HTTPStatus.FORBIDDEN, {
-                    "ok": False,
-                    "error": "forbidden",
-                    "message": "This approval belongs to another workspace.",
-                })
-            else:
-                self._send_approval_sign_in_required(
-                    HTTPStatus.FORBIDDEN,
-                    "This approval belongs to another workspace.",
-                )
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "forbidden",
+                "message": "This approval belongs to another workspace.",
+            })
             return
 
-        if not as_json and not self._request_origin_is_same_site():
-            self._send_approval_sign_in_required(
-                HTTPStatus.FORBIDDEN,
-                "This request did not come from Assistyca. Open the approval again and retry.",
-            )
-            return
-
-        body = self._read_body()
-        content_type = normalize_text(self.headers.get("Content-Type")).lower()
         try:
-            if "application/json" in content_type:
-                payload = parse_whatsapp_json_body(body)
-            else:
-                payload = parse_whatsapp_form_encoded(body)
+            payload = parse_whatsapp_json_body(self._read_body())
         except json.JSONDecodeError:
             payload = {}
 
         reply_text = normalize_text(payload.get("reply_text")) or normalize_text(approval.get("suggested_reply"))
         if not reply_text:
-            error_message = "Reply text is required."
-            if as_json:
-                json_response(self, HTTPStatus.BAD_REQUEST, {
-                    "ok": False,
-                    "error": "missing_reply_text",
-                    "message": error_message,
-                })
-            else:
-                self._send_html(
-                    HTTPStatus.BAD_REQUEST,
-                    service.render_approval_page_html(approval_id, notice=error_message, notice_kind="error"),
-                )
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_reply_text",
+                "message": "Reply text is required.",
+            })
             return
 
         try:
             updated, sent_message_id = service.send_approval(approval_id, reply_text)
         except ValueError as exc:
-            error_message = str(exc)
-            if as_json:
-                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_request", "message": error_message})
-            else:
-                self._send_html(
-                    HTTPStatus.BAD_REQUEST,
-                    service.render_approval_page_html(approval_id, notice=error_message, notice_kind="error"),
-                )
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_request", "message": str(exc)})
             return
         except Exception as exc:  # pragma: no cover - surfaced to the UI
-            error_message = str(exc)
-            if as_json:
-                json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "send_failed", "message": error_message})
-            else:
-                self._send_html(
-                    HTTPStatus.BAD_GATEWAY,
-                    service.render_approval_page_html(approval_id, notice=error_message, notice_kind="error"),
-                )
+            json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "send_failed", "message": str(exc)})
             return
 
         self._record_whatsapp_outbound_approval(connection, updated, sent_message_id, reply_text)
@@ -7900,18 +7889,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 phone_number_id=normalize_text(owner.get("phoneNumberId")),
             )
 
-        if as_json:
-            json_response(self, HTTPStatus.OK, {
-                "ok": True,
-                "approval": updated,
-                "sentMessageId": sent_message_id,
-            })
-            return
-
-        # The form path previously fell off the end of the function without writing
-        # a response. Redirect back to the approval page, which renders the
-        # "Reply sent successfully." notice from the ?sent= query parameter.
-        self._redirect(f"/approval/{urllib_parse.quote(approval_id)}?sent=1")
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "approval": updated,
+            "sentMessageId": sent_message_id,
+        })
 
     def _handle_feature_run_delete(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
@@ -8403,63 +8385,58 @@ def is_public_static_path(path: str) -> bool:
     return segments[0] in STATIC_ALLOWED_DIRECTORIES
 
 
-def normalize_telegram_delivery_message_id(response: dict[str, Any]) -> str:
-    result = response.get("result") if isinstance(response.get("result"), dict) else {}
-    message_id = normalize_text(result.get("message_id") or response.get("message_id"))
-    return f"telegram-{message_id}" if message_id else f"telegram-{int(time.time() * 1000)}"
-
-
 def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) -> Callable[[dict[str, Any], str], Any]:
+    """Deliver the weekly re-engagement report to the owner's in-app feed.
+
+    This used to fan out over WhatsApp and Telegram. Both are gone; the report
+    now lands in the notification centre, where it is durable and readable from
+    any device.
+    """
+
     def send_owner_message(connection: dict[str, Any], message_text: str) -> Any:
-        settings = normalize_whatsapp_tool_delivery_settings(
-            connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
+        database = server.database  # type: ignore[attr-defined]
+        user_id = resolve_notification_user_id(
+            database,
+            user_id=int(connection.get("userId") or 0),
+            email=normalize_text(connection.get("email")),
         )
-        service = build_portal_service_from_connection(
-            root=root,
-            connection={
-                **connection,
-                "settings": settings,
+        if user_id <= 0:
+            raise RuntimeError("No account was found for this re-engagement report.")
+
+        report = connection.get("reengagementReport") if isinstance(connection.get("reengagementReport"), dict) else {}
+        scheduled_for = normalize_text(report.get("scheduledFor"))
+        candidates_count = int(report.get("candidatesCount") or 0)
+        is_demo = bool(report.get("demo"))
+
+        title = "Follow-up drafts ready"
+        if is_demo:
+            title = "Follow-up demo results"
+        elif candidates_count:
+            title = f"{candidates_count} conversation{'s' if candidates_count != 1 else ''} ready for follow-up"
+
+        notification = deliver_portal_notification(
+            database,
+            user_id=user_id,
+            title=title,
+            body=message_text,
+            kind="reengagement_report",
+            tone="info",
+            source="whatsapp_reengagement",
+            feature_id=REENGAGEMENT_FEATURE_ID,
+            dedupe_key=(
+                f"reengagement:{user_id}:{scheduled_for}" if scheduled_for and not is_demo else ""
+            ),
+            metadata={
+                "candidatesCount": candidates_count,
+                "scheduledFor": scheduled_for,
+                "cutoffAt": normalize_text(report.get("cutoffAt")),
+                "demo": is_demo,
             },
-            base_url=normalize_text(os.getenv("PUBLIC_BASE_URL")) or "http://127.0.0.1",
-            store_cache=server.whatsapp_stores,  # type: ignore[attr-defined]
-            store_lock=server.whatsapp_store_lock,  # type: ignore[attr-defined]
         )
-        deliveries: list[dict[str, Any]] = []
-        errors: list[str] = []
-
-        if whatsapp_tool_delivery_uses_whatsapp(settings):
-            try:
-                deliveries.append(service.send_reengagement_report(connection, message_text))
-            except Exception as exc:  # noqa: BLE001 - Telegram can still receive the report
-                errors.append(f"WhatsApp: {exc}")
-
-        if whatsapp_tool_delivery_uses_telegram(settings):
-            try:
-                telegram_response = send_telegram_notification(
-                    chat_id=normalize_text(settings.get("telegramChatId")),
-                    text=message_text,
-                )
-                deliveries.append(
-                    {
-                        "messageId": normalize_telegram_delivery_message_id(telegram_response),
-                        "deliveryMode": "telegram",
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"Telegram: {exc}")
-
-        if not deliveries:
-            raise RuntimeError("; ".join(errors) or "No owner delivery channel is configured.")
-
-        if len(deliveries) == 1:
-            return deliveries[0]
-
-        primary_delivery = deliveries[0]
         return {
-            "messageId": normalize_text(primary_delivery.get("messageId")),
-            "deliveryMode": "mixed",
-            "reportId": normalize_text(primary_delivery.get("reportId")),
-            "deliveries": deliveries,
+            "messageId": f"portal-notification-{int(notification.get('id') or 0)}",
+            "deliveryMode": "portal",
+            "reportId": str(notification.get("id") or ""),
         }
 
     return send_owner_message
