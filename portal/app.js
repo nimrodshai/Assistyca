@@ -15879,6 +15879,11 @@ function agentWebMonitorTextSuggestsManualOnly(value) {
     .test(String(value || ""));
 }
 
+function agentTextSuggestsOneTimeRun(value) {
+  return /\b(?:just once|only once|one[-\s]?time|one[-\s]?off|run once|single run)\b/i
+    .test(String(value || ""));
+}
+
 function getAgentProposalWebMonitorManualOnly(proposal, backendFeature = null) {
   if (proposal?.type !== "web-monitor") {
     return false;
@@ -15969,14 +15974,25 @@ function getAgentProposalManualOnly(proposal, backendFeature = null) {
     return true;
   }
 
-  return [
+  const cadenceFields = [
     settings.frequency,
     proposal?.executionPlan?.frequency,
     getAgentProposalFieldValue(proposal, "frequency"),
     getAgentProposalFieldValue(proposal, "schedule"),
-    proposal?.summary,
-    proposal?.requestText,
-  ].some(agentWebMonitorTextSuggestsManualOnly);
+  ];
+  const manualTexts = [...cadenceFields, proposal?.summary, proposal?.requestText];
+  if (manualTexts.some(agentWebMonitorTextSuggestsManualOnly) || manualTexts.some(agentTextSuggestsOneTimeRun)) {
+    return true;
+  }
+
+  // A month-based batch job (August receipts, last month's invoices) is a
+  // one-off unless a cadence was actually chosen. Making it live by default
+  // would silently keep re-running work the user asked for once.
+  if (agentContextSuggestsMonthlyBatchTask(proposal)) {
+    return ![...cadenceFields, proposal?.requestText].some((text) => Boolean(extractAgentFrequencyField(text)));
+  }
+
+  return false;
 }
 
 function applyAgentProposalManualMode(proposal) {
@@ -17553,12 +17569,15 @@ function getAgentLocalActionFrequencyValue(action, proposal) {
   if (getAgentProposalManualOnly(proposal)) {
     return "manual";
   }
+  // A recurring receipts/invoices job collects the previous month, so an
+  // unknown cadence means monthly here rather than the generic daily default.
+  const fallbackFrequency = agentContextSuggestsMonthlyBatchTask(proposal) ? "monthly" : "daily";
   const raw = String(
     action?.payload?.frequency
     || getAgentProposalFieldValue(proposal, "frequency")
     || getAgentProposalFieldValue(proposal, "schedule")
     || proposal?.executionPlan?.frequency
-    || "daily",
+    || fallbackFrequency,
   ).trim().toLowerCase();
   if (/hour/.test(raw)) return "hourly";
   if (/week/.test(raw)) return "weekly";
@@ -17566,7 +17585,7 @@ function getAgentLocalActionFrequencyValue(action, proposal) {
   if (/15\s*minutes?/.test(raw)) return "minutes:15";
   if (/5\s*minutes?/.test(raw)) return "minutes:5";
   if (/minute/.test(raw)) return "minutes:15";
-  return "daily";
+  return fallbackFrequency;
 }
 
 function getAgentLocalActionFrequencyOptions() {

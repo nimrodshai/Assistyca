@@ -855,6 +855,27 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-loading-spinner", styles)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 
+    def test_month_based_batch_actions_default_to_a_manual_monthly_run(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # A "pull my August receipts" request is a one-off. It must not become a
+        # live daily action just because no cadence was ever stated.
+        self.assertIn("function agentTextSuggestsOneTimeRun", script)
+        self.assertIn("just once|only once|one[-\\s]?time|one[-\\s]?off|run once|single run", script)
+        self.assertIn("manualTexts.some(agentWebMonitorTextSuggestsManualOnly) || manualTexts.some(agentTextSuggestsOneTimeRun)", script)
+        self.assertIn(
+            "return ![...cadenceFields, proposal?.requestText].some((text) => Boolean(extractAgentFrequencyField(text)));",
+            script,
+        )
+
+        # When it is recurring, the cadence is monthly, not the generic daily default.
+        self.assertIn(
+            'const fallbackFrequency = agentContextSuggestsMonthlyBatchTask(proposal) ? "monthly" : "daily";',
+            script,
+        )
+        self.assertIn("|| fallbackFrequency,", script)
+        self.assertIn("  return fallbackFrequency;\n}", script)
+
     def test_action_results_use_notification_center(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
