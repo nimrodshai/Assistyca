@@ -13790,7 +13790,9 @@ function getAgentManualRunMonthOptions(currentValue = "") {
 }
 
 function replaceAgentMonthlyBatchWindowInResult(value, targetLabel) {
-  const text = String(value || "").trim();
+  const text = String(value || "")
+    .trim()
+    .replace(/\bthe\s+the\s+((?:selected|requested|previous|last)\s+month)\b/i, "the $1");
   const target = String(targetLabel || "").trim();
   if (!text || !target) {
     return text;
@@ -13836,6 +13838,8 @@ function normalizeAgentMonthlyBatchProposalFields(proposal, draft = {}) {
   }
 
   const fields = { ...getAgentProposalFieldMap(proposal) };
+  const draftFrequency = String(draft.frequency || "").trim().toLowerCase();
+  const isManual = draftFrequency ? draftFrequency === "manual" : getAgentProposalManualOnly(proposal);
   const monthValue = getAgentProposalManualRunMonthValue(proposal, draft);
   const resultText = getAgentMonthlyBatchResultText(proposal, {
     ...draft,
@@ -13843,8 +13847,11 @@ function normalizeAgentMonthlyBatchProposalFields(proposal, draft = {}) {
     result: draft.result || fields.result,
   });
   let didChange = false;
-  if (monthValue && fields.manualRunMonth !== monthValue) {
+  if (isManual && monthValue && fields.manualRunMonth !== monthValue) {
     fields.manualRunMonth = monthValue;
+    didChange = true;
+  } else if (!isManual && fields.manualRunMonth) {
+    delete fields.manualRunMonth;
     didChange = true;
   }
   if (resultText && fields.result !== resultText) {
@@ -17489,8 +17496,12 @@ function setAgentLocalActionEditorStatus(editor, message, isError = false, isSav
 }
 
 function shouldShowAgentManualRunMonthField(proposal, draft = {}) {
-  return String(draft.frequency || "").trim().toLowerCase() === "manual"
-    && agentContextSuggestsMonthlyBatchTask(proposal, draft.result || "");
+  return agentContextSuggestsMonthlyBatchTask(proposal, draft.result || "");
+}
+
+function shouldAllowAgentManualRunMonthChoice(proposal, draft = {}) {
+  return shouldShowAgentManualRunMonthField(proposal, draft)
+    && String(draft.frequency || "").trim().toLowerCase() === "manual";
 }
 
 function applyAgentLocalActionDraftState(action, draft, options = {}) {
@@ -17517,23 +17528,29 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
       if (value) fields[key] = value;
     }
   }
-  if (shouldShowAgentManualRunMonthField(proposal, draft)) {
+  const canChooseRunMonth = shouldAllowAgentManualRunMonthChoice(proposal, draft);
+  if (canChooseRunMonth) {
     fields.manualRunMonth = getAgentProposalManualRunMonthValue(proposal, draft);
+  } else if (fields.manualRunMonth) {
+    delete fields.manualRunMonth;
   }
 
   proposal.fields = normalizeAgentFieldValues(fields);
   normalizeAgentMonthlyBatchProposalFields(proposal, {
     ...draft,
-    manualRunMonth: fields.manualRunMonth,
+    manualRunMonth: canChooseRunMonth ? fields.manualRunMonth : "",
     result: fields.result,
   });
+  const savedManualRunMonth = canChooseRunMonth
+    ? (proposal.fields.manualRunMonth || fields.manualRunMonth || "")
+    : "";
   proposal.details = {
     ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
     manualOnly,
     runMode: manualOnly ? "manual" : "recurring",
     frequency: frequencyLabel,
     actionLifecycleStatus: lifecycleStatus,
-    manualRunMonth: proposal.fields.manualRunMonth || fields.manualRunMonth || "",
+    manualRunMonth: savedManualRunMonth,
   };
   proposal.executionPlan = {
     ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
@@ -17541,13 +17558,13 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     runMode: manualOnly ? "manual" : "recurring",
     frequency: frequencyLabel,
     actionLifecycleStatus: lifecycleStatus,
-    manualRunMonth: proposal.fields.manualRunMonth || fields.manualRunMonth || "",
+    manualRunMonth: savedManualRunMonth,
     settings: {
       ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
       manualOnly,
       runMode: manualOnly ? "manual" : "recurring",
       actionLifecycleStatus: lifecycleStatus,
-      manualRunMonth: proposal.fields.manualRunMonth || fields.manualRunMonth || "",
+      manualRunMonth: savedManualRunMonth,
     },
   };
   const previousDeliveryChannel = normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel);
@@ -17567,7 +17584,7 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
   action.payload.frequency = manualOnly ? "manual only" : frequencyLabel;
   action.payload.summary = proposal.summary;
   action.payload.preview = getAgentProposalLocalActionPreview(proposal);
-  action.payload.manualRunMonth = proposal.fields.manualRunMonth || fields.manualRunMonth || "";
+  action.payload.manualRunMonth = savedManualRunMonth;
   action.payload.deliveryChannel = draft.deliveryChannel;
   action.payload.deliveryTarget = nextDeliveryTarget;
   action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, nextDeliveryTarget || action.recipientRef);
@@ -17674,7 +17691,7 @@ function createAgentLocalActionEditor(action) {
   );
   frequency.input.addEventListener("change", () => {
     draft.frequency = frequency.input.value;
-    if (shouldShowAgentManualRunMonthField(proposal, draft) && !draft.manualRunMonth) {
+    if (shouldAllowAgentManualRunMonthChoice(proposal, draft) && !draft.manualRunMonth) {
       draft.manualRunMonth = getAgentProposalManualRunMonthValue(proposal, draft);
     }
     syncManualRunMonthField();
@@ -17701,20 +17718,37 @@ function createAgentLocalActionEditor(action) {
   });
   form.append(manualRunMonth.field);
 
+  function setManualRunMonthOptions(options, selectedValue) {
+    const nextOptions = (Array.isArray(options) ? options : []).filter((option) => option?.value);
+    const signature = nextOptions.map((option) => `${option.value}:${option.label}`).join("|");
+    if (manualRunMonth.input.dataset.agentMonthOptionsSignature !== signature) {
+      manualRunMonth.input.replaceChildren();
+      for (const option of nextOptions) {
+        const optionElement = document.createElement("option");
+        optionElement.value = option.value;
+        optionElement.textContent = option.label;
+        manualRunMonth.input.append(optionElement);
+      }
+      manualRunMonth.input.dataset.agentMonthOptionsSignature = signature;
+    }
+    manualRunMonth.input.value = selectedValue || nextOptions[0]?.value || "";
+  }
+
   function syncManualRunMonthField() {
     const showField = shouldShowAgentManualRunMonthField(proposal, draft);
+    const canChooseMonth = shouldAllowAgentManualRunMonthChoice(proposal, draft);
     manualRunMonth.field.hidden = !showField;
-    manualRunMonth.input.disabled = !showField;
-    if (showField) {
-      draft.manualRunMonth = parseAgentManualRunMonthValue(draft.manualRunMonth) || getAgentProposalManualRunMonthValue(proposal, draft);
-      if (!Array.from(manualRunMonth.input.options).some((option) => option.value === draft.manualRunMonth)) {
-        const optionElement = document.createElement("option");
-        optionElement.value = draft.manualRunMonth;
-        optionElement.textContent = formatAgentManualRunMonthLabel(draft.manualRunMonth);
-        manualRunMonth.input.prepend(optionElement);
-      }
-      manualRunMonth.input.value = draft.manualRunMonth;
+    manualRunMonth.input.disabled = !canChooseMonth;
+    if (!showField) {
+      return;
     }
+    if (!canChooseMonth) {
+      setManualRunMonthOptions([{ value: "previous-month", label: "Previous month" }], "previous-month");
+      return;
+    }
+
+    draft.manualRunMonth = parseAgentManualRunMonthValue(draft.manualRunMonth) || getAgentProposalManualRunMonthValue(proposal, draft);
+    setManualRunMonthOptions(getAgentManualRunMonthOptions(draft.manualRunMonth), draft.manualRunMonth);
   }
 
   function refreshMonthlyBatchResultField() {
