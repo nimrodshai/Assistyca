@@ -911,6 +911,18 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('month: "long", year: "numeric"', script)
         self.assertIn("updateAgentReceiptsQuickAction();", script)
 
+    def test_a_running_manual_action_shows_that_it_is_running(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # The action list only re-renders when its signature changes, so a run
+        # that is missing from the signature leaves the card untouched: the
+        # button keeps saying "Run now" and clicking it looks like nothing
+        # happened, even while the run is in flight.
+        self.assertIn("function isAgentLocalActionRunBusy", script)
+        self.assertIn("    String(isAgentLocalActionRunBusy(action)),\n  ]);", script)
+        self.assertIn("const isRunBusy = isAgentLocalActionRunBusy(action)", script)
+        self.assertIn("const runBusy = isAgentLocalActionRunBusy(action);", script)
+
     def test_action_results_use_notification_center(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -946,7 +958,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=139", html)
-        self.assertIn("app.js?v=177", html)
+        self.assertIn("app.js?v=178", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

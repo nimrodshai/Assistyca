@@ -15841,6 +15841,13 @@ function isAgentLocalActionSettingsBusy(action) {
   return Boolean(key && agentLocalActionSettingsBusy.has(key));
 }
 
+function isAgentLocalActionRunBusy(action) {
+  return Boolean(
+    isAgentProposalLocalAction(action)
+    && localActionRunBusy.has(String(action?.id || "").trim()),
+  );
+}
+
 function isAgentLifecycleActionPaused(action) {
   return getScheduledActionStatusClass(action?.status, action) === "paused";
 }
@@ -16777,10 +16784,13 @@ function createScheduledActionStatus(action) {
   const status = document.createElement("span");
   const statusClass = getScheduledActionStatusClass(action.status, action);
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
-  const isRunBusy = isAgentFeatureLiveAction(action)
-    && action.actionType === "agent_web_monitor"
-    && featureId
-    && monitorActionRunBusy.has(featureId);
+  const isRunBusy = isAgentLocalActionRunBusy(action)
+    || Boolean(
+      isAgentFeatureLiveAction(action)
+      && action.actionType === "agent_web_monitor"
+      && featureId
+      && monitorActionRunBusy.has(featureId),
+    );
   const isLifecycleBusy = isAgentActionLifecycleBusy(action);
   status.className = `agent-action-status is-${isRunBusy ? "run-busy" : isLifecycleBusy ? "lifecycle-busy" : statusClass}`;
   status.textContent = isRunBusy
@@ -16835,6 +16845,7 @@ function getScheduledActionItemSignature(action) {
     String(monitorActionRunBusy.has(featureId)),
     String(isAgentActionLifecycleBusy(action)),
     String(isAgentLocalActionSettingsBusy(action)),
+    String(isAgentLocalActionRunBusy(action)),
   ]);
 }
 
@@ -18013,11 +18024,14 @@ function updateAgentLocalActionDom(action) {
   item.dataset.agentActionItemSignature = getScheduledActionItemSignature(action);
   const status = item.querySelector(".agent-action-status");
   const lifecycleBusy = isAgentActionLifecycleBusy(action);
+  const runBusy = isAgentLocalActionRunBusy(action);
   if (status) {
-    status.className = `agent-action-status is-${lifecycleBusy ? "lifecycle-busy" : statusClass}`;
-    status.textContent = lifecycleBusy
-      ? (isAgentLifecycleActionPaused(action) ? "Starting" : "Stopping")
-      : getScheduledActionStatusLabel(action.status, action);
+    status.className = `agent-action-status is-${runBusy ? "run-busy" : lifecycleBusy ? "lifecycle-busy" : statusClass}`;
+    status.textContent = runBusy
+      ? "Running"
+      : lifecycleBusy
+        ? (isAgentLifecycleActionPaused(action) ? "Starting" : "Stopping")
+        : getScheduledActionStatusLabel(action.status, action);
   }
   const time = item.querySelector(".agent-action-item-time");
   if (time) {
