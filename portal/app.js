@@ -16279,6 +16279,11 @@ function getConnectedPlatformAddress(platform) {
   return formatAgentPlatformAddress(normalized, metadata.account || metadata.workspace || metadata.label);
 }
 
+// Every action reports back through the in-app notification centre. Other
+// channels are not wired up, so the editors keep delivery fixed here instead of
+// offering a picker that cannot change anything.
+const AGENT_ACTION_DELIVERY_CHANNEL = "portal";
+
 function getAgentDeliveryOptionItems() {
   return [
     { value: "portal", label: "Notifications" },
@@ -16289,16 +16294,6 @@ function getAgentDeliveryOptionItems() {
     ...option,
     label: option.address ? `${option.label} (${option.address})` : option.label,
   }));
-}
-
-function normalizeAgentMonitorDeliveryChannel(value, fallback = DEFAULT_MONITOR_SETTINGS.deliveryChannel) {
-  const channel = normalizeAgentDeliveryChannel(value) || normalizeAgentDeliveryChannel(fallback);
-  return ["email", "telegram", "whatsapp"].includes(channel) ? channel : DEFAULT_MONITOR_SETTINGS.deliveryChannel;
-}
-
-function getAgentMonitorDeliveryOptionItems() {
-  return getAgentDeliveryOptionItems()
-    .filter((option) => ["email", "telegram", "whatsapp"].includes(option.value));
 }
 
 function getAgentDeliveryOptionsSignature() {
@@ -17341,9 +17336,7 @@ function createAgentMonitorEditor(action) {
         : (action?.payload?.watchItems || []),
     ),
     frequency: getAgentMonitorEditorFrequencyValue(currentSettings),
-    deliveryChannel: normalizeAgentMonitorDeliveryChannel(
-      currentSettings.deliveryChannel || action?.payload?.deliveryChannel || action?.channel,
-    ),
+    deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,
   };
 
   const form = document.createElement("form");
@@ -17388,18 +17381,6 @@ function createAgentMonitorEditor(action) {
   }
   frequencySelect.value = draft.frequency;
   frequencyField.append(frequencyLabel, wrapAgentActionEditorSelect(frequencySelect));
-
-  const delivery = createAgentLocalActionEditorField(
-    "Delivery",
-    draft.deliveryChannel,
-    {
-      select: true,
-      options: getAgentMonitorDeliveryOptionItems(),
-    },
-  );
-  const deliveryNote = document.createElement("p");
-  deliveryNote.className = "agent-action-editor-delivery";
-  deliveryNote.textContent = "You can change the delivery channel without recreating the action.";
 
   const status = createAgentActionEditorStatusElement("agent-action-editor-status", "p");
   status.setAttribute("role", "status");
@@ -17469,22 +17450,15 @@ function createAgentMonitorEditor(action) {
     draft.frequency = frequencySelect.value;
     scheduleAgentMonitorAutoSave(action, draft, form);
   });
-  delivery.input.addEventListener("change", () => {
-    draft.deliveryChannel = normalizeAgentMonitorDeliveryChannel(delivery.input.value);
-    delivery.input.value = draft.deliveryChannel;
-    scheduleAgentMonitorAutoSave(action, draft, form);
-  });
-
   form._agentMonitorEditor = {
     draft,
     frequencySelect,
-    deliverySelect: delivery.input,
     status,
     saveTimer: null,
     savePromise: null,
     saveQueued: false,
   };
-  form.append(topicsField, frequencyField, delivery.field, deliveryNote, status);
+  form.append(topicsField, frequencyField, status);
   renderTopics();
   return form;
 }
@@ -17526,7 +17500,7 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
     ...currentSettings,
     watchItems,
     ...getAgentMonitorEditorFrequencySettings(editor.frequencySelect?.value, currentSettings),
-    deliveryChannel: normalizeAgentMonitorDeliveryChannel(draft.deliveryChannel || editor.deliverySelect?.value, currentSettings.deliveryChannel),
+    deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,
     actionLifecycleStatus: currentLifecycleStatus,
   });
   setAgentMonitorEditorStatus(editor, "Saving changes…");
@@ -17546,7 +17520,7 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
       state.paymentStatus = response.paymentStatus || state.paymentStatus;
       updateAgentMonitorActionFrequency(action, nextSettings);
       if (action?.payload) {
-        const deliveryChannel = normalizeAgentMonitorDeliveryChannel(nextSettings.deliveryChannel);
+        const deliveryChannel = normalizeAgentDeliveryChannel(nextSettings.deliveryChannel) || AGENT_ACTION_DELIVERY_CHANNEL;
         const deliveryTarget = getMonitorFeatureDeliveryTarget(nextSettings, deliveryChannel);
         action.payload.actionLifecycleStatus = nextSettings.actionLifecycleStatus;
         action.payload.manualOnly = normalizeMonitorManualOnly(nextSettings.manualOnly);
@@ -18335,11 +18309,7 @@ function createAgentLocalActionEditor(action) {
     frequency: getAgentLocalActionFrequencyValue(action, proposal),
     manualRunMonth: getAgentProposalManualRunMonthValue(proposal),
     outputFolder: getAgentProposalFieldValue(proposal, "outputFolder") || action.payload?.outputFolder || "",
-    // Preserve an action's already-selected channel (including older saved
-    // actions) before applying the new chat default.
-    deliveryChannel: normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel)
-      || getAgentProposalDeliveryChannel(proposal)
-      || "portal",
+    deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,
   };
   const form = document.createElement("form");
   form.className = "agent-action-editor";
@@ -18499,27 +18469,10 @@ function createAgentLocalActionEditor(action) {
   refreshMonthlyBatchResultField();
   syncOutputFolderField();
 
-  const delivery = createAgentLocalActionEditorField(
-    "Delivery",
-    draft.deliveryChannel,
-    {
-      select: true,
-      options: getAgentDeliveryOptionItems(),
-    },
-  );
-  delivery.input.addEventListener("change", () => {
-    draft.deliveryChannel = delivery.input.value;
-    scheduleAgentLocalActionAutoSave(action, draft, form, delivery.field);
-  });
-  form.append(delivery.field);
-
-  const deliveryNote = document.createElement("p");
-  deliveryNote.className = "agent-action-editor-delivery";
-  deliveryNote.textContent = "You can change the delivery channel without recreating the action.";
   const status = createAgentActionEditorStatusElement("agent-action-editor-status", "p");
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
-  form.append(deliveryNote, status);
+  form.append(status);
   form._agentLocalActionEditor = { draft, status, frequencySelect: frequency.input, saveTimer: null, activeField: null };
   return form;
 }

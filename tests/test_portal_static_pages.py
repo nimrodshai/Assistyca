@@ -295,12 +295,14 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function createAgentMonitorEditor"):
             script.index("async function saveAgentMonitorActionSettings")
         ]
-        self.assertIn("function getAgentMonitorDeliveryOptionItems", script)
-        self.assertIn("normalizeAgentMonitorDeliveryChannel", monitor_editor)
-        self.assertIn('"Delivery",', monitor_editor)
-        self.assertIn("options: getAgentMonitorDeliveryOptionItems()", monitor_editor)
-        self.assertIn("draft.deliveryChannel = normalizeAgentMonitorDeliveryChannel", monitor_editor)
-        self.assertIn("deliverySelect: delivery.input", monitor_editor)
+        # Delivery is fixed to the in-app notification centre, so no editor
+        # offers a channel picker any more.
+        self.assertIn('const AGENT_ACTION_DELIVERY_CHANNEL = "portal";', script)
+        self.assertNotIn("function getAgentMonitorDeliveryOptionItems", script)
+        self.assertNotIn("normalizeAgentMonitorDeliveryChannel", script)
+        self.assertNotIn('"Delivery",', script)
+        self.assertNotIn("deliverySelect", script)
+        self.assertIn("deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,", monitor_editor)
         self.assertIn("createAgentActionEditorStatusElement(\"agent-action-editor-status\", \"p\")", monitor_editor)
         detail_card_styles = styles[
             styles.index(".agent-action-detail-card {"):
@@ -308,7 +310,7 @@ class PortalStaticPageTests(unittest.TestCase):
         ]
         editor_styles = styles[
             styles.index(".agent-action-editor {"):
-            styles.index(".agent-action-editor-delivery,")
+            styles.index(".agent-action-editor-status {")
         ]
         self.assertIn("background: transparent;", detail_card_styles)
         self.assertIn("box-shadow: none;", detail_card_styles)
@@ -353,6 +355,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("the\\s+the\\s+", script)
         self.assertIn('value: "previous-month", label: "Previous month"', script)
         self.assertIn('const manualRunMonth = createAgentLocalActionEditorField(', script)
+        self.assertNotIn("agent-action-editor-delivery", script)
+        self.assertNotIn("agent-action-editor-delivery", styles)
+        self.assertNotIn("You can change the delivery channel without recreating the action.", script)
         self.assertIn('"Run month"', script)
         self.assertIn("manualRunMonth.input.disabled = !canChooseMonth;", script)
         self.assertIn("setAgentLocalActionSettingsBusy(action, true);", script)
@@ -472,7 +477,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("async function saveAgentMonitorActionSettings"):
             script.index("function getAgentLocalActionProposal")
         ]
-        self.assertIn("deliveryChannel: normalizeAgentMonitorDeliveryChannel", save_monitor_action)
+        self.assertIn("deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,", save_monitor_action)
         self.assertIn("action.payload.deliveryChannel = deliveryChannel", save_monitor_action)
         self.assertIn("action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget)", save_monitor_action)
         self.assertIn("→", script)
