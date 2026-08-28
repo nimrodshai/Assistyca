@@ -1364,6 +1364,7 @@ const elements = {
   appBar: document.querySelector("#appBar"),
   agentWorkspaceStatus: document.querySelector("#agentWorkspaceStatus"),
   agentEmptyState: document.querySelector("#agentEmptyState"),
+  agentReceiptsQuickAction: document.querySelector("#agentReceiptsQuickAction"),
   agentMessageList: document.querySelector("#agentMessageList"),
   agentComposerForm: document.querySelector("#agentComposerForm"),
   agentComposerInput: document.querySelector("#agentComposerInput"),
@@ -14089,6 +14090,25 @@ function parseAgentManualRunMonthValue(value, timeZone = getWorkspaceTimeZone())
   return formatAgentYearMonthValue(new Date(Date.UTC(year, monthIndex, 1)));
 }
 
+function formatAgentPreviousMonth(options) {
+  const previousMonth = shiftAgentMonth(getAgentWorkspaceMonthDate(), -1);
+  return new Intl.DateTimeFormat("en-US", { ...options, timeZone: "UTC" }).format(previousMonth);
+}
+
+// The receipts example names last month, so it has to be recomputed rather
+// than hardcoded. The label stays short ("July 26") while the prompt spells
+// the year out: both month parsers accept only a four-digit year and
+// otherwise assume the current one, which would read "December 26" typed in
+// January as December of the wrong year.
+function updateAgentReceiptsQuickAction() {
+  const button = elements.agentReceiptsQuickAction;
+  if (!button) {
+    return;
+  }
+  button.textContent = `Pull all my receipts from ${formatAgentPreviousMonth({ month: "long", year: "2-digit" })}`;
+  button.dataset.agentPrompt = `Pull all my receipts from ${formatAgentPreviousMonth({ month: "long", year: "numeric" })}.`;
+}
+
 function formatAgentManualRunMonthLabel(value, fallback = "") {
   const normalizedValue = parseAgentManualRunMonthValue(value) || parseAgentManualRunMonthValue(fallback);
   const match = normalizedValue.match(/^(\d{4})-(\d{2})$/);
@@ -15159,6 +15179,7 @@ function renderAgentMessages() {
 
   const agent = getAgentWorkspace();
   elements.agentEmptyState?.classList.toggle("is-hidden", agent.messages.length > 0);
+  updateAgentReceiptsQuickAction();
   const visibleMessages = agentTurnBusy
     ? [
       ...agent.messages,

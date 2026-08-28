@@ -888,6 +888,24 @@ class PortalStaticPageTests(unittest.TestCase):
         # status is re-anchored to activeChatId so the two cannot drift apart.
         self.assertIn('chat.status = chat.id === activeChat?.id ? "active" : "historical";', script)
 
+    def test_receipts_example_names_last_month(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # The example must not name a fixed month.
+        self.assertNotIn("Pull all my receipts from August", html)
+        self.assertIn('id="agentReceiptsQuickAction"', html)
+        self.assertIn("function updateAgentReceiptsQuickAction", script)
+        self.assertIn("function formatAgentPreviousMonth", script)
+        self.assertIn("shiftAgentMonth(getAgentWorkspaceMonthDate(), -1)", script)
+
+        # The visible label is short ("July 26") but the prompt spells the year
+        # out, because both month parsers assume the current year otherwise -
+        # "December 26" typed in January would resolve to the wrong year.
+        self.assertIn('month: "long", year: "2-digit"', script)
+        self.assertIn('month: "long", year: "numeric"', script)
+        self.assertIn("updateAgentReceiptsQuickAction();", script)
+
     def test_action_results_use_notification_center(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -923,7 +941,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=139", html)
-        self.assertIn("app.js?v=176", html)
+        self.assertIn("app.js?v=177", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)
