@@ -10,6 +10,7 @@ from unittest.mock import patch
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
@@ -412,6 +413,28 @@ class AgentProposalRevisionTests(unittest.TestCase):
         )
         self.assertIn("calendar-summary", prompt)
         self.assertIn("Never ask for Gmail or mailbox access", prompt)
+
+    def test_prompts_ask_for_action_wording_instead_of_install(self) -> None:
+        turn_prompt = build_agent_turn_prompt(
+            user_message="Pull all my receipts from July 2026.",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+        revision_prompt = build_agent_proposal_revision_prompt(
+            proposal=normalize_agent_proposal_for_revision({
+                "id": "proposal-1",
+                "type": "scheduled-message",
+                "revision": 1,
+            }),
+            user_message="Make it 13:50 instead",
+            conversation=[],
+        )
+
+        for prompt in (turn_prompt, revision_prompt, AGENT_TURN_INSTRUCTIONS):
+            self.assertIn("call", prompt.lower())
+            self.assertIn("an action", prompt)
+            self.assertIn("install", prompt)
+        self.assertIn("keep internal vocabulary", turn_prompt)
 
 
 class AgentProposalRevisionApiTests(unittest.TestCase):

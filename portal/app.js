@@ -784,7 +784,7 @@ const AGENT_BLUEPRINTS = {
     type: "custom",
     title: "Workflow helper",
     summary:
-      "Create a custom workflow from your request, then ask any missing questions before installation.",
+      "Create a custom action from your request, then ask any missing questions before it is created.",
     response:
       "I can shape that into a custom workflow. I will start with a planning helper, then identify the exact skills, external services, credentials, and notification path before anything runs.",
     relatedFeatureId: "",
