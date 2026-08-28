@@ -5103,10 +5103,6 @@ function isEmailConnectionReady() {
   return Boolean(getConnectedEmailProvider());
 }
 
-function isEmailConnectionReady() {
-  return isEmailConnectionReady();
-}
-
 function isOutlookConnectionReady() {
   return getConnectedEmailProvider() === EMAIL_PROVIDER_OUTLOOK;
 }

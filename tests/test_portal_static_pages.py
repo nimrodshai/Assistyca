@@ -973,7 +973,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=141", html)
-        self.assertIn("app.js?v=180", html)
+        self.assertIn("app.js?v=181", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)
@@ -1370,6 +1370,21 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("data-contact-back", body)
         self.assertIn("חזור לאתר", body)
         self.assertNotIn('.contact-form[data-complete="true"] .contact-privacy', body)
+
+    def test_portal_app_declares_each_function_only_once(self) -> None:
+        # A second `function foo` silently replaces the first, so a rename that
+        # misses an old forwarding alias turns it into `foo() { return foo() }`
+        # and every caller dies on a stack overflow. assertNotIn on the retired
+        # name does not catch that: both copies carry the new name.
+        # Top-level declarations only - nested helpers are indented, and two of
+        # those sharing a name in different scopes is legal.
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        declarations: dict[str, int] = {}
+        for match in re.finditer(r"^(?:async )?function ([A-Za-z0-9_$]+)\s*\(", script, re.MULTILINE):
+            name = match.group(1)
+            declarations[name] = declarations.get(name, 0) + 1
+        duplicates = sorted(name for name, count in declarations.items() if count > 1)
+        self.assertEqual(duplicates, [], f"declared more than once in app.js: {duplicates}")
 
 
 if __name__ == "__main__":
