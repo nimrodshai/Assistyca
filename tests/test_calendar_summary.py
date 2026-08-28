@@ -39,6 +39,25 @@ class _FakeResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+# Patching urlopen on the server module patches urllib.request globally, so a
+# blanket patch also swallows these tests' own requests to the portal under
+# test. Only the provider token and revoke endpoints are stubbed; everything
+# else goes to the real opener.
+_PROVIDER_HOSTS = ("oauth2.googleapis.com", "accounts.google.com", "login.microsoftonline.com")
+
+
+def _provider_endpoint_patch(responder, target="packages.infrastructure.portal_auth.server.urllib_request.urlopen"):
+    real_urlopen = urllib_request.urlopen
+
+    def routed(request, *, timeout=None, **kwargs):  # type: ignore[no-untyped-def]
+        url = getattr(request, "full_url", str(request))
+        if any(host in url for host in _PROVIDER_HOSTS):
+            return responder(request, timeout=timeout)
+        return real_urlopen(request, timeout=timeout, **kwargs)
+
+    return mock.patch(target, side_effect=routed)
+
+
 class CalendarSummaryTests(unittest.TestCase):
     def test_next_week_is_a_monday_to_sunday_interval(self) -> None:
         date_range = parse_calendar_date_range(
@@ -337,7 +356,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
             "eventCount": 0,
             "dateRange": {"display": "Aug 25, 2026"},
         }
-        with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+        with _provider_endpoint_patch(fake_urlopen):
             with mock.patch(
                 "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
                 return_value=fake_result,
@@ -397,7 +416,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
             "messageCount": 1,
             "items": [{"subject": "Proposal review"}],
         }
-        with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+        with _provider_endpoint_patch(fake_urlopen):
             with mock.patch(
                 "packages.infrastructure.portal_auth.server.GmailDigestRunner.run",
                 return_value=fake_result,
@@ -472,7 +491,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
                 "snippet": "Total USD 19.95",
             }],
         }
-        with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+        with _provider_endpoint_patch(fake_urlopen):
             with mock.patch(
                 "packages.infrastructure.portal_auth.server.GmailDigestRunner.run",
                 return_value=fake_result,
@@ -482,10 +501,13 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["messageCount"], 1)
-        self.assertIn("Receipt search", payload["message"])
+        # The notification offers the download; the counts live in the PDF.
+        self.assertIn("ready to download", payload["message"])
         self.assertIn("Receipt search", payload["summary"])
-        self.assertIn("after:2026/08/01", payload["query"])
-        self.assertIn("before:2026/09/01", payload["query"])
+        # The query is described in words now, because the same action can run
+        # against a Gmail or an Outlook mailbox.
+        self.assertIn("2026-08-01", payload["query"])
+        self.assertIn("2026-09-01", payload["query"])
         self.assertIn("receipt", payload["query"])
         self.assertEqual(payload["outputFolder"], "Receipts/Aug2026/")
         self.assertEqual(payload["receiptCount"], 1)
@@ -493,12 +515,21 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         self.assertEqual(payload["hrefLabel"], "Open PDF")
         self.assertTrue(Path(payload["artifacts"]["pdf"]["path"]).exists())
         self.assertTrue(Path(payload["artifacts"]["excel"]["path"]).exists())
-        with urllib_request.urlopen(f"{self.base_url}{payload['resultUrl']}", timeout=5) as response:
+        # Receipts are private financial documents, so the download is only
+        # served to the session that owns them.
+        download = urllib_request.Request(
+            f"{self.base_url}{payload['resultUrl']}",
+            headers={"Authorization": f"Bearer {self.session_token}"},
+        )
+        with urllib_request.urlopen(download, timeout=5) as response:
             self.assertEqual(response.status, 200)
             self.assertEqual(response.read(4), b"%PDF")
+        with self.assertRaises(urllib_error.HTTPError) as unauthenticated:
+            urllib_request.urlopen(f"{self.base_url}{payload['resultUrl']}", timeout=5)
+        self.assertEqual(unauthenticated.exception.code, 404)
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], "fresh-gmail-access-token")
-        self.assertEqual(run.call_args.kwargs["query"], payload["query"])
+        self.assertEqual(run.call_args.kwargs["query"].describe(), payload["query"])
         self.assertTrue(run.call_args.kwargs["include_attachments"])
         self.assertIn("Receipts/Aug2026/attachments", str(run.call_args.kwargs["attachment_output_dir"]))
 

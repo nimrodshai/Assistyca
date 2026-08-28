@@ -43,6 +43,49 @@ class _NoRedirect(urllib_request.HTTPRedirectHandler):
         return None
 
 
+# Patching urlopen on the server module patches urllib.request globally, so a
+# blanket patch also swallows these tests' own requests to the portal under
+# test. Only the provider token and revoke endpoints are stubbed; everything
+# else goes to the real opener.
+_PROVIDER_HOSTS = (
+    "oauth2.googleapis.com",
+    "accounts.google.com",
+    "login.microsoftonline.com",
+    "gmail.googleapis.com",
+    "www.googleapis.com",
+    "graph.microsoft.com",
+)
+
+
+def _provider_endpoint_patch(*responders, target="packages.infrastructure.portal_auth.server.urllib_request.urlopen"):
+    """Route provider calls to the given responders, portal calls to the network.
+
+    Every responder is tried in turn; the first one that does not raise
+    ``_NotMine`` answers. Nesting two blanket patches would not work: they
+    target the same global ``urlopen``, so the inner one would swallow the
+    outer one's calls.
+    """
+
+    real_urlopen = urllib_request.urlopen
+
+    def routed(request, *, timeout=None, **kwargs):  # type: ignore[no-untyped-def]
+        url = getattr(request, "full_url", str(request))
+        if any(host in url for host in _PROVIDER_HOSTS):
+            for responder in responders:
+                try:
+                    return responder(request, timeout=timeout)
+                except _NotMine:
+                    continue
+            raise AssertionError(f"no responder handled {url}")
+        return real_urlopen(request, timeout=timeout, **kwargs)
+
+    return mock.patch(target, side_effect=routed)
+
+
+class _NotMine(Exception):
+    """Raised by a responder that does not handle this request's host."""
+
+
 class PlatformConnectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -176,7 +219,7 @@ class PlatformConnectionTests(unittest.TestCase):
                 headers={"Cookie": cookie},
                 method="DELETE",
             )
-            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+            with _provider_endpoint_patch(fake_urlopen):
                 with urllib_request.urlopen(request, timeout=5) as response:
                     payload = json.loads(response.read().decode("utf-8"))
 
@@ -265,6 +308,7 @@ class PlatformConnectionTests(unittest.TestCase):
             PortalConfig(
                 db_path=db_path,
                 credential_encryption_key=key,
+                session_secret="test-session-secret-that-is-long-enough-to-sign",
                 google_oauth_client_id="google-client-id.apps.googleusercontent.com",
                 google_oauth_client_secret="google-client-secret",
                 google_oauth_redirect_uri="https://assistyca.com/api/oauth/google/calendar/callback",
@@ -318,6 +362,7 @@ class PlatformConnectionTests(unittest.TestCase):
             PortalConfig(
                 db_path=db_path,
                 credential_encryption_key=key,
+                session_secret="test-session-secret-that-is-long-enough-to-sign",
                 google_oauth_client_id="google-client-id.apps.googleusercontent.com",
                 google_oauth_client_secret="google-client-secret",
             ),
@@ -351,11 +396,12 @@ class PlatformConnectionTests(unittest.TestCase):
                     "Content-Type": "application/json",
                     "Cookie": cookie,
                     "X-Requested-With": "XMLHttpRequest",
+                    "X-Forwarded-Proto": "http",
                 },
                 method="POST",
             )
             opener = urllib_request.build_opener()
-            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+            with _provider_endpoint_patch(fake_urlopen):
                 with mock.patch(
                     "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
                     return_value={"eventCount": 0, "message": "", "summary": ""},
@@ -395,6 +441,7 @@ class PlatformConnectionTests(unittest.TestCase):
             PortalConfig(
                 db_path=db_path,
                 credential_encryption_key=key,
+                session_secret="test-session-secret-that-is-long-enough-to-sign",
                 google_oauth_client_id="google-client-id.apps.googleusercontent.com",
                 google_oauth_client_secret="google-client-secret",
             ),
@@ -422,6 +469,8 @@ class PlatformConnectionTests(unittest.TestCase):
                 })
 
             def fake_gmail_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+                if "gmail.googleapis.com" not in request.full_url:
+                    raise _NotMine
                 self.assertEqual(timeout, 20)
                 self.assertTrue(request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"))
                 self.assertEqual(request.get_header("Authorization"), "Bearer popup-google-gmail-access-token")
@@ -434,12 +483,13 @@ class PlatformConnectionTests(unittest.TestCase):
                     "Content-Type": "application/json",
                     "Cookie": cookie,
                     "X-Requested-With": "XMLHttpRequest",
+                    "X-Forwarded-Proto": "http",
                 },
                 method="POST",
             )
             opener = urllib_request.build_opener()
-            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_token_urlopen):
-                with mock.patch("packages.infrastructure.gmail_summary.urllib_request.urlopen", side_effect=fake_gmail_urlopen):
+            with _provider_endpoint_patch(fake_gmail_urlopen, fake_token_urlopen):
+                if True:
                     with opener.open(request, timeout=5) as response:
                         payload = json.loads(response.read().decode("utf-8"))
 
@@ -477,6 +527,7 @@ class PlatformConnectionTests(unittest.TestCase):
             PortalConfig(
                 db_path=db_path,
                 credential_encryption_key=key,
+                session_secret="test-session-secret-that-is-long-enough-to-sign",
                 google_oauth_client_id="google-client-id.apps.googleusercontent.com",
                 google_oauth_client_secret="google-client-secret",
             ),
@@ -509,6 +560,8 @@ class PlatformConnectionTests(unittest.TestCase):
                 })
 
             def fake_gmail_urlopen(request, *, timeout):  # type: ignore[no-untyped-def]
+                if "gmail.googleapis.com" not in request.full_url:
+                    raise _NotMine
                 self.assertEqual(timeout, 20)
                 self.assertTrue(request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"))
                 self.assertEqual(request.get_header("Authorization"), "Bearer popup-google-multi-access-token")
@@ -524,12 +577,13 @@ class PlatformConnectionTests(unittest.TestCase):
                     "Content-Type": "application/json",
                     "Cookie": cookie,
                     "X-Requested-With": "XMLHttpRequest",
+                    "X-Forwarded-Proto": "http",
                 },
                 method="POST",
             )
             opener = urllib_request.build_opener()
-            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_token_urlopen):
-                with mock.patch("packages.infrastructure.gmail_summary.urllib_request.urlopen", side_effect=fake_gmail_urlopen):
+            with _provider_endpoint_patch(fake_gmail_urlopen, fake_token_urlopen):
+                if True:
                     with mock.patch(
                         "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
                         return_value={"eventCount": 0, "message": "", "summary": ""},
@@ -575,6 +629,7 @@ class PlatformConnectionTests(unittest.TestCase):
             PortalConfig(
                 db_path=db_path,
                 credential_encryption_key=key,
+                session_secret="test-session-secret-that-is-long-enough-to-sign",
                 google_oauth_client_id="google-client-id.apps.googleusercontent.com",
                 google_oauth_client_secret="google-client-secret",
             ),
@@ -617,7 +672,7 @@ class PlatformConnectionTests(unittest.TestCase):
                 f"{urllib_parse.urlencode({'code': 'calendar-code', 'state': state})}"
             )
             callback_request = urllib_request.Request(callback_url, headers={"Cookie": cookie})
-            with mock.patch("packages.infrastructure.portal_auth.server.urllib_request.urlopen", side_effect=fake_urlopen):
+            with _provider_endpoint_patch(fake_urlopen):
                 with mock.patch(
                     "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
                     return_value={"eventCount": 0, "message": "", "summary": ""},

@@ -2,26 +2,36 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
-import mimetypes
-import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+from packages.infrastructure import mail_attachments
+from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
+from packages.infrastructure.mail_search import MailQuery
+from packages.infrastructure.mail_search import to_gmail_query
+
 GMAIL_MESSAGES_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 GMAIL_TIMEOUT_SECONDS = 20
 GMAIL_MAX_DIGEST_MESSAGES = 10
-GMAIL_MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE = 10
-GMAIL_MAX_RECEIPT_ATTACHMENT_BYTES = 8 * 1024 * 1024
-_ATTACHMENT_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._ -]+")
-_IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
-_RECEIPT_ATTACHMENT_MIME_TYPES = {"application/pdf"}
+GMAIL_MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE = mail_attachments.MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE
+GMAIL_MAX_RECEIPT_ATTACHMENT_BYTES = mail_attachments.MAX_RECEIPT_ATTACHMENT_BYTES
+GMAIL_DEFAULT_QUERY = "in:inbox newer_than:1d"
+
+
+def resolve_gmail_query(query: "str | MailQuery | None") -> str:
+    """Accept either a Gmail string or the neutral intent.
+
+    Actions saved before Outlook support pass a string; everything the portal
+    builds now passes a ``MailQuery``.
+    """
+
+    if isinstance(query, MailQuery):
+        return to_gmail_query(query) or to_gmail_query(DEFAULT_DIGEST_QUERY)
+    return str(query or "").strip() or GMAIL_DEFAULT_QUERY
 
 
 class GmailAuthorizationError(RuntimeError):
@@ -54,7 +64,7 @@ class GmailAccessValidator:
         self,
         access_token: str,
         *,
-        query: str = "in:inbox newer_than:1d",
+        query: "str | MailQuery" = DEFAULT_DIGEST_QUERY,
     ) -> dict[str, Any]:
         token = str(access_token or "").strip()
         if not token:
@@ -64,7 +74,7 @@ class GmailAccessValidator:
 
         params = urllib_parse.urlencode({
             "maxResults": "1",
-            "q": str(query or "in:inbox newer_than:1d").strip()[:200],
+            "q": resolve_gmail_query(query)[:200],
         })
         request = urllib_request.Request(
             f"{GMAIL_MESSAGES_API_URL}?{params}",
@@ -188,7 +198,7 @@ class GmailDigestRunner:
         self,
         access_token: str,
         *,
-        query: str = "in:inbox newer_than:1d",
+        query: "str | MailQuery" = DEFAULT_DIGEST_QUERY,
         max_results: int = GMAIL_MAX_DIGEST_MESSAGES,
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
@@ -199,7 +209,7 @@ class GmailDigestRunner:
             raise GmailAuthorizationError(
                 "Gmail access needs attention: no usable access token is saved. Reconnect Gmail with read-only access, then try again."
             )
-        safe_query = str(query or "in:inbox newer_than:1d").strip()[:200]
+        safe_query = resolve_gmail_query(query)[:200]
         safe_max = max(1, min(GMAIL_MAX_DIGEST_MESSAGES, int(max_results or GMAIL_MAX_DIGEST_MESSAGES)))
         list_params = urllib_parse.urlencode({
             "maxResults": str(safe_max),
@@ -268,12 +278,12 @@ class GmailDigestRunner:
                 continue
             mime_type = str(part.get("mimeType") or "").strip().lower()
             filename = str(part.get("filename") or "").strip()
-            if not _is_receipt_attachment(mime_type, filename):
+            if not mail_attachments.is_receipt_attachment(mime_type, filename):
                 continue
             attachment_index = len(attachments) + 1
             body = part.get("body") if isinstance(part.get("body"), dict) else {}
             size = int(body.get("size") or 0)
-            safe_name = _safe_attachment_filename(
+            safe_name = mail_attachments.safe_attachment_filename(
                 filename,
                 fallback=f"receipt-{attachment_index:02d}",
                 mime_type=mime_type,
@@ -281,13 +291,11 @@ class GmailDigestRunner:
                 part_index=attachment_index,
             )
             if size > GMAIL_MAX_RECEIPT_ATTACHMENT_BYTES:
-                attachments.append({
-                    "filename": safe_name,
-                    "mimeType": mime_type,
-                    "size": size,
-                    "status": "skipped",
-                    "reason": "Attachment is too large to include in the receipt bundle.",
-                })
+                attachments.append(mail_attachments.skipped_attachment(
+                    safe_name,
+                    mime_type=mime_type,
+                    size=size,
+                ))
                 continue
             data_value = str(body.get("data") or "").strip()
             attachment_id = str(body.get("attachmentId") or "").strip()
@@ -303,37 +311,30 @@ class GmailDigestRunner:
             if not data_value:
                 continue
             try:
-                content = _decode_gmail_attachment_data(data_value)
+                content = mail_attachments.decode_base64_attachment(data_value, url_safe=True)
             except ValueError:
                 continue
             if len(content) > GMAIL_MAX_RECEIPT_ATTACHMENT_BYTES:
-                attachments.append({
-                    "filename": safe_name,
-                    "mimeType": mime_type,
-                    "size": len(content),
-                    "status": "skipped",
-                    "reason": "Attachment is too large to include in the receipt bundle.",
-                })
+                attachments.append(mail_attachments.skipped_attachment(
+                    safe_name,
+                    mime_type=mime_type,
+                    size=len(content),
+                ))
                 continue
-            file_path = _deduplicate_path(output_dir / safe_name)
-            file_path.write_bytes(content)
-            attachment: dict[str, Any] = {
-                "filename": file_path.name,
-                "mimeType": mime_type,
-                "size": len(content),
-                "path": str(file_path),
-                "status": "saved",
-            }
-            if url_prefix:
-                attachment["url"] = f"{str(url_prefix).rstrip('/')}/{urllib_parse.quote(file_path.name)}"
-            attachments.append(attachment)
+            attachments.append(mail_attachments.save_attachment(
+                content,
+                output_dir=output_dir,
+                filename=safe_name,
+                mime_type=mime_type,
+                url_prefix=url_prefix,
+            ))
         return attachments
 
     def run(
         self,
         access_token: str,
         *,
-        query: str = "in:inbox newer_than:1d",
+        query: "str | MailQuery" = DEFAULT_DIGEST_QUERY,
         max_results: int = GMAIL_MAX_DIGEST_MESSAGES,
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
@@ -351,7 +352,7 @@ class GmailDigestRunner:
         if not items:
             return {
                 "ok": True,
-                "message": f"{header}\n\nNo Gmail messages found for `{query}`.",
+                "message": f"{header}\n\nNo Gmail messages found for `{resolve_gmail_query(query)}`.",
                 "summary": header,
                 "messageCount": 0,
                 "items": [],
@@ -377,58 +378,3 @@ def _iter_payload_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
         child_parts = part.get("parts") if isinstance(part.get("parts"), list) else []
         pending.extend(child for child in child_parts if isinstance(child, dict))
     return parts
-
-
-def _is_receipt_attachment(mime_type: str, filename: str) -> bool:
-    normalized_mime_type = str(mime_type or "").strip().lower()
-    suffix = Path(str(filename or "")).suffix.lower()
-    return (
-        normalized_mime_type.startswith("image/")
-        or normalized_mime_type in _RECEIPT_ATTACHMENT_MIME_TYPES
-        or suffix in _IMAGE_EXTENSIONS
-        or suffix == ".pdf"
-    )
-
-
-def _decode_gmail_attachment_data(value: str) -> bytes:
-    data = str(value or "").strip()
-    if not data:
-        raise ValueError("missing Gmail attachment data")
-    padding = "=" * (-len(data) % 4)
-    try:
-        return base64.urlsafe_b64decode(f"{data}{padding}".encode("ascii"))
-    except (binascii.Error, UnicodeEncodeError) as exc:
-        raise ValueError("invalid Gmail attachment data") from exc
-
-
-def _safe_attachment_filename(
-    filename: str,
-    *,
-    fallback: str,
-    mime_type: str,
-    message_id: str,
-    part_index: int,
-) -> str:
-    raw_name = Path(str(filename or "").replace("\\", "/")).name.strip()
-    if not raw_name:
-        extension = mimetypes.guess_extension(str(mime_type or "").split(";", 1)[0].strip()) or ".bin"
-        if extension == ".jpe":
-            extension = ".jpg"
-        raw_name = f"{fallback}{extension}"
-    stem = Path(raw_name).stem.strip() or fallback
-    suffix = Path(raw_name).suffix.lower() or ".bin"
-    stem = _ATTACHMENT_FILENAME_RE.sub("-", stem).strip(" .-_") or fallback
-    message_fragment = _ATTACHMENT_FILENAME_RE.sub("-", str(message_id or "message"))[:12].strip(" .-_") or "message"
-    return f"{message_fragment}-{part_index:02d}-{stem[:50]}{suffix}"
-
-
-def _deduplicate_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    stem = path.stem
-    suffix = path.suffix
-    for index in range(2, 100):
-        candidate = path.with_name(f"{stem}-{index}{suffix}")
-        if not candidate.exists():
-            return candidate
-    return path.with_name(f"{stem}-{datetime.now().timestamp():.0f}{suffix}")

@@ -64,6 +64,15 @@ from packages.infrastructure.credential_vault import credential_hint
 from packages.infrastructure.credential_vault import normalize_platform_connection_metadata
 from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
 from packages.infrastructure.feature_activation import FeatureActivationService
+from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
+from packages.infrastructure.mail_search import MailQuery
+from packages.infrastructure.mail_search import month_window
+from packages.infrastructure.mail_search import normalize_terms
+from packages.infrastructure.mail_search import parse_gmail_query
+from packages.infrastructure.outlook_summary import OutlookAccessValidator
+from packages.infrastructure.outlook_summary import OutlookAuthorizationError
+from packages.infrastructure.outlook_summary import OutlookDigestRunner
+from packages.infrastructure.outlook_summary import OutlookSummaryError
 from packages.infrastructure.gmail_summary import GmailAccessValidator
 from packages.infrastructure.gmail_summary import GmailAuthorizationError
 from packages.infrastructure.gmail_summary import GmailDigestRunner
@@ -245,6 +254,24 @@ GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60
 GOOGLE_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
 GOOGLE_OAUTH_SECRET_TYPE = "google_refresh_token"
 GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE = "google_calendar_refresh_token"
+MICROSOFT_OUTLOOK_OAUTH_PLATFORM = "email"
+MICROSOFT_OUTLOOK_OAUTH_PROVIDER = "microsoft_outlook"
+# Mail.Read is read-only. offline_access is what makes Microsoft return a
+# refresh token, the same way Google needs access_type=offline.
+MICROSOFT_OUTLOOK_OAUTH_SCOPE = "https://graph.microsoft.com/Mail.Read offline_access"
+MICROSOFT_OAUTH_DEFAULT_TENANT = "common"
+MICROSOFT_OAUTH_AUTH_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
+MICROSOFT_OAUTH_TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+MICROSOFT_OAUTH_STATE_TTL_SECONDS = 10 * 60
+MICROSOFT_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
+MICROSOFT_OAUTH_SECRET_TYPE = "microsoft_refresh_token"
+# Which reader a saved email connection belongs to. The provider lives in the
+# connection metadata; the secret payload repeats it so a run can pick a reader
+# without a second database read.
+EMAIL_PROVIDER_LABELS = {
+    GOOGLE_GMAIL_OAUTH_PROVIDER: "Gmail",
+    MICROSOFT_OUTLOOK_OAUTH_PROVIDER: "Outlook",
+}
 AGENT_GOOGLE_BATCH_OBJECT_RE = re.compile(
     r"\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|bookkeeping|reconciliation)\b",
     re.IGNORECASE,
@@ -542,6 +569,10 @@ class PortalConfig:
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_redirect_uri: str = ""
+    microsoft_oauth_client_id: str = ""
+    microsoft_oauth_client_secret: str = ""
+    microsoft_oauth_redirect_uri: str = ""
+    microsoft_oauth_tenant: str = MICROSOFT_OAUTH_DEFAULT_TENANT
     agent_output_dir: Path = Path("output/agent_receipts")
     smtp: SmtpConfig = field(default_factory=SmtpConfig)
     resend: ResendConfig = field(default_factory=ResendConfig)
@@ -1384,6 +1415,10 @@ def load_config() -> PortalConfig:
         google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
         google_oauth_redirect_uri=os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip(),
+        microsoft_oauth_client_id=os.getenv("MICROSOFT_OAUTH_CLIENT_ID", "").strip(),
+        microsoft_oauth_client_secret=os.getenv("MICROSOFT_OAUTH_CLIENT_SECRET", "").strip(),
+        microsoft_oauth_redirect_uri=os.getenv("MICROSOFT_OAUTH_REDIRECT_URI", "").strip(),
+        microsoft_oauth_tenant=os.getenv("MICROSOFT_OAUTH_TENANT", "").strip() or MICROSOFT_OAUTH_DEFAULT_TENANT,
         agent_output_dir=agent_output_dir,
         smtp=smtp,
         resend=resend,
@@ -1786,14 +1821,6 @@ def get_previous_agent_run_month(now: Optional[datetime] = None) -> tuple[int, i
     return year, month
 
 
-def format_agent_gmail_month_start(year: int, month: int) -> str:
-    return f"{year:04d}/{month:02d}/01"
-
-
-def get_next_agent_run_month(year: int, month: int) -> tuple[int, int]:
-    return (year + 1, 1) if month >= 12 else (year, month + 1)
-
-
 def agent_batch_frequency_is_monthly(fields: dict[str, Any], payload: dict[str, Any]) -> bool:
     text = normalize_text(
         fields.get("frequency")
@@ -1848,28 +1875,50 @@ def build_agent_receipt_owner_key(email: str) -> str:
     return hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:16]
 
 
-def build_custom_google_batch_gmail_query(fields: dict[str, Any], payload: dict[str, Any]) -> str:
-    explicit_query = normalize_text(
-        fields.get("gmailQuery")
+def read_saved_query_text(fields: dict[str, Any], payload: dict[str, Any]) -> str:
+    """The raw query an action saved, whichever key it used."""
+
+    return normalize_text(
+        fields.get("mailQuery")
+        or fields.get("gmailQuery")
         or fields.get("query")
+        or payload.get("mailQuery")
         or payload.get("gmailQuery")
         or payload.get("query")
     )
-    if explicit_query:
-        return explicit_query
 
-    terms = " OR ".join(AGENT_GMAIL_BATCH_SEARCH_TERMS)
+
+def resolve_saved_mail_query(fields: dict[str, Any], payload: dict[str, Any]) -> MailQuery:
+    """Read a digest action's saved query into the provider-neutral shape.
+
+    Actions written before Outlook support saved a Gmail string, so the string
+    is parsed rather than dropped. An action with nothing saved gets the
+    default inbox digest.
+    """
+
+    saved = read_saved_query_text(fields, payload)
+    if not saved:
+        return DEFAULT_DIGEST_QUERY
+    parsed = parse_gmail_query(saved)
+    return DEFAULT_DIGEST_QUERY if parsed.is_empty() else parsed
+
+
+def build_custom_batch_mail_query(fields: dict[str, Any], payload: dict[str, Any]) -> MailQuery:
+    """The receipts and invoices search, as intent rather than Gmail syntax."""
+
+    saved = read_saved_query_text(fields, payload)
+    if saved:
+        parsed = parse_gmail_query(saved)
+        if not parsed.is_empty():
+            return parsed
+
+    terms = normalize_terms(AGENT_GMAIL_BATCH_SEARCH_TERMS)
     month_value = resolve_agent_batch_run_month(fields, payload)
     if month_value:
-        year, month = month_value
-        next_year, next_month = get_next_agent_run_month(year, month)
-        return (
-            f"after:{format_agent_gmail_month_start(year, month)} "
-            f"before:{format_agent_gmail_month_start(next_year, next_month)} "
-            f"({terms})"
-        )
+        window = month_window(*month_value)
+        return MailQuery(terms=terms, after=window.after, before=window.before)
 
-    return f"newer_than:31d ({terms})"
+    return MailQuery(terms=terms, newer_than_days=31)
 
 
 def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
@@ -1880,15 +1929,17 @@ def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
         return "Invoice search"
     if re.search(r"\bstatements?\b", text, re.IGNORECASE):
         return "Statement search"
-    return "Gmail source search"
+    return "Mailbox source search"
 
 
-def relabel_gmail_digest_result(result: dict[str, Any], header: str) -> dict[str, Any]:
+def relabel_mail_digest_result(result: dict[str, Any], header: str) -> dict[str, Any]:
     next_result = dict(result)
     for key in ("message", "summary"):
         value = str(next_result.get(key) or "")
-        if value.startswith("Gmail digest"):
-            next_result[key] = header + value[len("Gmail digest"):]
+        for prefix in ("Gmail digest", "Outlook digest"):
+            if value.startswith(prefix):
+                next_result[key] = header + value[len(prefix):]
+                break
     return next_result
 
 
@@ -2761,6 +2812,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_google_calendar_oauth_callback(parsed)
             return
 
+        if path == "/api/oauth/microsoft/email/start":
+            self._handle_microsoft_email_oauth_start(parsed)
+            return
+
+        if path == "/api/oauth/microsoft/email/callback":
+            self._handle_microsoft_email_oauth_callback(parsed)
+            return
+
         if path == "/api/features":
             session = self._require_authenticated_session()
             if session is None:
@@ -2841,6 +2900,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/oauth/google/calendar/code":
             self._handle_google_calendar_oauth_code_post()
+            return
+
+        if path == "/api/oauth/microsoft/email/code":
+            self._handle_microsoft_email_oauth_code_post()
             return
 
         if path == "/api/account/profile":
@@ -3356,6 +3419,360 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
         return connections[0] if connections else {}
 
+    def _microsoft_oauth_tenant(self) -> str:
+        return normalize_text(self.config.microsoft_oauth_tenant) or MICROSOFT_OAUTH_DEFAULT_TENANT
+
+    def _microsoft_oauth_auth_url(self) -> str:
+        return MICROSOFT_OAUTH_AUTH_URL_TEMPLATE.format(tenant=self._microsoft_oauth_tenant())
+
+    def _microsoft_oauth_token_url(self) -> str:
+        return MICROSOFT_OAUTH_TOKEN_URL_TEMPLATE.format(tenant=self._microsoft_oauth_tenant())
+
+    def _microsoft_oauth_redirect_uri(self) -> str:
+        configured = normalize_text(self.config.microsoft_oauth_redirect_uri)
+        if configured:
+            return configured
+        return f"{self._public_base_url()}/api/oauth/microsoft/email/callback"
+
+    def _microsoft_oauth_popup_redirect_uri(self) -> str:
+        return self._public_origin_url()
+
+    def _microsoft_oauth_config_error(self) -> str:
+        if self.credential_vault is None:
+            return "Secure connection storage is not available, so Outlook cannot be connected yet."
+        if not normalize_text(self.config.microsoft_oauth_client_id):
+            return "Microsoft OAuth client ID is not configured yet."
+        if not normalize_text(self.config.microsoft_oauth_client_secret):
+            return "Microsoft OAuth client secret is not configured yet."
+        return ""
+
+    def _build_microsoft_oauth_state(self, session: PortalSession) -> str:
+        token_hash = hashlib.sha256(session.token.encode("utf-8")).hexdigest()
+        return self._sign_oauth_state({
+            "version": 1,
+            "provider": "microsoft",
+            "email": session.email,
+            "sessionHash": token_hash,
+            "issuedAt": int(time.time()),
+            "nonce": secrets.token_urlsafe(16),
+        })
+
+    def _verify_microsoft_oauth_state(self, raw_state: str, session: PortalSession) -> tuple[dict[str, Any] | None, str]:
+        state = normalize_text(raw_state)
+        if "." not in state:
+            return None, "The Microsoft sign-in response was missing its security check."
+        body_value, signature_value = state.split(".", 1)
+        try:
+            body = self._base64url_decode(body_value)
+            signature = self._base64url_decode(signature_value)
+        except (ValueError, TypeError, binascii.Error):
+            return None, "The Microsoft sign-in response could not be read."
+
+        expected = hmac.new(normalize_text(self.config.session_secret).encode("utf-8"), body, hashlib.sha256).digest()
+        if not hmac.compare_digest(signature, expected):
+            return None, "The Microsoft sign-in response failed its security check."
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None, "The Microsoft sign-in response could not be read."
+        if not isinstance(payload, dict):
+            return None, "The Microsoft sign-in response was invalid."
+        if normalize_text(payload.get("provider")) not in {"microsoft", MICROSOFT_OUTLOOK_OAUTH_PROVIDER}:
+            return None, "The Microsoft sign-in response was for another connection."
+        if normalize_email(payload.get("email")) != normalize_email(session.email):
+            return None, "The Microsoft sign-in response was for another user."
+        expected_session_hash = hashlib.sha256(session.token.encode("utf-8")).hexdigest()
+        if normalize_text(payload.get("sessionHash")) != expected_session_hash:
+            return None, "Your session changed before Microsoft returned. Try connecting Outlook again."
+        issued_at = int(payload.get("issuedAt") or 0)
+        if issued_at <= 0 or time.time() - issued_at > MICROSOFT_OAUTH_STATE_TTL_SECONDS:
+            return None, "The Microsoft sign-in attempt expired. Try connecting Outlook again."
+        return payload, ""
+
+    def _microsoft_oauth_return_url(self, status: str, message: str) -> str:
+        query = urllib_parse.urlencode({
+            "email_oauth": normalize_text(status) or "error",
+            "email_oauth_message": normalize_text(message)[:220],
+        })
+        return f"/portal/?{query}"
+
+    def _post_microsoft_oauth_token_request(self, payload: dict[str, str]) -> dict[str, Any]:
+        request = urllib_request.Request(
+            self._microsoft_oauth_token_url(),
+            data=urllib_parse.urlencode(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=MICROSOFT_OAUTH_TOKEN_TIMEOUT_SECONDS) as response:
+                raw = response.read()
+                parsed = json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib_error.HTTPError as exc:
+            raise OutlookAuthorizationError(
+                "Microsoft rejected the sign-in. Try connecting Outlook again."
+            ) from exc
+        except (urllib_error.URLError, TimeoutError, OSError) as exc:
+            raise OutlookSummaryError(
+                "I couldn't reach Microsoft to finish connecting Outlook. Try again.",
+                code="outlook_network_error",
+            ) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise OutlookAuthorizationError("Microsoft returned an unreadable sign-in response.") from exc
+        if not isinstance(parsed, dict):
+            raise OutlookAuthorizationError("Microsoft returned an invalid sign-in response.")
+        return parsed
+
+    def _exchange_microsoft_oauth_code(self, code: str, *, redirect_uri: str = "") -> dict[str, Any]:
+        return self._post_microsoft_oauth_token_request({
+            "code": normalize_text(code),
+            "client_id": normalize_text(self.config.microsoft_oauth_client_id),
+            "client_secret": normalize_text(self.config.microsoft_oauth_client_secret),
+            "redirect_uri": normalize_text(redirect_uri) or self._microsoft_oauth_redirect_uri(),
+            "grant_type": "authorization_code",
+            "scope": MICROSOFT_OUTLOOK_OAUTH_SCOPE,
+        })
+
+    def _refresh_microsoft_access_token(self, refresh_token: str) -> str:
+        if not normalize_text(self.config.microsoft_oauth_client_id) or not normalize_text(self.config.microsoft_oauth_client_secret):
+            raise OutlookAuthorizationError(
+                "Outlook access needs attention: Microsoft OAuth is not configured on the server. "
+                "Add the Microsoft client ID and secret, then reconnect Outlook."
+            )
+        payload = self._post_microsoft_oauth_token_request({
+            "refresh_token": normalize_text(refresh_token),
+            "client_id": normalize_text(self.config.microsoft_oauth_client_id),
+            "client_secret": normalize_text(self.config.microsoft_oauth_client_secret),
+            "grant_type": "refresh_token",
+            "scope": MICROSOFT_OUTLOOK_OAUTH_SCOPE,
+        })
+        access_token = normalize_text(payload.get("access_token"))
+        if not access_token:
+            raise OutlookAuthorizationError(
+                "Microsoft did not return a usable Outlook access token. Reconnect Outlook and try again."
+            )
+        return access_token
+
+    def _build_microsoft_oauth_secret(self, refresh_token: str) -> str:
+        return json.dumps({
+            "type": MICROSOFT_OAUTH_SECRET_TYPE,
+            "provider": "microsoft",
+            "refreshToken": normalize_text(refresh_token),
+        }, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    def _save_microsoft_oauth_connection(
+        self,
+        session: PortalSession,
+        token_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        access_token = normalize_text(token_payload.get("access_token"))
+        refresh_token = normalize_text(token_payload.get("refresh_token"))
+        granted_scope = normalize_text(token_payload.get("scope"))
+        if not access_token:
+            raise OutlookAuthorizationError("Microsoft did not return a usable access token. Try connecting Outlook again.")
+        if not refresh_token:
+            raise OutlookAuthorizationError(
+                "Microsoft did not return long-lived access. Try connecting again and approve offline access."
+            )
+
+        validation = OutlookAccessValidator().validate(access_token)
+
+        if self.credential_vault is None:
+            raise CredentialVaultError("Secure connection storage is not available, so Outlook could not be saved.")
+
+        encrypted_secret = self.credential_vault.encrypt(self._build_microsoft_oauth_secret(refresh_token))
+        secret_fingerprint = self.credential_vault.fingerprint(refresh_token)
+        now = datetime.now(timezone.utc).isoformat()
+        return self.database.save_platform_connection(
+            session.email,
+            platform=MICROSOFT_OUTLOOK_OAUTH_PLATFORM,
+            auth_type="oauth",
+            secret_ciphertext=encrypted_secret,
+            secret_hint="Microsoft OAuth",
+            key_version=self.credential_vault.key_version,
+            secret_fingerprint=secret_fingerprint,
+            metadata={
+                "provider": MICROSOFT_OUTLOOK_OAUTH_PROVIDER,
+                "authFlow": "microsoft_oauth",
+                "validationStatus": "verified",
+                "scope": MICROSOFT_OUTLOOK_OAUTH_SCOPE,
+                "grantedScope": granted_scope,
+                "validatedAt": now,
+                **validation,
+            },
+            connection_status="connected",
+        )
+
+    def _handle_microsoft_email_oauth_start(self, parsed: urllib_parse.ParseResult) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        config_error = self._microsoft_oauth_config_error()
+        redirect_uri = self._microsoft_oauth_redirect_uri()
+        if config_error:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "microsoft_oauth_not_configured",
+                "message": config_error,
+                "redirectUri": redirect_uri,
+                "popupRedirectUri": self._microsoft_oauth_popup_redirect_uri(),
+            })
+            return
+
+        try:
+            state = self._build_microsoft_oauth_state(session)
+        except ValueError:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "microsoft_oauth_not_configured",
+                "message": "The portal session secret is not configured, so Outlook cannot be connected yet.",
+                "redirectUri": redirect_uri,
+                "popupRedirectUri": self._microsoft_oauth_popup_redirect_uri(),
+            })
+            return
+
+        query_params = {
+            "client_id": normalize_text(self.config.microsoft_oauth_client_id),
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "response_mode": "query",
+            "scope": MICROSOFT_OUTLOOK_OAUTH_SCOPE,
+            "state": state,
+            "prompt": "select_account",
+        }
+        auth_url = f"{self._microsoft_oauth_auth_url()}?{urllib_parse.urlencode(query_params)}"
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "authUrl": auth_url,
+            "clientId": normalize_text(self.config.microsoft_oauth_client_id),
+            "redirectUri": redirect_uri,
+            "popupRedirectUri": self._microsoft_oauth_popup_redirect_uri(),
+            "scope": MICROSOFT_OUTLOOK_OAUTH_SCOPE,
+        })
+
+    def _handle_microsoft_email_oauth_callback(self, parsed: urllib_parse.ParseResult) -> None:
+        params = urllib_parse.parse_qs(parsed.query)
+        error = normalize_text((params.get("error") or [""])[0])
+        if error:
+            self._redirect(self._microsoft_oauth_return_url(
+                "error",
+                "Outlook was not connected. Choose the Microsoft account again and grant read-only mail access.",
+            ))
+            return
+
+        session = self._get_authenticated_session()
+        if session is None:
+            self._redirect(self._microsoft_oauth_return_url(
+                "error",
+                "Sign in to Assistyca again, then connect Outlook.",
+            ))
+            return
+
+        config_error = self._microsoft_oauth_config_error()
+        if config_error:
+            self._redirect(self._microsoft_oauth_return_url("error", config_error))
+            return
+
+        _, state_error = self._verify_microsoft_oauth_state(
+            (params.get("state") or [""])[0],
+            session,
+        )
+        if state_error:
+            self._redirect(self._microsoft_oauth_return_url("error", state_error))
+            return
+
+        code = normalize_text((params.get("code") or [""])[0])
+        if not code:
+            self._redirect(self._microsoft_oauth_return_url(
+                "error",
+                "Microsoft did not return a sign-in code. Try connecting Outlook again.",
+            ))
+            return
+
+        try:
+            token_payload = self._exchange_microsoft_oauth_code(code)
+            self._save_microsoft_oauth_connection(session, token_payload)
+        except (CredentialVaultError, OutlookAuthorizationError, OutlookSummaryError) as exc:
+            self._redirect(self._microsoft_oauth_return_url("error", str(exc)))
+            return
+        except Exception:
+            self._redirect(self._microsoft_oauth_return_url(
+                "error",
+                "Outlook could not be connected right now. Try again.",
+            ))
+            return
+
+        self._redirect(self._microsoft_oauth_return_url(
+            "connected",
+            "Outlook connected with read-only access.",
+        ))
+
+    def _handle_microsoft_email_oauth_code_post(self) -> None:
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        config_error = self._microsoft_oauth_config_error()
+        if config_error:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "microsoft_oauth_not_configured",
+                "message": config_error,
+                "redirectUri": self._microsoft_oauth_redirect_uri(),
+                "popupRedirectUri": self._microsoft_oauth_popup_redirect_uri(),
+            })
+            return
+
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        code = normalize_text(payload.get("code"))
+        if not code:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_microsoft_oauth_code",
+                "message": "Microsoft did not return a sign-in code. Try connecting Outlook again.",
+            })
+            return
+
+        try:
+            token_payload = self._exchange_microsoft_oauth_code(
+                code,
+                redirect_uri=self._microsoft_oauth_popup_redirect_uri(),
+            )
+            connection = self._save_microsoft_oauth_connection(session, token_payload)
+        except (CredentialVaultError, OutlookAuthorizationError, OutlookSummaryError) as exc:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": normalize_text(getattr(exc, "code", "")) or "microsoft_oauth_failed",
+                "message": str(exc),
+            })
+            return
+        except Exception:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "microsoft_oauth_failed",
+                "message": "Outlook could not be connected right now. Try again.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Outlook connected with read-only access.",
+            "connection": connection,
+        })
+
     def _handle_platform_connection_post(self) -> None:
         authenticated = self._require_authenticated_user()
         if authenticated is None:
@@ -3491,9 +3908,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             GOOGLE_GMAIL_OAUTH_PLATFORM,
             GOOGLE_DRIVE_OAUTH_PLATFORM,
         }
+        # An email connection can be either provider. Revoking is a Google call,
+        # so an Outlook mailbox must not go down this path - it would tell the
+        # owner to visit their Google Account for a mailbox Google never held.
+        is_microsoft_email_connection = (
+            connection_record.get("platform") == MICROSOFT_OUTLOOK_OAUTH_PLATFORM
+            and self._connection_record_email_provider(connection_record) == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+        )
         is_google_oauth_connection = (
             connection_record.get("platform") in google_oauth_platforms
             and connection_record.get("authType") == "oauth"
+            and not is_microsoft_email_connection
         )
         shared_google_grant_count = self.database.count_platform_connections_with_secret_fingerprint(
             session.email,
@@ -3519,7 +3944,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM:
             message = "Google Calendar was disconnected and its saved credential was removed."
         elif connection_record.get("platform") == GOOGLE_GMAIL_OAUTH_PLATFORM and connection_record.get("authType") == "oauth":
-            message = "Gmail was disconnected and its saved credential was removed."
+            mailbox_label = "Outlook" if is_microsoft_email_connection else "Gmail"
+            message = f"{mailbox_label} was disconnected and its saved credential was removed."
         elif connection_record.get("platform") == GOOGLE_DRIVE_OAUTH_PLATFORM and connection_record.get("authType") == "oauth":
             message = "Google Drive was disconnected and its saved credential was removed."
         else:
@@ -4192,28 +4618,33 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if not ciphertext or vault is None:
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
-                    "error": "gmail_setup_required",
-                    "message": "Gmail is not ready for reading messages. Open Email setup and reconnect Gmail with read-only access, then try again.",
+                    "error": "email_setup_required",
+                    "message": "No mailbox is ready for reading messages. Open Email setup and connect Gmail or Outlook with read-only access, then try again.",
                 })
                 return
 
+            email_provider = GOOGLE_GMAIL_OAUTH_PROVIDER
             try:
-                stored_gmail_secret = vault.decrypt(ciphertext)
-                access_token, credential_source = self._resolve_gmail_access_token(stored_gmail_secret)
+                stored_email_secret = vault.decrypt(ciphertext)
+                email_provider = self._saved_email_provider(stored_email_secret)
+                access_token, credential_source = self._resolve_email_access_token(
+                    stored_email_secret,
+                    provider=email_provider,
+                )
             except CredentialVaultError:
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
-                    "error": "gmail_setup_required",
-                    "message": "The saved Gmail connection could not be opened securely. Reconnect Gmail and try again.",
+                    "error": "email_setup_required",
+                    "message": "The saved mailbox connection could not be opened securely. Reconnect it and try again.",
                 })
                 return
-            except GmailAuthorizationError as exc:
+            except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
                 self.database.update_platform_connection_status(
                     session.email,
                     platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
                     connection_status="needs_attention",
                     metadata_updates={
-                        "provider": GOOGLE_GMAIL_OAUTH_PROVIDER,
+                        "provider": email_provider,
                         "validationStatus": "failed",
                         "validatedAt": datetime.now(timezone.utc).isoformat(),
                     },
@@ -4225,17 +4656,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            gmail_query = (
-                build_custom_google_batch_gmail_query(fields, payload)
+            mail_query = (
+                build_custom_batch_mail_query(fields, payload)
                 if is_custom_google_batch
-                else normalize_text(
-                    fields.get("gmailQuery")
-                    or fields.get("query")
-                    or payload.get("gmailQuery")
-                    or payload.get("query")
-                    or "in:inbox newer_than:1d"
-                )
-            ) or "in:inbox newer_than:1d"
+                else resolve_saved_mail_query(fields, payload)
+            )
             receipt_bundle: Optional[dict[str, Any]] = None
             result_header = get_custom_google_batch_result_header(fields) if is_custom_google_batch else ""
             receipt_month: tuple[int, int] | None = None
@@ -4264,21 +4689,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     )
                     + "/attachments"
                 )
+            is_outlook = email_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+            runner = OutlookDigestRunner() if is_outlook else GmailDigestRunner()
             try:
-                result = GmailDigestRunner().run(
+                result = runner.run(
                     access_token,
-                    query=gmail_query,
+                    query=mail_query,
                     include_attachments=receipt_attachment_dir is not None,
                     attachment_output_dir=receipt_attachment_dir,
                     attachment_url_prefix=receipt_attachment_url_prefix,
                 )
-            except GmailAuthorizationError as exc:
+            except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
                 self.database.update_platform_connection_status(
                     session.email,
                     platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
                     connection_status="needs_attention",
                     metadata_updates={
-                        "provider": GOOGLE_GMAIL_OAUTH_PROVIDER,
+                        "provider": email_provider,
                         "validationStatus": "failed",
                         "validatedAt": datetime.now(timezone.utc).isoformat(),
                     },
@@ -4289,7 +4716,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "message": str(exc),
                 })
                 return
-            except GmailSummaryError as exc:
+            except (GmailSummaryError, OutlookSummaryError) as exc:
                 json_response(self, HTTPStatus.BAD_GATEWAY, {
                     "ok": False,
                     "error": exc.code,
@@ -4298,7 +4725,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return
 
             if is_custom_google_batch:
-                result = relabel_gmail_digest_result(result, result_header)
+                result = relabel_mail_digest_result(result, result_header)
                 if result_header == "Receipt search":
                     receipt_items = result.get("items") if isinstance(result.get("items"), list) else []
                     try:
@@ -4308,7 +4735,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             owner_key=receipt_owner_key or build_agent_receipt_owner_key(session.email),
                             output_folder=receipt_output_folder,
                             month_value=receipt_month,
-                            query=gmail_query,
+                            query=mail_query.describe(),
                         )
                     except Exception as exc:
                         print(f"Receipt export failed: {exc}", flush=True)
@@ -4335,20 +4762,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
                 connection_status="connected",
                 metadata_updates={
-                    "provider": GOOGLE_GMAIL_OAUTH_PROVIDER,
+                    "provider": email_provider,
                     "validationStatus": "verified",
                     "credentialSource": credential_source,
                     "validatedAt": datetime.now(timezone.utc).isoformat(),
                 },
             )
+            mailbox_label = EMAIL_PROVIDER_LABELS.get(email_provider, "Email")
             response_payload = {
                 "ok": True,
-                "message": str(result.get("message") or "Gmail digest complete."),
+                "message": str(result.get("message") or f"{mailbox_label} digest complete."),
                 "summary": str(result.get("summary") or result.get("message") or ""),
                 "messageCount": int(result.get("messageCount") or 0),
                 "items": result.get("items") if isinstance(result.get("items"), list) else [],
-                "mailbox": "Gmail",
-                "query": gmail_query,
+                "mailbox": mailbox_label,
+                "query": mail_query.describe(),
             }
             if receipt_bundle:
                 response_payload.update({
@@ -6051,7 +6479,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         padding = "=" * (-len(normalized) % 4)
         return base64.urlsafe_b64decode(f"{normalized}{padding}".encode("ascii"))
 
-    def _sign_google_calendar_oauth_state(self, payload: dict[str, Any]) -> str:
+    def _sign_oauth_state(self, payload: dict[str, Any]) -> str:
         secret = normalize_text(self.config.session_secret)
         if not secret:
             raise ValueError("Session secret is not configured.")
@@ -6066,7 +6494,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         scope_ids: tuple[str, ...] = ("calendar",),
     ) -> str:
         token_hash = hashlib.sha256(session.token.encode("utf-8")).hexdigest()
-        return self._sign_google_calendar_oauth_state({
+        return self._sign_oauth_state({
             "version": 1,
             "provider": "google",
             "scopeIds": list(self._normalize_google_oauth_scope_ids(scope_ids)),
@@ -6310,6 +6738,65 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return self._refresh_google_access_token(refresh_token, access_label="Gmail"), "google_oauth_refresh_token"
         except CalendarAuthorizationError as exc:
             raise GmailAuthorizationError(str(exc)) from exc
+
+    def _connection_record_email_provider(self, connection_record: dict[str, Any]) -> str:
+        """Which provider a stored email connection belongs to, or "" if unknown."""
+
+        vault = self.credential_vault
+        ciphertext = normalize_text(connection_record.get("secretCiphertext"))
+        if vault is None or not ciphertext:
+            return ""
+        try:
+            return self._saved_email_provider(vault.decrypt(ciphertext))
+        except CredentialVaultError:
+            return ""
+
+    def _saved_email_provider(self, decrypted_secret: str) -> str:
+        """Read the provider out of a saved email credential.
+
+        The secret payload names its own provider, so a run picks a reader
+        without a second database read. Anything unrecognised is treated as a
+        Gmail access token, which is what a hand-entered token always was.
+        """
+
+        value = normalize_text(decrypted_secret)
+        if not value:
+            return GOOGLE_GMAIL_OAUTH_PROVIDER
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return GOOGLE_GMAIL_OAUTH_PROVIDER
+        if not isinstance(parsed, dict):
+            return GOOGLE_GMAIL_OAUTH_PROVIDER
+        if normalize_text(parsed.get("type")) == MICROSOFT_OAUTH_SECRET_TYPE:
+            return MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+        return GOOGLE_GMAIL_OAUTH_PROVIDER
+
+    def _resolve_outlook_access_token(self, decrypted_secret: str) -> tuple[str, str]:
+        value = normalize_text(decrypted_secret)
+        if not value:
+            raise OutlookAuthorizationError(
+                "Outlook access needs attention: no usable credential is saved. Reconnect Outlook, then run it again."
+            )
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value, "manual_access_token"
+        if not isinstance(parsed, dict):
+            return value, "manual_access_token"
+        refresh_token = normalize_text(parsed.get("refreshToken") or parsed.get("refresh_token"))
+        if not refresh_token:
+            raise OutlookAuthorizationError(
+                "Outlook access needs attention: the saved Microsoft refresh token is missing. Reconnect Outlook."
+            )
+        return self._refresh_microsoft_access_token(refresh_token), "microsoft_oauth_refresh_token"
+
+    def _resolve_email_access_token(self, decrypted_secret: str, *, provider: str) -> tuple[str, str]:
+        """Return ``(access_token, credential_source)`` for a mailbox."""
+
+        if provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER:
+            return self._resolve_outlook_access_token(decrypted_secret)
+        return self._resolve_gmail_access_token(decrypted_secret)
 
     def _normalize_digits(self, value: Any) -> str:
         return re.sub(r"\D+", "", str(value or ""))

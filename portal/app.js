@@ -507,7 +507,7 @@ const PLATFORM_CONNECTION_OPTIONS = [
   {
     id: "email",
     label: "Email",
-    detail: "Connect Gmail summaries",
+    detail: "Connect Gmail or Outlook",
     icon: "email",
     authType: "oauth",
     credentialLabel: "Google access",
@@ -529,14 +529,14 @@ const AGENT_BLUEPRINTS = {
     summary:
       "Create a daily assistant that reads new email, extracts the important items, and sends a concise digest on your schedule.",
     response:
-      "I can set that up. I would add a Gmail reading skill, a scheduler, an Email Digest helper, and a delivery helper. Before it starts, I need approval plus your preferred delivery channel and time.",
+      "I can set that up. I would add a mailbox reading skill, a scheduler, an Email Digest helper, and a delivery helper. Before it starts, I need approval plus your preferred delivery channel and time.",
     relatedFeatureId: MONITOR_FEATURE_ID,
     primaryActionLabel: "Create email digest helpers",
     setupActionLabel: "Review scheduler setup",
-    missingCredential: "Gmail access",
+    missingCredential: "Mailbox access",
     skills: [
       {
-        label: "Gmail reader",
+        label: "Mailbox reader",
         detail: "Connects to the mailbox with read-only access for summary work.",
       },
       {
@@ -5076,8 +5076,39 @@ function isGoogleOAuthPlatformConnectionReady(platform, provider = "") {
   );
 }
 
-function isGmailConnectionReady() {
-  return isGoogleOAuthPlatformConnectionReady("email", "google_gmail");
+const EMAIL_PROVIDER_GMAIL = "google_gmail";
+const EMAIL_PROVIDER_OUTLOOK = "microsoft_outlook";
+const EMAIL_PROVIDER_LABELS = {
+  [EMAIL_PROVIDER_GMAIL]: "Gmail",
+  [EMAIL_PROVIDER_OUTLOOK]: "Outlook",
+};
+
+function getConnectedEmailProvider() {
+  const connection = getPlatformConnectionByPlatform("email");
+  if (!connection || connection.connectionStatus !== "connected" || connection.authType !== "oauth") {
+    return "";
+  }
+  const metadata = connection.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
+  const provider = normalizeText(metadata.provider);
+  return provider === EMAIL_PROVIDER_OUTLOOK ? EMAIL_PROVIDER_OUTLOOK : EMAIL_PROVIDER_GMAIL;
+}
+
+function getConnectedEmailProviderLabel() {
+  return EMAIL_PROVIDER_LABELS[getConnectedEmailProvider()] || "Email";
+}
+
+// A mailbox is a mailbox: an email action only cares that one is connected,
+// not which provider is behind it.
+function isEmailConnectionReady() {
+  return Boolean(getConnectedEmailProvider());
+}
+
+function isEmailConnectionReady() {
+  return isEmailConnectionReady();
+}
+
+function isOutlookConnectionReady() {
+  return getConnectedEmailProvider() === EMAIL_PROVIDER_OUTLOOK;
 }
 
 function isCalendarConnectionReady() {
@@ -5129,11 +5160,12 @@ function agentTextSuggestsGoogleWorkspaceBatch(text = "") {
 
 function createAgentConnectionRequirement(requirementId) {
   if (requirementId === "gmail") {
+    // Either mailbox satisfies this, so the prompt does not name one.
     return {
       id: "gmail",
-      missingCredential: "Gmail access",
-      toolLabel: "Gmail",
-      actionLabel: "Connect Gmail",
+      missingCredential: "Mailbox access",
+      toolLabel: "Email",
+      actionLabel: "Connect a mailbox",
       setupPlatformId: "email",
       capability: "read the mailbox for this action",
     };
@@ -5206,7 +5238,7 @@ function isAgentProposalRequiredConnectionReady(requirement) {
     return true;
   }
   if (requirement.id === "gmail") {
-    return isGmailConnectionReady();
+    return isEmailConnectionReady();
   }
   if (requirement.id === "calendar") {
     return isCalendarConnectionReady();
@@ -5215,7 +5247,7 @@ function isAgentProposalRequiredConnectionReady(requirement) {
     return isGoogleDriveConnectionReady();
   }
   if (requirement.id === "google-workspace") {
-    return isGmailConnectionReady() || isGoogleDriveConnectionReady();
+    return isEmailConnectionReady() || isGoogleDriveConnectionReady();
   }
   return true;
 }
@@ -5226,7 +5258,7 @@ function syncAgentProposalRequiredConnection(proposal) {
   }
   const requirement = getAgentProposalRequiredConnection(proposal);
   const googleCredentialLabels = new Set([
-    "Gmail access",
+    "Mailbox access",
     "Calendar access",
     "Google Drive access",
     "Google access",
@@ -6120,10 +6152,17 @@ function openCalendarOAuthConnection(option) {
   body.className = "calendar-oauth-flow";
   const primaryLabel = "Sign in with Google";
   const isEmailConnection = option.id === "email";
-  const setupTitle = isConnected ? "Google connected" : (isEmailConnection ? "Connect Gmail" : "Connect Google");
+  const connectedEmailLabel = getConnectedEmailProviderLabel();
+  const setupTitle = isConnected
+    ? (isEmailConnection ? `${connectedEmailLabel} connected` : "Google connected")
+    : (isEmailConnection ? "Connect your mailbox" : "Connect Google");
   const setupMessage = isConnected
-    ? "These Google permissions are connected and ready to use."
-    : "Choose the Google access Assistyca can use.";
+    ? (isEmailConnection
+      ? `${connectedEmailLabel} is connected and ready to use.`
+      : "These Google permissions are connected and ready to use.")
+    : (isEmailConnection
+      ? "Choose the mailbox Assistyca should read."
+      : "Choose the Google access Assistyca can use.");
   const assistantSuccessMessage = isEmailConnection
     ? "Gmail is connected with read-only access. You can use it for email digest actions."
     : "Google is connected with the selected read-only access. You can use it in actions.";
@@ -6131,9 +6170,11 @@ function openCalendarOAuthConnection(option) {
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
   intro.textContent = isConnected
-    ? "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca."
+    ? (isEmailConnection
+      ? `${connectedEmailLabel} is connected with read-only access. Disconnect it to remove this access from Assistyca.`
+      : "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca.")
     : isEmailConnection
-    ? "Sign in with Google so Assistyca can read Gmail for email digest actions."
+    ? "Connect Gmail or Outlook so Assistyca can read your mail for email digest and receipt actions. Access is read-only."
     : "Sign in with Google so Assistyca can use the selected read-only Google permissions.";
 
   const { status, setStatus } = createCalendarOAuthStatusNode();
@@ -6143,6 +6184,9 @@ function openCalendarOAuthConnection(option) {
 
   const permissionList = createGoogleOAuthPermissionList(option, { readOnly: isConnected });
   body.append(intro, permissionList, status);
+  if (isEmailConnection && !isConnected) {
+    body.append(createOutlookConnectButton(setStatus, () => storageAvailable));
+  }
   const disconnectButton = usesAggregateGoogleConnection
     ? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)
     : createPlatformConnectionDisconnectButton(option, connection);
@@ -6346,6 +6390,55 @@ function openCalendarOAuthConnection(option) {
   if (!isConnected) {
     setCalendarOAuthPrimaryButton(primaryLabel);
   }
+}
+
+// Microsoft has no browser SDK loaded here, so Outlook uses the plain
+// redirect flow: the server hands back a sign-in URL and the callback saves
+// the connection before returning to the portal.
+function createOutlookConnectButton(setStatus, isStorageAvailable) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "calendar-oauth-alternate";
+
+  const separator = document.createElement("p");
+  separator.className = "calendar-oauth-alternate-label";
+  separator.textContent = "Not a Gmail mailbox?";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost-button calendar-oauth-alternate-button";
+  button.textContent = "Sign in with Microsoft";
+
+  let starting = false;
+  button.addEventListener("click", async () => {
+    if (starting || !isStorageAvailable()) {
+      return;
+    }
+    starting = true;
+    button.disabled = true;
+    setStatus("loading", "Opening Microsoft", "Choose the Microsoft account to connect.");
+    try {
+      const response = await apiRequest("/api/oauth/microsoft/email/start", {
+        method: "GET",
+        timeoutMs: 20000,
+      });
+      const authUrl = normalizeText(response.authUrl);
+      if (!authUrl) {
+        throw new Error("Microsoft did not return a usable sign-in setup.");
+      }
+      window.location.assign(authUrl);
+    } catch (requestError) {
+      starting = false;
+      button.disabled = false;
+      setStatus(
+        "error",
+        "Outlook not connected",
+        normalizeText(requestError?.message) || "Outlook could not be connected right now. Try again.",
+      );
+    }
+  });
+
+  wrapper.append(separator, button);
+  return wrapper;
 }
 
 function openPlatformConnection(optionId) {
@@ -9857,6 +9950,49 @@ function consumeCalendarOAuthReturn() {
   }
 }
 
+function consumeEmailOAuthReturn() {
+  const url = new URL(window.location.href);
+  const status = normalizeText(url.searchParams.get("email_oauth")).toLowerCase();
+  if (!status) {
+    return;
+  }
+
+  const rawMessage = normalizeText(url.searchParams.get("email_oauth_message"));
+  url.searchParams.delete("email_oauth");
+  url.searchParams.delete("email_oauth_message");
+  window.history.replaceState({}, "", url);
+
+  const succeeded = status === "connected" || status === "success";
+  const message = rawMessage || (succeeded
+    ? "Outlook connected with read-only access."
+    : "Outlook could not be connected. Try again from Email setup.");
+
+  if (succeeded && resumeAgentProposalAfterConnectedPlatforms(["email"], {
+    connectionMessage: message,
+  })) {
+    elements.agentComposerInput?.focus();
+    return;
+  }
+
+  openAuthAlert(
+    succeeded ? "Outlook connected" : "Outlook not connected",
+    message,
+    {
+      eyebrow: "Outlook",
+      iconNode: createFeatureActivationResultIcon(succeeded ? "check" : "x"),
+      tone: succeeded ? "success" : "warning",
+      buttonLabel: "OK",
+      returnFocus: elements.agentAddToolButton,
+    },
+  );
+
+  if (succeeded) {
+    pushAgentMessage("assistant", message);
+    persistAgentWorkspace("Outlook connected through Microsoft.");
+    renderApp({ preserveStatus: true });
+  }
+}
+
 function resolveRouteFromHash() {
   const hash = window.location.hash.replace(/^#/, "").trim();
 
@@ -13251,7 +13387,7 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
     ? WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
     : blueprint.relatedFeatureId;
   const calendarConnected = isCalendarConnectionReady();
-  const gmailConnected = isGmailConnectionReady();
+  const gmailConnected = isEmailConnectionReady();
   let missingCredential = blueprint.missingCredential;
   if (blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp") {
     missingCredential = isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
@@ -21079,16 +21215,16 @@ async function runAgentProposalLocalActionNow(actionId) {
   }
 
   if (isAgentProposalCustomGoogleBatchRunner(proposal)) {
-    if (!isGmailConnectionReady()) {
-      const message = "Gmail access is required to run this receipts search. Connect Google with Email read access, then try again.";
+    if (!isEmailConnectionReady()) {
+      const message = "A connected mailbox is required to run this receipts search. Connect Gmail or Outlook with read access, then try again.";
       addAgentNotification({
-        title: "Gmail setup required",
+        title: "Mailbox setup required",
         message,
         tone: "warning",
         source: "agent-action",
         actionId: String(action.id || ""),
         proposalId: proposal.id,
-        dedupeKey: `proposal:${proposal.id}:gmail-required`,
+        dedupeKey: `proposal:${proposal.id}:mailbox-required`,
       });
       persistAgentWorkspace(message);
       openAgentProposalSetup(proposal.id);
@@ -25607,8 +25743,8 @@ function completeSignIn(session) {
   void refreshWhatsAppConnection();
   void refreshFeatureActivationStates();
   void refreshPlatformConnections()
-    .then(() => consumeCalendarOAuthReturn())
-    .catch(() => consumeCalendarOAuthReturn());
+    .then(() => { consumeCalendarOAuthReturn(); consumeEmailOAuthReturn(); })
+    .catch(() => { consumeCalendarOAuthReturn(); consumeEmailOAuthReturn(); });
   if (canManageClients()) {
     void refreshAdminUsers({ render: false });
   }
@@ -26458,8 +26594,8 @@ async function bootstrapAuthState() {
     void refreshWhatsAppConnection();
     void refreshFeatureActivationStates();
     void refreshPlatformConnections()
-      .then(() => consumeCalendarOAuthReturn())
-      .catch(() => consumeCalendarOAuthReturn());
+      .then(() => { consumeCalendarOAuthReturn(); consumeEmailOAuthReturn(); })
+      .catch(() => { consumeCalendarOAuthReturn(); consumeEmailOAuthReturn(); });
     if (canManageClients()) {
       void refreshAdminUsers({ render: false });
     }

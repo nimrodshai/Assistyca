@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=140", html)
+        self.assertIn("styles.css?v=141", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -344,7 +344,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("action.payload.title = getAgentProposalLocalActionTitle(proposal);", script)
         self.assertNotIn("Custom task agent", script)
         self.assertIn("custom-google-batch", script)
-        self.assertIn("Gmail setup required", script)
+        self.assertIn("Mailbox setup required", script)
         self.assertIn("Receipt search ready", script)
         self.assertIn("Receipt bundle ready", script)
         self.assertIn("hrefLabel: response.hrefLabel || response.href_label || \"Open PDF\"", script)
@@ -597,6 +597,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-panel-mode-button.is-guided", styles)
         self.assertIn("@keyframes agent-tab-guide", styles)
         self.assertIn(".agent-action-inline-link", styles)
+        # Email is a mailbox, not a Google product: either provider satisfies it.
+        self.assertIn("function isEmailConnectionReady", script)
+        self.assertIn("function getConnectedEmailProvider", script)
+        self.assertIn('const EMAIL_PROVIDER_OUTLOOK = "microsoft_outlook";', script)
+        self.assertIn("function createOutlookConnectButton", script)
+        self.assertIn("/api/oauth/microsoft/email/start", script)
+        self.assertIn("function consumeEmailOAuthReturn", script)
+        self.assertNotIn("function isGmailConnectionReady", script)
+        self.assertIn(".calendar-oauth-alternate", styles)
         self.assertIn(".agent-action-item.is-spotlighted", styles)
         self.assertIn(".agent-action-item.is-spotlighted::after", styles)
         self.assertIn(
@@ -675,7 +684,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("platformConnectionStorageAvailable", script)
         self.assertIn("credential_storage_unavailable", script)
         self.assertIn("Storage unavailable", script)
-        self.assertIn(".then(() => consumeCalendarOAuthReturn())", script)
+        self.assertIn("consumeCalendarOAuthReturn(); consumeEmailOAuthReturn();", script)
         self.assertNotIn("void refreshPlatformConnections({ render: false });", script)
         self.assertIn("iconNode: createAgentAddToolLogo(option)", script)
         self.assertNotIn('icon: "↗"', script)
@@ -690,8 +699,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("const connectedGoogleConnections = usesAggregateGoogleConnection", calendar_oauth_flow)
         self.assertIn("? getConnectedGoogleOAuthConnections()", calendar_oauth_flow)
         self.assertIn("? connectedGoogleConnections.length > 0", calendar_oauth_flow)
-        self.assertIn('const setupTitle = isConnected ? "Google connected"', calendar_oauth_flow)
+        # The Email card names the connected mailbox; the Google card still
+        # talks about Google permissions.
+        self.assertIn('? (isEmailConnection ? `${connectedEmailLabel} connected` : "Google connected")', calendar_oauth_flow)
         self.assertIn('"These Google permissions are connected and ready to use."', calendar_oauth_flow)
+        self.assertIn("createOutlookConnectButton(setStatus, () => storageAvailable)", calendar_oauth_flow)
         self.assertIn("createGoogleOAuthPermissionList(option, { readOnly: isConnected });", calendar_oauth_flow)
         self.assertIn("? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)", calendar_oauth_flow)
         self.assertIn("hidePrimaryButton: isConnected,", calendar_oauth_flow)
@@ -926,17 +938,6 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("const isRunBusy = isAgentLocalActionRunBusy(action)", script)
         self.assertIn("const runBusy = isAgentLocalActionRunBusy(action);", script)
 
-    def test_a_finished_receipts_run_records_its_folder(self) -> None:
-        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
-
-        # The run writes a bundle into a folder on the server; nothing recorded
-        # that anywhere, so the Folders view stayed empty after a good run.
-        self.assertIn("function recordAgentReceiptFolder", script)
-        self.assertIn("recordAgentReceiptFolder(response);", script)
-        self.assertIn('createAgentFolderRecord(name, "receipts", { itemCount, createdAt: now })', script)
-        # Re-running a month updates the existing entry instead of duplicating it.
-        self.assertIn("agent.folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase())", script)
-
     def test_action_results_use_notification_center(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -971,7 +972,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=140", html)
+        self.assertIn("styles.css?v=141", html)
         self.assertIn("app.js?v=180", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)

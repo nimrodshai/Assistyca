@@ -83,6 +83,17 @@ services:
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
+      # Outlook and Microsoft 365 mailboxes. From an Azure app registration
+      # with the delegated Mail.Read permission. Without these the portal still
+      # runs; only the "Sign in with Microsoft" button reports it is not
+      # configured. MICROSOFT_OAUTH_TENANT defaults to "common", which accepts
+      # both work and personal Microsoft accounts.
+      - key: MICROSOFT_OAUTH_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_OAUTH_TENANT
+        value: common
       - key: TELEGRAM_CONTACT_CHAT_ID
         sync: false
       - key: WHATSAPP_ACCESS_TOKEN

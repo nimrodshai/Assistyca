@@ -2767,6 +2767,25 @@ body[data-modal="billing"] .app-shell {
   border-bottom: 1px solid rgba(20, 28, 38, 0.08);
 }
 
+/* The second way into the Email connection: Microsoft, next to Google. */
+.calendar-oauth-alternate {
+  display: grid;
+  gap: 0.42rem;
+  justify-items: start;
+  padding-top: 0.2rem;
+}
+
+.calendar-oauth-alternate-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.calendar-oauth-alternate-button {
+  width: 100%;
+}
+
 .calendar-oauth-permissions h3 {
   margin: 0;
   color: var(--text);
