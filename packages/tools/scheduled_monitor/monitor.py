@@ -26,12 +26,14 @@ from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import parse_datetime
+from packages.infrastructure.task_complexity import TaskComplexity, model_for_complexity
 from packages.infrastructure.tool_model_selection import resolve_tool_model
 
 
 MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier"
 MONITOR_FEATURE_NAME = "Scheduled Web Monitor"
-DEFAULT_MONITOR_MODEL = "gpt-5.5"
+MONITOR_COMPLEXITY = TaskComplexity.IMPORTANT
+DEFAULT_MONITOR_MODEL = model_for_complexity(MONITOR_COMPLEXITY)
 DEFAULT_MONITOR_POLL_SECONDS = 300
 DEFAULT_MONITOR_SEARCH_CONTEXT_SIZE = "high"
 DEFAULT_MONITOR_MAX_OUTPUT_TOKENS = 1800

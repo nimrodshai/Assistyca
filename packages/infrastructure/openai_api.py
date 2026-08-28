@@ -24,11 +24,13 @@ from typing import Union
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from packages.infrastructure.task_complexity import TaskComplexity, model_for_complexity
+
 
 _logger = logging.getLogger("assistyca.openai_api")
 
 DEFAULT_OPENAI_API_BASE = "https://api.openai.com/v1"
-DEFAULT_OPENAI_MODEL = "gpt-5.5"
+DEFAULT_OPENAI_MODEL = model_for_complexity(TaskComplexity.IMPORTANT)
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 60.0
 DEFAULT_OPENAI_CURRENCY = "USD"
 

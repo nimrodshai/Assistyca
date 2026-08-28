@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfoNotFoundError
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.task_complexity import TaskComplexity, model_for_complexity
 from packages.infrastructure.tool_model_selection import resolve_tool_model
 from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
 from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_telegram
@@ -32,7 +33,8 @@ DEFAULT_REENGAGEMENT_HOUR = 9
 DEFAULT_REENGAGEMENT_MINUTE = 0
 DEFAULT_REENGAGEMENT_MONTHS = 6
 DEFAULT_REENGAGEMENT_POLL_SECONDS = 300
-DEFAULT_REENGAGEMENT_MODEL = "gpt-5.5"
+REENGAGEMENT_COMPLEXITY = TaskComplexity.MEDIUM
+DEFAULT_REENGAGEMENT_MODEL = model_for_complexity(REENGAGEMENT_COMPLEXITY)
 DEFAULT_REENGAGEMENT_INTERVAL_DAYS = 7
 DEFAULT_REENGAGEMENT_INACTIVITY_UNIT = "months"
 DEFAULT_REENGAGEMENT_INACTIVITY_VALUE = 6

@@ -49,8 +49,6 @@ services:
         value: "1"
       - key: PORTAL_SCHEDULED_MONITOR_POLL_SECONDS
         value: "300"
-      - key: PORTAL_SCHEDULED_MONITOR_MODEL
-        value: gpt-5.5
       - key: PORTAL_SCHEDULED_MONITOR_SEARCH_CONTEXT_SIZE
         value: medium
       - key: PORTAL_SCHEDULED_MONITOR_MAX_OUTPUT_TOKENS
@@ -61,10 +59,6 @@ services:
         value: "1"
       - key: PORTAL_SCHEDULED_ACTIONS_POLL_SECONDS
         value: "10"
-      - key: PORTAL_CONTACT_AGENT_MODEL
-        value: gpt-5.5
-      - key: PORTAL_ASSISTANT_MODEL
-        value: gpt-5.5
       - key: OPENAI_API_KEY
         sync: false
       # Required in practice: with no secret the server falls back to ephemeral

@@ -108,6 +108,8 @@ from packages.infrastructure.rate_limiter import (
 )
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.portal_runtime_paths import resolve_runtime_path
+from packages.infrastructure.task_complexity import TaskComplexity
+from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
@@ -185,6 +187,9 @@ CONTACT_PAGE_MAX_LENGTH = 500
 CONTACT_AGENT_MAX_MESSAGES = 18
 CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
+CONTACT_AGENT_COMPLEXITY = TaskComplexity.MEDIUM
+AGENT_PROPOSAL_REVISION_COMPLEXITY = TaskComplexity.MEDIUM
+AGENT_TURN_COMPLEXITY = TaskComplexity.IMPORTANT
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
 CONTACT_AGENT_DONE_REPLY = (
     "מעולה, תודה. סיכמתי את הפרטים ואעביר אותם לנמרוד בצורה מסודרת, "
@@ -4405,10 +4410,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        model = (
-            normalize_text(os.getenv("PORTAL_CONTACT_AGENT_MODEL"))
-            or normalize_text(os.getenv("OPENAI_MODEL"))
-            or "gpt-5.5"
+        model = resolve_task_model(
+            CONTACT_AGENT_COMPLEXITY,
+            "PORTAL_CONTACT_AGENT_MODEL",
+            "OPENAI_MODEL",
         )
         prompt = build_contact_agent_prompt(messages, page=page)
 
@@ -4508,10 +4513,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             user_message=user_message,
             conversation=conversation,
         )
-        model = (
-            normalize_text(os.getenv("PORTAL_ASSISTANT_MODEL"))
-            or normalize_text(os.getenv("OPENAI_MODEL"))
-            or "gpt-5.5"
+        model = resolve_task_model(
+            AGENT_PROPOSAL_REVISION_COMPLEXITY,
+            "PORTAL_AGENT_REVISION_MODEL",
+            "OPENAI_MODEL",
         )
 
         try:
@@ -4964,10 +4969,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             tool_context=tool_context,
             source_context=source_context,
         )
-        model = (
-            normalize_text(os.getenv("PORTAL_ASSISTANT_MODEL"))
-            or normalize_text(os.getenv("OPENAI_MODEL"))
-            or "gpt-5.5"
+        model = resolve_task_model(
+            AGENT_TURN_COMPLEXITY,
+            "PORTAL_ASSISTANT_MODEL",
+            "OPENAI_MODEL",
         )
 
         try:

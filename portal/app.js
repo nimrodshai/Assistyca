@@ -150,7 +150,7 @@ const DEFAULT_MONITOR_SETTINGS = {
   telegramChatId: "",
 };
 const DEFAULT_REENGAGEMENT_SETTINGS = {
-  model: "gpt-5.5",
+  model: "gpt-5.4-mini",
   intervalDays: 7,
   scheduleTimeLocal: "09:00",
   scheduleTimezone: "",

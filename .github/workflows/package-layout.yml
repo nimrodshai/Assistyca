@@ -38,6 +38,7 @@ jobs:
       - name: Run tests
         run: |
           python3 -m unittest \
+            tests.test_task_complexity \
             tests.test_calendar_summary \
             tests.test_receipt_collector \
             tests.test_agent_proposals \

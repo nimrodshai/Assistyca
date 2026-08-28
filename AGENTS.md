@@ -46,6 +46,14 @@ When working here:
 - Do not call the OpenAI API directly from tool code, client code, or portal code.
 - If a workflow needs new OpenAI behavior, extend the centralized gateway first so request construction, event emission, token tracking, and billing stay consistent.
 
+## Model Selection
+
+- Every task that calls an LLM must declare a `TaskComplexity` level from `packages/infrastructure/task_complexity.py`.
+- The level decides the model: `IMPORTANT` runs on the strongest model, `MEDIUM` on the mid tier, `SMALL` on the cheapest.
+- Do not hardcode a model name at a call site. Change the mapping in `task_complexity.py` instead.
+- Environment variables stay available as per-task overrides for incident response, not as the normal way to pick a model.
+- Pick the level from the work, not the feature's importance: open-ended reasoning is `IMPORTANT`, constrained drafting or structured edits are `MEDIUM`, short mechanical extraction is `SMALL`.
+
 ## Secrets And Access
 
 - Never commit secrets to the repo.

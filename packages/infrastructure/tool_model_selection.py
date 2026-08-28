@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.infrastructure.task_complexity import TaskComplexity, model_for_complexity
 
-DEFAULT_TOOL_MODEL = "gpt-5.5"
+
+# What a client gets before they pick a model of their own.
+DEFAULT_TOOL_MODEL = model_for_complexity(TaskComplexity.IMPORTANT)
 
 TOOL_MODEL_OPTIONS = (
     {
