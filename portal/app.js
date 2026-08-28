@@ -12905,7 +12905,12 @@ function selectAgentChat(chatId) {
   renderApp({ preserveStatus: true });
 }
 
-function deleteAgentChat(chatId) {
+// The rest of the portal confirms destructive actions with the in-app dialog,
+// and this used to be the one caller of window.confirm(). Native dialogs are
+// suppressed outright in some mobile browsers and in-app webviews, where
+// confirm() returns false without ever showing anything -- the delete button
+// looked dead. Use the same dialog every other delete uses.
+function deleteAgentChat(chatId, options = {}) {
   const agent = getAgentWorkspace();
   const chat = agent.chats.find((candidate) => candidate.id === chatId);
   if (!chat || chat.id === agent.activeChatId) {
@@ -12913,8 +12918,29 @@ function deleteAgentChat(chatId) {
   }
 
   const title = getAgentChatTitle(chat);
-  const confirmed = window.confirm(`Delete “${title}”? This conversation will be removed from your chat history.`);
-  if (!confirmed) {
+  openAuthAlert(
+    "Delete conversation?",
+    `Delete “${title}”? This conversation will be removed from your chat history.`,
+    {
+      eyebrow: "Delete conversation",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Delete",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Cancel",
+      focusTarget: "secondary",
+      returnFocus: options.returnFocus || elements.agentNewChatButton,
+      onPrimary: () => {
+        confirmAgentChatDelete(chat.id);
+      },
+    },
+  );
+}
+
+function confirmAgentChatDelete(chatId) {
+  const agent = getAgentWorkspace();
+  const chat = agent.chats.find((candidate) => candidate.id === chatId);
+  if (!chat || chat.id === agent.activeChatId) {
     return;
   }
 
@@ -27255,7 +27281,7 @@ function bindEvents() {
       if (deleteButton) {
         event.preventDefault();
         event.stopPropagation();
-        deleteAgentChat(deleteButton.dataset.agentChatDelete || "");
+        deleteAgentChat(deleteButton.dataset.agentChatDelete || "", { returnFocus: deleteButton });
         return;
       }
 
