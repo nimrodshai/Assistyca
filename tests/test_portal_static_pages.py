@@ -926,6 +926,17 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("const isRunBusy = isAgentLocalActionRunBusy(action)", script)
         self.assertIn("const runBusy = isAgentLocalActionRunBusy(action);", script)
 
+    def test_a_finished_receipts_run_records_its_folder(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # The run writes a bundle into a folder on the server; nothing recorded
+        # that anywhere, so the Folders view stayed empty after a good run.
+        self.assertIn("function recordAgentReceiptFolder", script)
+        self.assertIn("recordAgentReceiptFolder(response);", script)
+        self.assertIn('createAgentFolderRecord(name, "receipts", { itemCount, createdAt: now })', script)
+        # Re-running a month updates the existing entry instead of duplicating it.
+        self.assertIn("agent.folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase())", script)
+
     def test_action_results_use_notification_center(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -961,7 +972,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=140", html)
-        self.assertIn("app.js?v=179", html)
+        self.assertIn("app.js?v=180", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

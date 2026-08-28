@@ -15369,6 +15369,34 @@ function getFilteredAgentFolders(agent = getAgentWorkspace()) {
   return sortAgentFolders(filtered, state.agentFolderSort);
 }
 
+// A receipts run writes its bundle into a folder on the server. Nothing used
+// to record that anywhere, so the Folders view stayed empty after a
+// successful run. Upsert by name so re-running a month updates the count
+// rather than stacking duplicates.
+function recordAgentReceiptFolder(response = {}) {
+  const rawFolder = String(response?.outputFolder || "").trim().replace(/\/+$/, "");
+  const name = normalizeAgentFolderName(rawFolder, "");
+  if (!name) {
+    return null;
+  }
+
+  const agent = getAgentWorkspace();
+  const itemCount = Math.max(0, Number.parseInt(response?.receiptCount ?? 0, 10) || 0);
+  const now = new Date().toISOString();
+  const existing = agent.folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    existing.type = "receipts";
+    existing.itemCount = itemCount;
+    existing.updatedAt = now;
+  } else {
+    agent.folders.unshift(createAgentFolderRecord(name, "receipts", { itemCount, createdAt: now }));
+  }
+  agent.folders = sortAgentFolders(agent.folders, state.agentFolderSort).slice(0, AGENT_MAX_FOLDERS);
+  persistClientState();
+  renderAgentFolders();
+  return name;
+}
+
 function createAgentFolderItem(folder) {
   const item = document.createElement("article");
   const type = getAgentFolderTypeOption(folder?.type);
@@ -21098,6 +21126,7 @@ async function runAgentProposalLocalActionNow(actionId) {
         timeoutMs: 90000,
       });
       const message = String(response.message || response.summary || "Receipt search complete.").trim();
+      recordAgentReceiptFolder(response);
       addAgentNotification({
         title: response.artifacts ? "Receipt bundle ready" : "Receipt search ready",
         message,

@@ -4322,12 +4322,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     receipt_count = int(receipt_bundle.get("receiptCount") or 0)
                     review_count = int(receipt_bundle.get("reviewCount") or 0)
                     result["summary"] = f"Receipt search - {receipt_count} candidate receipt(s)"
+                    # The notification says it is ready and offers the download.
+                    # Counts, folder and review details live in the PDF itself.
                     result["message"] = (
-                        f"Receipt bundle ready. I found {receipt_count} candidate receipt(s)"
-                        f" and saved the Excel workbook and PDF report in {receipt_bundle['outputFolder']}."
+                        "Your receipts are ready to download."
+                        if receipt_count
+                        else "No receipts found for that month."
                     )
-                    if review_count:
-                        result["message"] += f" {review_count} row(s) need review."
 
             self.database.update_platform_connection_status(
                 session.email,
