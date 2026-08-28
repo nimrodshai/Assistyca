@@ -2047,6 +2047,12 @@ body[data-modal="billing"] .app-shell {
   line-height: 1;
 }
 
+/* The display above outranks the browser's own rule for [hidden], so the count
+   has to be hidden explicitly or an empty feed still shows a "0" badge. */
+.notification-center-badge[hidden] {
+  display: none;
+}
+
 .notification-center-popover {
   position: absolute;
   z-index: 32;

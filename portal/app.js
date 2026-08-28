@@ -3371,9 +3371,28 @@ function addAgentNotification(options = {}) {
   return notification;
 }
 
-// Notifications are server state. They are fetched from /api/notifications so
-// they survive a tab close and are visible on every device the owner signs in
-// on. The local list is a render cache, not the source of truth.
+// Server rows always carry the database row id, so a notification with any other
+// id was raised by the portal itself. Those are not throwaway: a manual proposal
+// run, or a request that failed before it reached a runner, is only ever known
+// to this browser, because the API has no endpoint for creating a notification.
+function isServerNotificationId(id) {
+  return /^\d+$/.test(String(id || "").trim());
+}
+
+// A poll refreshes what the server knows without dropping what only the browser
+// knows. A local row steps aside once the server sends the same dedupe key.
+function mergeServerNotifications(serverNotifications) {
+  const serverDedupeKeys = new Set(serverNotifications.map((row) => row.dedupeKey).filter(Boolean));
+  const localOnly = getAgentNotifications().filter((notification) => (
+    !isServerNotificationId(notification.id)
+    && !(notification.dedupeKey && serverDedupeKeys.has(notification.dedupeKey))
+  ));
+  return normalizeAgentNotifications([...serverNotifications, ...localOnly]);
+}
+
+// Notifications are mostly server state. They are fetched from /api/notifications
+// so they survive a tab close and are visible on every device the owner signs in
+// on; the portal's own entries are merged back in on top.
 function mapServerNotification(row) {
   const source = row && typeof row === "object" ? row : {};
   return {
@@ -3402,7 +3421,7 @@ async function refreshNotifications() {
       return null;
     }
     const rows = Array.isArray(response.notifications) ? response.notifications : [];
-    clientState.notifications = normalizeAgentNotifications(rows.map(mapServerNotification));
+    clientState.notifications = mergeServerNotifications(rows.map(mapServerNotification));
     renderNotificationCenter();
     return clientState.notifications;
   } catch (error) {
@@ -3418,7 +3437,13 @@ async function markAgentNotificationRead(notificationId) {
   }
   // Optimistic: reflect it immediately, then confirm with the server.
   notification.readAt = new Date().toISOString();
+  persistClientState();
   renderNotificationCenter();
+  if (!isServerNotificationId(notification.id)) {
+    // Local-only: there is no server row to mark, and asking for one would
+    // bounce back as an error and re-render the feed for nothing.
+    return true;
+  }
   try {
     await apiRequest("/api/notifications/read", {
       method: "POST",
@@ -3442,6 +3467,7 @@ async function markAllAgentNotificationsRead() {
       changed = true;
     }
   });
+  persistClientState();
   renderNotificationCenter();
   try {
     await apiRequest("/api/notifications/read-all", {
@@ -22554,6 +22580,17 @@ function getManualMonitorRunAlertIcon(run = {}) {
   return getManualMonitorRunAlertTone(run) === "success" ? "✓" : "!";
 }
 
+// A run that delivered findings already wrote its own durable notification on
+// the server. Adding a local receipt on top of it would list the same run
+// twice, so pull the server's row in instead.
+function recordManualMonitorRunNotification(run, notification) {
+  if (Math.max(0, Number(run?.notificationsSent || 0)) > 0) {
+    void refreshNotifications();
+    return;
+  }
+  addAgentNotification(notification);
+}
+
 function getManualMonitorRunAlertTitle(run = {}) {
   const status = String(run?.status || "").trim().toLowerCase();
   const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
@@ -22820,7 +22857,7 @@ async function runMonitorActionNow(featureId) {
     });
     const completionMessage = String(response.message || "The monitor finished.");
     await refreshFeatureActivationStates({ render: false });
-    addAgentNotification({
+    recordManualMonitorRunNotification(response.run, {
       title: getManualMonitorRunAlertTitle(response.run),
       message: getManualMonitorRunAlertMessage(response.run, completionMessage),
       tone: getManualMonitorRunAlertTone(response.run),
@@ -22947,7 +22984,7 @@ async function runSelectedMonitorNow() {
 
     const completionMessage = String(response.message || "Manual run finished.");
     monitorManualRunOverlayVisible = false;
-    addAgentNotification({
+    recordManualMonitorRunNotification(response.run, {
       title: getManualMonitorRunAlertTitle(response.run),
       message: getManualMonitorRunAlertMessage(response.run, completionMessage),
       tone: getManualMonitorRunAlertTone(response.run),
