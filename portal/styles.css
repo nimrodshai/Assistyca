@@ -4251,13 +4251,9 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-folder-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 0.68rem;
-  align-items: center;
   width: 100%;
   min-width: 0;
-  padding: 0.78rem 0.82rem;
+  overflow: hidden;
   color: var(--text);
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(20, 28, 38, 0.075);
@@ -4265,46 +4261,123 @@ body[data-modal="billing"] .app-shell {
   box-shadow: 0 5px 14px rgba(25, 38, 54, 0.025);
 }
 
-.agent-folder-icon {
-  position: relative;
-  width: 2.35rem;
-  height: 1.82rem;
-  color: #177a72;
-  background: linear-gradient(145deg, rgba(112, 178, 172, 0.34), rgba(236, 246, 242, 0.94));
-  border: 1px solid rgba(23, 122, 114, 0.18);
-  border-radius: 8px;
-  box-shadow: 0 7px 16px rgba(23, 122, 114, 0.08);
+.agent-folder-item-open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.68rem;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 0.78rem 0.82rem;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 14px;
+  cursor: pointer;
 }
 
-.agent-folder-icon::before {
-  content: "";
-  position: absolute;
-  left: 0.28rem;
-  top: -0.32rem;
-  width: 1.02rem;
-  height: 0.46rem;
-  background: inherit;
-  border: inherit;
-  border-bottom: 0;
-  border-radius: 7px 7px 0 0;
+.agent-folder-item-open:hover,
+.agent-folder-item-open:focus-visible {
+  background: rgba(15, 118, 110, 0.05);
+}
+
+.agent-folder-item-open:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 0 0 2px rgba(15, 118, 110, 0.3);
+}
+
+.agent-folder-icon {
+  display: grid;
+  place-items: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  color: #177a72;
+  background: rgba(23, 122, 114, 0.1);
+  border-radius: 11px;
+}
+
+.agent-folder-icon svg {
+  width: 1.28rem;
+  height: 1.28rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 
 .agent-folder-item.is-reports .agent-folder-icon {
   color: #2f6eb7;
-  background: linear-gradient(145deg, rgba(83, 140, 203, 0.28), rgba(239, 246, 255, 0.95));
-  border-color: rgba(47, 110, 183, 0.18);
+  background: rgba(47, 110, 183, 0.1);
 }
 
 .agent-folder-item.is-receipts .agent-folder-icon {
   color: #946118;
-  background: linear-gradient(145deg, rgba(212, 154, 58, 0.26), rgba(255, 248, 235, 0.95));
-  border-color: rgba(148, 97, 24, 0.18);
+  background: rgba(148, 97, 24, 0.1);
 }
 
 .agent-folder-item.is-sources .agent-folder-icon {
   color: #596778;
-  background: linear-gradient(145deg, rgba(96, 112, 128, 0.22), rgba(244, 247, 249, 0.95));
-  border-color: rgba(96, 112, 128, 0.18);
+  background: rgba(89, 103, 120, 0.1);
+}
+
+.agent-folder-body {
+  display: grid;
+  gap: 0.34rem;
+  padding: 0 0.82rem 0.78rem;
+}
+
+.agent-folder-body-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.agent-folder-body-note.is-error {
+  color: #b3261e;
+}
+
+.agent-folder-file-list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-folder-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.46rem 0.58rem;
+  color: var(--text);
+  font-size: 0.74rem;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(20, 28, 38, 0.075);
+  border-radius: 10px;
+}
+
+.agent-folder-file:hover,
+.agent-folder-file:focus-visible {
+  color: var(--accent);
+  border-color: rgba(15, 118, 110, 0.28);
+}
+
+.agent-folder-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-folder-file-size {
+  color: var(--muted);
+  font-size: 0.66rem;
+  white-space: nowrap;
 }
 
 .agent-folder-copy {
@@ -10688,6 +10761,40 @@ body.is-chat-view {
   border-color: var(--line-strong);
   background: var(--surface);
   box-shadow: var(--shadow-soft);
+}
+
+:root[data-theme="dark"] .agent-folder-item-open:hover,
+:root[data-theme="dark"] .agent-folder-item-open:focus-visible {
+  background: rgba(55, 184, 171, 0.09);
+}
+
+:root[data-theme="dark"] .agent-folder-icon {
+  color: #58cfc2;
+  background: rgba(88, 207, 194, 0.14);
+}
+
+:root[data-theme="dark"] .agent-folder-item.is-reports .agent-folder-icon {
+  color: #83b4f0;
+  background: rgba(131, 180, 240, 0.14);
+}
+
+:root[data-theme="dark"] .agent-folder-item.is-receipts .agent-folder-icon {
+  color: #e3b566;
+  background: rgba(227, 181, 102, 0.14);
+}
+
+:root[data-theme="dark"] .agent-folder-item.is-sources .agent-folder-icon {
+  color: #a9bacb;
+  background: rgba(169, 186, 203, 0.14);
+}
+
+:root[data-theme="dark"] .agent-folder-file {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+}
+
+:root[data-theme="dark"] .agent-folder-body-note.is-error {
+  color: #ff9d94;
 }
 
 :root[data-theme="dark"] .panel-intro h1 {

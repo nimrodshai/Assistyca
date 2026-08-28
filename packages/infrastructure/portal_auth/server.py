@@ -110,6 +110,7 @@ from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.portal_runtime_paths import resolve_runtime_path
 from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
+from packages.infrastructure.receipt_collector import RECEIPT_MANIFEST_FILENAME
 from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
@@ -188,6 +189,7 @@ CONTACT_AGENT_MAX_MESSAGES = 18
 CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_COMPLEXITY = TaskComplexity.MEDIUM
+AGENT_FOLDER_CONTENTS_LIMIT = 200
 AGENT_PROPOSAL_REVISION_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_TURN_COMPLEXITY = TaskComplexity.IMPORTANT
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
@@ -2625,6 +2627,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/platform-connections"
             or path == "/api/features"
             or path.startswith("/api/features/")
+            or path == "/api/agent/folder-contents"
             or path == "/api/scheduled-actions"
             or path == "/api/source-actions"
             or path == "/api/notifications"
@@ -2737,6 +2740,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/account/profile":
             self._handle_account_profile_get()
+            return
+
+        if path == "/api/agent/folder-contents":
+            self._handle_agent_folder_contents_get(parsed)
             return
 
         if path == "/api/scheduled-actions":
@@ -4910,6 +4917,71 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "eventCount": int(result.get("eventCount") or 0),
             "dateRange": result.get("dateRange") if isinstance(result.get("dateRange"), dict) else {},
             "calendar": "connected calendar",
+        })
+
+    # Workspace folders are the receipt bundles this server already wrote to
+    # disk. The panel only stores a folder name, so opening one needs a way to
+    # read back what is actually inside it.
+    def _handle_agent_folder_contents_get(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        query = urllib_parse.parse_qs(parsed.query)
+        requested_folder = normalize_text(query.get("folder", [""])[0])
+        if not requested_folder:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "folder_required",
+                "message": "Name the folder to open.",
+            })
+            return
+
+        # The owner key comes from the session rather than the request, so a
+        # caller can only ever list their own bundles.
+        logical_folder = normalize_receipt_output_folder(requested_folder)
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        folder_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_folder,
+        )
+        base_url = build_receipt_bundle_base_url(owner_key=owner_key, output_folder=logical_folder)
+
+        items: list[dict[str, Any]] = []
+        if folder_path.is_dir():
+            # Top-level exports (the PDF and the Excel) before the attachment
+            # files they were built from.
+            paths = sorted(
+                folder_path.rglob("*"),
+                key=lambda candidate: (
+                    len(candidate.relative_to(folder_path).parts),
+                    candidate.as_posix().lower(),
+                ),
+            )
+            for file_path in paths:
+                if len(items) >= AGENT_FOLDER_CONTENTS_LIMIT:
+                    break
+                if file_path.name == RECEIPT_MANIFEST_FILENAME or not file_path.is_file():
+                    continue
+                relative_parts = file_path.relative_to(folder_path).parts
+                try:
+                    stats = file_path.stat()
+                except OSError:
+                    continue
+                items.append({
+                    "name": "/".join(relative_parts),
+                    "url": "/".join([base_url, *(urllib_parse.quote(part) for part in relative_parts)]),
+                    "size": int(stats.st_size),
+                    "updatedAt": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
+                })
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "folder": logical_folder,
+            "items": items,
         })
 
     def _handle_agent_turn(self) -> None:

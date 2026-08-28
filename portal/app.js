@@ -1246,6 +1246,7 @@ const state = {
   agentFolderCreateOpen: false,
   agentFolderFilterOpen: false,
   agentFolderSortOpen: false,
+  agentFolderOpenId: "",
   agentHistoryExpanded: false,
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
@@ -1308,6 +1309,7 @@ const monitorActionRunBusy = new Set();
 const localActionRunBusy = new Set();
 const agentActionLifecycleBusy = new Set();
 const agentLocalActionSettingsBusy = new Set();
+const agentFolderContents = new Map();
 let reengagementDemoRunBusy = false;
 let reengagementDemoRunTargetId = "";
 let reengagementDemoRunRequestId = "";
@@ -15576,20 +15578,163 @@ function recordAgentReceiptFolder(response = {}) {
     agent.folders.unshift(createAgentFolderRecord(name, "receipts", { itemCount, createdAt: now }));
   }
   agent.folders = sortAgentFolders(agent.folders, state.agentFolderSort).slice(0, AGENT_MAX_FOLDERS);
+  agentFolderContents.delete(name);
   persistClientState();
   renderAgentFolders();
   return name;
 }
 
+function formatAgentFolderFileSize(size) {
+  const bytes = Math.max(0, Number(size) || 0);
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Folder contents live on the server as the bundle a run wrote to disk, so the
+// panel reads them the first time a folder is opened and keeps the answer for
+// the rest of the session.
+async function loadAgentFolderContents(folderName) {
+  const name = normalizeAgentTextItem(folderName, "");
+  if (!name) {
+    return;
+  }
+
+  const cached = agentFolderContents.get(name);
+  if (cached && cached.status !== "error") {
+    return;
+  }
+
+  agentFolderContents.set(name, { status: "loading", items: [], message: "" });
+  renderAgentFolders();
+  try {
+    const response = await apiRequest(`/api/agent/folder-contents?folder=${encodeURIComponent(name)}`);
+    const items = Array.isArray(response?.items) ? response.items : [];
+    agentFolderContents.set(name, { status: "ready", items, message: "" });
+  } catch (error) {
+    agentFolderContents.set(name, {
+      status: "error",
+      items: [],
+      message: formatApiErrorMessage(error, "I couldn’t open that folder."),
+    });
+  }
+  renderAgentFolders();
+}
+
+function toggleAgentFolderOpen(folderId) {
+  const id = normalizeAgentTextItem(folderId, "");
+  state.agentFolderOpenId = state.agentFolderOpenId === id ? "" : id;
+  renderAgentFolders();
+
+  if (!state.agentFolderOpenId) {
+    return;
+  }
+
+  const folder = getAgentWorkspace().folders.find((entry) => entry.id === state.agentFolderOpenId);
+  if (folder) {
+    void loadAgentFolderContents(folder.name);
+  }
+}
+
+function createAgentFolderIcon() {
+  const icon = document.createElement("span");
+  icon.className = "agent-folder-icon";
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  svg.append(
+    createSvgElement("path", {
+      d: "M3.5 7.6a2 2 0 0 1 2-2h3.2a2 2 0 0 1 1.5.7l1 1.2h7.3a2 2 0 0 1 2 2v7.9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z",
+    }),
+    createSvgElement("path", { d: "M3.5 11.2h17" }),
+  );
+  icon.append(svg);
+  icon.setAttribute("aria-hidden", "true");
+  return icon;
+}
+
+function createAgentFolderBody(folder) {
+  const body = document.createElement("div");
+  body.className = "agent-folder-body";
+
+  const contents = agentFolderContents.get(folder.name);
+  if (!contents || contents.status === "loading") {
+    const note = document.createElement("p");
+    note.className = "agent-folder-body-note";
+    note.textContent = "Opening folder…";
+    body.append(note);
+    return body;
+  }
+
+  if (contents.status === "error") {
+    const note = document.createElement("p");
+    note.className = "agent-folder-body-note is-error";
+    note.textContent = contents.message;
+    body.append(note);
+    return body;
+  }
+
+  if (!contents.items.length) {
+    const note = document.createElement("p");
+    note.className = "agent-folder-body-note";
+    note.textContent = "This folder is empty. Files land here after the action runs.";
+    body.append(note);
+    return body;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "agent-folder-file-list";
+  for (const file of contents.items) {
+    const href = normalizeAgentNotificationHref(file?.url);
+    const name = normalizeAgentTextItem(file?.name, "");
+    if (!href || !name) {
+      continue;
+    }
+
+    const row = document.createElement("li");
+    const link = document.createElement("a");
+    link.className = "agent-folder-file";
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+
+    const label = document.createElement("span");
+    label.className = "agent-folder-file-name";
+    label.textContent = name;
+
+    const size = document.createElement("span");
+    size.className = "agent-folder-file-size";
+    size.textContent = formatAgentFolderFileSize(file?.size);
+
+    link.append(label, size);
+    row.append(link);
+    list.append(row);
+  }
+  body.append(list);
+  return body;
+}
+
 function createAgentFolderItem(folder) {
   const item = document.createElement("article");
   const type = getAgentFolderTypeOption(folder?.type);
+  const isOpen = state.agentFolderOpenId === folder.id;
   item.className = `agent-folder-item is-${type.value}`;
+  item.classList.toggle("is-open", isOpen);
+  item.dataset.agentFolderId = folder.id;
   item.setAttribute("role", "listitem");
 
-  const icon = document.createElement("span");
-  icon.className = "agent-folder-icon";
-  icon.setAttribute("aria-hidden", "true");
+  const openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.className = "agent-folder-item-open";
+  openButton.dataset.agentFolderOpen = folder.id;
+  openButton.setAttribute("aria-expanded", String(isOpen));
+  openButton.setAttribute("aria-label", `${isOpen ? "Close" : "Open"} folder: ${folder.name}`);
 
   const copy = document.createElement("span");
   copy.className = "agent-folder-copy";
@@ -15605,7 +15750,12 @@ function createAgentFolderItem(folder) {
   time.className = "agent-folder-time";
   time.textContent = formatAgentFolderTime(folder);
 
-  item.append(icon, copy, time);
+  openButton.append(createAgentFolderIcon(), copy, time);
+  item.append(openButton);
+
+  if (isOpen) {
+    item.append(createAgentFolderBody(folder));
+  }
   return item;
 }
 
@@ -15619,6 +15769,12 @@ function renderAgentFolders() {
   state.agentFolderSort = normalizeAgentFolderSort(state.agentFolderSort || agent.folderSort);
   const folders = getFilteredAgentFolders(agent);
   const totalFolders = Array.isArray(agent.folders) ? agent.folders.length : 0;
+  if (
+    state.agentFolderOpenId
+    && !folders.some((folder) => folder.id === state.agentFolderOpenId)
+  ) {
+    state.agentFolderOpenId = "";
+  }
 
   if (elements.agentFolderCount) {
     elements.agentFolderCount.textContent = String(totalFolders);
@@ -27328,6 +27484,16 @@ function bindEvents() {
         return;
       }
       selectAgentChat(item.dataset.agentChatId || "");
+    });
+  }
+
+  if (elements.agentFolderList) {
+    elements.agentFolderList.addEventListener("click", (event) => {
+      const openButton = event.target?.closest?.("[data-agent-folder-open]");
+      if (!openButton || !elements.agentFolderList.contains(openButton)) {
+        return;
+      }
+      toggleAgentFolderOpen(openButton.dataset.agentFolderOpen || "");
     });
   }
 
