@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=139", html)
+        self.assertIn("styles.css?v=140", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -598,11 +598,14 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("@keyframes agent-tab-guide", styles)
         self.assertIn(".agent-action-inline-link", styles)
         self.assertIn(".agent-action-item.is-spotlighted", styles)
-        self.assertIn("animation: agent-action-card-border-pulse 960ms ease-in-out 4 forwards;", styles)
-        self.assertIn("box-shadow: 0 0 0 0 rgba(55, 184, 171, 0)", styles)
-        self.assertIn("@keyframes agent-action-card-border-pulse", styles)
+        self.assertIn(".agent-action-item.is-spotlighted::after", styles)
+        self.assertIn(
+            "animation: agent-action-card-shimmer 920ms cubic-bezier(0.32, 0, 0.24, 1) 1 both;",
+            styles,
+        )
+        self.assertIn("@keyframes agent-action-card-shimmer", styles)
         self.assertNotIn("@keyframes agent-action-spotlight-dot", styles)
-        self.assertNotIn(".agent-action-item.is-spotlighted::after", styles)
+        self.assertNotIn("agent-action-card-border-pulse", styles)
         self.assertIn(".agent-chat-item", styles)
         self.assertIn(".agent-chat-item.is-active", styles)
         self.assertIn(".agent-action-detail-actions", styles)
@@ -957,8 +960,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=139", html)
-        self.assertIn("app.js?v=178", html)
+        self.assertIn("styles.css?v=140", html)
+        self.assertIn("app.js?v=179", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

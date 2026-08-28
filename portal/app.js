@@ -17116,7 +17116,7 @@ function applyAgentActionSpotlight(actionId) {
   }
 
   item.classList.remove("is-spotlighted");
-  // Restart the pulse when the user taps the same "here" link twice.
+  // Restart the shimmer when the user taps the same "here" link twice.
   void item.offsetWidth;
   item.classList.add("is-spotlighted");
   const focusTarget = item.querySelector("[data-agent-scheduled-action-trigger]") || item;
@@ -17127,7 +17127,7 @@ function applyAgentActionSpotlight(actionId) {
   if (agentActionSpotlightTimer !== null) {
     window.clearTimeout(agentActionSpotlightTimer);
   }
-  agentActionSpotlightTimer = window.setTimeout(clearAgentActionSpotlight, shouldReduceAgentMotion() ? 1800 : 4300);
+  agentActionSpotlightTimer = window.setTimeout(clearAgentActionSpotlight, shouldReduceAgentMotion() ? 1800 : 2600);
   return true;
 }
 
