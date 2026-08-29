@@ -19442,14 +19442,35 @@ function resizeAgentActionEditorTextarea(input) {
   if (!input || input.tagName !== "TEXTAREA") {
     return;
   }
+  // A textarea that is still detached or hidden measures zero, and growing it to
+  // that leaves the text clipped once the card is on screen. Wait for a real width.
+  if (!input.clientWidth) {
+    return;
+  }
   input.style.height = "auto";
   const borderBlock = Math.max(0, input.offsetHeight - input.clientHeight);
   input.style.height = `${input.scrollHeight + borderBlock}px`;
+  input._agentActionEditorTextareaWidth = input.clientWidth;
 }
 
+// The card is built off-screen and only gets its width when it lands in the DOM,
+// and that width changes again when the panel opens or the window resizes - each
+// time the text rewraps onto a different number of lines. Watch the box itself so
+// it refits whenever its width actually changes.
 function scheduleAgentActionEditorTextareaResize(input) {
   resizeAgentActionEditorTextarea(input);
   window.requestAnimationFrame(() => resizeAgentActionEditorTextarea(input));
+  window.setTimeout(() => resizeAgentActionEditorTextarea(input), 0);
+  if (!input || input._agentActionEditorTextareaObserver || typeof window.ResizeObserver !== "function") {
+    return;
+  }
+  const observer = new window.ResizeObserver(() => {
+    if (input.clientWidth && input.clientWidth !== input._agentActionEditorTextareaWidth) {
+      resizeAgentActionEditorTextarea(input);
+    }
+  });
+  observer.observe(input);
+  input._agentActionEditorTextareaObserver = observer;
 }
 
 function createAgentActionEditorStatusElement(className = "agent-action-editor-status", tagName = "p") {
