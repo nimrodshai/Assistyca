@@ -283,7 +283,7 @@ class PortalStaticPageTests(unittest.TestCase):
         # The connected account's calendar comes from the connection, so it has
         # no remove button of its own.
         self.assertIn('index === 0 && getConnectedCalendarTagLabel() === tag ? " is-fixed" : ""', tags_field)
-        self.assertIn("An added address is only readable once that person shares their calendar", tags_field)
+        self.assertIn('setHint("Connect Google Calendar so this action has a calendar to read.");', tags_field)
         self.assertIn(".agent-action-editor-chip.is-fixed", styles)
         self.assertIn(".agent-action-editor-hint", styles)
         self.assertIn(':root[data-theme="dark"] .agent-action-editor-chip {', styles)

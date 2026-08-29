@@ -18649,7 +18649,7 @@ function createAgentCalendarTagsField(labelText, value) {
       setHint("Connect Google Calendar so this action has a calendar to read.");
       return;
     }
-    setHint("An added address is only readable once that person shares their calendar with the connected Google account.");
+    setHint("");
   }
 
   function renderTags() {
