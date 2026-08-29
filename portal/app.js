@@ -21942,6 +21942,53 @@ function getAgentAnswerRunFields(turn) {
   return { ...fields };
 }
 
+// One question can name several months ("July and August"), but one lookup
+// reads one month. Six is more months than anyone asks about in a sentence,
+// and it keeps a stray list from turning into a long row of mailbox reads.
+const AGENT_ANSWER_RUN_MONTH_LIMIT = 6;
+// A month named in free text counts only when it is unmistakably a month:
+// "may" is an ordinary word, so it needs its year to be read as May.
+const AGENT_ANSWER_TEXT_MONTH_RE = /\b(?:\d{4}-\d{1,2}|may\s+\d{4}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?)\b/gi;
+
+function collectAgentAnswerRunMonths(text, months) {
+  String(text || "").match(AGENT_ANSWER_TEXT_MONTH_RE)?.forEach((piece) => {
+    const month = parseAgentManualRunMonthValue(piece);
+    if (month && !months.includes(month)) {
+      months.push(month);
+    }
+  });
+  return months;
+}
+
+// Every month the question named, oldest first. Asking about two months and
+// hearing back about one reads as an unfinished answer, so each month named
+// gets its own lookup rather than only the first one parsed.
+function getAgentAnswerRunMonths(fields) {
+  const raw = String(fields?.manualRunMonth || "").trim();
+  const months = collectAgentAnswerRunMonths(raw, []);
+  collectAgentAnswerRunMonths(fields?.result, months);
+  if (!months.length) {
+    return { months: [raw], trimmed: false };
+  }
+  months.sort();
+  return {
+    months: months.slice(0, AGENT_ANSWER_RUN_MONTH_LIMIT),
+    trimmed: months.length > AGENT_ANSWER_RUN_MONTH_LIMIT,
+  };
+}
+
+function formatAgentAnswerMonthLabel(value) {
+  const match = parseAgentManualRunMonthValue(value).match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return "";
+  }
+  const date = new Date(Date.UTC(Number.parseInt(match[1], 10), Number.parseInt(match[2], 10) - 1, 1));
+  const label = new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" })
+    .format(date)
+    .replace(/\./g, "");
+  return `${label} ${match[1]}`;
+}
+
 // An answer run needs the same connection its saved counterpart would need.
 function getAgentAnswerRunBlocker(proposalType) {
   if (proposalType === "calendar-summary") {
@@ -21985,20 +22032,53 @@ async function runAgentAnswerNow(turn) {
   persistAgentWorkspace("Running task...");
   renderApp({ preserveStatus: true });
 
+  const fields = getAgentAnswerRunFields(turn);
+  const { months, trimmed } = getAgentAnswerRunMonths(fields);
+  const lines = [];
+  const missedMonths = [];
+  let lastError = null;
+
   try {
-    const response = await apiRequest("/api/agent/proposals/run", {
-      method: "POST",
-      body: {
-        proposalType,
-        mode: "answer",
-        fields: getAgentAnswerRunFields(turn),
-        deliveryChannel: "portal",
-        timezone: getWorkspaceTimeZone(),
-      },
-      timeoutMs: 90000,
-    });
-    const answer = String(response.answer || response.message || response.summary || "").trim()
-      || "I ran that, but it came back without anything to report.";
+    // The months run one after another so each one reports its own total,
+    // including the months that turn out to have nothing in them.
+    for (const month of months) {
+      try {
+        const response = await apiRequest("/api/agent/proposals/run", {
+          method: "POST",
+          body: {
+            proposalType,
+            mode: "answer",
+            fields: month ? { ...fields, manualRunMonth: month } : fields,
+            deliveryChannel: "portal",
+            timezone: getWorkspaceTimeZone(),
+          },
+          timeoutMs: 90000,
+        });
+        const line = String(response.answer || response.message || response.summary || "").trim();
+        if (line) {
+          lines.push(line);
+        }
+      } catch (error) {
+        lastError = error;
+        missedMonths.push(formatAgentAnswerMonthLabel(month) || String(month || "").trim());
+      }
+    }
+    if (!lines.length) {
+      if (lastError) {
+        throw lastError;
+      }
+      lines.push("I ran that, but it came back without anything to report.");
+    }
+    // A month that could not be read is said out loud, so a partial answer
+    // never passes for a complete one.
+    const missed = missedMonths.filter(Boolean);
+    if (missed.length) {
+      lines.push(`I couldn’t check ${missed.join(" and ")} just now.`);
+    }
+    if (trimmed) {
+      lines.push(`That was more months than I check at once, so I stopped after ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
+    }
+    const answer = lines.join("\n\n");
     pushAgentMessage("assistant", answer, { kind: "result" });
     persistAgentWorkspace(answer);
   } catch (error) {

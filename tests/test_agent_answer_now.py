@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 from urllib import request as urllib_request
 
@@ -107,6 +110,17 @@ class AgentAnswerTurnTests(unittest.TestCase):
         self.assertIn("answer_now", prompt)
         self.assertIn('"today":"2026-08-29"', prompt)
         self.assertIn("Do not offer to create an action for these", prompt)
+
+    def test_the_prompt_asks_for_every_month_a_question_names(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="How much did I pay Render in July and in August?",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            today="2026-08-29",
+        )
+
+        self.assertIn("list every month it names in manualRunMonth", prompt)
+        self.assertIn("2026-07,2026-08", prompt)
 
     def test_today_falls_back_to_utc_for_an_unknown_timezone(self) -> None:
         self.assertEqual(
@@ -339,6 +353,109 @@ class AgentAnswerChatTests(unittest.TestCase):
         ]
 
         self.assertNotIn("addAgentNotification", runner)
+
+    def test_every_month_the_question_named_gets_its_own_lookup(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        self.assertIn("for (const month of months)", runner)
+        self.assertIn("manualRunMonth: month", runner)
+        # Every month's sentence is kept, so an empty month still reports.
+        self.assertIn("lines.join", runner)
+
+    def test_a_month_that_could_not_be_read_is_named(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        self.assertIn("missedMonths.push", runner)
+        self.assertIn("I couldn\u2019t check", runner)
+
+
+def _run_agent_answer_month_script(expression: str) -> Any:
+    """Run the chat's month splitting in node, with its date sources fixed."""
+
+    script = (Path(__file__).resolve().parents[1] / "portal" / "app.js").read_text(encoding="utf-8")
+    month_parser = script[
+        script.index("const AGENT_MONTH_NAME_INDEX"):
+        script.index("function formatAgentPreviousMonth")
+    ]
+    answer_helpers = script[
+        script.index("const AGENT_ANSWER_RUN_MONTH_LIMIT"):
+        script.index("async function runAgentAnswerNow")
+    ]
+    harness = "\n".join([
+        'function getWorkspaceTimeZone() { return "UTC"; }',
+        "function getAgentWorkspaceDateParts() { return new Date(Date.UTC(2026, 7, 15)); }",
+        month_parser,
+        answer_helpers,
+        f"console.log(JSON.stringify({expression}));",
+    ])
+    completed = subprocess.run(
+        ["node", "-e", harness],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the chat script")
+class AgentAnswerMonthSplitTests(unittest.TestCase):
+    """A question naming two months has to run two lookups, not one."""
+
+    def test_two_months_become_two_lookups(self) -> None:
+        result = _run_agent_answer_month_script(
+            'getAgentAnswerRunMonths({ manualRunMonth: "2026-07,2026-08" })'
+        )
+
+        self.assertEqual(result["months"], ["2026-07", "2026-08"])
+        self.assertFalse(result["trimmed"])
+
+    def test_a_month_named_only_in_the_request_text_still_runs(self) -> None:
+        # The model may fill one month into the field and leave the second in
+        # the sentence; both months were asked about either way.
+        result = _run_agent_answer_month_script(
+            'getAgentAnswerRunMonths({'
+            ' manualRunMonth: "2026-08",'
+            ' result: "Find receipts from Render for July and August 2026"'
+            ' })'
+        )
+
+        self.assertEqual(result["months"], ["2026-07", "2026-08"])
+
+    def test_the_word_may_is_not_read_as_a_month(self) -> None:
+        result = _run_agent_answer_month_script(
+            'getAgentAnswerRunMonths({'
+            ' manualRunMonth: "2026-08",'
+            ' result: "Find receipts that may name a total"'
+            ' })'
+        )
+
+        self.assertEqual(result["months"], ["2026-08"])
+
+    def test_no_month_leaves_the_run_to_resolve_its_own(self) -> None:
+        result = _run_agent_answer_month_script("getAgentAnswerRunMonths({})")
+
+        self.assertEqual(result["months"], [""])
+
+    def test_a_long_list_of_months_stops_and_says_so(self) -> None:
+        months = ",".join(f"2026-{month:02d}" for month in range(1, 10))
+        result = _run_agent_answer_month_script(
+            f'getAgentAnswerRunMonths({{ manualRunMonth: "{months}" }})'
+        )
+
+        self.assertEqual(len(result["months"]), 6)
+        self.assertTrue(result["trimmed"])
+
+    def test_a_month_is_labelled_the_way_the_answer_reads(self) -> None:
+        self.assertEqual(
+            _run_agent_answer_month_script('formatAgentAnswerMonthLabel("2026-07")'),
+            "Jul 2026",
+        )
 
 
 if __name__ == "__main__":
