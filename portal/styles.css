@@ -4962,24 +4962,52 @@ body[data-modal="billing"] .app-shell {
   border-color: rgba(55, 184, 171, 0.88);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(237, 252, 250, 0.92));
   box-shadow: 0 0 0 2px rgba(55, 184, 171, 0.26), 0 16px 34px rgba(15, 118, 110, 0.16);
+  animation: agent-action-card-glow 2200ms ease-in-out both;
 }
 
-/* One sweep of light across the card so the eye lands on it once, then rests. */
+/* A newly arrived card that is also the spotlight target keeps both moves. */
+.agent-action-item.is-entering.is-spotlighted {
+  animation: rise 260ms ease both, agent-action-card-glow 2200ms ease-in-out both;
+}
+
+/* Two unhurried sweeps of light across the card so the eye has time to land on
+   it, then the card rests. The band fades in and out at the edges instead of
+   sliding in as a hard rectangle, which is what made the single pass feel stiff. */
 .agent-action-item.is-spotlighted::after {
   content: "";
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  /* The band is two and a half card widths and starts hanging off to the left,
+     so its bright middle is centred on the card at rest and a broad wash of
+     light — not a thin streak — crosses the card on each sweep. */
+  left: -75%;
+  width: 250%;
   z-index: 1;
   pointer-events: none;
+  /* Saturated teal rather than white: the card itself is near-white while it is
+     spotlighted, so a pale band had almost nothing to show up against. */
   background: linear-gradient(
     100deg,
-    rgba(55, 184, 171, 0) 38%,
-    rgba(55, 184, 171, 0.2) 50%,
-    rgba(55, 184, 171, 0.32) 56%,
-    rgba(55, 184, 171, 0.2) 62%,
-    rgba(55, 184, 171, 0) 74%
+    rgba(45, 190, 176, 0) 0%,
+    rgba(45, 190, 176, 0.24) 14%,
+    rgba(40, 186, 172, 0.55) 26%,
+    rgba(32, 176, 163, 0.8) 36%,
+    rgba(26, 168, 156, 0.9) 44%,
+    rgba(26, 168, 156, 0.9) 56%,
+    rgba(32, 176, 163, 0.8) 64%,
+    rgba(40, 186, 172, 0.55) 74%,
+    rgba(45, 190, 176, 0.24) 86%,
+    rgba(45, 190, 176, 0) 100%
   );
-  animation: agent-action-card-shimmer 920ms cubic-bezier(0.32, 0, 0.24, 1) 1 both;
+  animation: agent-action-card-shimmer 2200ms linear both;
+}
+
+/* The light passes under the card's own text, so the band can be this bright
+   without the wording washing out while it goes by. */
+.agent-action-item.is-spotlighted > * {
+  position: relative;
+  z-index: 2;
 }
 
 .agent-action-item.is-expanded {
@@ -5020,13 +5048,74 @@ body[data-modal="billing"] .app-shell {
   display: none;
 }
 
+/* The band is two and a half times the card's width and already centred on it,
+   so a small shift each way carries the light right across; the percentages
+   below are of the band, not of the card. */
 @keyframes agent-action-card-shimmer {
-  from {
-    transform: translateX(-100%);
+  0% {
+    opacity: 0;
+    transform: translateX(-52%);
   }
 
-  to {
-    transform: translateX(100%);
+  6% {
+    opacity: 1;
+  }
+
+  38% {
+    opacity: 1;
+  }
+
+  44% {
+    opacity: 0;
+    transform: translateX(52%);
+  }
+
+  /* The band is invisible here, so the jump back to the left is not seen. */
+  52% {
+    opacity: 0;
+    transform: translateX(-52%);
+  }
+
+  58% {
+    opacity: 1;
+  }
+
+  90% {
+    opacity: 1;
+  }
+
+  96%,
+  100% {
+    opacity: 0;
+    transform: translateX(52%);
+  }
+}
+
+/* The ring around the card breathes once while the light sweeps over it. */
+@keyframes agent-action-card-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(55, 184, 171, 0.26), 0 16px 34px rgba(15, 118, 110, 0.16);
+  }
+
+  30% {
+    box-shadow: 0 0 0 5px rgba(55, 184, 171, 0.42), 0 20px 44px rgba(15, 118, 110, 0.28);
+  }
+
+  70% {
+    box-shadow: 0 0 0 5px rgba(55, 184, 171, 0.38), 0 20px 44px rgba(15, 118, 110, 0.26);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-action-item.is-spotlighted,
+  .agent-action-item.is-entering.is-spotlighted {
+    animation: none;
+  }
+
+  /* No sweep at all rather than a band of light parked over the card. */
+  .agent-action-item.is-spotlighted::after {
+    display: none;
   }
 }
 
