@@ -4966,9 +4966,9 @@ body[data-modal="billing"] .app-shell {
   box-shadow: 0 16px 34px rgba(15, 118, 110, 0.16);
 }
 
-/* Two unhurried sweeps of light across the card so the eye has time to land on
-   it, then the card rests. The band fades in and out at the edges instead of
-   sliding in as a hard rectangle, which is what made the single pass feel stiff. */
+/* One unhurried sweep of light across the card, then the card rests. The band
+   fades in and out at the edges instead of sliding in as a hard rectangle,
+   which is what made an earlier pass feel stiff. */
 .agent-action-item.is-spotlighted::after {
   content: "";
   position: absolute;
@@ -4996,7 +4996,7 @@ body[data-modal="billing"] .app-shell {
     rgba(45, 190, 176, 0.24) 86%,
     rgba(45, 190, 176, 0) 100%
   );
-  animation: agent-action-card-shimmer 2200ms linear both;
+  animation: agent-action-card-shimmer 1800ms linear both;
 }
 
 /* The light passes under the card's own text, so the band can be this bright
@@ -5046,41 +5046,25 @@ body[data-modal="billing"] .app-shell {
 
 /* The band is two and a half times the card's width and already centred on it,
    so a small shift each way carries the light right across; the percentages
-   below are of the band, not of the card. */
+   below are of the band, not of the card.
+
+   The light keeps moving through the last stretch while it fades, so the sweep
+   ends by dimming to nothing over roughly two thirds of a second rather than
+   being cut off with part of the band still lying across the card. */
 @keyframes agent-action-card-shimmer {
   0% {
     opacity: 0;
     transform: translateX(-52%);
   }
 
-  6% {
+  7% {
     opacity: 1;
   }
 
-  38% {
+  62% {
     opacity: 1;
   }
 
-  44% {
-    opacity: 0;
-    transform: translateX(52%);
-  }
-
-  /* The band is invisible here, so the jump back to the left is not seen. */
-  52% {
-    opacity: 0;
-    transform: translateX(-52%);
-  }
-
-  58% {
-    opacity: 1;
-  }
-
-  90% {
-    opacity: 1;
-  }
-
-  96%,
   100% {
     opacity: 0;
     transform: translateX(52%);
