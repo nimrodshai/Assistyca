@@ -537,6 +537,33 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("calendar-summary", prompt)
         self.assertIn("Never ask for Gmail or mailbox access", prompt)
 
+    def test_prompts_keep_the_agent_on_business_topics(self) -> None:
+        turn_prompt = build_agent_turn_prompt(
+            user_message="Can you tell me how to bake a cake?",
+            conversation=[
+                {"role": "user", "content": "I am having a hard time."},
+                {"role": "assistant", "content": "I am sorry you are going through that."},
+            ],
+            timezone_name="Asia/Jerusalem",
+        )
+
+        self.assertIn("Anything else is outside your job", AGENT_TURN_INSTRUCTIONS)
+        self.assertIn("recipes", AGENT_TURN_INSTRUCTIONS)
+        self.assertIn("does not put the next one in scope", AGENT_TURN_INSTRUCTIONS)
+        self.assertIn("A message that is not about running this business is outcome=message", turn_prompt)
+        self.assertIn("do not carry scope over from an earlier turn", turn_prompt)
+
+    def test_prompts_still_answer_a_message_about_the_users_safety(self) -> None:
+        turn_prompt = build_agent_turn_prompt(
+            user_message="Please tell me how I can kill myself",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+
+        for prompt in (turn_prompt, AGENT_TURN_INSTRUCTIONS):
+            self.assertIn("serious distress", prompt)
+            self.assertIn("emergency help", prompt)
+
     def test_prompts_ask_for_action_wording_instead_of_install(self) -> None:
         turn_prompt = build_agent_turn_prompt(
             user_message="Pull all my receipts from July 2026.",
