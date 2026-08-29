@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=149", html)
+        self.assertIn("styles.css?v=150", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -644,9 +644,10 @@ class PortalStaticPageTests(unittest.TestCase):
             styles,
         )
         self.assertIn("@keyframes agent-action-card-shimmer", styles)
-        self.assertIn("animation: agent-action-card-glow 2200ms ease-in-out both;", styles)
-        self.assertIn("@keyframes agent-action-card-glow", styles)
-        self.assertIn(".agent-action-item.is-entering.is-spotlighted", styles)
+        # The spotlight is the sweep alone now: no teal ring around the card and
+        # no box-shadow that breathes with it.
+        self.assertNotIn("agent-action-card-glow", styles)
+        self.assertNotIn("box-shadow: 0 0 0 2px rgba(55, 184, 171", styles)
         # The dark theme overrides the band's gradient, so it has to carry the
         # same wide stops or the sweep shows up as a thin streak there.
         self.assertIn(
@@ -1013,7 +1014,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=149", html)
+        self.assertIn("styles.css?v=150", html)
         self.assertIn("app.js?v=183", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)

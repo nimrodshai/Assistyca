@@ -4958,16 +4958,12 @@ body[data-modal="billing"] .app-shell {
   }
 }
 
+/* The spotlight is the sweep of light and nothing else: no ring, no tinted
+   border. The card only lifts a little and warms its background so the sweep
+   has something to travel over. */
 .agent-action-item.is-spotlighted {
-  border-color: rgba(55, 184, 171, 0.88);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(237, 252, 250, 0.92));
-  box-shadow: 0 0 0 2px rgba(55, 184, 171, 0.26), 0 16px 34px rgba(15, 118, 110, 0.16);
-  animation: agent-action-card-glow 2200ms ease-in-out both;
-}
-
-/* A newly arrived card that is also the spotlight target keeps both moves. */
-.agent-action-item.is-entering.is-spotlighted {
-  animation: rise 260ms ease both, agent-action-card-glow 2200ms ease-in-out both;
+  box-shadow: 0 16px 34px rgba(15, 118, 110, 0.16);
 }
 
 /* Two unhurried sweeps of light across the card so the eye has time to land on
@@ -5091,29 +5087,9 @@ body[data-modal="billing"] .app-shell {
   }
 }
 
-/* The ring around the card breathes once while the light sweeps over it. */
-@keyframes agent-action-card-glow {
-  0%,
-  100% {
-    box-shadow: 0 0 0 2px rgba(55, 184, 171, 0.26), 0 16px 34px rgba(15, 118, 110, 0.16);
-  }
-
-  30% {
-    box-shadow: 0 0 0 5px rgba(55, 184, 171, 0.42), 0 20px 44px rgba(15, 118, 110, 0.28);
-  }
-
-  70% {
-    box-shadow: 0 0 0 5px rgba(55, 184, 171, 0.38), 0 20px 44px rgba(15, 118, 110, 0.26);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .agent-action-item.is-spotlighted,
-  .agent-action-item.is-entering.is-spotlighted {
-    animation: none;
-  }
-
-  /* No sweep at all rather than a band of light parked over the card. */
+  /* No sweep at all rather than a band of light parked over the card. The
+     warmed background is what marks the card here. */
   .agent-action-item.is-spotlighted::after {
     display: none;
   }
@@ -5817,10 +5793,6 @@ body[data-modal="billing"] .app-shell {
 
   .agent-action-item.is-spotlighted::after {
     display: none;
-  }
-
-  .agent-action-item.is-spotlighted {
-    box-shadow: 0 0 0 3px rgba(55, 184, 171, 0.2), 0 12px 28px rgba(15, 118, 110, 0.14);
   }
 
   .agent-action-editor-status-spinner {
@@ -11650,9 +11622,8 @@ body.is-chat-view {
 }
 
 :root[data-theme="dark"] .agent-action-item.is-spotlighted {
-  border-color: rgba(55, 184, 171, 0.88);
   background: linear-gradient(180deg, rgba(20, 40, 47, 0.98), rgba(11, 28, 34, 0.96));
-  box-shadow: 0 0 0 2px rgba(55, 184, 171, 0.3), 0 18px 38px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.28);
 }
 
 /* Same broad band as the light theme, in a brighter teal that reads against the
