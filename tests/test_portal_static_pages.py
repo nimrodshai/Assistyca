@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=153", html)
+        self.assertIn("styles.css?v=155", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -323,6 +323,10 @@ class PortalStaticPageTests(unittest.TestCase):
         # the row says so and reconnecting is the one thing it can do.
         self.assertIn('placeholder.textContent = "Reconnect to list your calendars";', tags_field)
         self.assertIn('openPlatformConnection("calendar");', tags_field)
+        # An action with no calendar at all is the same dead end, so the button
+        # beside the dropdown connects one rather than only reconnecting.
+        self.assertIn('connectButton.textContent = connected ? "Reconnect" : "Connect";', tags_field)
+        self.assertIn("connectButton.hidden = connected && !needsReconnect();", tags_field)
         self.assertIn(".agent-calendar-add {", styles)
         self.assertIn(".agent-calendar-add .agent-action-editor-select-wrap {", styles)
         self.assertIn(".agent-calendar-source-name", styles)
@@ -1194,8 +1198,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=153", html)
-        self.assertIn("app.js?v=186", html)
+        self.assertIn("styles.css?v=155", html)
+        self.assertIn("app.js?v=188", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

@@ -20320,12 +20320,14 @@ function createAgentCalendarTagsField(labelText, value) {
   const picker = document.createElement("select");
   picker.className = "agent-action-editor-select";
   picker.setAttribute("aria-label", `Add a calendar to ${labelText}`);
-  const reconnectButton = document.createElement("button");
-  reconnectButton.type = "button";
-  reconnectButton.className = "ghost-button small agent-calendar-add-reconnect";
-  reconnectButton.textContent = "Reconnect";
-  reconnectButton.hidden = true;
-  entry.append(wrapAgentActionEditorSelect(picker), reconnectButton);
+  // Nothing to pick from is never a dead end: the button beside the dropdown is
+  // the way to get a list, whether that means connecting a calendar for the
+  // first time or reconnecting one that cannot list what it holds.
+  const connectButton = document.createElement("button");
+  connectButton.type = "button";
+  connectButton.className = "ghost-button small agent-calendar-add-connect";
+  connectButton.hidden = true;
+  entry.append(wrapAgentActionEditorSelect(picker), connectButton);
 
   const hint = document.createElement("p");
   hint.className = "agent-action-editor-hint";
@@ -20566,7 +20568,7 @@ function createAgentCalendarTagsField(labelText, value) {
     const atLimit = tags.length >= AGENT_CALENDAR_TAG_LIMIT;
     const loading = state.agentCalendarSourcesLoading && !sources.length;
     if (!connected) {
-      placeholder.textContent = "Connect Google Calendar first";
+      placeholder.textContent = "Connect Google Calendar to list your calendars";
     } else if (loading) {
       placeholder.textContent = "Loading the calendars in this account…";
     } else if (atLimit) {
@@ -20579,7 +20581,8 @@ function createAgentCalendarTagsField(labelText, value) {
       placeholder.textContent = "Every calendar in this account is already listed";
     }
     picker.disabled = !connected || !addable || atLimit;
-    reconnectButton.hidden = !connected || !needsReconnect();
+    connectButton.textContent = connected ? "Reconnect" : "Connect";
+    connectButton.hidden = connected && !needsReconnect();
   }
 
   picker.addEventListener("change", () => {
@@ -20587,7 +20590,7 @@ function createAgentCalendarTagsField(labelText, value) {
     picker.value = "";
     addTag(tag);
   });
-  reconnectButton.addEventListener("click", () => {
+  connectButton.addEventListener("click", () => {
     openPlatformConnection("calendar");
   });
   sourceList.addEventListener("click", (event) => {
