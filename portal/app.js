@@ -15501,17 +15501,100 @@ function readAgentThinkingBubbleSize(container) {
   };
 }
 
-function playAgentMessageEntrances(container, newMessages, thinking) {
+const AGENT_MESSAGE_RISE_EASING = "cubic-bezier(0.33, 1, 0.68, 1)";
+
+function findAgentMessageRow(container, messageId) {
+  return container.querySelector(`[data-agent-message-id="${CSS.escape(messageId)}"]`);
+}
+
+// Where every message sits right now, so the ones already on screen can glide
+// to their new spot instead of jumping the moment a message is added.
+function readAgentMessageRowTops(container) {
+  const tops = new Map();
+  for (const row of container.querySelectorAll("[data-agent-message-id]")) {
+    tops.set(row.dataset.agentMessageId, row.getBoundingClientRect().top);
+  }
+  return tops;
+}
+
+function glideSettledAgentRows(container, previousTops, duration) {
+  if (!previousTops?.size) {
+    return;
+  }
+
+  const bounds = container.getBoundingClientRect();
+  const moves = [];
+  for (const [messageId, previousTop] of previousTops) {
+    const row = findAgentMessageRow(container, messageId);
+    if (!row) {
+      continue;
+    }
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom < bounds.top - 40 || rect.top > bounds.bottom + 40) {
+      continue;
+    }
+    const delta = previousTop - rect.top;
+    if (Math.abs(delta) < 1) {
+      continue;
+    }
+    moves.push([row, delta]);
+  }
+
+  for (const [row, delta] of moves) {
+    row.animate(
+      [{ transform: `translateY(${delta}px)` }, { transform: "none" }],
+      { duration, easing: AGENT_MESSAGE_RISE_EASING },
+    );
+  }
+}
+
+// A sent message starts just below the list's bottom edge, which sits behind
+// the composer.
+function getAgentRiseTravel(container, row) {
+  return Math.max(24, Math.round(container.getBoundingClientRect().bottom - row.getBoundingClientRect().top) + 10);
+}
+
+// A taller message has further to travel, so give it longer to get there and
+// keep the speed of the movement about the same either way.
+function getAgentRiseDuration(travel) {
+  return Math.round(Math.min(620, Math.max(380, 340 + travel * 0.55)));
+}
+
+function playAgentUserMessageEntrance(row, travel, duration) {
+  row.style.setProperty("--agent-rise-distance", `${travel}px`);
+  row.style.setProperty("--agent-rise-duration", `${duration}ms`);
+  playAgentMessageEntrance(row, "is-entering-user");
+}
+
+function playAgentMessageEntrances(container, newMessages, thinking, previousTops) {
+  if (shouldReduceAgentMotion()) {
+    return;
+  }
+
   const morphId = thinking
     ? newMessages.filter((message) => message.role !== "user").at(-1)?.id || ""
     : "";
+  // The message that was just sent sets the pace, so the rest of the
+  // conversation moves up with it rather than on its own schedule.
+  const travels = new Map();
   for (const message of newMessages) {
-    const row = container.querySelector(`[data-agent-message-id="${CSS.escape(message.id)}"]`);
+    if (message.role !== "user") {
+      continue;
+    }
+    const row = findAgentMessageRow(container, message.id);
+    if (row) {
+      travels.set(message.id, getAgentRiseTravel(container, row));
+    }
+  }
+  const duration = getAgentRiseDuration(Math.max(80, ...travels.values(), 0));
+  glideSettledAgentRows(container, previousTops, duration);
+  for (const message of newMessages) {
+    const row = findAgentMessageRow(container, message.id);
     if (!row) {
       continue;
     }
     if (message.role === "user") {
-      playAgentMessageEntrance(row, "is-entering-user");
+      playAgentUserMessageEntrance(row, travels.get(message.id) || 80, duration);
     } else if (message.id === morphId) {
       playAgentThinkingMorph(row, thinking);
     } else {
@@ -15561,10 +15644,16 @@ function renderAgentMessages() {
     agentAnimatedMessageIds.add(message.id);
   }
   const thinking = agentTurnBusy ? null : readAgentThinkingBubbleSize(elements.agentMessageList);
+  const previousTops = newMessages.length ? readAgentMessageRowTops(elements.agentMessageList) : null;
   elements.agentMessageList.dataset.agentMessageRenderSignature = signature;
   elements.agentMessageList.dataset.agentMessageLastId = lastMessage?.id || "";
   elements.agentMessageList.replaceChildren(...visibleMessages.map(renderAgentMessage));
-  playAgentMessageEntrances(elements.agentMessageList, newMessages, thinking);
+  if (shouldPinToBottom && newMessages.length) {
+    // Settle the scroll before measuring, so the entrance animations start from
+    // where each message actually ends up.
+    scrollAgentMessagesToBottom();
+  }
+  playAgentMessageEntrances(elements.agentMessageList, newMessages, thinking, previousTops);
   if (shouldPinToBottom) {
     window.requestAnimationFrame(scrollAgentMessagesToBottom);
   }
