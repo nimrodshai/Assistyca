@@ -5406,6 +5406,13 @@ body[data-modal="billing"] .app-shell {
   gap: 0.34rem;
 }
 
+/* The display above outranks the browser's own rule for [hidden], so a field the
+   editor hides (Save folder on a non-receipt action, Read mailbox with only one
+   mailbox) stayed on screen showing its example placeholder. */
+.agent-action-editor-field[hidden] {
+  display: none;
+}
+
 .agent-action-editor-label-row {
   display: flex;
   gap: 0.55rem;

@@ -336,6 +336,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function getAgentMonthlyBatchOutputFolder", script)
         self.assertIn("Receipts/{RunMonth}/", script)
         self.assertIn('"Save folder"', script)
+        self.assertIn(".agent-action-editor-field[hidden]", styles)
         self.assertIn("function isAgentProposalCustomGoogleBatchRunner", script)
         self.assertIn("function getAgentProposalPurposeTitle", script)
         self.assertIn("function getAgentPurposeTitleFromText", script)
