@@ -3544,15 +3544,14 @@ function renderNotificationCenter() {
       link.textContent = notification.hrefLabel;
       actions.append(link);
     }
-    const openButton = document.createElement("button");
-    openButton.className = "notification-center-item-open";
-    openButton.type = "button";
-    openButton.dataset.notificationOpen = notification.id;
-    openButton.textContent = notification.actionId ? "Open action" : "Mark read";
-    if (!notification.actionId && notification.readAt) {
-      openButton.hidden = true;
+    if (!notification.readAt) {
+      const openButton = document.createElement("button");
+      openButton.className = "notification-center-item-open";
+      openButton.type = "button";
+      openButton.dataset.notificationOpen = notification.id;
+      openButton.textContent = "Mark read";
+      actions.append(openButton);
     }
-    actions.append(openButton);
     item.append(icon, content, actions);
     list.append(item);
   }
