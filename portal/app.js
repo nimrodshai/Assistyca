@@ -4173,12 +4173,12 @@ function renderNotificationCenterItem(notification) {
     actions.append(link);
   }
   if (!notification.readAt) {
-    const openButton = document.createElement("button");
-    openButton.className = "notification-center-item-open";
-    openButton.type = "button";
-    openButton.dataset.notificationOpen = notification.id;
-    openButton.textContent = "Mark read";
-    actions.append(openButton);
+    const markReadButton = document.createElement("button");
+    markReadButton.className = "notification-center-item-mark-read";
+    markReadButton.type = "button";
+    markReadButton.dataset.notificationMarkRead = notification.id;
+    markReadButton.textContent = "Mark read";
+    actions.append(markReadButton);
   }
   item.append(icon, content, time, actions);
   return item;
@@ -30197,6 +30197,14 @@ function bindEvents() {
       const link = target?.closest("[data-notification-link]");
       if (link) {
         markAgentNotificationRead(link.dataset.notificationLink || "");
+        return;
+      }
+      // "Mark read" only marks the row read. Without this the click would fall
+      // through to the row itself, which opens the action behind it and closes
+      // the panel the reader is still working down.
+      const markRead = target?.closest("[data-notification-mark-read]");
+      if (markRead) {
+        markAgentNotificationRead(markRead.dataset.notificationMarkRead || "");
         return;
       }
       const item = target?.closest("[data-notification-id]");

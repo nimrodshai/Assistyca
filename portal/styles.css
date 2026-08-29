@@ -2271,7 +2271,7 @@ body[data-modal="billing"] .app-shell {
 }
 
 .notification-center-item-link,
-.notification-center-item-open {
+.notification-center-item-mark-read {
   padding: 0.28rem 0.48rem;
   border-radius: 8px;
   color: var(--accent);
@@ -2282,8 +2282,8 @@ body[data-modal="billing"] .app-shell {
 
 .notification-center-item-link:hover,
 .notification-center-item-link:focus-visible,
-.notification-center-item-open:hover,
-.notification-center-item-open:focus-visible {
+.notification-center-item-mark-read:hover,
+.notification-center-item-mark-read:focus-visible {
   background: rgba(15, 118, 110, 0.09);
 }
 
