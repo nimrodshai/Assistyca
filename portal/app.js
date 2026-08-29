@@ -2947,8 +2947,18 @@ function openAuthAlert(title, message, options = {}) {
     elements.authAlertTitle.textContent = String(title || "Let’s get you set up");
   }
 
+  const hideAlertMessage = Boolean(options.hideMessage);
   if (elements.authAlertMessage) {
-    elements.authAlertMessage.textContent = String(message || "If you need help, contact me and I’ll take care of it.");
+    elements.authAlertMessage.textContent = hideAlertMessage
+      ? ""
+      : String(message || "If you need help, contact me and I’ll take care of it.");
+    elements.authAlertMessage.classList.toggle("is-hidden", hideAlertMessage);
+  }
+  if (elements.authAlertOverlay) {
+    elements.authAlertOverlay.setAttribute(
+      "aria-describedby",
+      hideAlertMessage ? "authAlertBody" : "authAlertMessage",
+    );
   }
   if (elements.authAlertDialog) {
     elements.authAlertDialog.dataset.mode = iconMode === "spinner" ? "loading" : "default";
@@ -14126,7 +14136,7 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
 
   if (proposal.type === "custom") {
     proposal.title = getAgentProposalPurposeTitle(proposal);
-    proposal.summary = `${blueprint.summary} Request: "${String(text).trim().slice(0, 140)}"`;
+    proposal.summary = getAgentActionPurposeText(String(text).trim().slice(0, 140)) || blueprint.summary;
   }
   if (proposal.type === "scheduled-message") {
     const channelLabel = formatAgentScheduledMessageChannel(scheduledDetails.channel);
@@ -16183,12 +16193,38 @@ function getAgentActionChoiceDetailRows(action, choice) {
   return rows;
 }
 
+function agentTextReadsLikeDescription(text) {
+  // A one-tap answer like "1" or "yes" is how the client picked something in
+  // chat, not a description of the action they ended up with.
+  const value = String(text || "").trim();
+  if (!/[a-z]/i.test(value)) {
+    return false;
+  }
+  return value.includes(" ") || value.length >= 12;
+}
+
+function getAgentActionPurposeText(raw) {
+  let value = String(raw || "").trim();
+  // Custom actions used to carry the blueprint's own account of how the agent
+  // builds them, with the raw request stapled on the end. Keep the client's
+  // words and drop our side of it.
+  const blueprint = String(AGENT_BLUEPRINTS.custom?.summary || "");
+  if (blueprint && value.startsWith(blueprint)) {
+    value = value.slice(blueprint.length).trim();
+  }
+  const quotedRequest = value.match(/^Request:\s*"([\s\S]*)"$/);
+  if (quotedRequest) {
+    value = quotedRequest[1].trim();
+  }
+  return agentTextReadsLikeDescription(value) ? value : "";
+}
+
 function createAgentActionChoiceDetailsBody(action, choice) {
   const body = document.createElement("div");
   body.className = "agent-action-choice-details";
 
   const payload = action?.payload && typeof action.payload === "object" ? action.payload : {};
-  const summary = String(payload.summary || payload.messageText || payload.text || "").trim();
+  const summary = getAgentActionPurposeText(payload.summary || payload.messageText || payload.text);
   if (summary) {
     const intro = document.createElement("p");
     intro.className = "agent-action-choice-details-summary";
@@ -16226,8 +16262,9 @@ function openAgentActionChoiceDetails(button) {
   const action = findAgentActionChoiceAction(choice.id);
   openAuthAlert(
     action ? getScheduledActionTitle(action) : (choice.name || "Action"),
-    "Here is what this action does, so you can tell it apart from the others.",
+    "",
     {
+      hideMessage: true,
       eyebrow: "Action details",
       icon: "i",
       tone: "progress",
