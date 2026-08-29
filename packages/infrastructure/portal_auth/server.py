@@ -2038,6 +2038,45 @@ def mailbox_display_name(record: dict[str, Any]) -> str:
     return EMAIL_PROVIDER_LABELS.get(provider, "Email")
 
 
+def join_with_and(names: list[str]) -> str:
+    """Read a short list the way a sentence would say it."""
+
+    kept = [name for name in names if name]
+    if len(kept) < 2:
+        return kept[0] if kept else ""
+    return f"{', '.join(kept[:-1])} and {kept[-1]}"
+
+
+def summarize_mailbox_failures(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Name each mailbox that could not be read, with its own reason."""
+
+    return [
+        {
+            "mailbox": normalize_text(failure.get("mailbox")),
+            "message": normalize_text(failure.get("message")),
+        }
+        for failure in failures
+    ]
+
+
+def describe_mailbox_failures(failures: list[dict[str, Any]]) -> str:
+    """Say in one sentence which mailboxes could not be read.
+
+    One mailbox keeps the reason its reader wrote, which is more specific than
+    anything this could say. Several mailboxes get one sentence naming them
+    all, because a list of reasons is not what the question asked about.
+    """
+
+    if not failures:
+        return ""
+    if len(failures) == 1:
+        return normalize_text(failures[0].get("message"))
+    names = join_with_and([normalize_text(failure.get("mailbox")) for failure in failures])
+    if not names:
+        return ""
+    return f"I couldn't read {names} just now. Try it again later, and reconnect them if it keeps happening."
+
+
 def mailbox_matches_selection(record: dict[str, Any], selection: str) -> bool:
     """Whether a saved action's mailbox choice points at this connection.
 
@@ -5015,11 +5054,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "error": "email_setup_required",
                     "message": "No mailbox could be read. Reconnect a mailbox and try again.",
                 }
-                json_response(self, failure["status"], {
+                # Every mailbox was tried, so every mailbox that failed is
+                # named. Reporting only the first read as though the others
+                # were never looked at.
+                failure_payload: dict[str, Any] = {
                     "ok": False,
                     "error": failure["error"],
-                    "message": failure["message"],
-                })
+                    "message": describe_mailbox_failures(mailbox_failures) or failure["message"],
+                }
+                if mailbox_failures:
+                    failure_payload["skippedMailboxes"] = summarize_mailbox_failures(mailbox_failures)
+                json_response(self, failure["status"], failure_payload)
                 return
 
             result = merge_mail_digest_results(mailbox_results)
@@ -5087,13 +5132,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if mailbox_failures:
                 # A partial run is still a result, but it must say what it missed
                 # rather than quietly reporting fewer receipts than exist.
-                response_payload["skippedMailboxes"] = [
-                    {
-                        "mailbox": normalize_text(failure.get("mailbox")),
-                        "message": normalize_text(failure.get("message")),
-                    }
-                    for failure in mailbox_failures
-                ]
+                response_payload["skippedMailboxes"] = summarize_mailbox_failures(mailbox_failures)
             if receipt_answer:
                 # A question asked in chat is answered in chat; there is no
                 # bundle to link because nothing was written.

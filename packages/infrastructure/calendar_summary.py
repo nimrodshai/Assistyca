@@ -398,11 +398,14 @@ class CalendarSummaryRunner:
             ) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CalendarSummaryError(
-                "Google Calendar returned an unreadable response. Try again or reconnect Calendar.",
+                "I couldn’t read Google Calendar just now. Try it again later, and reconnect Calendar if it keeps happening.",
                 code="calendar_provider_error",
             ) from exc
         if not isinstance(payload, dict):
-            raise CalendarSummaryError("Google Calendar returned an invalid response.", code="calendar_provider_error")
+            raise CalendarSummaryError(
+                "I couldn’t read Google Calendar just now. Try it again later, and reconnect Calendar if it keeps happening.",
+                code="calendar_provider_error",
+            )
         return payload
 
     def fetch_calendar_list(self, access_token: str) -> list[dict[str, Any]]:
@@ -421,7 +424,7 @@ class CalendarSummaryRunner:
             if exc.code in {401, 403}:
                 return CalendarListUnavailableError()
             return CalendarSummaryError(
-                f"Google Calendar returned an error ({exc.code}) while listing calendars.",
+                "I couldn’t read your list of calendars just now. Try it again later, and reconnect Calendar if it keeps happening.",
                 code="calendar_provider_error",
             )
 
@@ -478,7 +481,8 @@ class CalendarSummaryRunner:
             if exc.code in {403, 404}:
                 return CalendarNotSharedError(safe_calendar_id)
             return CalendarSummaryError(
-                f"Google Calendar returned an error ({exc.code}). Try again or reconnect Calendar.",
+                # A client reads this sentence; the HTTP code stays in ``code``.
+                "I couldn’t read Google Calendar just now. Try it again later, and reconnect Calendar if it keeps happening.",
                 code="calendar_provider_error",
             )
 

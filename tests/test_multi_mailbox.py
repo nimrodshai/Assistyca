@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.gmail_summary import GmailAuthorizationError
+from packages.infrastructure.outlook_summary import OutlookSummaryError
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_SECRET_TYPE
 from packages.infrastructure.portal_auth.server import MICROSOFT_OAUTH_SECRET_TYPE
 from packages.infrastructure.portal_auth.server import MICROSOFT_OUTLOOK_OAUTH_PROVIDER
@@ -320,6 +321,24 @@ class MultiMailboxTests(unittest.TestCase):
                 self._run_receipts({"deliveryChannel": "portal"})
 
         self.assertEqual(caught.exception.code, 409)
+
+    def test_a_run_that_fails_everywhere_names_every_mailbox_it_tried(self) -> None:
+        # Naming only the first reads as though the others were never opened,
+        # which is the opposite of what the run actually did.
+        self._save_gmail("personal@gmail.com")
+        self._save_outlook("work@contoso.com")
+
+        with mock.patch(f"{SERVER_MODULE}.GmailDigestRunner.run", side_effect=GmailAuthorizationError("Gmail access needs attention.")):
+            with mock.patch(f"{SERVER_MODULE}.OutlookDigestRunner.run", side_effect=OutlookSummaryError("Outlook is unhappy.", code="outlook_provider_error")):
+                with self.assertRaises(urllib_error.HTTPError) as caught:
+                    self._run_receipts({"deliveryChannel": "portal"})
+
+        payload = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(
+            [entry["mailbox"] for entry in payload["skippedMailboxes"]],
+            ["personal@gmail.com", "work@contoso.com"],
+        )
+        self.assertIn("personal@gmail.com and work@contoso.com", payload["message"])
 
 
 class MergeMailDigestResultTests(unittest.TestCase):

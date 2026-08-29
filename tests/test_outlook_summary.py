@@ -333,6 +333,16 @@ class OutlookFailureTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, "outlook_provider_error")
 
+    def test_a_provider_error_reads_as_english_rather_than_an_http_code(self) -> None:
+        # This sentence is shown to a client in chat. The status code belongs
+        # in ``code`` and the logs, not in what they read.
+        with self.assertRaises(OutlookSummaryError) as caught:
+            OutlookDigestRunner(opener=self._failing_opener(400)).run("token", query=INBOX_QUERY)
+
+        message = str(caught.exception)
+        self.assertNotIn("400", message)
+        self.assertIn("Outlook", message)
+
     def test_an_unreachable_provider_says_so(self) -> None:
         def opener(request, *, timeout):  # type: ignore[no-untyped-def]
             raise urllib.error.URLError("no route")

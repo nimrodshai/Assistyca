@@ -22503,6 +22503,26 @@ function describeAgentAnswerMonth(entry) {
   return `${label}: ${amounts} (${count} ${receiptWord}${missingNote})`;
 }
 
+// A mailbox the run could not open is named before the answer, in words a
+// client can act on. The numbers underneath were read from the mailboxes that
+// did open, so a silent skip would pass a partial total off as the whole one.
+function describeAgentAnswerSkippedMailboxes(results) {
+  const names = [];
+  results.forEach((entry) => {
+    const skipped = Array.isArray(entry?.skippedMailboxes) ? entry.skippedMailboxes : [];
+    skipped.forEach((item) => {
+      const name = String(item?.mailbox || "").trim();
+      if (name && !names.includes(name)) {
+        names.push(name);
+      }
+    });
+  });
+  if (!names.length) {
+    return "";
+  }
+  return `I couldn’t read ${joinAgentAnswerLabels(names)} just now - you can try that again later. Here is what I found in the rest of your mail:`;
+}
+
 // Several months asked about in one question deserve one answer: the total
 // first, then a line per month. Stacking one sentence per month leaves the
 // adding up to the reader, which is the part they asked for.
@@ -22650,7 +22670,10 @@ async function runAgentAnswerNow(turn) {
     if (trimmed) {
       answerLines.push(`That was more months than I check at once, so I stopped after ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
     }
-    const answer = answerLines.join("\n\n");
+    // The mailbox that could not be read comes first, so the totals below it
+    // are read as what they are: everything the other mailboxes had.
+    const skippedNote = describeAgentAnswerSkippedMailboxes(results);
+    const answer = (skippedNote ? [skippedNote, ...answerLines] : answerLines).join("\n\n");
     pushAgentMessage("assistant", answer, { kind: "result" });
     persistAgentWorkspace(answer);
   } catch (error) {

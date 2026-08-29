@@ -124,6 +124,16 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(':root[data-theme="dark"] .admin-users-table td', styles)
         self.assertIn(':root[data-theme="dark"] .admin-client-type-select[data-admin-client-type-value="demo"]', styles)
 
+    def test_an_answer_says_which_mailbox_it_could_not_read(self) -> None:
+        # A partial answer that says nothing about the mailbox it skipped
+        # passes a smaller total off as the whole one.
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function describeAgentAnswerSkippedMailboxes", script)
+        self.assertIn("skippedMailboxes", script)
+        self.assertIn("Here is what I found in the rest of your mail", script)
+        self.assertIn("const skippedNote = describeAgentAnswerSkippedMailboxes(results);", script)
+
     def test_reengagement_demo_results_use_completion_popup_not_editor_card(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

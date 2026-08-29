@@ -121,8 +121,14 @@ account.
 Each mailbox is read independently, so one expired credential cannot sink the
 rest: the failing connection alone is marked `needs_attention`, the run
 continues, and the response carries `skippedMailboxes` so a partial result is
-never mistaken for a complete one. The run fails only when every mailbox
-fails.
+never mistaken for a complete one. Chat reads that list out before the answer,
+naming the mailbox it could not open. The run fails only when every mailbox
+fails, and that failure carries `skippedMailboxes` too, so every mailbox that
+was tried is named rather than only the first.
+
+Provider messages are written for the person who reads them in chat, so they
+never carry an HTTP status. The code stays in the error's `code` field and in
+the logs, where the technical detail panel picks it up.
 
 ### Searching two mailboxes with one query
 

@@ -89,7 +89,9 @@ def _graph_request(
                 "Reconnect Outlook with read-only access, then try again."
             ) from exc
         raise OutlookSummaryError(
-            f"Outlook returned an error ({exc.code}). Try again or reconnect Outlook.",
+            # The person reading this is a client, not an operator: the HTTP
+            # code belongs in ``code`` and the logs, not in the sentence.
+            "I couldn't read Outlook just now. Try it again later, and reconnect Outlook if it keeps happening.",
             code="outlook_provider_error",
         ) from exc
     except (urllib_error.URLError, TimeoutError, OSError) as exc:
@@ -99,13 +101,13 @@ def _graph_request(
         ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise OutlookSummaryError(
-            "Outlook returned an unreadable response.",
+            "I couldn't read Outlook just now. Try it again later, and reconnect Outlook if it keeps happening.",
             code="outlook_provider_error",
         ) from exc
 
     if not isinstance(payload, dict):
         raise OutlookSummaryError(
-            "Outlook returned an invalid response.",
+            "I couldn't read Outlook just now. Try it again later, and reconnect Outlook if it keeps happening.",
             code="outlook_provider_error",
         )
     return payload

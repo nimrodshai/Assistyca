@@ -101,7 +101,8 @@ class GmailAccessValidator:
                     "Gmail access needs attention: Google rejected the saved credential or its permissions. Reconnect Gmail with read-only access, then try again."
                 ) from exc
             raise GmailSummaryError(
-                f"Gmail returned an error ({exc.code}). Try again or reconnect Gmail.",
+                # A client reads this sentence; the HTTP code stays in ``code``.
+                "I couldn't read Gmail just now. Try it again later, and reconnect Gmail if it keeps happening.",
                 code="gmail_provider_error",
             ) from exc
         except (urllib_error.URLError, TimeoutError, OSError) as exc:
@@ -111,19 +112,19 @@ class GmailAccessValidator:
             ) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise GmailSummaryError(
-                "Gmail returned an unreadable response.",
+                "I couldn't read Gmail just now. Try it again later, and reconnect Gmail if it keeps happening.",
                 code="gmail_provider_error",
             ) from exc
 
         if not isinstance(payload, dict):
             raise GmailSummaryError(
-                "Gmail returned an invalid response.",
+                "I couldn't read Gmail just now. Try it again later, and reconnect Gmail if it keeps happening.",
                 code="gmail_provider_error",
             )
         messages = payload.get("messages")
         if messages is not None and not isinstance(messages, list):
             raise GmailSummaryError(
-                "Gmail returned an invalid message list.",
+                "I couldn't read Gmail just now. Try it again later, and reconnect Gmail if it keeps happening.",
                 code="gmail_provider_error",
             )
         return {
@@ -214,7 +215,8 @@ class GmailDigestRunner:
                     "Gmail access needs attention: Google rejected the saved credential or its permissions. Reconnect Gmail with read-only access, then try again."
                 ) from exc
             raise GmailSummaryError(
-                f"Gmail returned an error ({exc.code}). Try again or reconnect Gmail.",
+                # A client reads this sentence; the HTTP code stays in ``code``.
+                "I couldn't read Gmail just now. Try it again later, and reconnect Gmail if it keeps happening.",
                 code="gmail_provider_error",
             ) from exc
         except (urllib_error.URLError, TimeoutError, OSError) as exc:
@@ -224,13 +226,13 @@ class GmailDigestRunner:
             ) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise GmailSummaryError(
-                "Gmail returned an unreadable response.",
+                "I couldn't read Gmail just now. Try it again later, and reconnect Gmail if it keeps happening.",
                 code="gmail_provider_error",
             ) from exc
 
         if not isinstance(payload, dict):
             raise GmailSummaryError(
-                "Gmail returned an invalid response.",
+                "I couldn't read Gmail just now. Try it again later, and reconnect Gmail if it keeps happening.",
                 code="gmail_provider_error",
             )
         return payload
