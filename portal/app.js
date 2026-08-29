@@ -21484,13 +21484,28 @@ function syncNotificationsPolling() {
 
 function syncScheduledActionsPolling() {
   syncNotificationsPolling();
-  const shouldPoll = Boolean(
+  // The actions panel belongs to the app shell, so it can be open on any tab.
+  // Its first load must not wait for the agent workspace to be the visible
+  // tab, or the panel sits on "Loading actions…" forever. Only the repeat
+  // polling stays tied to the workspace being on screen.
+  const canLoad = Boolean(
     isSignedIn()
     && document.body.dataset.view === "app"
     && document.visibilityState !== "hidden"
+  );
+  const shouldPoll = Boolean(
+    canLoad
     && state.activeTab === "features"
     && !state.selectedFeatureId
   );
+  if (canLoad) {
+    if (!state.scheduledActionsLoadedAt && !scheduledActionsRefreshPromise) {
+      void refreshScheduledActions();
+    }
+    if (!state.sourceActionsLoadedAt && !sourceActionsRefreshPromise) {
+      void refreshSourceActions();
+    }
+  }
   if (!shouldPoll) {
     if (scheduledActionsPollTimer !== null) {
       window.clearInterval(scheduledActionsPollTimer);
@@ -21500,9 +21515,6 @@ function syncScheduledActionsPolling() {
     return;
   }
 
-  if (!state.scheduledActionsLoadedAt && !scheduledActionsRefreshPromise) {
-    void refreshScheduledActions();
-  }
   if (!sourceActionsRefreshPromise) {
     void refreshSourceActions();
   }
