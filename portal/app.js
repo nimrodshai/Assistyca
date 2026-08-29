@@ -21251,6 +21251,22 @@ function isAgentToolsInitialLoading() {
   );
 }
 
+// The panel paints a spinner whenever its first load has not landed, so that
+// same condition is what has to guarantee a request is on its way. Tying the
+// fetch to anything else — the visible tab, the selected feature — leaves the
+// spinner up with nothing behind it.
+function ensureAgentActionsLoaded() {
+  if (!isSignedIn() || document.body.dataset.view !== "app") {
+    return;
+  }
+  if (!state.scheduledActionsLoadedAt && !scheduledActionsRefreshPromise) {
+    void refreshScheduledActions();
+  }
+  if (!state.sourceActionsLoadedAt && !sourceActionsRefreshPromise) {
+    void refreshSourceActions();
+  }
+}
+
 function renderAgentActions() {
   if (!elements.agentPendingActionList || !elements.agentCompletedActionList) {
     return;
@@ -21280,6 +21296,7 @@ function renderAgentActions() {
     elements.agentCompletedActionList.hidden = !historyExpanded;
   }
   if (initialLoading) {
+    ensureAgentActionsLoaded();
     renderScheduledActionLoadingList(elements.agentPendingActionList, "Loading actions…");
     renderScheduledActionLoadingList(elements.agentCompletedActionList, "Loading history…");
   } else {
@@ -21313,7 +21330,6 @@ async function refreshScheduledActions(options = {}) {
 
   const requestSessionKey = currentAuthSessionKey();
   state.scheduledActionsLoading = true;
-  renderAgentActions();
   scheduledActionsRefreshPromise = (async () => {
     try {
       const response = await apiRequest("/api/scheduled-actions?limit=100");
@@ -21342,6 +21358,7 @@ async function refreshScheduledActions(options = {}) {
       scheduledActionsRefreshPromise = null;
     }
   })();
+  renderAgentActions();
   return scheduledActionsRefreshPromise;
 }
 
@@ -21484,28 +21501,14 @@ function syncNotificationsPolling() {
 
 function syncScheduledActionsPolling() {
   syncNotificationsPolling();
-  // The actions panel belongs to the app shell, so it can be open on any tab.
-  // Its first load must not wait for the agent workspace to be the visible
-  // tab, or the panel sits on "Loading actions…" forever. Only the repeat
-  // polling stays tied to the workspace being on screen.
-  const canLoad = Boolean(
+  const shouldPoll = Boolean(
     isSignedIn()
     && document.body.dataset.view === "app"
     && document.visibilityState !== "hidden"
-  );
-  const shouldPoll = Boolean(
-    canLoad
     && state.activeTab === "features"
     && !state.selectedFeatureId
   );
-  if (canLoad) {
-    if (!state.scheduledActionsLoadedAt && !scheduledActionsRefreshPromise) {
-      void refreshScheduledActions();
-    }
-    if (!state.sourceActionsLoadedAt && !sourceActionsRefreshPromise) {
-      void refreshSourceActions();
-    }
-  }
+  ensureAgentActionsLoaded();
   if (!shouldPoll) {
     if (scheduledActionsPollTimer !== null) {
       window.clearInterval(scheduledActionsPollTimer);
