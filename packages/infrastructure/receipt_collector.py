@@ -77,6 +77,38 @@ _TOTAL_LABEL_PATTERNS = (
     re.compile(r"\btotals?\b", re.IGNORECASE),
 )
 _TOTAL_LABEL_WINDOW = 80
+# The mailbox search is six broad words matched over the whole message, and
+# Gmail's word search reaches inside attachments: a signed agreement whose PDF
+# says "statement" or "expenses" comes back from a receipt search. Deciding
+# what is actually a receipt therefore uses the email's own words only - the
+# attachment text is never read here.
+_RECEIPT_EVIDENCE_RE = re.compile(
+    "|".join((
+        r"\breceipts?\b",
+        r"\binvoiced?\b",
+        r"\binvoices\b",
+        r"\bpaid\b",
+        r"\bpayments?\b",
+        r"\bcharged\b",
+        r"\brefunds?\b",
+        r"\bsubtotal\b",
+        r"\bcheckout\b",
+        r"\bpurchased?\b",
+        r"\bbilled\b",
+        r"\bbilling\b",
+        r"\byour order\b",
+        r"\border (?:total|confirmation|number|summary)\b",
+        r"\btransaction (?:id|details|receipt)\b",
+        r"\bsubscription (?:payment|renewal|renewed)\b",
+        "\u05e7\u05d1\u05dc\u05d4",
+        "\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea",
+        "\u05ea\u05e9\u05dc\u05d5\u05dd",
+    )),
+    re.IGNORECASE,
+)
+RECEIPT_STATUS_READY = "Ready"
+RECEIPT_STATUS_REVIEW = "Needs review"
+RECEIPT_STATUS_NOT_A_RECEIPT = "Not a receipt"
 
 
 def format_receipt_folder_month(year: int, month: int) -> str:
@@ -132,14 +164,25 @@ def create_receipt_bundle(
     )
     folder_path.mkdir(parents=True, exist_ok=True)
 
-    rows = extract_receipt_rows(items)
+    rows, skipped_rows = split_receipt_rows(extract_receipt_rows(items))
     metadata = {
         "createdAt": created.isoformat(),
         "outputFolder": logical_folder,
         "monthLabel": format_receipt_month_label(month_value) if month_value else "",
         "query": str(query or "").strip(),
         "receiptCount": len(rows),
-        "reviewCount": sum(1 for row in rows if row["status"] != "Ready"),
+        "reviewCount": sum(1 for row in rows if row["status"] != RECEIPT_STATUS_READY),
+        "skippedCount": len(skipped_rows),
+        # Named rather than counted, so a receipt wrongly left out is visible.
+        "skipped": [
+            {
+                "vendor": row["vendor"],
+                "subject": row["subject"],
+                "source": row["source"],
+                "date": row["date"],
+            }
+            for row in skipped_rows
+        ],
         "summary": summarize_receipt_rows(rows),
         "exportVersion": RECEIPT_EXPORT_VERSION,
     }
@@ -160,7 +203,7 @@ def create_receipt_bundle(
     write_receipts_xlsx(excel_path, rows, metadata)
     write_receipts_pdf(pdf_path, rows, metadata)
     manifest_path.write_text(
-        json.dumps({"metadata": metadata, "receipts": rows}, indent=2, ensure_ascii=True),
+        json.dumps({"metadata": metadata, "receipts": rows, "skipped": skipped_rows}, indent=2, ensure_ascii=True),
         encoding="utf-8",
     )
 
@@ -175,6 +218,7 @@ def create_receipt_bundle(
         "folderPath": str(folder_path),
         "receiptCount": len(rows),
         "reviewCount": metadata["reviewCount"],
+        "skippedCount": len(skipped_rows),
         "artifacts": {
             "excel": {
                 "name": RECEIPT_EXCEL_FILENAME,
@@ -398,10 +442,18 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         vendor = _extract_vendor(sender)
         body_text = _clean_text(source.get("bodyText"))
         # The subject and the preview rarely carry the total; the body does.
-        amount, currency = _extract_amount(" ".join(part for part in (subject, snippet, body_text) if part))
+        own_text = " ".join(part for part in (subject, snippet, body_text) if part)
+        amount, currency = _extract_amount(own_text)
         date = _clean_text(source.get("date"))
         source_ref = _clean_text(source.get("id") or source.get("threadId"))
-        status = "Ready" if vendor and amount else "Needs review"
+        # A message the search returned still has to look like a receipt in
+        # its own right before it is counted as one.
+        if not (amount or _RECEIPT_EVIDENCE_RE.search(own_text)):
+            status = RECEIPT_STATUS_NOT_A_RECEIPT
+        elif vendor and amount:
+            status = RECEIPT_STATUS_READY
+        else:
+            status = RECEIPT_STATUS_REVIEW
         attachments = _extract_receipt_attachments(source)
         image_attachments = [
             attachment
@@ -416,6 +468,11 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             notes = f"{saved_count} receipt attachment(s) saved."
         if not amount:
             notes = "No amount detected. Review the source email or attachment."
+        if status == RECEIPT_STATUS_NOT_A_RECEIPT:
+            notes = (
+                "The mailbox search matched this message, but the email itself names no "
+                "amount and reads nothing like a receipt. Left out of the totals."
+            )
         rows.append({
             "index": str(index),
             "date": date,
@@ -433,6 +490,22 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "imageAttachments": image_attachments,
         })
     return rows
+
+
+def split_receipt_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate the real receipts from what the search net dragged in.
+
+    Both lists are renumbered from 1, so "Receipt 3" in the report means the
+    third receipt rather than the third search hit.
+    """
+
+    receipts = [row for row in rows if row.get("status") != RECEIPT_STATUS_NOT_A_RECEIPT]
+    skipped = [row for row in rows if row.get("status") == RECEIPT_STATUS_NOT_A_RECEIPT]
+    for position, row in enumerate(receipts, start=1):
+        row["index"] = str(position)
+    for position, row in enumerate(skipped, start=1):
+        row["index"] = str(position)
+    return receipts, skipped
 
 
 def write_receipts_xlsx(path: Path, rows: list[dict[str, Any]], metadata: dict[str, Any]) -> None:
@@ -459,6 +532,7 @@ def write_receipts_xlsx(path: Path, rows: list[dict[str, Any]], metadata: dict[s
         ["Search query", str(metadata.get("query") or "")],
         ["Candidate receipts", str(metadata.get("receiptCount") or 0)],
         ["Needs review", str(metadata.get("reviewCount") or 0)],
+        ["Not counted as receipts", str(metadata.get("skippedCount") or 0)],
     ]
     for currency, total in _currency_totals(rows).items():
         summary_values.append([f"Total {currency}", f"{total:.2f}"])
@@ -599,6 +673,7 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
         # The message reads across the whole table rather than down the "#" column.
         table.setStyle(TableStyle([("SPAN", (0, 1), (-1, 1))]))
     story.append(table)
+    story.extend(_skipped_story(metadata, Paragraph, Spacer, heading_style, small_style))
 
     story.append(PageBreak())
     story.extend(_receipt_summary_story(rows, metadata, {
@@ -1025,6 +1100,9 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
             )
     else:
         first_page.append("No candidate receipts found.")
+    skipped_lines = _skipped_lines(metadata)
+    if skipped_lines:
+        first_page.extend(["", "Not counted as receipts", *skipped_lines])
     pages.append(first_page)
 
     summary = metadata.get("summary")
@@ -1332,6 +1410,44 @@ def _build_reportlab_image(
         return image_cls(str(path), width=width * scale, height=height * scale)
     except Exception:
         return None
+
+
+def _skipped_lines(metadata: dict[str, Any]) -> list[str]:
+    """Name what the search returned that was not a receipt."""
+
+    skipped = metadata.get("skipped") if isinstance(metadata.get("skipped"), list) else []
+    lines: list[str] = []
+    for entry in skipped:
+        if not isinstance(entry, dict):
+            continue
+        vendor = _clean_text(entry.get("vendor")) or "Unknown sender"
+        subject = _clean_text(entry.get("subject")) or "(no subject)"
+        lines.append(f"{vendor} - {subject}")
+    return lines
+
+
+def _skipped_story(
+    metadata: dict[str, Any],
+    paragraph_cls: Any,
+    spacer_cls: Any,
+    heading_style: Any,
+    small_style: Any,
+) -> list[Any]:
+    lines = _skipped_lines(metadata)
+    if not lines:
+        return []
+    story: list[Any] = [
+        spacer_cls(1, 12),
+        paragraph_cls("Not counted as receipts", heading_style),
+        paragraph_cls(
+            "The mailbox search matches whole messages, attachments included, so these "
+            "came back without being receipts. They are named here rather than dropped "
+            "quietly, and they are in none of the totals.",
+            small_style,
+        ),
+    ]
+    story.extend(paragraph_cls(_pdf_escape(line), small_style) for line in lines)
+    return story
 
 
 def _receipt_table_style(colors: Any, table_style_cls: Any) -> Any:

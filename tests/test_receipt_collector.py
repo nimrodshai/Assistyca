@@ -12,6 +12,7 @@ from packages.infrastructure.receipt_collector import build_receipt_spend_view
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import extract_receipt_rows
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
+from packages.infrastructure.receipt_collector import split_receipt_rows
 from packages.infrastructure.receipt_collector import summarize_receipt_rows
 
 
@@ -202,6 +203,81 @@ class ReceiptSummaryTests(unittest.TestCase):
             )
             metadata = json.loads(Path(bundle["artifacts"]["manifest"]["path"]).read_text(encoding="utf-8"))["metadata"]
             self.assertNotIn("previous", metadata)
+
+class ReceiptClassificationTests(unittest.TestCase):
+    """The search net is broad, so what comes back still has to be checked."""
+
+    NDA_BODY = (
+        "Hi nimrod shai, Thanks for signing your NDA with Wild - a copy is attached. "
+        "You can also re-download it for the next 30 days at: "
+        "https://office.wild.co/signed/d94582c0-27a1-47a5-baf5-ff5c74e2e4ee - Wild"
+    )
+
+    def rows_for(self, *sources: dict) -> list[dict]:
+        return extract_receipt_rows(list(sources))
+
+    def test_a_signed_agreement_is_not_a_receipt(self) -> None:
+        # Gmail matched this on the words inside the attached PDF, not the email.
+        row = self.rows_for({
+            "id": "msg-1",
+            "from": "noreply@office.wild.co",
+            "subject": "Your signed NDA with Wild",
+            "snippet": "Thanks for signing your NDA with Wild",
+            "bodyText": self.NDA_BODY,
+            "attachments": [{"filename": "nda-signed.pdf", "path": "/tmp/nda-signed.pdf", "mimeType": "application/pdf"}],
+        })[0]
+        self.assertEqual(row["status"], "Not a receipt")
+        self.assertIn("nothing like a receipt", row["notes"])
+
+    def test_keeps_a_receipt_whose_total_is_only_in_the_attachment(self) -> None:
+        row = self.rows_for({
+            "id": "msg-2",
+            "from": "Atlassian <noreply@po.atlassian.net>",
+            "subject": "Your invoice is ready",
+            "bodyText": "Your invoice is attached.",
+        })[0]
+        self.assertEqual(row["status"], "Needs review")
+
+    def test_keeps_anything_naming_an_amount(self) -> None:
+        row = self.rows_for({
+            "id": "msg-3",
+            "from": "Apple <no_reply@email.apple.com>",
+            "subject": "Your receipt from Apple",
+            "snippet": "Total ILS 40.00",
+        })[0]
+        self.assertEqual(row["status"], "Ready")
+
+    def test_split_renumbers_each_list_from_one(self) -> None:
+        rows = self.rows_for(
+            {"id": "a", "from": "noreply@office.wild.co", "subject": "Your signed NDA with Wild", "bodyText": self.NDA_BODY},
+            {"id": "b", "from": "Apple <no_reply@email.apple.com>", "subject": "Your receipt", "snippet": "Total ILS 40.00"},
+            {"id": "c", "from": "PayPal <service@paypal.co.il>", "subject": "Payment sent", "snippet": "You paid ILS 71.80"},
+        )
+        receipts, skipped = split_receipt_rows(rows)
+        self.assertEqual([row["index"] for row in receipts], ["1", "2"])
+        self.assertEqual([row["index"] for row in skipped], ["1"])
+        self.assertEqual(skipped[0]["subject"], "Your signed NDA with Wild")
+
+    def test_bundle_leaves_non_receipts_out_of_the_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = create_receipt_bundle(
+                [
+                    {"id": "a", "from": "noreply@office.wild.co", "subject": "Your signed NDA with Wild", "bodyText": self.NDA_BODY},
+                    {"id": "b", "from": "Apple <no_reply@email.apple.com>", "subject": "Your receipt", "snippet": "Total ILS 40.00"},
+                ],
+                output_root=Path(temp_dir),
+                owner_key="owner@example.com",
+                month_value=(2026, 7),
+                created_at=datetime(2026, 8, 29, 10, 34, tzinfo=timezone.utc),
+            )
+            self.assertEqual(bundle["receiptCount"], 1)
+            self.assertEqual(bundle["skippedCount"], 1)
+
+            manifest = json.loads((Path(bundle["folderPath"]) / "bundle.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["receipts"]), 1)
+            self.assertEqual(manifest["skipped"][0]["subject"], "Your signed NDA with Wild")
+            self.assertEqual(manifest["metadata"]["summary"]["receiptCount"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
