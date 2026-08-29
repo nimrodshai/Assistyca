@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime
 from datetime import timezone
 from email.utils import parseaddr
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib import parse as urllib_parse
@@ -37,11 +38,28 @@ MONTH_FOLDER_LABELS = (
 )
 _BAD_PATH_SEGMENT_RE = re.compile(r"[^a-zA-Z0-9 ._-]+")
 _WHITESPACE_RE = re.compile(r"\s+")
+_AMOUNT_NUMBER = r"\d[\d,]*(?:\.\d{1,2})?"
+_CURRENCY_CODES = "USD|EUR|GBP|ILS|NIS"
+_CURRENCY_SIGNS = "[$" + chr(8364) + chr(163) + chr(8362) + "]"
+_CURRENCY_SIGN_CODES = {"$": "USD", chr(8364): "EUR", chr(163): "GBP", chr(8362): "ILS"}
 _AMOUNT_PATTERNS = (
-    re.compile(r"(?P<currency>USD|EUR|GBP|ILS|NIS)\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)", re.IGNORECASE),
-    re.compile(r"(?P<amount>\d[\d,]*(?:\.\d{1,2})?)\s*(?P<currency>USD|EUR|GBP|ILS|NIS)\b", re.IGNORECASE),
-    re.compile(r"(?P<currency>[$])\s*(?P<amount>\d[\d,]*(?:\.\d{1,2})?)"),
+    re.compile(rf"(?P<currency>{_CURRENCY_CODES})\s*(?P<amount>{_AMOUNT_NUMBER})", re.IGNORECASE),
+    re.compile(rf"(?P<amount>{_AMOUNT_NUMBER})\s*(?P<currency>{_CURRENCY_CODES})\b", re.IGNORECASE),
+    re.compile(rf"(?P<currency>{_CURRENCY_SIGNS})\s*(?P<amount>{_AMOUNT_NUMBER})"),
+    re.compile(rf"(?P<amount>{_AMOUNT_NUMBER})\s*(?P<currency>{_CURRENCY_SIGNS})"),
 )
+# A receipt body quotes plenty of numbers - item prices, VAT, loyalty points.
+# The one worth reporting is the one sitting next to a total label, so those
+# labels are tried first and only then the first amount anywhere in the text.
+_TOTAL_LABEL_PATTERNS = (
+    re.compile(
+        r"(grand total|order total|total charged|total paid|total due|total amount|"
+        r"amount charged|amount paid|amount due|invoice total|you paid|you were charged)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\btotals?\b", re.IGNORECASE),
+)
+_TOTAL_LABEL_WINDOW = 80
 
 
 def format_receipt_folder_month(year: int, month: int) -> str:
@@ -185,7 +203,9 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         snippet = _clean_text(source.get("snippet"))
         sender = _clean_text(source.get("from"))
         vendor = _extract_vendor(sender)
-        amount, currency = _extract_amount(f"{subject} {snippet}")
+        body_text = _clean_text(source.get("bodyText"))
+        # The subject and the preview rarely carry the total; the body does.
+        amount, currency = _extract_amount(" ".join(part for part in (subject, snippet, body_text) if part))
         date = _clean_text(source.get("date"))
         source_ref = _clean_text(source.get("id") or source.get("threadId"))
         status = "Ready" if vendor and amount else "Needs review"
@@ -316,6 +336,27 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
         textColor=colors.HexColor("#5e6d80"),
     )
 
+    cell_style = ParagraphStyle(
+        "ReceiptCell",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        spaceBefore=0,
+        spaceAfter=0,
+        textColor=colors.HexColor("#2c3a4b"),
+    )
+    cell_center_style = ParagraphStyle("ReceiptCellCenter", parent=cell_style, alignment=1)
+    cell_right_style = ParagraphStyle("ReceiptCellRight", parent=cell_style, alignment=2)
+    header_cell_style = ParagraphStyle(
+        "ReceiptHeaderCell",
+        parent=cell_style,
+        fontName="Helvetica-Bold",
+        textColor=colors.white,
+    )
+    header_center_style = ParagraphStyle("ReceiptHeaderCenter", parent=header_cell_style, alignment=1)
+    header_right_style = ParagraphStyle("ReceiptHeaderRight", parent=header_cell_style, alignment=2)
+
     document = SimpleDocTemplate(
         str(path),
         pagesize=A4,
@@ -328,23 +369,42 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
     story: list[Any] = []
     story.append(Paragraph("Receipt report", title_style))
     story.append(Paragraph(_pdf_escape(f"Folder: {metadata.get('outputFolder') or ''}"), body_style))
-    story.append(Paragraph(_pdf_escape(f"Generated: {metadata.get('createdAt') or ''}"), small_style))
+    story.append(Paragraph(_pdf_escape(f"Generated: {_format_generated_at(metadata.get('createdAt'))}"), small_style))
     story.append(Spacer(1, 8))
 
-    table_rows: list[list[Any]] = [["#", "Date", "Vendor", "Amount", "Status", "Source"]]
+    # Every cell is a Paragraph so long vendors and sender addresses wrap inside
+    # their column instead of running across the one beside it.
+    table_rows: list[list[Any]] = [[
+        Paragraph("#", header_center_style),
+        Paragraph("Date", header_cell_style),
+        Paragraph("Vendor", header_cell_style),
+        Paragraph("Amount", header_right_style),
+        Paragraph("Status", header_cell_style),
+        Paragraph("Source", header_cell_style),
+    ]]
     for row in rows:
         table_rows.append([
-            row["index"],
-            _short_text(row["date"], 32),
-            _short_text(row["vendor"], 28),
-            _format_amount(row),
-            row["status"],
-            _short_text(row["source"], 34),
+            Paragraph(_pdf_escape(row["index"]), cell_center_style),
+            Paragraph(_pdf_escape(_format_receipt_date(row["date"])), cell_style),
+            Paragraph(_pdf_escape(row["vendor"]), cell_style),
+            Paragraph(_pdf_escape(_format_amount(row) or "Not found"), cell_right_style),
+            Paragraph(_pdf_escape(row["status"]), cell_style),
+            Paragraph(_pdf_escape(row["source"]), cell_style),
         ])
-    if len(table_rows) == 1:
-        table_rows.append(["", "", "No candidate receipts found.", "", "", ""])
-    table = Table(table_rows, colWidths=[12 * mm, 34 * mm, 38 * mm, 24 * mm, 26 * mm, 50 * mm], repeatRows=1)
+    empty_state = len(table_rows) == 1
+    if empty_state:
+        table_rows.append([Paragraph("No candidate receipts found.", cell_style)] + [""] * 5)
+    # The widths add up to the 182mm between the page margins, so nothing is
+    # pushed off the right edge.
+    table = Table(
+        table_rows,
+        colWidths=[8 * mm, 30 * mm, 34 * mm, 22 * mm, 22 * mm, 66 * mm],
+        repeatRows=1,
+    )
     table.setStyle(_receipt_table_style(colors, TableStyle))
+    if empty_state:
+        # The message reads across the whole table rather than down the "#" column.
+        table.setStyle(TableStyle([("SPAN", (0, 1), (-1, 1))]))
     story.append(table)
 
     story.append(PageBreak())
@@ -374,7 +434,7 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
         story.append(Paragraph(_pdf_escape(f"Receipt {row['index']}: {row['vendor']}"), title_style))
         story.append(Paragraph(_pdf_escape(row["subject"]), heading_style))
         details = [
-            ("Date", row["date"]),
+            ("Date", _format_receipt_date(row["date"])),
             ("Amount", _format_amount(row)),
             ("Status", row["status"]),
             ("Source", row["source"]),
@@ -419,7 +479,7 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
     first_page = [
         "Receipt report",
         f"Folder: {metadata.get('outputFolder') or ''}",
-        f"Generated: {metadata.get('createdAt') or ''}",
+        f"Generated: {_format_generated_at(metadata.get('createdAt'))}",
         "",
         "# | Date | Vendor | Amount | Status | Source",
     ]
@@ -428,7 +488,7 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
             first_page.append(
                 " | ".join([
                     row["index"],
-                    _short_text(row["date"], 20),
+                    _short_text(_format_receipt_date(row["date"]), 20),
                     _short_text(row["vendor"], 24),
                     _format_amount(row),
                     row["status"],
@@ -463,7 +523,7 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
         pages.append([
             f"Receipt {row['index']}: {row['vendor']}",
             row["subject"],
-            f"Date: {row['date'] or 'Not available'}",
+            f"Date: {_format_receipt_date(row['date']) or 'Not available'}",
             f"Amount: {_format_amount(row) or 'Not available'}",
             f"Status: {row['status']}",
             f"Source: {row['source']}",
@@ -566,6 +626,34 @@ def _clean_text(value: Any) -> str:
     return _WHITESPACE_RE.sub(" ", str(value or "").strip())
 
 
+def _format_generated_at(value: Any) -> str:
+    """Render the bundle timestamp without the machine-readable tail."""
+
+    text = _clean_text(value)
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    return parsed.strftime("%d %b %Y, %H:%M")
+
+
+def _format_receipt_date(value: Any) -> str:
+    """Render a mail date header as something a person reads at a glance."""
+
+    text = _clean_text(value)
+    if not text:
+        return ""
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (IndexError, TypeError, ValueError):
+        return text
+    if parsed is None:
+        return text
+    return parsed.strftime("%d %b %Y, %H:%M")
+
+
 def _short_text(value: Any, limit: int) -> str:
     text = _clean_text(value)
     if len(text) <= limit:
@@ -590,20 +678,55 @@ def _extract_vendor(sender: str) -> str:
 
 
 def _extract_amount(value: str) -> tuple[str, str]:
-    shekel = chr(8362)
     text = str(value or "")
-    shekel_match = re.search(rf"{re.escape(shekel)}\s*(?P<amount>\d[\d,]*(?:\.\d{{1,2}})?)", text)
-    if shekel_match:
-        return _normalize_amount(shekel_match.group("amount")), "ILS"
+    matches = _find_amounts(text)
+    if not matches:
+        return "", ""
+    labelled = _amount_beside_total_label(text, matches)
+    if labelled:
+        return labelled
+    _, amount, currency = matches[0]
+    return amount, currency
+
+
+def _find_amounts(text: str) -> list[tuple[int, str, str]]:
+    """Return every currency amount in the text as (position, amount, currency)."""
+
+    matches: list[tuple[int, int, str, str]] = []
     for pattern in _AMOUNT_PATTERNS:
-        match = pattern.search(text)
-        if not match:
+        for match in pattern.finditer(text):
+            amount = _normalize_amount(match.group("amount"))
+            currency = _currency_code(match.group("currency"))
+            if amount and currency:
+                matches.append((match.start(), match.end(), amount, currency))
+    matches.sort(key=lambda item: (item[0], -item[1]))
+    found: list[tuple[int, str, str]] = []
+    covered_until = -1
+    for start, end, amount, currency in matches:
+        # "$40 USD" matches two patterns over the same number; keep it once.
+        if start < covered_until:
             continue
-        raw_currency = match.group("currency").upper()
-        currency = "USD" if raw_currency == "$" else raw_currency
-        currency = "ILS" if currency == "NIS" else currency
-        return _normalize_amount(match.group("amount")), currency
-    return "", ""
+        covered_until = end
+        found.append((start, amount, currency))
+    return found
+
+
+def _amount_beside_total_label(text: str, matches: list[tuple[int, str, str]]) -> tuple[str, str] | None:
+    for label_pattern in _TOTAL_LABEL_PATTERNS:
+        labels = list(label_pattern.finditer(text))
+        # The grand total is normally the last one quoted, below the line items.
+        for label in reversed(labels):
+            for start, amount, currency in matches:
+                if label.end() <= start <= label.end() + _TOTAL_LABEL_WINDOW:
+                    return amount, currency
+    return None
+
+
+def _currency_code(value: str) -> str:
+    raw_currency = str(value or "").strip().upper()
+    if raw_currency in _CURRENCY_SIGN_CODES:
+        return _CURRENCY_SIGN_CODES[raw_currency]
+    return "ILS" if raw_currency == "NIS" else raw_currency
 
 
 def _normalize_amount(value: str) -> str:
@@ -657,13 +780,13 @@ def _build_reportlab_image(
 def _receipt_table_style(colors: Any, table_style_cls: Any) -> Any:
     return table_style_cls([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#172231")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("LEADING", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d7dee7")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f8fb")]),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ])
 
 

@@ -10,6 +10,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from packages.infrastructure import mail_attachments
+from packages.infrastructure import mail_body
 from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import to_gmail_query
@@ -248,6 +249,10 @@ class GmailDigestRunner:
                 "snippet": str(message.get("snippet") or "").strip(),
             }
             if include_attachments:
+                # A receipt run already asks for the full message, so the body
+                # text is in hand: the total is usually there and never in the
+                # snippet Gmail returns.
+                item["bodyText"] = _extract_body_text(message)
                 item["attachments"] = self._save_receipt_attachments(
                     token,
                     message_id=message_id,
@@ -367,6 +372,31 @@ class GmailDigestRunner:
             "messageCount": len(items),
             "items": items,
         }
+
+
+def _extract_body_text(message: dict[str, Any]) -> str:
+    """Return the readable text of a message, preferring its plain-text parts."""
+
+    payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+    plain_chunks: list[str] = []
+    html_chunks: list[str] = []
+    for part in _iter_payload_parts(payload):
+        if not isinstance(part, dict):
+            continue
+        mime_type = str(part.get("mimeType") or "").strip().lower()
+        if mime_type not in {"text/plain", "text/html"}:
+            continue
+        if str(part.get("filename") or "").strip():
+            continue
+        body = part.get("body") if isinstance(part.get("body"), dict) else {}
+        decoded = mail_body.decode_base64url(body.get("data"))
+        if not decoded:
+            continue
+        if mime_type == "text/plain":
+            plain_chunks.append(decoded)
+        else:
+            html_chunks.append(mail_body.html_to_text(decoded))
+    return mail_body.limit_body_text(" ".join(plain_chunks or html_chunks))
 
 
 def _iter_payload_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:

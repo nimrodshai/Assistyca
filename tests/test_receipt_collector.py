@@ -9,6 +9,7 @@ from datetime import timezone
 from pathlib import Path
 
 from packages.infrastructure.receipt_collector import create_receipt_bundle
+from packages.infrastructure.receipt_collector import extract_receipt_rows
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 
 
@@ -80,6 +81,46 @@ class ReceiptCollectorExportTests(unittest.TestCase):
             self.assertEqual(manifest["receipts"][0]["vendor"], "Store")
             self.assertEqual(manifest["receipts"][0]["attachmentCount"], "1")
             self.assertEqual(manifest["receipts"][0]["imageAttachments"][0]["filename"], "receipt.png")
+
+
+class ReceiptAmountTests(unittest.TestCase):
+    def row_for(self, **fields: str) -> dict[str, str]:
+        source = {"id": "msg-1", "from": "Store <billing@store.example.com>", "subject": "Receipt"}
+        source.update(fields)
+        return extract_receipt_rows([source])[0]
+
+    def test_reads_the_total_from_the_message_body(self) -> None:
+        row = self.row_for(
+            snippet="Thanks for your order",
+            bodyText="Item A 30.00 USD Item B 15.00 USD Order total USD 45.00",
+        )
+        self.assertEqual((row["amount"], row["currency"]), ("45.00", "USD"))
+        self.assertEqual(row["status"], "Ready")
+
+    def test_prefers_the_total_over_earlier_line_items(self) -> None:
+        row = self.row_for(bodyText="Subtotal 30.00 ILS VAT 7.00 ILS Total " + chr(8362) + "37.00")
+        self.assertEqual((row["amount"], row["currency"]), ("37.00", "ILS"))
+
+    def test_reads_currency_symbols(self) -> None:
+        for text, expected in (
+            ("Total charged " + chr(163) + "19.90", ("19.90", "GBP")),
+            ("Amount due " + chr(8364) + "1,234.50", ("1234.50", "EUR")),
+            ("Order total: $12.34", ("12.34", "USD")),
+            ("You paid NIS 71.80", ("71.80", "ILS")),
+        ):
+            with self.subTest(text=text):
+                row = self.row_for(bodyText=text)
+                self.assertEqual((row["amount"], row["currency"]), expected)
+
+    def test_falls_back_to_the_first_amount_when_no_total_is_labelled(self) -> None:
+        row = self.row_for(bodyText="Your card was billed 24.90 ILS this morning")
+        self.assertEqual((row["amount"], row["currency"]), ("24.90", "ILS"))
+
+    def test_flags_a_message_with_no_amount_for_review(self) -> None:
+        row = self.row_for(snippet="Your subscription renews soon", bodyText="No numbers worth reading here")
+        self.assertEqual(row["amount"], "")
+        self.assertEqual(row["status"], "Needs review")
+        self.assertIn("No amount detected", row["notes"])
 
 
 if __name__ == "__main__":

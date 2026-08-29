@@ -18,6 +18,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from packages.infrastructure import mail_attachments
+from packages.infrastructure import mail_body
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import matches as query_matches
 from packages.infrastructure.mail_search import to_graph_search
@@ -33,6 +34,9 @@ GRAPH_MAX_DIGEST_MESSAGES = 10
 GRAPH_MAX_PAGES = 5
 GRAPH_PAGE_SIZE = 25
 GRAPH_MESSAGE_FIELDS = "id,conversationId,subject,from,receivedDateTime,bodyPreview,hasAttachments"
+# A receipt run needs the total, which lives in the body rather than in the
+# preview Graph returns by default. Digest runs stay on the lighter select.
+GRAPH_RECEIPT_MESSAGE_FIELDS = f"{GRAPH_MESSAGE_FIELDS},body"
 
 
 class OutlookAuthorizationError(RuntimeError):
@@ -98,6 +102,16 @@ def _graph_request(
             code="outlook_provider_error",
         )
     return payload
+
+
+def _extract_body_text(message: dict[str, Any]) -> str:
+    """Return the readable text of a Graph message body."""
+
+    body = message.get("body") if isinstance(message.get("body"), dict) else {}
+    content = body.get("content")
+    if str(body.get("contentType") or "").strip().lower() == "html":
+        return mail_body.limit_body_text(mail_body.html_to_text(content))
+    return mail_body.limit_body_text(content)
 
 
 def _format_sender(message: dict[str, Any]) -> str:
@@ -188,10 +202,10 @@ class OutlookDigestRunner:
             timeout_seconds=self.timeout_seconds,
         )
 
-    def _first_page_url(self, query: MailQuery, page_size: int) -> str:
+    def _first_page_url(self, query: MailQuery, page_size: int, *, include_body: bool = False) -> str:
         search = to_graph_search(query)
         params: list[tuple[str, str]] = [
-            ("$select", GRAPH_MESSAGE_FIELDS),
+            ("$select", GRAPH_RECEIPT_MESSAGE_FIELDS if include_body else GRAPH_MESSAGE_FIELDS),
             ("$top", str(page_size)),
         ]
         if search:
@@ -227,7 +241,7 @@ class OutlookDigestRunner:
             output_dir.mkdir(parents=True, exist_ok=True)
 
         summaries: list[dict[str, Any]] = []
-        url = self._first_page_url(query, GRAPH_PAGE_SIZE)
+        url = self._first_page_url(query, GRAPH_PAGE_SIZE, include_body=include_attachments)
         for _ in range(GRAPH_MAX_PAGES):
             payload = self._get_json(url, token)
             raw_messages = payload.get("value") if isinstance(payload.get("value"), list) else []
@@ -264,6 +278,7 @@ class OutlookDigestRunner:
                     "snippet": snippet,
                 }
                 if include_attachments:
+                    item["bodyText"] = _extract_body_text(raw_message)
                     item["attachments"] = (
                         self._save_receipt_attachments(
                             token,
