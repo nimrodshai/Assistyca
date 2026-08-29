@@ -15308,6 +15308,7 @@ function renderAgentMessage(message) {
   const proposal = getAgentMessageProposal(message, agent);
   const displayText = getAgentDisplayMessageText(message, kind, proposal);
   row.className = `agent-message is-${message.role} is-${kind}`;
+  row.dataset.agentMessageId = message.id;
 
   const bubble = document.createElement("div");
   bubble.className = "agent-message-bubble";
@@ -15437,6 +15438,88 @@ function shouldPinAgentMessagesToBottom(container, messages) {
   );
 }
 
+const AGENT_MESSAGE_MORPH_MS = 900;
+let agentAnimatedChatId = null;
+let agentAnimatedMessageIds = new Set();
+
+function playAgentMessageEntrance(row, className) {
+  row.classList.add(className);
+  const finish = (event) => {
+    if (event && event.target !== row) {
+      return;
+    }
+    row.classList.remove(className);
+    row.removeEventListener("animationend", finish);
+  };
+  row.addEventListener("animationend", finish);
+}
+
+function playAgentThinkingMorph(row, thinking) {
+  const line = row.querySelector(".agent-message-line");
+  const bubble = row.querySelector(".agent-message-bubble");
+  if (!line || !bubble) {
+    playAgentMessageEntrance(row, "is-entering-reply");
+    return;
+  }
+
+  const inlineWidth = bubble.style.width;
+  bubble.style.width = "fit-content";
+  const target = bubble.getBoundingClientRect();
+  bubble.style.width = inlineWidth;
+
+  const overlay = document.createElement("span");
+  overlay.className = "agent-message-morph";
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.style.setProperty("--agent-morph-from-width", `${Math.round(thinking.width)}px`);
+  overlay.style.setProperty("--agent-morph-from-height", `${Math.round(thinking.height)}px`);
+  overlay.style.setProperty("--agent-morph-to-width", `${Math.round(target.width)}px`);
+  overlay.style.setProperty("--agent-morph-to-height", `${Math.round(target.height)}px`);
+
+  const ghost = document.createElement("span");
+  ghost.className = "agent-message-morph-ghost";
+  ghost.textContent = thinking.label;
+  overlay.append(ghost);
+  line.append(overlay);
+  row.classList.add("is-morphing");
+
+  window.setTimeout(() => {
+    overlay.remove();
+    row.classList.remove("is-morphing");
+  }, AGENT_MESSAGE_MORPH_MS);
+}
+
+function readAgentThinkingBubbleSize(container) {
+  const bubble = container.querySelector(".agent-message.is-thinking .agent-message-bubble");
+  if (!bubble) {
+    return null;
+  }
+
+  return {
+    width: bubble.offsetWidth,
+    height: bubble.offsetHeight,
+    label: String(bubble.textContent || "Thinking").trim() || "Thinking",
+  };
+}
+
+function playAgentMessageEntrances(container, newMessages, thinking) {
+  const morphId = thinking
+    ? newMessages.filter((message) => message.role !== "user").at(-1)?.id || ""
+    : "";
+  for (const message of newMessages) {
+    const row = container.querySelector(`[data-agent-message-id="${CSS.escape(message.id)}"]`);
+    if (!row) {
+      continue;
+    }
+    if (message.role === "user") {
+      playAgentMessageEntrance(row, "is-entering-user");
+    } else if (message.id === morphId) {
+      playAgentThinkingMorph(row, thinking);
+    } else {
+      playAgentMessageEntrance(row, "is-entering-reply");
+    }
+  }
+}
+
 function renderAgentMessages() {
   if (!elements.agentMessageList) {
     return;
@@ -15463,9 +15546,25 @@ function renderAgentMessages() {
 
   const shouldPinToBottom = shouldPinAgentMessagesToBottom(elements.agentMessageList, visibleMessages);
   const lastMessage = visibleMessages.at(-1);
+  const chatId = String(agent.activeChatId || "");
+  const isFirstRenderForChat = agentAnimatedChatId !== chatId
+    || !elements.agentMessageList.dataset.agentMessageRenderSignature;
+  if (isFirstRenderForChat) {
+    agentAnimatedChatId = chatId;
+    agentAnimatedMessageIds = new Set();
+  }
+  const settledMessages = visibleMessages.filter((message) => message.metadata?.kind !== "thinking");
+  const newMessages = isFirstRenderForChat
+    ? []
+    : settledMessages.filter((message) => !agentAnimatedMessageIds.has(message.id));
+  for (const message of settledMessages) {
+    agentAnimatedMessageIds.add(message.id);
+  }
+  const thinking = agentTurnBusy ? null : readAgentThinkingBubbleSize(elements.agentMessageList);
   elements.agentMessageList.dataset.agentMessageRenderSignature = signature;
   elements.agentMessageList.dataset.agentMessageLastId = lastMessage?.id || "";
   elements.agentMessageList.replaceChildren(...visibleMessages.map(renderAgentMessage));
+  playAgentMessageEntrances(elements.agentMessageList, newMessages, thinking);
   if (shouldPinToBottom) {
     window.requestAnimationFrame(scrollAgentMessagesToBottom);
   }
