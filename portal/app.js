@@ -22537,6 +22537,11 @@ async function runAgentAnswerNow(turn) {
     // The months run one after another so each one reports its own total,
     // including the months that turn out to have nothing in them.
     for (const month of months) {
+      // Several months take several reads, so the progress line names the
+      // month in hand rather than leaving one long unexplained wait.
+      const monthLabel = months.length > 1 ? formatAgentAnswerMonthLabel(month) : "";
+      agentTurnProgressText = monthLabel ? `Checking ${monthLabel}` : "Running task";
+      renderApp({ preserveStatus: true });
       try {
         const response = await apiRequest("/api/agent/proposals/run", {
           method: "POST",

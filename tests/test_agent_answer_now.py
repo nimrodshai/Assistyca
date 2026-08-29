@@ -478,6 +478,15 @@ class AgentAnswerChatTests(unittest.TestCase):
         # Every month's result is kept, so an empty month still reports.
         self.assertIn("composeAgentMonthlyAnswer(results)", runner)
 
+    def test_the_progress_line_names_the_month_being_read(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        # Several reads in a row look like one long stall otherwise.
+        self.assertIn('agentTurnProgressText = monthLabel ? `Checking ${monthLabel}` : "Running task"', runner)
+
     def test_a_month_that_could_not_be_read_is_named(self) -> None:
         runner = self.script[
             self.script.index("async function runAgentAnswerNow"):
