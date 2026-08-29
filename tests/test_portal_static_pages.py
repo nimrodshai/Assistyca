@@ -1005,6 +1005,46 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".notification-center-item.is-unread", styles)
         self.assertIn("notification-center-enter", styles)
 
+    def test_notification_feed_pages_instead_of_capping(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("const NOTIFICATIONS_PAGE_SIZE = 20;", script)
+        self.assertIn("function loadOlderNotifications", script)
+        self.assertIn("function maybeLoadMoreNotifications", script)
+        self.assertIn("function getOldestServerNotificationId", script)
+        # Scrolling near the end asks for the next page rather than stopping at
+        # a fixed number of notifications.
+        self.assertIn("params.set(\"beforeId\", String(Number(beforeId)));", script)
+        self.assertIn('id="notificationCenterStatus"', html)
+        self.assertIn(".notification-center-status", styles)
+        # Nothing left in the browser trims the feed to a fixed size, and the
+        # portal never asks the server to remove a notification.
+        self.assertNotIn("AGENT_MAX_NOTIFICATIONS", script)
+        self.assertIn("const AGENT_PERSISTED_NOTIFICATIONS = 100;", script)
+        self.assertNotIn("/api/notifications/delete", script)
+        for line in script.splitlines():
+            if "/api/notifications" in line:
+                self.assertNotIn("DELETE", line)
+
+    def test_notifications_can_be_searched(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="notificationCenterSearch"', html)
+        self.assertIn('id="notificationCenterSearchClear"', html)
+        self.assertIn("function setNotificationSearchQuery", script)
+        self.assertIn("function runNotificationSearch", script)
+        self.assertIn("function getNotificationSearchMatches", script)
+        # Local matches render as the owner types; the server fills in the older
+        # ones a moment later.
+        self.assertIn("function notificationMatchesSearch", script)
+        self.assertIn('params.set("search", search);', script)
+        self.assertIn("const NOTIFICATION_SEARCH_DEBOUNCE_MS = 180;", script)
+        self.assertIn(".notification-center-search-input", styles)
+
     def test_agent_proposal_changes_use_contextual_structured_revision(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

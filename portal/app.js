@@ -411,7 +411,39 @@ const DEFAULT_SIMULATOR = {
 
 const AGENT_INITIAL_MESSAGE = "";
 const AGENT_MAX_MESSAGES = 40;
-const AGENT_MAX_NOTIFICATIONS = 100;
+// Nothing is ever removed from the feed, so the portal holds every notification
+// it has loaded and only bounds what it writes to browser storage.
+const AGENT_PERSISTED_NOTIFICATIONS = 100;
+const NOTIFICATIONS_PAGE_SIZE = 20;
+const NOTIFICATION_SEARCH_DEBOUNCE_MS = 180;
+const NOTIFICATION_SCROLL_LOAD_MARGIN_PX = 120;
+
+// The feed is read a page at a time. The newest page arrives with every poll and
+// older pages are fetched as the list is scrolled; a poll never drops a page that
+// is already on screen, because notifications are only ever added, never removed.
+const notificationFeed = {
+  hasMore: true,
+  loadingOlder: false,
+  // Once an older page has been read, the newest page can no longer say whether
+  // anything is left below it -- only the last older page can.
+  pagedBack: false,
+  unreadCount: 0,
+  error: "",
+};
+
+// Search asks the server as well as this browser, so a match that was written
+// months ago is found even though the feed has only paged back a few screens.
+const notificationSearch = {
+  query: "",
+  requestId: 0,
+  loading: false,
+  loadingMore: false,
+  hasMore: false,
+  serverMatches: [],
+  error: "",
+};
+let notificationSearchTimer = null;
+
 const AGENT_MAX_CHATS = 30;
 const AGENT_MAX_FOLDERS = 80;
 const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
@@ -1553,6 +1585,9 @@ const elements = {
   notificationCenterList: document.querySelector("#notificationCenterList"),
   notificationCenterEmpty: document.querySelector("#notificationCenterEmpty"),
   notificationCenterMarkReadButton: document.querySelector("#notificationCenterMarkReadButton"),
+  notificationCenterSearch: document.querySelector("#notificationCenterSearch"),
+  notificationCenterSearchClear: document.querySelector("#notificationCenterSearchClear"),
+  notificationCenterStatus: document.querySelector("#notificationCenterStatus"),
   accountAvatar: document.querySelector("#accountAvatar"),
   accountLabel: document.querySelector("#accountLabel"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
@@ -3147,7 +3182,29 @@ function persistMonitorWatchDraft(value, featureId, email = activeEmail) {
   persistJson(key, draft ? draft : null);
 }
 
+function resetNotificationPaging() {
+  notificationFeed.hasMore = true;
+  notificationFeed.loadingOlder = false;
+  notificationFeed.pagedBack = false;
+  notificationFeed.unreadCount = 0;
+  notificationFeed.error = "";
+  notificationSearch.query = "";
+  notificationSearch.requestId += 1;
+  notificationSearch.loading = false;
+  notificationSearch.loadingMore = false;
+  notificationSearch.hasMore = false;
+  notificationSearch.serverMatches = [];
+  notificationSearch.error = "";
+  if (notificationSearchTimer !== null) {
+    window.clearTimeout(notificationSearchTimer);
+    notificationSearchTimer = null;
+  }
+}
+
 function loadClientState(email) {
+  // Whose feed this is has just changed, so how far it has been paged and what
+  // was being searched for no longer apply.
+  resetNotificationPaging();
   const saved = loadJson(getClientKey(email), null) || {};
   const savedPrompt = saved.guidance || {};
   const savedSimulator = saved.simulator || {};
@@ -3319,13 +3376,23 @@ function normalizeAgentNotification(value = {}) {
   };
 }
 
+// Newest first, and for two notifications written in the same second the higher
+// server id wins. Without that tiebreak the order could shuffle between renders,
+// which would move the paging cursor around under the reader.
+function compareAgentNotifications(a, b) {
+  const byTime = parseAgentTimestamp(b.createdAt) - parseAgentTimestamp(a.createdAt);
+  if (byTime !== 0) {
+    return byTime;
+  }
+  return (Number(b.id) || 0) - (Number(a.id) || 0);
+}
+
 function normalizeAgentNotifications(value) {
   const source = Array.isArray(value) ? value : [];
   return source
     .map(normalizeAgentNotification)
     .filter(Boolean)
-    .sort((a, b) => parseAgentTimestamp(b.createdAt) - parseAgentTimestamp(a.createdAt))
-    .slice(0, AGENT_MAX_NOTIFICATIONS);
+    .sort(compareAgentNotifications);
 }
 
 function formatAgentNotificationDate(value) {
@@ -3352,7 +3419,24 @@ function getAgentNotifications() {
 
 function getAgentNotificationById(notificationId) {
   const id = String(notificationId || "").trim();
-  return getAgentNotifications().find((notification) => notification.id === id) || null;
+  if (!id) {
+    return null;
+  }
+  return getAgentNotifications().find((notification) => notification.id === id)
+    || notificationSearch.serverMatches.find((notification) => notification.id === id)
+    || null;
+}
+
+// A notification the server also matched for a search is held twice: once in the
+// feed and once in the search results. Marking it read has to reach both copies,
+// or clearing the search would show it unread again.
+function getAgentNotificationCopies(notificationId) {
+  const id = String(notificationId || "").trim();
+  if (!id) {
+    return [];
+  }
+  return [...getAgentNotifications(), ...notificationSearch.serverMatches]
+    .filter((notification) => notification.id === id);
 }
 
 function addAgentNotification(options = {}) {
@@ -3386,15 +3470,45 @@ function isServerNotificationId(id) {
   return /^\d+$/.test(String(id || "").trim());
 }
 
-// A poll refreshes what the server knows without dropping what only the browser
-// knows. A local row steps aside once the server sends the same dedupe key.
-function mergeServerNotifications(serverNotifications) {
-  const serverDedupeKeys = new Set(serverNotifications.map((row) => row.dedupeKey).filter(Boolean));
-  const localOnly = getAgentNotifications().filter((notification) => (
-    !isServerNotificationId(notification.id)
-    && !(notification.dedupeKey && serverDedupeKeys.has(notification.dedupeKey))
-  ));
-  return normalizeAgentNotifications([...serverNotifications, ...localOnly]);
+// Paging works off the oldest server row on hand: ask for what sits below it.
+// Rows the browser raised itself have no server id and cannot be a cursor.
+function getOldestServerNotificationId(notifications) {
+  let oldest = 0;
+  for (const notification of notifications) {
+    if (!isServerNotificationId(notification.id)) {
+      continue;
+    }
+    const id = Number(notification.id);
+    if (!oldest || id < oldest) {
+      oldest = id;
+    }
+  }
+  return oldest;
+}
+
+// A page from the server updates what is already held and appends what is new.
+// A local row steps aside once the server sends the same dedupe key: it keeps
+// its place in the list but takes on the server row's id and content.
+function mergeNotificationRows(existing, incoming) {
+  const merged = Array.isArray(existing) ? [...existing] : [];
+  const byId = new Map(merged.map((row) => [row.id, row]));
+  const byDedupeKey = new Map(
+    merged.filter((row) => row.dedupeKey).map((row) => [row.dedupeKey, row]),
+  );
+  for (const row of incoming) {
+    const current = byId.get(row.id) || (row.dedupeKey ? byDedupeKey.get(row.dedupeKey) : null);
+    if (current) {
+      Object.assign(current, row);
+      byId.set(row.id, current);
+      continue;
+    }
+    merged.push(row);
+    byId.set(row.id, row);
+    if (row.dedupeKey) {
+      byDedupeKey.set(row.dedupeKey, row);
+    }
+  }
+  return normalizeAgentNotifications(merged);
 }
 
 // Notifications are mostly server state. They are fetched from /api/notifications
@@ -3417,18 +3531,44 @@ function mapServerNotification(row) {
   };
 }
 
+async function fetchNotificationPage({ beforeId = 0, search = "" } = {}) {
+  const params = new URLSearchParams({ limit: String(NOTIFICATIONS_PAGE_SIZE) });
+  if (Number(beforeId) > 0) {
+    params.set("beforeId", String(Number(beforeId)));
+  }
+  if (search) {
+    params.set("search", search);
+  }
+  const response = await apiRequest(`/api/notifications?${params.toString()}`);
+  const rows = Array.isArray(response.notifications) ? response.notifications : [];
+  return {
+    notifications: rows.map(mapServerNotification),
+    unreadCount: Math.max(0, Number(response.unreadCount || 0)),
+    hasMore: Boolean(response.hasMore),
+  };
+}
+
 async function refreshNotifications() {
   if (!isSignedIn()) {
     return null;
   }
   const requestSessionKey = currentAuthSessionKey();
   try {
-    const response = await apiRequest("/api/notifications?limit=100");
+    const page = await fetchNotificationPage();
     if (requestSessionKey !== currentAuthSessionKey()) {
       return null;
     }
-    const rows = Array.isArray(response.notifications) ? response.notifications : [];
-    clientState.notifications = mergeServerNotifications(rows.map(mapServerNotification));
+    const before = describeNotificationListSignature(getAgentNotifications());
+    clientState.notifications = mergeNotificationRows(getAgentNotifications(), page.notifications);
+    notificationFeed.unreadCount = page.unreadCount;
+    if (!notificationFeed.pagedBack) {
+      notificationFeed.hasMore = page.hasMore;
+    }
+    // Polls mostly return what is already held, and rewriting browser storage
+    // every few seconds for an unchanged feed is work for nothing.
+    if (describeNotificationListSignature(clientState.notifications) !== before) {
+      persistClientState();
+    }
     renderNotificationCenter();
     return clientState.notifications;
   } catch (error) {
@@ -3437,13 +3577,194 @@ async function refreshNotifications() {
   }
 }
 
+async function loadOlderNotifications() {
+  if (notificationFeed.loadingOlder || !notificationFeed.hasMore || !isSignedIn()) {
+    return false;
+  }
+  const beforeId = getOldestServerNotificationId(getAgentNotifications());
+  if (!beforeId) {
+    // Nothing from the server yet, so there is no cursor to page from. The next
+    // poll brings the first page and paging picks up from there.
+    return false;
+  }
+  notificationFeed.loadingOlder = true;
+  notificationFeed.error = "";
+  renderNotificationCenter();
+  const requestSessionKey = currentAuthSessionKey();
+  try {
+    const page = await fetchNotificationPage({ beforeId });
+    if (requestSessionKey !== currentAuthSessionKey()) {
+      return false;
+    }
+    clientState.notifications = mergeNotificationRows(getAgentNotifications(), page.notifications);
+    notificationFeed.unreadCount = page.unreadCount;
+    notificationFeed.hasMore = page.hasMore;
+    notificationFeed.pagedBack = true;
+    persistClientState();
+    return true;
+  } catch (error) {
+    notificationFeed.error = "Older notifications didn’t load. Scroll again to retry.";
+    return false;
+  } finally {
+    notificationFeed.loadingOlder = false;
+    renderNotificationCenter();
+  }
+}
+
+function getNotificationSearchTokens(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+// The same rule the server matches on, so a result found here and a result found
+// there mean the same thing: every word typed has to appear somewhere in the
+// title or the message, in any order.
+function notificationMatchesSearch(notification, query) {
+  const tokens = getNotificationSearchTokens(query);
+  if (!tokens.length) {
+    return true;
+  }
+  const haystack = `${notification?.title || ""} ${notification?.message || ""}`.toLowerCase();
+  return tokens.every((token) => haystack.includes(token));
+}
+
+// What the box shows: everything already on this device that matches, plus the
+// older matches the server sent back. Local first means results appear as fast
+// as the owner types, and the server fills in the rest a moment later.
+function getNotificationSearchMatches() {
+  const query = notificationSearch.query;
+  const matches = getAgentNotifications()
+    .filter((notification) => notificationMatchesSearch(notification, query));
+  const seenIds = new Set(matches.map((notification) => notification.id));
+  const seenKeys = new Set(matches.map((notification) => notification.dedupeKey).filter(Boolean));
+  for (const row of notificationSearch.serverMatches) {
+    if (seenIds.has(row.id) || (row.dedupeKey && seenKeys.has(row.dedupeKey))) {
+      continue;
+    }
+    matches.push(row);
+    seenIds.add(row.id);
+  }
+  return matches.sort(compareAgentNotifications);
+}
+
+function setNotificationSearchQuery(value) {
+  const query = String(value || "").trim();
+  if (query === notificationSearch.query) {
+    return;
+  }
+  notificationSearch.query = query;
+  // Bumping the id retires any answer still in flight for the previous query,
+  // so a slow response cannot overwrite the results for what is typed now.
+  notificationSearch.requestId += 1;
+  notificationSearch.serverMatches = [];
+  notificationSearch.hasMore = false;
+  notificationSearch.loadingMore = false;
+  notificationSearch.error = "";
+  notificationSearch.loading = Boolean(query);
+  if (notificationSearchTimer !== null) {
+    window.clearTimeout(notificationSearchTimer);
+    notificationSearchTimer = null;
+  }
+  renderNotificationCenter();
+  if (!query) {
+    return;
+  }
+  notificationSearchTimer = window.setTimeout(() => {
+    notificationSearchTimer = null;
+    void runNotificationSearch();
+  }, NOTIFICATION_SEARCH_DEBOUNCE_MS);
+}
+
+async function runNotificationSearch({ beforeId = 0 } = {}) {
+  const query = notificationSearch.query;
+  if (!query || !isSignedIn()) {
+    notificationSearch.loading = false;
+    renderNotificationCenter();
+    return;
+  }
+  const requestId = (notificationSearch.requestId += 1);
+  if (Number(beforeId) > 0) {
+    notificationSearch.loadingMore = true;
+  } else {
+    notificationSearch.loading = true;
+  }
+  notificationSearch.error = "";
+  renderNotificationCenter();
+  try {
+    const page = await fetchNotificationPage({ beforeId, search: query });
+    if (requestId !== notificationSearch.requestId || query !== notificationSearch.query) {
+      return;
+    }
+    notificationSearch.serverMatches = Number(beforeId) > 0
+      ? mergeNotificationRows(notificationSearch.serverMatches, page.notifications)
+      : normalizeAgentNotifications(page.notifications);
+    notificationSearch.hasMore = page.hasMore;
+    notificationFeed.unreadCount = page.unreadCount;
+  } catch (error) {
+    if (requestId !== notificationSearch.requestId) {
+      return;
+    }
+    // The local matches are still worth showing, so the box keeps working with
+    // what this device holds and says that is all it is showing.
+    notificationSearch.error = "Search couldn’t reach the server. Showing matches from this device.";
+    notificationSearch.hasMore = false;
+  } finally {
+    if (requestId === notificationSearch.requestId) {
+      notificationSearch.loading = false;
+      notificationSearch.loadingMore = false;
+      renderNotificationCenter();
+    }
+  }
+}
+
+function loadMoreNotificationMatches() {
+  if (notificationSearch.loading || notificationSearch.loadingMore || !notificationSearch.hasMore) {
+    return;
+  }
+  const beforeId = getOldestServerNotificationId(notificationSearch.serverMatches);
+  if (!beforeId) {
+    notificationSearch.hasMore = false;
+    return;
+  }
+  void runNotificationSearch({ beforeId });
+}
+
+// Scrolling near the end of the list asks for the next page -- of the feed, or
+// of the search results when the box has something in it.
+function maybeLoadMoreNotifications() {
+  const list = elements.notificationCenterList;
+  if (!list || !state.notificationCenterOpen) {
+    return;
+  }
+  const remaining = list.scrollHeight - list.scrollTop - list.clientHeight;
+  if (remaining > NOTIFICATION_SCROLL_LOAD_MARGIN_PX) {
+    return;
+  }
+  if (notificationSearch.query) {
+    loadMoreNotificationMatches();
+    return;
+  }
+  void loadOlderNotifications();
+}
+
 async function markAgentNotificationRead(notificationId) {
-  const notification = getAgentNotificationById(notificationId);
+  const copies = getAgentNotificationCopies(notificationId);
+  const notification = copies[0];
   if (!notification || notification.readAt) {
     return false;
   }
   // Optimistic: reflect it immediately, then confirm with the server.
-  notification.readAt = new Date().toISOString();
+  const readAt = new Date().toISOString();
+  copies.forEach((copy) => {
+    copy.readAt = readAt;
+  });
+  if (isServerNotificationId(notification.id)) {
+    notificationFeed.unreadCount = Math.max(0, notificationFeed.unreadCount - 1);
+  }
   persistClientState();
   renderNotificationCenter();
   if (!isServerNotificationId(notification.id)) {
@@ -3452,11 +3773,13 @@ async function markAgentNotificationRead(notificationId) {
     return true;
   }
   try {
-    await apiRequest("/api/notifications/read", {
+    const response = await apiRequest("/api/notifications/read", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: Number(notificationId) }),
     });
+    notificationFeed.unreadCount = Math.max(0, Number(response?.unreadCount || 0));
+    renderNotificationCenter();
   } catch (error) {
     await refreshNotifications();
     return false;
@@ -3465,15 +3788,17 @@ async function markAgentNotificationRead(notificationId) {
 }
 
 async function markAllAgentNotificationsRead() {
-  const notifications = getAgentNotifications();
   const now = new Date().toISOString();
   let changed = false;
-  notifications.forEach((notification) => {
+  [...getAgentNotifications(), ...notificationSearch.serverMatches].forEach((notification) => {
     if (!notification.readAt) {
       notification.readAt = now;
       changed = true;
     }
   });
+  // Unread rows the feed has not paged in are marked read by the server too, so
+  // the count goes to zero rather than to what this device happens to hold.
+  notificationFeed.unreadCount = 0;
   persistClientState();
   renderNotificationCenter();
   try {
@@ -3489,6 +3814,102 @@ async function markAllAgentNotificationsRead() {
   return changed;
 }
 
+// One line under the list that says what the list is currently showing: how far
+// the search got, whether an older page is on its way, or that this is the end.
+function describeNotificationCenterStatus(visibleCount) {
+  if (notificationSearch.query) {
+    if (notificationSearch.loading) {
+      return "Searching…";
+    }
+    if (notificationSearch.loadingMore) {
+      return "Loading more matches…";
+    }
+    if (notificationSearch.error) {
+      return notificationSearch.error;
+    }
+    if (!visibleCount) {
+      return `Nothing matches “${notificationSearch.query}”.`;
+    }
+    if (notificationSearch.hasMore) {
+      return "Scroll for more matches.";
+    }
+    return visibleCount === 1 ? "1 match." : `${visibleCount} matches.`;
+  }
+  if (notificationFeed.loadingOlder) {
+    return "Loading older notifications…";
+  }
+  if (notificationFeed.error) {
+    return notificationFeed.error;
+  }
+  if (notificationFeed.hasMore) {
+    return "Scroll for older notifications.";
+  }
+  return visibleCount > NOTIFICATIONS_PAGE_SIZE ? "That’s every notification." : "";
+}
+
+// What a rendered row depends on. Two lists with the same signature would draw
+// exactly the same, so there is nothing to gain from redrawing.
+let lastRenderedNotificationSignature = "";
+
+function describeNotificationListSignature(notifications) {
+  return notifications
+    .map((notification) => [
+      notification.id,
+      notification.readAt,
+      notification.tone,
+      notification.title,
+      notification.message,
+      notification.href,
+    ].join("\u0001"))
+    .join("\u0002");
+}
+
+function renderNotificationCenterItem(notification) {
+  const item = document.createElement("article");
+  item.className = `notification-center-item is-${notification.tone}${notification.readAt ? "" : " is-unread"}`;
+  item.dataset.notificationId = notification.id;
+  item.setAttribute("role", "listitem");
+
+  const icon = document.createElement("span");
+  icon.className = "notification-center-item-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = notification.tone === "success" ? "✓" : notification.tone === "error" ? "!" : notification.tone === "warning" ? "!" : "i";
+
+  const content = document.createElement("div");
+  content.className = "notification-center-item-content";
+  const title = document.createElement("h3");
+  title.textContent = notification.title;
+  const message = document.createElement("p");
+  message.textContent = notification.message;
+  const time = document.createElement("time");
+  time.dateTime = notification.createdAt;
+  time.textContent = formatAgentNotificationDate(notification.createdAt);
+  content.append(title, message, time);
+
+  const actions = document.createElement("div");
+  actions.className = "notification-center-item-actions";
+  if (notification.href) {
+    const link = document.createElement("a");
+    link.className = "notification-center-item-link";
+    link.href = notification.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.dataset.notificationLink = notification.id;
+    link.textContent = notification.hrefLabel;
+    actions.append(link);
+  }
+  if (!notification.readAt) {
+    const openButton = document.createElement("button");
+    openButton.className = "notification-center-item-open";
+    openButton.type = "button";
+    openButton.dataset.notificationOpen = notification.id;
+    openButton.textContent = "Mark read";
+    actions.append(openButton);
+  }
+  item.append(icon, content, actions);
+  return item;
+}
+
 function renderNotificationCenter() {
   const list = elements.notificationCenterList;
   const empty = elements.notificationCenterEmpty;
@@ -3499,7 +3920,12 @@ function renderNotificationCenter() {
   }
 
   const notifications = getAgentNotifications();
-  const unreadCount = notifications.filter((notification) => !notification.readAt).length;
+  // Unread rows the feed has not paged in still count, so the badge follows the
+  // server's number and adds the rows only this browser knows about.
+  const localUnread = notifications
+    .filter((notification) => !notification.readAt && !isServerNotificationId(notification.id))
+    .length;
+  const unreadCount = Math.max(0, notificationFeed.unreadCount) + localUnread;
   badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
   badge.hidden = unreadCount === 0;
   button.setAttribute("aria-label", unreadCount ? `Notifications (${unreadCount} unread)` : "Notifications");
@@ -3507,53 +3933,38 @@ function renderNotificationCenter() {
     elements.notificationCenterMarkReadButton.disabled = unreadCount === 0;
   }
 
-  list.replaceChildren();
-  list.hidden = notifications.length === 0;
-  empty.hidden = notifications.length !== 0;
-  for (const notification of notifications) {
-    const item = document.createElement("article");
-    item.className = `notification-center-item is-${notification.tone}${notification.readAt ? "" : " is-unread"}`;
-    item.dataset.notificationId = notification.id;
-    item.setAttribute("role", "listitem");
+  const searching = Boolean(notificationSearch.query);
+  const searchInput = elements.notificationCenterSearch;
+  if (searchInput && searchInput.value.trim() !== notificationSearch.query) {
+    searchInput.value = notificationSearch.query;
+  }
+  if (elements.notificationCenterSearchClear) {
+    elements.notificationCenterSearchClear.hidden = !searching;
+  }
 
-    const icon = document.createElement("span");
-    icon.className = "notification-center-item-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = notification.tone === "success" ? "✓" : notification.tone === "error" ? "!" : notification.tone === "warning" ? "!" : "i";
+  const visible = searching ? getNotificationSearchMatches() : notifications;
+  list.hidden = visible.length === 0;
+  empty.hidden = searching || visible.length !== 0;
 
-    const content = document.createElement("div");
-    content.className = "notification-center-item-content";
-    const title = document.createElement("h3");
-    title.textContent = notification.title;
-    const message = document.createElement("p");
-    message.textContent = notification.message;
-    const time = document.createElement("time");
-    time.dateTime = notification.createdAt;
-    time.textContent = formatAgentNotificationDate(notification.createdAt);
-    content.append(title, message, time);
-
-    const actions = document.createElement("div");
-    actions.className = "notification-center-item-actions";
-    if (notification.href) {
-      const link = document.createElement("a");
-      link.className = "notification-center-item-link";
-      link.href = notification.href;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.dataset.notificationLink = notification.id;
-      link.textContent = notification.hrefLabel;
-      actions.append(link);
+  // The feed is polled every few seconds and can be many pages long by then.
+  // Rebuilding an unchanged list would throw away where the reader had scrolled
+  // to, so the rows are only redrawn when they actually differ.
+  const signature = describeNotificationListSignature(visible);
+  if (signature !== lastRenderedNotificationSignature) {
+    const scrollTop = list.scrollTop;
+    list.replaceChildren();
+    for (const notification of visible) {
+      list.append(renderNotificationCenterItem(notification));
     }
-    if (!notification.readAt) {
-      const openButton = document.createElement("button");
-      openButton.className = "notification-center-item-open";
-      openButton.type = "button";
-      openButton.dataset.notificationOpen = notification.id;
-      openButton.textContent = "Mark read";
-      actions.append(openButton);
-    }
-    item.append(icon, content, actions);
-    list.append(item);
+    lastRenderedNotificationSignature = signature;
+    // Appending older rows below keeps everything above them in place.
+    list.scrollTop = Math.min(scrollTop, Math.max(0, list.scrollHeight - list.clientHeight));
+  }
+
+  if (elements.notificationCenterStatus) {
+    const status = describeNotificationCenterStatus(visible.length);
+    elements.notificationCenterStatus.textContent = status;
+    elements.notificationCenterStatus.hidden = !status;
   }
 }
 
@@ -3566,6 +3977,13 @@ function toggleNotificationCenter(force) {
   elements.notificationCenterPopover?.classList.toggle("is-hidden", !nextOpen);
   elements.notificationCenterButton?.setAttribute("aria-expanded", String(nextOpen));
   elements.notificationCenterPopover?.setAttribute("aria-hidden", String(!nextOpen));
+  if (nextOpen) {
+    // Opening on a short list still has to offer the next page, so top it up
+    // once the popover has been laid out and its height is known.
+    window.requestAnimationFrame(() => {
+      maybeLoadMoreNotifications();
+    });
+  }
 }
 
 function closeNotificationCenter() {
@@ -8893,6 +9311,9 @@ function persistClientState() {
     ...clientState,
     agent: persistedAgent,
     features: persistedFeatures,
+    // Every notification loaded stays in memory, but only the newest ones are
+    // written to browser storage: the rest are a page request away.
+    notifications: clientState.notifications.slice(0, AGENT_PERSISTED_NOTIFICATIONS),
   });
 }
 
@@ -27892,6 +28313,11 @@ function bindEvents() {
     elements.notificationCenterPopover.addEventListener("click", (event) => {
       event.stopPropagation();
       const target = getEventTargetElement(event);
+      if (target?.closest("#notificationCenterSearchClear")) {
+        setNotificationSearchQuery("");
+        elements.notificationCenterSearch?.focus();
+        return;
+      }
       const link = target?.closest("[data-notification-link]");
       if (link) {
         markAgentNotificationRead(link.dataset.notificationLink || "");
@@ -27918,6 +28344,35 @@ function bindEvents() {
       event.stopPropagation();
       markAllAgentNotificationsRead();
     });
+  }
+
+  if (elements.notificationCenterSearch) {
+    elements.notificationCenterSearch.addEventListener("input", (event) => {
+      setNotificationSearchQuery(event.target.value || "");
+    });
+    // A type="search" box clears itself from its own control, which fires
+    // "search" rather than "input" in some browsers.
+    elements.notificationCenterSearch.addEventListener("search", (event) => {
+      setNotificationSearchQuery(event.target.value || "");
+    });
+    elements.notificationCenterSearch.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (!notificationSearch.query) {
+        // Nothing to clear, so Escape means what it means everywhere else.
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setNotificationSearchQuery("");
+    });
+  }
+
+  if (elements.notificationCenterList) {
+    elements.notificationCenterList.addEventListener("scroll", () => {
+      maybeLoadMoreNotifications();
+    }, { passive: true });
   }
 
   for (const button of elements.tabButtons) {

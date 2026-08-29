@@ -193,6 +193,9 @@ CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_FOLDER_CONTENTS_LIMIT = 200
+# The feed keeps every notification, so the portal reads it a page at a time.
+NOTIFICATIONS_PAGE_SIZE = 20
+NOTIFICATIONS_PAGE_LIMIT = 100
 AGENT_PROPOSAL_REVISION_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_TURN_COMPLEXITY = TaskComplexity.IMPORTANT
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
@@ -3011,9 +3014,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if path.startswith("/api/source-actions/"):
             self._handle_source_actions_delete(parsed)
             return
-        if path.startswith("/api/notifications/"):
-            self._handle_notifications_delete(parsed)
-            return
         if path.startswith("/api/whatsapp/history/conversations/"):
             self._handle_whatsapp_history_conversation_delete(parsed)
             return
@@ -4270,16 +4270,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             except (TypeError, ValueError):
                 return default
 
-        notifications = self.database.list_notifications(
-            user_id=int(user.get("id") or 0),
-            limit=_int_param("limit", 50),
+        user_id = int(user.get("id") or 0)
+        limit = max(1, min(NOTIFICATIONS_PAGE_LIMIT, _int_param("limit", NOTIFICATIONS_PAGE_SIZE)))
+        search = normalize_text(query.get("search", [""])[0])
+
+        # One row past the page tells the caller whether to offer more without a
+        # second count query, and it is dropped before the page is sent.
+        page = self.database.list_notifications(
+            user_id=user_id,
+            limit=limit + 1,
             unread_only=normalize_text(query.get("unread", [""])[0]).lower() in {"1", "true", "yes"},
             before_id=_int_param("beforeId", 0),
+            search=search,
         )
+        has_more = len(page) > limit
+        notifications = page[:limit]
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "notifications": notifications,
-            "unreadCount": self.database.count_unread_notifications(user_id=int(user.get("id") or 0)),
+            "unreadCount": self.database.count_unread_notifications(user_id=user_id),
+            "hasMore": has_more,
+            "nextBeforeId": int(notifications[-1].get("id") or 0) if has_more and notifications else 0,
+            "search": search,
         })
 
     def _handle_notifications_read_post(self, parsed: urllib_parse.ParseResult) -> None:
@@ -4340,36 +4352,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "notification": updated,
-            "unreadCount": self.database.count_unread_notifications(user_id=user_id),
-        })
-
-    def _handle_notifications_delete(self, parsed: urllib_parse.ParseResult) -> None:
-        authenticated = self._require_authenticated_user()
-        if authenticated is None:
-            return
-
-        _, user = authenticated
-        user_id = int(user.get("id") or 0)
-        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
-        if len(parts) != 3 or parts[0] != "api" or parts[1] != "notifications":
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-
-        try:
-            notification_id = int(urllib_parse.unquote(parts[2]))
-        except (TypeError, ValueError):
-            notification_id = 0
-
-        if not self.database.delete_notification(user_id=user_id, notification_id=notification_id):
-            json_response(self, HTTPStatus.NOT_FOUND, {
-                "ok": False,
-                "error": "not_found",
-                "message": "Notification not found.",
-            })
-            return
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
             "unreadCount": self.database.count_unread_notifications(user_id=user_id),
         })
 

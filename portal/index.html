@@ -369,7 +369,28 @@
                   Mark all read
                 </button>
               </div>
+              <div class="notification-center-search">
+                <label class="sr-only" for="notificationCenterSearch">Search notifications</label>
+                <input
+                  id="notificationCenterSearch"
+                  class="notification-center-search-input"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="Search notifications"
+                  aria-controls="notificationCenterList"
+                />
+                <button
+                  id="notificationCenterSearchClear"
+                  class="notification-center-search-clear"
+                  type="button"
+                  aria-label="Clear search"
+                  hidden
+                >
+                  ×
+                </button>
+              </div>
               <div id="notificationCenterList" class="notification-center-list" role="list"></div>
+              <p id="notificationCenterStatus" class="notification-center-status" role="status" aria-live="polite" hidden></p>
               <p id="notificationCenterEmpty" class="notification-center-empty" hidden>
                 You’re all caught up. Completed actions and results will appear here.
               </p>

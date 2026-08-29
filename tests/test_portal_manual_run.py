@@ -2531,17 +2531,113 @@ class NotificationsApiTests(unittest.TestCase):
         self.assertEqual(payload["unreadCount"], 0)
         self.assertEqual(self.server.database.count_unread_notifications(user_id=other_id), 1)
 
-    def test_cannot_delete_another_users_notification(self) -> None:
-        notification = self.server.database.save_notification(
-            user_id=self._user_id("other@example.com"), title="Theirs"
-        )
+    def test_notifications_cannot_be_deleted(self) -> None:
+        """The feed is a record: a notification is read or unread, never removed."""
 
-        status, _ = self._request(
-            "DELETE", f"/api/notifications/{notification['id']}", "owner@example.com"
+        owner_id = self._user_id("owner@example.com")
+        notification = self.server.database.save_notification(user_id=owner_id, title="Mine")
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/notifications/{notification['id']}",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {self.tokens['owner@example.com']}"},
         )
+        try:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                status = response.status
+        except urllib_error.HTTPError as exc:
+            status = exc.code
 
         self.assertEqual(status, 404)
-        self.assertEqual(len(self.server.database.list_notifications(user_id=self._user_id("other@example.com"))), 1)
+        self.assertEqual(len(self.server.database.list_notifications(user_id=owner_id)), 1)
+        self.assertFalse(hasattr(self.server.database, "delete_notification"))
+
+    def test_feed_returns_one_page_at_a_time(self) -> None:
+        owner_id = self._user_id("owner@example.com")
+        for index in range(25):
+            self.server.database.save_notification(user_id=owner_id, title=f"Note {index:02d}")
+
+        status, payload = self._request("GET", "/api/notifications", "owner@example.com")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["notifications"]), 20)
+        self.assertTrue(payload["hasMore"])
+        # Newest first, so the page starts at the last one written.
+        self.assertEqual(payload["notifications"][0]["title"], "Note 24")
+        self.assertEqual(payload["nextBeforeId"], payload["notifications"][-1]["id"])
+
+    def test_paging_walks_back_through_the_whole_feed(self) -> None:
+        owner_id = self._user_id("owner@example.com")
+        for index in range(25):
+            self.server.database.save_notification(user_id=owner_id, title=f"Note {index:02d}")
+
+        _, first = self._request("GET", "/api/notifications", "owner@example.com")
+        _, second = self._request(
+            "GET", f"/api/notifications?beforeId={first['nextBeforeId']}", "owner@example.com"
+        )
+
+        self.assertEqual(len(second["notifications"]), 5)
+        self.assertFalse(second["hasMore"])
+        self.assertEqual(second["nextBeforeId"], 0)
+        titles = [item["title"] for item in first["notifications"] + second["notifications"]]
+        # Every notification is reachable, and none is served twice.
+        self.assertEqual(len(set(titles)), 25)
+        self.assertEqual(titles[-1], "Note 00")
+
+    def test_search_matches_title_and_body_in_any_order(self) -> None:
+        owner_id = self._user_id("owner@example.com")
+        self.server.database.save_notification(
+            user_id=owner_id, title="Meeting summary ready", body="No meetings found in this range."
+        )
+        self.server.database.save_notification(
+            user_id=owner_id, title="Receipt bundle ready", body="Your receipts are ready to download."
+        )
+
+        _, payload = self._request(
+            "GET", "/api/notifications?search=ready%20MEETING", "owner@example.com"
+        )
+
+        self.assertEqual([item["title"] for item in payload["notifications"]], ["Meeting summary ready"])
+        self.assertEqual(payload["search"], "ready MEETING")
+
+    def test_search_finds_a_body_only_match(self) -> None:
+        owner_id = self._user_id("owner@example.com")
+        self.server.database.save_notification(
+            user_id=owner_id, title="Receipt bundle ready", body="Saved to Receipts/Jul2026."
+        )
+
+        _, payload = self._request("GET", "/api/notifications?search=jul2026", "owner@example.com")
+
+        self.assertEqual([item["title"] for item in payload["notifications"]], ["Receipt bundle ready"])
+
+    def test_search_stays_inside_the_callers_feed(self) -> None:
+        self.server.database.save_notification(
+            user_id=self._user_id("other@example.com"), title="Meeting summary ready"
+        )
+
+        _, payload = self._request("GET", "/api/notifications?search=meeting", "owner@example.com")
+
+        self.assertEqual(payload["notifications"], [])
+
+    def test_search_pages_like_the_feed(self) -> None:
+        owner_id = self._user_id("owner@example.com")
+        for index in range(22):
+            self.server.database.save_notification(user_id=owner_id, title=f"Meeting {index:02d}")
+        self.server.database.save_notification(user_id=owner_id, title="Receipt bundle ready")
+
+        _, first = self._request("GET", "/api/notifications?search=meeting", "owner@example.com")
+        _, second = self._request(
+            "GET",
+            f"/api/notifications?search=meeting&beforeId={first['nextBeforeId']}",
+            "owner@example.com",
+        )
+
+        self.assertEqual(len(first["notifications"]), 20)
+        self.assertTrue(first["hasMore"])
+        self.assertEqual(len(second["notifications"]), 2)
+        self.assertFalse(second["hasMore"])
+        titles = [item["title"] for item in first["notifications"] + second["notifications"]]
+        self.assertNotIn("Receipt bundle ready", titles)
 
 
 if __name__ == "__main__":

@@ -2069,6 +2069,72 @@ body[data-modal="billing"] .app-shell {
   opacity: 0.45;
 }
 
+.notification-center-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0.7rem 0.9rem 0.15rem;
+}
+
+.notification-center-search-input {
+  width: 100%;
+  padding: 0.5rem 2rem 0.5rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(248, 250, 251, 0.9);
+  font-size: 0.84rem;
+}
+
+.notification-center-search-input::-webkit-search-cancel-button {
+  /* The popover has its own clear button, and two of them side by side reads
+     as a mistake. */
+  appearance: none;
+}
+
+.notification-center-search-input:focus-visible {
+  outline: none;
+  border-color: rgba(15, 118, 110, 0.42);
+  background: #fff;
+}
+
+.notification-center-search-clear {
+  position: absolute;
+  right: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.notification-center-search-clear:hover,
+.notification-center-search-clear:focus-visible {
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.notification-center-search-clear[hidden] {
+  display: none;
+}
+
+.notification-center-status {
+  margin: 0;
+  padding: 0.15rem 1.15rem 0.85rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.notification-center-status[hidden] {
+  display: none;
+}
+
 .notification-center-list {
   display: grid;
   gap: 0.45rem;
@@ -11583,6 +11649,22 @@ body.is-chat-view {
   border-color: var(--line-strong);
   background: rgba(19, 28, 36, 0.98);
   box-shadow: var(--shadow);
+}
+
+:root[data-theme="dark"] .notification-center-search-input {
+  border-color: var(--line-strong);
+  background: rgba(24, 35, 44, 0.76);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .notification-center-search-input:focus-visible {
+  border-color: rgba(55, 184, 171, 0.42);
+  background: rgba(31, 45, 56, 0.96);
+}
+
+:root[data-theme="dark"] .notification-center-search-clear:hover,
+:root[data-theme="dark"] .notification-center-search-clear:focus-visible {
+  background: rgba(55, 184, 171, 0.14);
 }
 
 :root[data-theme="dark"] .notification-center-item {

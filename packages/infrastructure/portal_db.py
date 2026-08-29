@@ -561,6 +561,23 @@ def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def notification_search_tokens(value: Any) -> list[str]:
+    """Split a notification search box into the words it has to match.
+
+    Kept to a handful of short tokens: the query comes from a box the owner is
+    still typing in, so it is a filter, not a query language.
+    """
+
+    tokens: list[str] = []
+    for token in re.split(r"\s+", normalize_text(value).lower()):
+        cleaned = token.strip()
+        if cleaned and cleaned not in tokens:
+            tokens.append(cleaned[:80])
+        if len(tokens) >= 6:
+            break
+    return tokens
+
+
 def normalize_whatsapp_lookup_id(value: Any) -> str:
     digits = re.sub(r"\D+", "", normalize_text(value))
     if len(digits) == 10 and digits.startswith("05"):
@@ -5375,7 +5392,20 @@ class PortalDatabase:
         limit: int = 50,
         unread_only: bool = False,
         before_id: int = 0,
+        search: str = "",
     ) -> list[dict[str, Any]]:
+        """Return one page of the feed, newest first.
+
+        `before_id` pages backwards through the feed: pass the id of the oldest
+        row already held and the next page picks up below it. Paging on the id
+        rather than an offset means a notification arriving mid-scroll cannot
+        shift the page boundary and hide a row.
+
+        `search` matches title and body. Every word has to appear somewhere in
+        the two, in any order, so a half-typed query still narrows the feed the
+        way an autocomplete does.
+        """
+
         if int(user_id or 0) <= 0:
             return []
 
@@ -5386,6 +5416,10 @@ class PortalDatabase:
         if int(before_id or 0) > 0:
             clauses.append("id < ?")
             values.append(int(before_id))
+        for token in notification_search_tokens(search):
+            clauses.append("(LOWER(title) LIKE ? OR LOWER(body) LIKE ?)")
+            pattern = f"%{token}%"
+            values.extend([pattern, pattern])
         values.append(max(1, min(200, int(limit or 50))))
 
         with self._connection() as conn:
@@ -5442,37 +5476,6 @@ class PortalDatabase:
             cursor = conn.execute(
                 "UPDATE notifications SET read_at = ?, updated_at = ? WHERE user_id = ? AND read_at IS NULL",
                 (now, now, int(user_id)),
-            )
-            return int(cursor.rowcount or 0)
-
-    def delete_notification(self, *, user_id: int, notification_id: int) -> bool:
-        if int(user_id or 0) <= 0 or int(notification_id or 0) <= 0:
-            return False
-        with self._connection() as conn:
-            cursor = conn.execute(
-                "DELETE FROM notifications WHERE id = ? AND user_id = ?",
-                (int(notification_id), int(user_id)),
-            )
-            return int(cursor.rowcount or 0) > 0
-
-    def prune_notifications(self, *, user_id: int, keep: int = 200) -> int:
-        """Trim a user's feed so it cannot grow without bound."""
-
-        if int(user_id or 0) <= 0:
-            return 0
-        with self._connection() as conn:
-            cursor = conn.execute(
-                """
-                DELETE FROM notifications
-                WHERE user_id = ?
-                  AND id NOT IN (
-                    SELECT id FROM notifications
-                    WHERE user_id = ?
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT ?
-                  )
-                """,
-                (int(user_id), int(user_id), max(1, int(keep or 200))),
             )
             return int(cursor.rowcount or 0)
 
