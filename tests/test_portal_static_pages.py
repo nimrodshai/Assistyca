@@ -258,6 +258,36 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("item.replaceChildren(trigger, expansion);", action_item_renderer)
         self.assertNotIn("item.append(trigger, expansion);", action_item_renderer)
 
+    def test_calendar_action_lists_calendars_as_tags(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # The calendar is a list of connections, not a sentence someone typed.
+        self.assertNotIn('["Calendar", "calendar", "Connected calendar"],', script)
+        self.assertIn('["Calendars", "calendar", ""],', script)
+        self.assertIn("function createAgentCalendarTagsField", script)
+        self.assertIn("createAgentCalendarTagsField(label, draft[key])", script)
+        self.assertIn("function getConnectedCalendarTagLabel", script)
+        self.assertIn('return address ? `Google Calendar (${address})` : "Google Calendar";', script)
+        self.assertIn("function getAgentCalendarAddressTags", script)
+        self.assertIn("function formatAgentCalendarFieldValue", script)
+        self.assertIn("const AGENT_CALENDAR_TAG_LIMIT = 5;", script)
+
+        tags_field = script[
+            script.index("function createAgentCalendarTagsField"):
+            script.index("function createAgentCalendarSummaryDateRangeField")
+        ]
+        self.assertIn('entryInput.placeholder = "Add a calendar email address";', tags_field)
+        self.assertIn("agent-action-editor-chip", tags_field)
+        self.assertIn("agentCalendarTagRemove", tags_field)
+        # The connected account's calendar comes from the connection, so it has
+        # no remove button of its own.
+        self.assertIn('index === 0 && getConnectedCalendarTagLabel() === tag ? " is-fixed" : ""', tags_field)
+        self.assertIn("An added address is only readable once that person shares their calendar", tags_field)
+        self.assertIn(".agent-action-editor-chip.is-fixed", styles)
+        self.assertIn(".agent-action-editor-hint", styles)
+        self.assertIn(':root[data-theme="dark"] .agent-action-editor-chip {', styles)
+
     def test_monitor_actions_support_manual_runs_and_manual_only_mode(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

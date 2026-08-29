@@ -59,6 +59,7 @@ from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.calendar_summary import CalendarAuthorizationError
 from packages.infrastructure.calendar_summary import CalendarSummaryError
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
+from packages.infrastructure.calendar_summary import parse_calendar_ids
 from packages.infrastructure.credential_vault import CredentialVault
 from packages.infrastructure.credential_vault import CredentialVaultError
 from packages.infrastructure.credential_vault import credential_hint
@@ -4861,16 +4862,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or payload.get("timeZone")
             or "UTC"
         ) or "UTC"
-        # “Connected calendar” and the current Google Calendar labels both map
-        # to the provider's primary calendar. Never treat a chat field as a URL.
-        calendar_id = "primary"
-        if calendar_label.lower() not in {"connected calendar", "google calendar", "primary", "calendar"}:
-            calendar_id = "primary"
+        # The calendar field holds one tag per calendar: the connected account
+        # under whatever label, plus any address shared with it. Every label
+        # that is not an address means the connected account's own calendar, so
+        # a saved label can never be read as a URL.
+        calendar_ids = parse_calendar_ids(calendar_label)
 
         try:
             result = CalendarSummaryRunner().run(
                 access_token,
-                calendar_id=calendar_id,
+                calendar_ids=calendar_ids,
                 time_window=time_window,
                 timezone_name=timezone_name,
             )
@@ -4916,7 +4917,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "summary": str(result.get("summary") or result.get("message") or ""),
             "eventCount": int(result.get("eventCount") or 0),
             "dateRange": result.get("dateRange") if isinstance(result.get("dateRange"), dict) else {},
-            "calendar": "connected calendar",
+            "calendar": calendar_label,
+            "calendars": result.get("calendars") if isinstance(result.get("calendars"), list) else calendar_ids,
+            # A calendar that could not be read is reported rather than quietly
+            # leaving its meetings out of the summary.
+            "skippedCalendars": [
+                {
+                    "calendar": normalize_text(entry.get("calendar")),
+                    "message": normalize_text(entry.get("message")),
+                }
+                for entry in (result.get("skippedCalendars") or [])
+                if isinstance(entry, dict)
+            ],
         })
 
     # Workspace folders are the receipt bundles this server already wrote to

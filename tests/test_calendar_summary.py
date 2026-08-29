@@ -14,10 +14,12 @@ from urllib import request as urllib_request
 from unittest import mock
 
 from packages.infrastructure.calendar_summary import CalendarAuthorizationError
+from packages.infrastructure.calendar_summary import CalendarNotSharedError
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import build_calendar_summary
 from packages.infrastructure.calendar_summary import normalize_calendar_event
 from packages.infrastructure.calendar_summary import parse_calendar_date_range
+from packages.infrastructure.calendar_summary import parse_calendar_ids
 from packages.infrastructure.gmail_summary import GmailDigestRunner
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_SECRET_TYPE
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_TOKEN_URL
@@ -125,6 +127,109 @@ class CalendarSummaryTests(unittest.TestCase):
 
         with self.assertRaises(CalendarAuthorizationError):
             CalendarSummaryRunner(opener=opener).run("expired-token", time_window="today")
+
+    def test_calendar_tags_become_calendar_ids(self) -> None:
+        # Every tag that is not an address means the connected account's own
+        # calendar, whatever the portal happened to label it.
+        self.assertEqual(parse_calendar_ids(""), ["primary"])
+        self.assertEqual(parse_calendar_ids("Connected calendar"), ["primary"])
+        self.assertEqual(parse_calendar_ids("Google Calendar (owner@example.com)"), ["primary"])
+        self.assertEqual(
+            parse_calendar_ids("Google Calendar, Alex@Example.com, alex@example.com"),
+            ["primary", "alex@example.com"],
+        )
+        self.assertEqual(parse_calendar_ids(["Google Calendar", "dana@example.org"]), ["primary", "dana@example.org"])
+
+    def test_calendar_id_is_never_a_url_or_a_path(self) -> None:
+        self.assertEqual(parse_calendar_ids("https://example.com/../secrets"), ["primary"])
+        self.assertEqual(parse_calendar_ids("primary/events?key=1"), ["primary"])
+
+    def test_extra_calendars_are_merged_and_deduplicated(self) -> None:
+        requested: list[str] = []
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            requested.append(request.full_url)
+            shared = {
+                "id": "event-shared",
+                "summary": "Launch review",
+                "start": {"dateTime": "2026-08-31T09:00:00+00:00"},
+                "end": {"dateTime": "2026-08-31T10:00:00+00:00"},
+            }
+            if "/calendars/primary/events?" in request.full_url:
+                return _FakeResponse({"items": [shared]})
+            return _FakeResponse({
+                "items": [
+                    shared,
+                    {
+                        "id": "event-2",
+                        "summary": "Site visit",
+                        "start": {"dateTime": "2026-08-31T08:00:00+00:00"},
+                        "end": {"dateTime": "2026-08-31T08:30:00+00:00"},
+                    },
+                ],
+            })
+
+        result = CalendarSummaryRunner(opener=opener).run(
+            "calendar-token",
+            calendar_ids="Google Calendar, dana@example.org",
+            time_window="next week",
+            timezone_name="UTC",
+            now=datetime(2026, 8, 25, 12, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["calendars"], ["primary", "dana@example.org"])
+        self.assertEqual(result["eventCount"], 2)
+        self.assertEqual(result["skippedCalendars"], [])
+        # The meeting on both calendars is reported once, and the earlier one
+        # leads even though it came from the second calendar read.
+        self.assertEqual(result["message"].count("Launch review"), 1)
+        self.assertLess(result["message"].index("Site visit"), result["message"].index("Launch review"))
+        self.assertIn("/calendars/dana%40example.org/events?", requested[1])
+
+    def test_unshared_extra_calendar_is_named_without_losing_the_others(self) -> None:
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            if "/calendars/primary/events?" in request.full_url:
+                return _FakeResponse({
+                    "items": [{
+                        "id": "event-1",
+                        "summary": "Planning session",
+                        "start": {"dateTime": "2026-08-31T10:00:00+00:00"},
+                        "end": {"dateTime": "2026-08-31T11:00:00+00:00"},
+                    }],
+                })
+            raise urllib_error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+        result = CalendarSummaryRunner(opener=opener).run(
+            "calendar-token",
+            calendar_ids="Google Calendar, dana@example.org",
+            time_window="next week",
+            timezone_name="UTC",
+            now=datetime(2026, 8, 25, 12, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["eventCount"], 1)
+        self.assertIn("Planning session", result["message"])
+        self.assertEqual([entry["calendar"] for entry in result["skippedCalendars"]], ["dana@example.org"])
+        self.assertIn("dana@example.org", result["message"])
+        self.assertIn("share their calendar", result["message"])
+
+    def test_extra_calendar_permission_error_leaves_the_connection_alone(self) -> None:
+        # A 403 on an extra calendar is a sharing problem with that calendar.
+        # Only the connected account's own calendar means the credential broke.
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            raise urllib_error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+
+        with self.assertRaises(CalendarAuthorizationError):
+            CalendarSummaryRunner(opener=opener).run("calendar-token", time_window="today")
+
+        runner = CalendarSummaryRunner(opener=opener)
+        date_range = parse_calendar_date_range(
+            "today",
+            timezone_name="UTC",
+            now=datetime(2026, 8, 25, 12, tzinfo=timezone.utc),
+        )
+        with self.assertRaises(CalendarNotSharedError):
+            runner.fetch_events("calendar-token", calendar_id="dana@example.org", date_range=date_range)
 
     def test_event_normalization_keeps_only_safe_summary_fields(self) -> None:
         event = normalize_calendar_event({
@@ -307,6 +412,43 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         connection = self.server.database.list_platform_connections("owner@example.com")[0]
         self.assertEqual(connection["connectionStatus"], "connected")
         self.assertEqual(connection["metadata"]["validationStatus"], "verified")
+
+    def test_calendar_proposal_run_reads_every_tagged_calendar(self) -> None:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/proposals/run",
+            data=json.dumps({
+                "proposalType": "calendar-summary",
+                "fields": {
+                    "calendar": "Google Calendar, dana@example.org",
+                    "timeWindow": "next week",
+                    "deliveryChannel": "portal",
+                },
+                "timezone": "UTC",
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        fake_result = {
+            "message": "Meeting summary · Aug 31–Sep 6, 2026",
+            "summary": "Meeting summary · Aug 31–Sep 6, 2026",
+            "eventCount": 2,
+            "calendars": ["primary", "dana@example.org"],
+            "skippedCalendars": [{"calendar": "dana@example.org", "message": "I couldn’t read dana@example.org."}],
+            "dateRange": {"display": "Aug 31–Sep 6, 2026"},
+        }
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
+            return_value=fake_result,
+        ) as run:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(run.call_args.kwargs["calendar_ids"], ["primary", "dana@example.org"])
+        self.assertEqual(payload["calendars"], ["primary", "dana@example.org"])
+        self.assertEqual(payload["skippedCalendars"][0]["calendar"], "dana@example.org")
 
     def test_calendar_proposal_run_refreshes_oauth_calendar_token(self) -> None:
         self.server.config.google_oauth_client_id = "google-client-id.apps.googleusercontent.com"

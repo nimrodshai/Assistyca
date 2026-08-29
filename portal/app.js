@@ -14361,6 +14361,56 @@ function getAgentProposalManualRunMonthValue(proposal, draft = {}) {
   return formatAgentYearMonthValue(getAgentWorkspaceMonthDate());
 }
 
+// A calendar action reads one calendar per tag: the connected account plus any
+// address the user added. Five is well past what anyone watches at once.
+const AGENT_CALENDAR_TAG_LIMIT = 5;
+const AGENT_CALENDAR_TAG_EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]{2,}$/;
+
+function isAgentCalendarAddressTag(value) {
+  return AGENT_CALENDAR_TAG_EMAIL_PATTERN.test(String(value || "").trim());
+}
+
+// The tag for the connected account. Older actions saved free text here
+// ("connected Google Calendar", "Connected calendar"); the connection itself is
+// the honest source, so that text is dropped and this replaces it.
+function getConnectedCalendarTagLabel() {
+  const connection = getPlatformConnectionByPlatform("calendar");
+  if (!connection || connection.connectionStatus === "disconnected") {
+    return "";
+  }
+  const address = normalizeText(connection.accountAddress);
+  return address ? `Google Calendar (${address})` : "Google Calendar";
+}
+
+// Only addresses survive from the saved value. Anything else named the
+// connected calendar, which the tag above already covers.
+function getAgentCalendarAddressTags(value) {
+  const tags = [];
+  for (const entry of String(value || "").split(/[,\n;]+/)) {
+    const address = entry.trim();
+    if (!isAgentCalendarAddressTag(address)) {
+      continue;
+    }
+    if (!tags.some((tag) => tag.toLowerCase() === address.toLowerCase())) {
+      tags.push(address);
+    }
+  }
+  return tags;
+}
+
+function getAgentCalendarTagValues(value) {
+  const connected = getConnectedCalendarTagLabel();
+  const tags = connected ? [connected] : [];
+  for (const address of getAgentCalendarAddressTags(value)) {
+    tags.push(address);
+  }
+  return tags.slice(0, AGENT_CALENDAR_TAG_LIMIT);
+}
+
+function formatAgentCalendarFieldValue(value) {
+  return getAgentCalendarTagValues(value).join(", ");
+}
+
 function getAgentManualRunMonthOptions(currentValue = "") {
   const baseMonth = getAgentWorkspaceMonthDate();
   const options = [];
@@ -18549,6 +18599,159 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
   return { field, input };
 }
 
+// One tag per calendar. The connected account is fixed because it comes from
+// the Google connection; extra addresses are added and removed here.
+function createAgentCalendarTagsField(labelText, value) {
+  const field = document.createElement("div");
+  field.className = "agent-action-editor-field";
+  const { labelRow, label, fieldStatus } = createAgentActionEditorLabelRow(labelText);
+  field._agentActionEditorFieldStatus = fieldStatus;
+  label.id = createAgentId("agent-calendar-tags-label");
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.value = formatAgentCalendarFieldValue(value);
+
+  const list = document.createElement("div");
+  list.className = "agent-action-editor-topics";
+  list.setAttribute("role", "list");
+  list.setAttribute("aria-labelledby", label.id);
+
+  const entry = document.createElement("div");
+  entry.className = "agent-action-editor-topic-entry";
+  const entryInput = document.createElement("input");
+  entryInput.type = "text";
+  entryInput.className = "agent-action-editor-input";
+  entryInput.placeholder = "Add a calendar email address";
+  entryInput.setAttribute("aria-label", "Add a calendar email address");
+  entryInput.autocomplete = "off";
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.className = "ghost-button small agent-action-editor-add";
+  addButton.textContent = "Add";
+  entry.append(entryInput, addButton);
+
+  const hint = document.createElement("p");
+  hint.className = "agent-action-editor-hint";
+
+  function getTags() {
+    return getAgentCalendarTagValues(input.value);
+  }
+
+  function setHint(message, isError = false) {
+    hint.textContent = message;
+    hint.classList.toggle("is-error", Boolean(isError));
+    hint.hidden = !message;
+  }
+
+  function resetHint() {
+    const connected = getConnectedCalendarTagLabel();
+    if (!connected) {
+      setHint("Connect Google Calendar so this action has a calendar to read.");
+      return;
+    }
+    setHint("An added address is only readable once that person shares their calendar with the connected Google account.");
+  }
+
+  function renderTags() {
+    const tags = getTags();
+    list.replaceChildren();
+    if (!tags.length) {
+      const empty = document.createElement("span");
+      empty.className = "agent-action-editor-empty";
+      empty.textContent = "No calendar connected yet.";
+      list.append(empty);
+    }
+    tags.forEach((tag, index) => {
+      const chip = document.createElement("span");
+      chip.className = `agent-action-editor-chip${index === 0 && getConnectedCalendarTagLabel() === tag ? " is-fixed" : ""}`;
+      chip.setAttribute("role", "listitem");
+      const chipLabel = document.createElement("span");
+      chipLabel.className = "agent-action-editor-chip-label";
+      chipLabel.textContent = tag;
+      chip.append(chipLabel);
+      if (chip.classList.contains("is-fixed")) {
+        chip.title = "The calendar of the connected Google account.";
+      } else {
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "agent-action-editor-chip-remove";
+        removeButton.dataset.agentCalendarTagRemove = tag;
+        removeButton.setAttribute("aria-label", `Remove ${tag}`);
+        removeButton.textContent = "×";
+        chip.append(removeButton);
+      }
+      list.append(chip);
+    });
+    entryInput.disabled = tags.length >= AGENT_CALENDAR_TAG_LIMIT;
+    addButton.disabled = entryInput.disabled;
+  }
+
+  function commitTags(tags) {
+    const nextValue = tags.join(", ");
+    if (nextValue === input.value) {
+      renderTags();
+      return;
+    }
+    input.value = nextValue;
+    renderTags();
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function addTag() {
+    const address = entryInput.value.trim();
+    if (!address) {
+      entryInput.focus();
+      return;
+    }
+    if (!isAgentCalendarAddressTag(address)) {
+      setHint("Add a calendar as an email address, like alex@example.com.", true);
+      entryInput.focus();
+      return;
+    }
+    const tags = getTags();
+    if (tags.some((tag) => tag.toLowerCase().includes(address.toLowerCase()))) {
+      setHint("That calendar is already on the list.", true);
+      entryInput.focus();
+      return;
+    }
+    if (tags.length >= AGENT_CALENDAR_TAG_LIMIT) {
+      setHint(`This action reads up to ${AGENT_CALENDAR_TAG_LIMIT} calendars.`, true);
+      return;
+    }
+    entryInput.value = "";
+    resetHint();
+    commitTags([...tags, address]);
+    entryInput.focus();
+  }
+
+  addButton.addEventListener("click", addTag);
+  entryInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addTag();
+    }
+  });
+  entryInput.addEventListener("input", () => {
+    if (hint.classList.contains("is-error")) {
+      resetHint();
+    }
+  });
+  list.addEventListener("click", (event) => {
+    const removeButton = getEventTargetElement(event)?.closest("[data-agent-calendar-tag-remove]");
+    if (!removeButton) {
+      return;
+    }
+    const removed = String(removeButton.dataset.agentCalendarTagRemove || "");
+    resetHint();
+    commitTags(getTags().filter((tag) => tag !== removed));
+  });
+
+  resetHint();
+  renderTags();
+  field.append(labelRow, list, entry, hint, input);
+  return { field, input };
+}
+
 function createAgentCalendarSummaryDateRangeField(labelText, value) {
   const options = getAgentCalendarSummaryDateRangeOptions(value);
   const field = document.createElement("div");
@@ -19003,7 +19206,7 @@ function createAgentLocalActionEditor(action) {
 
   const typeFields = {
     "calendar-summary": [
-      ["Calendar", "calendar", "Connected calendar"],
+      ["Calendars", "calendar", ""],
       ["Date range", "timeWindow", "e.g. next week"],
     ],
     "email-digest": [["Mailbox", "mailbox", "Gmail or Outlook"]],
@@ -19017,6 +19220,16 @@ function createAgentLocalActionEditor(action) {
       draft[key] = getAgentMonthlyBatchResultText(proposal, draft) || draft[key];
     }
     const editorFieldOptions = { placeholder, ...fieldOptions };
+    if (key === "calendar") {
+      draft[key] = formatAgentCalendarFieldValue(draft[key]);
+      const control = createAgentCalendarTagsField(label, draft[key]);
+      control.input.addEventListener("change", () => {
+        draft[key] = control.input.value;
+        scheduleAgentLocalActionAutoSave(action, draft, form, control.field);
+      });
+      form.append(control.field);
+      continue;
+    }
     if (key === "timeWindow") {
       draft[key] = normalizeAgentCalendarSummaryDateRangeValue(draft[key] || "next week");
       const control = createAgentCalendarSummaryDateRangeField(label, draft[key]);

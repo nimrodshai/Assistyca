@@ -28,6 +28,12 @@ from zoneinfo import ZoneInfoNotFoundError
 CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars"
 CALENDAR_MAX_EVENTS = 100
 CALENDAR_TIMEOUT_SECONDS = 20
+# One read per calendar, so the list has to stay short enough that a run does
+# not turn into a long chain of provider calls.
+CALENDAR_MAX_CALENDARS = 5
+# A calendar ID is either the connected account's own calendar or the address
+# of a calendar shared with it. Nothing else is ever put in the request path.
+CALENDAR_ID_PATTERN = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$")
 
 
 class CalendarSummaryError(RuntimeError):
@@ -43,6 +49,46 @@ class CalendarAuthorizationError(CalendarSummaryError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="calendar_authorization_failed")
+
+
+class CalendarNotSharedError(CalendarSummaryError):
+    """One extra calendar is not readable by the connected account."""
+
+    def __init__(self, calendar_id: str) -> None:
+        super().__init__(
+            f"I couldn’t read {calendar_id}. Ask them to share their calendar with the connected Google account, then run it again.",
+            code="calendar_not_shared",
+        )
+        self.calendar_id = calendar_id
+
+
+def normalize_calendar_id(value: Any) -> str:
+    """Return a calendar ID that is safe to put in the request path."""
+
+    candidate = str(value or "").strip().strip("<>").lower()
+    return candidate if CALENDAR_ID_PATTERN.match(candidate) else "primary"
+
+
+def parse_calendar_ids(value: Any) -> list[str]:
+    """Turn the saved calendar field into the calendars a run should read.
+
+    The field holds one tag per calendar: the connected account, whatever it is
+    labelled, plus any address the user added.  Every tag that is not an address
+    means the connected account's own calendar, which Google calls "primary".
+    """
+
+    if isinstance(value, (list, tuple, set)):
+        entries = [str(item) for item in value]
+    else:
+        entries = re.split(r"[,\n;]+", str(value or ""))
+    calendar_ids: list[str] = []
+    for entry in entries:
+        if not entry.strip():
+            continue
+        calendar_id = normalize_calendar_id(entry)
+        if calendar_id not in calendar_ids:
+            calendar_ids.append(calendar_id)
+    return calendar_ids[:CALENDAR_MAX_CALENDARS] or ["primary"]
 
 
 @dataclass(frozen=True)
@@ -201,12 +247,25 @@ def _display_range(date_range: CalendarDateRange) -> str:
     return f"{start.strftime('%b %-d, %Y')}–{end.strftime('%b %-d, %Y')}"
 
 
-def build_calendar_summary(events: list[dict[str, Any]], date_range: CalendarDateRange) -> str:
+def build_calendar_summary(
+    events: list[dict[str, Any]],
+    date_range: CalendarDateRange,
+    *,
+    skipped_calendars: list[dict[str, Any]] | None = None,
+) -> str:
     """Build a concise portal-safe summary from normalized event records."""
 
     header = f"Meeting summary · {_display_range(date_range)}"
+    # A calendar that could not be read is named in the summary rather than
+    # quietly leaving its meetings out.
+    skipped_lines = [
+        f"Couldn’t read {str(entry.get('calendar') or '').strip()}: {str(entry.get('message') or '').strip()}"
+        for entry in (skipped_calendars or [])
+        if str(entry.get("calendar") or "").strip()
+    ]
     if not events:
-        return f"{header}\n\nNo meetings found in this range."
+        body = f"{header}\n\nNo meetings found in this range."
+        return "\n".join([body, "", *skipped_lines]) if skipped_lines else body
 
     lines = [header, "", f"{len(events)} meeting{'s' if len(events) != 1 else ''}:"]
     for event in events[:CALENDAR_MAX_EVENTS]:
@@ -219,7 +278,25 @@ def build_calendar_summary(events: list[dict[str, Any]], date_range: CalendarDat
             lines.append(f"  {description[:240]}")
     if len(events) > CALENDAR_MAX_EVENTS:
         lines.append(f"…and {len(events) - CALENDAR_MAX_EVENTS} more.")
+    if skipped_lines:
+        lines.extend(["", *skipped_lines])
     return "\n".join(lines)
+
+
+# The same meeting shows up once per calendar it was invited to, and reading
+# two calendars should not report it twice.
+def _merge_calendar_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for event in events:
+        event_id = str(event.get("id") or "").strip()
+        key = (event_id,) if event_id else (event.get("start"), event.get("title"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(event)
+    merged.sort(key=lambda item: item["start"])
+    return merged
 
 
 class CalendarSummaryRunner:
@@ -246,11 +323,9 @@ class CalendarSummaryRunner:
             raise CalendarAuthorizationError(
                 "Calendar access needs attention: no usable access token is saved. Reconnect Calendar with Google read-only access, then run it again."
             )
-        safe_calendar_id = str(calendar_id or "primary").strip() or "primary"
-        # Calendar IDs are provider data, not a URL supplied by the user. Keep
-        # the default primary calendar unless a future OAuth flow supplies one.
-        if safe_calendar_id != "primary":
-            safe_calendar_id = "primary"
+        # A calendar ID reaches the request path only as "primary" or as an
+        # address, so a saved label can never be read as a URL.
+        safe_calendar_id = normalize_calendar_id(calendar_id)
         params = urllib_parse.urlencode({
             "timeMin": date_range.start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             "timeMax": date_range.end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -270,10 +345,14 @@ class CalendarSummaryRunner:
                 raw = response.read()
                 payload = json.loads(raw.decode("utf-8")) if raw else {}
         except urllib_error.HTTPError as exc:
-            if exc.code in {401, 403}:
+            if exc.code == 401 or (exc.code == 403 and safe_calendar_id == "primary"):
                 raise CalendarAuthorizationError(
                     "Calendar access needs attention: Google rejected the saved credential or its permissions. Reconnect with a Google OAuth token that grants read-only Calendar access, then run it again."
                 ) from exc
+            # An extra calendar the account cannot open is a sharing problem
+            # with that one calendar, not a problem with the connection.
+            if exc.code in {403, 404}:
+                raise CalendarNotSharedError(safe_calendar_id) from exc
             raise CalendarSummaryError(
                 f"Google Calendar returned an error ({exc.code}). Try again or reconnect Calendar.",
                 code="calendar_provider_error",
@@ -302,21 +381,57 @@ class CalendarSummaryRunner:
         events.sort(key=lambda item: item["start"])
         return events
 
+    def fetch_calendar_events(
+        self,
+        access_token: str,
+        *,
+        calendar_ids: list[str],
+        date_range: CalendarDateRange,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        """Read every listed calendar and merge the meetings into one list."""
+
+        events: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        first_error: CalendarSummaryError | None = None
+        read_any = False
+        for calendar_id in calendar_ids or ["primary"]:
+            try:
+                events.extend(self.fetch_events(access_token, calendar_id=calendar_id, date_range=date_range))
+            except CalendarSummaryError as exc:
+                # One unreadable calendar should not lose the meetings from the
+                # others, so the run continues and says what it skipped.
+                first_error = first_error or exc
+                skipped.append({"calendar": calendar_id, "message": str(exc)})
+                continue
+            read_any = True
+        if not read_any and first_error is not None:
+            raise first_error
+        return _merge_calendar_events(events), skipped
+
     def run(
         self,
         access_token: str,
         *,
         calendar_id: str = "primary",
+        calendar_ids: Any = None,
         time_window: str = "next week",
         timezone_name: str = "UTC",
         now: datetime | None = None,
     ) -> dict[str, Any]:
         date_range = parse_calendar_date_range(time_window, timezone_name=timezone_name, now=now)
-        events = self.fetch_events(access_token, calendar_id=calendar_id, date_range=date_range)
+        wanted = parse_calendar_ids(calendar_ids if calendar_ids is not None else calendar_id)
+        events, skipped = self.fetch_calendar_events(
+            access_token,
+            calendar_ids=wanted,
+            date_range=date_range,
+        )
+        summary = build_calendar_summary(events, date_range, skipped_calendars=skipped)
         return {
-            "message": build_calendar_summary(events, date_range),
-            "summary": build_calendar_summary(events, date_range),
+            "message": summary,
+            "summary": summary,
             "eventCount": len(events),
+            "calendars": wanted,
+            "skippedCalendars": skipped,
             "dateRange": {
                 "label": date_range.label,
                 "display": _display_range(date_range),

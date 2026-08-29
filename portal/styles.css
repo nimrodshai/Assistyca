@@ -5565,6 +5565,27 @@ body[data-modal="billing"] .app-shell {
   outline: 0;
 }
 
+/* The connected account's own calendar is not removable: it comes from the
+   Google connection, not from something typed here. */
+.agent-action-editor-chip.is-fixed {
+  padding-right: 0.65rem;
+}
+
+.agent-action-editor-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.agent-action-editor-hint.is-error {
+  color: var(--warn);
+}
+
+.agent-action-editor-hint[hidden] {
+  display: none;
+}
+
 .agent-action-editor-empty {
   color: var(--muted);
   font-size: 0.68rem;
@@ -11355,6 +11376,16 @@ body.is-chat-view {
   border-color: rgba(55, 184, 171, 0.52);
   background: rgba(13, 21, 28, 0.94);
   box-shadow: 0 0 0 4px rgba(55, 184, 171, 0.14);
+}
+
+:root[data-theme="dark"] .agent-action-editor-chip {
+  color: #cdefe8;
+  background: rgba(55, 184, 171, 0.16);
+}
+
+:root[data-theme="dark"] .agent-action-editor-chip-remove:hover,
+:root[data-theme="dark"] .agent-action-editor-chip-remove:focus-visible {
+  background: rgba(55, 184, 171, 0.28);
 }
 
 :root[data-theme="dark"] .agent-folder-utility-button {
