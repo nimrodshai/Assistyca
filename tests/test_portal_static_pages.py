@@ -1367,8 +1367,30 @@ class PortalStaticPageTests(unittest.TestCase):
             script,
         )
 
+        # Each option carries its own details button, so a repeated title can be
+        # checked before it is picked.
+        self.assertIn("row.append(button, createAgentActionChoiceDetailsButton(choice));", picker)
+        self.assertIn('button.dataset.agentActionDetails = String(choice?.id || "");', picker)
+        self.assertIn("bodyNode: createAgentActionChoiceDetailsBody(action, choice),", picker)
+        self.assertIn("returnFocus: button,", picker)
+
+        # The details button opens a popup instead of answering the question.
+        self.assertNotIn("agentMessageAction", script[
+            script.index("function createAgentActionChoiceDetailsButton"):
+            script.index("function findAgentActionChoiceAction")
+        ])
+        workspace_click = script[
+            script.index("function handleAgentWorkspaceClick"):
+        ]
+        self.assertLess(
+            workspace_click.index("handleAgentActionChoiceDetailsClick(event)"),
+            workspace_click.index("handleAgentMessageAction(event)"),
+        )
+
         self.assertIn(".agent-message-action-picker {", styles)
         self.assertIn(".agent-message-action-picker-option {", styles)
+        self.assertIn(".agent-message-action-picker-details {", styles)
+        self.assertIn(".agent-action-choice-details-grid {", styles)
         self.assertIn("background: var(--surface-soft);", styles)
 
     def test_page_scripts_resolve_from_the_url_the_page_is_served_at(self) -> None:

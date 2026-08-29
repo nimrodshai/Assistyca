@@ -15892,6 +15892,9 @@ function createAgentActionChoiceCard(message) {
   const agent = getAgentWorkspace();
   const resolved = Boolean(agentTurnBusy || areAgentMessageActionsResolved(message, agent.messages));
   for (const choice of getAgentMessageActionChoices(message)) {
+    const row = document.createElement("div");
+    row.className = "agent-message-action-picker-row";
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = "agent-message-action-picker-option";
@@ -15912,10 +15915,173 @@ function createAgentActionChoiceCard(message) {
       detail.textContent = meta.join(" · ");
       button.append(detail);
     }
-    list.append(button);
+    row.append(button, createAgentActionChoiceDetailsButton(choice));
+    list.append(row);
   }
   card.append(list);
   return card;
+}
+
+function createAgentActionChoiceDetailsButton(choice) {
+  // Two actions can share a title, so the picker keeps a way to look one up
+  // before committing to it.
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "agent-message-action-picker-details";
+  button.dataset.agentActionDetails = String(choice?.id || "");
+  button.dataset.agentActionDetailsName = String(choice?.name || "");
+  button.dataset.agentActionDetailsStatus = String(choice?.status || "");
+  button.dataset.agentActionDetailsCreated = String(choice?.created || "");
+  button.title = "Show details";
+  button.setAttribute("aria-label", `Show details for ${String(choice?.name || "this action")}`);
+
+  const icon = document.createElement("span");
+  icon.className = "agent-message-action-picker-details-icon";
+  icon.textContent = "i";
+  icon.setAttribute("aria-hidden", "true");
+  button.append(icon);
+  return button;
+}
+
+function findAgentActionChoiceAction(choiceId) {
+  const id = String(choiceId || "").trim();
+  if (!id) {
+    return null;
+  }
+  return getRenderableAgentActions().find((action) => String(action?.id || "") === id) || null;
+}
+
+function getAgentActionChoiceDetailRows(action, choice) {
+  const payload = action?.payload && typeof action.payload === "object" ? action.payload : {};
+  const timezone = action?.timezone || "";
+  const statusClass = action ? getScheduledActionStatusClass(action.status, action) : "";
+  const rows = [];
+
+  const status = action
+    ? getScheduledActionStatusLabel(action.status, action)
+    : String(choice?.status || "").trim();
+  if (status) {
+    rows.push(["Status", status]);
+  }
+
+  const watching = Array.isArray(payload.watchItems) && payload.watchItems.length
+    ? payload.watchItems.join(" · ")
+    : String(payload.watchQuery || "").trim();
+  if (watching) {
+    rows.push(["Watching", watching]);
+  }
+
+  const source = payload.sourceType === "file"
+    ? String(payload.fileName || "").trim()
+    : String(payload.sourceUrl || "").trim();
+  if (source) {
+    rows.push(["Source", source]);
+  }
+
+  const frequency = String(payload.frequency || "").trim();
+  if (frequency) {
+    rows.push(["How often", frequency]);
+  }
+
+  const deliveryTarget = String(payload.deliveryTarget || "").trim();
+  const deliveryChannel = String(payload.deliveryChannel || action?.channel || "").trim();
+  if (deliveryTarget || deliveryChannel) {
+    const channelLabel = formatAgentScheduledMessageChannel(deliveryChannel);
+    rows.push(["Results go to", deliveryTarget ? `${deliveryTarget} (${channelLabel})` : channelLabel]);
+  }
+
+  if (action && !isAgentLocalAction(action)) {
+    rows.push(["Scheduled for", formatScheduledActionDate(action.runAt, timezone)]);
+  } else if (action && statusClass !== "paused" && !payload.manualOnly) {
+    rows.push(["Next run", formatScheduledActionDate(payload.nextRunAt || action.runAt, timezone)]);
+  }
+
+  if (payload.lastRunAt) {
+    rows.push([
+      "Last run",
+      `${formatScheduledActionDate(payload.lastRunAt, timezone)} · ${capitalizeWords(payload.lastRunStatus || "success")}`,
+    ]);
+  }
+
+  const created = action
+    ? formatScheduledActionDate(action.createdAt, timezone)
+    : String(choice?.created || "").trim();
+  if (created) {
+    rows.push(["Created", created]);
+  }
+
+  const lastError = String(action?.lastError || "").trim();
+  if (lastError) {
+    rows.push(["Last problem", lastError]);
+  }
+
+  return rows;
+}
+
+function createAgentActionChoiceDetailsBody(action, choice) {
+  const body = document.createElement("div");
+  body.className = "agent-action-choice-details";
+
+  const payload = action?.payload && typeof action.payload === "object" ? action.payload : {};
+  const summary = String(payload.summary || payload.messageText || payload.text || "").trim();
+  if (summary) {
+    const intro = document.createElement("p");
+    intro.className = "agent-action-choice-details-summary";
+    intro.textContent = summary;
+    body.append(intro);
+  }
+
+  const rows = getAgentActionChoiceDetailRows(action, choice);
+  if (rows.length) {
+    const grid = document.createElement("dl");
+    grid.className = "agent-action-choice-details-grid";
+    for (const [label, value] of rows) {
+      grid.append(createScheduledActionDetailRow(label, value));
+    }
+    body.append(grid);
+  }
+
+  if (!action) {
+    const note = document.createElement("p");
+    note.className = "agent-action-choice-details-note";
+    note.textContent = "This action is no longer in the Actions panel, so only what the picker recorded is shown.";
+    body.append(note);
+  }
+
+  return body;
+}
+
+function openAgentActionChoiceDetails(button) {
+  const choice = {
+    id: String(button?.dataset.agentActionDetails || "").trim(),
+    name: String(button?.dataset.agentActionDetailsName || "").trim(),
+    status: String(button?.dataset.agentActionDetailsStatus || "").trim(),
+    created: String(button?.dataset.agentActionDetailsCreated || "").trim(),
+  };
+  const action = findAgentActionChoiceAction(choice.id);
+  openAuthAlert(
+    action ? getScheduledActionTitle(action) : (choice.name || "Action"),
+    "Here is what this action does, so you can tell it apart from the others.",
+    {
+      eyebrow: "Action details",
+      icon: "i",
+      tone: "progress",
+      bodyNode: createAgentActionChoiceDetailsBody(action, choice),
+      buttonLabel: "Close",
+      returnFocus: button,
+    },
+  );
+}
+
+function handleAgentActionChoiceDetailsClick(event) {
+  const button = getEventTargetElement(event)?.closest("[data-agent-action-details]");
+  if (!button) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  openAgentActionChoiceDetails(button);
+  return true;
 }
 
 function renderAgentMessageBubbleContent(bubble, message, kind, proposal, displayText) {
@@ -22670,6 +22836,10 @@ function handleAgentWorkspaceClick(event) {
   }
 
   if (handleAgentActionReferenceClick(event)) {
+    return;
+  }
+
+  if (handleAgentActionChoiceDetailsClick(event)) {
     return;
   }
 
