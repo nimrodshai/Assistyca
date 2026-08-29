@@ -769,6 +769,25 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("async function requestMicrosoftEmailSignInUrl", script)
         self.assertIn('if (option.id === "microsoft") {\n    openMicrosoftOAuthConnection(option);', script)
         self.assertIn('["calendar", "email", "microsoft"].includes(option.id) ? "oauth"', script)
+        # A connected Outlook mailbox is stored on the email platform, so the
+        # tool shelf has to name its provider or Microsoft never shows up.
+        self.assertIn("function isOutlookPlatformConnection", script)
+        self.assertIn('platform: "microsoft",\n        label: "Microsoft",', script)
+        self.assertIn("&& !isOutlookPlatformConnection(connection)", script)
+        # Connecting an app from the tools panel is not a chat turn, so nothing
+        # about it is announced in chat.
+        self.assertIn("function wasPlatformConnectionStartedFromChat", script)
+        self.assertIn("const startedFromChat = wasPlatformConnectionStartedFromChat();", script)
+        self.assertIn(
+            "if (options.startedFromChat === false && !didAgentAskForConnection(proposal)) {",
+            script,
+        )
+        self.assertIn(
+            "if (startedFromChat) {\n      pushAgentMessage(\"assistant\", message);"
+            "\n      persistAgentWorkspace(\"Outlook connected through Microsoft.\");",
+            script,
+        )
+        self.assertIn('openPlatformConnection(requirement.setupPlatformId || "calendar", { origin: "chat" });', script)
         self.assertIn("GOOGLE_CONNECTION_SCOPE_OPTIONS", script)
         self.assertIn("https://www.googleapis.com/auth/calendar.events.readonly", script)
         self.assertIn("https://www.googleapis.com/auth/gmail.readonly", script)
@@ -801,7 +820,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("connected-mailbox-disconnect", styles)
         calendar_oauth_flow = script[
             script.index("function openCalendarOAuthConnection"):
-            script.index("function openPlatformConnection(optionId)")
+            script.index("function openPlatformConnection(optionId, options = {})")
         ]
         self.assertIn("const usesAggregateGoogleConnection = option.id === \"calendar\";", calendar_oauth_flow)
         self.assertIn("const connectedGoogleConnections = usesAggregateGoogleConnection", calendar_oauth_flow)
@@ -1199,7 +1218,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=155", html)
-        self.assertIn("app.js?v=188", html)
+        self.assertIn("app.js?v=189", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)
@@ -1329,7 +1348,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('proposal.type === "custom" && agentTextSuggestsGoogleWorkspaceBatch(contextText)', script)
         self.assertIn('"google-workspace"', script)
         self.assertIn("No API key is needed.", script)
-        self.assertIn("openPlatformConnection(requirement.setupPlatformId || \"calendar\")", script)
+        self.assertIn("openPlatformConnection(requirement.setupPlatformId || \"calendar\", { origin: \"chat\" })", script)
         self.assertIn("gmail: {", script)
         self.assertIn("drive: {", script)
         self.assertNotIn('proposal.type === "web-monitor" && agentTextSuggestsGoogleWorkspaceBatch', script)

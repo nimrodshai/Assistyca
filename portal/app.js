@@ -5872,6 +5872,36 @@ function getPlatformConnectionByPlatform(platform) {
   return state.platformConnections.find((connection) => connection.platform === normalized) || null;
 }
 
+function getPlatformConnectionPlatformId(connection) {
+  return String(connection?.platform || connection?.id || "").trim().toLowerCase();
+}
+
+// Where a connection flow was started. Connecting an app from the tools panel
+// is the user's own errand, so the chat stays out of it; only a flow the chat
+// asked for comes back with a chat message. OAuth leaves the page and returns,
+// so this has to outlive a reload.
+const PLATFORM_CONNECTION_ORIGIN_KEY = "assistyca.platformConnectionOrigin";
+
+function setPlatformConnectionOrigin(origin) {
+  try {
+    window.sessionStorage.setItem(PLATFORM_CONNECTION_ORIGIN_KEY, origin === "chat" ? "chat" : "tools");
+  } catch {
+    // Without storage the connection counts as panel-started, which is quiet.
+  }
+}
+
+// Reading the origin also clears it: one connection flow, one answer.
+function wasPlatformConnectionStartedFromChat() {
+  let origin = "";
+  try {
+    origin = window.sessionStorage.getItem(PLATFORM_CONNECTION_ORIGIN_KEY) || "";
+    window.sessionStorage.removeItem(PLATFORM_CONNECTION_ORIGIN_KEY);
+  } catch {
+    origin = "";
+  }
+  return origin === "chat";
+}
+
 function isGoogleToolPlatformConnection(platform) {
   const normalized = String(platform || "").trim().toLowerCase();
   return GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(normalized);
@@ -6273,9 +6303,21 @@ function consumeAgentApprovalPendingAfterConnection(proposal) {
   return pending;
 }
 
+// A proposal only speaks up about a connection the chat itself asked for.
+function didAgentAskForConnection(proposal) {
+  const details = proposal?.details && typeof proposal.details === "object" ? proposal.details : {};
+  return Boolean(details.approvalPendingAfterConnection || details.connectionRequestedInChat);
+}
+
 function resumeAgentProposalAfterConnectedPlatforms(platforms = [], options = {}) {
   const proposal = findAgentProposalReadyAfterConnection(platforms);
   if (!proposal) {
+    return false;
+  }
+
+  // Connecting an app from the tools panel is not a chat turn. Unless the chat
+  // was the one waiting on that connection, it stays quiet.
+  if (options.startedFromChat === false && !didAgentAskForConnection(proposal)) {
     return false;
   }
 
@@ -7251,8 +7293,10 @@ function openCalendarOAuthConnection(option) {
           ))
           .filter(Boolean);
       const connectionMessage = saveResponse.message || assistantSuccessMessage;
+      const startedFromChat = wasPlatformConnectionStartedFromChat();
       if (resumeAgentProposalAfterConnectedPlatforms(connectedPlatforms, {
         connectionMessage,
+        startedFromChat,
       })) {
         closeAuthAlert();
         elements.agentComposerInput?.focus();
@@ -7269,8 +7313,10 @@ function openCalendarOAuthConnection(option) {
           returnFocus: elements.agentAddToolButton,
         },
       );
-      pushAgentMessage("assistant", connectionMessage);
-      persistAgentWorkspace("Google connected through OAuth.");
+      if (startedFromChat) {
+        pushAgentMessage("assistant", connectionMessage);
+        persistAgentWorkspace("Google connected through OAuth.");
+      }
       renderApp({ preserveStatus: true });
     } catch (requestError) {
       const errorCode = normalizeText(requestError?.code);
@@ -7477,11 +7523,13 @@ function openMicrosoftOAuthConnection(option) {
   setCalendarOAuthPrimaryButton(primaryLabel, { logo: createMicrosoftBrandLogo });
 }
 
-function openPlatformConnection(optionId) {
+function openPlatformConnection(optionId, options = {}) {
   const option = getPlatformConnectionOption(optionId);
   if (!option) {
     return;
   }
+
+  setPlatformConnectionOrigin(options.origin);
 
   if (option.id === "microsoft") {
     openMicrosoftOAuthConnection(option);
@@ -10986,12 +11034,14 @@ function consumeCalendarOAuthReturn() {
   window.history.replaceState({}, "", url);
 
   const succeeded = status === "success";
+  const startedFromChat = wasPlatformConnectionStartedFromChat();
   const message = rawMessage || (succeeded
     ? "Google is connected with the selected read-only access."
     : "Google could not be connected. Try again from Google setup.");
 
   if (succeeded && resumeAgentProposalAfterConnectedPlatforms(["google"], {
     connectionMessage: message,
+    startedFromChat,
   })) {
     elements.agentComposerInput?.focus();
     return;
@@ -11010,8 +11060,10 @@ function consumeCalendarOAuthReturn() {
   );
 
   if (succeeded) {
-    pushAgentMessage("assistant", message);
-    persistAgentWorkspace("Google connected through OAuth.");
+    if (startedFromChat) {
+      pushAgentMessage("assistant", message);
+      persistAgentWorkspace("Google connected through OAuth.");
+    }
     renderApp({ preserveStatus: true });
   }
 }
@@ -11029,12 +11081,14 @@ function consumeEmailOAuthReturn() {
   window.history.replaceState({}, "", url);
 
   const succeeded = status === "connected" || status === "success";
+  const startedFromChat = wasPlatformConnectionStartedFromChat();
   const message = rawMessage || (succeeded
     ? "Outlook connected with read-only access."
     : "Outlook could not be connected. Try again from Email setup.");
 
   if (succeeded && resumeAgentProposalAfterConnectedPlatforms(["email"], {
     connectionMessage: message,
+    startedFromChat,
   })) {
     elements.agentComposerInput?.focus();
     return;
@@ -11053,8 +11107,10 @@ function consumeEmailOAuthReturn() {
   );
 
   if (succeeded) {
-    pushAgentMessage("assistant", message);
-    persistAgentWorkspace("Outlook connected through Microsoft.");
+    if (startedFromChat) {
+      pushAgentMessage("assistant", message);
+      persistAgentWorkspace("Outlook connected through Microsoft.");
+    }
     renderApp({ preserveStatus: true });
   }
 }
@@ -22226,6 +22282,14 @@ function pushAgentRequiredConnectionSetupPrompt(proposal, requirement, reply = "
   const message = isAgentConnectionSetupReply(candidateReply)
     ? candidateReply
     : getAgentRequiredConnectionApprovalMessage(requirement);
+  if (proposal) {
+    // Remember that the chat asked, so the connection can resume the chat even
+    // if the user goes and makes it from the tools panel instead.
+    proposal.details = {
+      ...(proposal.details && typeof proposal.details === "object" ? proposal.details : {}),
+      connectionRequestedInChat: true,
+    };
+  }
   return pushAgentMessage("assistant", message, {
     kind: "credential",
     proposalId: proposal?.id || "",
@@ -22336,7 +22400,7 @@ function openAgentWhatsAppSetup() {
     openFeatureStudio(feature.id, "activation");
     return;
   }
-  openPlatformConnection("whatsapp");
+  openPlatformConnection("whatsapp", { origin: "chat" });
 }
 
 function createAgentProposalFromTurn(requestText, turn = {}) {
@@ -22728,7 +22792,7 @@ async function handleAgentUserText(text) {
     pushAgentMessage("assistant", `Let’s connect ${platformConnection.label}.`);
     persistAgentWorkspace(`Connecting ${platformConnection.label}...`);
     renderApp({ preserveStatus: true });
-    openPlatformConnection(platformConnection.id);
+    openPlatformConnection(platformConnection.id, { origin: "chat" });
     return;
   }
 
@@ -23675,15 +23739,15 @@ function openAgentProposalSetup(proposalId) {
   const proposal = getAgentWorkspace().proposals.find((candidate) => candidate.id === proposalId);
   const requirement = getAgentProposalRequiredConnection(proposal);
   if (requirement && !isAgentProposalRequiredConnectionReady(requirement)) {
-    openPlatformConnection(requirement.setupPlatformId || "calendar");
+    openPlatformConnection(requirement.setupPlatformId || "calendar", { origin: "chat" });
     return;
   }
   if (proposal?.type === "email-digest" && proposal.missingCredential) {
-    openPlatformConnection("email");
+    openPlatformConnection("email", { origin: "chat" });
     return;
   }
   if (proposal?.type === "calendar-summary" && proposal.missingCredential) {
-    openPlatformConnection("calendar");
+    openPlatformConnection("calendar", { origin: "chat" });
     return;
   }
   if (!proposal?.relatedFeatureId) {
@@ -24961,25 +25025,47 @@ const ACTION_ONLY_PLATFORM_CONNECTION_IDS = new Set([
 ]);
 
 function shouldRenderAgentToolShelfConnection(connection) {
-  const platform = String(connection?.platform || connection?.id || "").trim().toLowerCase();
+  const platform = getPlatformConnectionPlatformId(connection);
   return Boolean(connection && platform && !ACTION_ONLY_PLATFORM_CONNECTION_IDS.has(platform));
+}
+
+// An Outlook mailbox is stored on the email platform, the same as Gmail, so
+// only the provider behind it says whether it belongs to Microsoft or Google.
+function isOutlookPlatformConnection(connection) {
+  return getPlatformConnectionPlatformId(connection) === "email"
+    && getEmailConnectionProvider(connection) === EMAIL_PROVIDER_OUTLOOK;
 }
 
 function getAgentToolShelfConnections(connections = []) {
   const source = Array.isArray(connections) ? connections : [];
   const visibleConnections = source.filter(shouldRenderAgentToolShelfConnection);
   const hasVisibleGoogle = visibleConnections.some((connection) => (
-    String(connection?.platform || connection?.id || "").trim().toLowerCase() === "calendar"
+    getPlatformConnectionPlatformId(connection) === "calendar"
   ));
   if (!hasVisibleGoogle) {
     const googleConnection = source.find((connection) => (
-      GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(String(connection?.platform || connection?.id || "").trim().toLowerCase())
+      GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(getPlatformConnectionPlatformId(connection))
+      && !isOutlookPlatformConnection(connection)
     ));
     if (googleConnection) {
       visibleConnections.push({
         ...googleConnection,
         platform: "calendar",
         label: "Google",
+      });
+    }
+  }
+  // Outlook reaches the shelf as Microsoft, the way Gmail reaches it as Google.
+  const hasVisibleMicrosoft = visibleConnections.some((connection) => (
+    getPlatformConnectionPlatformId(connection) === "microsoft"
+  ));
+  if (!hasVisibleMicrosoft) {
+    const outlookConnection = source.find(isOutlookPlatformConnection);
+    if (outlookConnection) {
+      visibleConnections.push({
+        ...outlookConnection,
+        platform: "microsoft",
+        label: "Microsoft",
       });
     }
   }
