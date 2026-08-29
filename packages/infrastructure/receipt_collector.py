@@ -17,6 +17,8 @@ from typing import Any
 from urllib import parse as urllib_parse
 from xml.sax.saxutils import escape as xml_escape
 
+from packages.infrastructure import receipt_pdf_sources
+
 RECEIPT_EXPORT_VERSION = 1
 RECEIPT_EXCEL_FILENAME = "receipts.xlsx"
 RECEIPT_PDF_FILENAME = "receipt-report.pdf"
@@ -38,6 +40,8 @@ RECEIPT_MUTED_INK = "#5e6d80"
 RECEIPT_CARD_BG = "#f5f8fb"
 RECEIPT_RULE = "#d7dee7"
 RECEIPT_VENDOR_LIMIT = 6
+# Enough of the email body to read the receipt itself, not the footer below it.
+RECEIPT_BODY_PREVIEW_CHARS = 900
 MONTH_FOLDER_LABELS = (
     "",
     "Jan",
@@ -194,8 +198,6 @@ def create_receipt_bundle(
     )
     if previous:
         metadata["previous"] = previous
-
-
 
     excel_path = folder_path / RECEIPT_EXCEL_FILENAME
     pdf_path = folder_path / RECEIPT_PDF_FILENAME
@@ -437,7 +439,9 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for index, item in enumerate(items or [], start=1):
         source = item if isinstance(item, dict) else {}
         subject = _clean_text(source.get("subject")) or "(no subject)"
-        snippet = _clean_text(source.get("snippet"))
+        # Both providers hand the preview back HTML-escaped, so an address
+        # like "Ra&#39;anana" has to be unescaped before it is shown.
+        snippet = _clean_text(html.unescape(str(source.get("snippet") or "")))
         sender = _clean_text(source.get("from"))
         vendor = _extract_vendor(sender)
         body_text = _clean_text(source.get("bodyText"))
@@ -446,6 +450,8 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         amount, currency = _extract_amount(own_text)
         date = _clean_text(source.get("date"))
         source_ref = _clean_text(source.get("id") or source.get("threadId"))
+        # The preview is one clipped line; the body is what the receipt says.
+        body_preview = _short_text(body_text, RECEIPT_BODY_PREVIEW_CHARS) if len(body_text) > len(snippet) else snippet
         # A message the search returned still has to look like a receipt in
         # its own right before it is counted as one.
         if not (amount or _RECEIPT_EVIDENCE_RE.search(own_text)):
@@ -485,6 +491,7 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "status": status,
             "notes": notes,
             "snippet": snippet,
+            "bodyPreview": body_preview,
             "attachmentCount": str(len(attachments)),
             "attachments": attachments,
             "imageAttachments": image_attachments,
@@ -555,6 +562,7 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
         from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.lib.units import mm
         from reportlab.lib.utils import ImageReader
+        from reportlab.platypus import Flowable
         from reportlab.platypus import Image as ReportImage
         from reportlab.platypus import PageBreak
         from reportlab.platypus import Paragraph
@@ -689,9 +697,9 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
     source_pdfs = {row["index"]: receipt_pdf_sources.collect_source_pdfs(row) for row in rows}
     page_mark_cls = _page_mark_flowable(Flowable)
 
-
     for row in rows:
         story.append(PageBreak())
+        story.append(page_mark_cls(page_marks, row["index"]))
         story.append(Paragraph(_pdf_escape(f"Receipt {row['index']}: {row['vendor']}"), title_style))
         story.append(Paragraph(_pdf_escape(row["subject"]), heading_style))
         details = [
@@ -704,8 +712,11 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
         for label, value in details:
             story.append(Paragraph(_pdf_escape(f"{label}: {value or 'Not available'}"), body_style))
         story.append(Spacer(1, 10))
-        story.append(Paragraph("Source preview", heading_style))
-        story.append(Paragraph(_pdf_escape(row["snippet"] or "No email preview was available."), body_style))
+        story.append(Paragraph("From the email", heading_style))
+        story.append(Paragraph(
+            _pdf_escape(row.get("bodyPreview") or row["snippet"] or "No email text was available."),
+            body_style,
+        ))
         story.append(Spacer(1, 12))
         image_attachments = row.get("imageAttachments") if isinstance(row.get("imageAttachments"), list) else []
         if image_attachments:
@@ -724,15 +735,29 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
                     continue
                 story.append(image)
                 story.append(Spacer(1, 8))
-        else:
+        sources = source_pdfs.get(row["index"]) or []
+        if sources:
+            story.append(Paragraph("Receipt from the sender", heading_style))
+            story.append(Paragraph(
+                _pdf_escape(
+                    "The sender's own receipt follows on the next page(s): "
+                    + ", ".join(receipt_pdf_sources.describe_source_pdf(source) for source in sources)
+                ),
+                small_style,
+            ))
+        if not image_attachments and not sources:
             attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else []
             attachment_note = _format_attachment_list(row)
             if attachments and attachment_note:
                 story.append(Paragraph(_pdf_escape(f"Saved attachment(s): {attachment_note}"), small_style))
             else:
-                story.append(Paragraph("No receipt image attachment was available. The source message is recorded for review.", small_style))
+                story.append(Paragraph("The sender attached no receipt file. The email above is the record.", small_style))
 
     document.build(story)
+    receipt_pdf_sources.merge_source_pdfs(
+        path,
+        _source_pdf_insertions(rows, source_pdfs, page_marks, getattr(document, "page", 0)),
+    )
 
 
 def _receipt_summary_story(
@@ -1165,12 +1190,19 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
             f"Source ref: {row['sourceRef'] or 'Not available'}",
             "",
             "Source preview",
-            row["snippet"] or "No email preview was available.",
+            row.get("bodyPreview") or row["snippet"] or "No email text was available.",
             "",
             _format_attachment_list(row) or "No receipt image attachment was available. The source message is recorded for review.",
         ])
 
     _write_simple_pdf(path, pages)
+    # This writer lays out the cover, the summary, then one page per receipt, so
+    # the page each sender's PDF follows can simply be counted.
+    insertions = [
+        (3 + position, [source["path"] for source in receipt_pdf_sources.collect_source_pdfs(row)])
+        for position, row in enumerate(rows)
+    ]
+    receipt_pdf_sources.merge_source_pdfs(path, [(page, paths) for page, paths in insertions if paths])
 
 
 def _safe_folder_segments(value: str) -> list[str]:
@@ -1390,6 +1422,52 @@ def _currency_totals(rows: list[dict[str, Any]]) -> dict[str, float]:
         except ValueError:
             continue
     return dict(sorted(totals.items()))
+
+
+def _page_mark_flowable(flowable_cls: Any) -> Any:
+    """Build a zero-height flowable that records the page it is drawn on.
+
+    The sender's own pages have to follow the receipt they belong to, and only
+    the finished layout knows which report page that turned out to be.
+    """
+
+    class _PageMark(flowable_cls):  # type: ignore[misc, valid-type]
+        width = 0
+        height = 0
+
+        def __init__(self, marks: dict[str, int], key: str) -> None:
+            super().__init__()
+            self._marks = marks
+            self._key = key
+
+        def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
+            return 0, 0
+
+        def draw(self) -> None:
+            self._marks[self._key] = self.canv.getPageNumber()
+
+    return _PageMark
+
+
+def _source_pdf_insertions(
+    rows: list[dict[str, Any]],
+    source_pdfs: dict[str, list[dict[str, Any]]],
+    page_marks: dict[str, int],
+    last_page: int,
+) -> list[tuple[int, list[str]]]:
+    """Pair each receipt with the report page its attached PDF follows."""
+
+    starts = [(row["index"], page_marks.get(row["index"], 0)) for row in rows]
+    insertions: list[tuple[int, list[str]]] = []
+    for position, (index, start_page) in enumerate(starts):
+        sources = source_pdfs.get(index) or []
+        if not sources or start_page <= 0:
+            continue
+        next_start = next((page for _, page in starts[position + 1:] if page > 0), 0)
+        # A receipt that spilled onto a second page keeps its pages together.
+        end_page = next_start - 1 if next_start else int(last_page or start_page)
+        insertions.append((max(start_page, end_page), [str(source["path"]) for source in sources]))
+    return insertions
 
 
 def _build_reportlab_image(

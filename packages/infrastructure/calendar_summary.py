@@ -26,8 +26,18 @@ from zoneinfo import ZoneInfoNotFoundError
 
 
 CALENDAR_API_URL = "https://www.googleapis.com/calendar/v3/calendars"
+CALENDAR_LIST_API_URL = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
 CALENDAR_MAX_EVENTS = 100
 CALENDAR_TIMEOUT_SECONDS = 20
+# The picker in the action editor lists what the account can read. An account
+# with more calendars than this has long stopped being a list someone reads.
+CALENDAR_MAX_LISTED_CALENDARS = 50
+# The connected account's own calendar. Google accepts this alias in place of
+# the account address, so a saved action keeps working if the address changes.
+PRIMARY_CALENDAR_ID = "primary"
+# A calendar the account can only see as busy blocks has no titles to summarize,
+# so it is never offered as something an action could read.
+CALENDAR_READABLE_ACCESS_ROLES = ("reader", "writer", "owner")
 # One read per calendar, so the list has to stay short enough that a run does
 # not turn into a long chain of provider calls.
 CALENDAR_MAX_CALENDARS = 5
@@ -49,6 +59,20 @@ class CalendarAuthorizationError(CalendarSummaryError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="calendar_authorization_failed")
+
+
+class CalendarListUnavailableError(CalendarSummaryError):
+    """The stored credential can read events but cannot list the calendars.
+
+    Connections made before the portal asked for the calendar-list grant land
+    here.  They still summarize fine; only the picker needs the reconnect.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Reconnect Google Calendar to choose which of its calendars this action reads.",
+            code="calendar_list_scope_missing",
+        )
 
 
 class CalendarNotSharedError(CalendarSummaryError):
@@ -226,6 +250,32 @@ def normalize_calendar_event(event: dict[str, Any], *, timezone_name: str | None
     }
 
 
+def normalize_calendar_list_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn one Google calendarList row into something the portal can show.
+
+    The account's own calendar comes back keyed by the account address; it is
+    rewritten to "primary" so a saved action keeps pointing at the right
+    calendar even if the address behind the connection changes.
+    """
+
+    access_role = str(entry.get("accessRole") or "").strip().lower()
+    if access_role not in CALENDAR_READABLE_ACCESS_ROLES:
+        return None
+    is_primary = bool(entry.get("primary"))
+    calendar_id = PRIMARY_CALENDAR_ID if is_primary else normalize_calendar_id(entry.get("id"))
+    if calendar_id == PRIMARY_CALENDAR_ID and not is_primary:
+        # An ID that is not an address cannot be put in a request path, and
+        # silently reading the account's own calendar instead would be a lie.
+        return None
+    label = str(entry.get("summaryOverride") or entry.get("summary") or "").strip()
+    return {
+        "id": calendar_id,
+        "label": label or ("My calendar" if is_primary else calendar_id),
+        "primary": is_primary,
+        "accessRole": access_role,
+    }
+
+
 def _format_event_time(event: dict[str, Any]) -> str:
     start = event["start"]
     if event.get("allDay"):
@@ -311,6 +361,94 @@ class CalendarSummaryRunner:
         self._opener = opener or urllib_request.urlopen
         self.timeout_seconds = max(3, min(60, int(timeout_seconds)))
 
+    def _read_json(
+        self,
+        url: str,
+        access_token: str,
+        *,
+        on_http_error: Callable[[urllib_error.HTTPError], CalendarSummaryError],
+    ) -> dict[str, Any]:
+        """GET one Google Calendar URL and return its JSON body.
+
+        Transport failures read the same for every caller; only the meaning of
+        an HTTP status differs between reading a calendar and listing them, so
+        that one decision is left to the caller.
+        """
+
+        token = str(access_token or "").strip()
+        if not token:
+            raise CalendarAuthorizationError(
+                "Calendar access needs attention: no usable access token is saved. Reconnect Calendar with Google read-only access, then run it again."
+            )
+        request = urllib_request.Request(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            method="GET",
+        )
+        try:
+            with self._opener(request, timeout=self.timeout_seconds) as response:
+                raw = response.read()
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib_error.HTTPError as exc:
+            raise on_http_error(exc) from exc
+        except (urllib_error.URLError, TimeoutError, OSError) as exc:
+            raise CalendarSummaryError(
+                "I couldn’t reach Google Calendar. Check the connection and try the run again.",
+                code="calendar_network_error",
+            ) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CalendarSummaryError(
+                "Google Calendar returned an unreadable response. Try again or reconnect Calendar.",
+                code="calendar_provider_error",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise CalendarSummaryError("Google Calendar returned an invalid response.", code="calendar_provider_error")
+        return payload
+
+    def fetch_calendar_list(self, access_token: str) -> list[dict[str, Any]]:
+        """Return the calendars inside the connected account, readable ones only.
+
+        This is what lets the action editor offer real calendars - "Family",
+        "Birthdays" - instead of asking someone to paste an ID.  It needs its
+        own grant: the events scope can read a calendar but cannot say which
+        calendars exist, so an older connection raises
+        ``CalendarListUnavailableError`` rather than failing the whole editor.
+        """
+
+        def on_http_error(exc: urllib_error.HTTPError) -> CalendarSummaryError:
+            # 403 here is the missing calendar-list grant, not a missing share:
+            # the account is asking about itself, and there is nothing to share.
+            if exc.code in {401, 403}:
+                return CalendarListUnavailableError()
+            return CalendarSummaryError(
+                f"Google Calendar returned an error ({exc.code}) while listing calendars.",
+                code="calendar_provider_error",
+            )
+
+        params = urllib_parse.urlencode({
+            "minAccessRole": "reader",
+            "showDeleted": "false",
+            "showHidden": "true",
+            "maxResults": str(CALENDAR_MAX_LISTED_CALENDARS),
+        })
+        payload = self._read_json(
+            f"{CALENDAR_LIST_API_URL}?{params}",
+            access_token,
+            on_http_error=on_http_error,
+        )
+        raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        calendars = [
+            normalized
+            for item in raw_items
+            if isinstance(item, dict)
+            for normalized in [normalize_calendar_list_entry(item)]
+            if normalized is not None
+        ]
+        # The account's own calendar first, then the rest by name, so the
+        # picker reads the same way twice in a row.
+        calendars.sort(key=lambda entry: (not entry["primary"], entry["label"].lower()))
+        return calendars[:CALENDAR_MAX_LISTED_CALENDARS]
+
     def fetch_events(
         self,
         access_token: str,
@@ -318,11 +456,6 @@ class CalendarSummaryRunner:
         calendar_id: str = "primary",
         date_range: CalendarDateRange,
     ) -> list[dict[str, Any]]:
-        token = str(access_token or "").strip()
-        if not token:
-            raise CalendarAuthorizationError(
-                "Calendar access needs attention: no usable access token is saved. Reconnect Calendar with Google read-only access, then run it again."
-            )
         # A calendar ID reaches the request path only as "primary" or as an
         # address, so a saved label can never be read as a URL.
         safe_calendar_id = normalize_calendar_id(calendar_id)
@@ -334,42 +467,26 @@ class CalendarSummaryRunner:
             "maxResults": str(CALENDAR_MAX_EVENTS),
         })
         encoded_calendar_id = urllib_parse.quote(safe_calendar_id, safe="")
-        url = f"{CALENDAR_API_URL}/{encoded_calendar_id}/events?{params}"
-        request = urllib_request.Request(
-            url,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            method="GET",
-        )
-        try:
-            with self._opener(request, timeout=self.timeout_seconds) as response:
-                raw = response.read()
-                payload = json.loads(raw.decode("utf-8")) if raw else {}
-        except urllib_error.HTTPError as exc:
-            if exc.code == 401 or (exc.code == 403 and safe_calendar_id == "primary"):
-                raise CalendarAuthorizationError(
+
+        def on_http_error(exc: urllib_error.HTTPError) -> CalendarSummaryError:
+            if exc.code == 401 or (exc.code == 403 and safe_calendar_id == PRIMARY_CALENDAR_ID):
+                return CalendarAuthorizationError(
                     "Calendar access needs attention: Google rejected the saved credential or its permissions. Reconnect with a Google OAuth token that grants read-only Calendar access, then run it again."
-                ) from exc
+                )
             # An extra calendar the account cannot open is a sharing problem
             # with that one calendar, not a problem with the connection.
             if exc.code in {403, 404}:
-                raise CalendarNotSharedError(safe_calendar_id) from exc
-            raise CalendarSummaryError(
+                return CalendarNotSharedError(safe_calendar_id)
+            return CalendarSummaryError(
                 f"Google Calendar returned an error ({exc.code}). Try again or reconnect Calendar.",
                 code="calendar_provider_error",
-            ) from exc
-        except (urllib_error.URLError, TimeoutError, OSError) as exc:
-            raise CalendarSummaryError(
-                "I couldn’t reach Google Calendar. Check the connection and try the run again.",
-                code="calendar_network_error",
-            ) from exc
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise CalendarSummaryError(
-                "Google Calendar returned an unreadable response. Try again or reconnect Calendar.",
-                code="calendar_provider_error",
-            ) from exc
+            )
 
-        if not isinstance(payload, dict):
-            raise CalendarSummaryError("Google Calendar returned an invalid response.", code="calendar_provider_error")
+        payload = self._read_json(
+            f"{CALENDAR_API_URL}/{encoded_calendar_id}/events?{params}",
+            access_token,
+            on_http_error=on_http_error,
+        )
         raw_events = payload.get("items") if isinstance(payload.get("items"), list) else []
         events = [
             normalized

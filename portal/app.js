@@ -1290,6 +1290,11 @@ const state = {
   platformConnectionsLoadedAt: 0,
   platformConnectionStorageAvailable: true,
   platformConnectionStorageMessage: "",
+  agentCalendarSources: [],
+  agentCalendarSourcesSignature: "",
+  agentCalendarSourcesLoading: false,
+  agentCalendarSourcesLoadedAt: 0,
+  agentCalendarSourcesError: "",
   paymentStatus: null,
   selectedSimulatorId: null,
   billingReport: null,
@@ -2005,6 +2010,7 @@ function resetAgentWorkspaceRemoteState(options = {}) {
   state.platformConnectionsLoadedAt = 0;
   state.platformConnectionStorageAvailable = true;
   state.platformConnectionStorageMessage = "";
+  resetAgentCalendarSources();
 }
 
 function clearAuthSession() {
@@ -6103,6 +6109,7 @@ async function refreshPlatformConnections(options = {}) {
   }
 
   const requestSessionKey = currentAuthSessionKey();
+  const previousCalendarSignature = getAgentCalendarConnectionSignature();
   state.platformConnectionsLoading = true;
   try {
     const response = await apiRequest("/api/platform-connections", {
@@ -6119,6 +6126,10 @@ async function refreshPlatformConnections(options = {}) {
       ? response.connections.map(normalizePlatformConnection).filter((connection) => connection.platform)
       : [];
     state.platformConnectionsLoadedAt = Date.now();
+    if (getAgentCalendarConnectionSignature() !== previousCalendarSignature) {
+      // A calendar account that came or went takes its calendars with it.
+      resetAgentCalendarSources();
+    }
     clearGoogleConnectionMissingCredentials();
     return state.platformConnections;
   } finally {
@@ -6927,6 +6938,11 @@ function openCalendarOAuthConnection(option) {
       } catch {
         // The saved response is already enough to update the visible state.
       }
+      // Reconnecting keeps the same connection row, so the calendars behind it
+      // are reloaded outright rather than left to a signature comparison. A
+      // reconnect is exactly how a connection gains the grant that lists them.
+      resetAgentCalendarSources();
+      void refreshAgentCalendarSources();
       const connectedPlatforms = savedConnections.length
         ? savedConnections.map((savedConnection) => savedConnection.platform)
         : selectedScopeIds
@@ -14952,10 +14968,32 @@ function getAgentProposalManualRunMonthValue(proposal, draft = {}) {
   return formatAgentYearMonthValue(getAgentWorkspaceMonthDate());
 }
 
-// A calendar action reads one calendar per tag: the connected account plus any
-// address the user added. Five is well past what anyone watches at once.
+// "All mailboxes" is first and is the default, so an action created before
+// there was a choice keeps reading everything.
+function getAgentMailboxAccountOptions(currentValue = "") {
+  const options = [{ value: "", label: "All mailboxes" }];
+  for (const connection of getConnectedEmailConnections()) {
+    const name = getEmailConnectionName(connection);
+    const provider = EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)] || "Email";
+    options.push({ value: name, label: `${name} (${provider})` });
+  }
+  const current = normalizeText(currentValue);
+  // A mailbox that has since been disconnected still shows, so the action does
+  // not look like it reads everything when it would actually fail.
+  if (current && !options.some((option) => option.value === current)) {
+    options.push({ value: current, label: `${current} (not connected)` });
+  }
+  return options;
+}
+
+// A calendar action reads one calendar per tag. Five is well past what anyone
+// watches at once, and it caps how many provider reads one run makes.
 const AGENT_CALENDAR_TAG_LIMIT = 5;
 const AGENT_CALENDAR_TAG_EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]{2,}$/;
+// The connected account's own calendar: the one ID in a saved field that is not
+// an address. Google accepts the same alias, so it keeps meaning the right
+// calendar even if the address behind the connection changes.
+const AGENT_CALENDAR_PRIMARY_ID = "primary";
 
 function isAgentCalendarAddressTag(value) {
   return AGENT_CALENDAR_TAG_EMAIL_PATTERN.test(String(value || "").trim());
@@ -14974,7 +15012,7 @@ function getConnectedCalendarTagLabel() {
 }
 
 // Only addresses survive from the saved value. Anything else named the
-// connected calendar, which the tag above already covers.
+// connected account's own calendar, which has its own ID above.
 function getAgentCalendarAddressTags(value) {
   const tags = [];
   for (const entry of String(value || "").split(/[,\n;]+/)) {
@@ -14989,17 +15027,125 @@ function getAgentCalendarAddressTags(value) {
   return tags;
 }
 
-function getAgentCalendarTagValues(value) {
-  const connected = getConnectedCalendarTagLabel();
-  const tags = connected ? [connected] : [];
-  for (const address of getAgentCalendarAddressTags(value)) {
-    tags.push(address);
+// The saved field is a list of calendar IDs. Anything that is not an address
+// means the connected account's own calendar, which is how an action written
+// before the picker existed - it saved a label such as "Google Calendar" - keeps
+// reading exactly what it always read. This mirrors parse_calendar_ids on the
+// server: the two have to agree, or the editor shows one thing and the run
+// reads another.
+function getAgentCalendarSelectionIds(value) {
+  const entries = Array.isArray(value) ? value : String(value || "").split(/[,\n;]+/);
+  const ids = [];
+  for (const entry of entries) {
+    const text = String(entry || "").trim();
+    if (!text) {
+      continue;
+    }
+    const id = isAgentCalendarAddressTag(text) ? text.toLowerCase() : AGENT_CALENDAR_PRIMARY_ID;
+    if (!ids.includes(id)) {
+      ids.push(id);
+    }
   }
-  return tags.slice(0, AGENT_CALENDAR_TAG_LIMIT);
+  return ids.slice(0, AGENT_CALENDAR_TAG_LIMIT);
 }
 
 function formatAgentCalendarFieldValue(value) {
-  return getAgentCalendarTagValues(value).join(", ");
+  return getAgentCalendarSelectionIds(value).join(", ");
+}
+
+// Every open Calendars field, so the ones on screen redraw when the calendars
+// inside the account finish loading. A field whose editor has been closed is
+// dropped rather than drawn into a detached form.
+const agentCalendarFieldRenderers = new Set();
+
+function renderOpenAgentCalendarFields() {
+  for (const renderer of [...agentCalendarFieldRenderers]) {
+    // A field is built before its form reaches the page, so "not on the page"
+    // only means closed once it has been there.
+    if (renderer.field.isConnected) {
+      renderer.attached = true;
+    } else if (renderer.attached) {
+      agentCalendarFieldRenderers.delete(renderer);
+      continue;
+    }
+    renderer.render();
+  }
+}
+
+function resetAgentCalendarSources() {
+  state.agentCalendarSources = [];
+  state.agentCalendarSourcesSignature = "";
+  state.agentCalendarSourcesLoading = false;
+  state.agentCalendarSourcesLoadedAt = 0;
+  state.agentCalendarSourcesError = "";
+}
+
+// Which calendar connections are in play. The cache is keyed on this so
+// connecting or disconnecting an account reloads its calendars, and merely
+// reopening an action editor does not.
+function getAgentCalendarConnectionSignature() {
+  return state.platformConnections
+    .filter((connection) => connection?.platform === "calendar")
+    .map((connection) => `${normalizeText(connection.id)}:${normalizeText(connection.connectionStatus)}`)
+    .sort()
+    .join("|");
+}
+
+function normalizeAgentCalendarSource(source) {
+  const calendars = Array.isArray(source?.calendars) ? source.calendars : [];
+  return {
+    connectionId: normalizeText(source?.connectionId),
+    platform: normalizeText(source?.platform) || "calendar",
+    label: normalizeText(source?.label) || "Calendar",
+    accountAddress: normalizeText(source?.accountAddress),
+    status: normalizeText(source?.status) || "ok",
+    message: normalizeText(source?.message),
+    calendars: calendars
+      .map((calendar) => ({
+        id: normalizeText(calendar?.id),
+        label: normalizeText(calendar?.label) || normalizeText(calendar?.id),
+        primary: Boolean(calendar?.primary),
+      }))
+      .filter((calendar) => calendar.id),
+  };
+}
+
+function getAgentCalendarSourceHeading(source) {
+  return source.accountAddress ? `${source.label} (${source.accountAddress})` : source.label;
+}
+
+async function refreshAgentCalendarSources(options = {}) {
+  const signature = getAgentCalendarConnectionSignature();
+  if (!isSignedIn() || !signature) {
+    resetAgentCalendarSources();
+    return [];
+  }
+  const isCached = state.agentCalendarSourcesLoadedAt > 0 && state.agentCalendarSourcesSignature === signature;
+  if (state.agentCalendarSourcesLoading || (isCached && !options.force)) {
+    return state.agentCalendarSources;
+  }
+
+  state.agentCalendarSourcesLoading = true;
+  state.agentCalendarSourcesError = "";
+  renderOpenAgentCalendarFields();
+  try {
+    const response = await apiRequest("/api/platform-connections/calendars", { timeoutMs: 15000 });
+    state.agentCalendarSources = Array.isArray(response.sources)
+      ? response.sources.map(normalizeAgentCalendarSource)
+      : [];
+  } catch (error) {
+    // A picker that cannot load falls back to typing an address, so this is a
+    // note beside the field rather than a failure of the editor.
+    state.agentCalendarSources = [];
+    state.agentCalendarSourcesError = normalizeText(error?.message)
+      || "Couldn’t load the calendars in this account.";
+  } finally {
+    state.agentCalendarSourcesSignature = signature;
+    state.agentCalendarSourcesLoadedAt = Date.now();
+    state.agentCalendarSourcesLoading = false;
+    renderOpenAgentCalendarFields();
+  }
+  return state.agentCalendarSources;
 }
 
 function getAgentManualRunMonthOptions(currentValue = "") {
@@ -19356,8 +19502,11 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
   return { field, input };
 }
 
-// One tag per calendar. The connected account is fixed because it comes from
-// the Google connection; extra addresses are added and removed here.
+// One tag per calendar inside the connected account, not one tag per account.
+// A Google connection holds the owner's own calendar plus every calendar shared
+// with it - Family, a partner's, a team's - and an action reads the ones ticked
+// here. The calendars come from the connection itself; the address box below
+// stays for a calendar that was shared but never added to the account's list.
 function createAgentCalendarTagsField(labelText, value) {
   const field = document.createElement("div");
   field.className = "agent-action-editor-field";
@@ -19368,10 +19517,9 @@ function createAgentCalendarTagsField(labelText, value) {
   input.type = "hidden";
   input.value = formatAgentCalendarFieldValue(value);
 
-  const list = document.createElement("div");
-  list.className = "agent-action-editor-topics";
-  list.setAttribute("role", "list");
-  list.setAttribute("aria-labelledby", label.id);
+  const sourceList = document.createElement("div");
+  sourceList.className = "agent-calendar-sources";
+  sourceList.setAttribute("aria-labelledby", label.id);
 
   const entry = document.createElement("div");
   entry.className = "agent-action-editor-topic-entry";
@@ -19391,7 +19539,11 @@ function createAgentCalendarTagsField(labelText, value) {
   hint.className = "agent-action-editor-hint";
 
   function getTags() {
-    return getAgentCalendarTagValues(input.value);
+    return getAgentCalendarSelectionIds(input.value);
+  }
+
+  function getSources() {
+    return Array.isArray(state.agentCalendarSources) ? state.agentCalendarSources : [];
   }
 
   function setHint(message, isError = false) {
@@ -19401,61 +19553,60 @@ function createAgentCalendarTagsField(labelText, value) {
   }
 
   function resetHint() {
-    const connected = getConnectedCalendarTagLabel();
-    if (!connected) {
+    if (!getConnectedCalendarTagLabel()) {
       setHint("Connect Google Calendar so this action has a calendar to read.");
+      return;
+    }
+    if (state.agentCalendarSourcesError) {
+      setHint(state.agentCalendarSourcesError, true);
       return;
     }
     setHint("");
   }
 
-  function renderTags() {
-    const tags = getTags();
-    list.replaceChildren();
-    if (!tags.length) {
-      const empty = document.createElement("span");
-      empty.className = "agent-action-editor-empty";
-      empty.textContent = "No calendar connected yet.";
-      list.append(empty);
+  // What to call a saved ID the account no longer lists, so a calendar that was
+  // removed or typed by hand still shows as something this action reads.
+  function getFallbackTagLabel(tag) {
+    if (tag !== AGENT_CALENDAR_PRIMARY_ID) {
+      return tag;
     }
-    tags.forEach((tag, index) => {
-      const chip = document.createElement("span");
-      chip.className = `agent-action-editor-chip${index === 0 && getConnectedCalendarTagLabel() === tag ? " is-fixed" : ""}`;
-      chip.setAttribute("role", "listitem");
-      const chipLabel = document.createElement("span");
-      chipLabel.className = "agent-action-editor-chip-label";
-      chipLabel.textContent = tag;
-      chip.append(chipLabel);
-      if (chip.classList.contains("is-fixed")) {
-        chip.title = "The calendar of the connected Google account.";
-      } else {
-        const removeButton = document.createElement("button");
-        removeButton.type = "button";
-        removeButton.className = "agent-action-editor-chip-remove";
-        removeButton.dataset.agentCalendarTagRemove = tag;
-        removeButton.setAttribute("aria-label", `Remove ${tag}`);
-        removeButton.textContent = "×";
-        chip.append(removeButton);
-      }
-      list.append(chip);
-    });
-    entryInput.disabled = tags.length >= AGENT_CALENDAR_TAG_LIMIT;
-    addButton.disabled = entryInput.disabled;
+    return getConnectedCalendarTagLabel() || "The connected calendar";
   }
 
   function commitTags(tags) {
     const nextValue = tags.join(", ");
     if (nextValue === input.value) {
-      renderTags();
+      renderSources();
       return;
     }
     input.value = nextValue;
-    renderTags();
+    renderSources();
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  function toggleTag(tag) {
+    const tags = getTags();
+    if (tags.includes(tag)) {
+      // Reading nothing is not a setting anyone means to choose, so the last
+      // calendar stays ticked until another one is.
+      if (tags.length <= 1) {
+        setHint("This action needs at least one calendar to read.", true);
+        return;
+      }
+      resetHint();
+      commitTags(tags.filter((existing) => existing !== tag));
+      return;
+    }
+    if (tags.length >= AGENT_CALENDAR_TAG_LIMIT) {
+      setHint(`This action reads up to ${AGENT_CALENDAR_TAG_LIMIT} calendars.`, true);
+      return;
+    }
+    resetHint();
+    commitTags([...tags, tag]);
+  }
+
   function addTag() {
-    const address = entryInput.value.trim();
+    const address = entryInput.value.trim().toLowerCase();
     if (!address) {
       entryInput.focus();
       return;
@@ -19481,6 +19632,134 @@ function createAgentCalendarTagsField(labelText, value) {
     entryInput.focus();
   }
 
+  function createCalendarChip(calendar, tags) {
+    const selected = tags.includes(calendar.id);
+    const atLimit = !selected && tags.length >= AGENT_CALENDAR_TAG_LIMIT;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `agent-action-editor-chip is-selectable${selected ? " is-selected" : ""}`;
+    chip.dataset.agentCalendarToggle = calendar.id;
+    chip.setAttribute("aria-pressed", selected ? "true" : "false");
+    chip.disabled = atLimit;
+    const mark = document.createElement("span");
+    mark.className = "agent-action-editor-chip-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = selected ? "✓" : "+";
+    const chipLabel = document.createElement("span");
+    chipLabel.className = "agent-action-editor-chip-label";
+    chipLabel.textContent = calendar.label;
+    chip.append(mark, chipLabel);
+    return chip;
+  }
+
+  function createRemovableChip(tag) {
+    const chip = document.createElement("span");
+    chip.className = "agent-action-editor-chip";
+    chip.setAttribute("role", "listitem");
+    const chipLabel = document.createElement("span");
+    chipLabel.className = "agent-action-editor-chip-label";
+    chipLabel.textContent = getFallbackTagLabel(tag);
+    chip.append(chipLabel);
+    if (getTags().length <= 1) {
+      // The one calendar left is not removable, the same way it is not
+      // untickable above.
+      chip.classList.add("is-fixed");
+      chip.title = tag === AGENT_CALENDAR_PRIMARY_ID
+        ? "The calendar of the connected Google account."
+        : "The only calendar this action reads.";
+      return chip;
+    }
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "agent-action-editor-chip-remove";
+    removeButton.dataset.agentCalendarTagRemove = tag;
+    removeButton.setAttribute("aria-label", `Remove ${getFallbackTagLabel(tag)}`);
+    removeButton.textContent = "×";
+    chip.append(removeButton);
+    return chip;
+  }
+
+  function createSourceGroup(heading, note) {
+    const group = document.createElement("div");
+    group.className = "agent-calendar-source";
+    group.setAttribute("role", "group");
+    const name = document.createElement("p");
+    name.className = "agent-calendar-source-name";
+    name.textContent = heading;
+    name.id = createAgentId("agent-calendar-source");
+    group.setAttribute("aria-labelledby", name.id);
+    const chips = document.createElement("div");
+    chips.className = "agent-action-editor-topics";
+    group.append(name, chips);
+    if (note) {
+      const noteLine = document.createElement("p");
+      noteLine.className = "agent-calendar-source-note";
+      noteLine.textContent = note;
+      group.append(noteLine);
+    }
+    return { group, chips };
+  }
+
+  function renderSources() {
+    const tags = getTags();
+    const sources = getSources();
+    const listed = new Set();
+    sourceList.replaceChildren();
+
+    if (!getConnectedCalendarTagLabel()) {
+      const empty = document.createElement("span");
+      empty.className = "agent-action-editor-empty";
+      empty.textContent = "No calendar connected yet.";
+      sourceList.append(empty);
+      entryInput.disabled = true;
+      addButton.disabled = true;
+      return;
+    }
+
+    if (!sources.length && state.agentCalendarSourcesLoading) {
+      const loading = document.createElement("span");
+      loading.className = "agent-action-editor-empty";
+      loading.textContent = "Loading the calendars in this account…";
+      sourceList.append(loading);
+    }
+
+    for (const source of sources) {
+      const { group, chips } = createSourceGroup(getAgentCalendarSourceHeading(source), source.message);
+      for (const calendar of source.calendars) {
+        listed.add(calendar.id);
+        chips.append(createCalendarChip(calendar, tags));
+      }
+      if (!source.calendars.length) {
+        // Without a list to tick, the account's own calendar and any address
+        // added by hand are still shown, so the action never looks empty.
+        chips.setAttribute("role", "list");
+        for (const tag of tags) {
+          listed.add(tag);
+          chips.append(createRemovableChip(tag));
+        }
+      }
+      sourceList.append(group);
+    }
+
+    const unlisted = tags.filter((tag) => !listed.has(tag));
+    if (unlisted.length && !(state.agentCalendarSourcesLoading && !sources.length)) {
+      // A calendar the account no longer lists is still read, so it is named
+      // here rather than quietly dropped from the action. With no account to
+      // sit under - the calendars could not be loaded at all - these are all
+      // the action reads, so they take the connection's own name.
+      const heading = sources.length ? "Also reading" : getConnectedCalendarTagLabel();
+      const { group, chips } = createSourceGroup(heading, "");
+      chips.setAttribute("role", "list");
+      for (const tag of unlisted) {
+        chips.append(createRemovableChip(tag));
+      }
+      sourceList.append(group);
+    }
+
+    entryInput.disabled = tags.length >= AGENT_CALENDAR_TAG_LIMIT;
+    addButton.disabled = entryInput.disabled;
+  }
+
   addButton.addEventListener("click", addTag);
   entryInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -19493,19 +19772,35 @@ function createAgentCalendarTagsField(labelText, value) {
       resetHint();
     }
   });
-  list.addEventListener("click", (event) => {
-    const removeButton = getEventTargetElement(event)?.closest("[data-agent-calendar-tag-remove]");
-    if (!removeButton) {
+  sourceList.addEventListener("click", (event) => {
+    const target = getEventTargetElement(event);
+    const removeButton = target?.closest("[data-agent-calendar-tag-remove]");
+    if (removeButton) {
+      const remaining = getTags().filter((tag) => tag !== String(removeButton.dataset.agentCalendarTagRemove || ""));
+      if (!remaining.length) {
+        setHint("This action needs at least one calendar to read.", true);
+        return;
+      }
+      resetHint();
+      commitTags(remaining);
       return;
     }
-    const removed = String(removeButton.dataset.agentCalendarTagRemove || "");
-    resetHint();
-    commitTags(getTags().filter((tag) => tag !== removed));
+    const toggle = target?.closest("[data-agent-calendar-toggle]");
+    if (toggle) {
+      toggleTag(String(toggle.dataset.agentCalendarToggle || ""));
+    }
   });
 
-  resetHint();
-  renderTags();
-  field.append(labelRow, list, entry, hint, input);
+  function render() {
+    resetHint();
+    renderSources();
+  }
+
+  const renderer = { field, render, attached: false };
+  agentCalendarFieldRenderers.add(renderer);
+  render();
+  void refreshAgentCalendarSources();
+  field.append(labelRow, sourceList, entry, hint, input);
   return { field, input };
 }
 

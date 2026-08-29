@@ -45,19 +45,84 @@ successful encrypt-and-read-back migration.
 `PORTAL_CREDENTIAL_ENCRYPTION_KEY` remains accepted as a local-development alias,
 but new deployments should use `PORTAL_CREDENTIALS_KEY`.
 
+## Calendars
+
+One calendar connection is not one calendar. A Google account holds the owner's
+own calendar plus every calendar shared with it - Family, a partner's, a team's
+- and each is a separate calendar with its own ID.
+
+A meeting summary reads the calendars listed in the action's `calendar` field,
+one provider call each, capped at five. The field holds calendar IDs:
+`primary` for the connected account's own calendar, and an address for anything
+else. Actions saved before the field held IDs kept free text there
+(`Google Calendar`, `Connected calendar`); `parse_calendar_ids` reads every
+non-address as `primary`, so those keep reading exactly what they always read.
+
+That default is also what made a full calendar summarize as empty: an action
+tagged only `Google Calendar` read `primary` alone and never saw the shared
+Family calendar the meetings were actually on.
+
+### Listing what is inside an account
+
+`GET /api/platform-connections/calendars` returns one entry per calendar
+connection, each with the calendars inside it, so the action editor can offer
+them by name instead of asking anyone to find an ID in Google's settings.
+
+Listing them is its own grant. `calendar.events.readonly` can read a calendar
+but cannot say which calendars exist, so connecting Calendar now asks for
+`calendar.calendarlist.readonly` alongside it. Only the events scope decides
+whether the permission connected: declining the list scope leaves a working
+connection that simply cannot offer the picker.
+
+A connection made before that grant existed - or one whose owner declined it -
+comes back with `status: "needs_reconnect"` and an empty calendar list rather
+than an error. The editor keeps its address box for that case, and for a
+calendar that was shared but never added to the account's own list.
+
 ## Email providers
 
-The `email` connection holds one mailbox, from either provider:
+A user may connect several mailboxes, in any mix of the two providers. Each
+one is its own `email` connection row, identified by its address:
 
 | Provider | `metadata.provider` | Grant | Reader |
 | --- | --- | --- | --- |
 | Gmail | `google_gmail` | `gmail.readonly` | `gmail_summary.py` |
-| Outlook / Microsoft 365 | `microsoft_outlook` | `Mail.Read` + `offline_access` | `outlook_summary.py` |
+| Outlook / Microsoft 365 | `microsoft_outlook` | `Mail.Read` + `User.Read` + `offline_access` | `outlook_summary.py` |
 
 Both readers return the same per-message shape (`id`, `threadId`, `from`,
 `subject`, `date`, `snippet`, `attachments`), so the email digest and the
 receipt bundle never learn which mailbox a run came from. A run picks its
-reader from the saved credential, which names its own provider.
+reader per mailbox from that mailbox's saved credential, which names its own
+provider.
+
+### Several mailboxes on one account
+
+Connections were once unique per `(user, platform)`, so connecting a second
+mailbox overwrote the first. Uniqueness is now
+`(user, platform, account_address)`. A platform that holds one account per user
+- Calendar, Drive, WhatsApp - saves with an empty address and so keeps exactly
+one row, unchanged.
+
+The address is read at connect time: Gmail from `users/me/profile`, which
+`gmail.readonly` already covers, and Outlook from `/me`, which is why the
+Microsoft grant asks for `User.Read` alongside `Mail.Read`. Reading it is a
+convenience rather than a permission check, so a refusal never fails the
+connect - the mailbox simply has no address until it is reconnected. A row
+saved before addresses were captured is adopted by the next connect on that
+platform rather than left beside the new one as a duplicate.
+
+An action reads **every** connected mailbox and merges the results, unless its
+`mailboxAccount` field names one. That field is separate from the older
+`mailbox` field, which holds a provider label such as `Outlook` and is still
+carried by saved actions. Naming a mailbox that is no longer connected fails
+the run with `mailbox_not_connected` rather than quietly reading a different
+account.
+
+Each mailbox is read independently, so one expired credential cannot sink the
+rest: the failing connection alone is marked `needs_attention`, the run
+continues, and the response carries `skippedMailboxes` so a partial result is
+never mistaken for a complete one. The run fails only when every mailbox
+fails.
 
 ### Searching two mailboxes with one query
 

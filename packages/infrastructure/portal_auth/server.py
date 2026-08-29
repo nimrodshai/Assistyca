@@ -57,6 +57,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_turn_respons
 from packages.infrastructure.agent_proposals import parse_agent_proposal_revision_json
 from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.calendar_summary import CalendarAuthorizationError
+from packages.infrastructure.calendar_summary import CalendarListUnavailableError
 from packages.infrastructure.calendar_summary import CalendarSummaryError
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import parse_calendar_ids
@@ -238,6 +239,12 @@ PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is 
 GOOGLE_CALENDAR_OAUTH_PLATFORM = "calendar"
 GOOGLE_CALENDAR_OAUTH_PROVIDER = "google_calendar"
 GOOGLE_CALENDAR_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
+# Reading a calendar and knowing which calendars exist are two different grants.
+# The events scope alone cannot answer "what is in this account", which is why a
+# meeting summary used to silently read only the account's own calendar and miss
+# a shared one such as Family. Asked alongside the events scope so the action
+# editor can offer real calendars to pick from.
+GOOGLE_CALENDAR_LIST_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
 GOOGLE_GMAIL_OAUTH_PLATFORM = "email"
 GOOGLE_GMAIL_OAUTH_PROVIDER = "google_gmail"
 GOOGLE_GMAIL_OAUTH_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -249,6 +256,12 @@ GOOGLE_OAUTH_SCOPE_BY_ID = {
     "gmail": GOOGLE_GMAIL_OAUTH_SCOPE,
     "email": GOOGLE_GMAIL_OAUTH_SCOPE,
     "drive": GOOGLE_DRIVE_OAUTH_SCOPE,
+}
+# Scopes asked for alongside the one that defines a permission, and that a user
+# may decline on their own. A declined extra narrows what the portal can offer,
+# never whether the permission connects at all.
+GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID = {
+    "calendar": (GOOGLE_CALENDAR_LIST_OAUTH_SCOPE,),
 }
 GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID = {
     "calendar": GOOGLE_CALENDAR_OAUTH_PLATFORM,
@@ -284,6 +297,12 @@ MICROSOFT_OAUTH_SECRET_TYPE = "microsoft_refresh_token"
 EMAIL_PROVIDER_LABELS = {
     GOOGLE_GMAIL_OAUTH_PROVIDER: "Gmail",
     MICROSOFT_OUTLOOK_OAUTH_PROVIDER: "Outlook",
+}
+CALENDAR_CONNECTION_PLATFORM = GOOGLE_CALENDAR_OAUTH_PLATFORM
+# Google is the only calendar provider wired up. The lookup exists so a second
+# one names itself in the picker instead of inheriting Google's label.
+CALENDAR_PROVIDER_LABELS = {
+    GOOGLE_CALENDAR_OAUTH_PROVIDER: "Google Calendar",
 }
 AGENT_GOOGLE_BATCH_OBJECT_RE = re.compile(
     r"\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|bookkeeping|reconciliation)\b",
@@ -2629,6 +2648,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/contact"
             or path.startswith("/api/admin/")
             or path == "/api/platform-connections"
+            or path == "/api/platform-connections/calendars"
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/api/agent/folder-contents"
@@ -2865,6 +2885,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        if path == "/api/platform-connections/calendars":
+            self._handle_platform_connection_calendars_get()
+            return
+
         if path == "/api/admin/opportunities":
             self._handle_admin_opportunities_get(parsed)
             return
@@ -3041,6 +3065,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "calendar-events": "calendar",
             "calendar-events-readonly": "calendar",
             GOOGLE_CALENDAR_OAUTH_SCOPE: "calendar",
+            "calendar-list": "calendar",
+            GOOGLE_CALENDAR_LIST_OAUTH_SCOPE: "calendar",
             "email": "gmail",
             "gmail": "gmail",
             "gmail-readonly": "gmail",
@@ -3080,12 +3106,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
         return self._normalize_google_oauth_scope_ids(raw_scopes, default=default)
 
+    def _google_oauth_scopes_for_id(self, scope_id: str) -> tuple[str, ...]:
+        """Every scope one permission asks for: the defining one, then its extras."""
+
+        if scope_id not in GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID:
+            return ()
+        return (GOOGLE_OAUTH_SCOPE_BY_ID[scope_id], *GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID.get(scope_id, ()))
+
+    def _google_oauth_scope_text_for_id(self, scope_id: str) -> str:
+        return " ".join(self._google_oauth_scopes_for_id(scope_id))
+
     def _google_oauth_scope_text(self, scope_ids: tuple[str, ...]) -> str:
-        scopes = [
-            GOOGLE_OAUTH_SCOPE_BY_ID[scope_id]
-            for scope_id in scope_ids
-            if scope_id in GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID
-        ]
+        scopes: list[str] = []
+        for scope_id in scope_ids:
+            for scope in self._google_oauth_scopes_for_id(scope_id):
+                if scope not in scopes:
+                    scopes.append(scope)
         return " ".join(scopes)
 
     def _granted_google_oauth_scope_ids(
@@ -3102,6 +3138,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # provider-edge cases; trust the just-requested set then.
         if not granted_scopes:
             return requested_scope_ids
+        # Only the defining scope decides whether a permission connected. A
+        # declined extra - the calendar list, say - leaves the connection
+        # working and simply removes what that extra would have offered.
         return tuple(
             scope_id
             for scope_id in requested_scope_ids
@@ -3128,6 +3167,78 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if len(labels) > 2:
             return f"{', '.join(labels[:-1])}, and {labels[-1]} connected with read-only access."
         return "Google connected with the selected read-only access."
+
+    def _handle_platform_connection_calendars_get(self) -> None:
+        """List the calendars inside every connected calendar account.
+
+        An action reads calendars, not accounts: one Google connection holds the
+        owner's own calendar plus every calendar shared with it. The action
+        editor needs those by name to offer them, so each connection is reported
+        separately and a connection that cannot be listed says why rather than
+        coming back as an empty account.
+        """
+
+
+        session = self._require_authenticated_session()
+        if session is None:
+            return
+
+        vault = self.credential_vault
+        statuses = ("connected", "needs_verification", "needs_attention")
+        # Calendar holds one account per user, so one row and one secret read.
+        # The response is still a list: a second calendar account, or a second
+        # provider, becomes another entry rather than a new response shape.
+        ciphertext = normalize_text(
+            self.database.get_platform_connection_ciphertext(
+                session.email,
+                CALENDAR_CONNECTION_PLATFORM,
+                include_statuses=statuses,
+            ) or ""
+        )
+        records = [
+            connection
+            for connection in self.database.list_platform_connections(session.email)
+            if normalize_text(connection.get("platform")).lower() == CALENDAR_CONNECTION_PLATFORM
+            and normalize_text(connection.get("connectionStatus")).lower() in statuses
+        ]
+        sources: list[dict[str, Any]] = []
+        for record in records:
+            provider = normalize_text((record.get("metadata") or {}).get("provider")) or GOOGLE_CALENDAR_OAUTH_PROVIDER
+            source: dict[str, Any] = {
+                "connectionId": normalize_text(record.get("id")),
+                "platform": CALENDAR_CONNECTION_PLATFORM,
+                "provider": provider,
+                "label": CALENDAR_PROVIDER_LABELS.get(provider, "Calendar"),
+                "accountAddress": normalize_text(record.get("accountAddress")),
+                "calendars": [],
+                "status": "ok",
+                "message": "",
+            }
+            if vault is None or not ciphertext:
+                source["status"] = "unavailable"
+                source["message"] = "Reconnect this calendar so the portal can read it."
+                sources.append(source)
+                continue
+            try:
+                access_token, _credential_source = self._resolve_calendar_access_token(vault.decrypt(ciphertext))
+                source["calendars"] = CalendarSummaryRunner().fetch_calendar_list(access_token)
+            except CredentialVaultError:
+                source["status"] = "unavailable"
+                source["message"] = "The saved calendar connection could not be opened securely. Reconnect it."
+            except CalendarListUnavailableError as exc:
+                # Nothing is wrong with the connection: it was made before the
+                # portal asked to see the account's list of calendars.
+                source["status"] = "needs_reconnect"
+                source["message"] = str(exc)
+            except CalendarSummaryError as exc:
+                source["status"] = "unavailable"
+                source["message"] = str(exc)
+            sources.append(source)
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "sources": sources,
+        })
 
     def _handle_google_calendar_oauth_start(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
@@ -3410,7 +3521,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "provider": provider,
                     "authFlow": "google_oauth",
                     "validationStatus": "verified",
-                    "scope": GOOGLE_OAUTH_SCOPE_BY_ID[scope_id],
+                    "scope": self._google_oauth_scope_text_for_id(scope_id),
                     "grantedScope": granted_scope,
                     "validatedAt": now,
                     **validation_results.get(scope_id, {}),

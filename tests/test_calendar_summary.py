@@ -14,6 +14,7 @@ from urllib import request as urllib_request
 from unittest import mock
 
 from packages.infrastructure.calendar_summary import CalendarAuthorizationError
+from packages.infrastructure.calendar_summary import CalendarListUnavailableError
 from packages.infrastructure.calendar_summary import CalendarNotSharedError
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import build_calendar_summary
@@ -230,6 +231,63 @@ class CalendarSummaryTests(unittest.TestCase):
         )
         with self.assertRaises(CalendarNotSharedError):
             runner.fetch_events("calendar-token", calendar_id="dana@example.org", date_range=date_range)
+
+    def test_calendar_list_names_every_readable_calendar_in_the_account(self) -> None:
+        requests: list[object] = []
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            requests.append(request)
+            return _FakeResponse({
+                "items": [
+                    {
+                        "id": "owner@example.com",
+                        "summary": "owner@example.com",
+                        "summaryOverride": "Alex Rivera",
+                        "primary": True,
+                        "accessRole": "owner",
+                    },
+                    {
+                        "id": "c_family@group.calendar.google.com",
+                        "summary": "Family",
+                        "accessRole": "reader",
+                    },
+                    # Busy blocks with no titles are nothing an action could
+                    # summarize, so this one is never offered.
+                    {
+                        "id": "c_busy@group.calendar.google.com",
+                        "summary": "Room booking",
+                        "accessRole": "freeBusyReader",
+                    },
+                ],
+            })
+
+        calendars = CalendarSummaryRunner(opener=opener).fetch_calendar_list("calendar-token")
+
+        self.assertEqual(
+            calendars,
+            [
+                {"id": "primary", "label": "Alex Rivera", "primary": True, "accessRole": "owner"},
+                {
+                    "id": "c_family@group.calendar.google.com",
+                    "label": "Family",
+                    "primary": False,
+                    "accessRole": "reader",
+                },
+            ],
+        )
+        self.assertIn("/users/me/calendarList?", requests[0].full_url)  # type: ignore[attr-defined]
+        self.assertEqual(requests[0].headers["Authorization"], "Bearer calendar-token")  # type: ignore[attr-defined]
+
+    def test_calendar_list_without_its_grant_asks_for_a_reconnect(self) -> None:
+        # A connection made before the portal asked to see the account's list of
+        # calendars still summarizes; only the picker needs the reconnect.
+        def opener(_request, *, timeout):  # type: ignore[no-untyped-def]
+            raise urllib_error.HTTPError("https://www.googleapis.com", 403, "Forbidden", {}, None)
+
+        with self.assertRaises(CalendarListUnavailableError) as context:
+            CalendarSummaryRunner(opener=opener).fetch_calendar_list("events-only-token")
+
+        self.assertEqual(context.exception.code, "calendar_list_scope_missing")
 
     def test_event_normalization_keeps_only_safe_summary_fields(self) -> None:
         event = normalize_calendar_event({
@@ -700,6 +758,59 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
         connection = self.server.database.list_platform_connections("owner@example.com")[0]
         self.assertEqual(connection["connectionStatus"], "needs_attention")
         self.assertEqual(connection["metadata"]["validationStatus"], "failed")
+
+    def _get_calendar_sources(self) -> dict[str, object]:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/platform-connections/calendars",
+            headers={"Authorization": f"Bearer {self.session_token}"},
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_calendar_sources_list_the_calendars_inside_each_connection(self) -> None:
+        listed = [
+            {"id": "primary", "label": "Alex Rivera", "primary": True, "accessRole": "owner"},
+            {
+                "id": "c_family@group.calendar.google.com",
+                "label": "Family",
+                "primary": False,
+                "accessRole": "reader",
+            },
+        ]
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
+            return_value=listed,
+        ) as fetch:
+            payload = self._get_calendar_sources()
+
+        self.assertTrue(payload["ok"])
+        source = payload["sources"][0]  # type: ignore[index]
+        self.assertEqual(source["platform"], "calendar")
+        self.assertEqual(source["label"], "Google Calendar")
+        self.assertEqual(source["status"], "ok")
+        self.assertEqual([calendar["label"] for calendar in source["calendars"]], ["Alex Rivera", "Family"])
+        self.assertEqual(fetch.call_args.args[0], "calendar-token")
+        # The credential behind the list never leaves the server.
+        self.assertNotIn("calendar-token", json.dumps(payload))
+
+    def test_calendar_sources_ask_for_a_reconnect_rather_than_looking_empty(self) -> None:
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
+            side_effect=CalendarListUnavailableError(),
+        ):
+            payload = self._get_calendar_sources()
+
+        source = payload["sources"][0]  # type: ignore[index]
+        self.assertEqual(source["status"], "needs_reconnect")
+        self.assertEqual(source["calendars"], [])
+        self.assertIn("Reconnect Google Calendar", source["message"])
+
+    def test_calendar_sources_need_a_session(self) -> None:
+        request = urllib_request.Request(f"{self.base_url}/api/platform-connections/calendars")
+        with self.assertRaises(urllib_error.HTTPError) as context:
+            urllib_request.urlopen(request, timeout=5)
+
+        self.assertEqual(context.exception.code, 401)
 
     def test_calendar_proposal_run_rejects_external_delivery_until_supported(self) -> None:
         request = urllib_request.Request(

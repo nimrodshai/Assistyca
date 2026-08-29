@@ -86,6 +86,88 @@ class ReceiptCollectorExportTests(unittest.TestCase):
             self.assertEqual(manifest["receipts"][0]["imageAttachments"][0]["filename"], "receipt.png")
 
 
+class ReceiptSourcePdfTests(unittest.TestCase):
+    """The sender's own receipt PDF belongs inside the report, not beside it."""
+
+    def build_source_pdf(self, path: Path, *, pages: int) -> None:
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas
+        except ModuleNotFoundError:
+            self.skipTest("reportlab is not installed")
+        page = canvas.Canvas(str(path), pagesize=A4)
+        for number in range(1, pages + 1):
+            page.drawString(80, 700, f"VENDOR TAX INVOICE page {number}")
+            page.showPage()
+        page.save()
+
+    def test_merges_the_sender_pdf_into_the_report(self) -> None:
+        try:
+            from pypdf import PdfReader
+        except ModuleNotFoundError:
+            self.skipTest("pypdf is not installed")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_pdf = Path(temp_dir) / "invoice.pdf"
+            self.build_source_pdf(source_pdf, pages=2)
+            bundle = create_receipt_bundle(
+                [{
+                    "id": "msg-1",
+                    "from": "Vendor <no-reply@vendor.example.com>",
+                    "subject": "Your invoice",
+                    "date": "Thu, 27 Aug 2026 08:15:00 +0000",
+                    "snippet": "Your invoice is attached. Total USD 42.10",
+                    "attachments": [{
+                        "filename": "invoice.pdf",
+                        "mimeType": "application/pdf",
+                        "path": str(source_pdf),
+                        "status": "saved",
+                    }],
+                }],
+                output_root=Path(temp_dir),
+                owner_key="owner-key",
+                month_value=(2026, 8),
+                created_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
+            )
+
+            report = PdfReader(str(bundle["artifacts"]["pdf"]["path"]))
+            report_text = "\n".join(page.extract_text() or "" for page in report.pages)
+            self.assertEqual(report_text.count("VENDOR TAX INVOICE page"), 2)
+            # The attached pages follow the report page for that receipt.
+            receipt_page = next(
+                number
+                for number, page in enumerate(report.pages)
+                if "Receipt 1: Vendor" in (page.extract_text() or "")
+            )
+            self.assertIn("VENDOR TAX INVOICE page 1", report.pages[receipt_page + 1].extract_text() or "")
+            self.assertIn("VENDOR TAX INVOICE page 2", report.pages[receipt_page + 2].extract_text() or "")
+
+    def test_keeps_the_report_when_the_attachment_is_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            broken_pdf = Path(temp_dir) / "invoice.pdf"
+            broken_pdf.write_bytes(b"%PDF-1.4 truncated before anything useful")
+            bundle = create_receipt_bundle(
+                [{
+                    "id": "msg-1",
+                    "from": "Vendor <no-reply@vendor.example.com>",
+                    "subject": "Your invoice",
+                    "snippet": "Your invoice is attached. Total USD 42.10",
+                    "attachments": [{
+                        "filename": "invoice.pdf",
+                        "mimeType": "application/pdf",
+                        "path": str(broken_pdf),
+                        "status": "saved",
+                    }],
+                }],
+                output_root=Path(temp_dir),
+                owner_key="owner-key",
+                month_value=(2026, 8),
+            )
+
+            report_path = Path(bundle["artifacts"]["pdf"]["path"])
+            self.assertEqual(report_path.read_bytes()[:4], b"%PDF")
+            self.assertFalse(list(report_path.parent.glob("*-merged.pdf")))
+
+
 class ReceiptAmountTests(unittest.TestCase):
     def row_for(self, **fields: str) -> dict[str, str]:
         source = {"id": "msg-1", "from": "Store <billing@store.example.com>", "subject": "Receipt"}

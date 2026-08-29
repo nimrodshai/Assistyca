@@ -13,6 +13,7 @@ from urllib import request as urllib_request
 from unittest import mock
 
 from packages.infrastructure.credential_vault import CredentialVault
+from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_LIST_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_DRIVE_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_GMAIL_OAUTH_SCOPE
@@ -22,6 +23,11 @@ from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import SESSION_COOKIE_NAME
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_db import PortalDatabase
+
+# Connecting Calendar asks for two grants: reading events, and seeing which
+# calendars the account holds. Only the first decides whether the permission
+# connected, which is why the token responses below still grant it alone.
+GOOGLE_CALENDAR_REQUESTED_SCOPE_TEXT = f"{GOOGLE_CALENDAR_OAUTH_SCOPE} {GOOGLE_CALENDAR_LIST_OAUTH_SCOPE}"
 
 
 class _JsonResponse:
@@ -291,7 +297,7 @@ class PlatformConnectionTests(unittest.TestCase):
         self.assertIn(popup_redirect.scheme, {"http", "https"})
         self.assertTrue(popup_redirect.netloc)
         self.assertEqual(popup_redirect.path, "")
-        self.assertEqual(body["scope"], GOOGLE_CALENDAR_OAUTH_SCOPE)
+        self.assertEqual(body["scope"], GOOGLE_CALENDAR_REQUESTED_SCOPE_TEXT)
 
     def test_calendar_oauth_start_returns_google_authorization_url(self) -> None:
         try:
@@ -338,7 +344,7 @@ class PlatformConnectionTests(unittest.TestCase):
             self.assertEqual(auth_url.netloc, "accounts.google.com")
             self.assertEqual(params["client_id"], ["google-client-id.apps.googleusercontent.com"])
             self.assertEqual(params["redirect_uri"], ["https://assistyca.com/api/oauth/google/calendar/callback"])
-            self.assertEqual(params["scope"], [GOOGLE_CALENDAR_OAUTH_SCOPE])
+            self.assertEqual(params["scope"], [GOOGLE_CALENDAR_REQUESTED_SCOPE_TEXT])
             self.assertEqual(params["access_type"], ["offline"])
             self.assertEqual(params["prompt"], ["consent"])
             self.assertTrue(params["state"][0])
@@ -595,7 +601,7 @@ class PlatformConnectionTests(unittest.TestCase):
             self.assertIn("Google Calendar, Gmail, and Drive connected", payload["message"])
             connections = {connection["platform"]: connection for connection in payload["connections"]}
             self.assertEqual(set(connections), {"calendar", "email", "drive"})
-            self.assertEqual(connections["calendar"]["metadata"]["scope"], GOOGLE_CALENDAR_OAUTH_SCOPE)
+            self.assertEqual(connections["calendar"]["metadata"]["scope"], GOOGLE_CALENDAR_REQUESTED_SCOPE_TEXT)
             self.assertEqual(connections["email"]["metadata"]["provider"], "google_gmail")
             self.assertEqual(connections["email"]["metadata"]["scope"], GOOGLE_GMAIL_OAUTH_SCOPE)
             self.assertEqual(connections["drive"]["metadata"]["provider"], "google_drive")

@@ -280,13 +280,45 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('entryInput.placeholder = "Add a calendar email address";', tags_field)
         self.assertIn("agent-action-editor-chip", tags_field)
         self.assertIn("agentCalendarTagRemove", tags_field)
-        # The connected account's calendar comes from the connection, so it has
-        # no remove button of its own.
-        self.assertIn('index === 0 && getConnectedCalendarTagLabel() === tag ? " is-fixed" : ""', tags_field)
         self.assertIn('setHint("Connect Google Calendar so this action has a calendar to read.");', tags_field)
         self.assertIn(".agent-action-editor-chip.is-fixed", styles)
         self.assertIn(".agent-action-editor-hint", styles)
         self.assertIn(':root[data-theme="dark"] .agent-action-editor-chip {', styles)
+
+    def test_calendar_action_picks_calendars_from_inside_the_account(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # A connection holds several calendars, so the field offers those rather
+        # than asking anyone to find a calendar ID in Google's settings.
+        self.assertIn('const AGENT_CALENDAR_PRIMARY_ID = "primary";', script)
+        self.assertIn("function getAgentCalendarSelectionIds", script)
+        self.assertIn("function refreshAgentCalendarSources", script)
+        self.assertIn('apiRequest("/api/platform-connections/calendars"', script)
+        self.assertIn("function getAgentCalendarConnectionSignature", script)
+        self.assertIn("function renderOpenAgentCalendarFields", script)
+        self.assertIn("agentCalendarSources: []", script)
+        self.assertIn("resetAgentCalendarSources();", script)
+
+        tags_field = script[
+            script.index("function createAgentCalendarTagsField"):
+            script.index("function createAgentCalendarSummaryDateRangeField")
+        ]
+        # Each connected account is its own group, with one tickable chip per
+        # calendar inside it.
+        self.assertIn("getAgentCalendarSourceHeading(source)", tags_field)
+        self.assertIn("agentCalendarToggle", tags_field)
+        self.assertIn('chip.setAttribute("aria-pressed", selected ? "true" : "false");', tags_field)
+        self.assertIn("void refreshAgentCalendarSources();", tags_field)
+        # An action that reads no calendar at all is not a setting to land on by
+        # unticking, and a calendar the account stopped listing is still named.
+        self.assertIn('setHint("This action needs at least one calendar to read.", true);', tags_field)
+        self.assertIn('const heading = sources.length ? "Also reading" : getConnectedCalendarTagLabel();', tags_field)
+        self.assertIn("Loading the calendars in this account…", tags_field)
+        self.assertIn(".agent-action-editor-chip.is-selectable", styles)
+        self.assertIn(".agent-action-editor-chip.is-selectable.is-selected", styles)
+        self.assertIn(".agent-calendar-source-name", styles)
+        self.assertIn(':root[data-theme="dark"] .agent-action-editor-chip.is-selectable {', styles)
 
     def test_monitor_actions_support_manual_runs_and_manual_only_mode(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
