@@ -19442,35 +19442,14 @@ function resizeAgentActionEditorTextarea(input) {
   if (!input || input.tagName !== "TEXTAREA") {
     return;
   }
-  // A textarea that is still detached or hidden measures zero, and growing it to
-  // that leaves the text clipped once the card is on screen. Wait for a real width.
-  if (!input.clientWidth) {
-    return;
-  }
   input.style.height = "auto";
   const borderBlock = Math.max(0, input.offsetHeight - input.clientHeight);
   input.style.height = `${input.scrollHeight + borderBlock}px`;
-  input._agentActionEditorTextareaWidth = input.clientWidth;
 }
 
-// The card is built off-screen and only gets its width when it lands in the DOM,
-// and that width changes again when the panel opens or the window resizes - each
-// time the text rewraps onto a different number of lines. Watch the box itself so
-// it refits whenever its width actually changes.
 function scheduleAgentActionEditorTextareaResize(input) {
   resizeAgentActionEditorTextarea(input);
   window.requestAnimationFrame(() => resizeAgentActionEditorTextarea(input));
-  window.setTimeout(() => resizeAgentActionEditorTextarea(input), 0);
-  if (!input || input._agentActionEditorTextareaObserver || typeof window.ResizeObserver !== "function") {
-    return;
-  }
-  const observer = new window.ResizeObserver(() => {
-    if (input.clientWidth && input.clientWidth !== input._agentActionEditorTextareaWidth) {
-      resizeAgentActionEditorTextarea(input);
-    }
-  });
-  observer.observe(input);
-  input._agentActionEditorTextareaObserver = observer;
 }
 
 function createAgentActionEditorStatusElement(className = "agent-action-editor-status", tagName = "p") {
@@ -21447,6 +21426,87 @@ function applyAgentTurnProposalRevision(proposal, changes = {}) {
   return true;
 }
 
+const AGENT_ANSWER_RUN_TYPES = new Set(["calendar-summary", "email-digest", "custom"]);
+
+function getAgentAnswerRunFields(turn) {
+  const changes = turn?.changes && typeof turn.changes === "object" ? turn.changes : {};
+  const fields = changes.fields && typeof changes.fields === "object" ? changes.fields : {};
+  return { ...fields };
+}
+
+// An answer run needs the same connection its saved counterpart would need.
+function getAgentAnswerRunBlocker(proposalType) {
+  if (proposalType === "calendar-summary") {
+    return isCalendarConnectionReady()
+      ? ""
+      : "I need your calendar connected before I can look that up. Open Calendar setup and connect it with read access.";
+  }
+  return isEmailConnectionReady()
+    ? ""
+    : "I need a mailbox connected before I can look that up. Connect Gmail or Outlook with read access, then ask me again.";
+}
+
+function getAgentAnswerRunFailureMessage(proposalType) {
+  if (proposalType === "calendar-summary") {
+    return "I couldn’t read the connected calendar just now. Check Calendar setup and ask me again.";
+  }
+  return "I couldn’t finish looking that up just now. Check Email setup and ask me again.";
+}
+
+// A question gets an answer, not an action. The lookup runs on the spot and
+// the result lands in this conversation; nothing is saved and nothing waits
+// for approval.
+async function runAgentAnswerNow(turn) {
+  const proposalType = String(turn?.proposalType || "").trim();
+  if (!AGENT_ANSWER_RUN_TYPES.has(proposalType)) {
+    return false;
+  }
+
+  const reply = String(turn?.reply || "").trim() || "Let me check — this might take a minute.";
+  pushAgentMessage("assistant", reply, { kind: "text" });
+
+  const blocker = getAgentAnswerRunBlocker(proposalType);
+  if (blocker) {
+    pushAgentMessage("assistant", blocker, { kind: "credential" });
+    persistAgentWorkspace(blocker);
+    renderApp({ preserveStatus: true });
+    return true;
+  }
+
+  agentTurnProgressText = "Running task";
+  persistAgentWorkspace("Running task...");
+  renderApp({ preserveStatus: true });
+
+  try {
+    const response = await apiRequest("/api/agent/proposals/run", {
+      method: "POST",
+      body: {
+        proposalType,
+        mode: "answer",
+        fields: getAgentAnswerRunFields(turn),
+        deliveryChannel: "portal",
+        timezone: getWorkspaceTimeZone(),
+      },
+      timeoutMs: 90000,
+    });
+    const answer = String(response.answer || response.message || response.summary || "").trim()
+      || "I ran that, but it came back without anything to report.";
+    pushAgentMessage("assistant", answer, { kind: "result" });
+    persistAgentWorkspace(answer);
+  } catch (error) {
+    const message = formatApiErrorMessage(error, getAgentAnswerRunFailureMessage(proposalType));
+    pushAgentMessage("assistant", message, {
+      kind: "error",
+      technical: getAgentErrorTechnicalInfo(error),
+    });
+    persistAgentWorkspace(message);
+  } finally {
+    agentTurnProgressText = "Thinking";
+    renderApp({ preserveStatus: true });
+  }
+  return true;
+}
+
 async function applyAgentTurnResponse(turn, userText) {
   const agent = getAgentWorkspace();
   const activeProposal = agent.proposals.find((proposal) => proposal.id === agent.activeProposalId)
@@ -21500,6 +21560,10 @@ async function applyAgentTurnResponse(turn, userText) {
     && applyAgentTurnProposalRevision(activeProposal, turn.changes)
   ) {
     pushAgentProposalNextStep(activeProposal, reply);
+    return true;
+  }
+
+  if (outcome === "answer_now" && await runAgentAnswerNow(turn)) {
     return true;
   }
 

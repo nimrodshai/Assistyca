@@ -8,6 +8,7 @@ import re
 import zipfile
 from collections import Counter
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 from email.utils import parseaddr
@@ -69,6 +70,30 @@ _AMOUNT_PATTERNS = (
     re.compile(rf"(?P<currency>{_CURRENCY_SIGNS})\s*(?P<amount>{_AMOUNT_NUMBER})"),
     re.compile(rf"(?P<amount>{_AMOUNT_NUMBER})\s*(?P<currency>{_CURRENCY_SIGNS})"),
 )
+
+
+@dataclass(frozen=True)
+class _AmountClaim:
+    """One number in the text laying claim to one currency marker."""
+
+    start: int
+    end: int
+    amount_span: tuple[int, int]
+    currency_span: tuple[int, int]
+    amount: str
+    currency: str
+
+    @property
+    def marker_leads_amount(self) -> bool:
+        return self.currency_span[0] < self.amount_span[0]
+
+    @property
+    def marker_touches_amount(self) -> bool:
+        if self.marker_leads_amount:
+            return self.currency_span[1] == self.amount_span[0]
+        return self.amount_span[1] == self.currency_span[0]
+
+
 # A receipt body quotes plenty of numbers - item prices, VAT, loyalty points.
 # The one worth reporting is the one sitting next to a total label, so those
 # labels are tried first and only then the first amount anywhere in the text.
@@ -306,6 +331,73 @@ def summarize_receipt_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "vendorSpend": vendor_spend,
         "vendorCounts": dict(vendor_counts.most_common()),
         "missingAmountCount": missing_amounts,
+    }
+
+
+def filter_receipt_rows_by_vendor(rows: list[dict[str, Any]], vendor: Any) -> list[dict[str, Any]]:
+    """Keep the receipts that belong to one named vendor.
+
+    The mailbox search casts a wide net on purpose, so narrowing to the vendor
+    the question actually named happens here rather than in the query.
+    """
+
+    needle = _clean_text(vendor).lower()
+    if not needle:
+        return list(rows)
+    return [
+        row for row in rows
+        if needle in " ".join([
+            _clean_text(row.get("vendor")),
+            _clean_text(row.get("subject")),
+            _clean_text(row.get("source")),
+        ]).lower()
+    ]
+
+
+def answer_receipt_question(
+    items: list[dict[str, Any]],
+    *,
+    vendor: Any = "",
+    month_label: str = "",
+) -> dict[str, Any]:
+    """Answer a one-off spending question, writing no files.
+
+    A question asked in chat wants a sentence back, not an export bundle, so
+    the rows are summed in memory and nothing is saved anywhere.
+    """
+
+    receipts, _ = split_receipt_rows(extract_receipt_rows(items))
+    matched = filter_receipt_rows_by_vendor(receipts, vendor)
+    summary = summarize_receipt_rows(matched)
+    totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
+
+    vendor_label = _clean_text(vendor)
+    where = f" to {vendor_label}" if vendor_label else ""
+    when = f" in {month_label}" if month_label else ""
+    count = len(matched)
+    receipt_word = "receipt" if count == 1 else "receipts"
+
+    if not count:
+        answer = f"I couldn't find any receipts{where}{when}."
+    elif not totals:
+        answer = (
+            f"I found {count} {receipt_word}{where}{when}, but none of them named an amount I could read."
+        )
+    else:
+        amounts = " and ".join(f"{value:,.2f} {code}" for code, value in totals.items())
+        answer = f"You paid {amounts}{where}{when}, across {count} {receipt_word}."
+        missing = int(summary.get("missingAmountCount") or 0)
+        if missing:
+            missing_word = "receipt" if missing == 1 else "receipts"
+            answer += f" Another {missing} {missing_word} named no amount I could read."
+
+    return {
+        "answer": answer,
+        "receiptCount": count,
+        "totals": totals,
+        "vendor": vendor_label,
+        "monthLabel": month_label,
+        "missingAmountCount": int(summary.get("missingAmountCount") or 0),
     }
 
 
@@ -1359,23 +1451,58 @@ def _extract_amount(value: str) -> tuple[str, str]:
 def _find_amounts(text: str) -> list[tuple[int, str, str]]:
     """Return every currency amount in the text as (position, amount, currency)."""
 
-    matches: list[tuple[int, int, str, str]] = []
+    claims: list[_AmountClaim] = []
     for pattern in _AMOUNT_PATTERNS:
         for match in pattern.finditer(text):
             amount = _normalize_amount(match.group("amount"))
             currency = _currency_code(match.group("currency"))
             if amount and currency:
-                matches.append((match.start(), match.end(), amount, currency))
-    matches.sort(key=lambda item: (item[0], -item[1]))
+                claims.append(
+                    _AmountClaim(
+                        start=match.start(),
+                        end=match.end(),
+                        amount_span=match.span("amount"),
+                        currency_span=match.span("currency"),
+                        amount=amount,
+                        currency=currency,
+                    )
+                )
+    claims = _settle_shared_currency_markers(claims)
+    claims.sort(key=lambda claim: (claim.start, -claim.end))
     found: list[tuple[int, str, str]] = []
     covered_until = -1
-    for start, end, amount, currency in matches:
+    for claim in claims:
         # "$40 USD" matches two patterns over the same number; keep it once.
-        if start < covered_until:
+        if claim.start < covered_until:
             continue
-        covered_until = end
-        found.append((start, amount, currency))
+        covered_until = claim.end
+        found.append((claim.start, claim.amount, claim.currency))
     return found
+
+
+def _settle_shared_currency_markers(claims: list[_AmountClaim]) -> list[_AmountClaim]:
+    """Keep one claimant per currency marker: the number the marker belongs to.
+
+    A date printed beside a price leaves two numbers reaching for the same
+    marker - "30 July 2026 \u20aa65.90" offers the year to the shekel sign on
+    its left, and the year wins on position alone. The marker is printed hard
+    against 65.90, so that is the amount; when it touches neither number it
+    belongs to the number that follows it, the way prices are normally set.
+    """
+
+    by_marker: dict[tuple[int, int], list[_AmountClaim]] = defaultdict(list)
+    for claim in claims:
+        by_marker[claim.currency_span].append(claim)
+    kept: list[_AmountClaim] = []
+    for claimants in by_marker.values():
+        kept.append(min(claimants, key=_currency_claim_rank))
+    return kept
+
+
+def _currency_claim_rank(claim: _AmountClaim) -> tuple[int, int]:
+    """Order claimants on a shared marker: touching first, then marker-first."""
+
+    return (0 if claim.marker_touches_amount else 1, 0 if claim.marker_leads_amount else 1)
 
 
 def _amount_beside_total_label(text: str, matches: list[tuple[int, str, str]]) -> tuple[str, str] | None:

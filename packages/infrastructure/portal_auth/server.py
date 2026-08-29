@@ -38,6 +38,7 @@ from typing import Any, Callable, Optional
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
+from zoneinfo import ZoneInfo
 
 from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH
@@ -115,8 +116,10 @@ from packages.infrastructure.portal_runtime_paths import resolve_runtime_path
 from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.receipt_collector import RECEIPT_MANIFEST_FILENAME
+from packages.infrastructure.receipt_collector import answer_receipt_question
 from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
 from packages.infrastructure.receipt_collector import create_receipt_bundle
+from packages.infrastructure.receipt_collector import format_receipt_month_label
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
@@ -1851,6 +1854,26 @@ def get_previous_agent_run_month(now: Optional[datetime] = None) -> tuple[int, i
     return year, month
 
 
+def get_current_agent_run_month(now: Optional[datetime] = None) -> tuple[int, int]:
+    current = now or datetime.now(timezone.utc)
+    return current.year, current.month
+
+
+def resolve_local_today(timezone_name: str, now: Optional[datetime] = None) -> str:
+    """Today's date where the user is, so the agent can read "this month".
+
+    An unknown timezone name is not worth failing a chat turn over, so UTC
+    stands in for it.
+    """
+
+    current = now or datetime.now(timezone.utc)
+    try:
+        local = current.astimezone(ZoneInfo(normalize_text(timezone_name) or "UTC"))
+    except Exception:
+        local = current.astimezone(timezone.utc)
+    return local.date().isoformat()
+
+
 def agent_batch_frequency_is_monthly(fields: dict[str, Any], payload: dict[str, Any]) -> bool:
     text = normalize_text(
         fields.get("frequency")
@@ -1878,6 +1901,8 @@ def resolve_agent_batch_run_month(fields: dict[str, Any], payload: dict[str, Any
         normalize_text(fields.get("schedule")),
         normalize_text(payload.get("schedule")),
     ])).lower()
+    if re.search(r"\b(?:this|current)\s+month\b", context):
+        return get_current_agent_run_month()
     if (
         re.search(r"\b(?:previous|last)\s+month\b", context)
         or agent_batch_frequency_is_monthly(fields, payload)
@@ -4693,6 +4718,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         proposal_type = normalize_text(payload.get("proposalType") or payload.get("proposal_type")).lower()
         fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        # An answer run is a question asked in chat: it reads the same sources
+        # and reports back in the reply, but saves no files and no action.
+        answer_mode = normalize_text(payload.get("mode")).lower() == "answer"
         is_custom_google_batch = proposal_type == "custom" and is_custom_google_batch_proposal_fields(fields)
         if proposal_type not in {"calendar-summary", "email-digest"} and not is_custom_google_batch:
             json_response(self, HTTPStatus.NOT_FOUND, {
@@ -4769,13 +4797,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             receipt_bundle: Optional[dict[str, Any]] = None
             result_header = get_custom_google_batch_result_header(fields) if is_custom_google_batch else ""
+            answer_month: tuple[int, int] | None = None
+            if answer_mode and is_custom_google_batch:
+                answer_month = resolve_agent_batch_run_month(fields, payload)
             receipt_month: tuple[int, int] | None = None
             receipt_output_folder = ""
             receipt_output_root: Path | None = None
             receipt_owner_key = ""
             receipt_attachment_dir: Path | None = None
             receipt_attachment_url_prefix = ""
-            if result_header == "Receipt search":
+            if result_header == "Receipt search" and not answer_mode:
                 receipt_month = resolve_agent_batch_run_month(fields, payload)
                 receipt_output_folder = build_agent_receipt_output_folder(fields, payload, receipt_month)
                 receipt_output_root = resolve_runtime_path(self.server.config.agent_output_dir, root=self.server.root)  # type: ignore[attr-defined]
@@ -4830,9 +4861,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
+            receipt_answer: Optional[dict[str, Any]] = None
             if is_custom_google_batch:
                 result = relabel_mail_digest_result(result, result_header)
-                if result_header == "Receipt search":
+                if result_header == "Receipt search" and answer_mode:
+                    receipt_answer = answer_receipt_question(
+                        result.get("items") if isinstance(result.get("items"), list) else [],
+                        vendor=fields.get("vendor") or payload.get("vendor"),
+                        month_label=format_receipt_month_label(answer_month) if answer_month else "",
+                    )
+                    result["summary"] = receipt_answer["answer"]
+                    result["message"] = receipt_answer["answer"]
+                elif result_header == "Receipt search":
                     receipt_items = result.get("items") if isinstance(result.get("items"), list) else []
                     try:
                         receipt_bundle = create_receipt_bundle(
@@ -4884,6 +4924,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "mailbox": mailbox_label,
                 "query": mail_query.describe(),
             }
+            if receipt_answer:
+                # A question asked in chat is answered in chat; there is no
+                # bundle to link because nothing was written.
+                response_payload["answer"] = receipt_answer["answer"]
+                response_payload["receiptCount"] = receipt_answer["receiptCount"]
+                response_payload["totals"] = receipt_answer["totals"]
             if receipt_bundle:
                 response_payload.update({
                     "outputFolder": str(receipt_bundle.get("outputFolder") or ""),
@@ -5143,6 +5189,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             user_message=user_message,
             conversation=conversation,
             timezone_name=timezone_name,
+            today=resolve_local_today(timezone_name),
             active_proposal=active_proposal,
             tool_context=tool_context,
             source_context=source_context,

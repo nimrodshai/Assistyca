@@ -384,6 +384,10 @@ A request may run without a proposal when it is read-only, uses an installed hel
 
 The assistant should answer direct product questions without creating a helper.
 
+A question about the account's own data is answered the same way. When the user asks what already happened - how much they paid a vendor, which receipts arrived, what is on the calendar - the agent returns the `answer_now` outcome with the lookup that answers it. The portal replies "let me check", shows `Running task` in place of the thinking indicator, runs the lookup against the connected source, and posts the answer in the conversation. Nothing is proposed, nothing is approved, no action is saved, and no file is written. Only lookups that already have a runner can be answered this way: the calendar summary, the mailbox digest, and the receipt search.
+
+A proposal is still the right outcome when the user wants the work to keep happening on a schedule, asks to set something up, or asks for something no runner can answer.
+
 ### 12.4 Complex request path
 
 A request is complex when it needs two or more skills, a schedule, an external service, a new helper, a credential, a payment, or a delivery decision.

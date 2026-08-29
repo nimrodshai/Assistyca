@@ -197,6 +197,16 @@ class ReceiptAmountTests(unittest.TestCase):
                 row = self.row_for(bodyText=text)
                 self.assertEqual((row["amount"], row["currency"]), expected)
 
+    def test_leaves_a_date_beside_the_price_out_of_the_amount(self) -> None:
+        for text, expected in (
+            ("30 July 2026 " + chr(8362) + "65.90", ("65.90", "ILS")),
+            ("30 July 2026 " + chr(8362) + " 65.90", ("65.90", "ILS")),
+            ("2026 $12.77 charged", ("12.77", "USD")),
+        ):
+            with self.subTest(text=text):
+                row = self.row_for(bodyText=text)
+                self.assertEqual((row["amount"], row["currency"]), expected)
+
     def test_falls_back_to_the_first_amount_when_no_total_is_labelled(self) -> None:
         row = self.row_for(bodyText="Your card was billed 24.90 ILS this morning")
         self.assertEqual((row["amount"], row["currency"]), ("24.90", "ILS"))
