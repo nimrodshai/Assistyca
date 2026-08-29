@@ -19134,6 +19134,77 @@ function buildAgentActionContext() {
   }));
 }
 
+// Chat asks for a change to actions the user already has; the names it sends
+// back are the ones on screen, so they resolve against the same list the
+// Actions panel renders and an unknown name simply never matches.
+const AGENT_ACTION_COMMAND_WORDING = {
+  delete: {
+    question: "Remove",
+    confirm: "Remove them",
+    confirmOne: "Remove it",
+    keep: "Keep them",
+    keepOne: "Keep it",
+    done: "Removed",
+    failed: "Couldn’t remove",
+    working: "Removing actions...",
+  },
+  pause: {
+    question: "Stop",
+    confirm: "Stop them",
+    confirmOne: "Stop it",
+    keep: "Leave them running",
+    keepOne: "Leave it running",
+    done: "Stopped",
+    failed: "Couldn’t stop",
+    working: "Stopping actions...",
+  },
+  resume: {
+    question: "Start",
+    confirm: "Start them",
+    confirmOne: "Start it",
+    keep: "Leave them stopped",
+    keepOne: "Leave it stopped",
+    done: "Started",
+    failed: "Couldn’t start",
+    working: "Starting actions...",
+  },
+};
+
+function normalizeAgentActionCommand(value) {
+  const command = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(AGENT_ACTION_COMMAND_WORDING, command) ? command : "";
+}
+
+function findActiveAgentActionsByName(names) {
+  const wanted = Array.isArray(names) ? names : [];
+  const active = getRenderableAgentActions()
+    .filter((action) => isActiveAgentActionStatus(action.status, action));
+  const matched = [];
+  const seen = new Set();
+  for (const name of wanted) {
+    const key = normalizeScheduledActionTitleKey(name);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    const action = active.find((candidate) => (
+      normalizeScheduledActionTitleKey(getScheduledActionTitle(candidate)) === key
+    ));
+    if (action) {
+      seen.add(key);
+      matched.push(action);
+    }
+  }
+  return matched;
+}
+
+function formatAgentActionNameList(names) {
+  const quoted = names.map((name) => `“${name}”`);
+  if (quoted.length <= 1) {
+    return quoted[0] || "";
+  }
+  return `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
+}
+
 function getScheduledActionItemSignature(action) {
   const featureId = String(action?.payload?.backendFeatureId || "").trim();
   const statusClass = getScheduledActionStatusClass(action.status, action);
@@ -22354,6 +22425,18 @@ function handleAgentMessageAction(event) {
     return true;
   }
 
+  if (action === "run-action-command") {
+    void runAgentActionCommand(messageId);
+    return true;
+  }
+
+  if (action === "cancel-action-command") {
+    pushAgentMessage("assistant", "Left as they are.", { kind: "result" });
+    persistAgentWorkspace("Nothing changed.");
+    renderApp({ preserveStatus: true });
+    return true;
+  }
+
   if (action === "choose") {
     handleAgentUserText(value);
     return true;
@@ -22907,6 +22990,10 @@ async function applyAgentTurnResponse(turn, userText) {
     return true;
   }
 
+  if (outcome === "action_command" && pushAgentActionCommandPrompt(turn)) {
+    return true;
+  }
+
   if (outcome === "proposal" || (outcome === "question" && turn?.proposalType)) {
     const proposal = createAgentProposalFromTurn(userText, turn);
     agent.proposals.push(proposal);
@@ -22919,6 +23006,149 @@ async function applyAgentTurnResponse(turn, userText) {
     pushAgentMessage("assistant", reply, buildAgentReplyMetadata(turn, outcome));
   }
   return true;
+}
+
+// Saying "consider it done" used to be the whole of it: nothing removed an
+// action from the chat, so the agent agreed and the list stayed as it was. A
+// command now becomes a confirmation the application owns, and confirming it
+// runs the same removal the Actions panel runs.
+function pushAgentActionCommandPrompt(turn) {
+  const command = normalizeAgentActionCommand(turn?.actionCommand);
+  if (!command) {
+    return false;
+  }
+  const wanted = (Array.isArray(turn?.actionNames) ? turn.actionNames : [])
+    .map((name) => String(name || "").trim())
+    .filter(Boolean);
+  if (!wanted.length) {
+    return false;
+  }
+  const actions = findActiveAgentActionsByName(wanted);
+  // A name nobody has an action for cannot be acted on, and the reply that
+  // came with it may already claim otherwise, so say what is actually true.
+  if (!actions.length) {
+    return Boolean(pushAgentMessage(
+      "assistant",
+      `I couldn’t find ${formatAgentActionNameList(wanted)} among your actions. Have a look at the Actions panel and tell me which one you mean.`,
+      { kind: "result" },
+    ));
+  }
+
+  // Only offer a button for what the change would really do. Starting an
+  // action that is already running is not a change, and promising one is how
+  // this went wrong in the first place.
+  const runnable = actions.filter((action) => canRunAgentActionCommand(command, action));
+  const skipped = actions.filter((action) => !canRunAgentActionCommand(command, action));
+  const skippedNote = skipped.length ? ` ${describeSkippedAgentActionCommand(command, skipped)}` : "";
+  if (!runnable.length) {
+    return Boolean(pushAgentMessage("assistant", skippedNote.trim(), { kind: "result" }));
+  }
+
+  const names = runnable.map((action) => getScheduledActionTitle(action));
+  const wording = AGENT_ACTION_COMMAND_WORDING[command];
+  const one = runnable.length === 1;
+  return Boolean(pushAgentMessage(
+    "assistant",
+    `${wording.question} ${formatAgentActionNameList(names)}?${skippedNote}`,
+    {
+      kind: "result",
+      actionCommand: command,
+      actionCommandIds: runnable.map((action) => String(action.id || "")),
+      actions: [
+        createAgentAction("run-action-command", one ? wording.confirmOne : wording.confirm, "", "primary"),
+        createAgentAction("cancel-action-command", one ? wording.keepOne : wording.keep, ""),
+      ],
+    },
+  ));
+}
+
+function canRunAgentActionCommand(command, action) {
+  if (command === "delete") {
+    return canCancelAgentAction(action);
+  }
+  return canToggleAgentActionLifecycle(action)
+    && isAgentLifecycleActionPaused(action) === (command === "resume");
+}
+
+function describeSkippedAgentActionCommand(command, skipped) {
+  const alreadyThere = skipped.filter((action) => (
+    isAgentLifecycleActionPaused(action) === (command === "pause")
+  ));
+  const notAvailable = skipped.filter((action) => !alreadyThere.includes(action));
+  const sentences = [];
+  if (alreadyThere.length) {
+    const names = formatAgentActionNameList(alreadyThere.map((action) => getScheduledActionTitle(action)));
+    const state = command === "resume" ? "running" : "stopped";
+    sentences.push(`${names} ${alreadyThere.length === 1 ? "is" : "are"} already ${state}.`);
+  }
+  if (notAvailable.length) {
+    const names = formatAgentActionNameList(notAvailable.map((action) => getScheduledActionTitle(action)));
+    const verb = command === "resume" ? "started" : "stopped";
+    sentences.push(`${names} can’t be ${verb} from here — open it in the Actions panel.`);
+  }
+  return sentences.join(" ");
+}
+
+async function runAgentActionCommandOnAction(command, action) {
+  const actionId = String(action?.id || "");
+  const sourceActionId = getAgentActionSourceActionId(action);
+  if (command === "delete") {
+    if (sourceActionId) {
+      return removeSourceAction(sourceActionId);
+    }
+    return isAgentLocalAction(action)
+      ? removeAgentProposalLocalAction(actionId)
+      : cancelScheduledAction(actionId);
+  }
+  if (sourceActionId) {
+    return updateSourceActionLifecycle(sourceActionId, command === "pause" ? "paused" : "active");
+  }
+  return command === "pause" ? stopAgentLocalAction(actionId) : resumeAgentLocalAction(actionId);
+}
+
+async function runAgentActionCommand(messageId) {
+  const message = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
+  const command = normalizeAgentActionCommand(message?.metadata?.actionCommand);
+  const actionIds = Array.isArray(message?.metadata?.actionCommandIds) ? message.metadata.actionCommandIds : [];
+  if (!command || !actionIds.length) {
+    return;
+  }
+
+  const wording = AGENT_ACTION_COMMAND_WORDING[command];
+  persistAgentWorkspace(wording.working);
+  renderApp({ preserveStatus: true });
+
+  const done = [];
+  const failed = [];
+  for (const actionId of actionIds) {
+    const action = getRenderableAgentActions()
+      .find((candidate) => String(candidate.id || "") === String(actionId || ""));
+    // Gone from the list already counts as done; there is nothing left to do
+    // to it and nothing to warn the user about.
+    if (!action) {
+      continue;
+    }
+    const title = getScheduledActionTitle(action);
+    // One at a time, so a failure halfway through still leaves an accurate
+    // account of what did change.
+    // eslint-disable-next-line no-await-in-loop
+    const changed = await runAgentActionCommandOnAction(command, action);
+    (changed ? done : failed).push(title);
+  }
+
+  const lines = [];
+  if (done.length) {
+    lines.push(`${wording.done} ${formatAgentActionNameList(done)}.`);
+  }
+  if (failed.length) {
+    lines.push(`${wording.failed} ${formatAgentActionNameList(failed)}. You can try again from the Actions panel.`);
+  }
+  if (!lines.length) {
+    lines.push("Those actions were already gone, so there was nothing to change.");
+  }
+  pushAgentMessage("assistant", lines.join(" "), { kind: "result" });
+  persistAgentWorkspace(lines[0]);
+  renderApp({ preserveStatus: true });
 }
 
 function buildAgentReplyMetadata(turn, outcome) {

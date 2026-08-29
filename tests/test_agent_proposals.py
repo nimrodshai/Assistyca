@@ -247,6 +247,78 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertEqual(single["actionChoiceMode"], "single")
         self.assertEqual(no_picker["actionChoiceMode"], "")
 
+    def test_turn_response_carries_a_delete_command_for_the_named_actions(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "action_command",
+                "reply": "Taking care of that.",
+                "actionCommand": "Delete",
+                "actionNames": ["Receipt collector #3", "Meeting summary #2", "Receipt collector #3"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["outcome"], "action_command")
+        self.assertEqual(turn["actionCommand"], "delete")
+        # The repeat drops out; the order the user sees is kept.
+        self.assertEqual(turn["actionNames"], ["Receipt collector #3", "Meeting summary #2"])
+
+    def test_turn_response_refuses_a_command_it_cannot_carry_out(self) -> None:
+        # Running an action is not one of the commands, and a command with
+        # nothing to act on would delete nothing while sounding like it did.
+        unsupported = normalize_agent_turn_response(
+            {
+                "outcome": "action_command",
+                "reply": "Running that now.",
+                "actionCommand": "run",
+                "actionNames": ["Receipt collector"],
+            },
+            has_active_proposal=False,
+        )
+        nameless = normalize_agent_turn_response(
+            {
+                "outcome": "action_command",
+                "reply": "Removing those.",
+                "actionCommand": "delete",
+                "actionNames": [],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(unsupported["outcome"], "message")
+        self.assertEqual(unsupported["actionCommand"], "")
+        self.assertEqual(nameless["outcome"], "message")
+        self.assertEqual(nameless["actionNames"], [])
+
+    def test_turn_response_leaves_the_command_empty_on_every_other_outcome(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "message",
+                "reply": "You have five active actions right now.",
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["actionCommand"], "")
+        self.assertEqual(turn["actionNames"], [])
+
+    def test_turn_prompt_tells_the_agent_to_command_instead_of_agreeing(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="The “Receipt collector” and “Web monitor” actions",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            action_context=[
+                {"name": "Receipt collector", "kind": "custom", "status": "Manual"},
+                {"name": "Web monitor", "kind": "web-monitor", "status": "Live"},
+            ],
+        )
+
+        self.assertIn("outcome=action_command", prompt)
+        self.assertIn("actionNames", prompt)
+        self.assertIn("never say the change has happened", prompt)
+        self.assertIn("right after the user answers the picker", prompt)
+        self.assertIn("no command for running an action now", prompt)
+
     def test_conversational_turn_prompt_uses_field_based_intake(self) -> None:
         prompt = build_agent_turn_prompt(
             user_message="HaSharon and central Israel",

@@ -59,6 +59,10 @@ _AGENT_PROPOSAL_TYPES = {
 # The lookups that already have a runner, so a question can be answered from
 # connected sources in the same chat turn instead of becoming a saved action.
 _AGENT_ANSWER_NOW_TYPES = {"calendar-summary", "email-digest", "custom"}
+# Changes the chat can make to actions that already exist. Running one is not
+# here: a manual run sends real messages, so it stays a button in the panel.
+_AGENT_ACTION_COMMANDS = {"delete", "pause", "resume"}
+_AGENT_ACTION_COMMAND_MAX_NAMES = 20
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "email-digest": ["mailbox", "schedule", "deliveryChannel"],
     "calendar-summary": ["calendar", "timeWindow", "deliveryChannel"],
@@ -423,6 +427,8 @@ def build_agent_turn_prompt(
         "- answer_now: the user asked a one-off question that a connected source can answer right now, "
         "with nothing saved and nothing to approve.\n"
         "- question: one missing detail is required before a safe proposal can be shown.\n"
+        "- action_command: delete, pause, or resume actions the account already has, once it is clear which "
+        "ones.\n"
         "- message: answer conversationally without creating or executing anything.\n"
         "A message that is not about running this business is outcome=message with proposalType empty and "
         "nothing looked up. Decline it in one short, friendly line and offer something you can do with the "
@@ -446,7 +452,8 @@ def build_agent_turn_prompt(
         "comma separated and oldest first, for example '2026-07,2026-08', and name them all in "
         "changes.fields.result too. Every month named gets its own answer, including the months with nothing "
         "in them, so never drop one. Leave outputFolder out, because an answer run saves nothing.\n"
-        "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode. reply is "
+        "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode, "
+        "actionCommand, actionNames. reply is "
         "required for every "
         "outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
@@ -494,6 +501,17 @@ def build_agent_turn_prompt(
         "a few of them, these, several, all the old ones, or a stated count above one. Use single when the "
         "message points at exactly one action. Word the reply to match: ask which actions they mean for "
         "multiple, which action for single. actionChoiceMode is read only when needsActionChoice is true.\n"
+        "Once it is clear which existing actions the user wants deleted, paused, or resumed, return "
+        "outcome=action_command. Set actionCommand to delete, pause, or resume, and actionNames to the names of "
+        "those actions copied exactly from existingActions, one entry per action. Return it as soon as the "
+        "actions are identified, including on the turn right after the user answers the picker, when the message "
+        "lists action names back to you. Only names present in existingActions may appear in actionNames; never "
+        "invent one and never leave actionNames empty. Do not ask the user to confirm and never say the change "
+        "has happened: the application shows its own confirmation naming those actions, carries the change out "
+        "when the user confirms, and reports the result in the chat afterwards. Its confirmation replaces reply "
+        "for this outcome, so keep reply to one short line and put nothing in it that the user must read. There "
+        "is no command for running an action now; when the user asks for that, use outcome=message and point "
+        "them at the Run now button on the action in the Actions panel.\n"
         "For action result notifications, default deliveryChannel to portal (the Notifications center) when the user has "
         "not explicitly chosen another channel. Do not ask where to notify merely to choose this default. If the "
         "user explicitly requests email, WhatsApp, Telegram, or another supported channel, preserve that choice.\n"
@@ -680,12 +698,36 @@ def normalize_agent_turn_response(
         if turn["needsActionChoice"]
         else ""
     )
+    # Every turn carries these keys so the client never has to guess whether a
+    # command was dropped or simply never asked for.
+    turn.setdefault("actionCommand", "")
+    turn.setdefault("actionNames", [])
     return turn
 
 
 def _normalize_action_choice_mode(value: Any) -> str:
     mode = _single_line(value, 20).lower()
     return "multiple" if mode == "multiple" else "single"
+
+
+def _normalize_agent_action_names(value: Any) -> list[str]:
+    """Keep the action names a command points at, in the order they arrived.
+
+    These are the names the user already sees in the Actions panel, not
+    internal ids. The application still matches them against its own list, so a
+    name it does not recognize simply drops out there.
+    """
+    raw_names = value if isinstance(value, list) else []
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in raw_names[:_AGENT_ACTION_COMMAND_MAX_NAMES]:
+        name = _single_line(item, 120)
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
 
 
 def _normalize_agent_turn_outcome(
@@ -747,6 +789,19 @@ def _normalize_agent_turn_outcome(
             "proposalType": proposal_type,
             "changes": changes,
         }
+
+    if outcome == "action_command":
+        command = _single_line(response.get("actionCommand"), 20).lower()
+        names = _normalize_agent_action_names(response.get("actionNames"))
+        if command in _AGENT_ACTION_COMMANDS and names:
+            return {
+                "outcome": "action_command",
+                "reply": reply,
+                "proposalType": "",
+                "changes": {},
+                "actionCommand": command,
+                "actionNames": names,
+            }
 
     if outcome == "approve_proposal" and has_active_proposal:
         return {"outcome": "approve_proposal", "reply": reply, "proposalType": "", "changes": {}}

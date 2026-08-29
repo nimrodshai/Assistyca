@@ -1105,6 +1105,34 @@ class PortalStaticPageTests(unittest.TestCase):
         # next duplicate is "#3" rather than "Receipt collector #2 #2".
         self.assertIn('const rootTitle = baseTitle.replace(/\\s*#\\d+$/, "").trim() || baseTitle;', script)
 
+    def test_the_chat_carries_out_a_delete_instead_of_agreeing_to_one(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # Confirming a removal in chat used to change nothing at all: the agent
+        # could only talk, so the actions stayed in the panel. A command now
+        # resolves to real actions and runs the same removal the panel runs.
+        self.assertIn('if (outcome === "action_command" && pushAgentActionCommandPrompt(turn)) {', script)
+        self.assertIn("function pushAgentActionCommandPrompt", script)
+        self.assertIn("function runAgentActionCommand", script)
+        self.assertIn("function findActiveAgentActionsByName", script)
+        self.assertIn("removeAgentProposalLocalAction(actionId)", script)
+        self.assertIn("cancelScheduledAction(actionId)", script)
+        self.assertIn("removeSourceAction(sourceActionId)", script)
+
+        # The application owns the confirmation, so the buttons are the only
+        # thing that carries the change out.
+        self.assertIn('createAgentAction("run-action-command"', script)
+        self.assertIn('createAgentAction("cancel-action-command"', script)
+        self.assertIn('if (action === "run-action-command") {', script)
+
+        # Nothing is claimed before it happens: an unknown name, an action
+        # already in that state, and a failure each get their own answer.
+        self.assertIn("I couldn’t find ${formatAgentActionNameList(wanted)} among your actions", script)
+        self.assertIn("function canRunAgentActionCommand", script)
+        self.assertIn("function describeSkippedAgentActionCommand", script)
+        self.assertIn("already ${state}", script)
+        self.assertIn("wording.failed", script)
+
     def test_receipts_example_names_last_month(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -1228,7 +1256,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=155", html)
-        self.assertIn("app.js?v=189", html)
+        self.assertIn("app.js?v=191", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)
