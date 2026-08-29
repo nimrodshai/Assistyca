@@ -7134,9 +7134,7 @@ function openCalendarOAuthConnection(option) {
   intro.className = "calendar-oauth-copy";
   intro.textContent = isConnected
     ? (isEmailConnection
-      // Connecting another mailbox adds one now, so say so here: this used to
-      // silently replace whatever was already connected.
-      ? "Actions read every connected mailbox unless you point them at one. Connecting another adds it; disconnecting one removes that access from Assistyca."
+      ? "Actions read all your connected mailboxes. Disconnect one to remove its access."
       : "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca.")
     : isEmailConnection
     ? "Connect Gmail or Outlook so Assistyca can read your mail for email digest and receipt actions. Access is read-only."
@@ -7467,7 +7465,7 @@ function openMicrosoftOAuthConnection(option) {
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
   intro.textContent = isConnected
-    ? "Actions read every connected mailbox unless you point them at one. Connecting another adds it; disconnecting one removes that access from Assistyca."
+    ? "Actions read all your connected mailboxes. Disconnect one to remove its access."
     : "Sign in with Microsoft so Assistyca can read your Outlook mail for email digest and receipt actions. Access is read-only.";
 
   const { status, setStatus } = createCalendarOAuthStatusNode();
