@@ -2141,9 +2141,39 @@ body[data-modal="billing"] .app-shell {
 
 .notification-center-list {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.2rem;
   overflow-y: auto;
-  padding: 0.55rem;
+  /* No padding at the top: the day heading sticks to the very top edge of the
+     scroll box, and a gap above it would let a row show through. */
+  padding: 0 0.55rem 0.55rem;
+}
+
+.notification-center-day {
+  display: grid;
+  gap: 0.35rem;
+}
+
+/* Reads like a section header in a table view: the day stays at the top of the
+   list for as long as one of its rows is still on screen. The padding and the
+   negative margins let the backdrop cover the full width of the scroll box, so
+   rows slide underneath it rather than beside it. */
+.notification-center-day-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -0.55rem;
+  padding: 0.5rem 1.1rem 0.34rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: #ffffff;
+}
+
+.notification-center-day-items {
+  display: grid;
+  gap: 0.45rem;
 }
 
 .notification-center-list[hidden],
@@ -2153,7 +2183,7 @@ body[data-modal="billing"] .app-shell {
 
 .notification-center-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.72rem;
   padding: 0.78rem;
   border: 1px solid transparent;
@@ -2167,6 +2197,8 @@ body[data-modal="billing"] .app-shell {
 }
 
 .notification-center-item-icon {
+  grid-column: 1;
+  grid-row: 1;
   display: inline-grid;
   place-items: center;
   width: 1.8rem;
@@ -2192,17 +2224,18 @@ body[data-modal="billing"] .app-shell {
 }
 
 .notification-center-item-content {
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
 }
 
-.notification-center-item-content h3,
-.notification-center-item-content p,
-.notification-center-item-content time {
+.notification-center-item-content h4,
+.notification-center-item-content p {
   display: block;
   margin: 0;
 }
 
-.notification-center-item-content h3 {
+.notification-center-item-content h4 {
   color: var(--text);
   font-size: 0.88rem;
   font-weight: 800;
@@ -2215,14 +2248,22 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.45;
 }
 
-.notification-center-item-content time {
-  margin-top: 0.38rem;
+/* Top right of the row, on the title's own line, so a column of times runs down
+   the edge of the list. */
+.notification-center-item-time {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: start;
+  padding-top: 0.1rem;
   color: var(--muted);
   font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .notification-center-item-actions {
-  grid-column: 2;
+  grid-column: 2 / -1;
+  grid-row: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -11934,6 +11975,10 @@ body.is-chat-view {
 :root[data-theme="dark"] .notification-center-search-clear:hover,
 :root[data-theme="dark"] .notification-center-search-clear:focus-visible {
   background: rgba(55, 184, 171, 0.14);
+}
+
+:root[data-theme="dark"] .notification-center-day-heading {
+  background: rgb(19, 28, 36);
 }
 
 :root[data-theme="dark"] .notification-center-item {

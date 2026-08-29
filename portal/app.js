@@ -3454,6 +3454,63 @@ function formatAgentNotificationDate(value) {
   }
 }
 
+// The feed is read like a table of days: the rows carry the clock time and the
+// day they belong to is said once, in the heading above them.
+function describeAgentNotificationDayKey(value) {
+  const timestamp = parseAgentTimestamp(value);
+  if (!timestamp) {
+    return "undated";
+  }
+  const date = new Date(timestamp);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+// "Today" and "Yesterday" are what a reader actually thinks in; anything older
+// gets the weekday and date, with the year only once it stops being this one.
+function formatAgentNotificationDayHeading(value) {
+  const timestamp = parseAgentTimestamp(value);
+  if (!timestamp) {
+    return "Earlier";
+  }
+  const date = new Date(timestamp);
+  const key = describeAgentNotificationDayKey(value);
+  const now = new Date();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (key === describeAgentNotificationDayKey(now.toISOString())) {
+    return "Today";
+  }
+  if (key === describeAgentNotificationDayKey(yesterday.toISOString())) {
+    return "Yesterday";
+  }
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: date.getFullYear() === now.getFullYear() ? undefined : "numeric",
+    }).format(date);
+  } catch {
+    return "Earlier";
+  }
+}
+
+function formatAgentNotificationTime(value) {
+  const timestamp = parseAgentTimestamp(value);
+  if (!timestamp) {
+    return "Just now";
+  }
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(timestamp));
+  } catch {
+    return "Just now";
+  }
+}
+
 function getAgentNotifications() {
   clientState.notifications = normalizeAgentNotifications(clientState.notifications || []);
   return clientState.notifications;
@@ -3899,6 +3956,8 @@ function describeNotificationListSignature(notifications) {
   return notifications
     .map((notification) => [
       notification.id,
+      formatAgentNotificationDayHeading(notification.createdAt),
+      formatAgentNotificationTime(notification.createdAt),
       notification.readAt,
       notification.tone,
       describeNotificationIconName(notification),
@@ -4087,14 +4146,19 @@ function renderNotificationCenterItem(notification) {
 
   const content = document.createElement("div");
   content.className = "notification-center-item-content";
-  const title = document.createElement("h3");
+  const title = document.createElement("h4");
   title.textContent = notification.title;
   const message = document.createElement("p");
   message.textContent = notification.message;
+  content.append(title, message);
+
+  // The day is said once in the heading above, so the row only needs the clock
+  // time -- kept in the corner where it can be scanned down the column.
   const time = document.createElement("time");
+  time.className = "notification-center-item-time";
   time.dateTime = notification.createdAt;
-  time.textContent = formatAgentNotificationDate(notification.createdAt);
-  content.append(title, message, time);
+  time.textContent = formatAgentNotificationTime(notification.createdAt);
+  time.title = formatAgentNotificationDate(notification.createdAt);
 
   const actions = document.createElement("div");
   actions.className = "notification-center-item-actions";
@@ -4116,8 +4180,50 @@ function renderNotificationCenterItem(notification) {
     openButton.textContent = "Mark read";
     actions.append(openButton);
   }
-  item.append(icon, content, actions);
+  item.append(icon, content, time, actions);
   return item;
+}
+
+// One day's worth of rows, under a heading that stays put at the top of the
+// list while any of its rows is still on screen.
+function renderNotificationCenterDayGroup(heading, notifications) {
+  const group = document.createElement("section");
+  group.className = "notification-center-day";
+
+  const title = document.createElement("h3");
+  title.className = "notification-center-day-heading";
+  title.textContent = heading;
+
+  const rows = document.createElement("div");
+  rows.className = "notification-center-day-items";
+  rows.setAttribute("role", "list");
+  rows.setAttribute("aria-label", heading);
+  for (const notification of notifications) {
+    rows.append(renderNotificationCenterItem(notification));
+  }
+
+  group.append(title, rows);
+  return group;
+}
+
+// The list arrives newest first, so walking it in order gives the day sections
+// in the order they should be drawn.
+function groupNotificationsByDay(notifications) {
+  const groups = [];
+  let current = null;
+  for (const notification of notifications) {
+    const key = describeAgentNotificationDayKey(notification.createdAt);
+    if (!current || current.key !== key) {
+      current = {
+        key,
+        heading: formatAgentNotificationDayHeading(notification.createdAt),
+        notifications: [],
+      };
+      groups.push(current);
+    }
+    current.notifications.push(notification);
+  }
+  return groups;
 }
 
 function renderNotificationCenter() {
@@ -4163,8 +4269,8 @@ function renderNotificationCenter() {
   if (signature !== lastRenderedNotificationSignature) {
     const scrollTop = list.scrollTop;
     list.replaceChildren();
-    for (const notification of visible) {
-      list.append(renderNotificationCenterItem(notification));
+    for (const group of groupNotificationsByDay(visible)) {
+      list.append(renderNotificationCenterDayGroup(group.heading, group.notifications));
     }
     lastRenderedNotificationSignature = signature;
     // Appending older rows below keeps everything above them in place.

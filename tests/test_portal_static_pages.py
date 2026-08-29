@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=151", html)
+        self.assertIn("styles.css?v=152", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -1115,6 +1115,24 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".notification-center-item.is-unread", styles)
         self.assertIn("notification-center-enter", styles)
 
+    def test_notifications_are_grouped_by_day_with_the_time_on_each_row(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # The day is said once, in a heading above the rows it covers.
+        self.assertIn("function groupNotificationsByDay", script)
+        self.assertIn("function renderNotificationCenterDayGroup", script)
+        self.assertIn("function formatAgentNotificationDayHeading", script)
+        self.assertIn('return "Today";', script)
+        self.assertIn('return "Yesterday";', script)
+        # The heading stays at the top of the list while its rows scroll past.
+        self.assertIn(".notification-center-day-heading", styles)
+        self.assertIn("position: sticky;", styles)
+        # Each row carries only the clock time, in its top right corner.
+        self.assertIn("function formatAgentNotificationTime", script)
+        self.assertIn('time.className = "notification-center-item-time";', script)
+        self.assertIn(".notification-center-item-time", styles)
+
     def test_notification_feed_pages_instead_of_capping(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -1166,8 +1184,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=151", html)
-        self.assertIn("app.js?v=184", html)
+        self.assertIn("styles.css?v=152", html)
+        self.assertIn("app.js?v=185", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)
