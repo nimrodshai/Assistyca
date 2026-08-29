@@ -16081,10 +16081,29 @@ function createAgentActionChoiceDetailsButton(choice) {
   button.title = "Show details";
   button.setAttribute("aria-label", `Show details for ${String(choice?.name || "this action")}`);
 
-  const icon = document.createElement("span");
-  icon.className = "agent-message-action-picker-details-icon";
-  icon.textContent = "i";
-  icon.setAttribute("aria-hidden", "true");
+  const icon = createSvgElement("svg", {
+    class: "agent-message-action-picker-details-icon",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  icon.append(
+    createSvgElement("circle", {
+      cx: "12",
+      cy: "12",
+      r: "9",
+      stroke: "currentColor",
+      "stroke-width": "1.6",
+    }),
+    createSvgElement("path", {
+      d: "M12 11.1v5",
+      stroke: "currentColor",
+      "stroke-width": "1.8",
+      "stroke-linecap": "round",
+    }),
+    createSvgElement("circle", { cx: "12", cy: "7.9", r: "1.05", fill: "currentColor" }),
+  );
   button.append(icon);
   return button;
 }
