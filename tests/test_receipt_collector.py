@@ -8,9 +8,11 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 
+from packages.infrastructure.receipt_collector import build_receipt_spend_view
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import extract_receipt_rows
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
+from packages.infrastructure.receipt_collector import summarize_receipt_rows
 
 
 class ReceiptCollectorExportTests(unittest.TestCase):
@@ -122,6 +124,84 @@ class ReceiptAmountTests(unittest.TestCase):
         self.assertEqual(row["status"], "Needs review")
         self.assertIn("No amount detected", row["notes"])
 
+
+class ReceiptSummaryTests(unittest.TestCase):
+    def message(self, vendor: str, amount: str, day: str, month: str = "Aug") -> dict[str, str]:
+        return {
+            "id": f"msg-{vendor}-{day}",
+            "from": f"{vendor} <billing@{vendor.lower()}.example.com>",
+            "subject": "Receipt",
+            "snippet": f"Total {amount}" if amount else "Nothing to see here",
+            "date": f"Mon, {day} {month} 2026 09:00:00 +0000",
+        }
+
+    def test_summarizes_spend_by_vendor_and_currency(self) -> None:
+        summary = summarize_receipt_rows(extract_receipt_rows([
+            self.message("Apple", "ILS 19.90", "02"),
+            self.message("Apple", "ILS 30.10", "04"),
+            self.message("Wild", "USD 12.00", "06"),
+            self.message("Quiet", "", "08"),
+        ]))
+        self.assertEqual(summary["totals"], {"ILS": 50.0, "USD": 12.0})
+        self.assertEqual(summary["vendorSpend"]["ILS"]["Apple"], {"amount": 50.0, "count": 2})
+        self.assertEqual(summary["missingAmountCount"], 1)
+        self.assertEqual(summary["vendorCounts"]["Apple"], 2)
+
+    def test_ranks_vendors_and_carries_last_month_alongside(self) -> None:
+        summary = summarize_receipt_rows(extract_receipt_rows([
+            self.message("Apple", "ILS 80.00", "02"),
+            self.message("Wild", "ILS 20.00", "04"),
+        ]))
+        previous = summarize_receipt_rows(extract_receipt_rows([
+            self.message("Apple", "ILS 50.00", "02", "Jul"),
+            self.message("Gone", "ILS 40.00", "04", "Jul"),
+        ]))
+        view = build_receipt_spend_view(summary, previous)
+
+        self.assertEqual(view["currency"], "ILS")
+        self.assertEqual(view["total"], 100.0)
+        self.assertEqual(view["previousTotal"], 90.0)
+        entries = {entry["vendor"]: entry for entry in view["entries"]}
+        self.assertEqual([entry["vendor"] for entry in view["entries"]][:2], ["Apple", "Wild"])
+        self.assertEqual(entries["Apple"]["share"], 80.0)
+        self.assertEqual(entries["Apple"]["previous"], 50.0)
+        # A vendor we stopped paying still shows up, so the drop is visible.
+        self.assertEqual(entries["Gone"]["amount"], 0.0)
+        self.assertEqual(entries["Gone"]["previous"], 40.0)
+
+    def test_reads_last_month_bundle_for_the_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for month, day, amount in ((7, "05", "ILS 40.00"), (8, "05", "ILS 55.00")):
+                bundle = create_receipt_bundle(
+                    [self.message("Apple", amount, day, "Jul" if month == 7 else "Aug")],
+                    output_root=root,
+                    owner_key="owner-key",
+                    output_folder="Receipts/{RunMonth}/",
+                    month_value=(2026, month),
+                    query="receipt",
+                    created_at=datetime(2026, month, 28, tzinfo=timezone.utc),
+                )
+            metadata = json.loads(Path(bundle["artifacts"]["manifest"]["path"]).read_text(encoding="utf-8"))["metadata"]
+
+            self.assertEqual(metadata["monthLabel"], "Aug 2026")
+            self.assertEqual(metadata["summary"]["totals"], {"ILS": 55.0})
+            self.assertEqual(metadata["previous"]["monthLabel"], "Jul 2026")
+            self.assertEqual(metadata["previous"]["totals"], {"ILS": 40.0})
+
+    def test_skips_the_comparison_when_last_month_has_no_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = create_receipt_bundle(
+                [self.message("Apple", "ILS 55.00", "05")],
+                output_root=Path(temp_dir),
+                owner_key="owner-key",
+                output_folder="Receipts/{RunMonth}/",
+                month_value=(2026, 8),
+                query="receipt",
+                created_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+            )
+            metadata = json.loads(Path(bundle["artifacts"]["manifest"]["path"]).read_text(encoding="utf-8"))["metadata"]
+            self.assertNotIn("previous", metadata)
 
 if __name__ == "__main__":
     unittest.main()

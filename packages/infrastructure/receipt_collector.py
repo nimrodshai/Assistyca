@@ -21,6 +21,23 @@ RECEIPT_EXPORT_VERSION = 1
 RECEIPT_EXCEL_FILENAME = "receipts.xlsx"
 RECEIPT_PDF_FILENAME = "receipt-report.pdf"
 RECEIPT_MANIFEST_FILENAME = "bundle.json"
+# Vendor slice colours, in fixed order, from the validated categorical palette.
+RECEIPT_CHART_COLORS = (
+    "#2a78d6",
+    "#eb6834",
+    "#1baf7a",
+    "#eda100",
+    "#e87ba4",
+    "#008300",
+)
+RECEIPT_OTHER_COLOR = "#8b95a3"
+RECEIPT_PREVIOUS_COLOR = "#9fb0c4"
+RECEIPT_INK = "#172231"
+RECEIPT_BODY_INK = "#4c5c70"
+RECEIPT_MUTED_INK = "#5e6d80"
+RECEIPT_CARD_BG = "#f5f8fb"
+RECEIPT_RULE = "#d7dee7"
+RECEIPT_VENDOR_LIMIT = 6
 MONTH_FOLDER_LABELS = (
     "",
     "Jan",
@@ -119,11 +136,23 @@ def create_receipt_bundle(
     metadata = {
         "createdAt": created.isoformat(),
         "outputFolder": logical_folder,
+        "monthLabel": format_receipt_month_label(month_value) if month_value else "",
         "query": str(query or "").strip(),
         "receiptCount": len(rows),
         "reviewCount": sum(1 for row in rows if row["status"] != "Ready"),
+        "summary": summarize_receipt_rows(rows),
         "exportVersion": RECEIPT_EXPORT_VERSION,
     }
+    previous = load_previous_receipt_summary(
+        output_root,
+        owner_key=safe_owner_key,
+        output_folder=logical_folder,
+        month_value=month_value,
+    )
+    if previous:
+        metadata["previous"] = previous
+
+
 
     excel_path = folder_path / RECEIPT_EXCEL_FILENAME
     pdf_path = folder_path / RECEIPT_PDF_FILENAME
@@ -193,6 +222,170 @@ def build_receipt_bundle_base_url(
         urllib_parse.quote(_safe_owner_key(owner_key)),
         *_quote_url_segments(logical_folder),
     ])
+
+
+def format_receipt_month_label(month_value: tuple[int, int] | None) -> str:
+    """Return the readable month label used on the summary page."""
+
+    if not month_value:
+        return ""
+    year, month = int(month_value[0]), int(month_value[1])
+    safe_month = max(1, min(12, month))
+    return f"{MONTH_FOLDER_LABELS[safe_month]} {year:04d}"
+
+
+def summarize_receipt_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll receipt rows up into the totals the summary page charts."""
+
+    vendor_spend: dict[str, dict[str, dict[str, float]]] = {}
+    vendor_counts: Counter[str] = Counter()
+    missing_amounts = 0
+    for row in rows:
+        vendor = _clean_text(row.get("vendor")) or "Unknown vendor"
+        vendor_counts[vendor] += 1
+        currency = _clean_text(row.get("currency"))
+        try:
+            amount = float(_clean_text(row.get("amount")).replace(",", ""))
+        except ValueError:
+            amount = None
+        if not currency or amount is None:
+            missing_amounts += 1
+            continue
+        bucket = vendor_spend.setdefault(currency, {}).setdefault(vendor, {"amount": 0.0, "count": 0})
+        bucket["amount"] += amount
+        bucket["count"] += 1
+    return {
+        "receiptCount": len(rows),
+        "totals": _currency_totals(rows),
+        "vendorSpend": vendor_spend,
+        "vendorCounts": dict(vendor_counts.most_common()),
+        "missingAmountCount": missing_amounts,
+    }
+
+
+def load_previous_receipt_summary(
+    output_root: Path,
+    *,
+    owner_key: str,
+    output_folder: Any,
+    month_value: tuple[int, int] | None,
+) -> dict[str, Any] | None:
+    """Read last month's bundle so the report can compare the two months."""
+
+    if not month_value:
+        return None
+    current_label = format_receipt_folder_month(*month_value)
+    previous_value = _previous_month_value(month_value)
+    previous_label = format_receipt_folder_month(*previous_value)
+    segments = _safe_folder_segments(normalize_receipt_output_folder(output_folder, month_value=month_value))
+    if current_label not in segments:
+        # Every run writes into the same folder, so there is no earlier month to read.
+        return None
+    previous_segments = [previous_label if segment == current_label else segment for segment in segments]
+    manifest_path = Path(output_root) / _safe_owner_key(owner_key)
+    for segment in previous_segments:
+        manifest_path /= segment
+    manifest_path /= RECEIPT_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    previous_rows = payload.get("receipts") if isinstance(payload, dict) else None
+    if not isinstance(previous_rows, list) or not previous_rows:
+        return None
+    summary = summarize_receipt_rows([row for row in previous_rows if isinstance(row, dict)])
+    summary["monthLabel"] = format_receipt_month_label(previous_value)
+    summary["outputFolder"] = "/".join(previous_segments) + "/"
+    return summary
+
+
+def build_receipt_spend_view(
+    summary: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+    *,
+    limit: int = RECEIPT_VENDOR_LIMIT,
+) -> dict[str, Any]:
+    """Rank vendors by spend in the busiest currency, with last month alongside."""
+
+    totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
+    previous_totals = (previous or {}).get("totals")
+    previous_totals = previous_totals if isinstance(previous_totals, dict) else {}
+    currency = _busiest_currency(totals) or _busiest_currency(previous_totals)
+    spend = _vendor_spend_for(summary, currency)
+    previous_spend = _vendor_spend_for(previous or {}, currency)
+    counts = summary.get("vendorCounts") if isinstance(summary.get("vendorCounts"), dict) else {}
+
+    names = set(counts) | set(spend) | set(previous_spend)
+    ranked = sorted(
+        names,
+        key=lambda name: (
+            -spend.get(name, (0.0, 0))[0],
+            -previous_spend.get(name, (0.0, 0))[0],
+            -int(counts.get(name) or 0),
+            name.lower(),
+        ),
+    )
+    total = float(totals.get(currency) or 0.0)
+    previous_total = float(previous_totals.get(currency) or 0.0)
+
+    entries: list[dict[str, Any]] = []
+    for index, name in enumerate(ranked[:limit]):
+        amount = spend.get(name, (0.0, 0))[0]
+        entries.append({
+            "vendor": name,
+            "amount": amount,
+            "count": int(counts.get(name) or spend.get(name, (0.0, 0))[1]),
+            "previous": previous_spend.get(name, (0.0, 0))[0],
+            "share": (amount / total * 100) if total else 0.0,
+            "color": RECEIPT_CHART_COLORS[index % len(RECEIPT_CHART_COLORS)],
+        })
+    remainder = ranked[limit:]
+    if remainder:
+        amount = sum(spend.get(name, (0.0, 0))[0] for name in remainder)
+        entries.append({
+            "vendor": f"Other ({len(remainder)} vendor{'s' if len(remainder) > 1 else ''})",
+            "amount": amount,
+            "count": sum(int(counts.get(name) or 0) for name in remainder),
+            "previous": sum(previous_spend.get(name, (0.0, 0))[0] for name in remainder),
+            "share": (amount / total * 100) if total else 0.0,
+            "color": RECEIPT_OTHER_COLOR,
+        })
+    return {
+        "currency": currency,
+        "total": total,
+        "previousTotal": previous_total,
+        "entries": entries,
+        "otherCurrencies": {code: value for code, value in totals.items() if code != currency},
+    }
+
+
+def _previous_month_value(month_value: tuple[int, int]) -> tuple[int, int]:
+    year, month = int(month_value[0]), int(month_value[1])
+    if month <= 1:
+        return (year - 1, 12)
+    return (year, month - 1)
+
+
+def _busiest_currency(totals: dict[str, Any]) -> str:
+    if not totals:
+        return ""
+    return max(totals.items(), key=lambda item: float(item[1] or 0.0))[0]
+
+
+def _vendor_spend_for(summary: dict[str, Any], currency: str) -> dict[str, tuple[float, int]]:
+    spend = summary.get("vendorSpend") if isinstance(summary.get("vendorSpend"), dict) else {}
+    bucket = spend.get(currency) if isinstance(spend.get(currency), dict) else {}
+    result: dict[str, tuple[float, int]] = {}
+    for vendor, values in bucket.items():
+        if not isinstance(values, dict):
+            continue
+        try:
+            result[str(vendor)] = (float(values.get("amount") or 0.0), int(values.get("count") or 0))
+        except (TypeError, ValueError):
+            continue
+    return result
 
 
 def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -408,26 +601,19 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
     story.append(table)
 
     story.append(PageBreak())
-    story.append(Paragraph("Summary", title_style))
-    story.append(Paragraph(_pdf_escape(f"{metadata.get('receiptCount') or 0} candidate receipt(s) found."), body_style))
-    story.append(Paragraph(_pdf_escape(f"{metadata.get('reviewCount') or 0} row(s) need review."), body_style))
-    query = str(metadata.get("query") or "").strip()
-    if query:
-        story.append(Spacer(1, 8))
-        story.append(Paragraph("Search query", heading_style))
-        story.append(Paragraph(_pdf_escape(query), body_style))
-    totals = _currency_totals(rows)
-    if totals:
-        story.append(Spacer(1, 8))
-        story.append(Paragraph("Totals by currency", heading_style))
-        for currency, total in totals.items():
-            story.append(Paragraph(_pdf_escape(f"{currency}: {total:.2f}"), body_style))
-    vendors = Counter(row["vendor"] for row in rows if row.get("vendor"))
-    if vendors:
-        story.append(Spacer(1, 8))
-        story.append(Paragraph("Top vendors", heading_style))
-        for vendor, count in vendors.most_common(6):
-            story.append(Paragraph(_pdf_escape(f"{vendor}: {count}"), body_style))
+    story.extend(_receipt_summary_story(rows, metadata, {
+        "title": title_style,
+        "heading": heading_style,
+        "body": body_style,
+        "small": small_style,
+    }))
+
+    # Where each receipt section landed, so the sender's own pages can be
+    # merged in behind it once the layout is settled.
+    page_marks: dict[str, int] = {}
+    source_pdfs = {row["index"]: receipt_pdf_sources.collect_source_pdfs(row) for row in rows}
+    page_mark_cls = _page_mark_flowable(Flowable)
+
 
     for row in rows:
         story.append(PageBreak())
@@ -474,6 +660,348 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
     document.build(story)
 
 
+def _receipt_summary_story(
+    rows: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    styles: dict[str, Any],
+) -> list[Any]:
+    """Build the spending summary page: headline cards, a vendor pie and last month."""
+
+    from reportlab.graphics.charts.barcharts import HorizontalBarChart
+    from reportlab.graphics.charts.piecharts import Pie
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph
+    from reportlab.platypus import Spacer
+    from reportlab.platypus import Table
+    from reportlab.platypus import TableStyle
+
+    summary = metadata.get("summary")
+    summary = summary if isinstance(summary, dict) else summarize_receipt_rows(rows)
+    previous = metadata.get("previous")
+    previous = previous if isinstance(previous, dict) else None
+    view = build_receipt_spend_view(summary, previous)
+
+    currency = view["currency"]
+    total = float(view["total"])
+    previous_total = float(view["previousTotal"])
+    entries = view["entries"]
+    month_label = _clean_text(metadata.get("monthLabel")) or "This month"
+    previous_label = _clean_text((previous or {}).get("monthLabel"))
+    receipt_count = int(metadata.get("receiptCount") or summary.get("receiptCount") or 0)
+    review_count = int(metadata.get("reviewCount") or 0)
+    vendor_count = len(summary.get("vendorCounts") or {})
+    missing_amounts = int(summary.get("missingAmountCount") or 0)
+
+    page_title_style = ParagraphStyle(
+        "ReceiptSummaryTitle",
+        parent=styles["title"],
+        fontSize=18,
+        leading=22,
+        spaceAfter=6,
+    )
+    story: list[Any] = [Paragraph("Where the money went", page_title_style)]
+    subtitle = f"{month_label}, compared with {previous_label}" if previous_label else month_label
+    story.append(Paragraph(_pdf_escape(subtitle), styles["small"]))
+    story.append(Spacer(1, 10))
+
+    # Four headline numbers, each on its own card.
+    if currency and total:
+        spend_value = f"{currency} {total:,.2f}"
+    elif receipt_count:
+        spend_value = "Not detected"
+    else:
+        spend_value = "None"
+    cards = [
+        (spend_value, "Total paid", _spend_delta_note(total, previous_total, currency, previous_label)),
+        (str(receipt_count), "Receipts found", _count_delta_note(receipt_count, previous, previous_label)),
+        (str(vendor_count), "Vendors paid", ""),
+        (str(review_count), "Need review", "" if not missing_amounts else f"{missing_amounts} without an amount"),
+    ]
+    note_style = ParagraphStyle(
+        "ReceiptCardNote",
+        parent=styles["small"],
+        fontSize=7.5,
+        leading=9.5,
+        textColor=colors.HexColor(RECEIPT_MUTED_INK),
+    )
+    card_rows = [
+        [card[0] for card in cards],
+        [card[1] for card in cards],
+        [Paragraph(_pdf_escape(card[2]), note_style) if card[2] else "" for card in cards],
+    ]
+    card_table = Table(card_rows, colWidths=[45.5 * mm] * 4, hAlign="LEFT")
+    card_style = [
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(RECEIPT_CARD_BG)),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 15),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(RECEIPT_INK)),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 1), (-1, 1), 8.5),
+        ("TEXTCOLOR", (0, 1), (-1, 1), colors.HexColor(RECEIPT_BODY_INK)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+        ("BOTTOMPADDING", (0, 2), (-1, 2), 8),
+        ("LINEABOVE", (0, 0), (-1, 0), 1.4, colors.HexColor(RECEIPT_CHART_COLORS[0])),
+        # A white gutter between the cards keeps them reading as four tiles.
+        ("LINEAFTER", (0, 0), (-2, -1), 4, colors.white),
+    ]
+    card_table.setStyle(TableStyle(card_style))
+    story.append(card_table)
+    story.append(Spacer(1, 10))
+
+    # Who we paid, as a share of the month.
+    money_label = f" ({currency})" if currency else ""
+    pie_entries = [entry for entry in entries if float(entry["amount"]) > 0]
+    if pie_entries and total > 0:
+        story.append(Paragraph(_pdf_escape(f"Who we paid{money_label}"), styles["heading"]))
+        drawing = Drawing(172, 120)
+        pie = Pie()
+        pie.x = 8
+        pie.y = 6
+        pie.width = 110
+        pie.height = 110
+        pie.data = [float(entry["amount"]) for entry in pie_entries]
+        pie.slices.strokeColor = colors.white
+        pie.slices.strokeWidth = 1.5
+        for index, entry in enumerate(pie_entries):
+            pie.slices[index].fillColor = colors.HexColor(entry["color"])
+        drawing.add(pie)
+
+        legend_rows = [["", "Vendor", "Paid", "Share"]]
+        for entry in pie_entries:
+            legend_rows.append([
+                "",
+                _short_text(entry["vendor"], 26),
+                f"{float(entry['amount']):,.2f}",
+                f"{float(entry['share']):.0f}%",
+            ])
+        legend = Table(legend_rows, colWidths=[5 * mm, 46 * mm, 26 * mm, 16 * mm], hAlign="LEFT")
+        legend_style = [
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(RECEIPT_MUTED_INK)),
+            ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor(RECEIPT_INK)),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.6, colors.HexColor(RECEIPT_RULE)),
+            ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (0, -1), 0),
+            ("RIGHTPADDING", (0, 0), (0, -1), 6),
+        ]
+        for index, entry in enumerate(pie_entries, start=1):
+            legend_style.append(("BACKGROUND", (0, index), (0, index), colors.HexColor(entry["color"])))
+        legend.setStyle(TableStyle(legend_style))
+
+        pie_block = Table([[drawing, legend]], colWidths=[62 * mm, 120 * mm], hAlign="LEFT")
+        pie_block.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(pie_block)
+    elif receipt_count:
+        story.append(Paragraph("Who we paid", styles["heading"]))
+        story.append(Paragraph(
+            "No amounts were detected in this month's receipts, so there is nothing to chart yet. "
+            "The vendor list below shows what was found.",
+            styles["body"],
+        ))
+        story.append(Spacer(1, 6))
+    else:
+        story.append(Paragraph("Who we paid", styles["heading"]))
+        story.append(Paragraph("No receipts were found for this month.", styles["body"]))
+
+    # The same numbers as a table, so nothing rests on colour alone.
+    if entries:
+        story.append(Spacer(1, 8))
+        story.append(Paragraph("Vendor breakdown", styles["heading"]))
+    if previous_label:
+        breakdown_rows = [[
+            "Vendor",
+            "Receipts",
+            f"{month_label}{money_label}",
+            "Share",
+            f"{previous_label}{money_label}",
+            "Change",
+        ]]
+        breakdown_widths = [54 * mm, 20 * mm, 32 * mm, 16 * mm, 32 * mm, 28 * mm]
+    else:
+        breakdown_rows = [["Vendor", "Receipts", f"Paid{money_label}", "Share"]]
+        breakdown_widths = [74 * mm, 26 * mm, 46 * mm, 36 * mm]
+    for entry in entries:
+        amount = float(entry["amount"])
+        row = [
+            _short_text(entry["vendor"], 34),
+            str(entry["count"]) if entry["count"] else "-",
+            f"{amount:,.2f}" if amount else "-",
+            f"{float(entry['share']):.0f}%" if amount else "-",
+        ]
+        if previous_label:
+            previous_amount = float(entry["previous"])
+            row.append(f"{previous_amount:,.2f}" if previous_amount else "-")
+            row.append(_delta_label(amount, previous_amount))
+        breakdown_rows.append(row)
+    breakdown = Table(breakdown_rows, colWidths=breakdown_widths, hAlign="LEFT", repeatRows=1)
+    breakdown.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(RECEIPT_INK)),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor(RECEIPT_INK)),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor(RECEIPT_CARD_BG)]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor(RECEIPT_RULE)),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    if entries:
+        story.append(breakdown)
+
+    # Side by side with last month, so a rise or a drop is obvious per vendor.
+    chart_entries = [
+        entry for entry in entries
+        if float(entry["amount"]) > 0 or float(entry["previous"]) > 0
+    ][:4]
+    if previous_label and chart_entries:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph(_pdf_escape(f"{month_label} against {previous_label}"), styles["heading"]))
+        story.append(Paragraph(_pdf_escape(_spend_headline(total, previous_total, currency, month_label, previous_label)), styles["body"]))
+        story.append(Spacer(1, 6))
+        ordered = list(reversed(chart_entries))
+        bar_height = 21 * len(ordered)
+        drawing = Drawing(500, bar_height + 34)
+        chart = HorizontalBarChart()
+        chart.x = 108
+        chart.y = 24
+        chart.width = 356
+        chart.height = bar_height
+        chart.data = [
+            [float(entry["previous"]) for entry in ordered],
+            [float(entry["amount"]) for entry in ordered],
+        ]
+        chart.categoryAxis.categoryNames = [_short_text(entry["vendor"], 20) for entry in ordered]
+        chart.categoryAxis.labels.fontName = "Helvetica"
+        chart.categoryAxis.labels.fontSize = 8
+        chart.categoryAxis.labels.fillColor = colors.HexColor(RECEIPT_INK)
+        chart.categoryAxis.strokeColor = colors.HexColor(RECEIPT_RULE)
+        chart.valueAxis.valueMin = 0
+        chart.valueAxis.labels.fontName = "Helvetica"
+        chart.valueAxis.labels.fontSize = 7
+        chart.valueAxis.labels.fillColor = colors.HexColor(RECEIPT_MUTED_INK)
+        chart.valueAxis.strokeColor = colors.HexColor(RECEIPT_RULE)
+        chart.valueAxis.gridStrokeColor = colors.HexColor(RECEIPT_RULE)
+        chart.valueAxis.gridStrokeWidth = 0.3
+        chart.valueAxis.visibleGrid = 1
+        chart.groupSpacing = 7
+        chart.barSpacing = 1
+        chart.bars.strokeWidth = 0
+        chart.bars.strokeColor = None
+        chart.bars[0].fillColor = colors.HexColor(RECEIPT_PREVIOUS_COLOR)
+        chart.bars[1].fillColor = colors.HexColor(RECEIPT_CHART_COLORS[0])
+        chart.barLabelFormat = _bar_label
+        chart.barLabels.fontName = "Helvetica"
+        chart.barLabels.fontSize = 7
+        chart.barLabels.fillColor = colors.HexColor(RECEIPT_MUTED_INK)
+        chart.barLabels.boxAnchor = "w"
+        chart.barLabels.dx = 4
+        drawing.add(chart)
+        story.append(drawing)
+
+        legend = Table(
+            [["", month_label, "", previous_label]],
+            colWidths=[5 * mm, 28 * mm, 5 * mm, 28 * mm],
+            hAlign="LEFT",
+        )
+        legend.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(RECEIPT_CHART_COLORS[0])),
+            ("BACKGROUND", (2, 0), (2, 0), colors.HexColor(RECEIPT_PREVIOUS_COLOR)),
+            ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor(RECEIPT_BODY_INK)),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (0, 0), 0),
+            ("LEFTPADDING", (2, 0), (2, 0), 0),
+            ("RIGHTPADDING", (0, 0), (0, 0), 5),
+            ("RIGHTPADDING", (2, 0), (2, 0), 5),
+        ]))
+        story.append(legend)
+
+    notes = []
+    if missing_amounts:
+        notes.append(f"{missing_amounts} receipt(s) had no amount we could read. Open them in the pages that follow.")
+    other_currencies = view.get("otherCurrencies") or {}
+    if other_currencies:
+        extra = ", ".join(f"{code} {float(value):,.2f}" for code, value in sorted(other_currencies.items()))
+        notes.append(f"Also paid in other currencies: {extra}.")
+    if not previous_label:
+        notes.append("No report was found for the month before, so there is nothing to compare against yet.")
+    query = _clean_text(metadata.get("query"))
+    if query:
+        notes.append(f"Search: {query}")
+    if notes:
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(_pdf_escape(" ".join(notes)), styles["small"]))
+    return story
+
+
+def _bar_label(value: Any) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return ""
+    # Two decimals so a bar label never disagrees with the table above it.
+    return f"{amount:,.2f}" if amount else ""
+
+
+def _spend_delta_note(total: float, previous_total: float, currency: str, previous_label: str) -> str:
+    if not previous_label or not previous_total:
+        return ""
+    difference = total - previous_total
+    if abs(difference) < 0.005:
+        return f"Same as {previous_label}"
+    direction = "more" if difference > 0 else "less"
+    percent = abs(difference) / previous_total * 100
+    return f"{currency} {abs(difference):,.2f} {direction} ({percent:.0f}%) than {previous_label}"
+
+
+def _count_delta_note(receipt_count: int, previous: dict[str, Any] | None, previous_label: str) -> str:
+    if not previous_label or not previous:
+        return ""
+    return f"{int(previous.get('receiptCount') or 0)} in {previous_label}"
+
+
+def _delta_label(amount: float, previous_amount: float) -> str:
+    if not previous_amount and not amount:
+        return "-"
+    if not previous_amount:
+        return "new"
+    if not amount:
+        return "stopped"
+    difference = amount - previous_amount
+    if abs(difference) < 0.005:
+        return "same"
+    return f"{'+' if difference > 0 else '-'}{abs(difference):,.2f}"
+
+
+def _spend_headline(total: float, previous_total: float, currency: str, month_label: str, previous_label: str) -> str:
+    if not previous_total:
+        return f"{previous_label} has no amounts on record, so only {month_label} is charted."
+    difference = total - previous_total
+    if abs(difference) < 0.005:
+        return f"{month_label} came to {currency} {total:,.2f}, the same as {previous_label}."
+    direction = "more" if difference > 0 else "less"
+    percent = abs(difference) / previous_total * 100
+    return (
+        f"{month_label} came to {currency} {total:,.2f}, "
+        f"{currency} {abs(difference):,.2f} {direction} than {previous_label} ({percent:.0f}%)."
+    )
+
+
 def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[str, Any]) -> None:
     pages: list[list[str]] = []
     first_page = [
@@ -499,24 +1027,53 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
         first_page.append("No candidate receipts found.")
     pages.append(first_page)
 
+    summary = metadata.get("summary")
+    summary = summary if isinstance(summary, dict) else summarize_receipt_rows(rows)
+    previous = metadata.get("previous")
+    previous = previous if isinstance(previous, dict) else None
+    view = build_receipt_spend_view(summary, previous)
+    currency = view["currency"]
+    total = float(view["total"])
+    previous_total = float(view["previousTotal"])
+    month_label = _clean_text(metadata.get("monthLabel")) or "This month"
+    previous_label = _clean_text((previous or {}).get("monthLabel"))
+    missing_amounts = int(summary.get("missingAmountCount") or 0)
+
     summary_page = [
-        "Summary",
-        f"{metadata.get('receiptCount') or 0} candidate receipt(s) found.",
-        f"{metadata.get('reviewCount') or 0} row(s) need review.",
+        "Where the money went",
+        f"{month_label}, compared with {previous_label}" if previous_label else month_label,
+        "",
+        f"Total paid: {currency} {total:,.2f}" if currency and total else "Total paid: not detected",
+        f"Receipts found: {metadata.get('receiptCount') or 0}",
+        f"Vendors paid: {len(summary.get('vendorCounts') or {})}",
+        f"Need review: {metadata.get('reviewCount') or 0}",
     ]
+    if previous_label:
+        summary_page.append(_spend_headline(total, previous_total, currency, month_label, previous_label))
+    summary_page.extend(["", "Who we paid"])
+    for entry in view["entries"]:
+        amount = float(entry["amount"])
+        share = float(entry["share"])
+        # A bar of hashes stands in for the pie when reportlab is unavailable.
+        bar = "#" * max(0, min(20, int(round(share / 5))))
+        paid = f"{currency} {amount:,.2f} ({share:.0f}%) {bar}".rstrip() if amount else "no amount read"
+        line = f"{_short_text(entry['vendor'], 26)}: {paid}"
+        if previous_label:
+            previous_amount = float(entry["previous"])
+            was = f"{previous_amount:,.2f}" if previous_amount else "-"
+            line = f"{line} | {previous_label}: {was} | {_delta_label(amount, previous_amount)}"
+        summary_page.append(line)
+    if missing_amounts:
+        summary_page.extend(["", f"{missing_amounts} receipt(s) had no amount we could read."])
+    other_currencies = view.get("otherCurrencies") or {}
+    if other_currencies:
+        summary_page.append(
+            "Also paid in other currencies: "
+            + ", ".join(f"{code} {float(value):,.2f}" for code, value in sorted(other_currencies.items()))
+        )
     query = str(metadata.get("query") or "").strip()
     if query:
         summary_page.extend(["", "Search query", query])
-    totals = _currency_totals(rows)
-    if totals:
-        summary_page.extend(["", "Totals by currency"])
-        for currency, total in totals.items():
-            summary_page.append(f"{currency}: {total:.2f}")
-    vendors = Counter(row["vendor"] for row in rows if row.get("vendor"))
-    if vendors:
-        summary_page.extend(["", "Top vendors"])
-        for vendor, count in vendors.most_common(6):
-            summary_page.append(f"{vendor}: {count}")
     pages.append(summary_page)
 
     for row in rows:
