@@ -751,7 +751,6 @@ a {
 .primary-button,
 .ghost-button,
 .text-button,
-.tab-button,
 .subtab-button,
 .menu-button,
 .menu-item {
@@ -887,6 +886,7 @@ a {
   position: relative;
   z-index: 1;
   --shell-pad: 0.85rem;
+  --rail-width: clamp(17rem, 21vw, 21rem);
   display: grid;
   gap: 0.85rem;
   align-content: start;
@@ -912,18 +912,19 @@ body[data-modal="billing"] .app-shell {
   transform: none;
 }
 
+/* The rail belongs to the agent workspace only. */
+.app-shell:not(.is-chat-workspace) > .agent-tools-panel {
+  display: none;
+}
+
 .app-bar {
   position: sticky;
   top: 0.7rem;
   z-index: 2;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "brand actions"
-    "tabs actions";
-  gap: 0.8rem 1rem;
-  align-content: start;
+  display: flex;
+  justify-content: flex-end;
   align-items: center;
+  gap: 1rem;
   margin-inline: calc(var(--shell-pad) * -1);
   padding: 0.45rem var(--shell-pad) 0.95rem;
   background:
@@ -936,45 +937,6 @@ body[data-modal="billing"] .app-shell {
   backdrop-filter: blur(14px) saturate(145%);
 }
 
-.brand-block {
-  grid-area: brand;
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  padding-top: 0.05rem;
-}
-
-.brand-logo {
-  display: block;
-  height: clamp(5rem, 7.8vw, 6.2rem);
-  width: auto;
-}
-
-.tab-strip {
-  grid-area: tabs;
-  display: inline-flex;
-  gap: 0.3rem;
-  flex-wrap: nowrap;
-  justify-content: flex-start;
-  align-self: start;
-  justify-self: start;
-  max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 0.3rem;
-  background: rgba(255, 255, 255, 0.68);
-  border: 1px solid rgba(20, 28, 38, 0.07);
-  border-radius: 999px;
-  box-shadow: 0 8px 18px rgba(25, 38, 54, 0.04);
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-
-.tab-strip::-webkit-scrollbar {
-  display: none;
-}
-
-.tab-button,
 .subtab-button {
   flex: 0 0 auto;
   padding: 0.72rem 1rem;
@@ -987,7 +949,6 @@ body[data-modal="billing"] .app-shell {
   white-space: nowrap;
 }
 
-.tab-button.is-active,
 .subtab-button.is-active {
   color: var(--text);
   background: rgba(255, 255, 255, 0.98);
@@ -996,7 +957,6 @@ body[data-modal="billing"] .app-shell {
 }
 
 .topbar-actions {
-  grid-area: actions;
   display: flex;
   justify-content: flex-end;
   align-items: center;
@@ -3090,8 +3050,7 @@ body[data-modal="billing"] .app-shell {
 .agent-workspace {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(17rem, 20rem);
-  gap: clamp(1rem, 2.5vw, 2.5rem);
+  grid-template-columns: minmax(0, 1fr);
   min-height: calc(100dvh - 11.5rem);
 }
 
@@ -3835,12 +3794,13 @@ body[data-modal="billing"] .app-shell {
   align-items: start;
   align-content: start;
   min-width: 0;
-  padding: 1rem 0 0 1rem;
-  border-left: 1px solid rgba(20, 28, 38, 0.08);
+  padding: 1rem 0.9rem 0;
+  background: rgba(255, 255, 255, 0.5);
+  border-right: 1px solid rgba(20, 28, 38, 0.08);
 }
 
 .agent-actions-panel {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   align-items: stretch;
   align-content: stretch;
   min-height: 0;
@@ -4017,6 +3977,102 @@ body[data-modal="billing"] .app-shell {
   padding: 0 0.25rem clamp(2rem, 5vh, 3.5rem) 0;
   scroll-padding-bottom: clamp(2rem, 5vh, 3.5rem);
   scrollbar-width: thin;
+}
+
+.agent-rail-footer {
+  padding-top: 0.7rem;
+  padding-bottom: 0.9rem;
+  border-top: 1px solid rgba(20, 28, 38, 0.08);
+}
+
+.agent-admin-wrap {
+  position: relative;
+}
+
+.agent-admin-button {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--muted);
+  font-weight: 650;
+  font-size: 0.9rem;
+  text-align: left;
+}
+
+.agent-admin-button:hover,
+.agent-admin-button:focus-visible,
+.agent-admin-button[aria-expanded="true"] {
+  color: var(--text);
+  background: rgba(15, 118, 110, 0.08);
+  border-color: rgba(20, 28, 38, 0.08);
+}
+
+.agent-admin-icon svg {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-admin-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agent-admin-caret {
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+/* The button sits at the foot of the rail, so its menu opens upward. */
+.agent-admin-menu {
+  position: absolute;
+  z-index: 14;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 0.5rem);
+  display: grid;
+  gap: 0.25rem;
+  min-width: 11rem;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.agent-admin-menu .menu-item {
+  font-size: 0.9rem;
+  padding: 0.58rem 0.7rem;
+}
+
+.app-bar-back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-right: auto;
+  padding: 0.5rem 0.9rem;
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(20, 28, 38, 0.07);
+  border-radius: 999px;
+  color: var(--muted);
+  font-weight: 650;
+  font-size: 0.88rem;
+}
+
+.app-bar-back-button:hover,
+.app-bar-back-button:focus-visible {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.98);
 }
 
 .agent-actions-list-view,
@@ -9377,34 +9433,12 @@ body[data-modal="billing"] .app-shell {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .app-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "brand actions"
-      "tabs tabs";
-    align-items: start;
-  }
-
   .status-pill {
     display: none;
   }
 
-  .brand-block {
-    grid-area: brand;
-  }
-
-  .tab-strip {
-    grid-area: tabs;
-    justify-content: flex-start;
-    width: 100%;
-    justify-self: stretch;
-    padding-bottom: 0.3rem;
-  }
-
   .topbar-actions {
-    grid-area: actions;
-    justify-content: flex-end;
-    align-items: flex-start;
+    align-items: center;
     gap: 0.55rem;
   }
 
@@ -9588,14 +9622,6 @@ body[data-modal="billing"] .app-shell {
     width: min(100%, 10rem);
   }
 
-  .app-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "brand actions"
-      "tabs tabs";
-    align-items: start;
-  }
-
   .feature-page-header {
     position: static;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -9666,21 +9692,8 @@ body[data-modal="billing"] .app-shell {
     grid-column: auto;
   }
 
-  .brand-block {
-    grid-area: brand;
-  }
-
-  .tab-strip {
-    grid-area: tabs;
-    width: 100%;
-    justify-content: flex-start;
-    justify-self: stretch;
-  }
-
   .topbar-actions {
-    grid-area: actions;
     flex-direction: row;
-    justify-content: flex-end;
     align-items: center;
   }
 
@@ -9893,26 +9906,12 @@ body[data-modal="billing"] .app-shell {
 
   .app-bar {
     top: 0;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "brand actions";
     gap: 0.72rem;
     margin-inline: -0.72rem;
     padding: 0.58rem 0.72rem 0.7rem;
     border-radius: 0 0 22px 22px;
     background: rgba(249, 252, 251, 0.96);
     box-shadow: 0 12px 28px rgba(25, 38, 54, 0.08);
-  }
-
-  .brand-block {
-    min-height: 2.45rem;
-  }
-
-  .brand-logo {
-    width: auto;
-    max-width: min(58vw, 11rem);
-    height: 2.45rem;
-    object-fit: contain;
-    object-position: left center;
   }
 
   .topbar-actions {
@@ -9943,30 +9942,6 @@ body[data-modal="billing"] .app-shell {
     max-height: calc(100svh - 4.6rem);
     overflow-y: auto;
     border-radius: 18px;
-  }
-
-  .tab-strip {
-    position: fixed;
-    z-index: 22;
-    left: 0.72rem;
-    right: 0.72rem;
-    bottom: calc(0.72rem + env(safe-area-inset-bottom, 0px));
-    display: flex;
-    justify-content: stretch;
-    width: auto;
-    padding: 0.38rem;
-    border-radius: 22px;
-    background: rgba(255, 255, 255, 0.96);
-    border-color: rgba(20, 28, 38, 0.09);
-    box-shadow: 0 18px 38px rgba(25, 38, 54, 0.16);
-  }
-
-  .tab-button {
-    flex: 1 1 0;
-    min-width: 0;
-    width: auto;
-    padding: 0.7rem 0.58rem;
-    font-size: 0.86rem;
   }
 
   .tab-panel {
@@ -10499,15 +10474,15 @@ body[data-modal="billing"] .app-shell {
     display: none;
     position: absolute;
     z-index: 12;
-    inset: 0 0 0 auto;
+    inset: 0 auto 0 0;
     width: min(100%, 28rem);
     height: 100%;
-    justify-self: end;
+    justify-self: start;
     padding: 1rem;
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: rgba(248, 251, 252, 0.97);
-    box-shadow: -22px 0 48px rgba(25, 38, 54, 0.14);
+    box-shadow: 22px 0 48px rgba(25, 38, 54, 0.14);
     backdrop-filter: blur(18px) saturate(135%);
   }
 
@@ -10612,16 +10587,38 @@ body.is-chat-view {
 }
 
 .app-shell.is-chat-workspace {
+  --shell-pad: 1rem;
   height: 100dvh;
   min-height: 0;
+  max-width: none;
   overflow: hidden;
   gap: 0;
+  padding: 0;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* The rail owns the first column and runs the full height of the viewport. */
+.app-shell.is-chat-workspace > .agent-tools-panel {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+
+.app-shell.is-chat-workspace > .app-bar,
+.app-shell.is-chat-workspace > .tab-panel {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.app-shell.is-chat-workspace > .tab-panel {
+  padding-inline: var(--shell-pad);
 }
 
 .app-shell.is-chat-workspace .app-bar {
   position: relative;
   top: auto;
+  margin-inline: 0;
+  padding: 0.45rem var(--shell-pad) 0.6rem;
 }
 
 .app-shell.is-chat-workspace .agent-panel {
@@ -10662,7 +10659,7 @@ body.is-chat-view {
 }
 
 .app-shell.is-chat-workspace .agent-tools-panel {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -10680,6 +10677,16 @@ body.is-chat-view {
 }
 
 @media (max-width: 1080px) {
+  /* Narrow screens keep the rail as a drawer that slides in from the left. */
+  .app-shell.is-chat-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell.is-chat-workspace > .app-bar,
+  .app-shell.is-chat-workspace > .tab-panel {
+    grid-column: 1;
+  }
+
   .app-shell.is-chat-workspace .agent-tools-panel.is-open {
     position: absolute;
     inset: 0.85rem;
@@ -10723,7 +10730,6 @@ body.is-chat-view {
 :root[data-theme="dark"] .auth-alert-dialog,
 :root[data-theme="dark"] .billing-help-dialog,
 :root[data-theme="dark"] .menu-popover,
-:root[data-theme="dark"] .tab-strip,
 :root[data-theme="dark"] .status-pill,
 :root[data-theme="dark"] .feature-card,
 :root[data-theme="dark"] .config-card,
@@ -10945,11 +10951,6 @@ body.is-chat-view {
     0 18px 34px rgba(0, 0, 0, 0.22);
 }
 
-:root[data-theme="dark"] .brand-logo {
-  filter: brightness(0) invert(1);
-  opacity: 0.92;
-}
-
 :root[data-theme="dark"] .field input,
 :root[data-theme="dark"] .field textarea,
 :root[data-theme="dark"] .field select,
@@ -11149,7 +11150,6 @@ body.is-chat-view {
   background: rgba(31, 45, 56, 0.96);
 }
 
-:root[data-theme="dark"] .tab-button.is-active,
 :root[data-theme="dark"] .subtab-button.is-active,
 :root[data-theme="dark"] .menu-button,
 :root[data-theme="dark"] .agent-action-status,
@@ -11343,6 +11343,24 @@ body.is-chat-view {
 
 :root[data-theme="dark"] .agent-tools-panel,
 :root[data-theme="dark"] .whatsapp-history-conversation-panel {
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .app-shell.is-chat-workspace > .agent-tools-panel {
+  background: rgba(10, 16, 22, 0.5);
+}
+
+:root[data-theme="dark"] .agent-rail-footer {
+  border-top-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .agent-admin-menu {
+  background: rgba(31, 45, 56, 0.98);
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .app-bar-back-button {
+  background: rgba(31, 45, 56, 0.9);
   border-color: var(--line-strong);
 }
 

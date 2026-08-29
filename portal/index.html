@@ -10,7 +10,7 @@
     />
     <meta name="color-scheme" content="light dark" />
     <script src="./theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="./styles.css?v=141" />
+    <link rel="stylesheet" href="./styles.css?v=145" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -119,24 +119,222 @@
     </main>
 
     <section id="appView" class="app-shell is-hidden">
-      <header id="appBar" class="app-bar">
-        <div class="brand-block">
-          <img
-            class="brand-logo"
-            src="../assets/AssistycaLogoTitleWeb.png"
-            alt="Assistyca"
-            width="1200"
-            height="353"
-          />
+      <aside id="agentActionsPanel" class="agent-tools-panel agent-actions-panel" aria-label="Agent side panel">
+        <div class="agent-tools-head agent-actions-head agent-panel-mode-head">
+          <div id="agentPanelModeSwitch" class="agent-panel-mode-switch" role="tablist" aria-label="Agent panel mode">
+            <button
+              id="agentPanelActionsModeButton"
+              class="agent-panel-mode-button is-active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="agentActionsListView"
+              data-agent-panel-mode="actions"
+            >
+              Actions
+            </button>
+            <button
+              id="agentPanelChatsModeButton"
+              class="agent-panel-mode-button"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="agentChatsListView"
+              data-agent-panel-mode="chats"
+            >
+              Chats
+            </button>
+            <button
+              id="agentPanelFoldersModeButton"
+              class="agent-panel-mode-button"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="agentFoldersListView"
+              data-agent-panel-mode="folders"
+            >
+              Folders
+            </button>
+          </div>
+          <button id="agentToolsCloseButton" class="agent-actions-icon-button agent-tools-close" type="button" aria-label="Close panel">×</button>
         </div>
 
-        <nav class="tab-strip" aria-label="Assistyca tabs">
-          <button class="tab-button is-active" data-tab="features" type="button">Agent</button>
-          <button class="tab-button" data-tab="opportunities" type="button" hidden>Opportunities</button>
-          <button class="tab-button" data-tab="clients" type="button" hidden>Clients</button>
-          <button class="tab-button" data-tab="preview" type="button" hidden>Preview</button>
-          <button class="tab-button" data-tab="simulator" type="button" hidden>Simulator</button>
-        </nav>
+        <div id="agentActionsPanelBody" class="agent-actions-panel-body">
+          <div id="agentActionsListView" class="agent-actions-list-view">
+            <section class="agent-actions-section" aria-labelledby="agentPendingActionsTitle">
+              <div class="agent-actions-section-head">
+                <h3 id="agentPendingActionsTitle">Active</h3>
+                <span id="agentPendingActionsCount" class="agent-actions-count">0</span>
+              </div>
+              <div id="agentPendingActionList" class="agent-action-list"></div>
+            </section>
+
+            <section class="agent-actions-section agent-history-section" aria-label="Action history">
+              <button
+                id="agentHistoryToggleButton"
+                class="agent-history-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="agentCompletedActionList"
+                aria-label="Show action history"
+              >
+                <span class="agent-history-title">History</span>
+                <span class="agent-history-toggle-meta">
+                  <span id="agentCompletedActionsCount" class="agent-actions-count">0</span>
+                  <span class="agent-history-chevron" aria-hidden="true"></span>
+                </span>
+              </button>
+              <div id="agentCompletedActionList" class="agent-action-list" hidden></div>
+            </section>
+
+            <section class="agent-tools-secondary" aria-labelledby="agentToolsTitle">
+              <div class="agent-actions-section-head agent-tools-section-head">
+                <h3 id="agentToolsTitle">Available tools</h3>
+                <div class="agent-add-tool-control">
+                  <button id="agentAddToolButton" class="agent-add-tool-button" type="button" aria-label="Add tool" aria-expanded="false" aria-controls="agentAddToolMenu">+</button>
+                </div>
+              </div>
+              <div id="agentToolShelf" class="agent-tool-shelf"></div>
+            </section>
+          </div>
+
+          <div id="agentChatsListView" class="agent-chats-list-view is-hidden" aria-labelledby="agentChatsTitle">
+            <div class="agent-chats-list-head">
+              <div>
+                <p class="eyebrow">Chat history</p>
+                <h3 id="agentChatsTitle">Chats</h3>
+              </div>
+              <button id="agentNewChatButton" class="primary-button small" type="button">
+                New chat
+              </button>
+            </div>
+            <div id="agentChatList" class="agent-chat-list" role="list"></div>
+          </div>
+
+          <div id="agentFoldersListView" class="agent-folders-list-view is-hidden" aria-labelledby="agentFoldersTitle">
+            <div class="agent-folders-list-head">
+              <div>
+                <p class="eyebrow">Workspace</p>
+                <h3 id="agentFoldersTitle">Folders</h3>
+              </div>
+              <div class="agent-folder-head-actions">
+                <span id="agentFolderCount" class="agent-actions-count">0</span>
+                <button
+                  id="agentFolderFilterButton"
+                  class="agent-folder-utility-button"
+                  type="button"
+                  aria-label="Filter folders"
+                  aria-expanded="false"
+                  aria-controls="agentFolderFilterPanel"
+                >
+                  <svg class="agent-folder-utility-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 6h16"></path>
+                    <path d="M7 12h10"></path>
+                    <path d="M10 18h4"></path>
+                  </svg>
+                </button>
+                <button
+                  id="agentFolderSortButton"
+                  class="agent-folder-utility-button"
+                  type="button"
+                  aria-label="Sort folders"
+                  aria-expanded="false"
+                  aria-controls="agentFolderSortPanel"
+                >
+                  <svg class="agent-folder-utility-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M7 4v16"></path>
+                    <path d="m3 8 4-4 4 4"></path>
+                    <path d="M17 20V4"></path>
+                    <path d="m21 16-4 4-4-4"></path>
+                  </svg>
+                </button>
+                <button
+                  id="agentFolderCreateToggleButton"
+                  class="agent-folder-create-toggle"
+                  type="button"
+                  aria-label="Create folder"
+                  aria-expanded="false"
+                  aria-controls="agentFolderCreateForm"
+                >
+                  <span aria-hidden="true">+</span>
+                </button>
+              </div>
+            </div>
+
+            <form id="agentFolderCreateForm" class="agent-folder-create is-hidden" hidden>
+              <label class="agent-folder-field" for="agentFolderNameInput">
+                <span>Folder name</span>
+                <input id="agentFolderNameInput" type="text" maxlength="64" autocomplete="off" placeholder="Receipts, reports, sources..." />
+              </label>
+              <button class="agent-folder-submit-button" type="submit">Create</button>
+            </form>
+
+            <div id="agentFolderFilterPanel" class="agent-folder-controls is-hidden" hidden>
+              <label class="sr-only" for="agentFolderSearchInput">Filter folders</label>
+              <input id="agentFolderSearchInput" type="search" autocomplete="off" placeholder="Filter folders" />
+            </div>
+
+            <div id="agentFolderSortPanel" class="agent-folder-sort-panel is-hidden" hidden>
+              <label class="sr-only" for="agentFolderSortSelect">Sort folders</label>
+              <select id="agentFolderSortSelect" aria-label="Sort folders">
+                <option value="recent">Recent</option>
+                <option value="name">Name</option>
+                <option value="type">Type</option>
+                <option value="count">Items</option>
+              </select>
+            </div>
+
+            <div id="agentFolderList" class="agent-folder-list" role="list"></div>
+          </div>
+
+          <div id="agentActionDetailView" class="agent-action-detail-view is-hidden" aria-live="polite">
+            <button id="agentActionDetailBackButton" class="agent-action-back" type="button">← All actions</button>
+            <div id="agentActionDetailContent"></div>
+          </div>
+        </div>
+
+        <div id="agentRailFooter" class="agent-rail-footer is-hidden">
+          <div class="agent-admin-wrap">
+            <button
+              id="agentAdminButton"
+              class="agent-admin-button"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="agentAdminMenu"
+            >
+              <span class="agent-admin-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M12 3 4.5 6v5.6c0 4.4 3.2 8.1 7.5 9.4 4.3-1.3 7.5-5 7.5-9.4V6L12 3Z" />
+                </svg>
+              </span>
+              <span class="agent-admin-label">Admin</span>
+              <span class="agent-admin-caret" aria-hidden="true">▾</span>
+            </button>
+
+            <div id="agentAdminMenu" class="agent-admin-menu is-hidden" role="menu">
+              <button class="menu-item" type="button" role="menuitem" data-admin-tab="opportunities">
+                Opportunities
+              </button>
+              <button class="menu-item" type="button" role="menuitem" data-admin-tab="clients">
+                Clients
+              </button>
+              <button class="menu-item" type="button" role="menuitem" data-admin-tab="preview">
+                Preview
+              </button>
+              <button class="menu-item" type="button" role="menuitem" data-admin-tab="simulator">
+                Simulator
+              </button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <header id="appBar" class="app-bar">
+        <button id="appBarBackButton" class="app-bar-back-button is-hidden" type="button">
+          <span aria-hidden="true">&lt;</span>
+          <span>Back to agent</span>
+        </button>
 
         <div class="topbar-actions">
           <div class="notification-center-wrap">
@@ -200,14 +398,6 @@
               <button class="menu-item" type="button" data-menu-action="pricing">Pricing</button>
               <button class="menu-item" type="button" data-menu-action="personal-details">About your business</button>
               <button class="menu-item" type="button" data-menu-action="settings">Settings</button>
-              <button
-                id="adminUsersMenuItem"
-                class="menu-item is-hidden"
-                type="button"
-                data-menu-action="admin-users"
-              >
-                Clients
-              </button>
               <div class="menu-divider" aria-hidden="true"></div>
               <button class="menu-item danger" type="button" data-menu-action="logout">
                 Log out
@@ -295,181 +485,6 @@
               </button>
             </form>
           </section>
-
-          <aside id="agentActionsPanel" class="agent-tools-panel agent-actions-panel" aria-label="Agent side panel">
-            <div class="agent-tools-head agent-actions-head agent-panel-mode-head">
-              <div id="agentPanelModeSwitch" class="agent-panel-mode-switch" role="tablist" aria-label="Agent panel mode">
-                <button
-                  id="agentPanelActionsModeButton"
-                  class="agent-panel-mode-button is-active"
-                  type="button"
-                  role="tab"
-                  aria-selected="true"
-                  aria-controls="agentActionsListView"
-                  data-agent-panel-mode="actions"
-                >
-                  Actions
-                </button>
-                <button
-                  id="agentPanelChatsModeButton"
-                  class="agent-panel-mode-button"
-                  type="button"
-                  role="tab"
-                  aria-selected="false"
-                  aria-controls="agentChatsListView"
-                  data-agent-panel-mode="chats"
-                >
-                  Chats
-                </button>
-                <button
-                  id="agentPanelFoldersModeButton"
-                  class="agent-panel-mode-button"
-                  type="button"
-                  role="tab"
-                  aria-selected="false"
-                  aria-controls="agentFoldersListView"
-                  data-agent-panel-mode="folders"
-                >
-                  Folders
-                </button>
-              </div>
-              <button id="agentToolsCloseButton" class="agent-actions-icon-button agent-tools-close" type="button" aria-label="Close panel">×</button>
-            </div>
-
-            <div id="agentActionsPanelBody" class="agent-actions-panel-body">
-              <div id="agentActionsListView" class="agent-actions-list-view">
-                <section class="agent-actions-section" aria-labelledby="agentPendingActionsTitle">
-                  <div class="agent-actions-section-head">
-                    <h3 id="agentPendingActionsTitle">Active</h3>
-                    <span id="agentPendingActionsCount" class="agent-actions-count">0</span>
-                  </div>
-                  <div id="agentPendingActionList" class="agent-action-list"></div>
-                </section>
-
-                <section class="agent-actions-section agent-history-section" aria-label="Action history">
-                  <button
-                    id="agentHistoryToggleButton"
-                    class="agent-history-toggle"
-                    type="button"
-                    aria-expanded="false"
-                    aria-controls="agentCompletedActionList"
-                    aria-label="Show action history"
-                  >
-                    <span class="agent-history-title">History</span>
-                    <span class="agent-history-toggle-meta">
-                      <span id="agentCompletedActionsCount" class="agent-actions-count">0</span>
-                      <span class="agent-history-chevron" aria-hidden="true"></span>
-                    </span>
-                  </button>
-                  <div id="agentCompletedActionList" class="agent-action-list" hidden></div>
-                </section>
-
-                <section class="agent-tools-secondary" aria-labelledby="agentToolsTitle">
-                  <div class="agent-actions-section-head agent-tools-section-head">
-                    <h3 id="agentToolsTitle">Available tools</h3>
-                    <div class="agent-add-tool-control">
-                      <button id="agentAddToolButton" class="agent-add-tool-button" type="button" aria-label="Add tool" aria-expanded="false" aria-controls="agentAddToolMenu">+</button>
-                    </div>
-                  </div>
-                  <div id="agentToolShelf" class="agent-tool-shelf"></div>
-                </section>
-              </div>
-
-              <div id="agentChatsListView" class="agent-chats-list-view is-hidden" aria-labelledby="agentChatsTitle">
-                <div class="agent-chats-list-head">
-                  <div>
-                    <p class="eyebrow">Chat history</p>
-                    <h3 id="agentChatsTitle">Chats</h3>
-                  </div>
-                  <button id="agentNewChatButton" class="primary-button small" type="button">
-                    New chat
-                  </button>
-                </div>
-                <div id="agentChatList" class="agent-chat-list" role="list"></div>
-              </div>
-
-              <div id="agentFoldersListView" class="agent-folders-list-view is-hidden" aria-labelledby="agentFoldersTitle">
-                <div class="agent-folders-list-head">
-                  <div>
-                    <p class="eyebrow">Workspace</p>
-                    <h3 id="agentFoldersTitle">Folders</h3>
-                  </div>
-                  <div class="agent-folder-head-actions">
-                    <span id="agentFolderCount" class="agent-actions-count">0</span>
-                    <button
-                      id="agentFolderFilterButton"
-                      class="agent-folder-utility-button"
-                      type="button"
-                      aria-label="Filter folders"
-                      aria-expanded="false"
-                      aria-controls="agentFolderFilterPanel"
-                    >
-                      <svg class="agent-folder-utility-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <path d="M4 6h16"></path>
-                        <path d="M7 12h10"></path>
-                        <path d="M10 18h4"></path>
-                      </svg>
-                    </button>
-                    <button
-                      id="agentFolderSortButton"
-                      class="agent-folder-utility-button"
-                      type="button"
-                      aria-label="Sort folders"
-                      aria-expanded="false"
-                      aria-controls="agentFolderSortPanel"
-                    >
-                      <svg class="agent-folder-utility-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <path d="M7 4v16"></path>
-                        <path d="m3 8 4-4 4 4"></path>
-                        <path d="M17 20V4"></path>
-                        <path d="m21 16-4 4-4-4"></path>
-                      </svg>
-                    </button>
-                    <button
-                      id="agentFolderCreateToggleButton"
-                      class="agent-folder-create-toggle"
-                      type="button"
-                      aria-label="Create folder"
-                      aria-expanded="false"
-                      aria-controls="agentFolderCreateForm"
-                    >
-                      <span aria-hidden="true">+</span>
-                    </button>
-                  </div>
-                </div>
-
-                <form id="agentFolderCreateForm" class="agent-folder-create is-hidden" hidden>
-                  <label class="agent-folder-field" for="agentFolderNameInput">
-                    <span>Folder name</span>
-                    <input id="agentFolderNameInput" type="text" maxlength="64" autocomplete="off" placeholder="Receipts, reports, sources..." />
-                  </label>
-                  <button class="agent-folder-submit-button" type="submit">Create</button>
-                </form>
-
-                <div id="agentFolderFilterPanel" class="agent-folder-controls is-hidden" hidden>
-                  <label class="sr-only" for="agentFolderSearchInput">Filter folders</label>
-                  <input id="agentFolderSearchInput" type="search" autocomplete="off" placeholder="Filter folders" />
-                </div>
-
-                <div id="agentFolderSortPanel" class="agent-folder-sort-panel is-hidden" hidden>
-                  <label class="sr-only" for="agentFolderSortSelect">Sort folders</label>
-                  <select id="agentFolderSortSelect" aria-label="Sort folders">
-                    <option value="recent">Recent</option>
-                    <option value="name">Name</option>
-                    <option value="type">Type</option>
-                    <option value="count">Items</option>
-                  </select>
-                </div>
-
-                <div id="agentFolderList" class="agent-folder-list" role="list"></div>
-              </div>
-
-              <div id="agentActionDetailView" class="agent-action-detail-view is-hidden" aria-live="polite">
-                <button id="agentActionDetailBackButton" class="agent-action-back" type="button">← All actions</button>
-                <div id="agentActionDetailContent"></div>
-              </div>
-            </div>
-          </aside>
         </div>
         <button id="agentToolsToggleButton" class="ghost-button small agent-tools-toggle" type="button" aria-expanded="false" aria-controls="agentActionsPanel">
           View actions
@@ -1742,6 +1757,6 @@ Owner said afternoons are easier."
     </section>
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
-    <script src="./app.js?v=181"></script>
+    <script src="./app.js?v=183"></script>
   </body>
 </html>

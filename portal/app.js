@@ -1207,6 +1207,7 @@ const state = {
   requestCountryCode: "",
   authAlertOpen: false,
   menuOpen: false,
+  agentAdminMenuOpen: false,
   notificationCenterOpen: false,
   selectedFeatureId: null,
   featureStudioView: "overview",
@@ -1426,6 +1427,10 @@ const elements = {
   agentToolsToggleButton: document.querySelector("#agentToolsToggleButton"),
   agentToolsCloseButton: document.querySelector("#agentToolsCloseButton"),
   agentToolsPanel: document.querySelector(".agent-tools-panel"),
+  agentRailFooter: document.querySelector("#agentRailFooter"),
+  agentAdminButton: document.querySelector("#agentAdminButton"),
+  agentAdminMenu: document.querySelector("#agentAdminMenu"),
+  appBarBackButton: document.querySelector("#appBarBackButton"),
   featureStudioPanel: document.querySelector("#featureStudioPanel"),
   backToFeaturesButton: document.querySelector("#backToFeaturesButton"),
   featureStudioHeaderLabel: document.querySelector("#featureStudioHeaderLabel"),
@@ -1637,7 +1642,6 @@ const elements = {
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
   adminUsersPane: document.querySelector("#clientsPanel"),
   adminUsersShell: document.querySelector("#adminUsersShell"),
-  adminUsersMenuItem: document.querySelector("#adminUsersMenuItem"),
   adminOpenAddUserButton: document.querySelector("#adminOpenAddUserButton"),
   adminUsersError: document.querySelector("#adminUsersError"),
   adminUsersContent: document.querySelector("#adminUsersContent"),
@@ -12188,11 +12192,6 @@ function createAdminUserDetailView(user) {
 }
 
 function renderAdminUsersPane() {
-  const adminVisible = canManageClients();
-  if (elements.adminUsersMenuItem) {
-    elements.adminUsersMenuItem.classList.toggle("is-hidden", !adminVisible);
-  }
-
   if (
     !elements.adminUsersPane
     || !elements.adminUsersShell
@@ -22339,6 +22338,57 @@ function updateOpportunityNavigation() {
   }
 }
 
+// The rail's Admin button is the only way into the admin-only panels now that
+// the top navigation is gone, so each entry follows its own permission check.
+const ADMIN_RAIL_TABS = [
+  { tab: "opportunities", isAllowed: canReviewOpportunities },
+  { tab: "clients", isAllowed: canManageClients },
+  { tab: "preview", isAllowed: isAdminUser },
+  { tab: "simulator", isAllowed: isAdminUser },
+];
+
+function setAgentAdminMenuOpen(open) {
+  const nextOpen = Boolean(open);
+  state.agentAdminMenuOpen = nextOpen;
+  elements.agentAdminMenu?.classList.toggle("is-hidden", !nextOpen);
+  elements.agentAdminButton?.setAttribute("aria-expanded", String(nextOpen));
+}
+
+function updateAgentAdminNavigation() {
+  if (!elements.agentRailFooter || !elements.agentAdminMenu) {
+    return;
+  }
+
+  let allowedCount = 0;
+  for (const entry of ADMIN_RAIL_TABS) {
+    const item = elements.agentAdminMenu.querySelector(`[data-admin-tab="${entry.tab}"]`);
+    if (!item) {
+      continue;
+    }
+
+    const allowed = entry.isAllowed();
+    item.classList.toggle("is-hidden", !allowed);
+    if (allowed) {
+      allowedCount += 1;
+    }
+  }
+
+  elements.agentRailFooter.classList.toggle("is-hidden", allowedCount === 0);
+  if (!allowedCount && state.agentAdminMenuOpen) {
+    setAgentAdminMenuOpen(false);
+  }
+}
+
+function openAdminRailTab(tab) {
+  setAgentAdminMenuOpen(false);
+  if (tab === "clients") {
+    openAdminUsersList();
+    return;
+  }
+
+  setActiveTab(tab || "features");
+}
+
 function updateClientNavigation() {
   const allowed = canManageClients();
   for (const button of elements.tabButtons) {
@@ -25382,6 +25432,7 @@ function populateMonitorTimezoneOptions() {
 function updateTabButtons() {
   updateOpportunityNavigation();
   updateClientNavigation();
+  updateAgentAdminNavigation();
   for (const button of elements.tabButtons) {
     const isSettingsButton = button.dataset.tab === "settings";
     const isActive = isSettingsButton
@@ -25430,6 +25481,7 @@ function updatePanelVisibility() {
   const isChatWorkspace = state.activeTab === "features" && !inStudio;
   elements.appView.classList.toggle("is-chat-workspace", isChatWorkspace);
   document.body.classList.toggle("is-chat-view", isChatWorkspace);
+  elements.appBarBackButton?.classList.toggle("is-hidden", isChatWorkspace);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.opportunitiesPanel?.classList.toggle("is-hidden", state.activeTab !== "opportunities");
   elements.clientsPanel?.classList.toggle("is-hidden", state.activeTab !== "clients");
@@ -26754,11 +26806,6 @@ function handleMenuAction(action) {
     return;
   }
 
-  if (action === "admin-users") {
-    openAdminUsersList();
-    return;
-  }
-
   if (action === "settings") {
     openSettings("account");
     return;
@@ -27612,6 +27659,27 @@ function bindEvents() {
     });
   }
 
+  if (elements.agentAdminButton) {
+    elements.agentAdminButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setAgentAdminMenuOpen(!state.agentAdminMenuOpen);
+    });
+  }
+
+  if (elements.agentAdminMenu) {
+    for (const item of Array.from(elements.agentAdminMenu.querySelectorAll("[data-admin-tab]"))) {
+      item.addEventListener("click", () => {
+        openAdminRailTab(item.dataset.adminTab || "");
+      });
+    }
+  }
+
+  if (elements.appBarBackButton) {
+    elements.appBarBackButton.addEventListener("click", () => {
+      setActiveTab("features");
+    });
+  }
+
   document.addEventListener("click", (event) => {
     const billingHelpButton = elements.billingHelpButton;
     const billingHelpPopover = elements.billingHelpPopover;
@@ -27659,6 +27727,16 @@ function bindEvents() {
       setDeliveryPlatformMenuOpen(false);
     }
 
+    if (
+      state.agentAdminMenuOpen
+      && elements.agentAdminMenu
+      && elements.agentAdminButton
+      && !elements.agentAdminMenu.contains(event.target)
+      && !elements.agentAdminButton.contains(event.target)
+    ) {
+      setAgentAdminMenuOpen(false);
+    }
+
     if (!elements.accountMenu.contains(event.target) && !elements.accountMenuButton.contains(event.target)) {
       closeMenu();
     }
@@ -27699,6 +27777,11 @@ function bindEvents() {
 
       if (elements.deliveryPlatformMenu && !elements.deliveryPlatformMenu.hidden) {
         setDeliveryPlatformMenuOpen(false);
+        return;
+      }
+
+      if (state.agentAdminMenuOpen) {
+        setAgentAdminMenuOpen(false);
         return;
       }
 
