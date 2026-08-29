@@ -2174,6 +2174,13 @@ body[data-modal="billing"] .app-shell {
   font-weight: 850;
 }
 
+/* Icons arrive at whatever size their drawing was written at, so the badge sets
+   one size for all of them. */
+.notification-center-item-icon svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
 .notification-center-item.is-error .notification-center-item-icon,
 .notification-center-item.is-warning .notification-center-item-icon {
   color: #ad4b31;

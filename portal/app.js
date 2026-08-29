@@ -3367,6 +3367,8 @@ function normalizeAgentNotification(value = {}) {
     readAt,
     tone: normalizedTone,
     source: normalizeAgentTextItem(source.source, "assistant"),
+    kind: normalizeAgentTextItem(source.kind, ""),
+    featureId: normalizeAgentTextItem(source.featureId || source.feature_id, ""),
     actionId: normalizeAgentTextItem(source.actionId || source.action_id, ""),
     proposalId: normalizeAgentTextItem(source.proposalId || source.proposal_id, ""),
     href: normalizeAgentNotificationHref(source.href || source.url || source.resultUrl || source.result_url),
@@ -3524,6 +3526,8 @@ function mapServerNotification(row) {
     readAt: source.readAt || "",
     tone: source.tone || "info",
     source: source.source || "assistant",
+    kind: source.kind || "",
+    featureId: source.featureId || "",
     actionId: source.actionId || "",
     href: source.resultUrl || "",
     dedupeKey: source.dedupeKey || "",
@@ -3857,11 +3861,177 @@ function describeNotificationListSignature(notifications) {
       notification.id,
       notification.readAt,
       notification.tone,
+      describeNotificationIconName(notification),
       notification.title,
       notification.message,
       notification.href,
     ].join("\u0001"))
     .join("\u0002");
+}
+
+// Which glyph belongs on a notification. A failure keeps the exclamation mark
+// whatever ran, because that is the one thing a reader has to catch. Everything
+// else shows what the action works on -- a calendar, a mailbox, a document -- so
+// the feed can be skimmed by shape. The source the row was raised under names
+// the action best; the server's kind and feature id back it up, and the title is
+// only read for rows written before either was recorded.
+function describeNotificationIconName(notification) {
+  const tone = String(notification?.tone || "").trim().toLowerCase();
+  if (tone === "error" || tone === "warning") {
+    return "alert";
+  }
+
+  const source = String(notification?.source || "").trim().toLowerCase();
+  const kind = String(notification?.kind || "").trim().toLowerCase();
+  const featureId = String(notification?.featureId || "").trim();
+  const title = String(notification?.title || "").trim().toLowerCase();
+
+  if (featureId === MONITOR_FEATURE_ID || source === "web-monitor" || title.includes("monitor")) {
+    return "web-monitor";
+  }
+  if (
+    featureId === REENGAGEMENT_FEATURE_ID
+    || featureId === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
+    || source.includes("whatsapp")
+    || kind === "reply_approval"
+    || kind === "reengagement_report"
+    || title.includes("whatsapp")
+  ) {
+    return "whatsapp";
+  }
+  if (source === "calendar-summary" || title.includes("meeting") || title.includes("calendar")) {
+    return "calendar";
+  }
+  if (
+    source === "email-digest"
+    || source === "contact_form"
+    || kind === "contact_opportunity"
+    || title.includes("email")
+    || title.includes("mailbox")
+    || title.includes("inbox")
+  ) {
+    return "email";
+  }
+  if (source === "custom-google-batch" || source === "source-action" || title.includes("receipt")) {
+    return "document";
+  }
+  if (source.startsWith("scheduled") || kind === "scheduled_action") {
+    return "clock";
+  }
+  return tone === "success" ? "check" : "info";
+}
+
+// The tool menu already draws the calendar, mailbox, WhatsApp and monitor marks,
+// so those come straight from it and the feed stays in step with the rest of the
+// portal. Only the glyphs a notification needs on its own are drawn here.
+function createNotificationIcon(name) {
+  if (["calendar", "email", "whatsapp", "web-monitor"].includes(name)) {
+    return createAgentAddToolLogo({ icon: name });
+  }
+
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "18",
+    height: "18",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+
+  if (name === "document") {
+    svg.append(
+      createSvgElement("rect", {
+        x: "5",
+        y: "3",
+        width: "14",
+        height: "18",
+        rx: "2.6",
+        stroke: "currentColor",
+        "stroke-width": "2",
+      }),
+      createSvgElement("path", {
+        d: "M8.6 8h6.8M8.6 12h6.8M8.6 16h4",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        "stroke-linecap": "round",
+      }),
+    );
+    return svg;
+  }
+
+  if (name === "clock") {
+    svg.append(
+      createSvgElement("circle", {
+        cx: "12",
+        cy: "12",
+        r: "8",
+        stroke: "currentColor",
+        "stroke-width": "2",
+      }),
+      createSvgElement("path", {
+        d: "M12 7.4V12l3.1 1.9",
+        stroke: "currentColor",
+        "stroke-width": "2",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      }),
+    );
+    return svg;
+  }
+
+  if (name === "check") {
+    svg.append(
+      createSvgElement("path", {
+        d: "m5.6 12.4 4.3 4.3L18.4 8",
+        stroke: "currentColor",
+        "stroke-width": "2.4",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      }),
+    );
+    return svg;
+  }
+
+  if (name === "alert") {
+    svg.append(
+      createSvgElement("path", {
+        d: "M12 6.4v6.9",
+        stroke: "currentColor",
+        "stroke-width": "2.4",
+        "stroke-linecap": "round",
+      }),
+      createSvgElement("circle", {
+        cx: "12",
+        cy: "17.3",
+        r: "1.4",
+        fill: "currentColor",
+      }),
+    );
+    return svg;
+  }
+
+  svg.append(
+    createSvgElement("circle", {
+      cx: "12",
+      cy: "12",
+      r: "8",
+      stroke: "currentColor",
+      "stroke-width": "2",
+    }),
+    createSvgElement("path", {
+      d: "M12 11v5.2",
+      stroke: "currentColor",
+      "stroke-width": "2.2",
+      "stroke-linecap": "round",
+    }),
+    createSvgElement("circle", {
+      cx: "12",
+      cy: "7.9",
+      r: "1.25",
+      fill: "currentColor",
+    }),
+  );
+  return svg;
 }
 
 function renderNotificationCenterItem(notification) {
@@ -3873,7 +4043,7 @@ function renderNotificationCenterItem(notification) {
   const icon = document.createElement("span");
   icon.className = "notification-center-item-icon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = notification.tone === "success" ? "✓" : notification.tone === "error" ? "!" : notification.tone === "warning" ? "!" : "i";
+  icon.append(createNotificationIcon(describeNotificationIconName(notification)));
 
   const content = document.createElement("div");
   content.className = "notification-center-item-content";
