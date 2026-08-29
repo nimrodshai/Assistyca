@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=148", html)
+        self.assertIn("styles.css?v=149", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -617,6 +617,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("animation: agent-action-card-glow 2200ms ease-in-out both;", styles)
         self.assertIn("@keyframes agent-action-card-glow", styles)
         self.assertIn(".agent-action-item.is-entering.is-spotlighted", styles)
+        # The dark theme overrides the band's gradient, so it has to carry the
+        # same wide stops or the sweep shows up as a thin streak there.
+        self.assertIn(
+            ':root[data-theme="dark"] .agent-action-item.is-spotlighted::after',
+            styles,
+        )
+        self.assertIn("rgba(124, 245, 233, 0.54) 44%", styles)
         self.assertNotIn("@keyframes agent-action-spotlight-dot", styles)
         self.assertNotIn("agent-action-card-border-pulse", styles)
         self.assertIn(".agent-chat-item", styles)
@@ -976,7 +983,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=148", html)
+        self.assertIn("styles.css?v=149", html)
         self.assertIn("app.js?v=183", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
