@@ -12204,6 +12204,8 @@ function createAdminUserDetailView(user) {
 }
 
 function renderAdminUsersPane() {
+  const adminVisible = canManageClients();
+
   if (
     !elements.adminUsersPane
     || !elements.adminUsersShell
