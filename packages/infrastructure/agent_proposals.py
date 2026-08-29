@@ -11,6 +11,7 @@ AGENT_PROPOSAL_REVISION_MAX_MESSAGES = 12
 AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH = 900
 AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS = 500
 AGENT_TURN_MAX_OUTPUT_TOKENS = 700
+AGENT_ACTION_CONTEXT_MAX_ITEMS = 20
 AGENT_PROPOSAL_REVISION_INSTRUCTIONS = (
     "You revise an existing Assistyca proposal from the user's latest message. "
     "Use the proposal and conversation as context to resolve references such as 'it' or 'later'. "
@@ -146,6 +147,31 @@ def _normalize_safe_google_tool_context(value: Any) -> dict[str, Any]:
         "connectionStatus": connection_status,
         "validationStatus": validation_status,
     }
+
+
+def normalize_agent_action_context(value: Any) -> list[dict[str, str]]:
+    """Keep only the display details of actions the account already has.
+
+    The agent needs these to ask which existing action the user means. Ids stay
+    out of the prompt: the picker in the chat resolves the choice locally, so
+    the model never has to hold an internal identifier.
+    """
+    raw_items = value if isinstance(value, list) else []
+    actions: list[dict[str, str]] = []
+    for raw_item in raw_items[:AGENT_ACTION_CONTEXT_MAX_ITEMS]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        name = _single_line(item.get("name") or item.get("title"), 120)
+        if not name:
+            continue
+        entry = {"name": name}
+        status = _single_line(item.get("status"), 40)
+        if status:
+            entry["status"] = status
+        created = _single_line(item.get("created"), 60)
+        if created:
+            entry["created"] = created
+        actions.append(entry)
+    return actions
 
 
 def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
@@ -354,6 +380,7 @@ def build_agent_turn_prompt(
     active_proposal: dict[str, Any] | None = None,
     tool_context: dict[str, Any] | None = None,
     source_context: dict[str, Any] | None = None,
+    action_context: Any = None,
 ) -> str:
     context = {
         "timezone": _single_line(timezone_name, 120) or "UTC",
@@ -361,6 +388,7 @@ def build_agent_turn_prompt(
         "proposalFieldSchemas": _AGENT_PROPOSAL_FIELD_SCHEMAS,
         "toolContext": normalize_agent_tool_context(tool_context),
         "sourceContext": normalize_agent_source_context(source_context),
+        "existingActions": normalize_agent_action_context(action_context),
         "recentConversation": conversation,
         "latestUserMessage": _single_line(user_message, AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
     }
@@ -373,7 +401,8 @@ def build_agent_turn_prompt(
         "- reject_proposal: the user clearly rejects or cancels the active pending proposal.\n"
         "- question: one missing detail is required before a safe proposal can be shown.\n"
         "- message: answer conversationally without creating or executing anything.\n"
-        "Return keys: outcome, reply, proposalType, changes. reply is required for every outcome and must "
+        "Return keys: outcome, reply, proposalType, changes, needsActionChoice. reply is required for every "
+        "outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
         "of scheduled-message, email-digest, calendar-summary, "
         "web-monitor, source-action, whatsapp-replies, reengagement, or custom when outcome is proposal or when outcome is "
@@ -404,6 +433,16 @@ def build_agent_turn_prompt(
         "exactly one missing detail in reply. When activeProposal exists and the user answers or corrects a detail, "
         "return outcome=revise_proposal with changes.fields containing the new or corrected field values. Do not "
         "restart questions whose values are already present in activeProposal.fields.\n"
+        "existingActions lists the actions this account already has, in the order the user sees them in the "
+        "Actions panel. Use it to recognize what the user already set up. When the user wants to change, "
+        "schedule, pause, run, or delete an action they already have, and the message does not identify which "
+        "one, return outcome=question with needsActionChoice=true, leave proposalType empty because this is not a "
+        "new setup, and ask which action they mean in one short sentence. The application shows the list as a "
+        "picker, so do not name the actions yourself, do not ask "
+        "the user to describe or retype one, and do not ask an unrelated question such as a frequency in the "
+        "same turn. Set needsActionChoice=true only when existingActions has entries and the missing detail is "
+        "which existing action the user means; leave it false everywhere else. Never refer to an action that is "
+        "not in existingActions.\n"
         "For action result notifications, default deliveryChannel to portal (the Notifications center) when the user has "
         "not explicitly chosen another channel. Do not ask where to notify merely to choose this default. If the "
         "user explicitly requests email, WhatsApp, Telegram, or another supported channel, preserve that choice.\n"
@@ -570,6 +609,27 @@ def normalize_agent_turn_response(
     active_proposal_type: str = "",
 ) -> dict[str, Any]:
     response = value if isinstance(value, dict) else {}
+    turn = _normalize_agent_turn_outcome(
+        response,
+        has_active_proposal=has_active_proposal,
+        active_proposal_type=active_proposal_type,
+    )
+    # The action picker only makes sense for a plain conversational question.
+    # A question that belongs to a proposal is already asking for a field.
+    turn["needsActionChoice"] = bool(
+        response.get("needsActionChoice") is True
+        and turn["outcome"] == "question"
+        and not turn["proposalType"]
+    )
+    return turn
+
+
+def _normalize_agent_turn_outcome(
+    response: dict[str, Any],
+    *,
+    has_active_proposal: bool,
+    active_proposal_type: str = "",
+) -> dict[str, Any]:
     outcome = _single_line(response.get("outcome"), 40).lower()
     reply = _remove_ambiguous_duplicate_preface(_single_line(response.get("reply"), 500))
     proposal_type = _single_line(response.get("proposalType"), 80).lower()
@@ -643,6 +703,7 @@ __all__ = [
     "build_agent_turn_prompt",
     "build_agent_proposal_revision_prompt",
     "normalize_agent_tool_context",
+    "normalize_agent_action_context",
     "normalize_agent_proposal_for_revision",
     "normalize_agent_proposal_for_turn",
     "normalize_agent_proposal_revision_conversation",

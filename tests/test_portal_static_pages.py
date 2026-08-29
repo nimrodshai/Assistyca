@@ -1236,6 +1236,57 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('resolvePendingAgentMessageActions("user-message")', handler)
         self.assertNotIn("createAgentProposalFromRequest(cleanText)", handler)
 
+    def test_chat_offers_an_action_picker_instead_of_asking_for_a_name(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # The agent sees the same active actions the panel shows, so it can ask
+        # which one the user means instead of guessing.
+        self.assertIn("function buildAgentActionContext", script)
+        self.assertIn("actionContext: buildAgentActionContext(),", script)
+        self.assertIn("function getAgentActionChoices", script)
+        self.assertIn("isActiveAgentActionStatus(action.status, action)", script)
+        self.assertIn("AGENT_ACTION_CHOICE_LIMIT", script)
+
+        reply_metadata = script[
+            script.index("function buildAgentReplyMetadata"):
+            script.index("async function handleAgentUserText")
+        ]
+        self.assertIn("turn?.needsActionChoice ? getAgentActionChoices() : []", reply_metadata)
+        self.assertIn('kind: "action-choice"', reply_metadata)
+        self.assertIn('createAgentAction(\n        "choose",', reply_metadata)
+
+        # Picking a card answers in chat with a name the numbering pass keeps unique.
+        choice_value = script[
+            script.index("function getAgentActionChoiceValue"):
+            script.index("function buildAgentActionContext")
+        ]
+        self.assertIn("return `The \u201c${String(choice?.name || \"\").trim()}\u201d action`;", choice_value)
+        self.assertIn("return refreshScheduledActionUniqueTitles([", script)
+
+        picker = script[
+            script.index("function createAgentActionChoiceCard"):
+            script.index("function renderAgentMessageBubbleContent")
+        ]
+        self.assertIn('button.dataset.agentMessageAction = "choose";', picker)
+        self.assertIn("button.dataset.agentActionValue = getAgentActionChoiceValue(choice);", picker)
+        self.assertIn("areAgentMessageActionsResolved(message, agent.messages)", picker)
+
+        # The card replaces the plain chip row rather than doubling it.
+        renderable = script[
+            script.index("function getAgentRenderableMessageActions"):
+            script.index("function normalizeAgentProposalFieldKey")
+        ]
+        self.assertIn('if (kind === "action-choice") {\n    return [];', renderable)
+        self.assertIn(
+            'if (kind === "action-choice" && getAgentMessageActionChoices(message).length) {',
+            script,
+        )
+
+        self.assertIn(".agent-message-action-picker {", styles)
+        self.assertIn(".agent-message-action-picker-option {", styles)
+        self.assertIn("background: var(--surface-soft);", styles)
+
     def test_page_scripts_resolve_from_the_url_the_page_is_served_at(self) -> None:
         """Resolve each <script src> the way a browser does, against the request URL.
 

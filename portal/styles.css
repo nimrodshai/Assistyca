@@ -3338,6 +3338,72 @@ body[data-modal="billing"] .app-shell {
   display: none;
 }
 
+.agent-message-action-picker {
+  width: min(100%, 34rem);
+  padding: 0.85rem 0.9rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-soft);
+  box-shadow: var(--shadow-soft);
+}
+
+.agent-message-action-picker-eyebrow {
+  display: block;
+  margin-bottom: 0.55rem;
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.agent-message-action-picker-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.agent-message-action-picker-option {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.agent-message-action-picker-option:hover:not(:disabled),
+.agent-message-action-picker-option:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.agent-message-action-picker-option:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.agent-message-action-picker-option:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.agent-message-action-picker-name {
+  font-size: 0.94rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.agent-message-action-picker-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .agent-message-connection-card {
   width: min(100%, 34rem);
   padding: 1.05rem 1.15rem 1.1rem;

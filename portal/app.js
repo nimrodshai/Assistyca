@@ -415,6 +415,7 @@ const AGENT_MAX_NOTIFICATIONS = 100;
 const AGENT_MAX_CHATS = 30;
 const AGENT_MAX_FOLDERS = 80;
 const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
+const AGENT_ACTION_CHOICE_LIMIT = 20;
 const AGENT_COMPOSER_MAX_LINES = 5;
 const VALID_AGENT_PANEL_MODES = new Set(["actions", "chats", "folders"]);
 const VALID_AGENT_FOLDER_SORTS = new Set(["recent", "name", "type", "count"]);
@@ -3736,6 +3737,17 @@ function normalizeAgentMessage(value = {}) {
       }))
       .filter((action) => action.id && action.label)
     : [];
+  if (Array.isArray(metadata.actionChoices)) {
+    metadata.actionChoices = metadata.actionChoices
+      .filter((choice) => choice && typeof choice === "object")
+      .map((choice) => ({
+        id: String(choice.id || "").trim(),
+        name: String(choice.name || "").trim(),
+        status: String(choice.status || "").trim(),
+        created: String(choice.created || "").trim(),
+      }))
+      .filter((choice) => choice.name);
+  }
 
   return {
     id: normalizeAgentTextItem(source.id, createAgentId("agent-message")),
@@ -13656,6 +13668,10 @@ function getAgentRenderableMessageActions(message, kind, proposal) {
     return [];
   }
 
+  if (kind === "action-choice") {
+    return [];
+  }
+
   if (kind === "question" && proposal && !proposal.approved && proposal.status !== "rejected") {
     const questionIndex = Math.max(0, Number(message.metadata?.questionIndex || proposal.questionIndex || 0) || 0);
     const questionText = getAgentDisplayMessageText(message, kind, proposal);
@@ -15204,6 +15220,51 @@ function appendAgentResultActionLink(bubble, message, displayText, proposal) {
   bubble.append(linkButton, document.createTextNode("."));
 }
 
+function getAgentMessageActionChoices(message) {
+  return Array.isArray(message?.metadata?.actionChoices) ? message.metadata.actionChoices : [];
+}
+
+function createAgentActionChoiceCard(message) {
+  const card = document.createElement("section");
+  card.className = "agent-message-action-picker";
+  card.setAttribute("aria-label", "Choose one of your actions");
+
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "agent-message-action-picker-eyebrow";
+  eyebrow.textContent = "Your active actions";
+  card.append(eyebrow);
+
+  const list = document.createElement("div");
+  list.className = "agent-message-action-picker-list";
+  const agent = getAgentWorkspace();
+  const resolved = Boolean(agentTurnBusy || areAgentMessageActionsResolved(message, agent.messages));
+  for (const choice of getAgentMessageActionChoices(message)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "agent-message-action-picker-option";
+    button.dataset.agentMessageAction = "choose";
+    button.dataset.agentActionValue = getAgentActionChoiceValue(choice);
+    button.dataset.agentActionMessage = message.id;
+    button.disabled = resolved;
+
+    const name = document.createElement("span");
+    name.className = "agent-message-action-picker-name";
+    name.textContent = String(choice?.name || "Action");
+    button.append(name);
+
+    const meta = [choice?.status, choice?.created].map((part) => String(part || "").trim()).filter(Boolean);
+    if (meta.length) {
+      const detail = document.createElement("span");
+      detail.className = "agent-message-action-picker-meta";
+      detail.textContent = meta.join(" · ");
+      button.append(detail);
+    }
+    list.append(button);
+  }
+  card.append(list);
+  return card;
+}
+
 function renderAgentMessageBubbleContent(bubble, message, kind, proposal, displayText) {
   if (kind === "thinking") {
     const progressText = agentTurnProgressText || "Thinking";
@@ -15264,6 +15325,9 @@ function renderAgentMessage(message) {
   if (kind === "whatsapp-reply-suggestion") {
     row.append(createAgentWhatsAppReplyCard(message));
   }
+  if (kind === "action-choice" && getAgentMessageActionChoices(message).length) {
+    row.append(createAgentActionChoiceCard(message));
+  }
 
   const actions = getAgentRenderableMessageActions(message, kind, proposal);
   if (actions.length && message.role !== "user") {
@@ -15305,6 +15369,9 @@ function getAgentMessageRenderSignature(messages) {
     message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.status || message.metadata?.approvalStatus || "") : "",
     message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approvalError || "") : "",
     message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.suggested_reply || "") : "",
+    message.metadata?.kind === "action-choice"
+      ? getAgentMessageActionChoices(message).map((choice) => [choice?.name || "", choice?.status || "", choice?.created || ""])
+      : "",
     message.metadata?.proposalId || "",
     message.metadata?.actionId || "",
     message.metadata?.showActionLink ? "show-action-link" : "",
@@ -17188,6 +17255,44 @@ function sortScheduledActionsByCreatedAt(actions) {
       return createdDifference || left.index - right.index;
     })
     .map((entry) => entry.action);
+}
+
+function formatAgentActionChoiceCreated(action) {
+  const createdTime = getScheduledActionCreatedTime(action);
+  if (!Number.isFinite(createdTime)) {
+    return "";
+  }
+  return formatScheduledActionDate(new Date(createdTime).toISOString(), action?.timezone);
+}
+
+function getAgentActionChoices() {
+  const active = sortScheduledActionsByCreatedAt(
+    getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status, action)),
+  );
+  return active
+    .slice(0, AGENT_ACTION_CHOICE_LIMIT)
+    .map((action) => ({
+      id: String(action.id || ""),
+      name: getScheduledActionTitle(action),
+      status: getScheduledActionStatusLabel(action.status, action),
+      created: formatAgentActionChoiceCreated(action),
+    }))
+    .filter((choice) => Boolean(choice.name));
+}
+
+function getAgentActionChoiceValue(choice) {
+  // A picked choice goes back to the agent as ordinary chat text. The rendered
+  // list already numbers repeated titles, so the name on its own names one
+  // action.
+  return `The “${String(choice?.name || "").trim()}” action`;
+}
+
+function buildAgentActionContext() {
+  return getAgentActionChoices().map((choice) => ({
+    name: choice.name,
+    status: choice.status,
+    created: choice.created,
+  }));
 }
 
 function getScheduledActionItemSignature(action) {
@@ -19865,13 +19970,27 @@ async function applyAgentTurnResponse(turn, userText) {
   }
 
   if (reply) {
-    pushAgentMessage(
-      "assistant",
-      reply,
-      { kind: outcome === "question" ? "question" : "text" },
-    );
+    pushAgentMessage("assistant", reply, buildAgentReplyMetadata(turn, outcome));
   }
   return true;
+}
+
+function buildAgentReplyMetadata(turn, outcome) {
+  // The agent asks which existing action the user means; the picker answers it
+  // so nobody has to retype an action title.
+  const choices = turn?.needsActionChoice ? getAgentActionChoices() : [];
+  if (choices.length) {
+    return {
+      kind: "action-choice",
+      actionChoices: choices,
+      actions: choices.map((choice) => createAgentAction(
+        "choose",
+        choice.name,
+        getAgentActionChoiceValue(choice),
+      )),
+    };
+  }
+  return { kind: outcome === "question" ? "question" : "text" };
 }
 
 async function handleAgentUserText(text) {
@@ -19954,6 +20073,7 @@ async function handleAgentUserText(text) {
         conversation,
         activeProposal: activeProposalPayload,
         toolContext: buildAgentToolContext(),
+        actionContext: buildAgentActionContext(),
         sourceContext,
       },
     });

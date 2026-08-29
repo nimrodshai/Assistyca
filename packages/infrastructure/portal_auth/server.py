@@ -46,6 +46,7 @@ from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import AGENT_TURN_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
+from packages.infrastructure.agent_proposals import normalize_agent_action_context
 from packages.infrastructure.agent_proposals import normalize_agent_tool_context
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
@@ -5032,6 +5033,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         tool_context = normalize_agent_tool_context(payload.get("toolContext"))
         source_context = normalize_agent_source_context(payload.get("sourceContext"))
+        action_context = normalize_agent_action_context(payload.get("actionContext"))
         prompt = build_agent_turn_prompt(
             user_message=user_message,
             conversation=conversation,
@@ -5039,6 +5041,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             active_proposal=active_proposal,
             tool_context=tool_context,
             source_context=source_context,
+            action_context=action_context,
         )
         model = resolve_task_model(
             AGENT_TURN_COMPLEXITY,

@@ -10,8 +10,10 @@ from unittest.mock import patch
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from packages.infrastructure.agent_proposals import AGENT_ACTION_CONTEXT_MAX_ITEMS
 from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
+from packages.infrastructure.agent_proposals import normalize_agent_action_context
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
@@ -123,6 +125,78 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn('"activeProposal":{"id":"proposal-1"', prompt)
         self.assertIn('"latestUserMessage":"No, let\'s change it to 13:50"', prompt)
         self.assertIn("not a new request", prompt)
+
+    def test_action_context_keeps_only_display_details(self) -> None:
+        actions = normalize_agent_action_context([
+            {"id": 41, "name": "Receipt collector", "status": "Manual", "created": "Aug 23, 9:25 AM"},
+            {"title": "Web monitor", "status": "Live", "secretToken": "shhh"},
+            {"name": "   "},
+            "Not an action",
+        ])
+
+        self.assertEqual(actions, [
+            {"name": "Receipt collector", "status": "Manual", "created": "Aug 23, 9:25 AM"},
+            {"name": "Web monitor", "status": "Live"},
+        ])
+
+    def test_action_context_caps_the_list(self) -> None:
+        actions = normalize_agent_action_context([
+            {"name": f"Action {index}"} for index in range(40)
+        ])
+
+        self.assertEqual(len(actions), AGENT_ACTION_CONTEXT_MAX_ITEMS)
+        self.assertEqual(actions[0]["name"], "Action 0")
+
+    def test_turn_prompt_lists_existing_actions_for_the_picker(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="I want to make one of my actions scheduled instead of a one timer.",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            action_context=[
+                {"name": "Receipt collector", "status": "Manual"},
+                {"name": "Web monitor", "status": "Live"},
+            ],
+        )
+
+        self.assertIn('"existingActions"', prompt)
+        self.assertIn('"name":"Receipt collector"', prompt)
+        self.assertIn("needsActionChoice=true", prompt)
+        self.assertIn("do not name the actions yourself", prompt)
+
+    def test_turn_response_keeps_action_choice_flag_on_a_plain_question(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which action should I put on a schedule?",
+                "needsActionChoice": True,
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["outcome"], "question")
+        self.assertTrue(turn["needsActionChoice"])
+
+    def test_turn_response_drops_action_choice_flag_outside_a_plain_question(self) -> None:
+        setup_question = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Where should I send the summary?",
+                "proposalType": "email-digest",
+                "needsActionChoice": True,
+            },
+            has_active_proposal=False,
+        )
+        chat_reply = normalize_agent_turn_response(
+            {
+                "outcome": "message",
+                "reply": "You have five active actions right now.",
+                "needsActionChoice": True,
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertFalse(setup_question["needsActionChoice"])
+        self.assertFalse(chat_reply["needsActionChoice"])
 
     def test_conversational_turn_prompt_uses_field_based_intake(self) -> None:
         prompt = build_agent_turn_prompt(
