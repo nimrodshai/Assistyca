@@ -24,6 +24,10 @@ from packages.infrastructure.mail_search import matches as query_matches
 from packages.infrastructure.mail_search import to_graph_search
 
 GRAPH_MESSAGES_API_URL = "https://graph.microsoft.com/v1.0/me/messages"
+# Mail.Read does not cover /me, so reading the mailbox address needs User.Read
+# alongside it. Without that grant this returns nothing and the connection
+# falls back to a label the user types.
+GRAPH_ME_API_URL = "https://graph.microsoft.com/v1.0/me"
 # Gmail's ``in:inbox`` has no KQL equivalent, so the inbox is a different
 # collection instead. Without this a digest would also read Sent and Archive.
 GRAPH_INBOX_MESSAGES_API_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
@@ -179,7 +183,40 @@ class OutlookAccessValidator:
         return {
             "outlookValidation": "ok",
             "messageCount": len(messages or []),
+            "emailAddress": self.read_mailbox_address(token),
         }
+
+    def read_mailbox_address(self, access_token: str) -> str:
+        """Return the connected mailbox's own address, or "" if unavailable.
+
+        Identifying a mailbox is a convenience, not a permission check. An
+        Outlook connection made before User.Read was requested still works for
+        reading mail, so a rejection here must not fail the connect.
+        """
+
+        token = str(access_token or "").strip()
+        if not token:
+            return ""
+
+        params = urllib_parse.urlencode({"$select": "mail,userPrincipalName"})
+        try:
+            payload = _graph_request(
+                self._opener,
+                f"{GRAPH_ME_API_URL}?{params}",
+                token,
+                timeout_seconds=self.timeout_seconds,
+            )
+        except (OutlookAuthorizationError, OutlookSummaryError, OSError):
+            return ""
+
+        if not isinstance(payload, dict):
+            return ""
+        address = str(payload.get("mail") or "").strip()
+        if not address:
+            # A work account without a routable mail attribute still has a UPN,
+            # which is an address-shaped identifier good enough to label it.
+            address = str(payload.get("userPrincipalName") or "").strip()
+        return address.lower()
 
 
 class OutlookDigestRunner:

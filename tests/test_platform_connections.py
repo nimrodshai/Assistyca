@@ -478,8 +478,12 @@ class PlatformConnectionTests(unittest.TestCase):
                 if "gmail.googleapis.com" not in request.full_url:
                     raise _NotMine
                 self.assertEqual(timeout, 20)
-                self.assertTrue(request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"))
                 self.assertEqual(request.get_header("Authorization"), "Bearer popup-google-gmail-access-token")
+                # Connecting also reads the mailbox's own address, which is how
+                # a user tells two connected Gmail accounts apart.
+                if request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/profile"):
+                    return _JsonResponse({"emailAddress": "Popup.Owner@Gmail.com"})
+                self.assertTrue(request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"))
                 return _JsonResponse({"messages": [], "resultSizeEstimate": 0})
 
             request = urllib_request.Request(
@@ -506,6 +510,8 @@ class PlatformConnectionTests(unittest.TestCase):
             self.assertEqual(payload["connection"]["connectionStatus"], "connected")
             self.assertEqual(payload["connection"]["metadata"]["provider"], "google_gmail")
             self.assertEqual(payload["connection"]["metadata"]["scope"], GOOGLE_GMAIL_OAUTH_SCOPE)
+            # The address is stored lowercased so it can key the connection.
+            self.assertEqual(payload["connection"]["accountAddress"], "popup.owner@gmail.com")
             self.assertNotIn("popup-gmail-refresh-token-that-stays-encrypted", json.dumps(payload))
 
             with sqlite3.connect(str(db_path)) as database:
@@ -569,8 +575,10 @@ class PlatformConnectionTests(unittest.TestCase):
                 if "gmail.googleapis.com" not in request.full_url:
                     raise _NotMine
                 self.assertEqual(timeout, 20)
-                self.assertTrue(request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"))
                 self.assertEqual(request.get_header("Authorization"), "Bearer popup-google-multi-access-token")
+                if request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/profile"):
+                    return _JsonResponse({"emailAddress": "multi.owner@gmail.com"})
+                self.assertTrue(request.full_url.startswith("https://gmail.googleapis.com/gmail/v1/users/me/messages?"))
                 return _JsonResponse({"messages": [], "resultSizeEstimate": 0})
 
             request = urllib_request.Request(

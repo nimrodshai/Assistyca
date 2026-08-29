@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import month_window
+from packages.infrastructure.outlook_summary import GRAPH_ME_API_URL
 from packages.infrastructure.outlook_summary import OutlookAccessValidator
 from packages.infrastructure.outlook_summary import OutlookAuthorizationError
 from packages.infrastructure.outlook_summary import OutlookDigestRunner
@@ -352,13 +353,44 @@ class OutlookFailureTests(unittest.TestCase):
 class OutlookValidatorTests(unittest.TestCase):
     def test_a_working_grant_validates(self) -> None:
         def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            # Validating also reads the mailbox address, so a user can tell
+            # two connected Outlook accounts apart.
+            if request.full_url.startswith(f"{GRAPH_ME_API_URL}?"):  # type: ignore[attr-defined]
+                return _FakeResponse({"mail": "Owner@Contoso.com"})
             self.assertIn("%24top=1", request.full_url)  # type: ignore[attr-defined]
             return _FakeResponse({"value": [{"id": "msg-1"}]})
 
         self.assertEqual(
             OutlookAccessValidator(opener=opener).validate("token"),
-            {"outlookValidation": "ok", "messageCount": 1},
+            {
+                "outlookValidation": "ok",
+                "messageCount": 1,
+                "emailAddress": "owner@contoso.com",
+            },
         )
+
+    def test_a_mailbox_without_a_mail_attribute_falls_back_to_the_principal_name(self) -> None:
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            if request.full_url.startswith(f"{GRAPH_ME_API_URL}?"):  # type: ignore[attr-defined]
+                return _FakeResponse({"mail": "", "userPrincipalName": "owner@contoso.onmicrosoft.com"})
+            return _FakeResponse({"value": []})
+
+        self.assertEqual(
+            OutlookAccessValidator(opener=opener).validate("token")["emailAddress"],
+            "owner@contoso.onmicrosoft.com",
+        )
+
+    def test_a_refused_profile_read_still_leaves_the_grant_usable(self) -> None:
+        # An Outlook connection made before User.Read was requested can still
+        # read mail. It just has no address until it is reconnected.
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            if request.full_url.startswith(f"{GRAPH_ME_API_URL}?"):  # type: ignore[attr-defined]
+                raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)  # type: ignore[arg-type]
+            return _FakeResponse({"value": [{"id": "msg-1"}]})
+
+        result = OutlookAccessValidator(opener=opener).validate("token")
+        self.assertEqual(result["outlookValidation"], "ok")
+        self.assertEqual(result["emailAddress"], "")
 
     def test_an_empty_mailbox_still_validates(self) -> None:
         def opener(request, *, timeout):  # type: ignore[no-untyped-def]

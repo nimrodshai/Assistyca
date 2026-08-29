@@ -91,6 +91,36 @@ class BillingPlan:
     output_token_price_multiplier: float = DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
 
 
+# Generic app connections intentionally store only encrypted credential
+# ciphertext. The encryption key lives outside SQLite in the deployment
+# secret manager; this table is never serialized into agent prompts.
+#
+# Kept out of SCHEMA_SQL so the bootstrap and the multi-mailbox rebuild in
+# _relax_platform_connection_uniqueness share one definition.
+PLATFORM_CONNECTIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS platform_connections (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    auth_type TEXT NOT NULL DEFAULT 'api_token',
+    secret_ciphertext TEXT NOT NULL,
+    key_version TEXT NOT NULL DEFAULT '1',
+    secret_fingerprint TEXT NOT NULL DEFAULT '',
+    secret_hint TEXT NOT NULL DEFAULT '',
+    connection_status TEXT NOT NULL DEFAULT 'connected',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    account_address TEXT NOT NULL DEFAULT '',
+    account_label TEXT NOT NULL DEFAULT '',
+    connected_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    -- A user may hold several mailboxes, so uniqueness is per account rather
+    -- than per platform. Single-account platforms leave account_address empty,
+    -- which keeps their old one-row-per-platform behaviour intact.
+    UNIQUE(user_id, platform, account_address),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,26 +224,6 @@ CREATE TABLE IF NOT EXISTS whatsapp_connections (
     last_tested_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
--- Generic app connections intentionally store only encrypted credential
--- ciphertext. The encryption key lives outside SQLite in the deployment
--- secret manager; this table is never serialized into agent prompts.
-CREATE TABLE IF NOT EXISTS platform_connections (
-    id TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    platform TEXT NOT NULL,
-    auth_type TEXT NOT NULL DEFAULT 'api_token',
-    secret_ciphertext TEXT NOT NULL,
-    key_version TEXT NOT NULL DEFAULT '1',
-    secret_fingerprint TEXT NOT NULL DEFAULT '',
-    secret_hint TEXT NOT NULL DEFAULT '',
-    connection_status TEXT NOT NULL DEFAULT 'connected',
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    connected_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(user_id, platform),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -806,6 +816,7 @@ class PortalDatabase:
     def _initialize(self) -> None:
         with self._init_lock:
             with self._connection() as conn:
+                conn.executescript(PLATFORM_CONNECTIONS_TABLE_SQL)
                 conn.executescript(SCHEMA_SQL)
                 self._migrate_users_table(conn)
                 self._migrate_user_billing_table(conn)
@@ -948,6 +959,52 @@ class PortalDatabase:
             conn.execute("ALTER TABLE platform_connections ADD COLUMN key_version TEXT NOT NULL DEFAULT '1'")
         if "secret_fingerprint" not in columns:
             conn.execute("ALTER TABLE platform_connections ADD COLUMN secret_fingerprint TEXT NOT NULL DEFAULT ''")
+        if "account_address" not in columns:
+            conn.execute("ALTER TABLE platform_connections ADD COLUMN account_address TEXT NOT NULL DEFAULT ''")
+        if "account_label" not in columns:
+            conn.execute("ALTER TABLE platform_connections ADD COLUMN account_label TEXT NOT NULL DEFAULT ''")
+        self._relax_platform_connection_uniqueness(conn)
+
+    def _relax_platform_connection_uniqueness(self, conn: sqlite3.Connection) -> None:
+        """Widen UNIQUE(user_id, platform) to include the account address.
+
+        Databases created before multi-mailbox support carry a table-level
+        UNIQUE(user_id, platform), which makes connecting a second mailbox
+        overwrite the first. SQLite cannot drop a table constraint, so the
+        table is rebuilt once. Existing rows keep an empty account_address,
+        which preserves one-row-per-platform for every single-account
+        platform and for a legacy mailbox until it is next identified.
+        """
+
+        table_sql = ""
+        for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'platform_connections'"
+        ).fetchall():
+            table_sql = normalize_text(row["sql"])
+        # Test for the widened constraint, not for the columns: the ADD COLUMN
+        # calls above already put account_address into this SQL, so a column
+        # check here would always report the rebuild as done.
+        if not table_sql or "UNIQUE(user_id, platform, account_address)" in table_sql:
+            return
+
+        conn.execute("ALTER TABLE platform_connections RENAME TO platform_connections_legacy")
+        conn.executescript(PLATFORM_CONNECTIONS_TABLE_SQL)
+        conn.execute(
+            """
+            INSERT INTO platform_connections (
+                id, user_id, platform, auth_type, secret_ciphertext,
+                key_version, secret_fingerprint, secret_hint,
+                connection_status, metadata_json, account_address, account_label,
+                connected_at, updated_at
+            )
+            SELECT id, user_id, platform, auth_type, secret_ciphertext,
+                   key_version, secret_fingerprint, secret_hint,
+                   connection_status, metadata_json, account_address, account_label,
+                   connected_at, updated_at
+            FROM platform_connections_legacy
+            """
+        )
+        conn.execute("DROP TABLE platform_connections_legacy")
 
     def _ensure_usage_events_tool_indexes(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -1618,7 +1675,8 @@ class PortalDatabase:
         row = conn.execute(
             f"""
             SELECT id, user_id, platform, auth_type, secret_hint,
-                   connection_status, metadata_json, connected_at, updated_at
+                   connection_status, metadata_json, account_address, account_label,
+                   connected_at, updated_at
             FROM platform_connections
             WHERE {" AND ".join(where)}
             LIMIT 1
@@ -1637,6 +1695,8 @@ class PortalDatabase:
             "secretHint": normalize_text(payload.get("secret_hint")),
             "connectionStatus": normalize_text(payload.get("connection_status")) or "connected",
             "metadata": _load_json_dict(payload.get("metadata_json")),
+            "accountAddress": normalize_text(payload.get("account_address")),
+            "accountLabel": normalize_text(payload.get("account_label")),
             "connectedAt": normalize_text(payload.get("connected_at")),
             "updatedAt": normalize_text(payload.get("updated_at")),
             "hasCredential": True,
@@ -2950,6 +3010,140 @@ class PortalDatabase:
             ).fetchone()
             return normalize_text(row["secret_ciphertext"]) if row else None
 
+    def list_platform_connection_secret_records(
+        self,
+        email: str,
+        platform: str,
+        *,
+        include_statuses: tuple[str, ...] = ("connected",),
+    ) -> list[dict[str, str]]:
+        """Return every account on a platform, with ciphertext, for server-side runs.
+
+        This is the multi-account counterpart of
+        ``get_platform_connection_ciphertext``. Callers must keep
+        ``secretCiphertext`` inside the server process; it is never serialized
+        to the portal or into an agent prompt. Ordering is stable so a fan-out
+        reads a user's mailboxes in the same order every run.
+        """
+
+        normalized_email = normalize_email(email)
+        normalized_platform = normalize_text(platform).lower()
+        if not normalized_email or not normalized_platform:
+            return []
+
+        statuses = tuple(
+            normalized_status
+            for normalized_status in (
+                normalize_text(status).lower() for status in include_statuses
+            )
+            if normalized_status
+        )
+        if not statuses:
+            return []
+
+        placeholders = ", ".join("?" for _ in statuses)
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                return []
+            if user_id <= 0:
+                return []
+            rows = conn.execute(
+                f"""
+                SELECT id, platform, auth_type, secret_ciphertext,
+                       account_address, account_label, connection_status, metadata_json
+                FROM platform_connections
+                WHERE user_id = ? AND platform = ? AND connection_status IN ({placeholders})
+                ORDER BY account_address ASC, connected_at ASC, id ASC
+                """,
+                (user_id, normalized_platform, *statuses),
+            ).fetchall()
+            return [
+                {
+                    "id": normalize_text(row["id"]),
+                    "platform": normalize_text(row["platform"]).lower(),
+                    "authType": normalize_text(row["auth_type"]).lower() or "api_token",
+                    "secretCiphertext": normalize_text(row["secret_ciphertext"]),
+                    "accountAddress": normalize_text(row["account_address"]),
+                    "accountLabel": normalize_text(row["account_label"]),
+                    "connectionStatus": normalize_text(row["connection_status"]).lower() or "connected",
+                    "metadata": _load_json_dict(row["metadata_json"]),
+                }
+                for row in rows
+            ]
+
+    def set_platform_connection_account(
+        self,
+        email: str,
+        *,
+        connection_id: str,
+        account_address: str = "",
+        account_label: str = "",
+    ) -> dict[str, Any] | None:
+        """Name one connection's account, ignoring a change that would collide.
+
+        Used to identify a mailbox saved before addresses were captured, and to
+        let a user rename an account from the portal.
+        """
+
+        normalized_email = normalize_email(email)
+        normalized_id = normalize_text(connection_id)
+        if not normalized_email or not normalized_id:
+            return None
+
+        normalized_address = normalize_email(account_address) or normalize_text(account_address).lower()
+        normalized_label = normalize_text(account_label)
+        with self._connection() as conn:
+            try:
+                user_id = self._resolve_active_user_id(conn, normalized_email)
+            except (KeyError, ValueError):
+                return None
+            row = conn.execute(
+                "SELECT platform, account_address FROM platform_connections WHERE user_id = ? AND id = ? LIMIT 1",
+                (user_id, normalized_id),
+            ).fetchone()
+            if row is None:
+                return None
+
+            if normalized_address and normalized_address != normalize_text(row["account_address"]):
+                clash = conn.execute(
+                    """
+                    SELECT id FROM platform_connections
+                    WHERE user_id = ? AND platform = ? AND account_address = ? AND id <> ?
+                    LIMIT 1
+                    """,
+                    (user_id, normalize_text(row["platform"]).lower(), normalized_address, normalized_id),
+                ).fetchone()
+                if clash is not None:
+                    # That account is already connected under another row.
+                    # Leaving both intact beats silently merging two credentials.
+                    return None
+
+            conn.execute(
+                """
+                UPDATE platform_connections
+                SET account_address = CASE WHEN ? <> '' THEN ? ELSE account_address END,
+                    account_label = CASE WHEN ? <> '' THEN ? ELSE account_label END,
+                    updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (
+                    normalized_address,
+                    normalized_address,
+                    normalized_label,
+                    normalized_label,
+                    now_iso(),
+                    user_id,
+                    normalized_id,
+                ),
+            )
+            return self._load_platform_connection_row(
+                conn,
+                user_id=user_id,
+                connection_id=normalized_id,
+            )
+
     def get_platform_connection_secret_record(
         self,
         email: str,
@@ -3032,9 +3226,15 @@ class PortalDatabase:
         secret_fingerprint: str = "",
         metadata: dict[str, Any] | None = None,
         connection_status: str = "connected",
+        account_address: str = "",
+        account_label: str = "",
     ) -> dict[str, Any]:
         normalized_email = normalize_email(email)
         normalized_platform = normalize_text(platform).lower()
+        # The account address identifies which of a user's several accounts
+        # this row is. Single-account platforms pass nothing and keep one row.
+        normalized_address = normalize_email(account_address) or normalize_text(account_address).lower()
+        normalized_label = normalize_text(account_label)
         normalized_auth_type = normalize_text(auth_type).lower() or "api_token"
         normalized_ciphertext = normalize_text(secret_ciphertext)
         normalized_hint = normalize_text(secret_hint)
@@ -3057,11 +3257,26 @@ class PortalDatabase:
                 """
                 SELECT id, connected_at
                 FROM platform_connections
-                WHERE user_id = ? AND platform = ?
+                WHERE user_id = ? AND platform = ? AND account_address = ?
                 LIMIT 1
                 """,
-                (user_id, normalized_platform),
+                (user_id, normalized_platform, normalized_address),
             ).fetchone()
+            if existing is None and normalized_address:
+                # A row saved before addresses were captured is unidentified.
+                # The connect happening now is the best identification available,
+                # so adopt that row instead of leaving a stale duplicate beside
+                # the new one. Rows that already carry an address are untouched,
+                # so a genuine second mailbox still lands as its own row.
+                existing = conn.execute(
+                    """
+                    SELECT id, connected_at
+                    FROM platform_connections
+                    WHERE user_id = ? AND platform = ? AND account_address = ''
+                    LIMIT 1
+                    """,
+                    (user_id, normalized_platform),
+                ).fetchone()
             connection_id = normalize_text(existing["id"]) if existing else ""
             connected_at = normalize_text(existing["connected_at"]) if existing else ""
             if not connection_id:
@@ -3076,9 +3291,13 @@ class PortalDatabase:
                     id, user_id, platform, auth_type, secret_ciphertext,
                     key_version, secret_fingerprint,
                     secret_hint, connection_status, metadata_json,
+                    account_address, account_label,
                     connected_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, platform) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                -- The row to reuse was already resolved above, so the conflict
+                -- target is the id. Keying it on (user_id, platform) would
+                -- collapse a second mailbox back onto the first.
+                ON CONFLICT(id) DO UPDATE SET
                     auth_type = excluded.auth_type,
                     secret_ciphertext = excluded.secret_ciphertext,
                     key_version = excluded.key_version,
@@ -3086,6 +3305,8 @@ class PortalDatabase:
                     secret_hint = excluded.secret_hint,
                     connection_status = excluded.connection_status,
                     metadata_json = excluded.metadata_json,
+                    account_address = excluded.account_address,
+                    account_label = excluded.account_label,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -3099,6 +3320,8 @@ class PortalDatabase:
                     normalized_hint,
                     normalized_status,
                     metadata_json,
+                    normalized_address,
+                    normalized_label,
                     connected_at,
                     now,
                 ),
@@ -3113,16 +3336,24 @@ class PortalDatabase:
         self,
         email: str,
         *,
-        platform: str,
+        platform: str = "",
+        connection_id: str = "",
         connection_status: str,
         metadata_updates: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Update non-secret connection health metadata after provider validation."""
+        """Update non-secret connection health metadata after provider validation.
+
+        Pass ``connection_id`` to flag one specific account. Passing only
+        ``platform`` still resolves to a single row, which is right for
+        single-account platforms but would pick an arbitrary mailbox once a
+        user has several.
+        """
 
         normalized_email = normalize_email(email)
         normalized_platform = normalize_text(platform).lower()
+        normalized_id = normalize_text(connection_id)
         normalized_status = normalize_text(connection_status).lower()
-        if not normalized_email or not normalized_platform:
+        if not normalized_email or (not normalized_platform and not normalized_id):
             return None
         if normalized_status not in {"connected", "needs_verification", "needs_attention", "disconnected"}:
             raise ValueError("Unsupported connection status.")
@@ -3131,14 +3362,15 @@ class PortalDatabase:
         now = now_iso()
         with self._connection() as conn:
             user_id = self._resolve_active_user_id(conn, normalized_email)
+            where = "id = ?" if normalized_id else "platform = ?"
             row = conn.execute(
-                """
+                f"""
                 SELECT id, metadata_json, connected_at
                 FROM platform_connections
-                WHERE user_id = ? AND platform = ?
+                WHERE user_id = ? AND {where}
                 LIMIT 1
                 """,
-                (user_id, normalized_platform),
+                (user_id, normalized_id or normalized_platform),
             ).fetchone()
             if row is None:
                 return None

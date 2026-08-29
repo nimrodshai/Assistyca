@@ -16,6 +16,9 @@ from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import to_gmail_query
 
 GMAIL_MESSAGES_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+# Reading the mailbox address is what lets a user tell two connected Gmail
+# accounts apart. gmail.readonly already covers this, so no extra consent.
+GMAIL_PROFILE_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 GMAIL_TIMEOUT_SECONDS = 20
 GMAIL_MAX_DIGEST_MESSAGES = 10
 GMAIL_MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE = mail_attachments.MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE
@@ -120,7 +123,38 @@ class GmailAccessValidator:
         return {
             "messageCount": len(messages or []),
             "resultSizeEstimate": int(payload.get("resultSizeEstimate") or 0),
+            "emailAddress": self.read_mailbox_address(token),
         }
+
+    def read_mailbox_address(self, access_token: str) -> str:
+        """Return the connected mailbox's own address, or "" if unavailable.
+
+        Identifying a mailbox is a convenience, not a permission check, so a
+        failure here must not fail the connect: the caller falls back to a
+        label the user types.
+        """
+
+        token = str(access_token or "").strip()
+        if not token:
+            return ""
+
+        request = urllib_request.Request(
+            GMAIL_PROFILE_API_URL,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            method="GET",
+        )
+        try:
+            with self._opener(request, timeout=self.timeout_seconds) as response:
+                raw = response.read()
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, OSError):
+            return ""
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return ""
+
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("emailAddress") or "").strip().lower()
 
 
 def _header_value(message: dict[str, Any], name: str) -> str:

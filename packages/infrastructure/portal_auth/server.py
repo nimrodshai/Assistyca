@@ -286,8 +286,14 @@ GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE = "google_calendar_refresh_token"
 MICROSOFT_OUTLOOK_OAUTH_PLATFORM = "email"
 MICROSOFT_OUTLOOK_OAUTH_PROVIDER = "microsoft_outlook"
 # Mail.Read is read-only. offline_access is what makes Microsoft return a
-# refresh token, the same way Google needs access_type=offline.
-MICROSOFT_OUTLOOK_OAUTH_SCOPE = "https://graph.microsoft.com/Mail.Read offline_access"
+# refresh token, the same way Google needs access_type=offline. User.Read is
+# what allows reading the mailbox's own address, which is how a user tells two
+# connected Outlook accounts apart; Mail.Read alone cannot reach /me. It is
+# also read-only, and a connection made before it was requested keeps working
+# without an address until it is next reconnected.
+MICROSOFT_OUTLOOK_OAUTH_SCOPE = (
+    "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access"
+)
 MICROSOFT_OAUTH_DEFAULT_TENANT = "common"
 MICROSOFT_OAUTH_AUTH_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
 MICROSOFT_OAUTH_TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
@@ -1998,6 +2004,79 @@ def relabel_mail_digest_result(result: dict[str, Any], header: str) -> dict[str,
     return next_result
 
 
+# "All mailboxes" is the default, so an action that names no mailbox reads
+# every one connected. These values mean the same thing in a saved action.
+ALL_MAILBOXES_TOKENS = {"", "all", "all mailboxes", "any", "every mailbox"}
+
+
+def mailbox_display_name(record: dict[str, Any]) -> str:
+    """Name one mailbox for a person: its address, else a label, else provider."""
+
+    address = normalize_text(record.get("accountAddress"))
+    if address:
+        return address
+    label = normalize_text(record.get("accountLabel"))
+    if label:
+        return label
+    provider = normalize_text((record.get("metadata") or {}).get("provider"))
+    return EMAIL_PROVIDER_LABELS.get(provider, "Email")
+
+
+def mailbox_matches_selection(record: dict[str, Any], selection: str) -> bool:
+    """Whether a saved action's mailbox choice points at this connection.
+
+    An action may name a mailbox by address, by the label the user gave it, or
+    by connection id. Address is what the portal writes; the others let a saved
+    action keep working after a rename.
+    """
+
+    wanted = normalize_text(selection).lower()
+    if wanted in ALL_MAILBOXES_TOKENS:
+        return True
+    candidates = {
+        normalize_text(record.get("accountAddress")).lower(),
+        normalize_text(record.get("accountLabel")).lower(),
+        normalize_text(record.get("id")).lower(),
+    }
+    candidates.discard("")
+    return wanted in candidates
+
+
+def merge_mail_digest_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fold per-mailbox digest results into the single shape the portal expects.
+
+    Every item carries the mailbox it came from, so a merged receipt bundle can
+    still say which account each row belongs to. A single-mailbox run merges to
+    the same shape it had before mailboxes could be plural.
+    """
+
+    merged_items: list[dict[str, Any]] = []
+    message_count = 0
+    for entry in results:
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        mailbox = normalize_text(entry.get("mailbox"))
+        message_count += int(result.get("messageCount") or 0)
+        items = result.get("items") if isinstance(result.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            merged_item = dict(item)
+            # Never overwrite a mailbox the reader already set.
+            merged_item.setdefault("mailbox", mailbox)
+            merged_items.append(merged_item)
+
+    first_result = results[0].get("result") if results and isinstance(results[0].get("result"), dict) else {}
+    merged: dict[str, Any] = dict(first_result)
+    merged["items"] = merged_items
+    merged["messageCount"] = message_count
+    if len(results) > 1:
+        # The single-mailbox wording came from one reader and would now be
+        # wrong, so state the combined count instead.
+        merged["summary"] = f"{len(results)} mailboxes - {message_count} message(s)"
+        merged["message"] = merged["summary"]
+    return merged
+
+
 def normalize_import_text(value: Any) -> str:
     return normalize_text(value).translate(WHATSAPP_HISTORY_IMPORT_CONTROL_CHARS).strip()
 
@@ -3534,6 +3613,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         for scope_id in granted_scope_ids:
             platform = GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID[scope_id]
             provider = GOOGLE_OAUTH_PROVIDER_BY_SCOPE_ID[scope_id]
+            # Only mailboxes are held per account. Calendar and Drive stay
+            # one-per-user, so they save with an empty address and keep their
+            # existing single-row behaviour.
+            account_address = (
+                normalize_text(validation_results.get("gmail", {}).get("emailAddress"))
+                if scope_id == "gmail"
+                else ""
+            )
             connection = self.database.save_platform_connection(
                 session.email,
                 platform=platform,
@@ -3542,6 +3629,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 secret_hint="Google OAuth",
                 key_version=self.credential_vault.key_version,
                 secret_fingerprint=secret_fingerprint,
+                account_address=account_address,
                 metadata={
                     "provider": provider,
                     "authFlow": "google_oauth",
@@ -3743,6 +3831,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             secret_hint="Microsoft OAuth",
             key_version=self.credential_vault.key_version,
             secret_fingerprint=secret_fingerprint,
+            account_address=normalize_text(validation.get("emailAddress")),
             metadata={
                 "provider": MICROSOFT_OUTLOOK_OAUTH_PROVIDER,
                 "authFlow": "microsoft_oauth",
@@ -4743,13 +4832,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            ciphertext = self.database.get_platform_connection_ciphertext(
+            vault = self.credential_vault
+            mailbox_records = self.database.list_platform_connection_secret_records(
                 session.email,
                 GOOGLE_GMAIL_OAUTH_PLATFORM,
                 include_statuses=("connected", "needs_attention"),
             )
-            vault = self.credential_vault
-            if not ciphertext or vault is None:
+            if not mailbox_records or vault is None:
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
                     "error": "email_setup_required",
@@ -4757,38 +4846,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
                 return
 
-            email_provider = GOOGLE_GMAIL_OAUTH_PROVIDER
-            try:
-                stored_email_secret = vault.decrypt(ciphertext)
-                email_provider = self._saved_email_provider(stored_email_secret)
-                access_token, credential_source = self._resolve_email_access_token(
-                    stored_email_secret,
-                    provider=email_provider,
-                )
-            except CredentialVaultError:
+            # An action reads every connected mailbox unless it names one.
+            # This is deliberately not the older "mailbox" field: that one
+            # holds a provider label such as "Outlook", and saved actions
+            # still carry it.
+            mailbox_selection = normalize_text(
+                fields.get("mailboxAccount") or payload.get("mailboxAccount")
+            )
+            selected_records = [
+                record for record in mailbox_records
+                if mailbox_matches_selection(record, mailbox_selection)
+            ]
+            if not selected_records:
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
-                    "error": "email_setup_required",
-                    "message": "The saved mailbox connection could not be opened securely. Reconnect it and try again.",
+                    "error": "mailbox_not_connected",
+                    "message": (
+                        f"This action reads {mailbox_selection}, which is not connected any more. "
+                        "Open Email setup to reconnect it, or edit the action to read a mailbox you have."
+                    ),
                 })
                 return
-            except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                self.database.update_platform_connection_status(
-                    session.email,
-                    platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
-                    connection_status="needs_attention",
-                    metadata_updates={
-                        "provider": email_provider,
-                        "validationStatus": "failed",
-                        "validatedAt": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-                json_response(self, HTTPStatus.CONFLICT, {
-                    "ok": False,
-                    "error": exc.code,
-                    "message": str(exc),
-                })
-                return
+            mailbox_records = selected_records
 
             mail_query = (
                 build_custom_batch_mail_query(fields, payload)
@@ -4826,41 +4905,99 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     )
                     + "/attachments"
                 )
-            is_outlook = email_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
-            runner = OutlookDigestRunner() if is_outlook else GmailDigestRunner()
-            try:
-                result = runner.run(
-                    access_token,
-                    query=mail_query,
-                    include_attachments=receipt_attachment_dir is not None,
-                    attachment_output_dir=receipt_attachment_dir,
-                    attachment_url_prefix=receipt_attachment_url_prefix,
+            # Each mailbox is read on its own so one broken connection cannot
+            # sink a run across the others. A failure is remembered and the
+            # loop continues; the run only fails if every mailbox failed.
+            mailbox_results: list[dict[str, Any]] = []
+            mailbox_failures: list[dict[str, Any]] = []
+            email_provider = GOOGLE_GMAIL_OAUTH_PROVIDER
+            for record in mailbox_records:
+                mailbox_name = mailbox_display_name(record)
+                record_provider = normalize_text((record.get("metadata") or {}).get("provider")) or GOOGLE_GMAIL_OAUTH_PROVIDER
+                try:
+                    stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")
+                    record_provider = self._saved_email_provider(stored_email_secret)
+                    access_token, credential_source = self._resolve_email_access_token(
+                        stored_email_secret,
+                        provider=record_provider,
+                    )
+                except CredentialVaultError:
+                    mailbox_failures.append({
+                        "mailbox": mailbox_name,
+                        "status": HTTPStatus.CONFLICT,
+                        "error": "email_setup_required",
+                        "message": f"The saved connection for {mailbox_name} could not be opened securely. Reconnect it and try again.",
+                    })
+                    continue
+                except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                    self._flag_mailbox_needs_attention(session.email, record, record_provider)
+                    mailbox_failures.append({
+                        "mailbox": mailbox_name,
+                        "status": HTTPStatus.CONFLICT,
+                        "error": exc.code,
+                        "message": str(exc),
+                    })
+                    continue
+
+                runner = (
+                    OutlookDigestRunner()
+                    if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+                    else GmailDigestRunner()
                 )
-            except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                try:
+                    result = runner.run(
+                        access_token,
+                        query=mail_query,
+                        include_attachments=receipt_attachment_dir is not None,
+                        attachment_output_dir=receipt_attachment_dir,
+                        attachment_url_prefix=receipt_attachment_url_prefix,
+                    )
+                except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                    self._flag_mailbox_needs_attention(session.email, record, record_provider)
+                    mailbox_failures.append({
+                        "mailbox": mailbox_name,
+                        "status": HTTPStatus.CONFLICT,
+                        "error": exc.code,
+                        "message": str(exc),
+                    })
+                    continue
+                except (GmailSummaryError, OutlookSummaryError) as exc:
+                    mailbox_failures.append({
+                        "mailbox": mailbox_name,
+                        "status": HTTPStatus.BAD_GATEWAY,
+                        "error": exc.code,
+                        "message": str(exc),
+                    })
+                    continue
+
                 self.database.update_platform_connection_status(
                     session.email,
-                    platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
-                    connection_status="needs_attention",
+                    connection_id=normalize_text(record.get("id")),
+                    connection_status="connected",
                     metadata_updates={
-                        "provider": email_provider,
-                        "validationStatus": "failed",
+                        "provider": record_provider,
+                        "validationStatus": "verified",
+                        "credentialSource": credential_source,
                         "validatedAt": datetime.now(timezone.utc).isoformat(),
                     },
                 )
-                json_response(self, HTTPStatus.CONFLICT, {
+                email_provider = record_provider
+                mailbox_results.append({"mailbox": mailbox_name, "result": result})
+
+            if not mailbox_results:
+                failure = mailbox_failures[0] if mailbox_failures else {
+                    "status": HTTPStatus.CONFLICT,
+                    "error": "email_setup_required",
+                    "message": "No mailbox could be read. Reconnect a mailbox and try again.",
+                }
+                json_response(self, failure["status"], {
                     "ok": False,
-                    "error": exc.code,
-                    "message": str(exc),
-                })
-                return
-            except (GmailSummaryError, OutlookSummaryError) as exc:
-                json_response(self, HTTPStatus.BAD_GATEWAY, {
-                    "ok": False,
-                    "error": exc.code,
-                    "message": str(exc),
+                    "error": failure["error"],
+                    "message": failure["message"],
                 })
                 return
 
+            result = merge_mail_digest_results(mailbox_results)
             receipt_answer: Optional[dict[str, Any]] = None
             if is_custom_google_batch:
                 result = relabel_mail_digest_result(result, result_header)
@@ -4903,18 +5040,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         else "No receipts found for that month."
                     )
 
-            self.database.update_platform_connection_status(
-                session.email,
-                platform=GOOGLE_GMAIL_OAUTH_PLATFORM,
-                connection_status="connected",
-                metadata_updates={
-                    "provider": email_provider,
-                    "validationStatus": "verified",
-                    "credentialSource": credential_source,
-                    "validatedAt": datetime.now(timezone.utc).isoformat(),
-                },
+            # Each mailbox was marked healthy as it succeeded, inside the loop.
+            mailbox_names = [normalize_text(entry.get("mailbox")) for entry in mailbox_results]
+            # One mailbox keeps reporting its provider label, which is what the
+            # portal has always shown. Only a genuine fan-out changes the shape.
+            mailbox_label = (
+                EMAIL_PROVIDER_LABELS.get(email_provider, "Email")
+                if len(mailbox_names) == 1
+                else f"{len(mailbox_names)} mailboxes"
             )
-            mailbox_label = EMAIL_PROVIDER_LABELS.get(email_provider, "Email")
             response_payload = {
                 "ok": True,
                 "message": str(result.get("message") or f"{mailbox_label} digest complete."),
@@ -4922,8 +5056,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "messageCount": int(result.get("messageCount") or 0),
                 "items": result.get("items") if isinstance(result.get("items"), list) else [],
                 "mailbox": mailbox_label,
+                "mailboxes": mailbox_names,
                 "query": mail_query.describe(),
             }
+            if mailbox_failures:
+                # A partial run is still a result, but it must say what it missed
+                # rather than quietly reporting fewer receipts than exist.
+                response_payload["skippedMailboxes"] = [
+                    {
+                        "mailbox": normalize_text(failure.get("mailbox")),
+                        "message": normalize_text(failure.get("message")),
+                    }
+                    for failure in mailbox_failures
+                ]
             if receipt_answer:
                 # A question asked in chat is answered in chat; there is no
                 # bundle to link because nothing was written.
@@ -7030,6 +7175,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "Outlook access needs attention: the saved Microsoft refresh token is missing. Reconnect Outlook."
             )
         return self._refresh_microsoft_access_token(refresh_token), "microsoft_oauth_refresh_token"
+
+    def _flag_mailbox_needs_attention(
+        self,
+        owner_email: str,
+        record: dict[str, Any],
+        provider: str,
+    ) -> None:
+        """Mark one mailbox as needing attention, leaving the others alone."""
+
+        self.database.update_platform_connection_status(
+            owner_email,
+            connection_id=normalize_text(record.get("id")),
+            connection_status="needs_attention",
+            metadata_updates={
+                "provider": provider,
+                "validationStatus": "failed",
+                "validatedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     def _resolve_email_access_token(self, decrypted_secret: str, *, provider: str) -> tuple[str, str]:
         """Return ``(access_token, credential_source)`` for a mailbox."""

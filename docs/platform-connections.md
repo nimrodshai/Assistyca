@@ -159,7 +159,8 @@ loaded in the portal, so Outlook uses a plain redirect: `GET
 refresh token, and returns to `/portal/?email_oauth=...`.
 
 Set `MICROSOFT_OAUTH_CLIENT_ID` and `MICROSOFT_OAUTH_CLIENT_SECRET` from an
-Azure app registration with the delegated `Mail.Read` permission, and register
+Azure app registration with the delegated `Mail.Read` and `User.Read`
+permissions, and register
 `https://<host>/api/oauth/microsoft/email/callback` as a redirect URI.
 `MICROSOFT_OAUTH_TENANT` defaults to `common`, which accepts both work and
 personal Microsoft accounts; set it to a tenant ID to restrict sign-in to one

@@ -746,6 +746,15 @@ class PortalStaticPageTests(unittest.TestCase):
         ]
         self.assertNotIn('label: "Email"', add_tool_options)
         self.assertIn('label: "Google"', script)
+        # Microsoft is a platform like any other, so it gets its own row in the
+        # picker instead of hiding behind the Google email card.
+        self.assertIn('label: "Microsoft"', add_tool_options)
+        self.assertIn('platformId: "microsoft"', add_tool_options)
+        self.assertIn("function createMicrosoftBrandLogo", script)
+        self.assertIn("function openMicrosoftOAuthConnection", script)
+        self.assertIn("async function requestMicrosoftEmailSignInUrl", script)
+        self.assertIn('if (option.id === "microsoft") {\n    openMicrosoftOAuthConnection(option);', script)
+        self.assertIn('["calendar", "email", "microsoft"].includes(option.id) ? "oauth"', script)
         self.assertIn("GOOGLE_CONNECTION_SCOPE_OPTIONS", script)
         self.assertIn("https://www.googleapis.com/auth/calendar.events.readonly", script)
         self.assertIn("https://www.googleapis.com/auth/gmail.readonly", script)
@@ -767,6 +776,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".platform-connection-status", styles)
         self.assertIn(".platform-connection-status[hidden]", styles)
         self.assertIn("function openCalendarOAuthConnection", script)
+        # The mailbox account has to survive the client-side normalizer, or
+        # every connected mailbox looks identical in the interface.
+        self.assertIn("accountAddress: String(source.accountAddress || source.account_address", script)
+        self.assertIn("accountLabel: String(source.accountLabel || source.account_label", script)
+        # Saving one Google connection must not drop a user's other mailboxes
+        # from local state, so the merge keys on connection id.
+        self.assertIn("const savedIds = new Set(savedConnections.map((savedConnection) => savedConnection.id)", script)
+        self.assertIn(".connected-mailbox-row", styles)
+        self.assertIn("connected-mailbox-disconnect", styles)
         calendar_oauth_flow = script[
             script.index("function openCalendarOAuthConnection"):
             script.index("function openPlatformConnection(optionId)")
@@ -775,20 +793,25 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("const connectedGoogleConnections = usesAggregateGoogleConnection", calendar_oauth_flow)
         self.assertIn("? getConnectedGoogleOAuthConnections()", calendar_oauth_flow)
         self.assertIn("? connectedGoogleConnections.length > 0", calendar_oauth_flow)
-        # The Email card names the connected mailbox; the Google card still
+        # The Email card counts the connected mailboxes; the Google card still
         # talks about Google permissions.
-        self.assertIn('? (isEmailConnection ? `${connectedEmailLabel} connected` : "Google connected")', calendar_oauth_flow)
+        self.assertIn('? (mailboxCount > 1 ? `${mailboxCount} mailboxes connected` : `${connectedEmailLabel} connected`)', calendar_oauth_flow)
         self.assertIn('"These Google permissions are connected and ready to use."', calendar_oauth_flow)
-        self.assertIn("createOutlookConnectButton(setStatus, () => storageAvailable)", calendar_oauth_flow)
+        # The Outlook button is offered whether or not a mailbox is connected,
+        # because a second mailbox is added rather than swapped in.
+        self.assertIn("createOutlookConnectButton(setStatus, () => storageAvailable, {", calendar_oauth_flow)
+        self.assertIn("addingAnother: mailboxCount > 0,", calendar_oauth_flow)
+        self.assertIn("createConnectedMailboxList(option, connectedMailboxes)", calendar_oauth_flow)
         self.assertIn("createGoogleOAuthPermissionList(option, { readOnly: isConnected });", calendar_oauth_flow)
         self.assertIn("? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)", calendar_oauth_flow)
-        self.assertIn("hidePrimaryButton: isConnected,", calendar_oauth_flow)
+        self.assertIn("hidePrimaryButton: isConnected && !isEmailConnection,", calendar_oauth_flow)
         self.assertIn('secondaryButtonLabel: "Cancel"', calendar_oauth_flow)
-        self.assertIn("onPrimary: isConnected ? null : startOAuth,", calendar_oauth_flow)
+        self.assertIn("onPrimary: (isConnected && !isEmailConnection) ? null : startOAuth,", calendar_oauth_flow)
         self.assertIn('elements.authAlertIcon.classList.remove("is-spinner");', calendar_oauth_flow)
         self.assertNotIn('elements.authAlertIcon.classList.add("is-spinner");', calendar_oauth_flow)
         self.assertIn('setCalendarOAuthPrimaryButton("Opening Google", { loading: true });', calendar_oauth_flow)
-        self.assertIn("if (!isConnected) {\n    setCalendarOAuthPrimaryButton(primaryLabel);\n  }", calendar_oauth_flow)
+        self.assertIn("if (!isConnected || isEmailConnection) {", calendar_oauth_flow)
+        self.assertIn('isEmailConnection && isConnected ? "Add another Google mailbox" : primaryLabel', calendar_oauth_flow)
         self.assertIn("function getConnectedGoogleOAuthConnections", script)
         self.assertIn("function createGoogleConnectionDisconnectButton", script)
         self.assertIn("/api/oauth/google/calendar/start?scopes=", script)
@@ -1014,6 +1037,31 @@ class PortalStaticPageTests(unittest.TestCase):
         # status is re-anchored to activeChatId so the two cannot drift apart.
         self.assertIn('chat.status = chat.id === activeChat?.id ? "active" : "historical";', script)
 
+    def test_two_actions_never_share_the_same_name(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # Names are derived from the request ("Receipt collector"), so two
+        # similar requests used to produce two identically named cards. Every
+        # rendered list now runs through the numbering pass, and the title
+        # lookup reads the numbered name instead of the derived one.
+        self.assertIn("function refreshScheduledActionUniqueTitles", script)
+        self.assertIn("function getScheduledActionBaseTitle", script)
+        self.assertIn("return refreshScheduledActionUniqueTitles([", script)
+        self.assertIn(
+            "return scheduledActionUniqueTitles.get(String(action?.id ?? \"\")) "
+            "|| getScheduledActionBaseTitle(action);",
+            script,
+        )
+
+        # The oldest action keeps the plain name and later ones become "#2",
+        # "#3", so an existing card is never renamed when a new one arrives.
+        self.assertIn("(getScheduledActionCreatedTime(left.action) - getScheduledActionCreatedTime(right.action))", script)
+        self.assertIn("title = `${rootTitle} #${suffix}`;", script)
+
+        # A name that already ends in "#2" is numbered from its root, so the
+        # next duplicate is "#3" rather than "Receipt collector #2 #2".
+        self.assertIn('const rootTitle = baseTitle.replace(/\\s*#\\d+$/, "").trim() || baseTitle;', script)
+
     def test_receipts_example_names_last_month(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -1119,7 +1167,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=151", html)
-        self.assertIn("app.js?v=183", html)
+        self.assertIn("app.js?v=184", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

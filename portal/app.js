@@ -502,6 +502,13 @@ const AGENT_ADD_TOOL_OPTIONS = [
     platformId: "calendar",
   },
   {
+    id: "microsoft",
+    label: "Microsoft",
+    detail: "Connect Outlook mail",
+    icon: "microsoft",
+    platformId: "microsoft",
+  },
+  {
     id: "telegram",
     label: "Telegram",
     detail: "Connect Telegram",
@@ -533,10 +540,12 @@ const PLATFORM_CONNECTION_OPTIONS = [
       icon: option.icon,
       authType: option.id === "telegram"
         ? "bot_token"
-        : (["calendar", "email"].includes(option.id) ? "oauth" : "api_token"),
+        : (["calendar", "email", "microsoft"].includes(option.id) ? "oauth" : "api_token"),
       credentialLabel: option.id === "slack"
         ? "Slack bot token"
-        : (["calendar", "email"].includes(option.id) ? "Google access" : `${option.label} token`),
+        : option.id === "microsoft"
+          ? "Microsoft access"
+          : (["calendar", "email"].includes(option.id) ? "Google access" : `${option.label} token`),
     })),
   {
     id: "email",
@@ -973,6 +982,13 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
       required: false,
     },
     {
+      // Left blank the action reads every connected mailbox, which is what
+      // most people want. Naming one narrows it to that account.
+      key: "mailboxAccount",
+      question: "Which mailbox should this read?",
+      required: false,
+    },
+    {
       key: "frequency",
       question: "How often should this happen?",
       actions: ["Daily", "Weekly", "Monthly"],
@@ -1047,6 +1063,12 @@ const AGENT_PROPOSAL_FIELD_ALIASES = {
   destinationfolder: "outputFolder",
   report_folder: "outputFolder",
   reportfolder: "outputFolder",
+  mailbox_account: "mailboxAccount",
+  mailboxaccount: "mailboxAccount",
+  email_account: "mailboxAccount",
+  emailaccount: "mailboxAccount",
+  from_mailbox: "mailboxAccount",
+  frommailbox: "mailboxAccount",
   month: "manualRunMonth",
   run_month: "manualRunMonth",
   runmonth: "manualRunMonth",
@@ -1465,6 +1487,7 @@ const elements = {
   agentActionDetailBackButton: document.querySelector("#agentActionDetailBackButton"),
   agentToolsToggleButton: document.querySelector("#agentToolsToggleButton"),
   agentToolsCloseButton: document.querySelector("#agentToolsCloseButton"),
+  agentToolsScrim: document.querySelector("#agentToolsScrim"),
   agentToolsPanel: document.querySelector(".agent-tools-panel"),
   agentRailFooter: document.querySelector("#agentRailFooter"),
   agentAdminButton: document.querySelector("#agentAdminButton"),
@@ -5693,6 +5716,10 @@ function normalizePlatformConnection(source = {}) {
     authType: String(source.authType || source.auth_type || "api_token").trim().toLowerCase(),
     secretHint: String(source.secretHint || "").trim(),
     connectionStatus,
+    // Which account this connection is. Several mailboxes can share the email
+    // platform, so without these they are indistinguishable in the interface.
+    accountAddress: String(source.accountAddress || source.account_address || "").trim(),
+    accountLabel: String(source.accountLabel || source.account_label || "").trim(),
     connectedAt: String(source.connectedAt || source.connected_at || "").trim(),
     updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
     metadata,
@@ -5770,14 +5797,40 @@ const EMAIL_PROVIDER_LABELS = {
   [EMAIL_PROVIDER_OUTLOOK]: "Outlook",
 };
 
-function getConnectedEmailProvider() {
-  const connection = getPlatformConnectionByPlatform("email");
-  if (!connection || connection.connectionStatus !== "connected" || connection.authType !== "oauth") {
-    return "";
-  }
-  const metadata = connection.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
+// An account can hold several mailboxes, so the email platform is the one
+// place where a lookup returns a list rather than a single connection.
+function getConnectedEmailConnections() {
+  return state.platformConnections.filter((connection) => (
+    connection?.platform === "email"
+    && connection.connectionStatus === "connected"
+    && connection.authType === "oauth"
+  ));
+}
+
+function getConnectedOutlookConnections() {
+  return getConnectedEmailConnections().filter((connection) => (
+    getEmailConnectionProvider(connection) === EMAIL_PROVIDER_OUTLOOK
+  ));
+}
+
+function getEmailConnectionProvider(connection) {
+  const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
   const provider = normalizeText(metadata.provider);
   return provider === EMAIL_PROVIDER_OUTLOOK ? EMAIL_PROVIDER_OUTLOOK : EMAIL_PROVIDER_GMAIL;
+}
+
+// What to call one mailbox in the interface: its address if the provider let
+// us read it, otherwise a name the user gave it, otherwise the provider.
+function getEmailConnectionName(connection) {
+  return normalizeText(connection?.accountAddress)
+    || normalizeText(connection?.accountLabel)
+    || EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)]
+    || "Email";
+}
+
+function getConnectedEmailProvider() {
+  const [connection] = getConnectedEmailConnections();
+  return connection ? getEmailConnectionProvider(connection) : "";
 }
 
 function getConnectedEmailProviderLabel() {
@@ -6216,6 +6269,54 @@ function createPlatformConnectionDisconnectButton(option, connection) {
   return button;
 }
 
+// One row per connected mailbox, each with its own disconnect. A single
+// "Disconnect Email" button cannot say which mailbox it would remove.
+function createConnectedMailboxList(option, connections = []) {
+  if (!connections.length) {
+    return null;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "connected-mailbox-list";
+  for (const connection of connections) {
+    const row = document.createElement("li");
+    row.className = "connected-mailbox-row";
+
+    const name = document.createElement("span");
+    name.className = "connected-mailbox-name";
+    name.textContent = getEmailConnectionName(connection);
+
+    const provider = document.createElement("span");
+    provider.className = "connected-mailbox-provider";
+    provider.textContent = EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)] || "Email";
+
+    row.append(name, provider);
+
+    if (connection.connectionStatus === "needs_attention") {
+      const warning = document.createElement("span");
+      warning.className = "connected-mailbox-warning";
+      warning.textContent = "Needs reconnecting";
+      row.append(warning);
+    }
+
+    const disconnect = document.createElement("button");
+    disconnect.type = "button";
+    disconnect.className = "ghost-button danger small connected-mailbox-disconnect";
+    const mailboxName = getEmailConnectionName(connection);
+    disconnect.textContent = "Disconnect";
+    disconnect.setAttribute("aria-label", `Disconnect ${mailboxName}`);
+    disconnect.addEventListener("click", () => {
+      openPlatformConnectionDisconnectConfirmation(
+        { ...option, label: mailboxName },
+        connection,
+      );
+    });
+    row.append(disconnect);
+    list.append(row);
+  }
+  return list;
+}
+
 function getUniqueConnectedGoogleOAuthConnections(connections = []) {
   const source = Array.isArray(connections) && connections.length
     ? connections
@@ -6593,6 +6694,23 @@ function createGoogleBrandLogo() {
   return svg;
 }
 
+function createMicrosoftBrandLogo() {
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "18",
+    height: "18",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  svg.append(
+    createSvgElement("rect", { x: "2", y: "2", width: "9.2", height: "9.2", fill: "#F25022" }),
+    createSvgElement("rect", { x: "12.8", y: "2", width: "9.2", height: "9.2", fill: "#7FBA00" }),
+    createSvgElement("rect", { x: "2", y: "12.8", width: "9.2", height: "9.2", fill: "#00A4EF" }),
+    createSvgElement("rect", { x: "12.8", y: "12.8", width: "9.2", height: "9.2", fill: "#FFB900" }),
+  );
+  return svg;
+}
+
 function setCalendarOAuthPrimaryButton(label, options = {}) {
   if (!elements.authAlertDismissButton) {
     return;
@@ -6603,7 +6721,7 @@ function setCalendarOAuthPrimaryButton(label, options = {}) {
   icon.className = options.loading ? "calendar-oauth-button-spinner" : "calendar-oauth-button-logo";
   icon.setAttribute("aria-hidden", "true");
   if (!options.loading) {
-    icon.append(createGoogleBrandLogo());
+    icon.append(typeof options.logo === "function" ? options.logo() : createGoogleBrandLogo());
   }
   elements.authAlertDismissButton.replaceChildren(icon, labelNode);
 }
@@ -6841,12 +6959,17 @@ function openCalendarOAuthConnection(option) {
   const primaryLabel = "Sign in with Google";
   const isEmailConnection = option.id === "email";
   const connectedEmailLabel = getConnectedEmailProviderLabel();
+  const connectedMailboxes = isEmailConnection ? getConnectedEmailConnections() : [];
+  const mailboxCount = connectedMailboxes.length;
+  const mailboxNoun = mailboxCount === 1 ? "mailbox" : "mailboxes";
   const setupTitle = isConnected
-    ? (isEmailConnection ? `${connectedEmailLabel} connected` : "Google connected")
+    ? (isEmailConnection
+      ? (mailboxCount > 1 ? `${mailboxCount} mailboxes connected` : `${connectedEmailLabel} connected`)
+      : "Google connected")
     : (isEmailConnection ? "Connect your mailbox" : "Connect Google");
   const setupMessage = isConnected
     ? (isEmailConnection
-      ? `${connectedEmailLabel} is connected and ready to use.`
+      ? `Your ${mailboxNoun} ${mailboxCount === 1 ? "is" : "are"} connected and ready to use.`
       : "These Google permissions are connected and ready to use.")
     : (isEmailConnection
       ? "Choose the mailbox Assistyca should read."
@@ -6859,7 +6982,9 @@ function openCalendarOAuthConnection(option) {
   intro.className = "calendar-oauth-copy";
   intro.textContent = isConnected
     ? (isEmailConnection
-      ? `${connectedEmailLabel} is connected with read-only access. Disconnect it to remove this access from Assistyca.`
+      // Connecting another mailbox adds one now, so say so here: this used to
+      // silently replace whatever was already connected.
+      ? "Actions read every connected mailbox unless you point them at one. Connecting another adds it; disconnecting one removes that access from Assistyca."
       : "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca.")
     : isEmailConnection
     ? "Connect Gmail or Outlook so Assistyca can read your mail for email digest and receipt actions. Access is read-only."
@@ -6872,12 +6997,21 @@ function openCalendarOAuthConnection(option) {
 
   const permissionList = createGoogleOAuthPermissionList(option, { readOnly: isConnected });
   body.append(intro, permissionList, status);
-  if (isEmailConnection && !isConnected) {
-    body.append(createOutlookConnectButton(setStatus, () => storageAvailable));
+  if (isEmailConnection && mailboxCount) {
+    body.append(createConnectedMailboxList(option, connectedMailboxes));
   }
+  if (isEmailConnection) {
+    // Shown whether or not a mailbox is already connected: a second mailbox is
+    // now added alongside the first rather than replacing it.
+    body.append(createOutlookConnectButton(setStatus, () => storageAvailable, {
+      addingAnother: mailboxCount > 0,
+    }));
+  }
+  // Email disconnects live on each mailbox row above, so the card-level
+  // button would be ambiguous once there is more than one.
   const disconnectButton = usesAggregateGoogleConnection
     ? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)
-    : createPlatformConnectionDisconnectButton(option, connection);
+    : (isEmailConnection ? null : createPlatformConnectionDisconnectButton(option, connection));
   if (disconnectButton) {
     body.append(disconnectButton);
   }
@@ -6976,10 +7110,20 @@ function openCalendarOAuthConnection(option) {
           ? [normalizePlatformConnection(saveResponse.connection)].filter((savedConnection) => savedConnection.platform)
           : [];
       if (savedConnections.length) {
-        const savedPlatforms = new Set(savedConnections.map((savedConnection) => savedConnection.platform));
+        // Replace by connection id, not by platform: several mailboxes share
+        // the email platform, and dropping them all would hide the other
+        // accounts until the next refresh.
+        const savedIds = new Set(savedConnections.map((savedConnection) => savedConnection.id).filter(Boolean));
+        const savedSinglePlatforms = new Set(
+          savedConnections
+            .filter((savedConnection) => savedConnection.platform !== "email")
+            .map((savedConnection) => savedConnection.platform),
+        );
         state.platformConnections = [
           ...savedConnections,
-          ...state.platformConnections.filter((savedConnection) => !savedPlatforms.has(savedConnection.platform)),
+          ...state.platformConnections.filter((existing) => (
+            !savedIds.has(existing.id) && !savedSinglePlatforms.has(existing.platform)
+          )),
         ];
         clearGoogleConnectionMissingCredentials();
       }
@@ -7073,28 +7217,49 @@ function openCalendarOAuthConnection(option) {
       bodyNode: body,
       buttonLabel: primaryLabel,
       secondaryButtonLabel: "Cancel",
-      hidePrimaryButton: isConnected,
+      // Email keeps its button when connected, because it now adds a mailbox.
+      hidePrimaryButton: isConnected && !isEmailConnection,
       primaryDisabled: !storageAvailable,
       closeOnPrimary: false,
       returnFocus: elements.agentAddToolButton,
-      onPrimary: isConnected ? null : startOAuth,
+      // A connected mailbox no longer disables the button: signing in again
+      // adds another mailbox rather than replacing the one already there.
+      onPrimary: (isConnected && !isEmailConnection) ? null : startOAuth,
     },
   );
-  if (!isConnected) {
-    setCalendarOAuthPrimaryButton(primaryLabel);
+  if (!isConnected || isEmailConnection) {
+    setCalendarOAuthPrimaryButton(
+      isEmailConnection && isConnected ? "Add another Google mailbox" : primaryLabel,
+    );
   }
 }
 
 // Microsoft has no browser SDK loaded here, so Outlook uses the plain
 // redirect flow: the server hands back a sign-in URL and the callback saves
 // the connection before returning to the portal.
-function createOutlookConnectButton(setStatus, isStorageAvailable) {
+async function requestMicrosoftEmailSignInUrl() {
+  const response = await apiRequest("/api/oauth/microsoft/email/start", {
+    method: "GET",
+    timeoutMs: 20000,
+  });
+  const authUrl = normalizeText(response.authUrl);
+  if (!authUrl) {
+    throw new Error("Microsoft did not return a usable sign-in setup.");
+  }
+  return authUrl;
+}
+
+function createOutlookConnectButton(setStatus, isStorageAvailable, options = {}) {
   const wrapper = document.createElement("div");
   wrapper.className = "calendar-oauth-alternate";
 
   const separator = document.createElement("p");
   separator.className = "calendar-oauth-alternate-label";
-  separator.textContent = "Not a Gmail mailbox?";
+  // "Not a Gmail mailbox?" read as an either/or, which is no longer what
+  // happens: an Outlook mailbox is added next to whatever is connected.
+  separator.textContent = options.addingAnother
+    ? "Add another mailbox"
+    : "Not a Gmail mailbox?";
 
   const button = document.createElement("button");
   button.type = "button";
@@ -7110,15 +7275,7 @@ function createOutlookConnectButton(setStatus, isStorageAvailable) {
     button.disabled = true;
     setStatus("loading", "Opening Microsoft", "Choose the Microsoft account to connect.");
     try {
-      const response = await apiRequest("/api/oauth/microsoft/email/start", {
-        method: "GET",
-        timeoutMs: 20000,
-      });
-      const authUrl = normalizeText(response.authUrl);
-      if (!authUrl) {
-        throw new Error("Microsoft did not return a usable sign-in setup.");
-      }
-      window.location.assign(authUrl);
+      window.location.assign(await requestMicrosoftEmailSignInUrl());
     } catch (requestError) {
       starting = false;
       button.disabled = false;
@@ -7134,9 +7291,94 @@ function createOutlookConnectButton(setStatus, isStorageAvailable) {
   return wrapper;
 }
 
+// Microsoft sits in the tool picker beside Google, so it needs a panel of its
+// own: the Outlook button inside the Google email card is only reachable once
+// you are already in that card.
+function openMicrosoftOAuthConnection(option) {
+  const connectedMailboxes = getConnectedOutlookConnections();
+  const isConnected = connectedMailboxes.length > 0;
+  const storageAvailable = state.platformConnectionStorageAvailable !== false;
+  const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
+  const primaryLabel = isConnected ? "Add another Outlook mailbox" : "Sign in with Microsoft";
+  const setupTitle = isConnected ? "Microsoft is connected" : "Connect Microsoft";
+  const setupMessage = isConnected
+    ? `${connectedMailboxes.length === 1 ? "This Outlook mailbox is" : "These Outlook mailboxes are"} connected and ready to use.`
+    : "Choose the Outlook mailbox Assistyca should read.";
+
+  const body = document.createElement("div");
+  body.className = "calendar-oauth-flow";
+
+  const intro = document.createElement("p");
+  intro.className = "calendar-oauth-copy";
+  intro.textContent = isConnected
+    ? "Actions read every connected mailbox unless you point them at one. Connecting another adds it; disconnecting one removes that access from Assistyca."
+    : "Sign in with Microsoft so Assistyca can read your Outlook mail for email digest and receipt actions. Access is read-only.";
+
+  const { status, setStatus } = createCalendarOAuthStatusNode();
+  if (!storageAvailable) {
+    setStatus("error", "Storage unavailable", storageMessage);
+  }
+  body.append(intro, status);
+  const mailboxList = createConnectedMailboxList(option, connectedMailboxes);
+  if (mailboxList) {
+    body.append(mailboxList);
+  }
+
+  let starting = false;
+  const startOAuth = async () => {
+    if (starting || !storageAvailable) {
+      return;
+    }
+    starting = true;
+    body.classList.add("is-starting");
+    elements.authAlertDismissButton.disabled = true;
+    setCalendarOAuthPrimaryButton("Opening Microsoft", { loading: true });
+    setStatus("loading", "Opening Microsoft", "Choose the Microsoft account to connect.");
+    try {
+      window.location.assign(await requestMicrosoftEmailSignInUrl());
+    } catch (requestError) {
+      starting = false;
+      body.classList.remove("is-starting");
+      elements.authAlertDismissButton.disabled = false;
+      setCalendarOAuthPrimaryButton(primaryLabel, { logo: createMicrosoftBrandLogo });
+      setStatus(
+        "error",
+        "Outlook not connected",
+        formatApiErrorMessage(requestError, "Microsoft OAuth is not configured yet."),
+      );
+    }
+  };
+
+  openAuthAlert(
+    setupTitle,
+    setupMessage,
+    {
+      eyebrow: "Microsoft",
+      iconNode: createMicrosoftBrandLogo(),
+      tone: isConnected ? "success" : "progress",
+      variant: "calendar-oauth",
+      bodyNode: body,
+      buttonLabel: primaryLabel,
+      secondaryButtonLabel: "Cancel",
+      primaryDisabled: !storageAvailable,
+      closeOnPrimary: false,
+      returnFocus: elements.agentAddToolButton,
+      // Signing in again adds a mailbox rather than replacing the one there,
+      // so the button stays live once Outlook is connected.
+      onPrimary: startOAuth,
+    },
+  );
+  setCalendarOAuthPrimaryButton(primaryLabel, { logo: createMicrosoftBrandLogo });
+}
+
 function openPlatformConnection(optionId) {
   const option = getPlatformConnectionOption(optionId);
   if (!option) {
+    return;
+  }
+
+  if (option.id === "microsoft") {
+    openMicrosoftOAuthConnection(option);
     return;
   }
 
@@ -18245,12 +18487,12 @@ function getRenderableAgentActions() {
   );
   const featureActions = getAgentFeatureLiveActions()
     .filter((action) => !proposalFeatureIds.has(String(action.payload?.backendFeatureId || "").trim()));
-  return [
+  return refreshScheduledActionUniqueTitles([
     ...featureActions,
     ...proposalActions,
     ...sourceActions,
     ...backendActions,
-  ];
+  ]);
 }
 
 function isActiveAgentActionStatus(status, action = null) {
@@ -18429,7 +18671,7 @@ function getScheduledActionStatusClass(status, action = null) {
   return action ? getAgentActionPresentationStatus(action, status) : normalizeScheduledActionStatusClass(status);
 }
 
-function getScheduledActionTitle(action) {
+function getScheduledActionBaseTitle(action) {
   const payloadTitle = String(action?.payload?.title || "").trim();
   if (payloadTitle && !isGenericAgentPurposeTitle(payloadTitle)) {
     return payloadTitle;
@@ -18454,6 +18696,43 @@ function getScheduledActionTitle(action) {
     return `${channel} message`;
   }
   return "Scheduled action";
+}
+
+// Two actions can end up with the same derived name (two receipt collectors,
+// two web monitors). Keep the oldest one on the plain name and number the
+// newer ones "Name #2", "Name #3" so the list never shows the same name twice.
+const scheduledActionUniqueTitles = new Map();
+
+function normalizeScheduledActionTitleKey(title) {
+  return String(title || "").trim().toLowerCase();
+}
+
+function refreshScheduledActionUniqueTitles(actions) {
+  scheduledActionUniqueTitles.clear();
+  const takenTitles = new Set();
+  actions
+    .map((action, index) => ({ action, index }))
+    .sort((left, right) => (
+      (getScheduledActionCreatedTime(left.action) - getScheduledActionCreatedTime(right.action))
+      || (left.index - right.index)
+    ))
+    .forEach(({ action }) => {
+      const baseTitle = getScheduledActionBaseTitle(action);
+      const rootTitle = baseTitle.replace(/\s*#\d+$/, "").trim() || baseTitle;
+      let title = baseTitle;
+      let suffix = 1;
+      while (takenTitles.has(normalizeScheduledActionTitleKey(title))) {
+        suffix += 1;
+        title = `${rootTitle} #${suffix}`;
+      }
+      takenTitles.add(normalizeScheduledActionTitleKey(title));
+      scheduledActionUniqueTitles.set(String(action?.id ?? ""), title);
+    });
+  return actions;
+}
+
+function getScheduledActionTitle(action) {
+  return scheduledActionUniqueTitles.get(String(action?.id ?? "")) || getScheduledActionBaseTitle(action);
 }
 
 function formatScheduledActionDate(value, timeZone = "") {
@@ -19767,14 +20046,35 @@ function resizeAgentActionEditorTextarea(input) {
   if (!input || input.tagName !== "TEXTAREA") {
     return;
   }
+  // A textarea that is still detached or hidden measures zero, and growing it to
+  // that leaves the text clipped once the card is on screen. Wait for a real width.
+  if (!input.clientWidth) {
+    return;
+  }
   input.style.height = "auto";
   const borderBlock = Math.max(0, input.offsetHeight - input.clientHeight);
   input.style.height = `${input.scrollHeight + borderBlock}px`;
+  input._agentActionEditorTextareaWidth = input.clientWidth;
 }
 
+// The card is built off-screen and only gets its width when it lands in the DOM,
+// and that width changes again when the panel opens or the window resizes - each
+// time the text rewraps onto a different number of lines. Watch the box itself so
+// it refits whenever its width actually changes.
 function scheduleAgentActionEditorTextareaResize(input) {
   resizeAgentActionEditorTextarea(input);
   window.requestAnimationFrame(() => resizeAgentActionEditorTextarea(input));
+  window.setTimeout(() => resizeAgentActionEditorTextarea(input), 0);
+  if (!input || input._agentActionEditorTextareaObserver || typeof window.ResizeObserver !== "function") {
+    return;
+  }
+  const observer = new window.ResizeObserver(() => {
+    if (input.clientWidth && input.clientWidth !== input._agentActionEditorTextareaWidth) {
+      resizeAgentActionEditorTextarea(input);
+    }
+  });
+  observer.observe(input);
+  input._agentActionEditorTextareaObserver = observer;
 }
 
 function createAgentActionEditorStatusElement(className = "agent-action-editor-status", tagName = "p") {
@@ -20003,7 +20303,7 @@ function createAgentCalendarTagsField(labelText, value) {
       return;
     }
     const tags = getTags();
-    if (tags.some((tag) => tag.toLowerCase().includes(address.toLowerCase()))) {
+    if (tags.includes(address)) {
       setHint("That calendar is already on the list.", true);
       entryInput.focus();
       return;
@@ -24045,6 +24345,10 @@ function handleAgentWorkspaceClick(event) {
 function setAgentToolsOpen(open) {
   const isOpen = Boolean(open);
   elements.agentToolsPanel?.classList.toggle("is-open", isOpen);
+  // On phones the panel covers the conversation, so it needs a backdrop to tap.
+  if (elements.agentToolsScrim) {
+    elements.agentToolsScrim.hidden = !isOpen;
+  }
   elements.agentToolsToggleButton?.setAttribute("aria-expanded", String(isOpen));
   if (elements.agentToolsToggleButton) {
     const upcomingCount = getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status, action)).length;
@@ -24155,6 +24459,9 @@ function createAgentAddToolLogo(option) {
   const iconType = String(option?.icon || option?.id || "").trim().toLowerCase();
   if (iconType === "google") {
     return createGoogleBrandLogo();
+  }
+  if (iconType === "microsoft") {
+    return createMicrosoftBrandLogo();
   }
 
   const svg = createSvgElement("svg", {
@@ -29838,6 +30145,27 @@ function bindEvents() {
       setAgentToolsOpen(false);
     });
   }
+
+  if (elements.agentToolsScrim) {
+    elements.agentToolsScrim.addEventListener("click", () => {
+      setAgentToolsOpen(false);
+    });
+  }
+
+  // Escape closes the panel only at the widths where it covers the conversation.
+  // Above that it is a permanent rail, so there is nothing to dismiss.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    if (!elements.agentToolsPanel?.classList.contains("is-open")) {
+      return;
+    }
+    if (!window.matchMedia("(max-width: 1080px)").matches) {
+      return;
+    }
+    setAgentToolsOpen(false);
+  });
 
   for (const [button] of getAgentPanelModeControls()) {
     button.addEventListener("click", () => {
