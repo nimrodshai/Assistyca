@@ -7673,6 +7673,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         business_account_id = self._normalize_digits(payload.get("waba_id") or payload.get("business_account_id"))
         phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
         owner_wa_id = normalize_portal_owner_wa_id(payload.get("owner_wa_id"))
+        # Coexistence numbers are already live on the owner's WhatsApp Business
+        # app. The signup flow connects them as-is; registering would be an
+        # attempt to move the number onto the API and take it off the phone.
+        is_coexistence = normalize_text(payload.get("onboarding_type")) == "coexistence"
 
         if not code or not business_account_id or not phone_number_id:
             json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -7715,16 +7719,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # without the customer having to invent and remember one.
         registration_pin = normalize_text(metadata.get("registrationPin")) or f"{secrets.randbelow(1000000):06d}"
         registration_note = ""
-        try:
-            register_whatsapp_phone_number(
-                access_token=access_token,
-                phone_number_id=phone_number_id,
-                pin=registration_pin,
-            )
-        except (ValueError, WhatsAppConnectionError) as exc:
-            # Numbers already live on the WhatsApp Business app are registered by
-            # the signup flow itself and reject this call. Not fatal.
-            registration_note = str(exc)
+        if is_coexistence:
+            registration_note = "Coexistence connection: the number stays on the owner's phone."
+        else:
+            try:
+                register_whatsapp_phone_number(
+                    access_token=access_token,
+                    phone_number_id=phone_number_id,
+                    pin=registration_pin,
+                )
+            except (ValueError, WhatsAppConnectionError) as exc:
+                # Numbers already live on the WhatsApp Business app are registered by
+                # the signup flow itself and reject this call. Not fatal.
+                registration_note = str(exc)
 
         try:
             number_result = test_whatsapp_connection(
@@ -7759,7 +7766,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             metadata={
                 **metadata,
                 **subscription_metadata,
-                "onboarding": "embedded_signup",
+                "onboarding": "coexistence" if is_coexistence else "embedded_signup",
                 "registrationPin": registration_pin,
                 "registrationNote": registration_note,
             },

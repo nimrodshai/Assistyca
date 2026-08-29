@@ -7054,6 +7054,9 @@ function attachWhatsAppSignupListener() {
       whatsappSignupSessionDetails = {
         wabaId: normalizeText(payload.data?.waba_id),
         phoneNumberId: normalizeText(payload.data?.phone_number_id),
+        // Coexistence numbers stay live on the owner's phone, so the backend
+        // must not try to register them.
+        coexistence: payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING",
       };
       return;
     }
@@ -7073,6 +7076,7 @@ async function completeWhatsAppSignup(code) {
       code,
       waba_id: details.wabaId || "",
       phone_number_id: details.phoneNumberId || "",
+      onboarding_type: details.coexistence ? "coexistence" : "embedded_signup",
       owner_wa_id: normalizeText(elements.featureActivationOwnerWaIdInput?.value || ""),
     },
   });
@@ -7122,7 +7126,14 @@ async function startWhatsAppGuidedConnect() {
           config_id: config.configId,
           response_type: "code",
           override_default_response_type: true,
-          extras: { sessionInfoVersion: "3" },
+          extras: {
+            setup: {},
+            // Adds a "connect your existing WhatsApp Business account" choice to
+            // the popup. Without it the only path is migrating the number off
+            // the owner's phone, which most owners will refuse.
+            featureType: "whatsapp_business_app_onboarding",
+            sessionInfoVersion: "3",
+          },
         });
       } catch {
         finish(null);

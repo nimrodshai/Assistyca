@@ -981,6 +981,85 @@ class BackendStore:
             self.save()
             return json.loads(json.dumps(thread))
 
+    def record_coexistence_message(
+        self,
+        *,
+        thread_id: str,
+        sender_name: str,
+        sender_wa_id: str,
+        message_text: str,
+        source_message_id: str,
+        message_type: str,
+        direction: str,
+        timestamp: str,
+        is_history: bool,
+        raw_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record a message seen on the owner's own phone.
+
+        Coexistence mirrors both halves of the owner's conversations to us: what
+        their customers send, and what the owner types back in the WhatsApp
+        Business app. These are stored for context only. They never create an
+        approval, because the owner is already handling the chat by hand.
+        """
+        with self.lock:
+            threads = self.data.setdefault("threads", {})
+            thread = self._find_thread_for_contact_locked(thread_id, sender_wa_id)
+
+            if thread is None:
+                thread = {
+                    "thread_id": thread_id,
+                    "sender_name": sender_name or sender_wa_id,
+                    "sender_wa_id": sender_wa_id,
+                    "messages": [],
+                    "latest_message": "",
+                    "latest_message_id": "",
+                    "pending_approval_id": "",
+                    "reply_assistant_notification_count": 0,
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                }
+                threads[thread_id] = thread
+
+            thread["sender_name"] = sender_name or thread.get("sender_name") or sender_wa_id
+            thread["sender_wa_id"] = sender_wa_id or thread.get("sender_wa_id", "")
+
+            # History arrives in overlapping chunks and echoes can repeat, so the
+            # same message id may land here more than once.
+            message_id = source_message_id or f"coexistence-{uuid.uuid4().hex}"
+            existing_ids = {
+                normalize_text(item.get("message_id"))
+                for item in thread.get("messages", [])
+                if isinstance(item, dict)
+            }
+            if message_id in existing_ids:
+                return json.loads(json.dumps(thread))
+
+            record = {
+                "message_id": message_id,
+                "direction": direction,
+                "message_type": message_type or "text",
+                "text": message_text,
+                "timestamp": timestamp or now_iso(),
+                "source": "coexistence_history" if is_history else "coexistence",
+                "raw_payload": raw_payload,
+            }
+            messages = thread.setdefault("messages", [])
+            messages.append(record)
+
+            if is_history:
+                # Backfill lands after live traffic, so put the thread back in
+                # order rather than leaving old messages at the end.
+                messages.sort(key=lambda item: normalize_text(item.get("timestamp")))
+                thread["coexistence_history_imported"] = True
+            else:
+                thread["latest_message"] = message_text
+                thread["latest_message_id"] = message_id
+                thread["updated_at"] = now_iso()
+
+            self.save()
+            return json.loads(json.dumps(thread))
+
     def mark_owner_notification_sent(self, approval_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             approvals = self.data.setdefault("approvals", {})
@@ -1562,6 +1641,12 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
             for change in entry.get("changes", []) or []:
                 if not isinstance(change, dict):
                     continue
+                field_name = normalize_text(change.get("field")) or "messages"
+                if field_name != "messages":
+                    # Coexistence traffic (smb_message_echoes, history,
+                    # smb_app_state_sync) is handled by
+                    # extract_coexistence_events, never as customer inbound.
+                    continue
                 value = change.get("value", {})
                 if not isinstance(value, dict):
                     continue
@@ -1623,6 +1708,111 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
         )
 
     return [event for event in events if event.get("thread_id") and event.get("message_text")]
+
+
+COEXISTENCE_MESSAGE_TYPES = frozenset(
+    {"text", "image", "audio", "video", "document", "interactive", "button", "location", "sticker"}
+)
+
+
+def coexistence_timestamp_to_iso(value: Any) -> str:
+    """WhatsApp sends epoch seconds; threads are stored in ISO."""
+    raw = normalize_text(value)
+    if not raw:
+        return now_iso()
+    try:
+        return datetime.fromtimestamp(int(raw), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return raw
+
+
+def extract_coexistence_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read the webhooks that mirror the owner's own WhatsApp Business app.
+
+    Three fields matter:
+
+    * ``smb_message_echoes`` -- what the owner typed on their phone after
+      connecting. Always outbound.
+    * ``history`` -- up to 180 days of past conversation, backfilled in chunks
+      when the connection is first made.
+    * ``smb_app_state_sync`` -- contact changes. Ignored for now; it carries no
+      message content.
+
+    Direction is derived by comparing each message's ``from`` against the
+    business number in the change metadata, rather than trusting an undocumented
+    field.
+    """
+    events: list[dict[str, Any]] = []
+
+    if not isinstance(payload.get("entry"), list):
+        return events
+
+    def collect(message: Any, *, business_wa_id: str, is_history: bool) -> None:
+        if not isinstance(message, dict):
+            return
+        message_type = normalize_text(message.get("type")) or "text"
+        if message_type not in COEXISTENCE_MESSAGE_TYPES:
+            # Edits and revokes arrive here too; they reference a message we
+            # already stored and carry no standalone content.
+            return
+
+        from_wa_id = normalize_whatsapp_id(message.get("from"))
+        to_wa_id = normalize_whatsapp_id(message.get("to"))
+        outbound = bool(business_wa_id) and from_wa_id == business_wa_id
+
+        # The thread is always keyed by the customer, whichever way it went.
+        contact_wa_id = to_wa_id if outbound else from_wa_id
+        if not contact_wa_id:
+            return
+
+        events.append(
+            {
+                "thread_id": contact_wa_id,
+                "sender_name": contact_wa_id,
+                "sender_wa_id": contact_wa_id,
+                "message_text": extract_message_text(message),
+                "message_type": message_type,
+                "source_message_id": normalize_text(message.get("id")),
+                "timestamp": coexistence_timestamp_to_iso(message.get("timestamp")),
+                "direction": "outbound" if outbound else "inbound",
+                "is_history": is_history,
+                "raw_payload": message,
+            }
+        )
+
+    for entry in payload.get("entry", []):
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("changes", []) or []:
+            if not isinstance(change, dict):
+                continue
+            field_name = normalize_text(change.get("field"))
+            if field_name not in {"smb_message_echoes", "history"}:
+                continue
+            value = change.get("value", {})
+            if not isinstance(value, dict):
+                continue
+
+            metadata = value.get("metadata", {})
+            business_wa_id = ""
+            if isinstance(metadata, dict):
+                business_wa_id = normalize_whatsapp_id(metadata.get("display_phone_number"))
+
+            if field_name == "smb_message_echoes":
+                for message in value.get("message_echoes", []) or []:
+                    collect(message, business_wa_id=business_wa_id, is_history=False)
+                continue
+
+            for chunk in value.get("history", []) or []:
+                if not isinstance(chunk, dict):
+                    continue
+                for thread in chunk.get("threads", []) or []:
+                    if not isinstance(thread, dict):
+                        continue
+                    for message in thread.get("messages", []) or []:
+                        collect(message, business_wa_id=business_wa_id, is_history=True)
+
+    return [event for event in events if event.get("message_text")]
 
 
 def extract_status_error_message(status_payload: dict[str, Any]) -> str:

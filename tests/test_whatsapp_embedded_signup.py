@@ -233,7 +233,13 @@ class EmbeddedSignupEndpointTests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertEqual(payload["error"], "invalid_fields")
 
-    def _complete_signup(self, cookie: str, *, owner_wa_id: str = "") -> tuple[int, dict]:
+    def _complete_signup(
+        self,
+        cookie: str,
+        *,
+        owner_wa_id: str = "",
+        onboarding_type: str = "",
+    ) -> tuple[int, dict]:
         env = {
             "META_APP_ID": "app-1",
             "WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID": "config-1",
@@ -244,6 +250,8 @@ class EmbeddedSignupEndpointTests(unittest.TestCase):
         body = {"code": "one-time-code", "waba_id": "11111", "phone_number_id": "55555"}
         if owner_wa_id:
             body["owner_wa_id"] = owner_wa_id
+        if onboarding_type:
+            body["onboarding_type"] = onboarding_type
 
         server_module = "packages.infrastructure.portal_auth.server"
         with mock.patch.dict(os.environ, env), \
@@ -298,6 +306,26 @@ class EmbeddedSignupEndpointTests(unittest.TestCase):
         self.assertTrue(pin.isdigit() and len(pin) == 6, pin)
         stored = self.server.database.get_whatsapp_connection("owner@example.com")
         self.assertEqual(stored["metadata"]["registrationPin"], pin)
+
+    def test_a_coexistence_signup_never_tries_to_register_the_number(self) -> None:
+        """The owner keeps WhatsApp on their phone.
+
+        Registering would move the number onto the API and take it off the
+        handset -- the exact outcome coexistence exists to avoid.
+        """
+        cookie = self._cookie()
+        status, payload = self._complete_signup(cookie, onboarding_type="coexistence")
+
+        self.assertEqual(status, 200, payload)
+        self.register_mock.assert_not_called()
+
+    def test_a_coexistence_signup_is_recorded_as_such(self) -> None:
+        cookie = self._cookie()
+        self._complete_signup(cookie, onboarding_type="coexistence")
+
+        stored = self.server.database.get_whatsapp_connection("owner@example.com")
+        self.assertEqual(stored["metadata"]["onboarding"], "coexistence")
+        self.assertEqual(stored["connectionStatus"], "connected")
 
     def test_a_number_that_refuses_registration_still_connects(self) -> None:
         """Numbers already on the WhatsApp Business app reject /register."""

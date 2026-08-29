@@ -23,6 +23,52 @@ For a multi-tenant product, the usual setup is:
 - Keep Assistyca-owned sender credentials in the backend deployment environment as `ASSISTYCA_WHATSAPP_ACCESS_TOKEN` and, if overriding the built-in default, `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID`.
 - Use one webhook endpoint for all tenants, then route each event by WABA ID or phone number ID.
 
+## Coexistence (Owner Keeps WhatsApp On Their Phone)
+
+Most owners will not delete WhatsApp from their handset to sign up. Coexistence
+lets the WhatsApp Business app and the Cloud API share one number, so the owner
+keeps chatting normally while we watch.
+
+How it differs from the migration flow:
+
+- The signup popup is launched with `featureType: "whatsapp_business_app_onboarding"`,
+  which adds a "connect your existing WhatsApp Business account" option.
+- The number is **never** registered. `register_whatsapp_phone_number` is skipped
+  entirely when the browser reports `onboarding_type: "coexistence"`; calling it
+  would move the number onto the API and take it off the phone.
+- The connection is stored with `metadata.onboarding = "coexistence"`.
+
+Requirements on the customer's side:
+
+- The number must be on the **WhatsApp Business app** (v2.24.17+), not the
+  consumer WhatsApp app.
+- Group chats, disappearing messages, view-once, live location, calls, and the
+  catalog/orders tools do not sync. Broadcast lists become read-only.
+- Throughput on a coexistence number is fixed at 20 messages/sec.
+
+### Webhook Fields To Enable
+
+These must be subscribed in the Meta App Dashboard webhook config, alongside
+`messages`. Without them the connection succeeds but nothing arrives:
+
+- `smb_message_echoes` -- messages the owner sends from their own phone.
+- `history` -- up to 180 days of past conversation, backfilled in chunks when
+  the number is first connected. Media asset ids only resolve for messages
+  within 14 days of onboarding.
+- `smb_app_state_sync` -- contact changes. Received but not yet stored.
+
+### How Coexistence Traffic Is Handled
+
+`extract_coexistence_events` parses these fields and `record_coexistence_message`
+stores them. Both halves of the conversation land in the normal thread, keyed by
+the customer, with `direction` derived by comparing each message's `from` against
+the business number.
+
+Coexistence messages never create an approval, and never reach
+`handle_owner_event`. That matters: `handle_owner_event` reads messages from the
+owner as approval commands, so routing echoes there would treat ordinary replies
+to customers as instructions.
+
 ## What The Backend Does
 
 - Receives inbound WhatsApp webhooks.

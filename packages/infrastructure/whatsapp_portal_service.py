@@ -28,6 +28,7 @@ from packages.tools.whatsapp_reply_approval.server import build_owner_interactiv
 from packages.tools.whatsapp_reply_approval.server import build_owner_notification_text
 from packages.tools.whatsapp_reply_approval.server import build_owner_review_actions_payload
 from packages.tools.whatsapp_reply_approval.server import build_owner_skip_text
+from packages.tools.whatsapp_reply_approval.server import extract_coexistence_events
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import now_iso
 from packages.tools.whatsapp_reply_approval.server import normalize_bool
@@ -1245,6 +1246,42 @@ class PortalWhatsAppService:
         approvals: list[dict[str, Any]] = []
         results: list[dict[str, Any]] = []
 
+        # Coexistence mirrors the owner's own WhatsApp Business app to us. It is
+        # recorded for context and never answered: the owner is holding the phone
+        # and is already replying themselves. In particular these must not reach
+        # handle_owner_event, which would read ordinary messages to customers as
+        # approval commands.
+        coexistence_events = extract_coexistence_events(payload)
+        for event in coexistence_events:
+            try:
+                self.store.record_coexistence_message(
+                    thread_id=str(event["thread_id"]),
+                    sender_name=str(event.get("sender_name", "")),
+                    sender_wa_id=str(event.get("sender_wa_id", "")),
+                    message_text=str(event.get("message_text", "")),
+                    source_message_id=str(event.get("source_message_id", "")),
+                    message_type=str(event.get("message_type", "text")),
+                    direction=str(event.get("direction", "inbound")),
+                    timestamp=str(event.get("timestamp", "")),
+                    is_history=bool(event.get("is_history")),
+                    raw_payload=event.get("raw_payload", {}),
+                )
+                results.append(
+                    {
+                        "type": "coexistence_history" if event.get("is_history") else "coexistence",
+                        "direction": event.get("direction", ""),
+                        "thread_id": event.get("thread_id", ""),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                results.append(
+                    {
+                        "type": "error",
+                        "thread_id": event.get("thread_id", ""),
+                        "error": str(exc),
+                    }
+                )
+
         for event in events:
             try:
                 if self.is_owner_sender(str(event["sender_wa_id"])):
@@ -1268,6 +1305,7 @@ class PortalWhatsAppService:
             "ok": True,
             "client_id": self.config.client_id,
             "received": len(events),
+            "coexistence_received": len(coexistence_events),
             "approvals": approvals,
             "results": results,
         }
