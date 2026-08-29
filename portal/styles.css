@@ -5819,45 +5819,6 @@ body[data-modal="billing"] .app-shell {
   padding-right: 0.65rem;
 }
 
-/* A calendar inside a connected account is ticked, not typed, so its chip is a
-   button. Unticked reads as an outline; ticked fills in like the chips above. */
-.agent-action-editor-chip.is-selectable {
-  align-items: center;
-  padding: 0.4rem 0.65rem;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid var(--line);
-  font: inherit;
-  font-size: 0.68rem;
-  text-align: left;
-  cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-}
-
-.agent-action-editor-chip.is-selectable:hover:not(:disabled),
-.agent-action-editor-chip.is-selectable:focus-visible {
-  border-color: rgba(15, 118, 110, 0.4);
-  outline: 0;
-}
-
-.agent-action-editor-chip.is-selectable.is-selected {
-  color: #24584f;
-  background: rgba(15, 118, 110, 0.1);
-  border-color: rgba(15, 118, 110, 0.32);
-}
-
-.agent-action-editor-chip.is-selectable:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.agent-action-editor-chip-mark {
-  flex: 0 0 auto;
-  font-size: 0.72rem;
-  line-height: 1;
-  opacity: 0.75;
-}
-
 .agent-calendar-sources {
   display: flex;
   flex-direction: column;
@@ -5905,6 +5866,22 @@ body[data-modal="billing"] .app-shell {
   color: var(--muted);
   font-size: 0.68rem;
   font-style: italic;
+}
+
+.agent-calendar-add {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.agent-calendar-add .agent-action-editor-select-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agent-calendar-add-reconnect {
+  flex: 0 0 auto;
 }
 
 .agent-action-editor-topic-entry {
@@ -11701,23 +11678,6 @@ body.is-chat-view {
 :root[data-theme="dark"] .agent-action-editor-chip-remove:hover,
 :root[data-theme="dark"] .agent-action-editor-chip-remove:focus-visible {
   background: rgba(55, 184, 171, 0.28);
-}
-
-:root[data-theme="dark"] .agent-action-editor-chip.is-selectable {
-  color: var(--muted);
-  background: transparent;
-  border-color: rgba(224, 239, 244, 0.16);
-}
-
-:root[data-theme="dark"] .agent-action-editor-chip.is-selectable:hover:not(:disabled),
-:root[data-theme="dark"] .agent-action-editor-chip.is-selectable:focus-visible {
-  border-color: rgba(55, 184, 171, 0.48);
-}
-
-:root[data-theme="dark"] .agent-action-editor-chip.is-selectable.is-selected {
-  color: #cdefe8;
-  background: rgba(55, 184, 171, 0.16);
-  border-color: rgba(55, 184, 171, 0.42);
 }
 
 :root[data-theme="dark"] .agent-folder-utility-button {

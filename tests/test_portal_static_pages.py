@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=152", html)
+        self.assertIn("styles.css?v=153", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -277,7 +277,10 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function createAgentCalendarTagsField"):
             script.index("function createAgentCalendarSummaryDateRangeField")
         ]
-        self.assertIn('entryInput.placeholder = "Add a calendar email address";', tags_field)
+        # Nobody knows a calendar's address by heart, so the field never asks
+        # for one: calendars are picked from what the connection can read.
+        self.assertNotIn("Add a calendar email address", script)
+        self.assertIn('placeholder.textContent = "Add another calendar…";', tags_field)
         self.assertIn("agent-action-editor-chip", tags_field)
         self.assertIn("agentCalendarTagRemove", tags_field)
         self.assertIn('setHint("Connect Google Calendar so this action has a calendar to read.");', tags_field)
@@ -304,21 +307,28 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function createAgentCalendarTagsField"):
             script.index("function createAgentCalendarSummaryDateRangeField")
         ]
-        # Each connected account is its own group, with one tickable chip per
-        # calendar inside it.
+        # Each connected account is its own group of chips, and the dropdown
+        # offers the calendars inside it that the action does not read yet.
         self.assertIn("getAgentCalendarSourceHeading(source)", tags_field)
-        self.assertIn("agentCalendarToggle", tags_field)
-        self.assertIn('chip.setAttribute("aria-pressed", selected ? "true" : "false");', tags_field)
+        self.assertIn("function renderPicker", tags_field)
+        self.assertIn("option.value = calendar.id;", tags_field)
+        self.assertIn("parent = document.createElement(\"optgroup\");", tags_field)
         self.assertIn("void refreshAgentCalendarSources();", tags_field)
         # An action that reads no calendar at all is not a setting to land on by
         # unticking, and a calendar the account stopped listing is still named.
         self.assertIn('setHint("This action needs at least one calendar to read.", true);', tags_field)
         self.assertIn('const heading = sources.length ? "Also reading" : getConnectedCalendarTagLabel();', tags_field)
         self.assertIn("Loading the calendars in this account…", tags_field)
-        self.assertIn(".agent-action-editor-chip.is-selectable", styles)
-        self.assertIn(".agent-action-editor-chip.is-selectable.is-selected", styles)
+        # A connection that cannot list its calendars has nothing to offer, so
+        # the row says so and reconnecting is the one thing it can do.
+        self.assertIn('placeholder.textContent = "Reconnect to list your calendars";', tags_field)
+        self.assertIn('openPlatformConnection("calendar");', tags_field)
+        self.assertIn(".agent-calendar-add {", styles)
+        self.assertIn(".agent-calendar-add .agent-action-editor-select-wrap {", styles)
         self.assertIn(".agent-calendar-source-name", styles)
-        self.assertIn(':root[data-theme="dark"] .agent-action-editor-chip.is-selectable {', styles)
+        # The tickable chips are gone, and so is the styling only they used.
+        self.assertNotIn(".agent-action-editor-chip.is-selectable", styles)
+        self.assertNotIn(".agent-action-editor-chip-mark", styles)
 
     def test_monitor_actions_support_manual_runs_and_manual_only_mode(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
@@ -1184,8 +1194,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=152", html)
-        self.assertIn("app.js?v=185", html)
+        self.assertIn("styles.css?v=153", html)
+        self.assertIn("app.js?v=186", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)
