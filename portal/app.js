@@ -146,6 +146,7 @@ const DEFAULT_MONITOR_SETTINGS = {
   intervalMinutes: 0,
   scheduleTimeLocal: "",
   scheduleTimezone: "",
+  scheduleStartAt: "",
   deliveryChannel: "email",
   telegramChatId: "",
 };
@@ -4918,6 +4919,18 @@ function normalizeMonitorScheduleTime(value, fallback = DEFAULT_MONITOR_SETTINGS
   return coerceMonitorScheduleTime(value) || coerceMonitorScheduleTime(fallback) || "";
 }
 
+// The moment a monitor runs for the first time. Without it a cadence only says
+// how often, never which day, so the schedule counted from whenever the
+// settings were last saved.
+function normalizeMonitorScheduleStartAt(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
 function normalizeMonitorScheduleTimezone(value, fallback = "") {
   const fallbackText = String(fallback || "").trim();
   const text = String(value || "").trim();
@@ -4986,6 +4999,23 @@ function getMonitorScheduleTime(feature = getSelectedFeature()) {
   return derivedTime || DEFAULT_MONITOR_SCHEDULE_TIME;
 }
 
+// Changing the hour on the schedule card has to move the first run with it,
+// otherwise the saved start would keep firing at the hour it was set with.
+function alignMonitorScheduleStartAt(value, scheduleTimeLocal, timeZone = getWorkspaceTimeZone()) {
+  const scheduleStartAt = normalizeMonitorScheduleStartAt(value);
+  const time = normalizeMonitorScheduleTime(scheduleTimeLocal, "");
+  if (!scheduleStartAt || !time) {
+    return scheduleStartAt;
+  }
+  const parts = getMonitorZonedDateTimeParts(scheduleStartAt, timeZone);
+  if (!parts) {
+    return scheduleStartAt;
+  }
+  const [hour, minute] = time.split(":").map((part) => Number.parseInt(part, 10));
+  const aligned = buildMonitorDateInTimeZone({ ...parts, hour, minute, second: 0 }, timeZone);
+  return aligned && !Number.isNaN(aligned.getTime()) ? aligned.toISOString() : scheduleStartAt;
+}
+
 function buildMonitorSettingsForSave(feature = getSelectedFeature(), settings = getSelectedFeatureSettings(feature)) {
   const source = settings && typeof settings === "object" ? settings : {};
   const manualOnly = normalizeMonitorManualOnly(source.manualOnly);
@@ -5003,6 +5033,13 @@ function buildMonitorSettingsForSave(feature = getSelectedFeature(), settings = 
     runMode: manualOnly ? "manual" : "recurring",
     scheduleTimeLocal,
     scheduleTimezone,
+    scheduleStartAt: manualOnly
+      ? ""
+      : alignMonitorScheduleStartAt(
+        source.scheduleStartAt,
+        scheduleTimeLocal,
+        scheduleTimezone || getMonitorScheduleTimezone(feature),
+      ),
   });
 }
 
@@ -5157,6 +5194,9 @@ function normalizeFeatureMonitorSettings(settings = {}) {
             : DEFAULT_MONITOR_SETTINGS.intervalDays,
     scheduleTimeLocal,
     scheduleTimezone,
+    scheduleStartAt: manualOnly
+      ? ""
+      : normalizeMonitorScheduleStartAt(source.scheduleStartAt || source.schedule_start_at || ""),
     deliveryChannel: ["email", "telegram", "whatsapp"].includes(deliveryChannel) ? deliveryChannel : DEFAULT_MONITOR_SETTINGS.deliveryChannel,
     telegramChatId: String(source.telegramChatId || "").trim(),
   };
@@ -9783,6 +9823,7 @@ function hasMonitorScheduleConfigChanges(feature = getSelectedFeature()) {
     normalizeMonitorIntervalDays(currentSettings.intervalDays) !== normalizeMonitorIntervalDays(savedSettings.intervalDays)
     || currentScheduleTime !== savedScheduleTime
     || currentScheduleTimezone !== savedScheduleTimezone
+    || normalizeMonitorScheduleStartAt(currentSettings.scheduleStartAt) !== normalizeMonitorScheduleStartAt(savedSettings.scheduleStartAt)
   );
 }
 
@@ -9814,7 +9855,17 @@ function resolveMonitorNextRunAt(feature, now = new Date()) {
     settings.scheduleTimezone,
     getMonitorScheduleTimezone(feature),
   ) || getMonitorScheduleTimezone(feature);
-  const anchorDate = resolveMonitorAnchorDate(feature, currentTime);
+  let anchorDate = resolveMonitorAnchorDate(feature, currentTime);
+  const scheduleStartAt = normalizeMonitorScheduleStartAt(settings.scheduleStartAt);
+  const startDate = scheduleStartAt ? new Date(scheduleStartAt) : null;
+  if (startDate) {
+    // The chosen start is the first run; once it has passed the cadence counts
+    // from it rather than from when the settings were saved.
+    if (startDate.getTime() > currentTime.getTime()) {
+      return startDate.toISOString();
+    }
+    anchorDate = startDate;
+  }
   if (!anchorDate) {
     return "";
   }
@@ -18007,6 +18058,7 @@ function createAgentProposalLocalAction(proposal) {
   const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
   const manualOnly = getAgentProposalManualOnly(proposal, backendFeature);
   const lifecycleStatus = getAgentProposalLifecycleStatus(proposal);
+  const runSchedule = getAgentProposalRunSchedule(proposal, manualOnly);
   const status = backendFeatureId
     ? (backendFeatureActive ? (manualOnly ? "manual_only" : "running") : (manualOnly ? "cancelled" : "paused"))
     : (
@@ -18046,6 +18098,10 @@ function createAgentProposalLocalAction(proposal) {
         : (proposal.executionPlan?.frequency || getAgentProposalFieldValue(proposal, "frequency")),
       manualOnly,
       actionLifecycleStatus: lifecycleStatus,
+      runDate: runSchedule.runDate,
+      runTime: runSchedule.runTime,
+      runTimezone: runSchedule.timezone,
+      nextRunAt: runSchedule.nextRunAt,
       deliveryChannel,
       deliveryTarget,
       deliveryLabel,
@@ -18952,6 +19008,47 @@ function getAgentMonitorEditorFrequencyOptions(settings = {}) {
   return options;
 }
 
+// What the editor's date and hour mean to the saved settings: the first run,
+// and the hour every run after it lands on.
+function getAgentMonitorEditorScheduleSettings(draft = {}, frequencyValue = "") {
+  const frequency = String(frequencyValue || draft.frequency || "").trim();
+  if (frequency === "manual") {
+    return { scheduleStartAt: "", scheduleTimeLocal: "" };
+  }
+  const timezone = normalizeMonitorScheduleTimezone(draft.scheduleTimezone, getWorkspaceTimeZone()) || getWorkspaceTimeZone();
+  const runTime = normalizeAgentActionRunTime(draft.runTime);
+  const runDate = normalizeAgentActionRunDate(draft.runDate) || getAgentActionDefaultRunDate(frequency, runTime, timezone);
+  return {
+    scheduleStartAt: resolveAgentActionNextRunAt({ frequency, runDate, runTime, timezone }),
+    scheduleTimeLocal: runTime,
+    scheduleTimezone: timezone,
+  };
+}
+
+function getAgentMonitorEditorRunSchedule(feature, settings = {}) {
+  const timezone = getMonitorScheduleTimezone(feature);
+  const frequency = getAgentMonitorEditorFrequencyValue(settings);
+  const parts = getMonitorZonedDateTimeParts(
+    normalizeMonitorScheduleStartAt(settings.scheduleStartAt) || resolveMonitorNextRunAt(feature),
+    timezone,
+  );
+  if (parts) {
+    return {
+      frequency,
+      timezone,
+      runDate: formatAgentActionRunDate(parts),
+      runTime: normalizeAgentActionRunTime(`${parts.hour}:${parts.minute}`),
+    };
+  }
+  const runTime = normalizeAgentActionRunTime(settings.scheduleTimeLocal);
+  return {
+    frequency,
+    timezone,
+    runTime,
+    runDate: getAgentActionDefaultRunDate(frequency, runTime, timezone),
+  };
+}
+
 function getAgentMonitorEditorFrequencySettings(value, currentSettings = {}) {
   const normalizedValue = String(value || "").trim().toLowerCase();
   if (normalizedValue === "manual") {
@@ -19021,6 +19118,7 @@ function createAgentMonitorEditor(action) {
   }
 
   const currentSettings = getSelectedFeatureSettings(feature);
+  const runSchedule = getAgentMonitorEditorRunSchedule(feature, currentSettings);
   const draft = {
     watchItems: normalizeMonitorWatchItems(
       currentSettings.watchItems.length
@@ -19028,6 +19126,9 @@ function createAgentMonitorEditor(action) {
         : (action?.payload?.watchItems || []),
     ),
     frequency: getAgentMonitorEditorFrequencyValue(currentSettings),
+    runDate: runSchedule.runDate,
+    runTime: runSchedule.runTime,
+    scheduleTimezone: runSchedule.timezone,
     deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,
   };
 
@@ -19073,6 +19174,31 @@ function createAgentMonitorEditor(action) {
   }
   frequencySelect.value = draft.frequency;
   frequencyField.append(frequencyLabel, wrapAgentActionEditorSelect(frequencySelect));
+
+  const runDate = createAgentLocalActionEditorField("Run date", draft.runDate, { inputType: "date" });
+  const runTime = createAgentLocalActionEditorField("Run time", draft.runTime, { inputType: "time" });
+  const runScheduleRow = document.createElement("div");
+  runScheduleRow.className = "agent-action-editor-field-row";
+  runScheduleRow.append(runDate.field, runTime.field);
+  const runScheduleNote = document.createElement("p");
+  runScheduleNote.className = "agent-action-editor-note";
+
+  const syncRunScheduleFields = () => {
+    const showFields = draft.frequency !== "manual";
+    runScheduleRow.hidden = !showFields;
+    runScheduleNote.hidden = !showFields;
+    runDate.input.disabled = !showFields;
+    runTime.input.disabled = !showFields;
+    if (!showFields) {
+      return;
+    }
+    runDate.input.value = draft.runDate;
+    runTime.input.value = draft.runTime;
+    const nextRunAt = resolveAgentActionNextRunAt(draft);
+    runScheduleNote.textContent = nextRunAt
+      ? `Next run ${formatScheduledActionDate(nextRunAt, draft.scheduleTimezone)}`
+      : "Pick the date and hour this monitor should run.";
+  };
 
   const status = createAgentActionEditorStatusElement("agent-action-editor-status", "p");
   status.setAttribute("role", "status");
@@ -19140,6 +19266,27 @@ function createAgentMonitorEditor(action) {
   });
   frequencySelect.addEventListener("change", () => {
     draft.frequency = frequencySelect.value;
+    syncRunScheduleFields();
+    scheduleAgentMonitorAutoSave(action, draft, form);
+  });
+  runDate.input.addEventListener("change", () => {
+    const chosenRunDate = normalizeAgentActionRunDate(runDate.input.value);
+    if (!chosenRunDate) {
+      runDate.input.value = draft.runDate;
+      return;
+    }
+    draft.runDate = chosenRunDate;
+    syncRunScheduleFields();
+    scheduleAgentMonitorAutoSave(action, draft, form);
+  });
+  runTime.input.addEventListener("change", () => {
+    const chosenRunTime = normalizeAgentActionRunTime(runTime.input.value, "");
+    if (!chosenRunTime) {
+      runTime.input.value = draft.runTime;
+      return;
+    }
+    draft.runTime = chosenRunTime;
+    syncRunScheduleFields();
     scheduleAgentMonitorAutoSave(action, draft, form);
   });
   form._agentMonitorEditor = {
@@ -19150,8 +19297,9 @@ function createAgentMonitorEditor(action) {
     savePromise: null,
     saveQueued: false,
   };
-  form.append(topicsField, frequencyField, status);
+  form.append(topicsField, frequencyField, runScheduleRow, runScheduleNote, status);
   renderTopics();
+  syncRunScheduleFields();
   return form;
 }
 
@@ -19192,6 +19340,7 @@ async function saveAgentMonitorActionSettings(action, draft, form) {
     ...currentSettings,
     watchItems,
     ...getAgentMonitorEditorFrequencySettings(editor.frequencySelect?.value, currentSettings),
+    ...getAgentMonitorEditorScheduleSettings(draft, editor.frequencySelect?.value),
     deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,
     actionLifecycleStatus: currentLifecycleStatus,
   });
@@ -19262,6 +19411,159 @@ function getAgentLocalActionProposal(action) {
   return getAgentWorkspace().proposals.find((proposal) => proposal.id === proposalId) || null;
 }
 
+// A cadence alone never says when a task actually runs: "Monthly" leaves the
+// day and the hour a mystery. Every scheduled action therefore carries a run
+// date and a run time, and the moment it next fires is derived from the two.
+const AGENT_ACTION_DEFAULT_RUN_TIME = "09:00";
+
+function normalizeAgentActionRunTime(value, fallback = AGENT_ACTION_DEFAULT_RUN_TIME) {
+  return normalizeMonitorScheduleTime(value, fallback);
+}
+
+function normalizeAgentActionRunDate(value) {
+  const text = String(value || "").trim();
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+  if (!match) {
+    return "";
+  }
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return "";
+  }
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month || parsed.getUTCDate() !== day) {
+    return "";
+  }
+  return formatAgentActionRunDate({ year, month, day });
+}
+
+function formatAgentActionRunDate(parts) {
+  if (!parts || !Number.isFinite(parts.year)) {
+    return "";
+  }
+  return [
+    String(parts.year).padStart(4, "0"),
+    String(parts.month).padStart(2, "0"),
+    String(parts.day).padStart(2, "0"),
+  ].join("-");
+}
+
+function parseAgentActionRunDateParts(value) {
+  const runDate = normalizeAgentActionRunDate(value);
+  if (!runDate) {
+    return null;
+  }
+  const [year, month, day] = runDate.split("-").map((part) => Number.parseInt(part, 10));
+  return { year, month, day };
+}
+
+// Keep the same day of the month where the month has one: a run on the 31st
+// lands on the 30th of a shorter month rather than skidding into the next one.
+function addAgentActionRunMonths(parts, months) {
+  const targetMonthIndex = (parts.month - 1) + months;
+  const year = parts.year + Math.floor(targetMonthIndex / 12);
+  const month = ((targetMonthIndex % 12) + 12) % 12 + 1;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return { year, month, day: Math.min(parts.day, daysInMonth) };
+}
+
+function buildAgentActionRunMoment(runDate, runTime, timezone = getWorkspaceTimeZone()) {
+  const parts = parseAgentActionRunDateParts(runDate);
+  const time = normalizeAgentActionRunTime(runTime, "");
+  if (!parts || !time) {
+    return null;
+  }
+  const [hour, minute] = time.split(":").map((part) => Number.parseInt(part, 10));
+  const moment = buildMonitorDateInTimeZone({ ...parts, hour, minute, second: 0 }, timezone);
+  return moment && !Number.isNaN(moment.getTime()) ? moment : null;
+}
+
+function getAgentActionFrequencyIntervalMinutes(frequency) {
+  const value = String(frequency || "").trim().toLowerCase();
+  const scaled = /^(minutes|days):(\d+)$/.exec(value);
+  if (scaled) {
+    const amount = Math.max(1, Number.parseInt(scaled[2], 10) || 1);
+    return scaled[1] === "minutes" ? amount : amount * 24 * 60;
+  }
+  if (/month/.test(value)) {
+    return 0;
+  }
+  if (/week/.test(value)) {
+    return 7 * 24 * 60;
+  }
+  if (/hour/.test(value)) {
+    return 60;
+  }
+  if (/minute/.test(value)) {
+    return 15;
+  }
+  return 24 * 60;
+}
+
+function isAgentActionMonthlyFrequency(frequency) {
+  const value = String(frequency || "").trim().toLowerCase();
+  return /month/.test(value) || value === "days:30";
+}
+
+function getAgentActionTodayRunDate(timezone = getWorkspaceTimeZone(), now = new Date()) {
+  return formatAgentActionRunDate(getMonitorZonedDateTimeParts(now, timezone));
+}
+
+// The first slot a task can honestly claim: today when the hour is still
+// ahead, tomorrow once it has passed, and the first of next month for a
+// monthly batch that reports on the month it just closed.
+function getAgentActionDefaultRunDate(frequency, runTime, timezone = getWorkspaceTimeZone(), now = new Date()) {
+  const parts = getMonitorZonedDateTimeParts(now, timezone);
+  if (!parts) {
+    return "";
+  }
+  if (isAgentActionMonthlyFrequency(frequency)) {
+    return formatAgentActionRunDate({ ...addAgentActionRunMonths({ ...parts, day: 1 }, 1) });
+  }
+  const today = formatAgentActionRunDate(parts);
+  const todayMoment = buildAgentActionRunMoment(today, runTime, timezone);
+  if (todayMoment && todayMoment.getTime() > now.getTime()) {
+    return today;
+  }
+  return formatAgentActionRunDate(addMonitorUtcDays(parts, 1));
+}
+
+// The chosen date and hour are the first run; once they are behind us the next
+// slot follows the cadence from there.
+function resolveAgentActionNextRunAt(schedule = {}, now = new Date()) {
+  const timezone = normalizeMonitorScheduleTimezone(schedule.timezone, getWorkspaceTimeZone()) || getWorkspaceTimeZone();
+  const firstMoment = buildAgentActionRunMoment(schedule.runDate, schedule.runTime, timezone);
+  if (!firstMoment) {
+    return "";
+  }
+  const currentTime = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
+  if (firstMoment.getTime() > currentTime.getTime()) {
+    return firstMoment.toISOString();
+  }
+
+  const intervalMinutes = getAgentActionFrequencyIntervalMinutes(schedule.frequency);
+  if (intervalMinutes) {
+    const intervalMs = intervalMinutes * 60 * 1000;
+    const cycles = Math.floor((currentTime.getTime() - firstMoment.getTime()) / intervalMs) + 1;
+    return new Date(firstMoment.getTime() + cycles * intervalMs).toISOString();
+  }
+
+  let parts = parseAgentActionRunDateParts(schedule.runDate);
+  for (let step = 1; parts && step <= 120; step += 1) {
+    const candidate = buildAgentActionRunMoment(
+      formatAgentActionRunDate(addAgentActionRunMonths(parts, step)),
+      schedule.runTime,
+      timezone,
+    );
+    if (candidate && candidate.getTime() > currentTime.getTime()) {
+      return candidate.toISOString();
+    }
+  }
+  return "";
+}
+
 function getAgentLocalActionFrequencyValue(action, proposal) {
   if (getAgentProposalManualOnly(proposal)) {
     return "manual";
@@ -19295,6 +19597,29 @@ function getAgentLocalActionFrequencyOptions() {
     { value: "weekly", label: "Weekly" },
     { value: "monthly", label: "Monthly" },
   ];
+}
+
+// The date and hour a saved action next runs, defaulted when the action was
+// approved before it was asked for one.
+function getAgentProposalRunSchedule(proposal, manualOnly = getAgentProposalManualOnly(proposal)) {
+  const timezone = getWorkspaceTimeZone();
+  if (manualOnly) {
+    return { frequency: "manual", runDate: "", runTime: "", timezone, nextRunAt: "" };
+  }
+  const frequency = getAgentLocalActionFrequencyValue(null, proposal);
+  const runTime = normalizeAgentActionRunTime(
+    getAgentProposalFieldValue(proposal, "runTime") || proposal?.executionPlan?.runTime,
+  );
+  const runDate = normalizeAgentActionRunDate(
+    getAgentProposalFieldValue(proposal, "runDate") || proposal?.executionPlan?.runDate,
+  ) || getAgentActionDefaultRunDate(frequency, runTime, timezone);
+  return {
+    frequency,
+    runDate,
+    runTime,
+    timezone,
+    nextRunAt: resolveAgentActionNextRunAt({ frequency, runDate, runTime, timezone }),
+  };
 }
 
 const AGENT_CALENDAR_SUMMARY_DATE_RANGE_OPTIONS = [
@@ -19537,8 +19862,13 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
   input.value = String(value || "");
   input.setAttribute("aria-label", labelText);
   if (!options.select && !options.multiline) {
-    input.type = "text";
-    input.placeholder = options.placeholder || "Enter a value";
+    input.type = options.inputType || "text";
+    if (input.type === "text") {
+      input.placeholder = options.placeholder || "Enter a value";
+    }
+    if (options.min) {
+      input.min = options.min;
+    }
   }
   if (options.multiline) {
     input.rows = Number(options.rows || 1);
@@ -20175,11 +20505,29 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     if (proposal.type === "email-digest") fields.schedule = frequencyLabel;
   }
   if (draft.deliveryChannel) fields.deliveryChannel = formatAgentScheduledMessageChannel(draft.deliveryChannel);
-  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result", "outputFolder"]) {
+  for (const key of ["calendar", "timeWindow", "mailbox", "mailboxAccount", "inactivityPeriod", "result", "outputFolder"]) {
     if (Object.prototype.hasOwnProperty.call(draft, key)) {
       const value = String(draft[key] || "").trim();
       if (value) fields[key] = value;
     }
+  }
+  const runTimezone = getWorkspaceTimeZone();
+  const runTime = manualOnly ? "" : normalizeAgentActionRunTime(draft.runTime);
+  const runSchedule = {
+    frequency: draft.frequency,
+    runDate: manualOnly
+      ? ""
+      : (normalizeAgentActionRunDate(draft.runDate) || getAgentActionDefaultRunDate(draft.frequency, runTime, runTimezone)),
+    runTime,
+    timezone: runTimezone,
+  };
+  runSchedule.nextRunAt = manualOnly ? "" : resolveAgentActionNextRunAt(runSchedule);
+  if (runSchedule.runDate) {
+    fields.runDate = runSchedule.runDate;
+    fields.runTime = runSchedule.runTime;
+  } else {
+    delete fields.runDate;
+    delete fields.runTime;
   }
   const canChooseRunMonth = shouldAllowAgentManualRunMonthChoice(proposal, draft);
   if (canChooseRunMonth) {
@@ -20212,6 +20560,10 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     actionLifecycleStatus: lifecycleStatus,
     manualRunMonth: savedManualRunMonth,
     outputFolder: savedOutputFolder,
+    runDate: runSchedule.runDate,
+    runTime: runSchedule.runTime,
+    timezone: runSchedule.timezone,
+    nextRunAt: runSchedule.nextRunAt,
   };
   proposal.executionPlan = {
     ...(proposal.executionPlan && typeof proposal.executionPlan === "object" ? proposal.executionPlan : {}),
@@ -20221,6 +20573,10 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     actionLifecycleStatus: lifecycleStatus,
     manualRunMonth: savedManualRunMonth,
     outputFolder: savedOutputFolder,
+    runDate: runSchedule.runDate,
+    runTime: runSchedule.runTime,
+    timezone: runSchedule.timezone,
+    nextRunAt: runSchedule.nextRunAt,
     settings: {
       ...(proposal.executionPlan?.settings && typeof proposal.executionPlan.settings === "object" ? proposal.executionPlan.settings : {}),
       manualOnly,
@@ -20228,6 +20584,10 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
       actionLifecycleStatus: lifecycleStatus,
       manualRunMonth: savedManualRunMonth,
       outputFolder: savedOutputFolder,
+      runDate: runSchedule.runDate,
+      runTime: runSchedule.runTime,
+      scheduleTimezone: runSchedule.timezone,
+      nextRunAt: runSchedule.nextRunAt,
     },
   };
   const previousDeliveryChannel = normalizeAgentDeliveryChannel(action.payload?.deliveryChannel || action.channel);
@@ -20253,11 +20613,15 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
   action.payload.preview = getAgentProposalLocalActionPreview(proposal);
   action.payload.manualRunMonth = savedManualRunMonth;
   action.payload.outputFolder = savedOutputFolder;
+  action.payload.runDate = runSchedule.runDate;
+  action.payload.runTime = runSchedule.runTime;
+  action.payload.runTimezone = runSchedule.timezone;
+  action.payload.nextRunAt = runSchedule.nextRunAt;
   action.payload.deliveryChannel = draft.deliveryChannel;
   action.payload.deliveryTarget = nextDeliveryTarget;
   action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, nextDeliveryTarget || action.recipientRef);
   action.recipientRef = nextDeliveryTarget || draft.deliveryChannel;
-  for (const key of ["calendar", "timeWindow", "mailbox", "inactivityPeriod", "result", "outputFolder"]) {
+  for (const key of ["calendar", "timeWindow", "mailbox", "mailboxAccount", "inactivityPeriod", "result", "outputFolder"]) {
     if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
   }
   if (savedOutputFolder) {
@@ -20302,10 +20666,14 @@ function createAgentLocalActionEditor(action) {
   const proposal = getAgentLocalActionProposal(action);
   if (!proposal || !isAgentProposalLocalAction(action)) return null;
 
+  const savedRunSchedule = getAgentProposalRunSchedule(proposal, false);
   const draft = {
     frequency: getAgentLocalActionFrequencyValue(action, proposal),
+    runDate: normalizeAgentActionRunDate(action.payload?.runDate) || savedRunSchedule.runDate,
+    runTime: normalizeAgentActionRunTime(action.payload?.runTime || savedRunSchedule.runTime),
     manualRunMonth: getAgentProposalManualRunMonthValue(proposal),
     outputFolder: getAgentProposalFieldValue(proposal, "outputFolder") || action.payload?.outputFolder || "",
+    mailboxAccount: getAgentProposalFieldValue(proposal, "mailboxAccount") || action.payload?.mailboxAccount || "",
     deliveryChannel: AGENT_ACTION_DELIVERY_CHANNEL,
   };
   const form = document.createElement("form");
@@ -20375,6 +20743,7 @@ function createAgentLocalActionEditor(action) {
     if (shouldAllowAgentManualRunMonthChoice(proposal, draft) && !draft.manualRunMonth) {
       draft.manualRunMonth = getAgentProposalManualRunMonthValue(proposal, draft);
     }
+    syncRunScheduleFields();
     syncManualRunMonthField();
     refreshMonthlyBatchResultField();
     syncOutputFolderField();
@@ -20384,6 +20753,42 @@ function createAgentLocalActionEditor(action) {
     scheduleAgentLocalActionAutoSave(action, draft, form, frequency.field, { renderOnSave: true });
   });
   form.append(frequency.field);
+
+  const runDate = createAgentLocalActionEditorField("Run date", draft.runDate, { inputType: "date" });
+  const runTime = createAgentLocalActionEditorField("Run time", draft.runTime, { inputType: "time" });
+  const runScheduleRow = document.createElement("div");
+  runScheduleRow.className = "agent-action-editor-field-row";
+  runScheduleRow.append(runDate.field, runTime.field);
+  const runScheduleNote = document.createElement("p");
+  runScheduleNote.className = "agent-action-editor-note";
+  // A saved date is the client's own choice; only an untouched one keeps
+  // following the cadence when the cadence changes.
+  let runScheduleTouched = Boolean(normalizeAgentActionRunDate(
+    action.payload?.runDate || getAgentProposalFieldValue(proposal, "runDate"),
+  ));
+  runDate.input.addEventListener("change", () => {
+    const chosenRunDate = normalizeAgentActionRunDate(runDate.input.value);
+    if (!chosenRunDate) {
+      runDate.input.value = draft.runDate;
+      return;
+    }
+    runScheduleTouched = true;
+    draft.runDate = chosenRunDate;
+    syncRunScheduleFields();
+    scheduleAgentLocalActionAutoSave(action, draft, form, runDate.field, { renderOnSave: true });
+  });
+  runTime.input.addEventListener("change", () => {
+    const chosenRunTime = normalizeAgentActionRunTime(runTime.input.value, "");
+    if (!chosenRunTime) {
+      runTime.input.value = draft.runTime;
+      return;
+    }
+    runScheduleTouched = true;
+    draft.runTime = chosenRunTime;
+    syncRunScheduleFields();
+    scheduleAgentLocalActionAutoSave(action, draft, form, runTime.field, { renderOnSave: true });
+  });
+  form.append(runScheduleRow, runScheduleNote);
 
   const manualRunMonth = createAgentLocalActionEditorField(
     "Run month",
@@ -20413,6 +20818,40 @@ function createAgentLocalActionEditor(action) {
     scheduleAgentLocalActionAutoSave(action, draft, form, outputFolder.field);
   });
   form.append(outputFolder.field);
+
+  const mailboxAccount = createAgentLocalActionEditorField(
+    "Read mailbox",
+    draft.mailboxAccount,
+    { select: true, options: getAgentMailboxAccountOptions(draft.mailboxAccount) },
+  );
+  mailboxAccount.input.addEventListener("change", () => {
+    draft.mailboxAccount = mailboxAccount.input.value;
+    scheduleAgentLocalActionAutoSave(action, draft, form, mailboxAccount.field);
+  });
+  // Only worth showing once there is a choice to make.
+  mailboxAccount.field.hidden = getConnectedEmailConnections().length < 2;
+  form.append(mailboxAccount.field);
+
+  function syncRunScheduleFields() {
+    const showFields = draft.frequency !== "manual";
+    runScheduleRow.hidden = !showFields;
+    runScheduleNote.hidden = !showFields;
+    runDate.input.disabled = !showFields;
+    runTime.input.disabled = !showFields;
+    if (!showFields) {
+      return;
+    }
+    draft.runTime = normalizeAgentActionRunTime(draft.runTime);
+    draft.runDate = runScheduleTouched
+      ? (normalizeAgentActionRunDate(draft.runDate) || getAgentActionDefaultRunDate(draft.frequency, draft.runTime))
+      : getAgentActionDefaultRunDate(draft.frequency, draft.runTime);
+    runDate.input.value = draft.runDate;
+    runTime.input.value = draft.runTime;
+    const nextRunAt = resolveAgentActionNextRunAt({ ...draft, timezone: getWorkspaceTimeZone() });
+    runScheduleNote.textContent = nextRunAt
+      ? `Next run ${formatScheduledActionDate(nextRunAt, getWorkspaceTimeZone())}`
+      : "Pick the date and hour this action should run.";
+  }
 
   function setManualRunMonthOptions(options, selectedValue) {
     const nextOptions = (Array.isArray(options) ? options : []).filter((option) => option?.value);
@@ -20472,6 +20911,7 @@ function createAgentLocalActionEditor(action) {
     resultControl.input.value = nextResult;
     scheduleAgentActionEditorTextareaResize(resultControl.input);
   }
+  syncRunScheduleFields();
   syncManualRunMonthField();
   refreshMonthlyBatchResultField();
   syncOutputFolderField();
@@ -20505,45 +20945,78 @@ function getSourceActionEditorFrequencyOptions() {
   ];
 }
 
+// The date and hour a source check is next due, read back from the schedule
+// the server is holding so the fields open on the real answer.
+function getSourceActionEditorRunSchedule(action) {
+  const timezone = getWorkspaceTimeZone();
+  const frequency = getSourceActionEditorFrequencyValue(action);
+  const parts = getMonitorZonedDateTimeParts(
+    String(action?.payload?.nextRunAt || action?.runAt || "").trim(),
+    timezone,
+  );
+  if (!parts) {
+    const runTime = AGENT_ACTION_DEFAULT_RUN_TIME;
+    return { frequency, timezone, runTime, runDate: getAgentActionDefaultRunDate(frequency, runTime, timezone) };
+  }
+  return {
+    frequency,
+    timezone,
+    runDate: formatAgentActionRunDate(parts),
+    runTime: normalizeAgentActionRunTime(`${parts.hour}:${parts.minute}`),
+  };
+}
+
 function createSourceActionEditor(action) {
   const sourceActionId = Number(action?.payload?.sourceActionId || 0);
   if (!sourceActionId) return null;
   const form = document.createElement("form");
   form.className = "agent-action-editor";
   form.addEventListener("submit", (event) => event.preventDefault());
+  const draft = getSourceActionEditorRunSchedule(action);
   const frequency = createAgentLocalActionEditorField(
     "Frequency",
-    getSourceActionEditorFrequencyValue(action),
+    draft.frequency,
     { select: true, options: getSourceActionEditorFrequencyOptions() },
   );
+  const runDate = createAgentLocalActionEditorField("Run date", draft.runDate, { inputType: "date" });
+  const runTime = createAgentLocalActionEditorField("Run time", draft.runTime, { inputType: "time" });
+  const runScheduleRow = document.createElement("div");
+  runScheduleRow.className = "agent-action-editor-field-row";
+  runScheduleRow.append(runDate.field, runTime.field);
   const status = createAgentActionEditorStatusElement("agent-action-editor-status", "p");
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
-  form.append(frequency.field, status);
+  form.append(frequency.field, runScheduleRow, status);
   let saveTimer = null;
-  frequency.input.addEventListener("change", () => {
+  const saveSchedule = (changedField) => {
     if (saveTimer) window.clearTimeout(saveTimer);
     setAgentActionEditorStatusElement(status, "Saving changes…", false, true);
-    setAgentActionEditorFieldStatus(frequency.field, "Saving", false, true);
+    setAgentActionEditorFieldStatus(changedField, "Saving", false, true);
     setAgentLocalActionSettingsBusy(action, true);
     updateAgentLocalActionDom(action);
     saveTimer = window.setTimeout(async () => {
       const selected = getSourceActionEditorFrequencyOptions().find((option) => option.value === frequency.input.value);
       if (!selected) {
         setAgentActionEditorStatusElement(status, "Choose a frequency.", true);
-        setAgentActionEditorFieldStatus(frequency.field, "Error", true);
+        setAgentActionEditorFieldStatus(changedField, "Error", true);
         setAgentLocalActionSettingsBusy(action, false);
         updateAgentLocalActionDom(action);
         return;
       }
+      const nextRunAt = resolveAgentActionNextRunAt({
+        frequency: selected.value,
+        runDate: draft.runDate,
+        runTime: draft.runTime,
+        timezone: draft.timezone,
+      });
       try {
         const response = await apiRequest(`/api/source-actions/${encodeURIComponent(String(sourceActionId))}/settings`, {
           method: "POST",
-          body: { intervalMinutes: selected.intervalMinutes },
+          body: { intervalMinutes: selected.intervalMinutes, nextRunAt },
         });
         setAgentActionEditorStatusElement(status, "Saved");
-        setAgentActionEditorFieldStatus(frequency.field, "Saved");
-        clearAgentActionEditorFieldStatusSoon(frequency.field);
+        setAgentActionEditorFieldStatus(changedField, "Saved");
+        clearAgentActionEditorFieldStatusSoon(changedField);
         if (response.action) {
           state.sourceActions = state.sourceActions.map((candidate) => (
             Number(candidate.id || 0) === sourceActionId ? response.action : candidate
@@ -20552,12 +21025,35 @@ function createSourceActionEditor(action) {
         }
       } catch (error) {
         setAgentActionEditorStatusElement(status, formatApiErrorMessage(error, "Couldn’t save the source schedule."), true);
-        setAgentActionEditorFieldStatus(frequency.field, "Error", true);
+        setAgentActionEditorFieldStatus(changedField, "Error", true);
       } finally {
         setAgentLocalActionSettingsBusy(action, false);
         updateAgentLocalActionDom(action);
       }
     }, 260);
+  };
+  frequency.input.addEventListener("change", () => {
+    draft.frequency = frequency.input.value;
+    saveSchedule(frequency.field);
+  });
+  runDate.input.addEventListener("change", () => {
+    const chosenRunDate = normalizeAgentActionRunDate(runDate.input.value);
+    if (!chosenRunDate) {
+      runDate.input.value = draft.runDate;
+      return;
+    }
+    draft.runDate = chosenRunDate;
+    saveSchedule(runDate.field);
+  });
+  runTime.input.addEventListener("change", () => {
+    const chosenRunTime = normalizeAgentActionRunTime(runTime.input.value, "");
+    if (!chosenRunTime) {
+      runTime.input.value = draft.runTime;
+      return;
+    }
+    draft.runTime = chosenRunTime;
+    runTime.input.value = chosenRunTime;
+    saveSchedule(runTime.field);
   });
   return form;
 }

@@ -388,6 +388,53 @@ class ScheduledMonitorTests(unittest.TestCase):
 
         self.assertEqual(next_slot.isoformat(), "2026-07-06T06:15:00+00:00")
 
+    def test_chosen_start_date_and_hour_decide_the_first_run(self) -> None:
+        next_slot = resolve_next_monitor_slot(
+            now=datetime(2026, 7, 6, 5, 30, tzinfo=timezone.utc),
+            settings={
+                "intervalDays": 3,
+                "scheduleTimeLocal": "09:15",
+                "scheduleTimezone": "Asia/Jerusalem",
+                "scheduleStartAt": "2026-07-09T06:15:00+00:00",
+            },
+            activated_at="2026-07-01T09:00:00+00:00",
+            settings_saved_at="2026-07-03T10:00:00+00:00",
+            last_scheduled_for="",
+        )
+
+        self.assertEqual(next_slot.isoformat(), "2026-07-09T06:15:00+00:00")
+
+    def test_a_start_that_has_passed_keeps_the_cadence_counting_from_it(self) -> None:
+        next_slot = resolve_next_monitor_slot(
+            now=datetime(2026, 7, 6, 5, 30, tzinfo=timezone.utc),
+            settings={
+                "intervalDays": 3,
+                "scheduleTimeLocal": "09:15",
+                "scheduleTimezone": "Asia/Jerusalem",
+                "scheduleStartAt": "2026-06-30T06:15:00+00:00",
+            },
+            activated_at="2026-07-01T09:00:00+00:00",
+            settings_saved_at="2026-07-03T10:00:00+00:00",
+            last_scheduled_for="",
+        )
+
+        self.assertEqual(next_slot.isoformat(), "2026-07-06T06:15:00+00:00")
+
+    def test_a_manual_monitor_keeps_no_start_moment(self) -> None:
+        settings = normalize_monitor_settings({
+            "watchItems": ["Kid-friendly events"],
+            "manualOnly": True,
+            "scheduleStartAt": "2026-07-09T06:15:00+00:00",
+        })
+
+        self.assertEqual(settings["scheduleStartAt"], "")
+        recurring = normalize_monitor_settings({
+            "watchItems": ["Kid-friendly events"],
+            "runMode": "recurring",
+            "scheduleStartAt": "2026-07-09T09:15:00+03:00",
+        })
+        self.assertEqual(recurring["scheduleStartAt"], "2026-07-09T06:15:00+00:00")
+
     def test_minute_interval_monitor_runs_after_requested_minutes(self) -> None:
         self.database.save_feature_assignment_metadata(
             "owner@example.com",

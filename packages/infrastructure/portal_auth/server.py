@@ -5485,10 +5485,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     interval_minutes = int(payload.get("intervalMinutes") or payload.get("interval_minutes") or 0)
                     if not SOURCE_ACTION_MIN_INTERVAL_MINUTES <= interval_minutes <= SOURCE_ACTION_MAX_INTERVAL_MINUTES:
                         raise ValueError("Choose a frequency between every 5 minutes and every 30 days.")
+                    # The client names the date and hour of the next check; an
+                    # unreadable one is a bad request, not a silent reset.
+                    next_run_at = normalize_text(payload.get("nextRunAt") or payload.get("next_run_at"))
+                    if next_run_at:
+                        try:
+                            datetime.fromisoformat(next_run_at.replace("Z", "+00:00"))
+                        except ValueError as exc:
+                            raise ValueError("Choose a valid run date and time.") from exc
                     updated = self.database.update_source_action_schedule(
                         action_id=action_id,
                         user_id=int(user.get("id") or 0),
                         interval_minutes=interval_minutes,
+                        next_run_at=next_run_at,
                     )
                 except (TypeError, ValueError) as exc:
                     json_response(self, HTTPStatus.BAD_REQUEST, {

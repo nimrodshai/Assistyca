@@ -87,6 +87,7 @@ DEFAULT_MONITOR_SETTINGS = {
     "intervalMinutes": 0,
     "scheduleTimeLocal": "",
     "scheduleTimezone": "",
+    "scheduleStartAt": "",
     "deliveryChannel": "portal",
     "telegramChatId": "",
     "actionLifecycleStatus": "active",
@@ -252,6 +253,25 @@ def normalize_schedule_time_local(value: Any) -> str:
     return f"{hour:02d}:{minute:02d}"
 
 
+# The moment a monitor first runs. A cadence alone never says which day the
+# first check lands on, so the portal names it and the schedule counts from
+# there instead of from the moment the settings were saved.
+def normalize_schedule_start_at(value: Any) -> str:
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        text = normalize_text(value)
+        if not text:
+            return ""
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat()
+
+
 def normalize_schedule_timezone(value: Any) -> str:
     text = normalize_text(value)
     if not text:
@@ -326,6 +346,9 @@ def normalize_monitor_settings(settings: dict[str, Any] | None = None) -> dict[s
         ),
         "scheduleTimeLocal": schedule_time_local,
         "scheduleTimezone": schedule_timezone,
+        "scheduleStartAt": "" if manual_only else normalize_schedule_start_at(
+            source.get("scheduleStartAt") or source.get("schedule_start_at")
+        ),
         "deliveryChannel": delivery_channel,
         "telegramChatId": normalize_text(source.get("telegramChatId")),
         "actionLifecycleStatus": normalize_action_lifecycle_status(
@@ -456,6 +479,15 @@ def resolve_next_monitor_slot(
         base_slot = latest_slot
     else:
         base_slot = reset_anchor
+
+    schedule_start_at = normalize_schedule_start_at(settings.get("scheduleStartAt") or settings.get("schedule_start_at"))
+    start_at = datetime.fromisoformat(schedule_start_at) if schedule_start_at else None
+    if start_at is not None and (latest_slot is None or latest_slot < start_at):
+        # The chosen start is the first run; once it has passed the cadence
+        # counts from it rather than from when the settings were saved.
+        if start_at > current_time:
+            return start_at
+        base_slot = start_at
 
     if base_slot is None:
         return None
@@ -1891,6 +1923,7 @@ __all__ = [
     "load_scheduled_monitor_config",
     "normalize_action_lifecycle_status",
     "normalize_monitor_settings",
+    "normalize_schedule_start_at",
     "resolve_next_monitor_slot",
     "validate_monitor_settings",
 ]

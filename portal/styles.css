@@ -5629,6 +5629,29 @@ body[data-modal="billing"] .app-shell {
   display: none;
 }
 
+/* The date and the hour belong to one answer - when does this run - so they
+   sit on a single row until the panel gets too narrow to hold both. */
+.agent-action-editor-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
+.agent-action-editor-field-row[hidden] {
+  display: none;
+}
+
+.agent-action-editor-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.agent-action-editor-note[hidden] {
+  display: none;
+}
+
 .agent-action-editor-label-row {
   display: flex;
   gap: 0.55rem;
@@ -5977,6 +6000,10 @@ body[data-modal="billing"] .app-shell {
 }
 
 @media (max-width: 520px) {
+  .agent-action-editor-field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .agent-action-editor-value-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.25rem;

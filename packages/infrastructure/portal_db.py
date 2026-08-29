@@ -5932,6 +5932,7 @@ class PortalDatabase:
         action_id: int,
         user_id: int,
         interval_minutes: int,
+        next_run_at: str | datetime | None = None,
     ) -> dict[str, Any] | None:
         if int(action_id or 0) <= 0 or int(user_id or 0) <= 0:
             return None
@@ -5939,7 +5940,13 @@ class PortalDatabase:
         if not 5 <= interval <= 30 * 24 * 60:
             raise ValueError("Interval must be between 5 minutes and 30 days.")
         now = datetime.now(timezone.utc)
-        next_run = (now + timedelta(minutes=interval)).isoformat()
+        # A caller that names the date and hour of the next check owns the
+        # schedule from there; without one the cadence starts over from now.
+        next_run = (
+            parse_datetime(next_run_at).astimezone(timezone.utc).isoformat()
+            if next_run_at
+            else (now + timedelta(minutes=interval)).isoformat()
+        )
         with self._connection() as conn:
             conn.execute(
                 """

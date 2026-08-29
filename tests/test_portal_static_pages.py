@@ -427,7 +427,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("createAgentActionSavingIndicator", script)
         self.assertIn(".agent-action-detail-saving", styles)
         self.assertIn('setAgentLocalActionEditorStatus(editor, "Saving changes…", false, true, changedField);', script)
-        self.assertIn("setAgentActionEditorFieldStatus(frequency.field, \"Saving\", false, true);", script)
+        self.assertIn("setAgentActionEditorFieldStatus(changedField, \"Saving\", false, true);", script)
         self.assertIn(".agent-action-editor-status-spinner", styles)
         self.assertIn(".agent-action-detail-saving.is-saving .agent-action-editor-status-spinner", styles)
         self.assertIn(".agent-action-editor-field.is-saving .agent-action-editor-select", styles)
@@ -971,6 +971,36 @@ class PortalStaticPageTests(unittest.TestCase):
         )
         self.assertIn("|| fallbackFrequency,", script)
         self.assertIn("  return fallbackFrequency;\n}", script)
+
+    def test_every_scheduled_action_names_the_date_and_hour_it_runs(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+        server_source = (self.root / "packages" / "infrastructure" / "portal_auth" / "server.py").read_text(encoding="utf-8")
+        monitor_source = (self.root / "packages" / "tools" / "scheduled_monitor" / "monitor.py").read_text(encoding="utf-8")
+
+        # A cadence on its own never says when a task runs, so each editor asks
+        # for the date and the hour and answers with the moment it next fires.
+        self.assertEqual(script.count('createAgentLocalActionEditorField("Run date", draft.runDate, { inputType: "date" })'), 3)
+        self.assertEqual(script.count('createAgentLocalActionEditorField("Run time", draft.runTime, { inputType: "time" })'), 3)
+        self.assertIn('input.type = options.inputType || "text";', script)
+        self.assertIn("function resolveAgentActionNextRunAt", script)
+        self.assertIn("function getAgentActionDefaultRunDate", script)
+        self.assertIn("`Next run ${formatScheduledActionDate(nextRunAt, getWorkspaceTimeZone())}`", script)
+        self.assertIn(".agent-action-editor-field-row", styles)
+        self.assertIn(".agent-action-editor-note", styles)
+
+        # An approved action carries the schedule, so the card can show it
+        # before anyone opens the editor.
+        self.assertIn("const runSchedule = getAgentProposalRunSchedule(proposal, manualOnly);", script)
+        self.assertIn("      nextRunAt: runSchedule.nextRunAt,", script)
+        self.assertIn("  action.payload.nextRunAt = runSchedule.nextRunAt;", script)
+
+        # A source check and a monitor keep their schedule on the server.
+        self.assertIn("body: { intervalMinutes: selected.intervalMinutes, nextRunAt },", script)
+        self.assertIn("next_run_at=next_run_at,", server_source)
+        self.assertIn("...getAgentMonitorEditorScheduleSettings(draft, editor.frequencySelect?.value),", script)
+        self.assertIn("def normalize_schedule_start_at", monitor_source)
+        self.assertIn("        if start_at > current_time:\n            return start_at", monitor_source)
 
     def test_saved_chats_can_actually_be_deleted(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

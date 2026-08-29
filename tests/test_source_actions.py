@@ -1,5 +1,8 @@
 import tempfile
 import unittest
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from pathlib import Path
 
 from packages.infrastructure.portal_db import PortalDatabase
@@ -76,6 +79,37 @@ class SourceActionTests(unittest.TestCase):
             resumed = database.resume_source_action(int(action["id"]), user_id=int(user["id"]))
 
             self.assertEqual(resumed["status"], "active")
+
+    def test_a_named_run_date_and_hour_decides_the_next_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = PortalDatabase(Path(directory) / "portal.db", bootstrap_registered_emails=["owner@example.com"])
+            user = database.get_user("owner@example.com")
+            action = database.create_source_action(
+                user_id=int(user["id"]),
+                source_type="file",
+                file_name="notes.txt",
+                file_bytes=b"notes",
+                interval_minutes=60,
+            )
+
+            chosen = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=3, hours=2)
+            rescheduled = database.update_source_action_schedule(
+                action_id=int(action["id"]),
+                user_id=int(user["id"]),
+                interval_minutes=1440,
+                next_run_at=chosen.isoformat(),
+            )
+
+            self.assertEqual(rescheduled["intervalMinutes"], 1440)
+            self.assertEqual(datetime.fromisoformat(rescheduled["nextRunAt"]), chosen)
+
+            # Without a chosen moment the cadence still starts over from now.
+            restarted = database.update_source_action_schedule(
+                action_id=int(action["id"]),
+                user_id=int(user["id"]),
+                interval_minutes=1440,
+            )
+            self.assertLess(datetime.fromisoformat(restarted["nextRunAt"]), chosen)
 
 
 if __name__ == "__main__":
