@@ -51,7 +51,7 @@ Why this setup works:
 Important:
 
 - Render free web services use ephemeral local storage, so portal users, feature assignments, WhatsApp connection state, billing data stored in SQLite, and WhatsApp approval thread history stored in local JSON can disappear after a restart or redeploy.
-- For persistent portal data, run the web service on a paid Render plan, attach a persistent disk, and point `PORTAL_DB_PATH` at the disk mount such as `/var/data/portal.db`. The portal will keep its WhatsApp approval JSON state beside that database by default, for example under `/var/data/portal-whatsapp/`.
+- For persistent portal data, run the web service on a paid Render plan, attach a persistent disk, and point `PORTAL_DB_PATH` at the disk mount such as `/var/data/portal.db`. The portal will keep its WhatsApp approval JSON state and the receipt bundles behind workspace folders beside that database by default, for example under `/var/data/portal-whatsapp/` and `/var/data/agent-receipts/`.
 
 When you are ready for always-on hosting, you can upgrade the Render service to a paid plan and keep the same code.
 
@@ -84,6 +84,7 @@ Required environment variables on Render:
 - `OPENAI_API_KEY` for Scheduled Web Monitor searches and any other backend OpenAI-powered tool execution
 - `TELEGRAM_BOT_TOKEN` when you want Scheduled Web Monitor alerts to be delivered through Telegram
 - `PORTAL_WHATSAPP_STORE_ROOT` optional override for the per-user WhatsApp approval JSON files. If unset, the portal uses `PORTAL_DATA_ROOT/portal-whatsapp`.
+- `PORTAL_AGENT_OUTPUT_DIR` optional override for the receipt bundles actions write to disk. If unset, the portal uses `PORTAL_DATA_ROOT/agent-receipts`, so workspace folders keep their files across restarts.
 - `PUBLIC_BASE_URL` recommended for production so approval links and the connection payload always point at the public portal hostname
 - `PORTAL_SCHEDULED_MONITOR_ENABLED` enables the recurring Scheduled Web Monitor worker. The default is `1`.
 - `PORTAL_SCHEDULED_MONITOR_POLL_SECONDS` controls how often the backend checks for due monitor runs. The default is `300`.
@@ -112,7 +113,7 @@ Required environment variables on Render:
 - `FEATURE_ACTIVATION_PAYMENT_STATUS_CACHE_TTL_SECONDS` optional cache TTL for backend payment-status refreshes. The default is `120`.
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.
-If you want portal state to survive restarts on Render, add a persistent disk in the Render dashboard and mount it at `/var/data` or another absolute path you control, then set `PORTAL_DB_PATH` to a file inside that mount. The portal will place its WhatsApp approval store in the same persistent area unless you explicitly override it.
+If you want portal state to survive restarts on Render, add a persistent disk in the Render dashboard and mount it at `/var/data` or another absolute path you control, then set `PORTAL_DB_PATH` to a file inside that mount. The portal will place its WhatsApp approval store and the receipt bundles behind workspace folders in the same persistent area unless you explicitly override them.
 Portal sessions now default to 180 days and survive server restarts when the signing secret stays stable.
 
 ## Local usage

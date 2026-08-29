@@ -94,6 +94,7 @@ from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPL
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_client_type
 from packages.infrastructure.portal_db import normalize_user_profile
+from packages.infrastructure.portal_runtime_paths import resolve_portal_agent_output_root
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.rate_limiter import (
     CONTACT_AGENT_GLOBAL,
@@ -1370,9 +1371,7 @@ def load_config() -> PortalConfig:
 
     db_path = resolve_portal_db_path()
     billing_data_path = resolve_portal_billing_data_path()
-    agent_output_dir = resolve_runtime_path(
-        os.getenv("PORTAL_AGENT_OUTPUT_DIR", "output/agent_receipts").strip() or "output/agent_receipts"
-    )
+    agent_output_dir = resolve_portal_agent_output_root(db_path=db_path)
 
     legacy_markup_multiplier = read_float_env("PORTAL_BILLING_MULTIPLIER", DEFAULT_BILLING_MULTIPLIER)
     input_token_price_multiplier = read_float_env(
