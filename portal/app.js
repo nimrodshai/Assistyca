@@ -1370,6 +1370,9 @@ let monitorManualRunOverlayVisible = false;
 const monitorActionRunBusy = new Set();
 const localActionRunBusy = new Set();
 const agentActionLifecycleBusy = new Set();
+// Ticks in a multi-select action picker, kept per message so a re-render
+// restores what the user already picked.
+const agentActionChoiceSelections = new Map();
 const agentLocalActionSettingsBusy = new Set();
 const agentFolderContents = new Map();
 let reengagementDemoRunBusy = false;
@@ -4480,6 +4483,7 @@ function normalizeAgentMessage(value = {}) {
         created: String(choice.created || "").trim(),
       }))
       .filter((choice) => choice.name);
+    metadata.actionChoiceMode = normalizeAgentActionChoiceMode(metadata.actionChoiceMode);
   }
 
   return {
@@ -16488,20 +16492,66 @@ function getAgentMessageActionChoices(message) {
   return Array.isArray(message?.metadata?.actionChoices) ? message.metadata.actionChoices : [];
 }
 
+function normalizeAgentActionChoiceMode(value) {
+  return String(value || "").trim().toLowerCase() === "multiple" ? "multiple" : "single";
+}
+
+function agentMessageAllowsMultipleActionChoices(message) {
+  return normalizeAgentActionChoiceMode(message?.metadata?.actionChoiceMode) === "multiple";
+}
+
+function getAgentActionChoiceSelection(messageId) {
+  const selected = agentActionChoiceSelections.get(String(messageId || ""));
+  return selected instanceof Set ? selected : new Set();
+}
+
+function toggleAgentActionChoiceSelection(messageId, choiceId) {
+  const id = String(messageId || "").trim();
+  const value = String(choiceId || "").trim();
+  if (!id || !value) {
+    return;
+  }
+  const selected = new Set(getAgentActionChoiceSelection(id));
+  if (selected.has(value)) {
+    selected.delete(value);
+  } else {
+    selected.add(value);
+  }
+  agentActionChoiceSelections.set(id, selected);
+}
+
+function getSelectedAgentActionChoices(message) {
+  const selected = getAgentActionChoiceSelection(message?.id);
+  return getAgentMessageActionChoices(message)
+    .filter((choice) => selected.has(String(choice?.id || "")));
+}
+
 function createAgentActionChoiceCard(message) {
+  const multiple = agentMessageAllowsMultipleActionChoices(message);
   const card = document.createElement("section");
   card.className = "agent-message-action-picker";
-  card.setAttribute("aria-label", "Choose one of your actions");
+  card.setAttribute("aria-label", multiple ? "Choose one or more of your actions" : "Choose one of your actions");
+  if (multiple) {
+    card.classList.add("is-multi");
+  }
 
   const eyebrow = document.createElement("span");
   eyebrow.className = "agent-message-action-picker-eyebrow";
   eyebrow.textContent = "Your active actions";
   card.append(eyebrow);
 
+  if (multiple) {
+    const hint = document.createElement("p");
+    hint.className = "agent-message-action-picker-hint";
+    hint.textContent = "Pick as many as you like, then continue.";
+    card.append(hint);
+  }
+
   const list = document.createElement("div");
   list.className = "agent-message-action-picker-list";
   const agent = getAgentWorkspace();
   const resolved = Boolean(agentTurnBusy || areAgentMessageActionsResolved(message, agent.messages));
+  const selected = getAgentActionChoiceSelection(message.id);
   for (const choice of getAgentMessageActionChoices(message)) {
     const row = document.createElement("div");
     row.className = "agent-message-action-picker-row";
@@ -16509,28 +16559,95 @@ function createAgentActionChoiceCard(message) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "agent-message-action-picker-option";
-    button.dataset.agentMessageAction = "choose";
-    button.dataset.agentActionValue = getAgentActionChoiceValue(choice);
+    button.dataset.agentMessageAction = multiple ? "toggle-choice" : "choose";
     button.dataset.agentActionMessage = message.id;
     button.disabled = resolved;
+    if (multiple) {
+      const picked = selected.has(String(choice?.id || ""));
+      button.classList.add("is-selectable");
+      button.classList.toggle("is-selected", picked);
+      button.dataset.agentActionChoiceId = String(choice?.id || "");
+      button.setAttribute("aria-pressed", picked ? "true" : "false");
+      button.append(createAgentActionChoiceTick());
+    } else {
+      button.dataset.agentActionValue = getAgentActionChoiceValue(choice);
+    }
+
+    const text = document.createElement("span");
+    text.className = "agent-message-action-picker-text";
 
     const name = document.createElement("span");
     name.className = "agent-message-action-picker-name";
     name.textContent = String(choice?.name || "Action");
-    button.append(name);
+    text.append(name);
 
     const meta = [choice?.status, choice?.created].map((part) => String(part || "").trim()).filter(Boolean);
     if (meta.length) {
       const detail = document.createElement("span");
       detail.className = "agent-message-action-picker-meta";
       detail.textContent = meta.join(" · ");
-      button.append(detail);
+      text.append(detail);
     }
+    button.append(text);
     row.append(button, createAgentActionChoiceDetailsButton(choice));
     list.append(row);
   }
   card.append(list);
+  if (multiple) {
+    card.append(createAgentActionChoiceConfirmRow(message, selected.size, resolved));
+  }
   return card;
+}
+
+function createAgentActionChoiceTick() {
+  const tick = createSvgElement("svg", {
+    class: "agent-message-action-picker-tick",
+    viewBox: "0 0 20 20",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  tick.append(
+    createSvgElement("rect", {
+      x: "2.9",
+      y: "2.9",
+      width: "14.2",
+      height: "14.2",
+      rx: "4.4",
+      stroke: "currentColor",
+      "stroke-width": "1.5",
+    }),
+    createSvgElement("path", {
+      class: "agent-message-action-picker-tick-mark",
+      d: "M6.6 10.3l2.5 2.5 4.6-5",
+      stroke: "currentColor",
+      "stroke-width": "1.9",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+    }),
+  );
+  return tick;
+}
+
+function createAgentActionChoiceConfirmRow(message, selectedCount, resolved) {
+  const row = document.createElement("div");
+  row.className = "agent-message-action-picker-confirm";
+
+  const count = document.createElement("span");
+  count.className = "agent-message-action-picker-count";
+  count.textContent = selectedCount === 1 ? "1 action picked" : `${selectedCount} actions picked`;
+  count.setAttribute("aria-live", "polite");
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary-button small";
+  button.dataset.agentMessageAction = "choose-multiple";
+  button.dataset.agentActionMessage = message.id;
+  button.disabled = Boolean(resolved || !selectedCount);
+  button.textContent = "Continue";
+
+  row.append(count, button);
+  return row;
 }
 
 function createAgentActionChoiceDetailsButton(choice) {
@@ -16848,6 +16965,10 @@ function getAgentMessageRenderSignature(messages) {
     message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.suggested_reply || "") : "",
     message.metadata?.kind === "action-choice"
       ? getAgentMessageActionChoices(message).map((choice) => [choice?.name || "", choice?.status || "", choice?.created || ""])
+      : "",
+    message.metadata?.kind === "action-choice" ? normalizeAgentActionChoiceMode(message.metadata?.actionChoiceMode) : "",
+    message.metadata?.kind === "action-choice"
+      ? Array.from(getAgentActionChoiceSelection(message.id)).sort()
       : "",
     message.metadata?.proposalId || "",
     message.metadata?.actionId || "",
@@ -18991,6 +19112,20 @@ function getAgentActionChoiceValue(choice) {
   // list already numbers repeated titles, so the name on its own names one
   // action.
   return `The “${String(choice?.name || "").trim()}” action`;
+}
+
+function getAgentActionChoiceListValue(choices) {
+  // Several picks answer in one sentence, so the agent reads them as one turn
+  // instead of a burst of separate messages.
+  const names = (Array.isArray(choices) ? choices : [])
+    .map((choice) => String(choice?.name || "").trim())
+    .filter(Boolean)
+    .map((name) => `“${name}”`);
+  if (names.length <= 1) {
+    return names.length ? `The ${names[0]} action` : "";
+  }
+  const last = names[names.length - 1];
+  return `The ${names.slice(0, -1).join(", ")} and ${last} actions`;
 }
 
 function buildAgentActionContext() {
@@ -22145,6 +22280,30 @@ function handleAgentMessageAction(event) {
   const proposalRevision = Math.max(0, Number(button.dataset.agentActionRevision || 0));
   const value = button.dataset.agentActionValue || button.textContent || "";
   const messageId = button.dataset.agentActionMessage || "";
+
+  // Ticking a box is not an answer yet, so the picker stays live until the
+  // user continues.
+  if (action === "toggle-choice") {
+    toggleAgentActionChoiceSelection(messageId, button.dataset.agentActionChoiceId || "");
+    renderAgentMessages();
+    return true;
+  }
+
+  if (action === "choose-multiple") {
+    const picked = getAgentActionChoiceListValue(
+      getSelectedAgentActionChoices(getAgentWorkspace().messages.find((candidate) => candidate.id === messageId)),
+    );
+    if (!picked) {
+      return true;
+    }
+    agentActionChoiceSelections.delete(messageId);
+    resolveAgentMessageActions(messageId, action);
+    persistClientState();
+    renderAgentMessages();
+    handleAgentUserText(picked);
+    return true;
+  }
+
   resolveAgentMessageActions(messageId, action);
   persistClientState();
   renderAgentMessages();
@@ -22772,6 +22931,7 @@ function buildAgentReplyMetadata(turn, outcome) {
     return {
       kind: "action-choice",
       actionChoices: choices,
+      actionChoiceMode: normalizeAgentActionChoiceMode(turn?.actionChoiceMode),
       actions: choices.map((choice) => createAgentAction(
         "choose",
         choice.name,

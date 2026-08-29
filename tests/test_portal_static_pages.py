@@ -1523,7 +1523,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function createAgentActionChoiceCard"):
             script.index("function renderAgentMessageBubbleContent")
         ]
-        self.assertIn('button.dataset.agentMessageAction = "choose";', picker)
+        self.assertIn('button.dataset.agentMessageAction = multiple ? "toggle-choice" : "choose";', picker)
         self.assertIn("button.dataset.agentActionValue = getAgentActionChoiceValue(choice);", picker)
         self.assertIn("areAgentMessageActionsResolved(message, agent.messages)", picker)
 
@@ -1564,6 +1564,52 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-action-choice-details-grid {", styles)
         self.assertIn("background: var(--surface-soft);", styles)
 
+    def test_a_plural_request_gets_a_multi_select_action_picker(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # The agent says how many actions the message pointed at; the picker
+        # follows that instead of forcing one pick at a time.
+        self.assertIn("actionChoiceMode: normalizeAgentActionChoiceMode(turn?.actionChoiceMode),", script)
+        self.assertIn("function agentMessageAllowsMultipleActionChoices", script)
+        self.assertIn('=== "multiple" ? "multiple" : "single"', script)
+
+        picker = script[
+            script.index("function createAgentActionChoiceCard"):
+            script.index("function createAgentActionChoiceDetailsButton")
+        ]
+        self.assertIn("const multiple = agentMessageAllowsMultipleActionChoices(message);", picker)
+        self.assertIn('button.setAttribute("aria-pressed", picked ? "true" : "false");', picker)
+        self.assertIn("createAgentActionChoiceConfirmRow(message, selected.size, resolved)", picker)
+        self.assertIn('button.dataset.agentMessageAction = "choose-multiple";', picker)
+        self.assertIn("button.disabled = Boolean(resolved || !selectedCount);", picker)
+
+        # Ticking a box must not count as the answer, so only Continue sends one.
+        handler = script[
+            script.index("function handleAgentMessageAction"):
+            script.index("function handleAgentActionReferenceClick")
+        ]
+        self.assertIn('if (action === "toggle-choice") {', handler)
+        self.assertIn("toggleAgentActionChoiceSelection(messageId, button.dataset.agentActionChoiceId", handler)
+        self.assertIn('if (action === "choose-multiple") {', handler)
+        self.assertIn("getAgentActionChoiceListValue(", handler)
+        # The picker stays usable while boxes are ticked; only Continue resolves it.
+        toggle_block = handler[handler.index('if (action === "toggle-choice") {'):handler.index('if (action === "choose-multiple") {')]
+        self.assertNotIn("resolveAgentMessageActions", toggle_block)
+
+        # Several picks answer in one sentence rather than several messages.
+        list_value = script[
+            script.index("function getAgentActionChoiceListValue"):
+            script.index("function buildAgentActionContext")
+        ]
+        self.assertIn("return `The ${names.slice(0, -1).join(\", \")} and ${last} actions`;", list_value)
+
+        # A re-render has to keep the ticks the user already made.
+        self.assertIn("const agentActionChoiceSelections = new Map();", script)
+        self.assertIn("Array.from(getAgentActionChoiceSelection(message.id)).sort()", script)
+
+        self.assertIn(".agent-message-action-picker-option.is-selected {", styles)
+        self.assertIn(".agent-message-action-picker-confirm {", styles)
     def test_page_scripts_resolve_from_the_url_the_page_is_served_at(self) -> None:
         """Resolve each <script src> the way a browser does, against the request URL.
 

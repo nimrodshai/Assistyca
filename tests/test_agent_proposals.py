@@ -198,6 +198,55 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertFalse(setup_question["needsActionChoice"])
         self.assertFalse(chat_reply["needsActionChoice"])
 
+    def test_turn_prompt_explains_when_the_picker_takes_more_than_one_action(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="ok. Lets delete some actions",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            action_context=[
+                {"name": "Receipt collector", "status": "Manual"},
+                {"name": "Web monitor", "status": "Live"},
+            ],
+        )
+
+        self.assertIn("actionChoiceMode", prompt)
+        self.assertIn("some actions", prompt)
+
+    def test_turn_response_keeps_a_multi_select_picker_for_a_plural_request(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which actions should I delete?",
+                "needsActionChoice": True,
+                "actionChoiceMode": "Multiple",
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertTrue(turn["needsActionChoice"])
+        self.assertEqual(turn["actionChoiceMode"], "multiple")
+
+    def test_turn_response_defaults_the_picker_to_a_single_action(self) -> None:
+        single = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which action should I put on a schedule?",
+                "needsActionChoice": True,
+            },
+            has_active_proposal=False,
+        )
+        no_picker = normalize_agent_turn_response(
+            {
+                "outcome": "message",
+                "reply": "You have five active actions right now.",
+                "actionChoiceMode": "multiple",
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(single["actionChoiceMode"], "single")
+        self.assertEqual(no_picker["actionChoiceMode"], "")
+
     def test_conversational_turn_prompt_uses_field_based_intake(self) -> None:
         prompt = build_agent_turn_prompt(
             user_message="HaSharon and central Israel",

@@ -432,7 +432,8 @@ def build_agent_turn_prompt(
         "comma separated and oldest first, for example '2026-07,2026-08', and name them all in "
         "changes.fields.result too. Every month named gets its own answer, including the months with nothing "
         "in them, so never drop one. Leave outputFolder out, because an answer run saves nothing.\n"
-        "Return keys: outcome, reply, proposalType, changes, needsActionChoice. reply is required for every "
+        "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode. reply is "
+        "required for every "
         "outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
         "of scheduled-message, email-digest, calendar-summary, "
@@ -474,6 +475,11 @@ def build_agent_turn_prompt(
         "same turn. Set needsActionChoice=true only when existingActions has entries and the missing detail is "
         "which existing action the user means; leave it false everywhere else. Never refer to an action that is "
         "not in existingActions.\n"
+        "actionChoiceMode says how many actions that picker should let the user tick. Use multiple when the "
+        "message points at more than one action, including plural or open-ended wording such as some actions, "
+        "a few of them, these, several, all the old ones, or a stated count above one. Use single when the "
+        "message points at exactly one action. Word the reply to match: ask which actions they mean for "
+        "multiple, which action for single. actionChoiceMode is read only when needsActionChoice is true.\n"
         "For action result notifications, default deliveryChannel to portal (the Notifications center) when the user has "
         "not explicitly chosen another channel. Do not ask where to notify merely to choose this default. If the "
         "user explicitly requests email, WhatsApp, Telegram, or another supported channel, preserve that choice.\n"
@@ -654,7 +660,18 @@ def normalize_agent_turn_response(
         and turn["outcome"] == "question"
         and not turn["proposalType"]
     )
+    # A picker that is not shown has no mode, so the field stays empty there.
+    turn["actionChoiceMode"] = (
+        _normalize_action_choice_mode(response.get("actionChoiceMode"))
+        if turn["needsActionChoice"]
+        else ""
+    )
     return turn
+
+
+def _normalize_action_choice_mode(value: Any) -> str:
+    mode = _single_line(value, 20).lower()
+    return "multiple" if mode == "multiple" else "single"
 
 
 def _normalize_agent_turn_outcome(

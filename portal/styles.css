@@ -3789,8 +3789,9 @@ body[data-modal="billing"] .app-shell {
 }
 
 .agent-message-action-picker-option {
-  display: grid;
-  gap: 0.15rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   width: 100%;
   padding: 0.6rem 0.75rem;
   border: 1px solid var(--line);
@@ -3827,6 +3828,63 @@ body[data-modal="billing"] .app-shell {
 .agent-message-action-picker-meta {
   color: var(--muted);
   font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.agent-message-action-picker-text {
+  display: grid;
+  gap: 0.15rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agent-message-action-picker-hint {
+  margin: -0.2rem 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.agent-message-action-picker-tick {
+  display: block;
+  flex: 0 0 auto;
+  width: 1.2rem;
+  height: 1.2rem;
+  color: var(--muted);
+  opacity: 0.7;
+  transition: color 0.16s ease, opacity 0.16s ease;
+}
+
+.agent-message-action-picker-tick-mark {
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.agent-message-action-picker-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.agent-message-action-picker-option.is-selected .agent-message-action-picker-tick {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.agent-message-action-picker-option.is-selected .agent-message-action-picker-tick-mark {
+  opacity: 1;
+}
+
+.agent-message-action-picker-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.agent-message-action-picker-count {
+  color: var(--muted);
+  font-size: 0.8rem;
   line-height: 1.35;
 }
 
