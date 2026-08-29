@@ -47,6 +47,27 @@ class GmailRenderingTests(unittest.TestCase):
 
         self.assertEqual(to_gmail_query(query), "newer_than:31d (receipt OR invoice)")
 
+    def test_a_named_vendor_narrows_the_search_rather_than_widening_it(self) -> None:
+        window = month_window(2026, 8)
+        query = MailQuery(
+            terms=RECEIPT_TERMS,
+            required_terms=("Render",),
+            after=window.after,
+            before=window.before,
+        )
+
+        # The vendor sits outside the OR group, so Gmail requires it.
+        self.assertEqual(
+            to_gmail_query(query),
+            "after:2026/08/01 before:2026/09/01 "
+            "(receipt OR invoice OR statement OR bill OR transaction OR expense) Render",
+        )
+
+    def test_a_vendor_of_two_words_stays_one_search_term(self) -> None:
+        query = MailQuery(terms=("receipt",), required_terms=("Green Invoice",))
+
+        self.assertEqual(to_gmail_query(query), '(receipt) "Green Invoice"')
+
 
 class GmailParsingTests(unittest.TestCase):
     def test_a_saved_gmail_query_survives_the_round_trip(self) -> None:
@@ -101,6 +122,17 @@ class GraphRenderingTests(unittest.TestCase):
         rendered = to_graph_search(query, today=date(2026, 8, 28))
 
         self.assertEqual(rendered, '"receipt" AND received>=2026-08-21')
+
+    def test_a_named_vendor_is_required_in_the_kql_too(self) -> None:
+        window = month_window(2026, 8)
+        search = to_graph_search(MailQuery(
+            terms=("receipt", "invoice"),
+            required_terms=("Render",),
+            after=window.after,
+            before=window.before,
+        ))
+
+        self.assertIn('("receipt" OR "invoice") AND "Render"', search)
 
     def test_an_attachment_filter_is_carried_across(self) -> None:
         query = MailQuery(terms=("receipt",), has_attachment=True)

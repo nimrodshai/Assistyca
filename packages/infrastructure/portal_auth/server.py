@@ -77,6 +77,7 @@ from packages.infrastructure.outlook_summary import OutlookAccessValidator
 from packages.infrastructure.outlook_summary import OutlookAuthorizationError
 from packages.infrastructure.outlook_summary import OutlookDigestRunner
 from packages.infrastructure.outlook_summary import OutlookSummaryError
+from packages.infrastructure.gmail_summary import GMAIL_MAX_DIGEST_MESSAGES
 from packages.infrastructure.gmail_summary import GmailAccessValidator
 from packages.infrastructure.gmail_summary import GmailAuthorizationError
 from packages.infrastructure.gmail_summary import GmailDigestRunner
@@ -352,6 +353,11 @@ AGENT_MONTH_NAME_INDEX = {
     "dec": 12,
     "december": 12,
 }
+# How much of a month one receipt search reads. Saving a bundle downloads the
+# whole message and its attachments, so it stays lower than a chat answer,
+# which only reads message headers.
+AGENT_RECEIPT_ANSWER_MAX_MESSAGES = 100
+AGENT_RECEIPT_BUNDLE_MAX_MESSAGES = 50
 AGENT_GMAIL_BATCH_SEARCH_TERMS = (
     "receipt",
     "invoice",
@@ -1974,12 +1980,22 @@ def build_custom_batch_mail_query(fields: dict[str, Any], payload: dict[str, Any
             return parsed
 
     terms = normalize_terms(AGENT_GMAIL_BATCH_SEARCH_TERMS)
+    # A named vendor is searched for in the mailbox rather than filtered out
+    # afterwards. A month holds more receipt-ish mail than one read returns,
+    # so a vendor left out of the query can sit past the end of the results
+    # and read back as "no receipts" when the receipt is right there.
+    required_terms = normalize_terms([normalize_text(fields.get("vendor") or payload.get("vendor"))])
     month_value = resolve_agent_batch_run_month(fields, payload)
     if month_value:
         window = month_window(*month_value)
-        return MailQuery(terms=terms, after=window.after, before=window.before)
+        return MailQuery(
+            terms=terms,
+            required_terms=required_terms,
+            after=window.after,
+            before=window.before,
+        )
 
-    return MailQuery(terms=terms, newer_than_days=31)
+    return MailQuery(terms=terms, required_terms=required_terms, newer_than_days=31)
 
 
 def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
@@ -4874,6 +4890,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 if is_custom_google_batch
                 else resolve_saved_mail_query(fields, payload)
             )
+            # A digest reports the newest few messages, so its default stands.
+            # A receipt search is asked about a whole month and has to read all
+            # of it, or a receipt sitting past the newest few reads as missing.
+            search_max_results = GMAIL_MAX_DIGEST_MESSAGES
+            if is_custom_google_batch:
+                search_max_results = (
+                    AGENT_RECEIPT_ANSWER_MAX_MESSAGES if answer_mode else AGENT_RECEIPT_BUNDLE_MAX_MESSAGES
+                )
             receipt_bundle: Optional[dict[str, Any]] = None
             result_header = get_custom_google_batch_result_header(fields) if is_custom_google_batch else ""
             answer_month: tuple[int, int] | None = None
@@ -4948,6 +4972,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     result = runner.run(
                         access_token,
                         query=mail_query,
+                        max_results=search_max_results,
                         include_attachments=receipt_attachment_dir is not None,
                         attachment_output_dir=receipt_attachment_dir,
                         attachment_url_prefix=receipt_attachment_url_prefix,
@@ -5075,6 +5100,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 response_payload["answer"] = receipt_answer["answer"]
                 response_payload["receiptCount"] = receipt_answer["receiptCount"]
                 response_payload["totals"] = receipt_answer["totals"]
+                # A question can cover several months, and each month is its
+                # own run. These let the chat add the months up into one
+                # answer instead of stacking one sentence per month.
+                response_payload["vendor"] = receipt_answer["vendor"]
+                response_payload["monthLabel"] = receipt_answer["monthLabel"]
+                response_payload["missingAmountCount"] = receipt_answer["missingAmountCount"]
             if receipt_bundle:
                 response_payload.update({
                     "outputFolder": str(receipt_bundle.get("outputFolder") or ""),

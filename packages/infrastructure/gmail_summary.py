@@ -21,6 +21,12 @@ GMAIL_MESSAGES_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/message
 GMAIL_PROFILE_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 GMAIL_TIMEOUT_SECONDS = 20
 GMAIL_MAX_DIGEST_MESSAGES = 10
+# A digest shows the newest handful. A receipt search has to see the whole
+# month it was asked about, so it may ask for more than the digest default,
+# up to this ceiling, and the reader pages until it has them.
+GMAIL_MAX_SEARCH_MESSAGES = 100
+GMAIL_MAX_SEARCH_PAGES = 5
+GMAIL_LIST_PAGE_SIZE = 100
 GMAIL_MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE = mail_attachments.MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE
 GMAIL_MAX_RECEIPT_ATTACHMENT_BYTES = mail_attachments.MAX_RECEIPT_ATTACHMENT_BYTES
 GMAIL_DEFAULT_QUERY = "in:inbox newer_than:1d"
@@ -229,6 +235,40 @@ class GmailDigestRunner:
             )
         return payload
 
+    def _list_message_ids(
+        self,
+        access_token: str,
+        *,
+        query: str,
+        max_results: int,
+    ) -> list[dict[str, Any]]:
+        """Every message the search matches, up to the caller's ceiling.
+
+        Gmail returns one page at a time, newest first. A single page is fine
+        for a digest of recent mail, but a month's receipts run past the end
+        of it, and stopping there loses the older half of the month.
+        """
+
+        messages: list[dict[str, Any]] = []
+        page_token = ""
+        for _ in range(GMAIL_MAX_SEARCH_PAGES):
+            params = [
+                ("maxResults", str(min(GMAIL_LIST_PAGE_SIZE, max_results - len(messages)))),
+                ("q", query),
+            ]
+            if page_token:
+                params.append(("pageToken", page_token))
+            payload = self._get_json(
+                f"{GMAIL_MESSAGES_API_URL}?{urllib_parse.urlencode(params)}",
+                access_token,
+            )
+            page = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+            messages.extend(entry for entry in page if isinstance(entry, dict))
+            page_token = str(payload.get("nextPageToken") or "").strip()
+            if len(messages) >= max_results or not page_token:
+                break
+        return messages[:max_results]
+
     def fetch_message_summaries(
         self,
         access_token: str,
@@ -245,13 +285,8 @@ class GmailDigestRunner:
                 "Gmail access needs attention: no usable access token is saved. Reconnect Gmail with read-only access, then try again."
             )
         safe_query = resolve_gmail_query(query)[:200]
-        safe_max = max(1, min(GMAIL_MAX_DIGEST_MESSAGES, int(max_results or GMAIL_MAX_DIGEST_MESSAGES)))
-        list_params = urllib_parse.urlencode({
-            "maxResults": str(safe_max),
-            "q": safe_query,
-        })
-        list_payload = self._get_json(f"{GMAIL_MESSAGES_API_URL}?{list_params}", token)
-        raw_messages = list_payload.get("messages") if isinstance(list_payload.get("messages"), list) else []
+        safe_max = max(1, min(GMAIL_MAX_SEARCH_MESSAGES, int(max_results or GMAIL_MAX_DIGEST_MESSAGES)))
+        raw_messages = self._list_message_ids(token, query=safe_query, max_results=safe_max)
         summaries: list[dict[str, Any]] = []
         output_dir = Path(attachment_output_dir) if attachment_output_dir else None
         if include_attachments and output_dir is not None:

@@ -22280,6 +22280,74 @@ function getAgentAnswerRunMonths(fields) {
   };
 }
 
+function formatAgentAnswerAmounts(totals) {
+  return Object.entries(totals && typeof totals === "object" ? totals : {})
+    .filter(([, value]) => Number.isFinite(Number(value)))
+    .map(([code, value]) => `${Number(value).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} ${code}`)
+    .join(" and ");
+}
+
+function joinAgentAnswerLabels(labels) {
+  if (labels.length < 2) {
+    return labels[0] || "";
+  }
+  return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
+function describeAgentAnswerMonth(entry) {
+  const label = String(entry.monthLabel || "").trim();
+  const count = Number(entry.receiptCount || 0);
+  const missing = Number(entry.missingAmountCount || 0);
+  if (!count) {
+    return `${label}: nothing found`;
+  }
+  const amounts = formatAgentAnswerAmounts(entry.totals);
+  const receiptWord = count === 1 ? "receipt" : "receipts";
+  if (!amounts) {
+    return `${label}: ${count} ${receiptWord}, none naming an amount I could read`;
+  }
+  const missingNote = missing ? `, ${missing} more with no amount I could read` : "";
+  return `${label}: ${amounts} (${count} ${receiptWord}${missingNote})`;
+}
+
+// Several months asked about in one question deserve one answer: the total
+// first, then a line per month. Stacking one sentence per month leaves the
+// adding up to the reader, which is the part they asked for.
+function composeAgentMonthlyAnswer(results) {
+  const months = results.filter((entry) => entry && entry.totals && typeof entry.totals === "object"
+    && String(entry.monthLabel || "").trim());
+  if (months.length < 2) {
+    return "";
+  }
+
+  const combined = {};
+  let receiptCount = 0;
+  months.forEach((entry) => {
+    Object.entries(entry.totals).forEach(([code, value]) => {
+      combined[code] = (combined[code] || 0) + Number(value || 0);
+    });
+    receiptCount += Number(entry.receiptCount || 0);
+  });
+
+  const vendorLabel = String(months.find((entry) => entry.vendor)?.vendor || "").trim();
+  const where = vendorLabel ? ` to ${vendorLabel}` : "";
+  const span = joinAgentAnswerLabels(months.map((entry) => String(entry.monthLabel).trim()));
+  const amounts = formatAgentAnswerAmounts(combined);
+  if (!amounts) {
+    // Nothing anywhere, so a month-by-month breakdown of nothing adds nothing.
+    return `I couldn’t find any receipts${where} in ${span}.`;
+  }
+
+  const receiptWord = receiptCount === 1 ? "receipt" : "receipts";
+  return [
+    `You paid ${amounts}${where} across ${span}, over ${receiptCount} ${receiptWord}.`,
+    months.map(describeAgentAnswerMonth).join("\n"),
+  ].join("\n\n");
+}
+
 function formatAgentAnswerMonthLabel(value) {
   const match = parseAgentManualRunMonthValue(value).match(/^(\d{4})-(\d{2})$/);
   if (!match) {
@@ -22337,6 +22405,7 @@ async function runAgentAnswerNow(turn) {
 
   const fields = getAgentAnswerRunFields(turn);
   const { months, trimmed } = getAgentAnswerRunMonths(fields);
+  const results = [];
   const lines = [];
   const missedMonths = [];
   let lastError = null;
@@ -22357,6 +22426,7 @@ async function runAgentAnswerNow(turn) {
           },
           timeoutMs: 90000,
         });
+        results.push(response);
         const line = String(response.answer || response.message || response.summary || "").trim();
         if (line) {
           lines.push(line);
@@ -22372,16 +22442,20 @@ async function runAgentAnswerNow(turn) {
       }
       lines.push("I ran that, but it came back without anything to report.");
     }
+    // Months that were counted separately are reported together. One month,
+    // or a lookup with no money in it, keeps the sentence the run wrote.
+    const summed = composeAgentMonthlyAnswer(results);
+    const answerLines = summed ? [summed] : lines;
     // A month that could not be read is said out loud, so a partial answer
     // never passes for a complete one.
     const missed = missedMonths.filter(Boolean);
     if (missed.length) {
-      lines.push(`I couldn’t check ${missed.join(" and ")} just now.`);
+      answerLines.push(`I couldn’t check ${missed.join(" and ")} just now.`);
     }
     if (trimmed) {
-      lines.push(`That was more months than I check at once, so I stopped after ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
+      answerLines.push(`That was more months than I check at once, so I stopped after ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
     }
-    const answer = lines.join("\n\n");
+    const answer = answerLines.join("\n\n");
     pushAgentMessage("assistant", answer, { kind: "result" });
     persistAgentWorkspace(answer);
   } catch (error) {

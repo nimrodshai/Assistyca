@@ -33,6 +33,9 @@ GRAPH_ME_API_URL = "https://graph.microsoft.com/v1.0/me"
 GRAPH_INBOX_MESSAGES_API_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
 GRAPH_TIMEOUT_SECONDS = 20
 GRAPH_MAX_DIGEST_MESSAGES = 10
+# A digest shows the newest handful; a receipt search has to see the whole
+# month it was asked about, so it may ask for more, up to this ceiling.
+GRAPH_MAX_SEARCH_MESSAGES = 100
 # One page is plenty for a digest. A receipt month can need more, because the
 # client-side date re-check drops whatever the KQL window let through.
 GRAPH_MAX_PAGES = 5
@@ -272,7 +275,7 @@ class OutlookDigestRunner:
                 "Reconnect Outlook with read-only access, then try again."
             )
 
-        safe_max = max(1, min(GRAPH_MAX_DIGEST_MESSAGES, int(max_results or GRAPH_MAX_DIGEST_MESSAGES)))
+        safe_max = max(1, min(GRAPH_MAX_SEARCH_MESSAGES, int(max_results or GRAPH_MAX_DIGEST_MESSAGES)))
         output_dir = Path(attachment_output_dir) if attachment_output_dir else None
         if include_attachments and output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)

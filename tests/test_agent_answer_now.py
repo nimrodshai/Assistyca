@@ -23,6 +23,10 @@ from urllib import request as urllib_request
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
+from packages.infrastructure.gmail_summary import GMAIL_MAX_DIGEST_MESSAGES
+from packages.infrastructure.gmail_summary import GmailDigestRunner
+from packages.infrastructure.mail_search import MailQuery
+from packages.infrastructure.mail_search import to_gmail_query
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_SECRET_TYPE
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -307,6 +311,41 @@ class AgentAnswerRunTests(unittest.TestCase):
         written = list(self.output_dir.rglob("*")) if self.output_dir.exists() else []
         self.assertEqual([path for path in written if path.is_file()], [])
 
+    def test_the_vendor_is_searched_for_in_the_mailbox(self) -> None:
+        # Filtering to the vendor after the read is what lost an August
+        # receipt: the month returns more receipt mail than one read, and the
+        # Render one sat past the end of it.
+        self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        query = self.run_call.kwargs["query"]
+        self.assertEqual(query.required_terms, ("Render",))
+        self.assertIn("Render", to_gmail_query(query))
+
+    def test_a_question_reads_more_than_a_digest_does(self) -> None:
+        self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertGreater(self.run_call.kwargs["max_results"], GMAIL_MAX_DIGEST_MESSAGES)
+
+    def test_the_answer_carries_the_month_it_covered(self) -> None:
+        # The chat adds several months up itself, which needs the parts.
+        payload = self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertEqual(payload["monthLabel"], "Aug 2026")
+        self.assertEqual(payload["vendor"], "Render")
+        self.assertEqual(payload["totals"], {"USD": 19.0})
+
     def test_answering_a_question_skips_downloading_attachments(self) -> None:
         self._run_answer({
             "result": "Find receipts from Render for August 2026",
@@ -315,6 +354,80 @@ class AgentAnswerRunTests(unittest.TestCase):
         })
 
         self.assertFalse(self.run_call.kwargs["include_attachments"])
+
+
+class _FakeGmailResponse:
+    """One Gmail JSON reply, shaped like the object urlopen hands back."""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> "_FakeGmailResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
+class GmailSearchReachTests(unittest.TestCase):
+    """A month holds more receipt mail than one page of results."""
+
+    def test_a_search_reads_past_the_first_page(self) -> None:
+        # The receipt that answers the question can be the eleventh newest,
+        # and reading only the first page reported it as missing.
+        listed: list[str] = []
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            url = getattr(request, "full_url", str(request))
+            if "/messages?" in url:
+                listed.append(url)
+                if "pageToken=" in url:
+                    return _FakeGmailResponse({
+                        "messages": [{"id": f"late-{index}"} for index in range(5)],
+                    })
+                return _FakeGmailResponse({
+                    "messages": [{"id": f"recent-{index}"} for index in range(10)],
+                    "nextPageToken": "page-two",
+                })
+            return _FakeGmailResponse({
+                "id": url.rsplit("/", 1)[-1].split("?")[0],
+                "payload": {"headers": [
+                    {"name": "Subject", "value": "Your Render receipt"},
+                    {"name": "From", "value": "Render <billing@render.com>"},
+                ]},
+                "snippet": "Total charged $19.00",
+            })
+
+        items = GmailDigestRunner(opener=opener).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("receipt",), required_terms=("Render",)),
+            max_results=15,
+        )
+
+        self.assertEqual(len(items), 15)
+        self.assertEqual(len(listed), 2)
+        self.assertIn("pageToken=page-two", listed[1])
+
+    def test_a_digest_still_reads_only_its_own_handful(self) -> None:
+        pages: list[str] = []
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            url = getattr(request, "full_url", str(request))
+            if "/messages?" in url:
+                pages.append(url)
+                return _FakeGmailResponse({
+                    "messages": [{"id": f"message-{index}"} for index in range(10)],
+                    "nextPageToken": "page-two",
+                })
+            return _FakeGmailResponse({"id": "message", "payload": {"headers": []}})
+
+        items = GmailDigestRunner(opener=opener).fetch_message_summaries("token")
+
+        self.assertEqual(len(items), GMAIL_MAX_DIGEST_MESSAGES)
+        self.assertEqual(len(pages), 1)
 
 
 class AgentAnswerChatTests(unittest.TestCase):
@@ -362,8 +475,8 @@ class AgentAnswerChatTests(unittest.TestCase):
 
         self.assertIn("for (const month of months)", runner)
         self.assertIn("manualRunMonth: month", runner)
-        # Every month's sentence is kept, so an empty month still reports.
-        self.assertIn("lines.join", runner)
+        # Every month's result is kept, so an empty month still reports.
+        self.assertIn("composeAgentMonthlyAnswer(results)", runner)
 
     def test_a_month_that_could_not_be_read_is_named(self) -> None:
         runner = self.script[
@@ -450,6 +563,47 @@ class AgentAnswerMonthSplitTests(unittest.TestCase):
 
         self.assertEqual(len(result["months"]), 6)
         self.assertTrue(result["trimmed"])
+
+    def test_two_months_are_added_up_into_one_answer(self) -> None:
+        answer = _run_agent_answer_month_script(
+            "composeAgentMonthlyAnswer(["
+            ' { monthLabel: "Jul 2026", vendor: "Render", totals: {}, receiptCount: 0 },'
+            ' { monthLabel: "Aug 2026", vendor: "Render", totals: { USD: 19 }, receiptCount: 1 }'
+            "])"
+        )
+
+        self.assertIn("You paid 19.00 USD to Render across Jul 2026 and Aug 2026", answer)
+        self.assertIn("Jul 2026: nothing found", answer)
+        self.assertIn("Aug 2026: 19.00 USD (1 receipt)", answer)
+
+    def test_two_empty_months_say_so_once(self) -> None:
+        answer = _run_agent_answer_month_script(
+            "composeAgentMonthlyAnswer(["
+            ' { monthLabel: "Jul 2026", vendor: "Render", totals: {}, receiptCount: 0 },'
+            ' { monthLabel: "Aug 2026", vendor: "Render", totals: {}, receiptCount: 0 }'
+            "])"
+        )
+
+        self.assertIn("any receipts to Render in Jul 2026 and Aug 2026", answer)
+        self.assertNotIn("nothing found", answer)
+
+    def test_one_month_keeps_the_sentence_the_run_wrote(self) -> None:
+        answer = _run_agent_answer_month_script(
+            'composeAgentMonthlyAnswer([{ monthLabel: "Aug 2026", totals: { USD: 19 }, receiptCount: 1 }])'
+        )
+
+        self.assertEqual(answer, "")
+
+    def test_receipts_with_no_readable_amount_are_still_counted_out_loud(self) -> None:
+        answer = _run_agent_answer_month_script(
+            "composeAgentMonthlyAnswer(["
+            ' { monthLabel: "Jul 2026", totals: { USD: 5 }, receiptCount: 1 },'
+            ' { monthLabel: "Aug 2026", totals: { USD: 19 }, receiptCount: 1, missingAmountCount: 2 }'
+            "])"
+        )
+
+        self.assertIn("You paid 24.00 USD across Jul 2026 and Aug 2026, over 2 receipts.", answer)
+        self.assertIn("2 more with no amount I could read", answer)
 
     def test_a_month_is_labelled_the_way_the_answer_reads(self) -> None:
         self.assertEqual(

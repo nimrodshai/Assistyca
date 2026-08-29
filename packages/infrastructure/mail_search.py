@@ -31,6 +31,10 @@ class MailQuery:
     """What to look for in a mailbox, with no provider syntax attached."""
 
     terms: tuple[str, ...] = ()
+    # Words every message must carry, rather than one of. A question about one
+    # vendor searches for that vendor at the provider instead of reading the
+    # newest messages of the month and dropping the ones that do not match.
+    required_terms: tuple[str, ...] = ()
     after: date | None = None
     before: date | None = None
     newer_than_days: int | None = None
@@ -40,6 +44,7 @@ class MailQuery:
     def is_empty(self) -> bool:
         return not (
             self.terms
+            or self.required_terms
             or self.after
             or self.before
             or self.newer_than_days
@@ -55,6 +60,8 @@ class MailQuery:
             parts.append(" or ".join(self.terms))
         else:
             parts.append("messages")
+        if self.required_terms:
+            parts.append("mentioning " + " and ".join(self.required_terms))
         if self.after and self.before:
             parts.append(f"between {self.after.isoformat()} and {self.before.isoformat()}")
         elif self.after:
@@ -197,6 +204,9 @@ def to_gmail_query(query: MailQuery) -> str:
         parts.append("has:attachment")
     if query.terms:
         parts.append(f"({' OR '.join(query.terms)})")
+    # Gmail ANDs bare words, which is exactly what a required term means.
+    for term in query.required_terms:
+        parts.append(f'"{term}"' if " " in term else term)
     return " ".join(parts)[:MAIL_QUERY_MAX_LENGTH]
 
 
@@ -213,6 +223,8 @@ def to_graph_search(query: MailQuery, *, today: date | None = None) -> str:
     if query.terms:
         quoted = " OR ".join(f'"{term}"' for term in query.terms)
         clauses.append(f"({quoted})" if len(query.terms) > 1 else quoted)
+    for term in query.required_terms:
+        clauses.append(f'"{term}"')
 
     after, before = resolve_window(query, today=today)
     if after:
@@ -283,6 +295,7 @@ def month_window(year: int, month: int) -> MailQuery:
 def build_query(
     *,
     terms: Any = (),
+    required_terms: Any = (),
     after: date | None = None,
     before: date | None = None,
     newer_than_days: int | None = None,
@@ -291,6 +304,7 @@ def build_query(
 ) -> MailQuery:
     return MailQuery(
         terms=normalize_terms(terms),
+        required_terms=normalize_terms(required_terms),
         after=after,
         before=before,
         newer_than_days=newer_than_days,
