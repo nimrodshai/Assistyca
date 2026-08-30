@@ -596,6 +596,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function formatAgentDeliveryTargetDetail", script)
         self.assertIn("function formatAgentDeliveryTargetSentence", script)
         self.assertIn("intervalMinutes", script)
+        # Hourly is the shortest cadence offered; checking every few minutes
+        # cost far more than it was worth.
+        self.assertNotIn("Every 5 minutes", script)
+        self.assertNotIn("Every 15 minutes", script)
+        self.assertIn("const AGENT_MIN_INTERVAL_MINUTES = 60;", script)
         self.assertIn("backendFeatureId", script)
         self.assertIn("deliveryTarget", script)
         self.assertIn("deliveryLabel", script)
@@ -1420,7 +1425,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=157", html)
-        self.assertIn("app.js?v=197", html)
+        self.assertIn("app.js?v=198", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

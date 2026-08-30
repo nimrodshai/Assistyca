@@ -935,7 +935,7 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
     { key: "sourceType", question: "What should I check?" },
     { key: "sourceUrl", question: "What URL should I check?", requiredWhen: "source-url" },
     { key: "sourceFileName", question: "Which file should I use?", requiredWhen: "source-file" },
-    { key: "frequency", question: "How often should I check?", actions: ["Every 15 minutes", "Hourly", "Daily", "Weekly"] },
+    { key: "frequency", question: "How often should I check?", actions: ["Hourly", "Daily", "Weekly"] },
   ],
   "whatsapp-replies": [
     {
@@ -19866,13 +19866,22 @@ function getScheduledActionDetailSignature(action) {
   ]);
 }
 
+// The shortest cadence an action can be set to. Checking a source every few
+// minutes cost far more than it was worth and gave nothing a person could act
+// on any sooner, so the pickers stop at hourly. The server holds the same
+// floor, which is what moves an action saved on a shorter cadence up to it.
+const AGENT_MIN_INTERVAL_MINUTES = 60;
+
 function getAgentMonitorEditorFrequencyValue(settings = {}) {
   const normalized = normalizeFeatureMonitorSettings(settings);
   if (normalized.manualOnly) {
     return "manual";
   }
   if (normalized.intervalMinutes) {
-    return `minutes:${normalized.intervalMinutes}`;
+    // Hourly is the shortest cadence offered now. An action saved on a
+    // shorter one reads back as Hourly rather than selecting an option the
+    // picker no longer has.
+    return `minutes:${Math.max(AGENT_MIN_INTERVAL_MINUTES, normalized.intervalMinutes)}`;
   }
   return `days:${normalized.intervalDays}`;
 }
@@ -19880,8 +19889,6 @@ function getAgentMonitorEditorFrequencyValue(settings = {}) {
 function getAgentMonitorEditorFrequencyOptions(settings = {}) {
   const options = [
     { value: "manual", label: "Run manually" },
-    { value: "minutes:5", label: "Every 5 minutes" },
-    { value: "minutes:15", label: "Every 15 minutes" },
     { value: "minutes:60", label: "Hourly" },
     { value: "days:1", label: "Daily" },
     { value: "days:7", label: "Weekly" },
@@ -20467,17 +20474,13 @@ function getAgentLocalActionFrequencyValue(action, proposal) {
   if (/hour/.test(raw)) return "hourly";
   if (/week/.test(raw)) return "weekly";
   if (/month/.test(raw)) return "monthly";
-  if (/15\s*minutes?/.test(raw)) return "minutes:15";
-  if (/5\s*minutes?/.test(raw)) return "minutes:5";
-  if (/minute/.test(raw)) return "minutes:15";
+  if (/minute/.test(raw)) return "hourly";
   return fallbackFrequency;
 }
 
 function getAgentLocalActionFrequencyOptions() {
   return [
     { value: "manual", label: "Run manually" },
-    { value: "minutes:5", label: "Every 5 minutes" },
-    { value: "minutes:15", label: "Every 15 minutes" },
     { value: "hourly", label: "Hourly" },
     { value: "daily", label: "Daily" },
     { value: "weekly", label: "Weekly" },
@@ -21946,9 +21949,7 @@ function createAgentLocalActionEditor(action) {
 
 function getSourceActionEditorFrequencyValue(action) {
   const raw = String(action?.payload?.frequency || "daily").toLowerCase();
-  if (/5\s*minutes?/.test(raw)) return "minutes:5";
-  if (/15\s*minutes?/.test(raw)) return "minutes:15";
-  if (/hour/.test(raw)) return "minutes:60";
+  if (/minute/.test(raw) || /hour/.test(raw)) return "minutes:60";
   if (/week/.test(raw)) return "days:7";
   if (/month/.test(raw)) return "days:30";
   return "days:1";
@@ -21956,8 +21957,6 @@ function getSourceActionEditorFrequencyValue(action) {
 
 function getSourceActionEditorFrequencyOptions() {
   return [
-    { value: "minutes:5", label: "Every 5 minutes", intervalMinutes: 5 },
-    { value: "minutes:15", label: "Every 15 minutes", intervalMinutes: 15 },
     { value: "minutes:60", label: "Hourly", intervalMinutes: 60 },
     { value: "days:1", label: "Daily", intervalMinutes: 1440 },
     { value: "days:7", label: "Weekly", intervalMinutes: 10080 },

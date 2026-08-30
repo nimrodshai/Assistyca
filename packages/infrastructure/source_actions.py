@@ -25,7 +25,10 @@ from packages.infrastructure.portal_db import normalize_text
 DEFAULT_SOURCE_ACTION_POLL_SECONDS = 15
 DEFAULT_SOURCE_ACTION_BATCH_SIZE = 10
 SOURCE_ACTION_MAX_BYTES = 5 * 1024 * 1024
-SOURCE_ACTION_MIN_INTERVAL_MINUTES = 5
+# Hourly is the shortest cadence a source check is offered on. Re-reading a
+# page every few minutes cost far more than it was worth and surfaced nothing
+# a person could act on any sooner.
+SOURCE_ACTION_MIN_INTERVAL_MINUTES = 60
 SOURCE_ACTION_MAX_INTERVAL_MINUTES = 30 * 24 * 60
 SOURCE_ACTION_TIMEOUT_SECONDS = 20
 

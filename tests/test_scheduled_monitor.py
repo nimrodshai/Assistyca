@@ -16,6 +16,8 @@ from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorConfig
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
 from packages.tools.scheduled_monitor.monitor import build_monitor_prompt
+from packages.tools.scheduled_monitor.monitor import extract_interval_minutes_from_frequency
+from packages.tools.scheduled_monitor.monitor import normalize_interval_minutes
 from packages.tools.scheduled_monitor.monitor import normalize_monitor_settings
 from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
 
@@ -435,7 +437,18 @@ class ScheduledMonitorTests(unittest.TestCase):
         })
         self.assertEqual(recurring["scheduleStartAt"], "2026-07-09T06:15:00+00:00")
 
-    def test_minute_interval_monitor_runs_after_requested_minutes(self) -> None:
+    def test_a_cadence_shorter_than_an_hour_is_lifted_to_an_hour(self) -> None:
+        # Sub-hourly checks are no longer offered. A monitor saved on one
+        # before that moves up on its next read rather than carrying on.
+        self.assertEqual(normalize_interval_minutes(5), 60)
+        self.assertEqual(normalize_interval_minutes(15), 60)
+        self.assertEqual(normalize_interval_minutes(59), 60)
+        self.assertEqual(normalize_interval_minutes(90), 90)
+        # Zero still means "use the day-based cadence instead", not "hourly".
+        self.assertEqual(normalize_interval_minutes(0), 0)
+        self.assertEqual(extract_interval_minutes_from_frequency("every 5 minutes"), 60)
+
+    def test_an_hourly_monitor_runs_after_the_hour(self) -> None:
         self.database.save_feature_assignment_metadata(
             "owner@example.com",
             MONITOR_FEATURE_ID,
@@ -444,7 +457,7 @@ class ScheduledMonitorTests(unittest.TestCase):
                     "watchItems": ["Kid-friendly events in August around HaSharon and central Israel"],
                     "manualOnly": False,
                     "runMode": "recurring",
-                    "intervalMinutes": 5,
+                    "intervalMinutes": 60,
                     "intervalDays": 1,
                     "deliveryChannel": "portal",
                 }
@@ -504,20 +517,20 @@ class ScheduledMonitorTests(unittest.TestCase):
             "packages.tools.scheduled_monitor.monitor.deliver_portal_notification",
             side_effect=fake_send_email_notification,
         ):
-            too_early = scheduler.run_pending(now=datetime(2026, 8, 22, 20, 4, tzinfo=timezone.utc))
-            due = scheduler.run_pending(now=datetime(2026, 8, 22, 20, 5, tzinfo=timezone.utc))
+            too_early = scheduler.run_pending(now=datetime(2026, 8, 22, 20, 59, tzinfo=timezone.utc))
+            due = scheduler.run_pending(now=datetime(2026, 8, 22, 21, 0, tzinfo=timezone.utc))
 
         self.assertFalse(too_early["ran"])
         self.assertEqual(too_early["runs"][0]["reason"], "not_due")
         self.assertTrue(due["ran"])
-        self.assertEqual(due["runs"][0]["scheduledFor"], "2026-08-22T20:05:00+00:00")
+        self.assertEqual(due["runs"][0]["scheduledFor"], "2026-08-22T21:00:00+00:00")
         self.assertEqual(due["runs"][0]["status"], "no_matches")
         self.assertEqual(delivered_messages, [])
 
         run = self.database.get_feature_monitor_run(
             user_id=1,
             feature_id=MONITOR_FEATURE_ID,
-            scheduled_for="2026-08-22T20:05:00+00:00",
+            scheduled_for="2026-08-22T21:00:00+00:00",
         )
         self.assertIsNotNone(run)
         self.assertFalse(run["metadata"]["noResultsNotificationSent"])

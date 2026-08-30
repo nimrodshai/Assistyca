@@ -195,11 +195,19 @@ def normalize_interval_days(value: Any, default: int = DEFAULT_MONITOR_SETTINGS[
     return max(1, min(365, candidate))
 
 
+# The shortest cadence a monitor can run on. Checking a source every few
+# minutes cost far more than it was worth and surfaced nothing a person could
+# act on any sooner. The floor lives here rather than only in the picker, so a
+# monitor saved on a shorter cadence before this moves up to it on its next
+# read instead of quietly carrying on.
+MIN_MONITOR_INTERVAL_MINUTES = 60
+
+
 def normalize_interval_minutes(value: Any, default: int = DEFAULT_MONITOR_SETTINGS["intervalMinutes"]) -> int:
     candidate = safe_int(value, default)
     if candidate <= 0:
         return 0
-    return max(5, min(60 * 24, candidate))
+    return max(MIN_MONITOR_INTERVAL_MINUTES, min(60 * 24, candidate))
 
 
 def extract_interval_minutes_from_frequency(value: Any) -> int:

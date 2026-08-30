@@ -5814,7 +5814,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     payload = parse_json_body(self)
                     interval_minutes = int(payload.get("intervalMinutes") or payload.get("interval_minutes") or 0)
                     if not SOURCE_ACTION_MIN_INTERVAL_MINUTES <= interval_minutes <= SOURCE_ACTION_MAX_INTERVAL_MINUTES:
-                        raise ValueError("Choose a frequency between every 5 minutes and every 30 days.")
+                        raise ValueError("Choose a frequency between hourly and every 30 days.")
                     # The client names the date and hour of the next check; an
                     # unreadable one is a bad request, not a silent reset.
                     next_run_at = normalize_text(payload.get("nextRunAt") or payload.get("next_run_at"))
@@ -5926,7 +5926,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except (TypeError, ValueError):
             interval_minutes = 0
         if not SOURCE_ACTION_MIN_INTERVAL_MINUTES <= interval_minutes <= SOURCE_ACTION_MAX_INTERVAL_MINUTES:
-            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_interval", "message": "Choose a frequency between every 5 minutes and every 30 days."})
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_interval", "message": "Choose a frequency between hourly and every 30 days."})
             return
 
         raw_file = b""
