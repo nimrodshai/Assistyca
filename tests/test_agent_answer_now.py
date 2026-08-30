@@ -456,6 +456,19 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertEqual(query.required_terms, ("Render",))
         self.assertIn("Render", to_gmail_query(query))
 
+    def test_the_search_knows_the_words_a_receipt_actually_uses(self) -> None:
+        # A vendor that writes "Payment confirmation" and never "receipt" was
+        # invisible to this search while its receipts sat in the mailbox.
+        self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        terms = self.run_call.kwargs["query"].terms
+        for word in ("receipt", "invoice", "payment", "purchase", "charged", "paid"):
+            self.assertIn(word, terms)
+
     def test_a_question_reads_more_than_a_digest_does(self) -> None:
         self._run_answer({
             "result": "Find receipts from Render for August 2026",

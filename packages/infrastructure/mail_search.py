@@ -184,6 +184,27 @@ def parse_gmail_query(text: Any) -> MailQuery:
     )
 
 
+def _fit_query(render: Any, terms: tuple[str, ...]) -> str:
+    """Render a query, dropping OR-terms from the end until it fits.
+
+    A query is a sentence the provider parses, so cutting it mid-word is worse
+    than asking for less: "(receipt OR invo" is not a narrower search, it is a
+    broken one, and an unclosed bracket can cost the whole month's results.
+    Only the OR-terms are given up, and the widest ones last: the date window
+    and anything the caller required stay, because dropping those would widen
+    the search rather than narrow it.
+    """
+
+    kept = list(terms)
+    while True:
+        rendered = render(tuple(kept))
+        if len(rendered) <= MAIL_QUERY_MAX_LENGTH or not kept:
+            # A required term long enough to overflow on its own is still cut
+            # here, which is the behaviour this has always had.
+            return rendered[:MAIL_QUERY_MAX_LENGTH]
+        kept.pop()
+
+
 def to_gmail_query(query: MailQuery) -> str:
     """Render the intent as a Gmail search string.
 
@@ -191,23 +212,26 @@ def to_gmail_query(query: MailQuery) -> str:
     action that ran against Gmail before keeps sending Gmail the same string.
     """
 
-    parts: list[str] = []
-    if query.in_inbox:
-        parts.append("in:inbox")
-    if query.after:
-        parts.append(f"after:{_format_gmail_date(query.after)}")
-    if query.before:
-        parts.append(f"before:{_format_gmail_date(query.before)}")
-    if query.newer_than_days and not (query.after or query.before):
-        parts.append(f"newer_than:{query.newer_than_days}d")
-    if query.has_attachment:
-        parts.append("has:attachment")
-    if query.terms:
-        parts.append(f"({' OR '.join(query.terms)})")
-    # Gmail ANDs bare words, which is exactly what a required term means.
-    for term in query.required_terms:
-        parts.append(f'"{term}"' if " " in term else term)
-    return " ".join(parts)[:MAIL_QUERY_MAX_LENGTH]
+    def render(terms: tuple[str, ...]) -> str:
+        parts: list[str] = []
+        if query.in_inbox:
+            parts.append("in:inbox")
+        if query.after:
+            parts.append(f"after:{_format_gmail_date(query.after)}")
+        if query.before:
+            parts.append(f"before:{_format_gmail_date(query.before)}")
+        if query.newer_than_days and not (query.after or query.before):
+            parts.append(f"newer_than:{query.newer_than_days}d")
+        if query.has_attachment:
+            parts.append("has:attachment")
+        if terms:
+            parts.append(f"({' OR '.join(terms)})")
+        # Gmail ANDs bare words, which is exactly what a required term means.
+        for term in query.required_terms:
+            parts.append(f'"{term}"' if " " in term else term)
+        return " ".join(parts)
+
+    return _fit_query(render, query.terms)
 
 
 def to_graph_search(query: MailQuery, *, today: date | None = None) -> str:
@@ -219,21 +243,24 @@ def to_graph_search(query: MailQuery, *, today: date | None = None) -> str:
     the result.
     """
 
-    clauses: list[str] = []
-    if query.terms:
-        quoted = " OR ".join(f'"{term}"' for term in query.terms)
-        clauses.append(f"({quoted})" if len(query.terms) > 1 else quoted)
-    for term in query.required_terms:
-        clauses.append(f'"{term}"')
+    def render(terms: tuple[str, ...]) -> str:
+        clauses: list[str] = []
+        if terms:
+            quoted = " OR ".join(f'"{term}"' for term in terms)
+            clauses.append(f"({quoted})" if len(terms) > 1 else quoted)
+        for term in query.required_terms:
+            clauses.append(f'"{term}"')
 
-    after, before = resolve_window(query, today=today)
-    if after:
-        clauses.append(f"received>={after.isoformat()}")
-    if before:
-        clauses.append(f"received<{before.isoformat()}")
-    if query.has_attachment:
-        clauses.append("hasattachment:true")
-    return " AND ".join(clauses)[:MAIL_QUERY_MAX_LENGTH]
+        after, before = resolve_window(query, today=today)
+        if after:
+            clauses.append(f"received>={after.isoformat()}")
+        if before:
+            clauses.append(f"received<{before.isoformat()}")
+        if query.has_attachment:
+            clauses.append("hasattachment:true")
+        return " AND ".join(clauses)
+
+    return _fit_query(render, query.terms)
 
 
 def resolve_window(

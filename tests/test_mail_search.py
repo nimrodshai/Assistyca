@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
+from packages.infrastructure.mail_search import MAIL_QUERY_MAX_LENGTH
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import matches
 from packages.infrastructure.mail_search import month_window
@@ -68,6 +69,45 @@ class GmailRenderingTests(unittest.TestCase):
         query = MailQuery(terms=("receipt",), required_terms=("Green Invoice",))
 
         self.assertEqual(to_gmail_query(query), '(receipt) "Green Invoice"')
+
+
+class QueryLengthTests(unittest.TestCase):
+    """A query too long to send is shortened, never cut in half."""
+
+    def _long_query(self) -> MailQuery:
+        window = month_window(2026, 7)
+        return MailQuery(
+            terms=RECEIPT_TERMS + ("payment", "purchase", "charged", "paid"),
+            required_terms=("A Very Long Supplier Name That Goes On And On Limited",),
+            after=window.after,
+            before=window.before,
+        )
+
+    def test_gmail_never_receives_an_unclosed_bracket(self) -> None:
+        rendered = to_gmail_query(self._long_query())
+
+        self.assertLessEqual(len(rendered), MAIL_QUERY_MAX_LENGTH)
+        # "(receipt OR invo" is not a narrower search, it is a broken one.
+        self.assertEqual(rendered.count("("), rendered.count(")"))
+        self.assertNotIn("OR)", rendered)
+
+    def test_graph_gives_up_whole_words_rather_than_half_of_one(self) -> None:
+        rendered = to_graph_search(self._long_query())
+
+        self.assertLessEqual(len(rendered), MAIL_QUERY_MAX_LENGTH)
+        self.assertEqual(rendered.count("("), rendered.count(")"))
+        self.assertEqual(rendered.count('"') % 2, 0)
+
+    def test_what_is_given_up_is_a_search_word_and_never_the_window(self) -> None:
+        query = self._long_query()
+        rendered = to_graph_search(query)
+
+        # The vendor and the month are what make the search narrow; dropping
+        # either would widen it, which is the opposite of shortening it.
+        self.assertIn(query.required_terms[0], rendered)
+        self.assertIn("received>=2026-07-01", rendered)
+        self.assertIn("received<2026-08-01", rendered)
+        self.assertIn("receipt", rendered)
 
 
 class GmailParsingTests(unittest.TestCase):

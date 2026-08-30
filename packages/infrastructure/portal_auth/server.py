@@ -406,6 +406,11 @@ AGENT_MONTH_NAME_INDEX = {
 # attachment, which is why it stays the lower of the two.
 AGENT_RECEIPT_ANSWER_MAX_MESSAGES = 100
 AGENT_RECEIPT_BUNDLE_MAX_MESSAGES = 50
+# The words a receipt-ish email actually uses. A vendor that never writes
+# "receipt" - and plenty say "Payment confirmation" or "You were charged"
+# instead - was invisible to this search while its receipts sat in the mailbox.
+# Widening it costs a few more messages read per month and finds the ones that
+# were being walked past.
 AGENT_GMAIL_BATCH_SEARCH_TERMS = (
     "receipt",
     "invoice",
@@ -413,6 +418,10 @@ AGENT_GMAIL_BATCH_SEARCH_TERMS = (
     "bill",
     "transaction",
     "expense",
+    "payment",
+    "purchase",
+    "charged",
+    "paid",
 )
 AGENT_SECRET_PATTERNS = (
     re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),
