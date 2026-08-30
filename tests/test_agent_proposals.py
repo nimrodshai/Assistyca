@@ -450,6 +450,59 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertNotIn("must-not-be-forwarded", json.dumps(context))
         self.assertNotIn("also-secret", json.dumps(context))
 
+    def test_every_connected_mailbox_reaches_the_prompt_not_only_gmail(self) -> None:
+        # A lookup reads them all. Describing Gmail alone had the chat answer
+        # "I don't see Outlook connected" about a run that had just read it.
+        context = normalize_agent_tool_context({
+            "gmail": {"platformConnected": True, "connectionStatus": "connected"},
+            "outlook": {
+                "platformConnected": True,
+                "connectionStatus": "connected",
+                "validationStatus": "verified",
+                "refreshToken": "must-not-be-forwarded",
+            },
+            "mailboxes": [
+                {"name": "someone@gmail.com", "provider": "Gmail"},
+                {"name": "someone@gmail.com", "provider": "Outlook"},
+            ],
+        })
+
+        self.assertEqual(context["outlook"], {
+            "platformConnected": True,
+            "connectionStatus": "connected",
+            "validationStatus": "verified",
+        })
+        # Same address, two mailboxes: the provider is the only thing that
+        # separates them, so both rows have to survive.
+        self.assertEqual(context["mailboxes"], [
+            {"name": "someone@gmail.com", "provider": "Gmail"},
+            {"name": "someone@gmail.com", "provider": "Outlook"},
+        ])
+        self.assertNotIn("must-not-be-forwarded", json.dumps(context))
+
+    def test_the_prompt_forbids_calling_a_listed_mailbox_disconnected(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Did you check both gmail and outlook?",
+            conversation=[],
+            timezone_name="UTC",
+            tool_context=normalize_agent_tool_context({
+                "mailboxes": [{"name": "someone@gmail.com", "provider": "Outlook"}],
+            }),
+        )
+
+        self.assertIn('"provider":"Outlook"', prompt)
+        self.assertIn("Never say a mailbox or a provider is not connected when it appears there", prompt)
+
+    def test_a_mailbox_list_that_is_not_a_list_is_left_out(self) -> None:
+        for value in ("Gmail", {"provider": "Gmail"}, None):
+            with self.subTest(value=value):
+                self.assertNotIn("mailboxes", normalize_agent_tool_context({"mailboxes": value}))
+
+    def test_a_mailbox_with_no_provider_is_still_called_something(self) -> None:
+        context = normalize_agent_tool_context({"mailboxes": [{"name": "someone@example.com"}, {}]})
+
+        self.assertEqual(context["mailboxes"], [{"name": "someone@example.com", "provider": "Email"}])
+
     def test_conversational_turn_prompt_discourages_repeated_plan_summaries(self) -> None:
         prompt = build_agent_turn_prompt(
             user_message="Please check the web every 5 minutes for fun events to do with kids in August. When you have the results send me an email with the top most relevant results",

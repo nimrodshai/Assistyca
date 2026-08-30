@@ -12,6 +12,7 @@ AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH = 900
 AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS = 500
 AGENT_TURN_MAX_OUTPUT_TOKENS = 700
 AGENT_ACTION_CONTEXT_MAX_ITEMS = 20
+AGENT_MAILBOX_CONTEXT_MAX_ITEMS = 12
 AGENT_PROPOSAL_REVISION_INSTRUCTIONS = (
     "You revise an existing Assistyca proposal from the user's latest message. "
     "Use the proposal and conversation as context to resolve references such as 'it' or 'later'. "
@@ -156,7 +157,7 @@ def _single_line(value: Any, max_length: int) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:max_length].strip()
 
 
-def _normalize_safe_google_tool_context(value: Any) -> dict[str, Any]:
+def _normalize_safe_connection_context(value: Any) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     connection_status = _single_line(
         source.get("connectionStatus") or source.get("connection_status"),
@@ -207,6 +208,27 @@ def normalize_agent_action_context(value: Any) -> list[dict[str, str]]:
     return actions
 
 
+def normalize_agent_mailbox_context(value: Any) -> list[dict[str, str]]:
+    """Every mailbox a lookup would read, named the way the chat should say it.
+
+    A run reads all of them at once, so a question about which ones were read
+    is answered from this. Without it Gmail was the only mailbox the model
+    could see, and it told the user Outlook was not connected while the run it
+    was reporting on had just read it.
+    """
+
+    raw_items = value if isinstance(value, list) else []
+    mailboxes: list[dict[str, str]] = []
+    for raw_item in raw_items[:AGENT_MAILBOX_CONTEXT_MAX_ITEMS]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        provider = _single_line(item.get("provider"), 40)
+        name = _single_line(item.get("name"), 240)
+        if not (provider or name):
+            continue
+        mailboxes.append({"name": name, "provider": provider or "Email"})
+    return mailboxes
+
+
 def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
     """Keep only safe, non-secret integration state for the agent prompt."""
     source = value if isinstance(value, dict) else {}
@@ -239,13 +261,19 @@ def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
     }
     raw_calendar = source.get("calendar") if isinstance(source.get("calendar"), dict) else None
     if raw_calendar is not None:
-        context["calendar"] = _normalize_safe_google_tool_context(raw_calendar)
+        context["calendar"] = _normalize_safe_connection_context(raw_calendar)
     raw_gmail = source.get("gmail") if isinstance(source.get("gmail"), dict) else None
     if raw_gmail is not None:
-        context["gmail"] = _normalize_safe_google_tool_context(raw_gmail)
+        context["gmail"] = _normalize_safe_connection_context(raw_gmail)
+    raw_outlook = source.get("outlook") if isinstance(source.get("outlook"), dict) else None
+    if raw_outlook is not None:
+        context["outlook"] = _normalize_safe_connection_context(raw_outlook)
     raw_drive = source.get("drive") if isinstance(source.get("drive"), dict) else None
     if raw_drive is not None:
-        context["drive"] = _normalize_safe_google_tool_context(raw_drive)
+        context["drive"] = _normalize_safe_connection_context(raw_drive)
+    mailboxes = normalize_agent_mailbox_context(source.get("mailboxes"))
+    if mailboxes:
+        context["mailboxes"] = mailboxes
     return context
 
 
@@ -579,6 +607,10 @@ def build_agent_turn_prompt(
         "calendar status in toolContext. Explain that Calendar should be connected with the Google sign-in button "
         "in the secure setup form; a Google API key is not sufficient, and tokens must never be pasted into chat. "
         "Do not claim Calendar is connected unless validationStatus is verified.\n"
+        "toolContext.mailboxes lists every mailbox connected to the account, each with the provider behind it. "
+        "A mailbox lookup reads all of them in one run, so when the user asks which mailboxes were read, answer "
+        "from that list. Never say a mailbox or a provider is not connected when it appears there; two mailboxes "
+        "can report the same address, so name the provider rather than the address when telling them apart.\n"
         "Use toolContext to understand which integrations are already connected. If toolContext.whatsapp.ready "
         "is true, use the connected WhatsApp Business connection and do not ask which WhatsApp number or account "
         "to monitor. If it is false, ask only for the specific WhatsApp details listed in "
@@ -915,6 +947,7 @@ __all__ = [
     "AGENT_TURN_MAX_OUTPUT_TOKENS",
     "build_agent_turn_prompt",
     "build_agent_proposal_revision_prompt",
+    "normalize_agent_mailbox_context",
     "normalize_agent_tool_context",
     "normalize_agent_action_context",
     "normalize_agent_proposal_for_revision",

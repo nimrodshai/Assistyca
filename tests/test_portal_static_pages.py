@@ -138,6 +138,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Here is what I found in the rest of your mail", script)
         self.assertIn("const skippedNote = describeAgentAnswerSkippedMailboxes(results);", script)
 
+    def test_the_chat_is_told_about_every_mailbox_not_only_gmail(self) -> None:
+        # The chat answered "I don't see Outlook connected" about a run that
+        # had just read Outlook, because only Gmail was ever described to it.
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function buildAgentMailboxContext", script)
+        self.assertIn("mailboxes: buildAgentMailboxContext(),", script)
+        self.assertIn("getConnectedMailboxForProvider(EMAIL_PROVIDER_OUTLOOK)", script)
+
     def test_reengagement_demo_results_use_completion_popup_not_editor_card(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

@@ -8553,12 +8553,29 @@ function isWhatsAppConnectionReady(feature = getFeatureById(WHATSAPP_REPLY_ASSIS
   return getWhatsAppConnectionSetupState(feature).ready;
 }
 
+// What the chat is allowed to say about the account's connections. A lookup
+// reads every connected mailbox, so the list it reads from has to be here too:
+// with only Gmail described, the chat answered a question about coverage by
+// saying Outlook was not connected while the run had just read it.
+function buildAgentMailboxContext() {
+  const connections = getConnectedEmailConnections();
+  return connections.map((connection) => ({
+    // Two mailboxes can report the same address - a personal Microsoft account
+    // may be registered under a Gmail one - so the provider is what tells them
+    // apart, and it is named rather than left for the address to imply.
+    name: getEmailConnectionName(connection),
+    provider: EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)] || "Email",
+  }));
+}
+
 function buildAgentToolContext() {
   const whatsapp = getWhatsAppConnectionSetupState();
   const calendar = getSinglePlatformConnection("calendar");
   const gmail = getConnectedMailboxForProvider(EMAIL_PROVIDER_GMAIL);
+  const outlook = getConnectedMailboxForProvider(EMAIL_PROVIDER_OUTLOOK);
   const drive = getSinglePlatformConnection("drive");
   return {
+    mailboxes: buildAgentMailboxContext(),
     whatsapp: {
       ready: whatsapp.ready,
       platformConnected: whatsapp.genericPlatformConnected,
@@ -8577,6 +8594,11 @@ function buildAgentToolContext() {
       platformConnected: Boolean(gmail),
       connectionStatus: getPlatformConnectionStatus(gmail).label.toLowerCase().replace(/\s+/g, "_"),
       validationStatus: String(gmail?.metadata?.validationStatus || "unknown").trim().toLowerCase() || "unknown",
+    },
+    outlook: {
+      platformConnected: Boolean(outlook),
+      connectionStatus: getPlatformConnectionStatus(outlook).label.toLowerCase().replace(/\s+/g, "_"),
+      validationStatus: String(outlook?.metadata?.validationStatus || "unknown").trim().toLowerCase() || "unknown",
     },
     drive: {
       platformConnected: Boolean(drive),
