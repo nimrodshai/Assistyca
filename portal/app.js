@@ -2149,6 +2149,43 @@ function getAdminClientTypeClass(value) {
   return getAdminClientTypeOption(value).className;
 }
 
+function normalizeAdminSpendMonth(entry = {}, currency = "USD") {
+  const usageUsd = Number(entry.usageUsd ?? entry.usage_usd ?? 0);
+  const billedUsd = Number(entry.billedUsd ?? entry.billed_usd ?? 0);
+  const tokensUsed = Number(entry.tokensUsed ?? entry.tokens_used ?? 0);
+  const usageCount = Number(entry.usageCount ?? entry.usage_count ?? 0);
+  const month = String(entry.month || "").trim();
+  return {
+    month,
+    label: String(entry.label || "").trim() || formatBillingMonthLabel(month),
+    usageUsd: Number.isFinite(usageUsd) ? usageUsd : 0,
+    billedUsd: Number.isFinite(billedUsd) ? billedUsd : 0,
+    minimumApplied: Boolean(entry.minimumApplied ?? entry.minimum_applied),
+    tokensUsed: Number.isFinite(tokensUsed) ? Math.max(0, tokensUsed) : 0,
+    usageCount: Number.isFinite(usageCount) ? Math.max(0, usageCount) : 0,
+    currency: String(entry.currency || currency || "USD").trim().toUpperCase() || "USD",
+  };
+}
+
+function normalizeAdminSpend(value) {
+  const payload = value && typeof value === "object" ? value : {};
+  const currency = String(payload.currency || "USD").trim().toUpperCase() || "USD";
+  const minimumMonthlyCharge = Number(payload.minimumMonthlyCharge ?? payload.minimum_monthly_charge ?? 0);
+  const lifetimeUsageUsd = Number(payload.lifetimeUsageUsd ?? payload.lifetime_usage_usd ?? 0);
+  const previousMonths = Array.isArray(payload.previousMonths || payload.previous_months)
+    ? (payload.previousMonths || payload.previous_months).map((entry) => normalizeAdminSpendMonth(entry, currency))
+    : [];
+  return {
+    currency,
+    isBilled: Boolean(payload.isBilled ?? payload.is_billed),
+    billingNote: String(payload.billingNote || payload.billing_note || "").trim(),
+    minimumMonthlyCharge: Number.isFinite(minimumMonthlyCharge) ? minimumMonthlyCharge : 0,
+    currentMonth: normalizeAdminSpendMonth(payload.currentMonth || payload.current_month, currency),
+    previousMonths: previousMonths.filter((entry) => entry.month),
+    lifetimeUsageUsd: Number.isFinite(lifetimeUsageUsd) ? lifetimeUsageUsd : 0,
+  };
+}
+
 function normalizeAdminUserRecord(user = {}) {
   const paymentStatus = normalizeAdminPaymentStatus(user.paymentStatus || user.payment_status || null);
   const clientType = normalizeAdminClientType(user.clientType || user.client_type)
@@ -2165,6 +2202,7 @@ function normalizeAdminUserRecord(user = {}) {
     lastUsageAt: String(user.lastUsageAt || user.last_usage_at || "").trim(),
     billing: user.billing && typeof user.billing === "object" ? user.billing : {},
     paymentStatus,
+    spend: normalizeAdminSpend(user.spend || user.spend_summary || null),
     assignedFeatureIds: sortUniqueFeatureIds(user.assignedFeatureIds || user.featureIds || []),
   };
 }
@@ -12859,6 +12897,125 @@ function createAdminEmptyState(titleText, copyText) {
   return empty;
 }
 
+function getAdminUserSpend(user) {
+  return user && typeof user.spend === "object" && user.spend ? user.spend : normalizeAdminSpend(null);
+}
+
+function createAdminSpendSummary(user) {
+  const spend = getAdminUserSpend(user);
+  const month = spend.currentMonth;
+  const wrapper = document.createElement("div");
+  wrapper.className = "admin-spend-summary";
+
+  const amount = document.createElement("strong");
+  amount.className = "admin-spend-amount";
+  amount.textContent = formatCurrency(month.usageUsd, spend.currency);
+  wrapper.append(amount);
+
+  const note = document.createElement("span");
+  note.className = "admin-spend-note";
+  if (!spend.isBilled) {
+    note.classList.add("is-not-billed");
+    note.textContent = "Not billed";
+    note.title = spend.billingNote || "This client is not billed.";
+  } else if (month.minimumApplied) {
+    note.textContent = `Billed ${formatCurrency(month.billedUsd, spend.currency)} (minimum)`;
+  } else {
+    note.textContent = `Billed ${formatCurrency(month.billedUsd, spend.currency)}`;
+  }
+  wrapper.append(note);
+
+  return wrapper;
+}
+
+function createAdminSpendMonthRow(month, spend, options = {}) {
+  const row = document.createElement("div");
+  row.className = "admin-spend-row";
+  if (options.isCurrent) {
+    row.classList.add("is-current-month");
+  }
+
+  const label = document.createElement("span");
+  label.className = "admin-spend-month";
+  label.textContent = options.isCurrent ? `${month.label} (this month)` : month.label;
+
+  const values = document.createElement("span");
+  values.className = "admin-spend-values";
+
+  const usage = document.createElement("strong");
+  usage.textContent = formatCurrency(month.usageUsd, spend.currency);
+  values.append(usage);
+
+  const detail = document.createElement("span");
+  detail.className = "admin-spend-row-note";
+  if (!spend.isBilled) {
+    detail.classList.add("is-not-billed");
+    detail.textContent = "not billed";
+  } else if (month.minimumApplied) {
+    detail.textContent = `billed ${formatCurrency(month.billedUsd, spend.currency)} (minimum)`;
+  } else {
+    detail.textContent = `billed ${formatCurrency(month.billedUsd, spend.currency)}`;
+  }
+  values.append(detail);
+
+  row.append(label, values);
+  row.title = `${formatTokenCount(month.tokensUsed)} tokens across ${month.usageCount} usage event${month.usageCount === 1 ? "" : "s"}`;
+  return row;
+}
+
+function createAdminSpendPanel(user) {
+  const spend = getAdminUserSpend(user);
+  const panel = document.createElement("section");
+  panel.className = "admin-detail-panel admin-detail-spend-panel";
+
+  const title = document.createElement("h4");
+  title.textContent = "Spend";
+  panel.append(title);
+
+  const badge = createAdminStateBadge(
+    spend.isBilled ? "Billed monthly" : "Not billed",
+    spend.isBilled ? "is-billed-client" : "is-not-billed-client",
+  );
+  panel.append(badge);
+
+  const stack = document.createElement("div");
+  stack.className = "detail-stack admin-spend-stack";
+  stack.append(createAdminSpendMonthRow(spend.currentMonth, spend, { isCurrent: true }));
+
+  if (spend.previousMonths.length) {
+    for (const month of spend.previousMonths) {
+      stack.append(createAdminSpendMonthRow(month, spend));
+    }
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "admin-spend-empty";
+    empty.textContent = "No earlier months with usage yet.";
+    stack.append(empty);
+  }
+
+  panel.append(stack);
+
+  const totalRow = createAdminDetailRow(
+    "Usage to date",
+    formatCurrency(spend.lifetimeUsageUsd, spend.currency),
+  );
+  totalRow.classList.add("admin-spend-total");
+  panel.append(totalRow);
+
+  const note = document.createElement("p");
+  note.className = "admin-spend-footnote";
+  if (!spend.isBilled) {
+    note.textContent = spend.billingNote || "This client is not billed.";
+  } else if (spend.minimumMonthlyCharge > 0) {
+    note.textContent = `Charged the larger of usage or the ${formatCurrency(spend.minimumMonthlyCharge, spend.currency)} monthly minimum.`;
+  } else {
+    note.textContent = "Charged for usage only.";
+  }
+  panel.append(note);
+
+  return panel;
+}
+
 function createAdminDetailRow(labelText, valueText) {
   const row = document.createElement("div");
   row.className = "detail-row";
@@ -13036,7 +13193,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Client type", "Active", "Visible tools", "Last login", ""]) {
+  for (const heading of ["Client", "Email", "Client type", "This month", "Active", "Visible tools", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -13062,6 +13219,10 @@ function createAdminUsersListView() {
     clientTypeCell.append(createAdminClientTypeSelect(user, {
       disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
     }));
+
+    const spendCell = document.createElement("td");
+    spendCell.className = "admin-spend-cell";
+    spendCell.append(createAdminSpendSummary(user));
 
     const activeCell = document.createElement("td");
     activeCell.append(createAdminActiveSwitch(user, {
@@ -13090,7 +13251,7 @@ function createAdminUsersListView() {
     actionCell.append(manageButton);
 
     row.classList.toggle("is-inactive-client", !user.isActive);
-    row.append(nameCell, emailCell, clientTypeCell, activeCell, toolsCell, lastLoginCell, actionCell);
+    row.append(nameCell, emailCell, clientTypeCell, spendCell, activeCell, toolsCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 
@@ -13444,7 +13605,7 @@ function createAdminUserDetailView(user) {
   actions.append(summary);
   accessPanel.append(accessTitle, picker, assignedShell, actions);
 
-  grid.append(infoPanel, accessPanel);
+  grid.append(infoPanel, accessPanel, createAdminSpendPanel(user));
   wrapper.append(strip, grid);
   return wrapper;
 }

@@ -132,6 +132,97 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertNotIn("inputTokenPriceMultiplier", report["billingPlan"])
         self.assertNotIn("outputTokenPriceMultiplier", report["billingPlan"])
 
+    def test_client_spend_summary_splits_current_and_previous_months(self) -> None:
+        database = PortalDatabase(self.db_path, default_monthly_minimum_cents=0)
+        database.register_user("owner@example.com")
+
+        database.record_usage(
+            "owner@example.com",
+            "gpt-5.5",
+            tool_id="assistant",
+            used_at=datetime(2026, 6, 10, tzinfo=timezone.utc),
+            input_tokens=1000,
+            output_tokens=1000,
+        )
+        database.record_usage(
+            "owner@example.com",
+            "gpt-5.5",
+            tool_id="assistant",
+            used_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+            input_tokens=2000,
+            output_tokens=2000,
+        )
+
+        summary = database.summarize_client_spend(
+            "owner@example.com",
+            reference_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertTrue(summary["isBilled"])
+        self.assertEqual(summary["currentMonth"]["month"], "2026-07")
+        self.assertAlmostEqual(summary["currentMonth"]["usageUsd"], 0.11)
+        self.assertAlmostEqual(summary["currentMonth"]["billedUsd"], 0.11)
+        self.assertEqual(summary["currentMonth"]["usageCount"], 1)
+        self.assertEqual(summary["currentMonth"]["tokensUsed"], 4000)
+        self.assertEqual([month["month"] for month in summary["previousMonths"]], ["2026-06"])
+        self.assertAlmostEqual(summary["previousMonths"][0]["usageUsd"], 0.05)
+        self.assertAlmostEqual(summary["lifetimeUsageUsd"], 0.16)
+
+    def test_client_spend_summary_reports_zero_billed_for_demo_clients(self) -> None:
+        database = PortalDatabase(self.db_path, default_monthly_minimum_cents=500)
+        database.register_user("demo@example.com")
+
+        database.record_usage(
+            "demo@example.com",
+            "gpt-5.5",
+            tool_id="assistant",
+            used_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+            input_tokens=1000,
+            output_tokens=1000,
+        )
+
+        billed = database.summarize_client_spend(
+            "demo@example.com",
+            is_billed=True,
+            reference_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+        demo = database.summarize_client_spend(
+            "demo@example.com",
+            is_billed=False,
+            reference_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+
+        self.assertAlmostEqual(billed["currentMonth"]["usageUsd"], 0.05)
+        self.assertAlmostEqual(billed["currentMonth"]["billedUsd"], 5.0)
+        self.assertTrue(billed["currentMonth"]["minimumApplied"])
+
+        self.assertFalse(demo["isBilled"])
+        self.assertAlmostEqual(demo["currentMonth"]["usageUsd"], 0.05)
+        self.assertAlmostEqual(demo["currentMonth"]["billedUsd"], 0.0)
+        self.assertFalse(demo["currentMonth"]["minimumApplied"])
+
+    def test_client_spend_summary_still_reports_usage_for_deactivated_clients(self) -> None:
+        database = PortalDatabase(self.db_path, default_monthly_minimum_cents=0)
+        database.register_user("owner@example.com")
+        database.record_usage(
+            "owner@example.com",
+            "gpt-5.5",
+            tool_id="assistant",
+            used_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+            input_tokens=1000,
+            output_tokens=1000,
+        )
+        database.update_user_status("owner@example.com", is_active=False)
+
+        summary = database.summarize_client_spend(
+            "owner@example.com",
+            reference_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertAlmostEqual(summary["currentMonth"]["usageUsd"], 0.05)
+
     def test_whatsapp_conversation_summary_includes_message_count(self) -> None:
         database = PortalDatabase(self.db_path)
         database.register_user("owner@example.com")

@@ -190,5 +190,50 @@ class PortalAuthSessionTests(unittest.TestCase):
         self.assertEqual(self.server.database.get_user(client_email)["clientType"], "qa")
 
 
+    def test_admin_client_list_reports_monthly_spend_and_demo_billing_state(self) -> None:
+        owner_email = "nimrod.shai@gmail.com"
+        demo_email = "demo@example.com"
+        paying_email = "paying@example.com"
+        self.server.database.register_user(owner_email, is_admin=True)
+        self.server.database.register_user(demo_email)
+        self.server.database.register_user(paying_email)
+        self.server.database.update_user_client_type(demo_email, client_type="demo")
+        self.server.database.update_user_client_type(paying_email, client_type="paying")
+        for email in (demo_email, paying_email):
+            self.server.database.record_usage(
+                email,
+                "gpt-5.5",
+                tool_id="assistant",
+                input_tokens=1000,
+                output_tokens=1000,
+            )
+        cookie_value = self._verify_otp_and_get_cookie(owner_email)
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/admin/users",
+            headers={"Cookie": cookie_value},
+        )
+        with urllib_request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        users_by_email = {user["email"]: user for user in payload["users"]}
+        demo_spend = users_by_email[demo_email]["spend"]
+        paying_spend = users_by_email[paying_email]["spend"]
+
+        self.assertFalse(demo_spend["isBilled"])
+        self.assertIn("never billed", demo_spend["billingNote"])
+        self.assertGreater(demo_spend["currentMonth"]["usageUsd"], 0)
+        self.assertEqual(demo_spend["currentMonth"]["billedUsd"], 0.0)
+        self.assertIn("previousMonths", demo_spend)
+
+        self.assertTrue(paying_spend["isBilled"])
+        self.assertEqual(paying_spend["billingNote"], "")
+        self.assertGreater(paying_spend["currentMonth"]["usageUsd"], 0)
+        self.assertGreaterEqual(
+            paying_spend["currentMonth"]["billedUsd"],
+            paying_spend["currentMonth"]["usageUsd"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

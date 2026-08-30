@@ -31,6 +31,7 @@ BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS = "active"
 STALE_CLAIM_SECONDS = 15 * 60
 MAX_SCHEDULED_ACTION_ATTEMPTS = 3
 VALID_CLIENT_TYPES = ("paying", "demo", "qa")
+MONTH_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 RAW_CENTS_QUANT = Decimal("0.0001")
 USD_QUANT = Decimal("0.01")
 DEFAULT_MODEL_PRICE_PROVIDER = "openai"
@@ -7622,6 +7623,103 @@ class PortalDatabase:
             events.append(payload)
 
         return events
+
+    def summarize_client_spend(
+        self,
+        email: str,
+        *,
+        is_billed: bool = True,
+        reference_time: datetime | None = None,
+        history_months: int = 6,
+    ) -> dict[str, Any] | None:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return None
+
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_email)
+            if user is None:
+                return None
+
+            rows = conn.execute(
+                """
+                SELECT
+                    COALESCE(NULLIF(billing_month, ''), substr(used_at, 1, 7)) AS month_key,
+                    SUM(input_charge_cents + output_charge_cents) AS charge_cents,
+                    SUM(input_tokens + output_tokens) AS tokens_used,
+                    COUNT(*) AS usage_count
+                FROM usage_events
+                WHERE user_id = ?
+                GROUP BY month_key
+                """,
+                (int(user["id"]),),
+            ).fetchall()
+
+        billing = user["billing"] if isinstance(user.get("billing"), dict) else {}
+        currency = normalize_text(billing.get("currency")) or self.default_billing_plan.currency
+        minimum_monthly_cents = int(
+            billing.get("monthlyMinimumCents") or self.default_billing_plan.monthly_minimum_cents
+        )
+        minimum_monthly_charge = cents_to_usd(Decimal(minimum_monthly_cents))
+
+        def build_month(
+            month_key: str,
+            *,
+            usage_usd: float = 0.0,
+            tokens_used: int = 0,
+            usage_count: int = 0,
+        ) -> dict[str, Any]:
+            billed_usd = round(max(usage_usd, minimum_monthly_charge), 2) if is_billed else 0.0
+            return {
+                "month": month_key,
+                "label": month_label(month_key),
+                "usageUsd": round(usage_usd, 2),
+                "billedUsd": billed_usd,
+                "minimumApplied": bool(is_billed and billed_usd > round(usage_usd, 2)),
+                "tokensUsed": int(tokens_used),
+                "usageCount": int(usage_count),
+                "currency": currency,
+            }
+
+        months: list[dict[str, Any]] = []
+        for row in rows:
+            month_key = normalize_text(row["month_key"])
+            if not MONTH_KEY_RE.match(month_key):
+                continue
+            months.append(
+                build_month(
+                    month_key,
+                    usage_usd=cents_to_usd(to_decimal(row["charge_cents"])),
+                    tokens_used=int(row["tokens_used"] or 0),
+                    usage_count=int(row["usage_count"] or 0),
+                )
+            )
+
+        months.sort(key=lambda row: month_sort_key(str(row.get("month", ""))), reverse=True)
+
+        current_key = month_key_for(reference_time)
+        current_month = next((row for row in months if row["month"] == current_key), None)
+        if current_month is None:
+            current_month = build_month(current_key)
+
+        previous_months = [
+            row for row in months if month_sort_key(str(row.get("month", ""))) < month_sort_key(current_key)
+        ]
+        if history_months > 0:
+            previous_months = previous_months[:history_months]
+
+        known_months = [current_month, *previous_months]
+        return {
+            "email": normalized_email,
+            "currency": currency,
+            "isBilled": bool(is_billed),
+            "minimumMonthlyCharge": minimum_monthly_charge,
+            "currentMonth": current_month,
+            "previousMonths": previous_months,
+            "lifetimeUsageUsd": round(sum(float(row["usageUsd"]) for row in months), 2),
+            "knownBilledUsd": round(sum(float(row["billedUsd"]) for row in known_months), 2),
+            "asOf": now_iso(),
+        }
 
     def build_billing_report(
         self,
