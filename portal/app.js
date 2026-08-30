@@ -24133,7 +24133,9 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     });
     persistAgentWorkspace(message);
   }
-  renderApp({ preserveStatus: true });
+  // Leave the drawing to whoever started the approval. Both callers turn the
+  // turn off and render straight after this, and the reply only grows out of
+  // the thinking bubble when it is first drawn on that render.
 }
 
 function requestAgentProposalChanges(proposalId, expectedRevision = 0) {

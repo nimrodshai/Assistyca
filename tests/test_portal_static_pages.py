@@ -1256,7 +1256,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=156", html)
-        self.assertIn("app.js?v=191", html)
+        self.assertIn("app.js?v=193", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)
@@ -1527,6 +1527,41 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('apiRequest("/api/agent/turn"', handler)
         self.assertIn('resolvePendingAgentMessageActions("user-message")', handler)
         self.assertNotIn("createAgentProposalFromRequest(cleanText)", handler)
+
+    def test_the_action_created_reply_grows_out_of_the_thinking_bubble(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # "Action created." used to appear with only a fade, because approving
+        # drew it while the turn was still busy. The morph is read from the
+        # thinking bubble that is still on screen, and only on the first draw
+        # of a message, so that early draw used up its entrance.
+        approve = script[
+            script.index("async function approveAgentProposal"):
+            script.index("function requestAgentProposalChanges")
+        ]
+        self.assertIn('const message = "Action created.";', approve)
+        self.assertNotIn(
+            'persistAgentWorkspace(message);\n  }\n  renderApp({ preserveStatus: true });',
+            approve,
+        )
+
+        # Both ways in turn the busy state off and redraw once approval is
+        # done, so the reply is first drawn with the thinking bubble still
+        # there and morphs out of it like any other agent message.
+        start = script[
+            script.index("function startAgentProposalApproval"):
+            script.index("function pushAgentProposalResult")
+        ]
+        self.assertIn(
+            ".finally(() => {\n      agentTurnBusy = false;",
+            start,
+        )
+        self.assertIn("renderApp({ preserveStatus: true });", start)
+        turn = script[
+            script.index("async function applyAgentTurnResponse"):
+            script.index("function pushAgentActionCommandPrompt")
+        ]
+        self.assertIn("await approveAgentProposal(activeProposal.id, currentRevision);", turn)
 
     def test_chat_offers_an_action_picker_instead_of_asking_for_a_name(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
