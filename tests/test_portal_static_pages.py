@@ -347,6 +347,36 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-mailbox-add .agent-action-editor-select-wrap {", styles)
         self.assertIn(".agent-mailbox-add-connect {", styles)
 
+    def test_disconnecting_google_leaves_the_other_provider_alone(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # "Disconnect Google" removes several connections in one go, and it
+        # gathered them by platform. Gmail and Outlook share the email
+        # platform, so the sweep took the Outlook mailbox with it - credential
+        # included. Whose a connection is is a question about the provider.
+        self.assertIn("function isGoogleOwnedPlatformConnection", script)
+        self.assertIn("function getPlatformConnectionProvider", script)
+        self.assertIn(
+            'return platform !== "email" || getPlatformConnectionProvider(connection) === EMAIL_PROVIDER_GMAIL;',
+            script,
+        )
+
+        google_sweep = script[
+            script.index("function getUniqueConnectedGoogleOAuthConnections"):
+            script.index("function createGoogleConnectionDisconnectButton")
+        ]
+        self.assertIn("isGoogleOwnedPlatformConnection(connection)", google_sweep)
+        self.assertNotIn("isGoogleToolPlatformConnection(connection.platform)", google_sweep)
+
+        # A confirmation that lists what Google can do rather than what this
+        # account has is how a mailbox gets removed by someone who never knew
+        # it was included.
+        self.assertIn("function describeGoogleConnectionsToDisconnect", script)
+        self.assertNotIn(
+            "Any actions that use Calendar, Email, or Drive will need setup again",
+            script,
+        )
+
     def test_calendar_action_picks_calendars_from_inside_the_account(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")

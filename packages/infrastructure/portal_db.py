@@ -1712,7 +1712,7 @@ class PortalDatabase:
 
         row = conn.execute(
             f"""
-            SELECT id, user_id, platform, auth_type, secret_hint,
+            SELECT id, user_id, platform, provider, auth_type, secret_hint,
                    connection_status, metadata_json, account_address, account_label,
                    connected_at, updated_at
             FROM platform_connections
@@ -1729,6 +1729,10 @@ class PortalDatabase:
             "id": normalize_text(payload.get("id")),
             "userId": int(payload.get("user_id") or 0),
             "platform": normalize_text(payload.get("platform")),
+            # The provider is half of what a connection is: the email platform
+            # holds both Gmail and Outlook, so a caller given the platform alone
+            # cannot tell whose mailbox it is looking at.
+            "provider": normalize_text(payload.get("provider")).lower(),
             "authType": normalize_text(payload.get("auth_type")) or "api_token",
             "secretHint": normalize_text(payload.get("secret_hint")),
             "connectionStatus": normalize_text(payload.get("connection_status")) or "connected",

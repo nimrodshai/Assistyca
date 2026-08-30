@@ -117,6 +117,16 @@ class MultiMailboxTests(unittest.TestCase):
             },
         )
 
+    def _get(self, path: str):  # type: ignore[no-untyped-def]
+        return urllib_request.Request(
+            f"{self.base_url}{path}",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+
     def _save_gmail(self, address: str, *, label: str = "") -> None:
         self.server.database.save_platform_connection(
             "owner@example.com",
@@ -196,6 +206,24 @@ class MultiMailboxTests(unittest.TestCase):
         providers = sorted(item["metadata"]["provider"] for item in connections)
 
         self.assertEqual(providers, ["google_gmail", "microsoft_outlook"])
+
+    def test_the_browser_is_told_which_provider_owns_each_connection(self) -> None:
+        # The browser decides what "Disconnect Google" removes. Told only the
+        # platform it cannot tell one provider's mailbox from the other's, and
+        # it deleted the Outlook mailbox along with Google's own permissions.
+        self._save_gmail("personal@gmail.com")
+        self._save_outlook("work@contoso.com")
+
+        with urllib_request.urlopen(self._get("/api/platform-connections"), timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        providers = {
+            item["accountAddress"]: item.get("provider")
+            for item in payload["connections"]
+        }
+
+        self.assertEqual(providers["personal@gmail.com"], "google_gmail")
+        self.assertEqual(providers["work@contoso.com"], MICROSOFT_OUTLOOK_OAUTH_PROVIDER)
 
     def test_two_providers_can_hold_the_same_address(self) -> None:
         # A personal Microsoft account may be registered under a Gmail address,

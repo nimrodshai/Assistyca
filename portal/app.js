@@ -5827,6 +5827,11 @@ function normalizePlatformConnection(source = {}) {
   return {
     id: String(source.id || "").trim(),
     platform,
+    // The platform says what a connection can do; the provider says whose
+    // account it is. The email platform holds both Gmail and Outlook, so only
+    // the two together identify one connection. The column is the database's
+    // own answer, and the metadata is what rows carried before it existed.
+    provider: String(source.provider || rawMetadata.provider || "").trim().toLowerCase(),
     label: option?.label || platform || "Connected app",
     authType: String(source.authType || source.auth_type || "api_token").trim().toLowerCase(),
     secretHint: String(source.secretHint || "").trim(),
@@ -5916,9 +5921,24 @@ function isGoogleToolPlatformConnection(platform) {
   return GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(normalized);
 }
 
+// A Google tool platform says what a connection can do, not whose account it
+// is: the email platform holds Outlook mailboxes too. Everything that treats
+// Google as one thing - counting it connected, disconnecting it - has to ask
+// the provider as well, or it reaches into Microsoft's row. Calendar and Drive
+// have only ever been Google's, so the platform answers for them; for a
+// mailbox only a stated Gmail provider does, because a wrong guess here
+// deletes the other provider's credential.
+function isGoogleOwnedPlatformConnection(connection) {
+  const platform = getPlatformConnectionPlatformId(connection);
+  if (!isGoogleToolPlatformConnection(platform)) {
+    return false;
+  }
+  return platform !== "email" || getPlatformConnectionProvider(connection) === EMAIL_PROVIDER_GMAIL;
+}
+
 function getConnectedGoogleOAuthConnections() {
   return state.platformConnections.filter((connection) => (
-    isGoogleToolPlatformConnection(connection?.platform)
+    isGoogleOwnedPlatformConnection(connection)
     && isPlatformConnectionConnected(connection)
     && connection.authType === "oauth"
   ));
@@ -5958,10 +5978,22 @@ function getConnectedOutlookConnections() {
   ));
 }
 
-function getEmailConnectionProvider(connection) {
+// What the connection itself says its provider is, with no default. A caller
+// deciding what to delete needs to know the difference between "Gmail" and
+// "this row never said", which the display default below hides.
+function getPlatformConnectionProvider(connection) {
   const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
-  const provider = normalizeText(metadata.provider);
-  return provider === EMAIL_PROVIDER_OUTLOOK ? EMAIL_PROVIDER_OUTLOOK : EMAIL_PROVIDER_GMAIL;
+  return normalizeText(connection?.provider || metadata.provider).toLowerCase();
+}
+
+// The provider a mailbox is shown as. Gmail is the default because it was the
+// only mailbox provider before Outlook, so a row that names none is one of
+// those. Naming a mailbox is all this is for - see the reader above before
+// using it to decide anything.
+function getEmailConnectionProvider(connection) {
+  return getPlatformConnectionProvider(connection) === EMAIL_PROVIDER_OUTLOOK
+    ? EMAIL_PROVIDER_OUTLOOK
+    : EMAIL_PROVIDER_GMAIL;
 }
 
 // What to call one mailbox in the interface: its address if the provider let
@@ -6485,7 +6517,7 @@ function getUniqueConnectedGoogleOAuthConnections(connections = []) {
   for (const connection of source) {
     if (
       connection?.id
-      && isGoogleToolPlatformConnection(connection.platform)
+      && isGoogleOwnedPlatformConnection(connection)
       && isPlatformConnectionConnected(connection)
       && connection.authType === "oauth"
     ) {
@@ -6579,16 +6611,48 @@ async function disconnectPlatformConnection(option, connection) {
   }
 }
 
+// One button removes several connections at once, so the confirmation names
+// them. "Calendar, Email, or Drive" listed what Google can do rather than what
+// this account has, which is how a mailbox could be removed by a reader who
+// had no idea one was included.
+function describeGoogleConnectionsToDisconnect(connections = []) {
+  // The permission's own name, not the shelf's: a calendar connection is
+  // labelled "Google" on the shelf, which in a list of Google things to remove
+  // would say nothing at all.
+  const permissionNames = { calendar: "Calendar", drive: "Drive" };
+  const mailboxes = [];
+  const permissions = [];
+  for (const connection of connections) {
+    const platform = getPlatformConnectionPlatformId(connection);
+    if (platform === "email") {
+      mailboxes.push(`the mailbox ${getEmailConnectionName(connection)}`);
+    } else {
+      permissions.push(permissionNames[platform] || normalizeText(connection?.label) || platform);
+    }
+  }
+  // Permissions first, mailboxes last: the mailbox is the surprising one, and
+  // the end of the sentence is where it is read.
+  const names = [...permissions, ...mailboxes].filter(Boolean);
+  if (names.length <= 1) {
+    return names[0] || "";
+  }
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 function openGoogleConnectionDisconnectConfirmation(option, connections = []) {
   const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
   if (!option || !connectedConnections.length) {
     return;
   }
   const label = option.label || "Google";
+  const removedNames = describeGoogleConnectionsToDisconnect(connectedConnections);
+  const removedSentence = removedNames
+    ? `This removes ${removedNames} from Assistyca.`
+    : `This removes the saved ${label} access from Assistyca.`;
 
   openAuthAlert(
     `Disconnect ${label}?`,
-    "This removes the saved Google access from Assistyca. Any actions that use Calendar, Email, or Drive will need setup again before they can run.",
+    `${removedSentence} Any action that uses them will need setup again before it can run.`,
     {
       eyebrow: "Disconnect app",
       icon: "!",
