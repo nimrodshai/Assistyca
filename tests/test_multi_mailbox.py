@@ -365,6 +365,16 @@ class MergeMailDigestResultTests(unittest.TestCase):
         self.assertEqual(merged["messageCount"], 3)
         self.assertEqual(merged["summary"], "2 mailboxes - 3 message(s)")
 
+    def test_a_combined_message_names_every_mailbox_and_its_count(self) -> None:
+        # A single total cannot say whether a mailbox was empty or never read.
+        merged = merge_mail_digest_results([
+            {"mailbox": "a@example.com", "result": {"messageCount": 1, "items": [{"subject": "A"}]}},
+            {"mailbox": "b@example.com", "result": {"messageCount": 0, "items": []}},
+        ])
+
+        self.assertIn("a@example.com: 1 message(s)", merged["message"])
+        self.assertIn("b@example.com: 0 message(s)", merged["message"])
+
     def test_a_reader_that_already_named_the_mailbox_is_left_alone(self) -> None:
         merged = merge_mail_digest_results([
             {"mailbox": "a@example.com", "result": {"messageCount": 1, "items": [{"subject": "A", "mailbox": "shared@example.com"}]}},

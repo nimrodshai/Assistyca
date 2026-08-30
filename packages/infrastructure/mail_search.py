@@ -314,3 +314,66 @@ def build_query(
 
 
 DEFAULT_DIGEST_QUERY = MailQuery(in_inbox=True, newer_than_days=1)
+
+
+# A digest action saves a schedule, not a period, so its default window is the
+# day it runs. A question asked in chat names its own period - "this week",
+# "the last 3 days" - and reading a day of mail for it answers a question the
+# user did not ask. These turn the period back into a number of days.
+MAIL_TIME_WINDOW_MAX_DAYS = 366
+_TIME_WINDOW_NUMBER_WORDS = {
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+_TIME_WINDOW_UNIT_DAYS = {
+    "day": 1,
+    "week": 7,
+    "fortnight": 14,
+    "month": 31,
+    "quarter": 92,
+    "year": 365,
+}
+_TIME_WINDOW_TODAY_RE = re.compile(r"\b(?:today|so far today|last 24 hours|past 24 hours)\b")
+_TIME_WINDOW_YESTERDAY_RE = re.compile(r"\byesterday\b")
+_TIME_WINDOW_COUNT_RE = re.compile(
+    r"(?:(?P<count>\d{1,3}|" + "|".join(_TIME_WINDOW_NUMBER_WORDS) + r")\s+)?"
+    r"(?P<unit>" + "|".join(_TIME_WINDOW_UNIT_DAYS) + r")s?\b"
+)
+
+
+def parse_time_window_days(value: Any) -> int | None:
+    """Read a period written the way a person says it as a number of days.
+
+    "this week" and "last week" both come back as seven days rather than a
+    calendar week. A rolling window is what a mailbox can actually be asked
+    for, and it is the reading that never leaves out yesterday's mail.
+    Returns None when the text names no period, so the caller keeps its own
+    default instead of inventing one.
+    """
+
+    text = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    if not text:
+        return None
+    if _TIME_WINDOW_TODAY_RE.search(text):
+        return 1
+    if _TIME_WINDOW_YESTERDAY_RE.search(text):
+        return 2
+    match = _TIME_WINDOW_COUNT_RE.search(text)
+    if not match:
+        return None
+    raw_count = match.group("count") or ""
+    count = int(raw_count) if raw_count.isdigit() else _TIME_WINDOW_NUMBER_WORDS.get(raw_count, 1)
+    days = max(1, count) * _TIME_WINDOW_UNIT_DAYS[match.group("unit")]
+    return min(days, MAIL_TIME_WINDOW_MAX_DAYS)

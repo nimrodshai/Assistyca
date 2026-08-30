@@ -14,6 +14,7 @@ from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import matches
 from packages.infrastructure.mail_search import month_window
 from packages.infrastructure.mail_search import parse_gmail_query
+from packages.infrastructure.mail_search import parse_time_window_days
 from packages.infrastructure.mail_search import to_gmail_query
 from packages.infrastructure.mail_search import to_graph_search
 
@@ -192,6 +193,32 @@ class ClientSideMatchTests(unittest.TestCase):
 
         self.assertFalse(matches(query, subject="receipt", has_attachment=False))
         self.assertTrue(matches(query, subject="receipt", has_attachment=True))
+
+
+class TimeWindowTests(unittest.TestCase):
+    """A period named in chat has to reach the mailbox as a real window."""
+
+    def test_a_week_is_seven_days_however_it_is_written(self) -> None:
+        self.assertEqual(parse_time_window_days("this week"), 7)
+        self.assertEqual(parse_time_window_days("last week"), 7)
+        self.assertEqual(parse_time_window_days("the past week"), 7)
+
+    def test_a_counted_window_keeps_its_count(self) -> None:
+        self.assertEqual(parse_time_window_days("the last 3 days"), 3)
+        self.assertEqual(parse_time_window_days("last two weeks"), 14)
+        self.assertEqual(parse_time_window_days("this month"), 31)
+
+    def test_today_and_yesterday_are_read_as_days(self) -> None:
+        self.assertEqual(parse_time_window_days("today"), 1)
+        self.assertEqual(parse_time_window_days("yesterday"), 2)
+
+    def test_text_naming_no_period_leaves_the_caller_its_default(self) -> None:
+        self.assertIsNone(parse_time_window_days(""))
+        self.assertIsNone(parse_time_window_days("my inbox"))
+        self.assertIsNone(parse_time_window_days(None))
+
+    def test_an_absurd_window_is_capped_rather_than_read_literally(self) -> None:
+        self.assertEqual(parse_time_window_days("the last 500 years"), 366)
 
 
 if __name__ == "__main__":

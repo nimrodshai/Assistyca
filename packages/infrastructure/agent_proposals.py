@@ -59,12 +59,17 @@ _AGENT_PROPOSAL_TYPES = {
 # The lookups that already have a runner, so a question can be answered from
 # connected sources in the same chat turn instead of becoming a saved action.
 _AGENT_ANSWER_NOW_TYPES = {"calendar-summary", "email-digest", "custom"}
+# One message can ask for more than one lookup ("what came in this week, and
+# what is on my calendar"). Each one runs on its own and the chat reports them
+# together. Three is more than a sentence usually carries, and it keeps a
+# misread request from turning into a long row of reads.
+AGENT_ANSWER_TASK_LIMIT = 3
 # Changes the chat can make to actions that already exist. Running one is not
 # here: a manual run sends real messages, so it stays a button in the panel.
 _AGENT_ACTION_COMMANDS = {"delete", "pause", "resume"}
 _AGENT_ACTION_COMMAND_MAX_NAMES = 20
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
-    "email-digest": ["mailbox", "schedule", "deliveryChannel"],
+    "email-digest": ["mailbox", "schedule", "timeWindow", "deliveryChannel"],
     "calendar-summary": ["calendar", "timeWindow", "deliveryChannel"],
     "web-monitor": ["watchQuery", "location", "timeWindow", "frequency", "deliveryChannel"],
     "whatsapp-replies": ["whatsappNumber", "approver", "guardrails", "deliveryChannel"],
@@ -449,6 +454,22 @@ def build_agent_turn_prompt(
         "checking and it may take a moment; the application replaces it with the real answer when the lookup "
         "finishes, so never guess the answer yourself. Choose proposal instead when the user wants the work to "
         "keep happening on a schedule, asks you to set something up, or no runner can answer the question.\n"
+        f"When one message asks for more than one thing, break it into its separate lookups and return them all "
+        f"in tasks: a list of at most {AGENT_ANSWER_TASK_LIMIT} entries, each with proposalType and changes.fields, "
+        "in the order they should run. The application runs every task and reports them together, so never answer "
+        "part of the message and drop the rest. Split by what is being asked, not by where the answer lives: a "
+        "mailbox lookup already reads every connected mailbox at once, so asking about email is one task even when "
+        "several mailboxes are connected. Leave tasks out for a message that asks for a single lookup.\n"
+        "For an email-digest lookup put the period the message named in changes.fields.timeWindow, in the user's "
+        "own words, for example today, this week, or the last 3 days. Without it the inbox is read for one day "
+        "only, which answers a narrower question than the one that was asked.\n"
+        "Every task carries a mode. Use mode=answer, the default, when the message asks a question and the reply "
+        "is the whole point. Use mode=run for a custom task the user asked you to carry out once, where the point "
+        "is the thing it produces - collecting a month of receipts into a file, exporting a bundle. Only custom "
+        "tasks can run; give a run task changes.fields.outputFolder when the user named where it should go, and "
+        "leave it out otherwise. A request to do something once is a one-off task, never a proposal: run it and "
+        "report back. The application offers to save it as a reusable action afterwards, so never ask whether to "
+        "save it first, and never say you have set anything up.\n"
         "For a one-off money question such as how much was paid to a named vendor, use proposalType=custom "
         "with changes.fields.result phrased as a receipt search, for example 'Find receipts from Render for "
         "August 2026', changes.fields.vendor holding the vendor name on its own, and "
@@ -742,6 +763,52 @@ def _normalize_agent_action_names(value: Any) -> list[str]:
     return names
 
 
+def _agent_answer_task_is_runnable(proposal_type: str, changes: dict[str, Any]) -> bool:
+    """Whether a lookup says enough to be run without asking anything first."""
+
+    if proposal_type not in _AGENT_ANSWER_NOW_TYPES:
+        return False
+    fields = changes.get("fields") if isinstance(changes.get("fields"), dict) else {}
+    # A receipt-style lookup is only runnable when it says what to look for;
+    # the calendar and inbox runners have workable defaults.
+    return proposal_type != "custom" or bool(fields.get("result"))
+
+
+def _normalize_agent_turn_tasks(value: Any) -> list[dict[str, Any]]:
+    """The lookups one message asked for, in the order they should run.
+
+    A message that asks for two things gets two entries here. Repeats are
+    dropped rather than run twice: a mailbox lookup already reads every
+    connected mailbox, so "check Gmail and Outlook" is one task, not two.
+    """
+
+    raw_tasks = value if isinstance(value, list) else []
+    tasks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_task in raw_tasks:
+        if not isinstance(raw_task, dict):
+            continue
+        proposal_type = _single_line(raw_task.get("proposalType") or raw_task.get("type"), 80).lower()
+        raw_changes = raw_task.get("changes") if isinstance(raw_task.get("changes"), dict) else raw_task
+        changes = _normalize_agent_turn_changes(raw_changes, proposal_type)
+        if not _agent_answer_task_is_runnable(proposal_type, changes):
+            continue
+        # A lookup either answers a question in the chat or does a job that
+        # writes something. Only the custom runner can write; a digest and a
+        # calendar summary have nothing to produce, so they always answer.
+        mode = _single_line(raw_task.get("mode"), 20).lower()
+        if mode != "run" or proposal_type != "custom":
+            mode = "answer"
+        key = json.dumps([proposal_type, mode, changes], sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        tasks.append({"proposalType": proposal_type, "changes": changes, "mode": mode})
+        if len(tasks) >= AGENT_ANSWER_TASK_LIMIT:
+            break
+    return tasks
+
+
 def _normalize_agent_turn_outcome(
     response: dict[str, Any],
     *,
@@ -774,16 +841,19 @@ def _normalize_agent_turn_outcome(
             "changes": changes,
         }
 
-    if outcome == "answer_now" and proposal_type in _AGENT_ANSWER_NOW_TYPES:
-        fields = changes.get("fields") if isinstance(changes.get("fields"), dict) else {}
-        # A receipt-style lookup is only runnable when it says what to look
-        # for; the calendar and inbox runners have workable defaults.
-        if proposal_type != "custom" or fields.get("result"):
+    if outcome == "answer_now":
+        tasks = _normalize_agent_turn_tasks(response.get("tasks"))
+        if not tasks and _agent_answer_task_is_runnable(proposal_type, changes):
+            tasks = [{"proposalType": proposal_type, "changes": changes, "mode": "answer"}]
+        if tasks:
+            # The first task also fills the single-lookup keys, so a caller
+            # that only knows about one lookup still gets a working one.
             return {
                 "outcome": "answer_now",
                 "reply": reply,
-                "proposalType": proposal_type,
-                "changes": changes,
+                "proposalType": tasks[0]["proposalType"],
+                "changes": tasks[0]["changes"],
+                "tasks": tasks,
             }
 
     if outcome == "revise_proposal" and has_active_proposal and changes:

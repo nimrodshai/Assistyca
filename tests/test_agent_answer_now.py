@@ -33,6 +33,7 @@ from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_auth.server import resolve_agent_batch_run_month
 from packages.infrastructure.portal_auth.server import resolve_local_today
+from packages.infrastructure.portal_auth.server import resolve_saved_mail_query
 from packages.infrastructure.receipt_collector import answer_receipt_question
 
 SERVER_MODULE = "packages.infrastructure.portal_auth.server"
@@ -61,6 +62,26 @@ def _token_endpoint_patch():  # type: ignore[no-untyped-def]
         return real_urlopen(request, timeout=timeout, **kwargs)
 
     return mock.patch(f"{SERVER_MODULE}.urllib_request.urlopen", side_effect=fake_urlopen)
+
+
+class AgentAnswerMailWindowTests(unittest.TestCase):
+    """A question that named a period has to be read for that period."""
+
+    def test_the_period_the_question_named_sets_the_window(self) -> None:
+        query = resolve_saved_mail_query({"timeWindow": "this week"}, {})
+
+        self.assertEqual(query.newer_than_days, 7)
+        self.assertTrue(query.in_inbox)
+
+    def test_a_question_naming_no_period_keeps_the_digest_default(self) -> None:
+        query = resolve_saved_mail_query({}, {})
+
+        self.assertEqual(query.newer_than_days, 1)
+
+    def test_a_saved_query_still_wins_over_the_period(self) -> None:
+        query = resolve_saved_mail_query({"mailQuery": "newer_than:3d", "timeWindow": "this week"}, {})
+
+        self.assertEqual(query.newer_than_days, 3)
 
 
 class AgentAnswerTurnTests(unittest.TestCase):
@@ -102,6 +123,99 @@ class AgentAnswerTurnTests(unittest.TestCase):
         }, has_active_proposal=False)
 
         self.assertNotEqual(turn["outcome"], "answer_now")
+
+    def test_a_message_asking_for_two_things_runs_both(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "answer_now",
+            "reply": "Checking both now.",
+            "tasks": [
+                {"proposalType": "email-digest", "changes": {"fields": {"timeWindow": "this week"}}},
+                {"proposalType": "calendar-summary", "changes": {"fields": {"timeWindow": "this week"}}},
+            ],
+        }, has_active_proposal=False)
+
+        self.assertEqual(turn["outcome"], "answer_now")
+        self.assertEqual(
+            [task["proposalType"] for task in turn["tasks"]],
+            ["email-digest", "calendar-summary"],
+        )
+        # The first lookup also fills the single-lookup keys, so nothing that
+        # only knows about one lookup is left without one.
+        self.assertEqual(turn["proposalType"], "email-digest")
+        self.assertEqual(turn["changes"]["fields"]["timeWindow"], "this week")
+
+    def test_the_same_lookup_asked_for_twice_runs_once(self) -> None:
+        # "Check Gmail and Outlook" is one mailbox read, not two: the runner
+        # already reads every connected mailbox.
+        turn = normalize_agent_turn_response({
+            "outcome": "answer_now",
+            "reply": "Checking now.",
+            "tasks": [
+                {"proposalType": "email-digest", "changes": {"fields": {"timeWindow": "this week"}}},
+                {"proposalType": "email-digest", "changes": {"fields": {"timeWindow": "this week"}}},
+            ],
+        }, has_active_proposal=False)
+
+        self.assertEqual(len(turn["tasks"]), 1)
+
+    def test_a_lookup_with_no_runner_is_dropped_from_the_task_list(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "answer_now",
+            "reply": "Checking now.",
+            "tasks": [
+                {"proposalType": "web-monitor", "changes": {"fields": {"watchQuery": "events"}}},
+                {"proposalType": "email-digest", "changes": {"fields": {"timeWindow": "today"}}},
+            ],
+        }, has_active_proposal=False)
+
+        self.assertEqual([task["proposalType"] for task in turn["tasks"]], ["email-digest"])
+
+    def test_a_single_lookup_turn_still_carries_one_task(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "answer_now",
+            "reply": "Checking now.",
+            "proposalType": "email-digest",
+            "changes": {"fields": {"timeWindow": "this week"}},
+        }, has_active_proposal=False)
+
+        self.assertEqual(len(turn["tasks"]), 1)
+        self.assertEqual(turn["tasks"][0]["proposalType"], "email-digest")
+
+    def test_only_a_custom_task_may_produce_something(self) -> None:
+        # A digest and a calendar summary have nothing to write, so a run mode
+        # on them is a misread and must not reach the runner.
+        turn = normalize_agent_turn_response({
+            "outcome": "answer_now",
+            "reply": "On it.",
+            "tasks": [
+                {"proposalType": "custom", "mode": "run", "changes": {"fields": {"result": "Collect August receipts"}}},
+                {"proposalType": "email-digest", "mode": "run", "changes": {"fields": {"timeWindow": "this week"}}},
+            ],
+        }, has_active_proposal=False)
+
+        self.assertEqual([task["mode"] for task in turn["tasks"]], ["run", "answer"])
+
+    def test_a_one_off_is_never_turned_into_a_proposal_by_the_prompt(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Collect my August receipts",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            today="2026-08-30",
+        )
+
+        self.assertIn("A request to do something once is a one-off task, never a proposal", prompt)
+        self.assertIn("offers to save it as a reusable action afterwards", prompt)
+
+    def test_the_prompt_asks_for_the_period_an_email_question_named(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Summarize my emails from this week",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            today="2026-08-30",
+        )
+
+        self.assertIn("changes.fields.timeWindow", prompt)
+        self.assertIn("break it into its separate lookups", prompt)
 
     def test_the_turn_prompt_offers_answering_as_an_outcome(self) -> None:
         prompt = build_agent_turn_prompt(
@@ -442,7 +556,7 @@ class AgentAnswerChatTests(unittest.TestCase):
             self.script.index("function buildAgentReplyMetadata")
         ]
 
-        self.assertIn('if (outcome === "answer_now" && await runAgentAnswerNow(turn))', turn_handler)
+        self.assertIn('if (outcome === "answer_now" && await runAgentAnswerNow(turn, userText))', turn_handler)
         # The proposal branch must stay behind it, or a question becomes a plan.
         self.assertLess(
             turn_handler.index('outcome === "answer_now"'),
@@ -451,17 +565,51 @@ class AgentAnswerChatTests(unittest.TestCase):
 
     def test_a_running_lookup_says_it_is_running_a_task(self) -> None:
         runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function runAgentAnswerTask"):
             self.script.index("async function applyAgentTurnResponse")
         ]
 
         self.assertIn('agentTurnProgressText = "Running task"', runner)
-        self.assertIn('mode: "answer"', runner)
-        self.assertIn('pushAgentMessage("assistant", answer, { kind: "result" })', runner)
+        self.assertIn("mode: runMode,", runner)
+        self.assertIn('kind: everyTaskFailed ? "error" : "result"', runner)
+
+    def test_a_finished_one_off_offers_what_it_produced(self) -> None:
+        runner = self.script[
+            self.script.index("function buildAgentAnswerResultActions"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        # A one-off saves no action, so anything worth keeping has to be
+        # offered on the result itself while the user is looking at it.
+        self.assertIn('createAgentAction("open-result-file", "Read PDF"', runner)
+        self.assertIn('createAgentAction("open-result-folder", "Open folder"', runner)
+        self.assertIn('createAgentAction("save-answer-to-folder", "Save to a folder")', runner)
+        self.assertIn('createAgentAction("save-one-off-as-action", "Save as an action")', runner)
+        # Two lookups do not fold into one saved action.
+        self.assertIn("if (tasks.length === 1) {", runner)
+        self.assertIn("keepActions: resultActions.length > 0", runner)
+
+    def test_a_result_button_outlives_the_messages_after_it(self) -> None:
+        # "Read PDF" has to still work once the conversation has moved on.
+        resolver = self.script[
+            self.script.index("function areAgentMessageActionsResolved"):
+            self.script.index("function getAgentStoredMessageActions")
+        ]
+
+        self.assertIn("if (message.metadata?.keepActions) {\n    return false;\n  }", resolver)
+
+    def test_a_job_asked_for_once_runs_in_full_rather_than_answering(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentAnswerTask"):
+            self.script.index("async function runAgentAnswerNow")
+        ]
+
+        self.assertIn('const runMode = task?.mode === "run" ? "run" : "answer";', runner)
+        self.assertIn("mode: runMode,", runner)
 
     def test_the_answer_lands_in_the_chat_rather_than_a_notification(self) -> None:
         runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function runAgentAnswerTask"):
             self.script.index("async function applyAgentTurnResponse")
         ]
 
@@ -469,7 +617,7 @@ class AgentAnswerChatTests(unittest.TestCase):
 
     def test_every_month_the_question_named_gets_its_own_lookup(self) -> None:
         runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function runAgentAnswerTask"):
             self.script.index("async function applyAgentTurnResponse")
         ]
 
@@ -480,16 +628,16 @@ class AgentAnswerChatTests(unittest.TestCase):
 
     def test_the_progress_line_names_the_month_being_read(self) -> None:
         runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function runAgentAnswerTask"):
             self.script.index("async function applyAgentTurnResponse")
         ]
 
         # Several reads in a row look like one long stall otherwise.
-        self.assertIn('agentTurnProgressText = monthLabel ? `Checking ${monthLabel}` : "Running task"', runner)
+        self.assertIn('agentTurnProgressText = monthLabel ? `Checking ${monthLabel}${step}` : label', runner)
 
     def test_a_month_that_could_not_be_read_is_named(self) -> None:
         runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function runAgentAnswerTask"):
             self.script.index("async function applyAgentTurnResponse")
         ]
 

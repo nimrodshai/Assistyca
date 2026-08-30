@@ -70,6 +70,64 @@ class AgentFolderContentsTests(unittest.TestCase):
         with urllib_request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _save_answer(self, body: dict[str, object], *, token: str | None = "") -> dict[str, object]:
+        headers = {"Content-Type": "application/json"}
+        auth_token = self.session_token if token == "" else token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/folders/save",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_an_answer_can_be_kept_in_a_folder(self) -> None:
+        payload = self._save_answer({
+            "title": "Email summary",
+            "text": "14 messages this week.",
+            "folder": "Saved answers",
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["folder"], "Saved answers/")
+        saved = self.output_dir / self.owner_key / "Saved answers" / str(payload["name"])
+        self.assertTrue(saved.is_file())
+        self.assertIn("14 messages this week.", saved.read_text(encoding="utf-8"))
+
+    def test_a_kept_answer_shows_up_in_the_folder_listing(self) -> None:
+        saved = self._save_answer({"title": "Email summary", "text": "14 messages."})
+
+        contents = self._get_contents("Saved answers")
+
+        self.assertIn(saved["name"], [item["name"] for item in contents["items"]])
+
+    def test_a_folder_name_cannot_climb_out_of_the_owner_directory(self) -> None:
+        payload = self._save_answer({
+            "title": "../../escape",
+            "text": "nope",
+            "folder": "../../../etc",
+        })
+
+        self.assertTrue(payload["ok"])
+        written = list((self.output_dir / self.owner_key).rglob("*.md"))
+        self.assertEqual(len(written), 1)
+        self.assertIn(self.owner_key, written[0].as_posix())
+
+    def test_an_empty_answer_is_refused(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._save_answer({"title": "Nothing", "text": "   "})
+
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_saving_needs_a_signed_in_owner(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._save_answer({"title": "Email summary", "text": "14 messages."}, token=None)
+
+        self.assertEqual(caught.exception.code, 401)
+
     def test_lists_bundle_files_with_download_urls(self) -> None:
         self._write_bundle()
 

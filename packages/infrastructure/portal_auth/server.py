@@ -73,6 +73,7 @@ from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import month_window
 from packages.infrastructure.mail_search import normalize_terms
 from packages.infrastructure.mail_search import parse_gmail_query
+from packages.infrastructure.mail_search import parse_time_window_days
 from packages.infrastructure.outlook_summary import OutlookAccessValidator
 from packages.infrastructure.outlook_summary import OutlookAuthorizationError
 from packages.infrastructure.outlook_summary import OutlookDigestRunner
@@ -198,6 +199,10 @@ CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_FOLDER_CONTENTS_LIMIT = 200
+# Where an answer goes when the chat is asked to keep it and no folder is
+# named. It sits beside the receipt bundles so the Folders panel shows both.
+AGENT_SAVED_ANSWER_FOLDER = "Saved answers"
+AGENT_SAVED_ANSWER_MAX_LENGTH = 20000
 # The feed keeps every notification, so the portal reads it a page at a time.
 NOTIFICATIONS_PAGE_SIZE = 20
 NOTIFICATIONS_PAGE_LIMIT = 100
@@ -1935,6 +1940,19 @@ def build_agent_receipt_output_folder(
     )
 
 
+def build_agent_saved_answer_filename(title: str, saved_at: datetime) -> str:
+    """A readable file name for a kept answer, safe to write to disk.
+
+    The timestamp keeps two answers with the same title from overwriting each
+    other, which matters most for the repeated question - the same weekly
+    summary asked for again a week later.
+    """
+
+    stem = re.sub(r"[^\w -]+", "", str(title or ""), flags=re.UNICODE).strip()
+    stem = re.sub(r"\s+", " ", stem)[:60].strip() or "Saved answer"
+    return f"{stem} {saved_at.strftime('%Y-%m-%d %H%M%S')}.md"
+
+
 def build_agent_receipt_owner_key(email: str) -> str:
     normalized_email = normalize_email(email)
     if not normalized_email:
@@ -1959,15 +1977,22 @@ def resolve_saved_mail_query(fields: dict[str, Any], payload: dict[str, Any]) ->
     """Read a digest action's saved query into the provider-neutral shape.
 
     Actions written before Outlook support saved a Gmail string, so the string
-    is parsed rather than dropped. An action with nothing saved gets the
-    default inbox digest.
+    is parsed rather than dropped. A question asked in chat carries no query at
+    all, only the period it named, so that period decides the window. An action
+    with neither gets the default inbox digest.
     """
 
     saved = read_saved_query_text(fields, payload)
-    if not saved:
-        return DEFAULT_DIGEST_QUERY
-    parsed = parse_gmail_query(saved)
-    return DEFAULT_DIGEST_QUERY if parsed.is_empty() else parsed
+    if saved:
+        parsed = parse_gmail_query(saved)
+        if not parsed.is_empty():
+            return parsed
+    window_days = parse_time_window_days(
+        normalize_text(fields.get("timeWindow") or payload.get("timeWindow"))
+    )
+    if window_days:
+        return MailQuery(in_inbox=True, newer_than_days=window_days)
+    return DEFAULT_DIGEST_QUERY
 
 
 def build_custom_batch_mail_query(fields: dict[str, Any], payload: dict[str, Any]) -> MailQuery:
@@ -2128,7 +2153,17 @@ def merge_mail_digest_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         # The single-mailbox wording came from one reader and would now be
         # wrong, so state the combined count instead.
         merged["summary"] = f"{len(results)} mailboxes - {message_count} message(s)"
-        merged["message"] = merged["summary"]
+        # Every mailbox is named with its own count. A combined total on its
+        # own cannot tell the owner that one of their mailboxes was empty
+        # rather than never read.
+        merged["message"] = "\n".join(
+            [f"{message_count} message(s) across {len(results)} mailboxes:"]
+            + [
+                f"- {normalize_text(entry.get('mailbox')) or 'mailbox'}: "
+                f"{int((entry.get('result') or {}).get('messageCount') or 0)} message(s)"
+                for entry in results
+            ]
+        )
     return merged
 
 
@@ -2773,6 +2808,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
+            or path == "/api/agent/folders/save"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -2840,6 +2876,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
+            or path == "/api/agent/folders/save"
             or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
             or path == "/api/features"
@@ -3123,6 +3160,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/proposals/revise":
             self._handle_agent_proposal_revision()
+            return
+
+        if path == "/api/agent/folders/save":
+            self._handle_agent_folder_save_post()
             return
 
         if path == "/api/agent/proposals/run":
@@ -5348,6 +5389,80 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "folder": logical_folder,
             "items": items,
+        })
+
+    def _handle_agent_folder_save_post(self) -> None:
+        """Keep an answer the chat gave as a file in one of the owner's folders.
+
+        A one-off run answers in the conversation and saves nothing, which is
+        what makes it a one-off. Some answers are worth keeping anyway, so this
+        writes the text the chat showed into a folder beside the bundles the
+        receipt runs produce.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        text = normalize_contact_message(payload.get("text"), AGENT_SAVED_ANSWER_MAX_LENGTH)
+        if not text:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "answer_required",
+                "message": "There is nothing in that answer to save.",
+            })
+            return
+
+        title = normalize_text(payload.get("title")) or "Saved answer"
+        # The owner key comes from the session, and the folder name is put
+        # through the same traversal-safe normalizer the bundles use, so a
+        # caller can only ever write inside their own output folder.
+        logical_folder = normalize_receipt_output_folder(
+            normalize_text(payload.get("folder")) or AGENT_SAVED_ANSWER_FOLDER
+        )
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        folder_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_folder,
+        )
+        base_url = build_receipt_bundle_base_url(owner_key=owner_key, output_folder=logical_folder)
+
+        saved_at = datetime.now(timezone.utc)
+        file_name = build_agent_saved_answer_filename(title, saved_at)
+        try:
+            folder_path.mkdir(parents=True, exist_ok=True)
+            (folder_path / file_name).write_text(
+                f"# {title}\n\nSaved {saved_at.isoformat()}\n\n{text}\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(f"Saving an answer to a folder failed: {exc}", flush=True)
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "folder_save_failed",
+                "message": "I couldn\u2019t save that to a folder just now. Try again.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "folder": logical_folder,
+            "name": file_name,
+            "url": "/".join([base_url, urllib_parse.quote(file_name)]),
+            "message": f"Saved to {logical_folder.rstrip('/')}.",
         })
 
     def _handle_agent_turn(self) -> None:

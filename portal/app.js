@@ -1487,10 +1487,12 @@ const elements = {
   agentFolderList: document.querySelector("#agentFolderList"),
   agentFolderCount: document.querySelector("#agentFolderCount"),
   agentPendingActionsCount: document.querySelector("#agentPendingActionsCount"),
+  agentOnDemandActionsCount: document.querySelector("#agentOnDemandActionsCount"),
   agentCompletedActionsCount: document.querySelector("#agentCompletedActionsCount"),
   agentHistoryToggleButton: document.querySelector("#agentHistoryToggleButton"),
   agentHistorySection: document.querySelector(".agent-history-section"),
   agentPendingActionList: document.querySelector("#agentPendingActionList"),
+  agentOnDemandActionList: document.querySelector("#agentOnDemandActionList"),
   agentCompletedActionList: document.querySelector("#agentCompletedActionList"),
   agentActionDetailView: document.querySelector("#agentActionDetailView"),
   agentActionDetailContent: document.querySelector("#agentActionDetailContent"),
@@ -4480,6 +4482,7 @@ function normalizeAgentMessage(value = {}) {
       }))
       .filter((action) => action.id && action.label)
     : [];
+  metadata.keepActions = Boolean(metadata.keepActions);
   if (Array.isArray(metadata.actionChoices)) {
     metadata.actionChoices = metadata.actionChoices
       .filter((choice) => choice && typeof choice === "object")
@@ -14733,6 +14736,9 @@ function resolvePendingAgentMessageActions(resolvedBy = "user-message") {
     if (!Array.isArray(message.metadata?.actions) || !message.metadata.actions.length) {
       continue;
     }
+    if (message.metadata?.keepActions) {
+      continue;
+    }
     message.metadata.actionsResolvedAt = new Date().toISOString();
     message.metadata.actionsResolvedBy = String(resolvedBy || "user-message").trim();
     didResolve = true;
@@ -14743,6 +14749,14 @@ function resolvePendingAgentMessageActions(resolvedBy = "user-message") {
 function areAgentMessageActionsResolved(message, messages = []) {
   if (message.metadata?.actionsResolvedAt) {
     return true;
+  }
+
+  // A result's buttons are things the user can still do with what came back:
+  // read the PDF, keep it in a folder. Those stay usable however much is said
+  // afterwards. A question's options are different - the next message answers
+  // them, so they go quiet.
+  if (message.metadata?.keepActions) {
+    return false;
   }
 
   const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
@@ -17537,6 +17551,31 @@ function recordAgentReceiptFolder(response = {}) {
   return name;
 }
 
+// A kept answer lands in a folder the panel has never heard of, the same way
+// a receipts bundle does. Record it so the folder is there to open.
+function recordAgentAnswerFolder(response = {}) {
+  const rawFolder = String(response?.folder || "").trim().replace(/\/+$/, "");
+  const name = normalizeAgentFolderName(rawFolder, "");
+  if (!name) {
+    return null;
+  }
+
+  const agent = getAgentWorkspace();
+  const now = new Date().toISOString();
+  const existing = agent.folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    existing.itemCount = Math.max(0, Number(existing.itemCount) || 0) + 1;
+    existing.updatedAt = now;
+  } else {
+    agent.folders.unshift(createAgentFolderRecord(name, "general", { itemCount: 1, createdAt: now }));
+  }
+  agent.folders = sortAgentFolders(agent.folders, state.agentFolderSort).slice(0, AGENT_MAX_FOLDERS);
+  agentFolderContents.delete(name);
+  persistClientState();
+  renderAgentFolders();
+  return name;
+}
+
 function formatAgentFolderFileSize(size) {
   const bytes = Math.max(0, Number(size) || 0);
   if (bytes < 1024) {
@@ -18074,6 +18113,12 @@ function normalizeScheduledActionStatusClass(status) {
 function agentActionFrequencyLooksRecurring(value) {
   return /\b(?:every|hourly|daily|weekly|monthly|recurring|scheduled)\b/i.test(String(value || ""))
     || /\b\d+\s*(?:minutes?|hours?|days?|weeks?|months?)\b/i.test(String(value || ""));
+}
+
+// An action the owner runs by hand, on no schedule of its own. This is the
+// on-demand category: a one-off that turned out to be worth keeping.
+function isAgentOnDemandAction(action) {
+  return getScheduledActionStatusClass(action?.status, action) === "manual_only";
 }
 
 function getAgentActionPresentationStatus(action, status = action?.status) {
@@ -22248,15 +22293,24 @@ function renderAgentActions() {
   }
 
   const actions = getRenderableAgentActions();
-  const activeActions = sortScheduledActionsByCreatedAt(
-    actions.filter((action) => isActiveAgentActionStatus(action.status, action)),
+  const active = actions.filter((action) => isActiveAgentActionStatus(action.status, action));
+  // Two lists, because they answer two different questions: what is running
+  // without me, and what is sitting here waiting for me. An action that runs
+  // only when the owner presses Run now was never "active" in any sense the
+  // word carries.
+  const recurringActions = sortScheduledActionsByCreatedAt(
+    active.filter((action) => !isAgentOnDemandAction(action)),
   );
+  const onDemandActions = sortScheduledActionsByCreatedAt(active.filter(isAgentOnDemandAction));
   const completed = sortScheduledActionsByCreatedAt(
     actions.filter((action) => !isActiveAgentActionStatus(action.status, action)),
   );
   const initialLoading = isAgentActionsInitialLoading();
 
-  elements.agentPendingActionsCount.textContent = initialLoading ? "…" : String(activeActions.length);
+  elements.agentPendingActionsCount.textContent = initialLoading ? "…" : String(recurringActions.length);
+  if (elements.agentOnDemandActionsCount) {
+    elements.agentOnDemandActionsCount.textContent = initialLoading ? "…" : String(onDemandActions.length);
+  }
   elements.agentCompletedActionsCount.textContent = initialLoading ? "…" : String(completed.length);
   const historyExpanded = Boolean(state.agentHistoryExpanded);
   elements.agentHistoryToggleButton?.setAttribute("aria-expanded", String(historyExpanded));
@@ -22273,9 +22327,15 @@ function renderAgentActions() {
   if (initialLoading) {
     ensureAgentActionsLoaded();
     renderScheduledActionLoadingList(elements.agentPendingActionList, "Loading actions…");
+    renderScheduledActionLoadingList(elements.agentOnDemandActionList, "Loading actions…");
     renderScheduledActionLoadingList(elements.agentCompletedActionList, "Loading history…");
   } else {
-    renderScheduledActionList(elements.agentPendingActionList, activeActions, "No active actions.");
+    renderScheduledActionList(elements.agentPendingActionList, recurringActions, "Nothing runs on a schedule yet.");
+    renderScheduledActionList(
+      elements.agentOnDemandActionList,
+      onDemandActions,
+      "Ask me for something once, then save it here to run again.",
+    );
     renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
   }
 
@@ -22659,6 +22719,32 @@ function handleAgentMessageAction(event) {
     persistClientState();
     renderAgentMessages();
     handleAgentUserText(picked);
+    return true;
+  }
+
+  // A result's buttons are not an answer to anything, so using one must not
+  // retire the buttons beside it. Each spends only itself.
+  const resultMessage = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
+  if (action === "open-result-file") {
+    const href = normalizeAgentNotificationHref(value);
+    if (href) {
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+    return true;
+  }
+
+  if (action === "open-result-folder") {
+    openAgentResultFolder(value);
+    return true;
+  }
+
+  if (action === "save-answer-to-folder") {
+    void saveAgentAnswerToFolder(resultMessage);
+    return true;
+  }
+
+  if (action === "save-one-off-as-action") {
+    void saveAgentOneOffAsAction(resultMessage);
     return true;
   }
 
@@ -23118,22 +23204,317 @@ function getAgentAnswerRunFailureMessage(proposalType) {
   return "I couldn’t finish looking that up just now. Check Email setup and ask me again.";
 }
 
-// A question gets an answer, not an action. The lookup runs on the spot and
-// the result lands in this conversation; nothing is saved and nothing waits
-// for approval.
-async function runAgentAnswerNow(turn) {
+// One message can ask for more than one lookup. Each one runs on its own and
+// they are reported together, so a two-part question never comes back answered
+// in half.
+const AGENT_ANSWER_TASK_LIMIT = 3;
+
+// The progress line names the lookup in hand, so a message that asked for two
+// things does not sit behind one unexplained wait.
+function getAgentAnswerTaskLabel(proposalType) {
+  if (proposalType === "calendar-summary") {
+    return "Checking your calendar";
+  }
+  if (proposalType === "custom") {
+    return "Searching your mail";
+  }
+  return "Checking your email";
+}
+
+// A heading only earns its place when there is more than one answer under it.
+function getAgentAnswerTaskHeading(proposalType) {
+  if (proposalType === "calendar-summary") {
+    return "Your calendar";
+  }
+  if (proposalType === "custom") {
+    return "Your mail search";
+  }
+  return "Your email";
+}
+
+// Every lookup the message asked for, in the order they should run. A turn
+// written before a message could carry several carries its one lookup in the
+// top-level keys instead.
+function getAgentAnswerRunTasks(turn) {
+  const rawTasks = Array.isArray(turn?.tasks) ? turn.tasks : [];
+  const tasks = rawTasks
+    .map((task) => ({
+      proposalType: String(task?.proposalType || "").trim(),
+      changes: task?.changes && typeof task.changes === "object" ? task.changes : {},
+      // Only a custom task can produce anything; everything else answers.
+      mode: String(task?.mode || "").trim() === "run" && task?.proposalType === "custom" ? "run" : "answer",
+    }))
+    .filter((task) => AGENT_ANSWER_RUN_TYPES.has(task.proposalType))
+    .slice(0, AGENT_ANSWER_TASK_LIMIT);
+  if (tasks.length) {
+    return tasks;
+  }
   const proposalType = String(turn?.proposalType || "").trim();
   if (!AGENT_ANSWER_RUN_TYPES.has(proposalType)) {
+    return [];
+  }
+  return [{
+    proposalType,
+    changes: turn?.changes && typeof turn.changes === "object" ? turn.changes : {},
+    mode: "answer",
+  }];
+}
+
+// One lookup, start to finish. It returns what to say rather than writing to
+// the conversation itself, because the lookups beside it still have to run and
+// the whole set is reported in one message.
+async function runAgentAnswerTask(task, setProgress) {
+  const { proposalType } = task;
+  // A job that produces something runs in full, the same way the saved
+  // version of it would. An answer run reads the same sources but writes
+  // nothing, because a question only needs the reply.
+  const runMode = task?.mode === "run" ? "run" : "answer";
+  const fields = getAgentAnswerRunFields(task);
+  const { months, trimmed } = getAgentAnswerRunMonths(fields);
+  const results = [];
+  const lines = [];
+  const missedMonths = [];
+  let lastError = null;
+
+  // The months run one after another so each one reports its own total,
+  // including the months that turn out to have nothing in them.
+  for (const month of months) {
+    // Several months take several reads, so the progress line names the
+    // month in hand rather than leaving one long unexplained wait.
+    setProgress(months.length > 1 ? formatAgentAnswerMonthLabel(month) : "");
+    try {
+      const response = await apiRequest("/api/agent/proposals/run", {
+        method: "POST",
+        body: {
+          proposalType,
+          mode: runMode,
+          fields: month ? { ...fields, manualRunMonth: month } : fields,
+          deliveryChannel: "portal",
+          timezone: getWorkspaceTimeZone(),
+        },
+        timeoutMs: 90000,
+      });
+      results.push(response);
+      const line = String(response.answer || response.message || response.summary || "").trim();
+      if (line) {
+        lines.push(line);
+      }
+    } catch (error) {
+      lastError = error;
+      missedMonths.push(formatAgentAnswerMonthLabel(month) || String(month || "").trim());
+    }
+  }
+
+  if (!lines.length) {
+    if (lastError) {
+      // One lookup failing is said in its own words and does not stop the
+      // lookups beside it, which the same message still asked for.
+      return {
+        ok: false,
+        results,
+        text: formatApiErrorMessage(lastError, getAgentAnswerRunFailureMessage(proposalType)),
+        error: lastError,
+      };
+    }
+    lines.push("I ran that, but it came back without anything to report.");
+  }
+
+  // Months that were counted separately are reported together. One month,
+  // or a lookup with no money in it, keeps the sentence the run wrote.
+  const summed = composeAgentMonthlyAnswer(results);
+  const answerLines = summed ? [summed] : lines;
+  // A month that could not be read is said out loud, so a partial answer
+  // never passes for a complete one.
+  const missed = missedMonths.filter(Boolean);
+  if (missed.length) {
+    answerLines.push(`I couldn’t check ${missed.join(" and ")} just now.`);
+  }
+  if (trimmed) {
+    answerLines.push(`That was more months than I check at once, so I stopped after ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
+  }
+  // The mailbox that could not be read comes first, so the totals below it
+  // are read as what they are: everything the other mailboxes had.
+  const skippedNote = describeAgentAnswerSkippedMailboxes(results);
+  return {
+    ok: true,
+    results,
+    text: (skippedNote ? [skippedNote, ...answerLines] : answerLines).join("\n\n"),
+  };
+}
+
+// What a one-off left behind, and what the user can still do with it. A
+// one-off saves no action by design, so everything worth keeping has to be
+// offered here, on the result itself.
+function getAgentAnswerArtifact(response, key) {
+  const artifacts = response?.artifacts && typeof response.artifacts === "object" ? response.artifacts : {};
+  const candidate = artifacts[key];
+  const href = typeof candidate === "object" ? candidate?.url || candidate?.href : candidate;
+  return normalizeAgentNotificationHref(href);
+}
+
+function getAgentAnswerResultFolder(results) {
+  for (const response of results) {
+    const folder = String(response?.outputFolder || "").trim().replace(/\/+$/, "");
+    if (folder) {
+      return folder;
+    }
+  }
+  return "";
+}
+
+// The buttons a finished one-off carries. A run that wrote files offers what
+// it wrote; a run that only answered offers to keep the answer. Saving it as
+// an action is offered either way, because that is the whole on-demand
+// category: a one-off the user turned out to want again.
+function buildAgentAnswerResultActions(results, tasks) {
+  const actions = [];
+  const pdfHref = results.map((response) => getAgentAnswerArtifact(response, "pdf")).find(Boolean);
+  const excelHref = results.map((response) => getAgentAnswerArtifact(response, "excel")).find(Boolean);
+  const folder = getAgentAnswerResultFolder(results);
+
+  if (pdfHref) {
+    actions.push(createAgentAction("open-result-file", "Read PDF", pdfHref, "primary"));
+  }
+  if (excelHref) {
+    actions.push(createAgentAction("open-result-file", "Open spreadsheet", excelHref));
+  }
+  if (folder) {
+    // The run already wrote these, so the honest offer is to show the user
+    // where they landed, not to save them a second time.
+    actions.push(createAgentAction("open-result-folder", "Open folder", folder));
+  } else {
+    actions.push(createAgentAction("save-answer-to-folder", "Save to a folder"));
+  }
+  // Two lookups in one message do not fold into one saved action, and picking
+  // the first of them would save something the user did not ask for.
+  if (tasks.length === 1) {
+    actions.push(createAgentAction("save-one-off-as-action", "Save as an action"));
+  }
+  return actions;
+}
+
+function openAgentResultFolder(folderName) {
+  const name = normalizeAgentFolderName(String(folderName || "").trim().replace(/\/+$/, ""), "");
+  if (!name) {
+    return;
+  }
+  const agent = getAgentWorkspace();
+  agent.panelMode = "folders";
+  state.agentPanelMode = "folders";
+  const folder = agent.folders.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+  state.agentFolderOpenId = folder?.id || "";
+  persistClientState();
+  renderApp({ preserveStatus: true });
+  if (folder) {
+    void loadAgentFolderContents(folder.name);
+  }
+}
+
+async function saveAgentAnswerToFolder(message) {
+  const text = String(message?.text || "").trim();
+  if (!text) {
+    return;
+  }
+  const title = String(message?.metadata?.oneOff?.requestText || "").trim() || "Saved answer";
+  try {
+    const response = await apiRequest("/api/agent/folders/save", {
+      method: "POST",
+      body: { title, text },
+      timeoutMs: 30000,
+    });
+    const folder = String(response?.folder || "").trim().replace(/\/+$/, "");
+    recordAgentAnswerFolder(response);
+    // The chip is spent once the answer is filed; offering it again would
+    // write a second copy of the same thing.
+    removeAgentMessageAction(message.id, "save-answer-to-folder");
+    const confirmation = folder
+      ? `Kept that in ${folder}. You can open it from the Folders panel.`
+      : "Kept that in your folders.";
+    // Without a folder name there is nothing for the button to open, so it is
+    // not offered rather than offered and inert.
+    const openActions = folder ? [createAgentAction("open-result-folder", "Open folder", folder)] : [];
+    pushAgentMessage("assistant", confirmation, {
+      kind: "result",
+      keepActions: openActions.length > 0,
+      actions: openActions,
+    });
+    persistAgentWorkspace(confirmation);
+  } catch (error) {
+    const failure = formatApiErrorMessage(error, "I couldn’t save that to a folder just now. Try again.");
+    pushAgentMessage("assistant", failure, {
+      kind: "error",
+      technical: getAgentErrorTechnicalInfo(error),
+    });
+    persistAgentWorkspace(failure);
+  }
+  renderApp({ preserveStatus: true });
+}
+
+// The one-off the user decided was worth keeping becomes an on-demand action:
+// saved with its settings, run from the panel's Run now button, on no
+// schedule of its own.
+async function saveAgentOneOffAsAction(message) {
+  const oneOff = message?.metadata?.oneOff;
+  const task = Array.isArray(oneOff?.tasks) && oneOff.tasks.length === 1 ? oneOff.tasks[0] : null;
+  if (!task) {
+    return;
+  }
+
+  const proposal = createAgentProposalFromTurn(String(oneOff.requestText || ""), {
+    proposalType: task.proposalType,
+    changes: task.changes,
+  });
+  applyAgentProposalManualMode(proposal);
+  const agent = getAgentWorkspace();
+  agent.proposals.push(proposal);
+  agent.activeProposalId = proposal.id;
+  removeAgentMessageAction(message.id, "save-one-off-as-action");
+
+  agentTurnProgressText = "Setting it up";
+  agentTurnBusy = true;
+  renderApp({ preserveStatus: true });
+  try {
+    await approveAgentProposal(proposal.id);
+  } finally {
+    agentTurnBusy = false;
+    agentTurnProgressText = "Thinking";
+    renderApp({ preserveStatus: true });
+  }
+}
+
+// A spent button leaves the message rather than greying out the row beside
+// it, so the buttons that still work stay usable.
+function removeAgentMessageAction(messageId, actionId) {
+  const message = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
+  if (!message || !Array.isArray(message.metadata?.actions)) {
+    return;
+  }
+  message.metadata.actions = message.metadata.actions.filter((action) => action.id !== actionId);
+  persistClientState();
+}
+
+// A question gets an answer, not an action. The lookups run on the spot and
+// the result lands in this conversation; nothing is saved and nothing waits
+// for approval.
+async function runAgentAnswerNow(turn, userText = "") {
+  const tasks = getAgentAnswerRunTasks(turn);
+  if (!tasks.length) {
     return false;
   }
 
   const reply = String(turn?.reply || "").trim() || "Let me check — this might take a minute.";
   pushAgentMessage("assistant", reply, { kind: "text" });
 
-  const blocker = getAgentAnswerRunBlocker(proposalType);
-  if (blocker) {
-    pushAgentMessage("assistant", blocker, { kind: "credential" });
-    persistAgentWorkspace(blocker);
+  // A lookup with nothing connected behind it cannot run, but the lookups
+  // beside it still can. Only a turn where every lookup is blocked comes back
+  // as a connection message and nothing else.
+  const blockers = tasks.map((task) => getAgentAnswerRunBlocker(task.proposalType));
+  if (blockers.every(Boolean)) {
+    // Two lookups can be waiting on two different connections, and asking for
+    // one of them is only half of what the message needs.
+    const blocked = Array.from(new Set(blockers)).join("\n\n");
+    pushAgentMessage("assistant", blocked, { kind: "credential" });
+    persistAgentWorkspace(blocked);
     renderApp({ preserveStatus: true });
     return true;
   }
@@ -23142,71 +23523,55 @@ async function runAgentAnswerNow(turn) {
   persistAgentWorkspace("Running task...");
   renderApp({ preserveStatus: true });
 
-  const fields = getAgentAnswerRunFields(turn);
-  const { months, trimmed } = getAgentAnswerRunMonths(fields);
-  const results = [];
-  const lines = [];
-  const missedMonths = [];
+  const sections = [];
+  const runResults = [];
+  let failureCount = 0;
   let lastError = null;
-
   try {
-    // The months run one after another so each one reports its own total,
-    // including the months that turn out to have nothing in them.
-    for (const month of months) {
-      // Several months take several reads, so the progress line names the
-      // month in hand rather than leaving one long unexplained wait.
-      const monthLabel = months.length > 1 ? formatAgentAnswerMonthLabel(month) : "";
-      agentTurnProgressText = monthLabel ? `Checking ${monthLabel}` : "Running task";
-      renderApp({ preserveStatus: true });
-      try {
-        const response = await apiRequest("/api/agent/proposals/run", {
-          method: "POST",
-          body: {
-            proposalType,
-            mode: "answer",
-            fields: month ? { ...fields, manualRunMonth: month } : fields,
-            deliveryChannel: "portal",
-            timezone: getWorkspaceTimeZone(),
-          },
-          timeoutMs: 90000,
-        });
-        results.push(response);
-        const line = String(response.answer || response.message || response.summary || "").trim();
-        if (line) {
-          lines.push(line);
-        }
-      } catch (error) {
-        lastError = error;
-        missedMonths.push(formatAgentAnswerMonthLabel(month) || String(month || "").trim());
+    for (const [index, task] of tasks.entries()) {
+      const step = tasks.length > 1 ? ` (${index + 1} of ${tasks.length})` : "";
+      const label = `${getAgentAnswerTaskLabel(task.proposalType)}${step}`;
+      const setProgress = (monthLabel) => {
+        agentTurnProgressText = monthLabel ? `Checking ${monthLabel}${step}` : label;
+        renderApp({ preserveStatus: true });
+      };
+      setProgress("");
+      if (blockers[index]) {
+        failureCount += 1;
+        sections.push({ task, text: blockers[index] });
+        continue;
       }
-    }
-    if (!lines.length) {
-      if (lastError) {
-        throw lastError;
+      const section = await runAgentAnswerTask(task, setProgress);
+      if (!section.ok) {
+        failureCount += 1;
+        lastError = section.error;
       }
-      lines.push("I ran that, but it came back without anything to report.");
+      runResults.push(...(section.results || []));
+      sections.push({ task, text: section.text });
     }
-    // Months that were counted separately are reported together. One month,
-    // or a lookup with no money in it, keeps the sentence the run wrote.
-    const summed = composeAgentMonthlyAnswer(results);
-    const answerLines = summed ? [summed] : lines;
-    // A month that could not be read is said out loud, so a partial answer
-    // never passes for a complete one.
-    const missed = missedMonths.filter(Boolean);
-    if (missed.length) {
-      answerLines.push(`I couldn’t check ${missed.join(" and ")} just now.`);
-    }
-    if (trimmed) {
-      answerLines.push(`That was more months than I check at once, so I stopped after ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
-    }
-    // The mailbox that could not be read comes first, so the totals below it
-    // are read as what they are: everything the other mailboxes had.
-    const skippedNote = describeAgentAnswerSkippedMailboxes(results);
-    const answer = (skippedNote ? [skippedNote, ...answerLines] : answerLines).join("\n\n");
-    pushAgentMessage("assistant", answer, { kind: "result" });
+
+    // One lookup keeps the sentence its run wrote. Several are stacked under
+    // headings, so the answer reads as the several things that were asked for.
+    const answer = sections.length === 1
+      ? sections[0].text
+      : sections
+        .map((section) => `${getAgentAnswerTaskHeading(section.task.proposalType)}\n\n${section.text}`)
+        .join("\n\n");
+    const everyTaskFailed = failureCount === sections.length;
+    // A one-off saves nothing on its own, so whatever it produced or worked
+    // out is offered here, on the result, while it is still in front of the
+    // user. Those buttons stay live for the rest of the conversation.
+    const resultActions = everyTaskFailed ? [] : buildAgentAnswerResultActions(runResults, tasks);
+    pushAgentMessage("assistant", answer, {
+      kind: everyTaskFailed ? "error" : "result",
+      technical: everyTaskFailed && lastError ? getAgentErrorTechnicalInfo(lastError) : undefined,
+      actions: resultActions,
+      keepActions: resultActions.length > 0,
+      oneOff: resultActions.length ? { requestText: String(userText || ""), tasks } : undefined,
+    });
     persistAgentWorkspace(answer);
   } catch (error) {
-    const message = formatApiErrorMessage(error, getAgentAnswerRunFailureMessage(proposalType));
+    const message = formatApiErrorMessage(error, getAgentAnswerRunFailureMessage(tasks[0].proposalType));
     pushAgentMessage("assistant", message, {
       kind: "error",
       technical: getAgentErrorTechnicalInfo(error),
@@ -23275,7 +23640,7 @@ async function applyAgentTurnResponse(turn, userText) {
     return true;
   }
 
-  if (outcome === "answer_now" && await runAgentAnswerNow(turn)) {
+  if (outcome === "answer_now" && await runAgentAnswerNow(turn, userText)) {
     return true;
   }
 
@@ -31350,7 +31715,11 @@ function bindEvents() {
     });
   }
 
-  for (const actionList of [elements.agentPendingActionList, elements.agentCompletedActionList]) {
+  for (const actionList of [
+    elements.agentPendingActionList,
+    elements.agentOnDemandActionList,
+    elements.agentCompletedActionList,
+  ]) {
     actionList?.addEventListener("click", handleScheduledActionListClick, { capture: true });
   }
 

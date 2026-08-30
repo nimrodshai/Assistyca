@@ -164,10 +164,18 @@
           <div id="agentActionsListView" class="agent-actions-list-view">
             <section class="agent-actions-section" aria-labelledby="agentPendingActionsTitle">
               <div class="agent-actions-section-head">
-                <h3 id="agentPendingActionsTitle">Active</h3>
+                <h3 id="agentPendingActionsTitle">Recurring</h3>
                 <span id="agentPendingActionsCount" class="agent-actions-count">0</span>
               </div>
               <div id="agentPendingActionList" class="agent-action-list"></div>
+            </section>
+
+            <section class="agent-actions-section" aria-labelledby="agentOnDemandActionsTitle">
+              <div class="agent-actions-section-head">
+                <h3 id="agentOnDemandActionsTitle">On demand</h3>
+                <span id="agentOnDemandActionsCount" class="agent-actions-count">0</span>
+              </div>
+              <div id="agentOnDemandActionList" class="agent-action-list"></div>
             </section>
 
             <section class="agent-actions-section agent-history-section" aria-label="Action history">
@@ -1779,6 +1787,6 @@ Owner said afternoons are easier."
     </section>
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
-    <script src="./app.js?v=196"></script>
+    <script src="./app.js?v=197"></script>
   </body>
 </html>
