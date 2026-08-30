@@ -3093,7 +3093,7 @@ class PortalDatabase:
                 return []
             rows = conn.execute(
                 f"""
-                SELECT id, platform, auth_type, secret_ciphertext,
+                SELECT id, platform, provider, auth_type, secret_ciphertext,
                        account_address, account_label, connection_status, metadata_json
                 FROM platform_connections
                 WHERE user_id = ? AND platform = ? AND connection_status IN ({placeholders})
@@ -3105,6 +3105,7 @@ class PortalDatabase:
                 {
                     "id": normalize_text(row["id"]),
                     "platform": normalize_text(row["platform"]).lower(),
+                    "provider": normalize_text(row["provider"]).lower(),
                     "authType": normalize_text(row["auth_type"]).lower() or "api_token",
                     "secretCiphertext": normalize_text(row["secret_ciphertext"]),
                     "accountAddress": normalize_text(row["account_address"]),
@@ -3222,7 +3223,8 @@ class PortalDatabase:
                 return None
             row = conn.execute(
                 """
-                SELECT id, platform, auth_type, secret_ciphertext, secret_fingerprint, connection_status
+                SELECT id, platform, provider, auth_type, secret_ciphertext,
+                       secret_fingerprint, connection_status
                 FROM platform_connections
                 WHERE user_id = ? AND id = ?
                 LIMIT 1
@@ -3234,6 +3236,7 @@ class PortalDatabase:
             return {
                 "id": normalize_text(row["id"]),
                 "platform": normalize_text(row["platform"]).lower(),
+                "provider": normalize_text(row["provider"]).lower(),
                 "authType": normalize_text(row["auth_type"]).lower() or "api_token",
                 "secretCiphertext": normalize_text(row["secret_ciphertext"]),
                 "secretFingerprint": normalize_text(row["secret_fingerprint"]),
@@ -3305,6 +3308,7 @@ class PortalDatabase:
         secret_hint: str,
         key_version: str = "1",
         secret_fingerprint: str = "",
+        provider: str = "",
         metadata: dict[str, Any] | None = None,
         connection_status: str = "connected",
         account_address: str = "",
@@ -3330,12 +3334,20 @@ class PortalDatabase:
             raise ValueError("Unsupported connection status.")
 
         metadata_payload = _load_json_dict(metadata)
-        metadata_json = json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True)
-        # Which reader this row belongs to. Gmail and Outlook are both the
-        # email platform, so the provider is what tells one account's mailboxes
+        # Whose account this row is. Gmail and Outlook are both the email
+        # platform, so the provider is what tells one account's mailboxes
         # apart when the addresses cannot: a personal Microsoft account may be
-        # registered under a Gmail address.
-        normalized_provider = normalize_text(metadata_payload.get("provider")).lower()
+        # registered under a Gmail address. A caller states it; the metadata
+        # is read only for callers written before it was an argument, and the
+        # column and the metadata are kept saying the same thing so a row
+        # written either way reads the same.
+        normalized_provider = (
+            normalize_text(provider).lower()
+            or normalize_text(metadata_payload.get("provider")).lower()
+        )
+        if normalized_provider:
+            metadata_payload["provider"] = normalized_provider
+        metadata_json = json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True)
         now = now_iso()
         with self._connection() as conn:
             user_id = self._resolve_active_user_id(conn, normalized_email)

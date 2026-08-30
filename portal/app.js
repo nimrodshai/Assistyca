@@ -15689,8 +15689,10 @@ function getAgentMailboxOptionValue(connection, connections) {
 // "All mailboxes" is first and is the default, so an action created before
 // there was a choice keeps reading everything.
 function getAgentMailboxAccountOptions(currentValue = "") {
-  const options = [{ value: "", label: "All mailboxes" }];
   const connections = getConnectedEmailConnections();
+  // With nothing connected there is no "every mailbox" to stand for, so the
+  // dropdown says so rather than naming mailboxes that are not there.
+  const options = [{ value: "", label: connections.length ? "All mailboxes" : "None" }];
   for (const connection of connections) {
     const name = getEmailConnectionName(connection);
     const provider = EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)] || "Email";
@@ -21009,7 +21011,8 @@ function createAgentMailboxField(labelText, value) {
   entry.className = "agent-mailbox-add";
   const connectButton = document.createElement("button");
   connectButton.type = "button";
-  connectButton.className = "ghost-button small agent-mailbox-add-connect";
+  connectButton.className = "ghost-button agent-mailbox-add-connect";
+  connectButton.textContent = "+";
   entry.append(wrapAgentActionEditorSelect(input), connectButton);
 
   const hint = document.createElement("p");
@@ -21032,7 +21035,9 @@ function createAgentMailboxField(labelText, value) {
     input.value = options.some((option) => option.value === selected) ? selected : "";
 
     const connectedCount = getConnectedEmailConnections().length;
-    connectButton.textContent = connectedCount ? "Add mailbox" : "Connect a mailbox";
+    const connectLabel = connectedCount ? "Add mailbox" : "Connect a mailbox";
+    connectButton.title = connectLabel;
+    connectButton.setAttribute("aria-label", connectLabel);
     input.disabled = !connectedCount;
     if (!connectedCount) {
       hint.textContent = "Connect a mailbox so this action has mail to read.";

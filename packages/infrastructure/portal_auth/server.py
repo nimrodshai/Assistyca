@@ -242,10 +242,18 @@ PLATFORM_CONNECTIONS = {
         "authTypes": {"api_token"},
     },
 }
+# What a connection can do, and whose account it is. These are two different
+# questions and the answer to one has never implied the other: Gmail and
+# Outlook are both the email platform, and Google owns three platforms. A
+# caller that asks the platform while meaning the provider reaches into
+# another vendor's row, which is how a Google disconnect once deleted an
+# Outlook mailbox.
+EMAIL_PLATFORM = "email"
+CALENDAR_PLATFORM = "calendar"
+DRIVE_PLATFORM = "drive"
 PLATFORM_CONNECTION_PLATFORM_RE = re.compile(r"^[a-z][a-z0-9_-]{1,48}$")
 PLATFORM_CONNECTION_SECRET_MAX_LENGTH = 4096
 PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE = "Secure connection storage is not available yet, so no token was saved."
-GOOGLE_CALENDAR_OAUTH_PLATFORM = "calendar"
 GOOGLE_CALENDAR_OAUTH_PROVIDER = "google_calendar"
 GOOGLE_CALENDAR_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
 # Reading a calendar and knowing which calendars exist are two different grants.
@@ -254,10 +262,8 @@ GOOGLE_CALENDAR_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.events.r
 # a shared one such as Family. Asked alongside the events scope so the action
 # editor can offer real calendars to pick from.
 GOOGLE_CALENDAR_LIST_OAUTH_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
-GOOGLE_GMAIL_OAUTH_PLATFORM = "email"
 GOOGLE_GMAIL_OAUTH_PROVIDER = "google_gmail"
 GOOGLE_GMAIL_OAUTH_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
-GOOGLE_DRIVE_OAUTH_PLATFORM = "drive"
 GOOGLE_DRIVE_OAUTH_PROVIDER = "google_drive"
 GOOGLE_DRIVE_OAUTH_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GOOGLE_OAUTH_SCOPE_BY_ID = {
@@ -273,9 +279,9 @@ GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID = {
     "calendar": (GOOGLE_CALENDAR_LIST_OAUTH_SCOPE,),
 }
 GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID = {
-    "calendar": GOOGLE_CALENDAR_OAUTH_PLATFORM,
-    "gmail": GOOGLE_GMAIL_OAUTH_PLATFORM,
-    "drive": GOOGLE_DRIVE_OAUTH_PLATFORM,
+    "calendar": CALENDAR_PLATFORM,
+    "gmail": EMAIL_PLATFORM,
+    "drive": DRIVE_PLATFORM,
 }
 GOOGLE_OAUTH_PROVIDER_BY_SCOPE_ID = {
     "calendar": GOOGLE_CALENDAR_OAUTH_PROVIDER,
@@ -289,7 +295,6 @@ GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60
 GOOGLE_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
 GOOGLE_OAUTH_SECRET_TYPE = "google_refresh_token"
 GOOGLE_LEGACY_CALENDAR_OAUTH_SECRET_TYPE = "google_calendar_refresh_token"
-MICROSOFT_OUTLOOK_OAUTH_PLATFORM = "email"
 MICROSOFT_OUTLOOK_OAUTH_PROVIDER = "microsoft_outlook"
 # Mail.Read is read-only. offline_access is what makes Microsoft return a
 # refresh token, the same way Google needs access_type=offline. User.Read is
@@ -306,18 +311,41 @@ MICROSOFT_OAUTH_TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}
 MICROSOFT_OAUTH_STATE_TTL_SECONDS = 10 * 60
 MICROSOFT_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
 MICROSOFT_OAUTH_SECRET_TYPE = "microsoft_refresh_token"
-# Which reader a saved email connection belongs to. The provider lives in the
-# connection metadata; the secret payload repeats it so a run can pick a reader
-# without a second database read.
+# What a mailbox is called on screen. The provider itself lives on the
+# connection, in the column connection_provider reads; the secret payload
+# repeats it so the run that opens a credential can pick a reader from the
+# credential itself rather than trusting a label.
 EMAIL_PROVIDER_LABELS = {
     GOOGLE_GMAIL_OAUTH_PROVIDER: "Gmail",
     MICROSOFT_OUTLOOK_OAUTH_PROVIDER: "Outlook",
 }
-CALENDAR_CONNECTION_PLATFORM = GOOGLE_CALENDAR_OAUTH_PLATFORM
 # Google is the only calendar provider wired up. The lookup exists so a second
 # one names itself in the picker instead of inheriting Google's label.
 CALENDAR_PROVIDER_LABELS = {
     GOOGLE_CALENDAR_OAUTH_PROVIDER: "Google Calendar",
+}
+# Which vendor each provider belongs to. Belonging is a property of the
+# provider and never of the platform: Gmail and Outlook share the email
+# platform and belong to different vendors, and Google spans three platforms.
+# Everything that acts on a vendor as a whole - the one button that
+# disconnects Google, the revoke call that follows it - reads this table
+# instead of inferring a vendor from a platform.
+GOOGLE_VENDOR = "google"
+MICROSOFT_VENDOR = "microsoft"
+CONNECTION_VENDOR_BY_PROVIDER = {
+    GOOGLE_CALENDAR_OAUTH_PROVIDER: GOOGLE_VENDOR,
+    GOOGLE_GMAIL_OAUTH_PROVIDER: GOOGLE_VENDOR,
+    GOOGLE_DRIVE_OAUTH_PROVIDER: GOOGLE_VENDOR,
+    MICROSOFT_OUTLOOK_OAUTH_PROVIDER: MICROSOFT_VENDOR,
+}
+# What a row on these platforms is when it states no provider of its own.
+# Rows predate the provider column, and these platforms have only ever held
+# Google's. The email platform is deliberately missing: it is the one platform
+# where a guess picks a vendor, and picking wrong deletes someone's
+# credential.
+DEFAULT_PROVIDER_BY_PLATFORM = {
+    CALENDAR_PLATFORM: GOOGLE_CALENDAR_OAUTH_PROVIDER,
+    DRIVE_PLATFORM: GOOGLE_DRIVE_OAUTH_PROVIDER,
 }
 AGENT_GOOGLE_BATCH_OBJECT_RE = re.compile(
     r"\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|bookkeeping|reconciliation)\b",
@@ -2050,6 +2078,54 @@ def relabel_mail_digest_result(result: dict[str, Any], header: str) -> dict[str,
 ALL_MAILBOXES_TOKENS = {"", "all", "all mailboxes", "any", "every mailbox"}
 
 
+def connection_provider(record: dict[str, Any]) -> str:
+    """Whose account a stored connection is, or "" when the row does not say.
+
+    The column is the answer. Rows written before it existed carry the same
+    value in their metadata, which is why that is the fallback and not a
+    second opinion. Nothing here opens a credential: a credential is for
+    using, and a row that has to be decrypted to be named is a row that can be
+    misnamed whenever the vault is unavailable.
+    """
+
+    if not isinstance(record, dict):
+        return ""
+    stated = normalize_text(record.get("provider")).lower()
+    if stated:
+        return stated
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        return normalize_text(metadata.get("provider")).lower()
+    return ""
+
+
+def resolved_connection_provider(record: dict[str, Any]) -> str:
+    """The provider a connection must be, falling back to its platform's only one.
+
+    Separate from ``connection_provider`` because the fallback is a guess, and
+    a guess is fine for naming a calendar and not fine for deciding what to
+    delete. It stays empty for a mailbox that names no provider, which is the
+    one case where guessing picks a vendor.
+    """
+
+    provider = connection_provider(record)
+    if provider:
+        return provider
+    platform = normalize_text((record or {}).get("platform")).lower()
+    return DEFAULT_PROVIDER_BY_PLATFORM.get(platform, "")
+
+
+def connection_vendor(record: dict[str, Any]) -> str:
+    """Which vendor owns a connection, or "" when nothing here can say.
+
+    An empty answer is a real answer. It means the row named no provider and
+    its platform has no single one, which is true of exactly one platform -
+    email - and is exactly where a guess would delete the wrong mailbox.
+    """
+
+    return CONNECTION_VENDOR_BY_PROVIDER.get(resolved_connection_provider(record), "")
+
+
 def mailbox_display_name(record: dict[str, Any]) -> str:
     """Name one mailbox for a person: its address, else a label, else provider."""
 
@@ -2059,8 +2135,7 @@ def mailbox_display_name(record: dict[str, Any]) -> str:
     label = normalize_text(record.get("accountLabel"))
     if label:
         return label
-    provider = normalize_text((record.get("metadata") or {}).get("provider"))
-    return EMAIL_PROVIDER_LABELS.get(provider, "Email")
+    return EMAIL_PROVIDER_LABELS.get(connection_provider(record), "Email")
 
 
 def mailbox_display_names(records: list[dict[str, Any]]) -> dict[str, str]:
@@ -2079,8 +2154,7 @@ def mailbox_display_names(records: list[dict[str, Any]]) -> dict[str, str]:
     for record in records:
         name = mailbox_display_name(record)
         if seen.get(name, 0) > 1:
-            provider = normalize_text((record.get("metadata") or {}).get("provider"))
-            label = EMAIL_PROVIDER_LABELS.get(provider, "")
+            label = EMAIL_PROVIDER_LABELS.get(connection_provider(record), "")
             if label:
                 name = f"{name} ({label})"
         names[normalize_text(record.get("id"))] = name
@@ -3386,17 +3460,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
 
     def _google_oauth_connected_message(self, connections: list[dict[str, Any]]) -> str:
-        platforms = {
-            normalize_text(connection.get("platform")).lower()
+        # By provider, not platform: "the email platform is connected" is not
+        # the same sentence as "Gmail is connected", and after this flow only
+        # the second one is true.
+        providers = {
+            resolved_connection_provider(connection)
             for connection in connections
             if isinstance(connection, dict)
         }
         labels = []
-        if GOOGLE_CALENDAR_OAUTH_PLATFORM in platforms:
+        if GOOGLE_CALENDAR_OAUTH_PROVIDER in providers:
             labels.append("Google Calendar")
-        if GOOGLE_GMAIL_OAUTH_PLATFORM in platforms:
+        if GOOGLE_GMAIL_OAUTH_PROVIDER in providers:
             labels.append("Gmail")
-        if GOOGLE_DRIVE_OAUTH_PLATFORM in platforms:
+        if GOOGLE_DRIVE_OAUTH_PROVIDER in providers:
             labels.append("Drive")
         if len(labels) == 1:
             return f"{labels[0]} connected with read-only access."
@@ -3429,22 +3506,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         ciphertext = normalize_text(
             self.database.get_platform_connection_ciphertext(
                 session.email,
-                CALENDAR_CONNECTION_PLATFORM,
+                CALENDAR_PLATFORM,
                 include_statuses=statuses,
             ) or ""
         )
         records = [
             connection
             for connection in self.database.list_platform_connections(session.email)
-            if normalize_text(connection.get("platform")).lower() == CALENDAR_CONNECTION_PLATFORM
+            if normalize_text(connection.get("platform")).lower() == CALENDAR_PLATFORM
             and normalize_text(connection.get("connectionStatus")).lower() in statuses
         ]
         sources: list[dict[str, Any]] = []
         for record in records:
-            provider = normalize_text((record.get("metadata") or {}).get("provider")) or GOOGLE_CALENDAR_OAUTH_PROVIDER
+            provider = resolved_connection_provider(record) or GOOGLE_CALENDAR_OAUTH_PROVIDER
             source: dict[str, Any] = {
                 "connectionId": normalize_text(record.get("id")),
-                "platform": CALENDAR_CONNECTION_PLATFORM,
+                "platform": CALENDAR_PLATFORM,
                 "provider": provider,
                 "label": CALENDAR_PROVIDER_LABELS.get(provider, "Calendar"),
                 "accountAddress": normalize_text(record.get("accountAddress")),
@@ -3758,6 +3835,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connection = self.database.save_platform_connection(
                 session.email,
                 platform=platform,
+                provider=provider,
                 auth_type="oauth",
                 secret_ciphertext=encrypted_secret,
                 secret_hint="Google OAuth",
@@ -3959,7 +4037,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         now = datetime.now(timezone.utc).isoformat()
         return self.database.save_platform_connection(
             session.email,
-            platform=MICROSOFT_OUTLOOK_OAUTH_PLATFORM,
+            platform=EMAIL_PLATFORM,
+            provider=MICROSOFT_OUTLOOK_OAUTH_PROVIDER,
             auth_type="oauth",
             secret_ciphertext=encrypted_secret,
             secret_hint="Microsoft OAuth",
@@ -4275,22 +4354,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         revocation_warning = ""
         provider_revoked = False
-        google_oauth_platforms = {
-            GOOGLE_CALENDAR_OAUTH_PLATFORM,
-            GOOGLE_GMAIL_OAUTH_PLATFORM,
-            GOOGLE_DRIVE_OAUTH_PLATFORM,
-        }
-        # An email connection can be either provider. Revoking is a Google call,
-        # so an Outlook mailbox must not go down this path - it would tell the
-        # owner to visit their Google Account for a mailbox Google never held.
+        # Revoking is a call to Google, so only Google's own rows take that
+        # path. Asking the platform would send an Outlook mailbox down it and
+        # tell the owner to visit their Google Account for a mailbox Google
+        # never held; asking the vendor cannot.
+        record_vendor = connection_vendor(connection_record)
         is_microsoft_email_connection = (
-            connection_record.get("platform") == MICROSOFT_OUTLOOK_OAUTH_PLATFORM
-            and self._connection_record_email_provider(connection_record) == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+            connection_record.get("platform") == EMAIL_PLATFORM
+            and record_vendor == MICROSOFT_VENDOR
         )
         is_google_oauth_connection = (
-            connection_record.get("platform") in google_oauth_platforms
+            record_vendor == GOOGLE_VENDOR
             and connection_record.get("authType") == "oauth"
-            and not is_microsoft_email_connection
         )
         shared_google_grant_count = self.database.count_platform_connections_with_secret_fingerprint(
             session.email,
@@ -4313,12 +4388,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        if connection_record.get("platform") == GOOGLE_CALENDAR_OAUTH_PLATFORM:
+        if connection_record.get("platform") == CALENDAR_PLATFORM:
             message = "Google Calendar was disconnected and its saved credential was removed."
-        elif connection_record.get("platform") == GOOGLE_GMAIL_OAUTH_PLATFORM and connection_record.get("authType") == "oauth":
-            mailbox_label = "Outlook" if is_microsoft_email_connection else "Gmail"
+        elif connection_record.get("platform") == EMAIL_PLATFORM and connection_record.get("authType") == "oauth":
+            mailbox_label = EMAIL_PROVIDER_LABELS.get(connection_provider(connection_record), "Gmail")
             message = f"{mailbox_label} was disconnected and its saved credential was removed."
-        elif connection_record.get("platform") == GOOGLE_DRIVE_OAUTH_PLATFORM and connection_record.get("authType") == "oauth":
+        elif connection_record.get("platform") == DRIVE_PLATFORM and connection_record.get("authType") == "oauth":
             message = "Google Drive was disconnected and its saved credential was removed."
         else:
             message = f"{connection_record.get('platform', 'App').replace('_', ' ').title()} was disconnected."
@@ -4969,7 +5044,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             vault = self.credential_vault
             mailbox_records = self.database.list_platform_connection_secret_records(
                 session.email,
-                GOOGLE_GMAIL_OAUTH_PLATFORM,
+                EMAIL_PLATFORM,
                 include_statuses=("connected", "needs_attention"),
             )
             if not mailbox_records or vault is None:
@@ -5057,9 +5132,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             mailbox_names = mailbox_display_names(mailbox_records)
             for record in mailbox_records:
                 mailbox_name = mailbox_names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
-                record_provider = normalize_text((record.get("metadata") or {}).get("provider")) or GOOGLE_GMAIL_OAUTH_PROVIDER
+                record_provider = connection_provider(record) or GOOGLE_GMAIL_OAUTH_PROVIDER
                 try:
                     stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")
+                    # The credential overrules the row here, and only here:
+                    # this picks which reader can use this token, and the
+                    # token itself is the authority on that. Everything about
+                    # whose mailbox it is still comes from the row.
                     record_provider = self._saved_email_provider(stored_email_secret)
                     access_token, credential_source = self._resolve_email_access_token(
                         stored_email_secret,
@@ -7349,24 +7428,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except CalendarAuthorizationError as exc:
             raise GmailAuthorizationError(str(exc)) from exc
 
-    def _connection_record_email_provider(self, connection_record: dict[str, Any]) -> str:
-        """Which provider a stored email connection belongs to, or "" if unknown."""
-
-        vault = self.credential_vault
-        ciphertext = normalize_text(connection_record.get("secretCiphertext"))
-        if vault is None or not ciphertext:
-            return ""
-        try:
-            return self._saved_email_provider(vault.decrypt(ciphertext))
-        except CredentialVaultError:
-            return ""
-
     def _saved_email_provider(self, decrypted_secret: str) -> str:
-        """Read the provider out of a saved email credential.
+        """Which reader can use this credential, read from the credential.
 
-        The secret payload names its own provider, so a run picks a reader
-        without a second database read. Anything unrecognised is treated as a
-        Gmail access token, which is what a hand-entered token always was.
+        This answers a question about the secret in hand - who will accept
+        this token - and not about the row that holds it. Whose connection it
+        is comes from ``connection_provider``: a row that has to be decrypted
+        to be named is a row that goes unnamed whenever the vault is
+        unavailable. Anything unrecognised is treated as a Gmail access token,
+        which is what a hand-entered token always was.
         """
 
         value = normalize_text(decrypted_secret)

@@ -323,7 +323,11 @@ class PortalStaticPageTests(unittest.TestCase):
         # Every connected mailbox is an option, and the button beside the
         # dropdown adds one without leaving the action.
         self.assertIn("getAgentMailboxAccountOptions(selected)", mailbox_field)
-        self.assertIn('connectButton.textContent = connectedCount ? "Add mailbox" : "Connect a mailbox";', mailbox_field)
+        # The button is a round plus, so the wording it used to show is its
+        # label for anyone hovering or listening instead.
+        self.assertIn('connectButton.textContent = "+";', mailbox_field)
+        self.assertIn('const connectLabel = connectedCount ? "Add mailbox" : "Connect a mailbox";', mailbox_field)
+        self.assertIn('connectButton.setAttribute("aria-label", connectLabel);', mailbox_field)
         self.assertIn('openPlatformConnection("email");', mailbox_field)
         self.assertIn("agentMailboxFieldRenderers.add(renderer);", mailbox_field)
         self.assertIn('hint.textContent = "Connect a mailbox so this action has mail to read.";', mailbox_field)
