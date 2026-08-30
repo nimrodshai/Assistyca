@@ -1062,6 +1062,61 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-loading-spinner", styles)
         self.assertNotIn("nextIndex < 3 && !/\\b(calendar|schedule|agenda|appointments?)\\b/i.test", script)
 
+    def test_a_monitor_runs_on_the_cadence_the_chat_asked_for(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # "How often should I check?" is a follow-up question, so the answer
+        # lands in the frequency field. Reading only the opening sentence left a
+        # monitor the user had just set to monthly sitting on Run manually.
+        self.assertIn("function getAgentProposalRequestedFrequency", script)
+        self.assertIn('getAgentProposalFieldValue(proposal, "frequency"),', script)
+        self.assertIn("const requestedFrequency = getAgentProposalRequestedFrequency(proposal);", script)
+        self.assertNotIn(
+            'const requestedFrequency = extractAgentFrequencyField(proposal?.requestText || "");',
+            script,
+        )
+        self.assertNotIn("const requestedFrequency = extractAgentFrequencyField(requestText);", script)
+
+        # A cadence chosen later still gives way to an explicit manual choice.
+        requested_frequency = script[
+            script.index("function getAgentProposalRequestedFrequency"):
+            script.index("function getAgentProposalWebMonitorManualOnly")
+        ]
+        self.assertIn("agentWebMonitorTextSuggestsManualOnly(text)", requested_frequency)
+        self.assertIn("agentTextSuggestsOneTimeRun(text)", requested_frequency)
+        self.assertIn("return \"\";", requested_frequency)
+
+    def test_the_view_it_here_link_waits_for_the_card_it_points_at(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # The card can be several frames behind the click while the panel opens
+        # and the list re-renders. Looking exactly twice and then giving up
+        # blinked the Actions tab instead of the action the link named.
+        self.assertIn("function revealAgentActionItem", script)
+        self.assertIn("const AGENT_ACTION_SPOTLIGHT_MAX_FRAMES = 90;", script)
+        self.assertIn(
+            "window.requestAnimationFrame(() => revealAgentActionItem(normalizedActionId));",
+            script,
+        )
+        reveal = script[
+            script.index("function revealAgentActionItem"):
+            script.index("function showAgentActionInPanel")
+        ]
+        self.assertIn("if (agentActionSpotlightId !== actionId) {", reveal)
+        self.assertIn("applyAgentActionSpotlight(actionId);", reveal)
+        self.assertIn("if (framesLeft <= 0) {", reveal)
+        self.assertIn("guideAgentActionsTab();", reveal)
+        self.assertIn(
+            "window.requestAnimationFrame(() => revealAgentActionItem(actionId, framesLeft - 1));",
+            reveal,
+        )
+        # The tab guide is the last resort, not what a found card gets.
+        show_in_panel = script[
+            script.index("function showAgentActionInPanel"):
+            script.index("function handleScheduledActionListClick")
+        ]
+        self.assertNotIn("guideAgentActionsTab();", show_in_panel)
+
     def test_month_based_batch_actions_default_to_a_manual_monthly_run(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
 
@@ -1330,7 +1385,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=157", html)
-        self.assertIn("app.js?v=195", html)
+        self.assertIn("app.js?v=196", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

@@ -18243,12 +18243,39 @@ function agentTextSuggestsOneTimeRun(value) {
     .test(String(value || ""));
 }
 
+// The cadence the user actually settled on. "How often should I check?" is a
+// follow-up question, so the answer lands in the frequency field and never in
+// the opening sentence — reading only the request text turned a monitor the
+// user had just set to monthly into a manual one. The first answer that says
+// something definite wins, so a later switch to manual still ends it.
+function getAgentProposalRequestedFrequency(proposal) {
+  const candidates = [
+    getAgentProposalFieldValue(proposal, "frequency"),
+    proposal?.executionPlan?.frequency,
+    proposal?.requestText,
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate || "").trim();
+    if (!text) {
+      continue;
+    }
+    if (agentWebMonitorTextSuggestsManualOnly(text) || agentTextSuggestsOneTimeRun(text)) {
+      return "";
+    }
+    const frequency = extractAgentFrequencyField(text);
+    if (frequency) {
+      return frequency;
+    }
+  }
+  return "";
+}
+
 function getAgentProposalWebMonitorManualOnly(proposal, backendFeature = null) {
   if (proposal?.type !== "web-monitor") {
     return false;
   }
 
-  const requestedFrequency = extractAgentFrequencyField(proposal?.requestText || "");
+  const requestedFrequency = getAgentProposalRequestedFrequency(proposal);
   if (backendFeature && isMonitorFeature(backendFeature)) {
     if (normalizeMonitorManualOnly(getSavedFeatureSettings(backendFeature).manualOnly, false)) {
       return true;
@@ -19640,6 +19667,39 @@ function guideAgentActionsTab() {
   agentActionSpotlightTimer = window.setTimeout(clearAgentActionSpotlight, shouldReduceAgentMotion() ? 1800 : 3600);
 }
 
+// The card the link points at can be a few frames behind the click: the panel
+// opens, the list re-renders, and a list still waiting on its first load paints
+// a spinner before it paints any cards. Looking exactly twice and then giving
+// up left the Actions tab blinking while the card was drawn a moment later, so
+// keep looking until it is there. Roughly a second and a half of frames.
+const AGENT_ACTION_SPOTLIGHT_MAX_FRAMES = 90;
+
+function revealAgentActionItem(actionId, framesLeft = AGENT_ACTION_SPOTLIGHT_MAX_FRAMES) {
+  // A second link clicked while this one waits takes over the spotlight.
+  if (agentActionSpotlightId !== actionId) {
+    return;
+  }
+
+  const item = findAgentActionItem(actionId);
+  if (item) {
+    item.scrollIntoView({
+      behavior: shouldReduceAgentMotion() ? "auto" : "smooth",
+      block: "center",
+      inline: "nearest",
+    });
+    applyAgentActionSpotlight(actionId);
+    return;
+  }
+
+  if (framesLeft <= 0) {
+    // Nothing to point at after all: guide the eye to the tab instead.
+    guideAgentActionsTab();
+    return;
+  }
+
+  window.requestAnimationFrame(() => revealAgentActionItem(actionId, framesLeft - 1));
+}
+
 function showAgentActionInPanel(actionId) {
   const normalizedActionId = String(actionId || "").trim();
   if (!normalizedActionId) {
@@ -19657,21 +19717,7 @@ function showAgentActionInPanel(actionId) {
   setAgentToolsOpen(true);
   setAgentPanelMode("actions");
 
-  window.requestAnimationFrame(() => {
-    window.requestAnimationFrame(() => {
-      const item = findAgentActionItem(normalizedActionId);
-      if (!item) {
-        guideAgentActionsTab();
-        return;
-      }
-      item.scrollIntoView({
-        behavior: shouldReduceAgentMotion() ? "auto" : "smooth",
-        block: "center",
-        inline: "nearest",
-      });
-      applyAgentActionSpotlight(normalizedActionId);
-    });
-  });
+  window.requestAnimationFrame(() => revealAgentActionItem(normalizedActionId));
   return true;
 }
 
@@ -23803,12 +23849,13 @@ function buildAgentWebMonitorWatchItem(proposal) {
 
 function buildAgentWebMonitorSettings(proposal) {
   const requestText = String(proposal?.requestText || "");
-  const requestedFrequency = extractAgentFrequencyField(requestText);
+  const requestedFrequency = getAgentProposalRequestedFrequency(proposal);
   const frequency = requestedFrequency || getAgentProposalFieldValue(proposal, "frequency");
   const interval = buildAgentMonitorIntervalFromFrequency(frequency);
   const requestsManualRuns = /\b(manual(?:ly)?|on[ -]?demand|when i want|when i ask|turn(?:ed)? on manually)\b/i.test(requestText);
-  // Agent-created monitors are manual by default; only an explicit cadence in
-  // the user's request opts into recurring background checks.
+  // Agent-created monitors are manual by default; only a cadence the user
+  // actually chose — asked for up front or answered when I asked how often —
+  // opts into recurring background checks.
   const manualOnly = requestsManualRuns || !requestedFrequency;
   const deliveryChannel = normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
     || normalizeAgentDeliveryChannel(proposal?.requestText || "")
