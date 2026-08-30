@@ -5635,12 +5635,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         # The receipts are fetched before the note is written, so the note can
         # name the files sitting next to it.
-        receipt_files = self._save_answer_receipt_files(
+        receipt_result = self._save_answer_receipt_files(
             session,
             normalize_saved_answer_sources(payload.get("sources")),
             folder_path=folder_path,
             base_url=base_url,
         )
+        receipt_files = receipt_result["files"]
+        missed_count = int(receipt_result["missedCount"])
         note_lines = [f"# {title}", "", f"Saved {saved_at.isoformat()}", "", text]
         if receipt_files:
             note_lines.extend(["", "## Receipts saved with this answer", ""])
@@ -5658,17 +5660,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         folder_label = logical_folder.rstrip("/")
         receipt_note = describe_saved_receipt_files(receipt_files)
+        if receipt_note:
+            message = f"Saved to {folder_label}, with {receipt_note}."
+        elif missed_count:
+            receipt_word = "receipt" if missed_count == 1 else "receipts"
+            message = f"Saved to {folder_label}. I couldn\u2019t fetch {missed_count} {receipt_word} from your mailbox."
+        else:
+            message = f"Saved to {folder_label}."
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "folder": logical_folder,
             "name": file_name,
             "url": "/".join([base_url, urllib_parse.quote(file_name)]),
             "receipts": receipt_files,
-            "message": (
-                f"Saved to {folder_label}, with {receipt_note}."
-                if receipt_note
-                else f"Saved to {folder_label}."
-            ),
+            # Receipts the mailbox would not hand over. Without this a save
+            # that fetched nothing reads exactly like an email that carried
+            # nothing, and only one of those is fine.
+            "receiptsMissed": missed_count,
+            "message": message,
         })
 
     def _save_answer_receipt_files(
@@ -5678,18 +5687,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         *,
         folder_path: Path,
         base_url: str,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Copy the receipts an answer was read from into the same folder.
 
         The answer run read the mailbox and wrote nothing, so the files are
-        fetched again here, one message at a time. A message that cannot be
-        read any more - moved, deleted, or in a mailbox that has since been
-        disconnected - is skipped: the answer is still worth keeping, and the
-        reply says how many receipts came with it.
+        fetched again here, one message at a time.
+
+        A receipt that cannot be fetched is counted rather than passed over in
+        silence. "Nothing was attached" and "I could not read your mailbox"
+        leave the same empty folder behind, and only one of them means the
+        client has everything there was to keep.
         """
 
+        result: dict[str, Any] = {"files": [], "missedCount": 0}
         if not sources:
-            return []
+            return result
         vault = self.credential_vault
         records = self.database.list_platform_connection_secret_records(
             session.email,
@@ -5697,26 +5709,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             include_statuses=("connected", "needs_attention"),
         )
         if not records or vault is None:
-            return []
+            print("Keeping receipts failed: no mailbox is connected to fetch them from.", flush=True)
+            result["missedCount"] = len(sources)
+            return result
 
         names = mailbox_display_names(records)
-        wanted: dict[str, list[dict[str, str]]] = {}
-        known_names = {name.lower() for name in names.values()}
-        for source in sources:
-            mailbox = normalize_text(source.get("mailbox")).lower()
-            # One mailbox owns everything it was asked about, including a
-            # receipt saved from a run that did not record a mailbox name.
-            if mailbox not in known_names and len(records) == 1:
-                mailbox = next(iter(known_names), "")
-            wanted.setdefault(mailbox, []).append(source)
 
-        saved_files: list[dict[str, Any]] = []
-        for record in records:
+        def mailbox_name_for(record: dict[str, Any]) -> str:
+            return names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
+
+        readers: dict[str, tuple[Any, str] | None] = {}
+
+        def reader_for(record: dict[str, Any]) -> tuple[Any, str] | None:
+            """The runner and token for one mailbox, opened once per save."""
+
             record_id = normalize_text(record.get("id"))
-            mailbox_name = names.get(record_id) or mailbox_display_name(record)
-            requested = wanted.get(mailbox_name.lower()) or []
-            if not requested:
-                continue
+            if record_id in readers:
+                return readers[record_id]
             try:
                 stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")
                 record_provider = self._saved_email_provider(stored_email_secret)
@@ -5725,15 +5734,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     provider=record_provider,
                 )
             except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                print(f"Keeping receipts from {mailbox_name} failed: {exc}", flush=True)
-                continue
-
+                print(f"Keeping receipts from {mailbox_name_for(record)} failed: {exc}", flush=True)
+                readers[record_id] = None
+                return None
             runner = (
                 OutlookDigestRunner()
                 if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
                 else GmailDigestRunner()
             )
-            for source in requested:
+            readers[record_id] = (runner, access_token)
+            return readers[record_id]
+
+        saved_files: list[dict[str, Any]] = []
+        for source in sources:
+            mailbox = normalize_text(source.get("mailbox")).lower()
+            matched = [record for record in records if mailbox_name_for(record).lower() == mailbox]
+            # A mailbox named differently now than it was during the run - a
+            # second account of the same address renamed it, or the run
+            # recorded no name at all - is a reason to look in every mailbox,
+            # not a reason to drop the receipt. A message id belongs to one
+            # provider, so the wrong mailbox simply refuses it.
+            candidates = matched or list(records)
+            if not matched:
+                print(
+                    f"A kept receipt named no mailbox I recognise ({source.get('mailbox') or 'none'}); "
+                    f"looking in all {len(records)} of them.",
+                    flush=True,
+                )
+            fetched = False
+            for record in candidates:
+                reader = reader_for(record)
+                if reader is None:
+                    continue
+                runner, access_token = reader
                 try:
                     attachments = runner.save_message_attachments(
                         access_token,
@@ -5750,8 +5783,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     GmailSummaryError,
                     OutlookSummaryError,
                 ) as exc:
-                    print(f"Keeping a receipt from {mailbox_name} failed: {exc}", flush=True)
+                    print(
+                        f"Keeping a receipt from {mailbox_name_for(record)} failed: {exc}",
+                        flush=True,
+                    )
                     continue
+                # The message was read. Whether it carried a file is the
+                # vendor's business, not a failure to report.
+                fetched = True
                 for attachment in attachments:
                     if not isinstance(attachment, dict) or attachment.get("status") != "saved":
                         continue
@@ -5760,7 +5799,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         "url": str(attachment.get("url") or ""),
                         "size": int(attachment.get("size") or 0),
                     })
-        return saved_files
+                break
+            if not fetched:
+                result["missedCount"] += 1
+        result["files"] = saved_files
+        return result
 
     def _handle_agent_turn(self) -> None:
         authenticated = self._require_authenticated_user()

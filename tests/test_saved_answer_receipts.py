@@ -207,6 +207,63 @@ class SavedAnswerReceiptTests(unittest.TestCase):
 
         self.assertEqual(len(payload["receipts"]), 1)
 
+    def test_a_receipt_is_looked_for_in_every_mailbox_when_its_own_is_not_recognised(self) -> None:
+        # Two mailboxes can report the same address, so the name a run wrote
+        # down is not guaranteed to still name a connection at save time.
+        # Dropping the receipt over that would be silent and wrong.
+        self._connect_gmail("owner@gmail.com")
+        self._connect_gmail("second@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
+            return_value=_gmail_message_with_pdf(),
+        ):
+            payload = self._save_answer({
+                "title": "Render receipts",
+                "text": "You paid 13.35 USD to Render.",
+                "sources": self._render_sources(mailbox="an-old-name@gmail.com"),
+            })
+
+        self.assertEqual(len(payload["receipts"]), 1)
+
+    def test_a_receipt_no_mailbox_would_hand_over_is_counted(self) -> None:
+        self._connect_gmail("owner@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
+            side_effect=GmailSummaryError("Gmail is unhappy.", code="gmail_provider_error"),
+        ):
+            payload = self._save_answer({
+                "title": "Render receipts",
+                "text": "You paid 13.35 USD to Render.",
+                "sources": self._render_sources(),
+            })
+
+        self.assertEqual(payload["receiptsMissed"], 1)
+        self.assertEqual(
+            payload["message"],
+            "Saved to Saved answers. I couldn\u2019t fetch 1 receipt from your mailbox.",
+        )
+
+    def test_an_email_that_carried_no_file_is_not_counted_as_a_miss(self) -> None:
+        # Nothing to keep is a fact about the email. It must not read as a
+        # mailbox that refused to answer.
+        self._connect_gmail("owner@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
+            return_value={"id": "msg-1", "payload": {"parts": []}},
+        ):
+            payload = self._save_answer({
+                "title": "Render receipts",
+                "text": "You paid 13.35 USD to Render.",
+                "sources": self._render_sources(),
+            })
+
+        self.assertEqual(payload["receipts"], [])
+        self.assertEqual(payload["receiptsMissed"], 0)
+        self.assertEqual(payload["message"], "Saved to Saved answers.")
+
     def test_a_receipt_that_cannot_be_read_does_not_lose_the_answer(self) -> None:
         self._connect_gmail("owner@gmail.com")
 
@@ -222,7 +279,6 @@ class SavedAnswerReceiptTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["receipts"], [])
-        self.assertEqual(payload["message"], "Saved to Saved answers.")
         self.assertTrue((self._saved_folder() / str(payload["name"])).is_file())
 
     def test_an_answer_with_no_receipts_behind_it_saves_as_it_always_did(self) -> None:
@@ -388,6 +444,14 @@ class SavedAnswerChatTests(unittest.TestCase):
         sentence = self._run('describeAgentSavedAnswer("Saved answers", { receipts: [] }, [{ messageId: "msg-1" }])')
 
         self.assertIn("nothing attached", str(sentence))
+
+    def test_a_mailbox_that_would_not_hand_the_receipt_over_reads_differently(self) -> None:
+        sentence = self._run(
+            'describeAgentSavedAnswer("Saved answers", { receipts: [], receiptsMissed: 1 }, [{ messageId: "msg-1" }])'
+        )
+
+        self.assertIn("couldn\u2019t fetch that receipt from your mailbox", str(sentence))
+        self.assertNotIn("nothing attached", str(sentence))
 
     def test_an_answer_with_no_receipts_reads_as_it_always_did(self) -> None:
         sentence = self._run('describeAgentSavedAnswer("Saved answers", {}, [])')

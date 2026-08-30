@@ -23895,6 +23895,7 @@ function openAgentResultFolder(folderName) {
 // file to keep, and saying so beats letting the client look for one.
 function describeAgentSavedAnswer(folder, response, sources) {
   const receiptCount = Array.isArray(response?.receipts) ? response.receipts.length : 0;
+  const missed = Number(response?.receiptsMissed || 0);
   const opener = folder
     ? `Kept that in ${folder}. You can open it from the Folders panel.`
     : "Kept that in your folders.";
@@ -23903,6 +23904,13 @@ function describeAgentSavedAnswer(folder, response, sources) {
     return folder
       ? `Kept that in ${folder}, with ${kept}. You can open it from the Folders panel.`
       : `Kept that in your folders, with ${kept}.`;
+  }
+  // A mailbox that would not hand the receipt over is not the same as an
+  // email that had nothing to hand over, and the client can act on one of
+  // them. Saying "nothing attached" for both would be a guess.
+  if (missed) {
+    const which = missed === 1 ? "that receipt" : `those ${missed} receipts`;
+    return `${opener} I couldn’t fetch ${which} from your mailbox just now, so the answer is in there on its own.`;
   }
   if (sources.length) {
     return `${opener} Those emails had nothing attached, so the answer is all there was to keep.`;
