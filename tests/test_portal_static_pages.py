@@ -308,6 +308,13 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('"email-digest": [["Mailbox", "mailbox", "Gmail or Outlook"]],', script)
         self.assertIn("function getAgentMailboxSummaryLabel", script)
         self.assertIn("function renderOpenAgentMailboxFields", script)
+        # Two providers can report the same address, and an address that names
+        # two mailboxes names neither, so those options carry the connection id
+        # instead. An id is never what the summary line says.
+        self.assertIn("function getAgentMailboxOptionValue", script)
+        self.assertIn("function getAgentMailboxSelectionName", script)
+        self.assertIn("return shared ? normalizeText(connection?.id) || name : name;", script)
+        self.assertIn('return current.startsWith("pc_") ? "That mailbox" : current;', script)
 
         mailbox_field = script[
             script.index("function createAgentMailboxField"):

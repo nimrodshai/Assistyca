@@ -98,18 +98,32 @@ provider.
 ### Several mailboxes on one account
 
 Connections were once unique per `(user, platform)`, so connecting a second
-mailbox overwrote the first. Uniqueness is now
-`(user, platform, account_address)`. A platform that holds one account per user
-- Calendar, Drive, WhatsApp - saves with an empty address and so keeps exactly
-one row, unchanged.
+mailbox overwrote the first. Widening that to `(user, platform, account_address)`
+was still not enough: Gmail and Outlook share the `email` platform and can
+report the same address, because a personal Microsoft account may be registered
+under a Gmail address. Uniqueness is now
+`(user, platform, provider, account_address)`. A platform that holds one account
+per user - Calendar, Drive, WhatsApp - saves with an empty address and so keeps
+exactly one row, unchanged.
+
+The `provider` column repeats what the row's metadata has always carried. A
+database written before the column had it backfilled from that metadata during
+the rebuild, so no row is left unidentified.
 
 The address is read at connect time: Gmail from `users/me/profile`, which
 `gmail.readonly` already covers, and Outlook from `/me`, which is why the
 Microsoft grant asks for `User.Read` alongside `Mail.Read`. Reading it is a
 convenience rather than a permission check, so a refusal never fails the
 connect - the mailbox simply has no address until it is reconnected. A row
-saved before addresses were captured is adopted by the next connect on that
-platform rather than left beside the new one as a duplicate.
+saved before addresses were captured is adopted by the next connect **from the
+same provider** rather than left beside the new one as a duplicate; a connect
+from a different provider leaves it alone, which is what stops Outlook from
+overwriting an older Gmail mailbox, credential and all.
+
+Where two connected mailboxes share an address, the portal's Mailbox dropdown
+saves the connection id instead of the address, because an address that names
+two mailboxes names neither. `mailboxAccount` accepts an address, a label, or a
+connection id, so both forms keep working.
 
 An action reads **every** connected mailbox and merges the results, unless its
 `mailboxAccount` field names one. That field is separate from the older

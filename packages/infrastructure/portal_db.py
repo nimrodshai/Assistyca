@@ -96,7 +96,7 @@ class BillingPlan:
 # secret manager; this table is never serialized into agent prompts.
 #
 # Kept out of SCHEMA_SQL so the bootstrap and the multi-mailbox rebuild in
-# _relax_platform_connection_uniqueness share one definition.
+# _widen_platform_connection_uniqueness share one definition.
 PLATFORM_CONNECTIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS platform_connections (
     id TEXT PRIMARY KEY,
@@ -111,12 +111,18 @@ CREATE TABLE IF NOT EXISTS platform_connections (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     account_address TEXT NOT NULL DEFAULT '',
     account_label TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
     connected_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     -- A user may hold several mailboxes, so uniqueness is per account rather
     -- than per platform. Single-account platforms leave account_address empty,
     -- which keeps their old one-row-per-platform behaviour intact.
-    UNIQUE(user_id, platform, account_address),
+    --
+    -- The provider is part of that identity because Gmail and Outlook share
+    -- the email platform and can report the same address: a personal Microsoft
+    -- account may be registered under a Gmail address. Without it, connecting
+    -- one provider overwrites the other's mailbox, credential and all.
+    UNIQUE(user_id, platform, provider, account_address),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
@@ -963,17 +969,24 @@ class PortalDatabase:
             conn.execute("ALTER TABLE platform_connections ADD COLUMN account_address TEXT NOT NULL DEFAULT ''")
         if "account_label" not in columns:
             conn.execute("ALTER TABLE platform_connections ADD COLUMN account_label TEXT NOT NULL DEFAULT ''")
-        self._relax_platform_connection_uniqueness(conn)
+        self._widen_platform_connection_uniqueness(conn)
 
-    def _relax_platform_connection_uniqueness(self, conn: sqlite3.Connection) -> None:
-        """Widen UNIQUE(user_id, platform) to include the account address.
+    def _widen_platform_connection_uniqueness(self, conn: sqlite3.Connection) -> None:
+        """Widen UNIQUE(user_id, platform) to include provider and address.
 
         Databases created before multi-mailbox support carry a table-level
         UNIQUE(user_id, platform), which makes connecting a second mailbox
-        overwrite the first. SQLite cannot drop a table constraint, so the
-        table is rebuilt once. Existing rows keep an empty account_address,
-        which preserves one-row-per-platform for every single-account
-        platform and for a legacy mailbox until it is next identified.
+        overwrite the first. The first widening added the account address,
+        which is still not enough on its own: Gmail and Outlook share the email
+        platform and can report the same address, so a Microsoft connect
+        overwrote a Google mailbox that had one. SQLite cannot drop a table
+        constraint, so the table is rebuilt once per widening.
+
+        Rows keep their account_address, which preserves one-row-per-platform
+        for every single-account platform and for a legacy mailbox until it is
+        next identified. Their provider is backfilled from the metadata that
+        has always carried it, so a legacy row is identified rather than left
+        beside a new one.
         """
 
         table_sql = ""
@@ -984,11 +997,14 @@ class PortalDatabase:
         # Test for the widened constraint, not for the columns: the ADD COLUMN
         # calls above already put account_address into this SQL, so a column
         # check here would always report the rebuild as done.
-        if not table_sql or "UNIQUE(user_id, platform, account_address)" in table_sql:
+        if not table_sql or "UNIQUE(user_id, platform, provider, account_address)" in table_sql:
             return
 
         conn.execute("ALTER TABLE platform_connections RENAME TO platform_connections_legacy")
         conn.executescript(PLATFORM_CONNECTIONS_TABLE_SQL)
+        # The provider column does not exist on either legacy shape, so rows
+        # arrive unidentified and are filled in below. Copying them with an
+        # empty provider cannot collide: it is the identity they already had.
         conn.execute(
             """
             INSERT INTO platform_connections (
@@ -1005,6 +1021,28 @@ class PortalDatabase:
             """
         )
         conn.execute("DROP TABLE platform_connections_legacy")
+        self._backfill_platform_connection_providers(conn)
+
+    def _backfill_platform_connection_providers(self, conn: sqlite3.Connection) -> None:
+        """Copy each row's provider out of its metadata and into its own column.
+
+        The metadata has named the provider since the first Gmail connection,
+        so this identifies every row a rebuild carried over. Filling a provider
+        in only ever tells two rows apart, so no row can collide with another.
+        """
+
+        rows = conn.execute(
+            "SELECT id, metadata_json FROM platform_connections WHERE provider = ''"
+        ).fetchall()
+        for row in rows:
+            metadata = _load_json_dict(row["metadata_json"])
+            provider = normalize_text(metadata.get("provider")).lower()
+            if not provider:
+                continue
+            conn.execute(
+                "UPDATE platform_connections SET provider = ? WHERE id = ?",
+                (provider, normalize_text(row["id"])),
+            )
 
     def _ensure_usage_events_tool_indexes(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -3100,20 +3138,29 @@ class PortalDatabase:
             except (KeyError, ValueError):
                 return None
             row = conn.execute(
-                "SELECT platform, account_address FROM platform_connections WHERE user_id = ? AND id = ? LIMIT 1",
+                "SELECT platform, provider, account_address FROM platform_connections WHERE user_id = ? AND id = ? LIMIT 1",
                 (user_id, normalized_id),
             ).fetchone()
             if row is None:
                 return None
 
             if normalized_address and normalized_address != normalize_text(row["account_address"]):
+                # Only this provider's own rows can clash. Two providers may
+                # hold the same address, so the platform alone would refuse a
+                # name that the connections themselves have room for.
                 clash = conn.execute(
                     """
                     SELECT id FROM platform_connections
-                    WHERE user_id = ? AND platform = ? AND account_address = ? AND id <> ?
+                    WHERE user_id = ? AND platform = ? AND provider = ? AND account_address = ? AND id <> ?
                     LIMIT 1
                     """,
-                    (user_id, normalize_text(row["platform"]).lower(), normalized_address, normalized_id),
+                    (
+                        user_id,
+                        normalize_text(row["platform"]).lower(),
+                        normalize_text(row["provider"]).lower(),
+                        normalized_address,
+                        normalized_id,
+                    ),
                 ).fetchone()
                 if clash is not None:
                     # That account is already connected under another row.
@@ -3214,6 +3261,36 @@ class PortalDatabase:
             ).fetchone()
             return int(row["connection_count"] or 0) if row else 0
 
+    def _platform_connection_row_to_reuse(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+        platform: str,
+        provider: str,
+        account_address: str,
+    ) -> sqlite3.Row | None:
+        """The row a connect should write over, if this account already has one.
+
+        This provider's own row comes first. A row that names no provider is
+        taken as this one's too: it predates the column, and claiming it keeps
+        a reconnect replacing a row rather than piling a second one beside it.
+        A row belonging to a different provider is never returned, which is how
+        connecting Outlook stops overwriting a Gmail mailbox.
+        """
+
+        return conn.execute(
+            """
+            SELECT id, connected_at
+            FROM platform_connections
+            WHERE user_id = ? AND platform = ? AND account_address = ?
+              AND provider IN (?, '')
+            ORDER BY CASE WHEN provider = ? THEN 0 ELSE 1 END, connected_at ASC, id ASC
+            LIMIT 1
+            """,
+            (user_id, platform, account_address, provider, provider),
+        ).fetchone()
+
     def save_platform_connection(
         self,
         email: str,
@@ -3250,33 +3327,34 @@ class PortalDatabase:
 
         metadata_payload = _load_json_dict(metadata)
         metadata_json = json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True)
+        # Which reader this row belongs to. Gmail and Outlook are both the
+        # email platform, so the provider is what tells one account's mailboxes
+        # apart when the addresses cannot: a personal Microsoft account may be
+        # registered under a Gmail address.
+        normalized_provider = normalize_text(metadata_payload.get("provider")).lower()
         now = now_iso()
         with self._connection() as conn:
             user_id = self._resolve_active_user_id(conn, normalized_email)
-            existing = conn.execute(
-                """
-                SELECT id, connected_at
-                FROM platform_connections
-                WHERE user_id = ? AND platform = ? AND account_address = ?
-                LIMIT 1
-                """,
-                (user_id, normalized_platform, normalized_address),
-            ).fetchone()
+            existing = self._platform_connection_row_to_reuse(
+                conn,
+                user_id=user_id,
+                platform=normalized_platform,
+                provider=normalized_provider,
+                account_address=normalized_address,
+            )
             if existing is None and normalized_address:
                 # A row saved before addresses were captured is unidentified.
                 # The connect happening now is the best identification available,
                 # so adopt that row instead of leaving a stale duplicate beside
                 # the new one. Rows that already carry an address are untouched,
                 # so a genuine second mailbox still lands as its own row.
-                existing = conn.execute(
-                    """
-                    SELECT id, connected_at
-                    FROM platform_connections
-                    WHERE user_id = ? AND platform = ? AND account_address = ''
-                    LIMIT 1
-                    """,
-                    (user_id, normalized_platform),
-                ).fetchone()
+                existing = self._platform_connection_row_to_reuse(
+                    conn,
+                    user_id=user_id,
+                    platform=normalized_platform,
+                    provider=normalized_provider,
+                    account_address="",
+                )
             connection_id = normalize_text(existing["id"]) if existing else ""
             connected_at = normalize_text(existing["connected_at"]) if existing else ""
             if not connection_id:
@@ -3291,9 +3369,9 @@ class PortalDatabase:
                     id, user_id, platform, auth_type, secret_ciphertext,
                     key_version, secret_fingerprint,
                     secret_hint, connection_status, metadata_json,
-                    account_address, account_label,
+                    account_address, account_label, provider,
                     connected_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 -- The row to reuse was already resolved above, so the conflict
                 -- target is the id. Keying it on (user_id, platform) would
                 -- collapse a second mailbox back onto the first.
@@ -3307,6 +3385,7 @@ class PortalDatabase:
                     metadata_json = excluded.metadata_json,
                     account_address = excluded.account_address,
                     account_label = excluded.account_label,
+                    provider = excluded.provider,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -3322,6 +3401,7 @@ class PortalDatabase:
                     metadata_json,
                     normalized_address,
                     normalized_label,
+                    normalized_provider,
                     connected_at,
                     now,
                 ),

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -28,7 +29,10 @@ from packages.infrastructure.portal_auth.server import MICROSOFT_OAUTH_SECRET_TY
 from packages.infrastructure.portal_auth.server import MICROSOFT_OUTLOOK_OAUTH_PROVIDER
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.portal_auth.server import describe_mailbox_selection
+from packages.infrastructure.portal_auth.server import mailbox_display_names
 from packages.infrastructure.portal_auth.server import merge_mail_digest_results
+from packages.infrastructure.portal_db import PortalDatabase
 
 SERVER_MODULE = "packages.infrastructure.portal_auth.server"
 
@@ -180,6 +184,53 @@ class MultiMailboxTests(unittest.TestCase):
         self._save_gmail("personal@gmail.com")
 
         self.assertEqual(len(self.server.database.list_platform_connections("owner@example.com")), 1)
+
+    def test_connecting_outlook_no_longer_replaces_an_unidentified_gmail(self) -> None:
+        # A mailbox connected before addresses were captured has none. Outlook
+        # used to adopt that row as though it were its own, which overwrote the
+        # Gmail credential and left one mailbox where there were two.
+        self._save_gmail("")
+        self._save_outlook("work@contoso.com")
+
+        connections = self.server.database.list_platform_connections("owner@example.com")
+        providers = sorted(item["metadata"]["provider"] for item in connections)
+
+        self.assertEqual(providers, ["google_gmail", "microsoft_outlook"])
+
+    def test_two_providers_can_hold_the_same_address(self) -> None:
+        # A personal Microsoft account may be registered under a Gmail address,
+        # so the address alone cannot tell these two mailboxes apart.
+        self._save_gmail("owner@gmail.com")
+        self._save_outlook("owner@gmail.com")
+
+        connections = self.server.database.list_platform_connections("owner@example.com")
+        providers = sorted(item["metadata"]["provider"] for item in connections)
+
+        self.assertEqual(providers, ["google_gmail", "microsoft_outlook"])
+        # Each keeps its own credential: the collision used to overwrite one
+        # provider's refresh token with the other's.
+        records = self.server.database.list_platform_connection_secret_records(
+            "owner@example.com",
+            "email",
+        )
+        secret_types = {
+            record["metadata"]["provider"]: json.loads(
+                self.server.credential_vault.decrypt(record["secretCiphertext"])  # type: ignore[union-attr]
+            )["type"]
+            for record in records
+        }
+        self.assertEqual(secret_types, {
+            "google_gmail": GOOGLE_OAUTH_SECRET_TYPE,
+            MICROSOFT_OUTLOOK_OAUTH_PROVIDER: MICROSOFT_OAUTH_SECRET_TYPE,
+        })
+
+    def test_gmail_identifies_its_own_unidentified_row_rather_than_duplicating_it(self) -> None:
+        self._save_gmail("")
+        self._save_gmail("personal@gmail.com")
+
+        connections = self.server.database.list_platform_connections("owner@example.com")
+
+        self.assertEqual([item["accountAddress"] for item in connections], ["personal@gmail.com"])
 
     def test_a_single_account_platform_still_holds_one_row(self) -> None:
         # Calendar and Drive save with no address, so they keep colliding by
@@ -339,6 +390,136 @@ class MultiMailboxTests(unittest.TestCase):
             ["personal@gmail.com", "work@contoso.com"],
         )
         self.assertIn("personal@gmail.com and work@contoso.com", payload["message"])
+
+
+class LegacyMailboxDatabaseTests(unittest.TestCase):
+    """Opening a database written before the provider was part of a row's identity."""
+
+    LEGACY_TABLE_SQL = """
+    CREATE TABLE platform_connections (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        platform TEXT NOT NULL,
+        auth_type TEXT NOT NULL DEFAULT 'api_token',
+        secret_ciphertext TEXT NOT NULL,
+        key_version TEXT NOT NULL DEFAULT '1',
+        secret_fingerprint TEXT NOT NULL DEFAULT '',
+        secret_hint TEXT NOT NULL DEFAULT '',
+        connection_status TEXT NOT NULL DEFAULT 'connected',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        account_address TEXT NOT NULL DEFAULT '',
+        account_label TEXT NOT NULL DEFAULT '',
+        connected_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, platform, account_address),
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = Path(self.temp_dir.name) / "portal.db"
+
+    def _write_legacy_database(self) -> None:
+        """A database whose email row predates the provider column."""
+
+        database = PortalDatabase(self.db_path, bootstrap_registered_emails=["owner@example.com"])
+        database.save_platform_connection(
+            "owner@example.com",
+            platform="email",
+            auth_type="oauth",
+            secret_ciphertext="gmail-ciphertext",
+            secret_hint="Google OAuth",
+            account_address="",
+            metadata={"provider": "google_gmail", "validationStatus": "verified"},
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("ALTER TABLE platform_connections RENAME TO platform_connections_new")
+            conn.executescript(self.LEGACY_TABLE_SQL)
+            conn.execute(
+                """
+                INSERT INTO platform_connections (
+                    id, user_id, platform, auth_type, secret_ciphertext,
+                    key_version, secret_fingerprint, secret_hint,
+                    connection_status, metadata_json, account_address, account_label,
+                    connected_at, updated_at
+                )
+                SELECT id, user_id, platform, auth_type, secret_ciphertext,
+                       key_version, secret_fingerprint, secret_hint,
+                       connection_status, metadata_json, account_address, account_label,
+                       connected_at, updated_at
+                FROM platform_connections_new
+                """
+            )
+            conn.execute("DROP TABLE platform_connections_new")
+
+    def test_a_legacy_row_survives_the_rebuild_with_its_provider_filled_in(self) -> None:
+        self._write_legacy_database()
+
+        database = PortalDatabase(self.db_path)
+        connections = database.list_platform_connections("owner@example.com")
+
+        self.assertEqual(len(connections), 1)
+        self.assertEqual(connections[0]["metadata"]["provider"], "google_gmail")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT provider FROM platform_connections").fetchone()
+        self.assertEqual(row["provider"], "google_gmail")
+
+    def test_outlook_lands_beside_a_migrated_gmail_row_instead_of_over_it(self) -> None:
+        self._write_legacy_database()
+
+        database = PortalDatabase(self.db_path)
+        database.save_platform_connection(
+            "owner@example.com",
+            platform="email",
+            auth_type="oauth",
+            secret_ciphertext="outlook-ciphertext",
+            secret_hint="Microsoft OAuth",
+            # The address a personal Microsoft account reports may be the very
+            # address the Gmail mailbox has.
+            account_address="owner@gmail.com",
+            metadata={"provider": MICROSOFT_OUTLOOK_OAUTH_PROVIDER, "validationStatus": "verified"},
+        )
+
+        records = database.list_platform_connection_secret_records("owner@example.com", "email")
+        secrets = {
+            record["metadata"]["provider"]: record["secretCiphertext"]
+            for record in records
+        }
+
+        self.assertEqual(secrets, {
+            "google_gmail": "gmail-ciphertext",
+            MICROSOFT_OUTLOOK_OAUTH_PROVIDER: "outlook-ciphertext",
+        })
+
+
+class MailboxNamingTests(unittest.TestCase):
+    """Naming mailboxes for a person when two of them share an address."""
+
+    def test_mailboxes_with_their_own_addresses_are_named_by_address(self) -> None:
+        names = mailbox_display_names([
+            {"id": "pc_one", "accountAddress": "personal@gmail.com", "metadata": {"provider": "google_gmail"}},
+            {"id": "pc_two", "accountAddress": "work@contoso.com", "metadata": {"provider": MICROSOFT_OUTLOOK_OAUTH_PROVIDER}},
+        ])
+
+        self.assertEqual(names, {"pc_one": "personal@gmail.com", "pc_two": "work@contoso.com"})
+
+    def test_a_shared_address_carries_the_provider_that_tells_them_apart(self) -> None:
+        names = mailbox_display_names([
+            {"id": "pc_one", "accountAddress": "owner@gmail.com", "metadata": {"provider": "google_gmail"}},
+            {"id": "pc_two", "accountAddress": "owner@gmail.com", "metadata": {"provider": MICROSOFT_OUTLOOK_OAUTH_PROVIDER}},
+        ])
+
+        self.assertEqual(names, {
+            "pc_one": "owner@gmail.com (Gmail)",
+            "pc_two": "owner@gmail.com (Outlook)",
+        })
+
+    def test_a_connection_id_is_never_read_back_as_a_mailbox_name(self) -> None:
+        self.assertEqual(describe_mailbox_selection("pc_abc123"), "a mailbox")
+        self.assertEqual(describe_mailbox_selection("personal@gmail.com"), "personal@gmail.com")
 
 
 class MergeMailDigestResultTests(unittest.TestCase):

@@ -2063,6 +2063,44 @@ def mailbox_display_name(record: dict[str, Any]) -> str:
     return EMAIL_PROVIDER_LABELS.get(provider, "Email")
 
 
+def mailbox_display_names(records: list[dict[str, Any]]) -> dict[str, str]:
+    """Name every mailbox in a run, keeping the names apart from each other.
+
+    Two providers can report the same address, so the address alone would say
+    the same thing twice in a sentence that lists both. Only a repeated name
+    carries its provider, so the common case reads as it always did.
+    """
+
+    names: dict[str, str] = {}
+    seen: dict[str, int] = {}
+    for record in records:
+        name = mailbox_display_name(record)
+        seen[name] = seen.get(name, 0) + 1
+    for record in records:
+        name = mailbox_display_name(record)
+        if seen.get(name, 0) > 1:
+            provider = normalize_text((record.get("metadata") or {}).get("provider"))
+            label = EMAIL_PROVIDER_LABELS.get(provider, "")
+            if label:
+                name = f"{name} ({label})"
+        names[normalize_text(record.get("id"))] = name
+    return names
+
+
+def describe_mailbox_selection(selection: str) -> str:
+    """Say which mailbox a saved action names, in a sentence.
+
+    The saved value is an address wherever one identifies a mailbox on its own.
+    Where two mailboxes share an address it is a connection id instead, which
+    is not something to show anyone.
+    """
+
+    wanted = normalize_text(selection)
+    if not wanted or wanted.startswith("pc_"):
+        return "a mailbox"
+    return wanted
+
+
 def join_with_and(names: list[str]) -> str:
     """Read a short list the way a sentence would say it."""
 
@@ -4958,7 +4996,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "ok": False,
                     "error": "mailbox_not_connected",
                     "message": (
-                        f"This action reads {mailbox_selection}, which is not connected any more. "
+                        f"This action reads {describe_mailbox_selection(mailbox_selection)}, "
+                        "which is not connected any more. "
                         "Open Email setup to reconnect it, or edit the action to read a mailbox you have."
                     ),
                 })
@@ -5015,8 +5054,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             mailbox_results: list[dict[str, Any]] = []
             mailbox_failures: list[dict[str, Any]] = []
             email_provider = GOOGLE_GMAIL_OAUTH_PROVIDER
+            mailbox_names = mailbox_display_names(mailbox_records)
             for record in mailbox_records:
-                mailbox_name = mailbox_display_name(record)
+                mailbox_name = mailbox_names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
                 record_provider = normalize_text((record.get("metadata") or {}).get("provider")) or GOOGLE_GMAIL_OAUTH_PROVIDER
                 try:
                     stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")

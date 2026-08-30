@@ -6465,7 +6465,9 @@ function createConnectedMailboxList(option, connections = []) {
     const disconnect = document.createElement("button");
     disconnect.type = "button";
     disconnect.className = "ghost-button danger small connected-mailbox-disconnect";
-    const mailboxName = getEmailConnectionName(connection);
+    // The provider is part of the name here: two mailboxes can share an
+    // address, and a confirmation has to say which one it would remove.
+    const mailboxName = `${getEmailConnectionName(connection)} (${provider.textContent})`;
     disconnect.textContent = "Disconnect";
     disconnect.setAttribute("aria-label", `Disconnect ${mailboxName}`);
     disconnect.addEventListener("click", () => {
@@ -15513,22 +15515,57 @@ function getAgentProposalManualRunMonthValue(proposal, draft = {}) {
   return formatAgentYearMonthValue(getAgentWorkspaceMonthDate());
 }
 
+// What a saved action stores to name one mailbox. The address is what the
+// runner matches on and what reads well in a saved action, so it stays the
+// value wherever it identifies one mailbox. Two providers can report the same
+// address - a personal Microsoft account may be registered under a Gmail
+// address - and there the connection id is the only thing that separates them.
+function getAgentMailboxOptionValue(connection, connections) {
+  const name = getEmailConnectionName(connection);
+  const shared = connections.filter(
+    (candidate) => getEmailConnectionName(candidate) === name,
+  ).length > 1;
+  return shared ? normalizeText(connection?.id) || name : name;
+}
+
 // "All mailboxes" is first and is the default, so an action created before
 // there was a choice keeps reading everything.
 function getAgentMailboxAccountOptions(currentValue = "") {
   const options = [{ value: "", label: "All mailboxes" }];
-  for (const connection of getConnectedEmailConnections()) {
+  const connections = getConnectedEmailConnections();
+  for (const connection of connections) {
     const name = getEmailConnectionName(connection);
     const provider = EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)] || "Email";
-    options.push({ value: name, label: `${name} (${provider})` });
+    options.push({
+      value: getAgentMailboxOptionValue(connection, connections),
+      label: `${name} (${provider})`,
+    });
   }
   const current = normalizeText(currentValue);
   // A mailbox that has since been disconnected still shows, so the action does
   // not look like it reads everything when it would actually fail.
   if (current && !options.some((option) => option.value === current)) {
-    options.push({ value: current, label: `${current} (not connected)` });
+    options.push({ value: current, label: `${getAgentMailboxSelectionName(current)} (not connected)` });
   }
   return options;
+}
+
+// The saved value read back as a name. It is usually the address itself; a
+// connection id is only there to tell two same-address mailboxes apart, and an
+// id is not something to show anyone.
+function getAgentMailboxSelectionName(selection = "") {
+  const current = normalizeText(selection);
+  if (!current) {
+    return "";
+  }
+  const connection = getConnectedEmailConnections().find(
+    (candidate) => normalizeText(candidate?.id) === current,
+  );
+  if (connection) {
+    const provider = EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)] || "Email";
+    return `${getEmailConnectionName(connection)} (${provider})`;
+  }
+  return current.startsWith("pc_") ? "That mailbox" : current;
 }
 
 // What the summary line calls the mailbox this action reads. An empty
@@ -15537,7 +15574,7 @@ function getAgentMailboxAccountOptions(currentValue = "") {
 function getAgentMailboxSummaryLabel(selection = "") {
   const current = normalizeText(selection);
   if (current) {
-    return current;
+    return getAgentMailboxSelectionName(current);
   }
   const providers = [...new Set(
     getConnectedEmailConnections().map(
