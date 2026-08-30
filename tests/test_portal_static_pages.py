@@ -116,7 +116,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=156", html)
+        self.assertIn("styles.css?v=157", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -297,6 +297,48 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn(".agent-action-editor-chip.is-fixed", styles)
         self.assertIn(".agent-action-editor-hint", styles)
         self.assertIn(':root[data-theme="dark"] .agent-action-editor-chip {', styles)
+
+    def test_email_digest_action_picks_a_mailbox_from_the_connected_ones(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # The digest names its mailbox with the field the runner actually reads,
+        # so the free-text box that only ever held a provider label is gone.
+        self.assertIn('"email-digest": [["Mailbox", "mailboxAccount", ""]],', script)
+        self.assertNotIn('"email-digest": [["Mailbox", "mailbox", "Gmail or Outlook"]],', script)
+        self.assertIn("function getAgentMailboxSummaryLabel", script)
+        self.assertIn("function renderOpenAgentMailboxFields", script)
+
+        mailbox_field = script[
+            script.index("function createAgentMailboxField"):
+            script.index("function createAgentCalendarTagsField")
+        ]
+        # Every connected mailbox is an option, and the button beside the
+        # dropdown adds one without leaving the action.
+        self.assertIn("getAgentMailboxAccountOptions(selected)", mailbox_field)
+        self.assertIn('connectButton.textContent = connectedCount ? "Add mailbox" : "Connect a mailbox";', mailbox_field)
+        self.assertIn('openPlatformConnection("email");', mailbox_field)
+        self.assertIn("agentMailboxFieldRenderers.add(renderer);", mailbox_field)
+        self.assertIn('hint.textContent = "Connect a mailbox so this action has mail to read.";', mailbox_field)
+
+        editor = script[
+            script.index("function createAgentLocalActionEditor"):
+            script.index("function getSourceActionEditorFrequencyValue")
+        ]
+        # Picking a mailbox has to move the summary line too, and the older
+        # "Read mailbox" dropdown is the same setting, so it stays out of sight.
+        self.assertIn("createAgentMailboxField(label, draft.mailboxAccount)", editor)
+        self.assertIn("draft.mailbox = getAgentMailboxSummaryLabel(draft.mailboxAccount);", editor)
+        self.assertIn(
+            "mailboxAccount.field.hidden = hasMailboxPicker || getConnectedEmailConnections().length < 2;",
+            editor,
+        )
+        # "All mailboxes" is an empty value, so saving has to clear the mailbox
+        # rather than leave the action pointed at the one it had.
+        self.assertIn('} else if (key === "mailboxAccount") {', script)
+        self.assertIn(".agent-mailbox-add {", styles)
+        self.assertIn(".agent-mailbox-add .agent-action-editor-select-wrap {", styles)
+        self.assertIn(".agent-mailbox-add-connect {", styles)
 
     def test_calendar_action_picks_calendars_from_inside_the_account(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -1287,8 +1329,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=156", html)
-        self.assertIn("app.js?v=193", html)
+        self.assertIn("styles.css?v=157", html)
+        self.assertIn("app.js?v=195", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

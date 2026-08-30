@@ -6393,6 +6393,7 @@ async function refreshPlatformConnections(options = {}) {
       resetAgentCalendarSources();
     }
     clearGoogleConnectionMissingCredentials();
+    renderOpenAgentMailboxFields();
     return state.platformConnections;
   } finally {
     if (requestSessionKey === currentAuthSessionKey()) {
@@ -6547,6 +6548,7 @@ async function disconnectPlatformConnection(option, connection) {
     state.platformConnections = state.platformConnections.filter(
       (candidate) => candidate.id !== connection.id,
     );
+    renderOpenAgentMailboxFields();
     const message = normalizeText(response.message) || `${option.label} was disconnected.`;
     pushAgentMessage("assistant", message, { kind: "result" });
     persistAgentWorkspace(message);
@@ -6622,6 +6624,7 @@ async function disconnectGoogleConnections(option, connections = []) {
     state.platformConnections = state.platformConnections.filter(
       (candidate) => !removedIds.has(candidate.id),
     );
+    renderOpenAgentMailboxFields();
     const message = normalizeText(responses.find((response) => normalizeText(response?.message))?.message)
       || `${label} was disconnected.`;
     pushAgentMessage("assistant", message, { kind: "result" });
@@ -7294,6 +7297,7 @@ function openCalendarOAuthConnection(option) {
       // reconnect is exactly how a connection gains the grant that lists them.
       resetAgentCalendarSources();
       void refreshAgentCalendarSources();
+      renderOpenAgentMailboxFields();
       const connectedPlatforms = savedConnections.length
         ? savedConnections.map((savedConnection) => savedConnection.platform)
         : selectedScopeIds
@@ -15513,6 +15517,46 @@ function getAgentMailboxAccountOptions(currentValue = "") {
   return options;
 }
 
+// What the summary line calls the mailbox this action reads. An empty
+// selection is every connected mailbox, so it is named that way rather than
+// left blank in a sentence that has to say something.
+function getAgentMailboxSummaryLabel(selection = "") {
+  const current = normalizeText(selection);
+  if (current) {
+    return current;
+  }
+  const providers = [...new Set(
+    getConnectedEmailConnections().map(
+      (connection) => EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)] || "Email",
+    ),
+  )];
+  if (providers.length === 1) {
+    return providers[0];
+  }
+  if (providers.length > 1) {
+    return providers.join(" and ");
+  }
+  return "all your mailboxes";
+}
+
+// Every open Mailbox field, so a mailbox connected while an action editor is
+// open turns up in the dropdown without closing and reopening the card. A
+// field whose editor has been closed is dropped rather than redrawn into a
+// form that is no longer on the page.
+const agentMailboxFieldRenderers = new Set();
+
+function renderOpenAgentMailboxFields() {
+  for (const renderer of [...agentMailboxFieldRenderers]) {
+    if (renderer.field.isConnected) {
+      renderer.attached = true;
+    } else if (renderer.attached) {
+      agentMailboxFieldRenderers.delete(renderer);
+      continue;
+    }
+    renderer.render();
+  }
+}
+
 // A calendar action reads one calendar per tag. Five is well past what anyone
 // watches at once, and it caps how many provider reads one run makes.
 const AGENT_CALENDAR_TAG_LIMIT = 5;
@@ -20627,6 +20671,78 @@ function createAgentLocalActionEditorField(labelText, value, options = {}) {
   return { field, input };
 }
 
+// Which mailbox this action reads, picked from the ones that are connected.
+// Typing the name of a mailbox never chose anything - the runner matches on
+// address, so free text such as "Gmail" quietly meant every mailbox - and the
+// button beside the dropdown is how a mailbox that is not there yet gets
+// added without leaving the action.
+function createAgentMailboxField(labelText, value) {
+  const field = document.createElement("div");
+  field.className = "agent-action-editor-field";
+  const { labelRow, label, fieldStatus } = createAgentActionEditorLabelRow(labelText);
+  field._agentActionEditorFieldStatus = fieldStatus;
+  label.id = createAgentId("agent-mailbox-label");
+
+  const input = document.createElement("select");
+  input.className = "agent-action-editor-select";
+  input.setAttribute("aria-labelledby", label.id);
+  input.value = String(value || "");
+
+  const entry = document.createElement("div");
+  entry.className = "agent-mailbox-add";
+  const connectButton = document.createElement("button");
+  connectButton.type = "button";
+  connectButton.className = "ghost-button small agent-mailbox-add-connect";
+  entry.append(wrapAgentActionEditorSelect(input), connectButton);
+
+  const hint = document.createElement("p");
+  hint.className = "agent-action-editor-hint";
+
+  function render() {
+    const selected = String(input.value || value || "");
+    const options = getAgentMailboxAccountOptions(selected);
+    const signature = options.map((option) => `${option.value}:${option.label}`).join("|");
+    if (input.dataset.agentMailboxOptionsSignature !== signature) {
+      input.replaceChildren();
+      for (const option of options) {
+        const optionElement = document.createElement("option");
+        optionElement.value = option.value;
+        optionElement.textContent = option.label;
+        input.append(optionElement);
+      }
+      input.dataset.agentMailboxOptionsSignature = signature;
+    }
+    input.value = options.some((option) => option.value === selected) ? selected : "";
+
+    const connectedCount = getConnectedEmailConnections().length;
+    connectButton.textContent = connectedCount ? "Add mailbox" : "Connect a mailbox";
+    input.disabled = !connectedCount;
+    if (!connectedCount) {
+      hint.textContent = "Connect a mailbox so this action has mail to read.";
+    } else if (input.value) {
+      hint.textContent = "";
+    } else {
+      hint.textContent = connectedCount > 1
+        ? "Reads every mailbox you have connected."
+        : "Reads the mailbox you have connected.";
+    }
+    hint.hidden = !hint.textContent;
+  }
+
+  // The hint under the dropdown describes the current pick, so the field
+  // redraws itself rather than waiting on whoever is listening for the change.
+  input.addEventListener("change", render);
+  connectButton.addEventListener("click", () => {
+    openPlatformConnection("email");
+  });
+
+  const renderer = { field, render, attached: false };
+  agentMailboxFieldRenderers.add(renderer);
+  render();
+  field.append(labelRow, entry, hint);
+  return { field, input };
+}
+
 // One tag per calendar inside the connected account, not one tag per account.
 // A Google connection holds the owner's own calendar plus every calendar shared
 // with it - Family, a partner's, a team's. The chips are the calendars this
@@ -21267,7 +21383,13 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
   for (const key of ["calendar", "timeWindow", "mailbox", "mailboxAccount", "inactivityPeriod", "result", "outputFolder"]) {
     if (Object.prototype.hasOwnProperty.call(draft, key)) {
       const value = String(draft[key] || "").trim();
-      if (value) fields[key] = value;
+      if (value) {
+        fields[key] = value;
+      } else if (key === "mailboxAccount") {
+        // "All mailboxes" is a choice, not a blank: leaving the saved mailbox
+        // in place would keep the action reading the one it was pointed at.
+        delete fields[key];
+      }
     }
   }
   const runTimezone = getWorkspaceTimeZone();
@@ -21444,12 +21566,26 @@ function createAgentLocalActionEditor(action) {
       ["Calendars", "calendar", ""],
       ["Date range", "timeWindow", "e.g. next week"],
     ],
-    "email-digest": [["Mailbox", "mailbox", "Gmail or Outlook"]],
+    "email-digest": [["Mailbox", "mailboxAccount", ""]],
     reengagement: [["Quiet period", "inactivityPeriod", "e.g. 30 days"]],
     custom: [["Result", "result", "What should this action produce?", { multiline: true }]],
   };
   let resultControl = null;
+  let hasMailboxPicker = false;
   for (const [label, key, placeholder, fieldOptions = {}] of typeFields[proposal.type] || []) {
+    if (key === "mailboxAccount") {
+      // The draft already carries the saved mailbox, and the summary line
+      // still reads from the older "mailbox" field, so a pick updates both.
+      const control = createAgentMailboxField(label, draft.mailboxAccount);
+      control.input.addEventListener("change", () => {
+        draft.mailboxAccount = control.input.value;
+        draft.mailbox = getAgentMailboxSummaryLabel(draft.mailboxAccount);
+        scheduleAgentLocalActionAutoSave(action, draft, form, control.field, { renderOnSave: true });
+      });
+      form.append(control.field);
+      hasMailboxPicker = true;
+      continue;
+    }
     draft[key] = getAgentProposalFieldValue(proposal, key);
     if (key === "result") {
       draft[key] = getAgentMonthlyBatchResultText(proposal, draft) || draft[key];
@@ -21587,8 +21723,9 @@ function createAgentLocalActionEditor(action) {
     draft.mailboxAccount = mailboxAccount.input.value;
     scheduleAgentLocalActionAutoSave(action, draft, form, mailboxAccount.field);
   });
-  // Only worth showing once there is a choice to make.
-  mailboxAccount.field.hidden = getConnectedEmailConnections().length < 2;
+  // Only worth showing once there is a choice to make, and never beside the
+  // action's own Mailbox picker, which is the same setting under a clearer name.
+  mailboxAccount.field.hidden = hasMailboxPicker || getConnectedEmailConnections().length < 2;
   form.append(mailboxAccount.field);
 
   function syncRunScheduleFields() {
