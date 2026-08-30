@@ -386,9 +386,9 @@ AGENT_MONTH_NAME_INDEX = {
     "dec": 12,
     "december": 12,
 }
-# How much of a month one receipt search reads. Saving a bundle downloads the
-# whole message and its attachments, so it stays lower than a chat answer,
-# which only reads message headers.
+# How much of a month one receipt search reads. Both read the whole message,
+# because the total is in the body; saving a bundle also downloads every
+# attachment, which is why it stays the lower of the two.
 AGENT_RECEIPT_ANSWER_MAX_MESSAGES = 100
 AGENT_RECEIPT_BUNDLE_MAX_MESSAGES = 50
 AGENT_GMAIL_BATCH_SEARCH_TERMS = (
@@ -5172,6 +5172,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         access_token,
                         query=mail_query,
                         max_results=search_max_results,
+                        # A receipt run has to name an amount, and the amount is
+                        # in the body of the email. Asking for headers alone
+                        # leaves a question answerable only when the total
+                        # happens to be in the subject line.
+                        include_body=is_custom_google_batch,
                         include_attachments=receipt_attachment_dir is not None,
                         attachment_output_dir=receipt_attachment_dir,
                         attachment_url_prefix=receipt_attachment_url_prefix,

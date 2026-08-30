@@ -44,6 +44,8 @@ GRAPH_MESSAGE_FIELDS = "id,conversationId,subject,from,receivedDateTime,bodyPrev
 # A receipt run needs the total, which lives in the body rather than in the
 # preview Graph returns by default. Digest runs stay on the lighter select.
 GRAPH_RECEIPT_MESSAGE_FIELDS = f"{GRAPH_MESSAGE_FIELDS},body"
+# Enough of Graph's error body to name the cause without filling the log.
+GRAPH_ERROR_LOG_CHARS = 500
 
 
 class OutlookAuthorizationError(RuntimeError):
@@ -58,6 +60,35 @@ class OutlookSummaryError(RuntimeError):
     def __init__(self, message: str, *, code: str = "outlook_summary_failed") -> None:
         super().__init__(message)
         self.code = code
+
+
+def _log_graph_failure(url: str, status: Any, detail: Any) -> None:
+    """Record what Graph refused, since the client only ever sees a sentence.
+
+    The message handed back to a client is deliberately plain, which leaves
+    nothing behind to diagnose from: a mailbox Graph keeps rejecting reads as
+    "try it again later" for ever. The URL carries the query that failed. The
+    access token travels in a header and is never part of either.
+    """
+
+    body = mail_body.collapse_whitespace(detail)[:GRAPH_ERROR_LOG_CHARS]
+    print(f"Outlook read failed: status={status} url={url} detail={body}", flush=True)
+
+
+def _read_error_body(exc: urllib_error.HTTPError) -> str:
+    """The body Graph sent with an error, or "" when there is nothing to read.
+
+    An error carrying no response body cannot be read at all, so this never
+    lets a failed read of the explanation replace the failure being explained.
+    """
+
+    if getattr(exc, "fp", None) is None:
+        return ""
+    try:
+        raw = exc.read()
+    except Exception:
+        return ""
+    return raw.decode("utf-8", errors="replace") if raw else ""
 
 
 def _graph_request(
@@ -83,6 +114,7 @@ def _graph_request(
             raw = response.read()
             payload = json.loads(raw.decode("utf-8")) if raw else {}
     except urllib_error.HTTPError as exc:
+        _log_graph_failure(url, exc.code, _read_error_body(exc))
         if exc.code in {401, 403}:
             raise OutlookAuthorizationError(
                 "Outlook access needs attention: Microsoft rejected the saved credential or its permissions. "
@@ -95,17 +127,20 @@ def _graph_request(
             code="outlook_provider_error",
         ) from exc
     except (urllib_error.URLError, TimeoutError, OSError) as exc:
+        _log_graph_failure(url, "network", exc)
         raise OutlookSummaryError(
             "I couldn't reach Outlook. Check the connection and try again.",
             code="outlook_network_error",
         ) from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        _log_graph_failure(url, "unreadable-response", exc)
         raise OutlookSummaryError(
             "I couldn't read Outlook just now. Try it again later, and reconnect Outlook if it keeps happening.",
             code="outlook_provider_error",
         ) from exc
 
     if not isinstance(payload, dict):
+        _log_graph_failure(url, "unexpected-payload", type(payload).__name__)
         raise OutlookSummaryError(
             "I couldn't read Outlook just now. Try it again later, and reconnect Outlook if it keeps happening.",
             code="outlook_provider_error",
@@ -121,6 +156,20 @@ def _extract_body_text(message: dict[str, Any]) -> str:
     if str(body.get("contentType") or "").strip().lower() == "html":
         return mail_body.limit_body_text(mail_body.html_to_text(content))
     return mail_body.limit_body_text(content)
+
+
+def _as_search_literal(search: str) -> str:
+    """Wrap a KQL string as the quoted literal ``$search`` expects.
+
+    The KQL quotes each word it searches for, and those quotes have to be
+    escaped on the way in or the first one closes the literal early - Graph
+    then reads the rest of the search as syntax it does not know and refuses
+    the whole request, which is not an authorization failure and so reads back
+    as a mailbox that is connected but cannot be opened.
+    """
+
+    escaped = str(search or "").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _format_sender(message: dict[str, Any]) -> str:
@@ -254,7 +303,7 @@ class OutlookDigestRunner:
             # Graph rejects $orderby together with $search, and rejects
             # $search together with $filter, so the search string carries the
             # whole intent on its own.
-            params.append(("$search", f'"{search}"'))
+            params.append(("$search", _as_search_literal(search)))
         else:
             params.append(("$orderby", "receivedDateTime desc"))
         base_url = GRAPH_INBOX_MESSAGES_API_URL if query.in_inbox else GRAPH_MESSAGES_API_URL
@@ -266,6 +315,7 @@ class OutlookDigestRunner:
         *,
         query: MailQuery,
         max_results: int = GRAPH_MAX_DIGEST_MESSAGES,
+        include_body: bool = False,
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
@@ -277,13 +327,17 @@ class OutlookDigestRunner:
                 "Reconnect Outlook with read-only access, then try again."
             )
 
+        # A run that saves attachments is a receipt run, and it reads the body
+        # too. Graph hands the body back on the listing page, so asking for it
+        # costs a bigger response rather than a request per message.
+        want_body = bool(include_body or include_attachments)
         safe_max = max(1, min(GRAPH_MAX_SEARCH_MESSAGES, int(max_results or GRAPH_MAX_DIGEST_MESSAGES)))
         output_dir = Path(attachment_output_dir) if attachment_output_dir else None
         if include_attachments and output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
 
         summaries: list[dict[str, Any]] = []
-        url = self._first_page_url(query, GRAPH_PAGE_SIZE, include_body=include_attachments)
+        url = self._first_page_url(query, GRAPH_PAGE_SIZE, include_body=want_body)
         for _ in range(GRAPH_MAX_PAGES):
             payload = self._get_json(url, token)
             raw_messages = payload.get("value") if isinstance(payload.get("value"), list) else []
@@ -319,8 +373,9 @@ class OutlookDigestRunner:
                     "date": _format_date_header(received, raw_message.get("receivedDateTime")),
                     "snippet": snippet,
                 }
-                if include_attachments:
+                if want_body:
                     item["bodyText"] = _extract_body_text(raw_message)
+                if include_attachments:
                     item["attachments"] = (
                         self._save_receipt_attachments(
                             token,
@@ -426,6 +481,7 @@ class OutlookDigestRunner:
         *,
         query: MailQuery,
         max_results: int = GRAPH_MAX_DIGEST_MESSAGES,
+        include_body: bool = False,
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
@@ -434,6 +490,7 @@ class OutlookDigestRunner:
             access_token,
             query=query,
             max_results=max_results,
+            include_body=include_body,
             include_attachments=include_attachments,
             attachment_output_dir=attachment_output_dir,
             attachment_url_prefix=attachment_url_prefix,

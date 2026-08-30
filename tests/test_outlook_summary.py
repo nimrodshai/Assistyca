@@ -11,6 +11,8 @@ import base64
 import json
 import sys
 import tempfile
+import contextlib
+import io
 import unittest
 import urllib.error
 import urllib.parse
@@ -125,6 +127,41 @@ class OutlookDigestTests(unittest.TestCase):
         # Graph rejects $orderby alongside $search.
         self.assertNotIn("%24orderby", urls[0])
 
+    def test_the_search_terms_own_quotes_do_not_close_the_search_literal(self) -> None:
+        # $search takes a quoted string, and the KQL inside quotes every word
+        # it looks for. Unescaped, the first of those closes the literal early
+        # and Graph refuses the request - which is not an authorization error,
+        # so the mailbox goes on reading as connected while nothing can be
+        # read from it.
+        urls: list[str] = []
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            urls.append(request.full_url)  # type: ignore[attr-defined]
+            return _FakeResponse({"value": []})
+
+        query = MailQuery(terms=("receipt", "invoice"), required_terms=("Render",))
+        OutlookDigestRunner(opener=opener).run("token", query=query)
+
+        search = urllib.parse.parse_qs(urllib.parse.urlparse(urls[0]).query)["$search"][0]
+        self.assertTrue(search.startswith('"') and search.endswith('"'))
+        self.assertNotIn('"', search[1:-1].replace('\\"', ""))
+        self.assertIn('\\"receipt\\"', search)
+        self.assertIn('\\"Render\\"', search)
+
+    def test_a_search_with_no_terms_needs_no_escaping(self) -> None:
+        # A digest searches on the date alone, which carries no quotes of its
+        # own, so nothing here should start escaping a string that is fine.
+        urls: list[str] = []
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            urls.append(request.full_url)  # type: ignore[attr-defined]
+            return _FakeResponse({"value": []})
+
+        OutlookDigestRunner(opener=opener).run("token", query=DEFAULT_DIGEST)
+
+        search = urllib.parse.parse_qs(urllib.parse.urlparse(urls[0]).query)["$search"][0]
+        self.assertNotIn("\\", search)
+
     def test_an_inbox_digest_reads_the_inbox_folder_not_the_whole_mailbox(self) -> None:
         # Gmail's in:inbox has no KQL equivalent, so without the folder
         # endpoint a digest would summarise Sent mail too.
@@ -206,6 +243,52 @@ class OutlookDigestTests(unittest.TestCase):
         self.assertEqual(result["messageCount"], 0)
         self.assertIn("No Outlook messages found", result["message"])
         self.assertNotIn("secret-token", json.dumps(result))
+
+
+def _selected_fields(url: str) -> list[str]:
+    """The message fields one request asked Graph for."""
+
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    return query["$select"][0].split(",")
+
+
+class OutlookBodyTests(unittest.TestCase):
+    """Reading the total means reading the body, with or without a bundle."""
+
+    def _opener(self, urls: list[str]):  # type: ignore[no-untyped-def]
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            urls.append(request.full_url)  # type: ignore[attr-defined]
+            message = _message(subject="Your receipt from Render")
+            message["body"] = {
+                "contentType": "html",
+                "content": "<p>Amount paid</p><p>$13.35</p>",
+            }
+            return _FakeResponse({"value": [message]})
+
+        return opener
+
+    def test_a_chat_answer_asks_graph_for_the_body(self) -> None:
+        urls: list[str] = []
+        items = OutlookDigestRunner(opener=self._opener(urls)).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("receipt",)),
+            include_body=True,
+        )
+
+        self.assertIn("body", _selected_fields(urls[0]))
+        self.assertIn("$13.35", items[0]["bodyText"])
+        # No bundle is being written, so nothing should be downloaded for one.
+        self.assertNotIn("attachments", items[0])
+
+    def test_a_digest_leaves_the_body_behind(self) -> None:
+        urls: list[str] = []
+        items = OutlookDigestRunner(opener=self._opener(urls)).fetch_message_summaries(
+            "token",
+            query=INBOX_QUERY,
+        )
+
+        self.assertNotIn("body", _selected_fields(urls[0]))
+        self.assertNotIn("bodyText", items[0])
 
 
 class OutlookAttachmentTests(unittest.TestCase):
@@ -351,6 +434,50 @@ class OutlookFailureTests(unittest.TestCase):
             OutlookDigestRunner(opener=opener).run("token", query=INBOX_QUERY)
 
         self.assertEqual(caught.exception.code, "outlook_network_error")
+
+    def test_a_refused_read_is_written_down_with_what_graph_said(self) -> None:
+        # The client only ever sees "try it again later", so without this the
+        # cause leaves no trace anywhere and cannot be chased down.
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            raise urllib.error.HTTPError(
+                request.full_url,  # type: ignore[attr-defined]
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(b'{"error":{"code":"BadRequest","message":"Invalid $search"}}'),
+            )
+
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            with self.assertRaises(OutlookSummaryError):
+                OutlookDigestRunner(opener=opener).run("token", query=MailQuery(terms=("receipt",)))
+
+        written = log.getvalue()
+        self.assertIn("status=400", written)
+        self.assertIn("Invalid $search", written)
+        # The URL says which query failed; the credential is a header and must
+        # never end up in a log line.
+        self.assertIn("graph.microsoft.com", written)
+        self.assertNotIn("token", written.replace("%24search", ""))
+
+    def test_an_error_carrying_no_body_still_reports_the_status(self) -> None:
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            with self.assertRaises(OutlookSummaryError):
+                OutlookDigestRunner(opener=self._failing_opener(500)).run("token", query=INBOX_QUERY)
+
+        self.assertIn("status=500", log.getvalue())
+
+    def test_an_unreachable_provider_is_written_down_too(self) -> None:
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            raise urllib.error.URLError("no route")
+
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            with self.assertRaises(OutlookSummaryError):
+                OutlookDigestRunner(opener=opener).run("token", query=INBOX_QUERY)
+
+        self.assertIn("no route", log.getvalue())
 
     def test_a_missing_token_never_reaches_the_network(self) -> None:
         def opener(request, *, timeout):  # type: ignore[no-untyped-def]

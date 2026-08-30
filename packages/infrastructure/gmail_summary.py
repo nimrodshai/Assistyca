@@ -277,6 +277,7 @@ class GmailDigestRunner:
         *,
         query: "str | MailQuery" = DEFAULT_DIGEST_QUERY,
         max_results: int = GMAIL_MAX_DIGEST_MESSAGES,
+        include_body: bool = False,
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
@@ -286,6 +287,9 @@ class GmailDigestRunner:
             raise GmailAuthorizationError(
                 "Gmail access needs attention: no usable access token is saved. Reconnect Gmail with read-only access, then try again."
             )
+        # Saving an attachment needs the whole message anyway, so a run that
+        # saves them reads the body whether or not it asked for it.
+        want_body = bool(include_body or include_attachments)
         safe_query = resolve_gmail_query(query)[:200]
         safe_max = max(1, min(GMAIL_MAX_SEARCH_MESSAGES, int(max_results or GMAIL_MAX_DIGEST_MESSAGES)))
         raw_messages = self._list_message_ids(token, query=safe_query, max_results=safe_max)
@@ -302,7 +306,7 @@ class GmailDigestRunner:
             encoded_message_id = urllib_parse.quote(message_id, safe="")
             detail_params = urllib_parse.urlencode(
                 [("format", "full")]
-                if include_attachments
+                if want_body
                 else [
                     ("format", "metadata"),
                     ("metadataHeaders", "From"),
@@ -319,11 +323,12 @@ class GmailDigestRunner:
                 "date": _header_value(message, "Date"),
                 "snippet": str(message.get("snippet") or "").strip(),
             }
-            if include_attachments:
-                # A receipt run already asks for the full message, so the body
-                # text is in hand: the total is usually there and never in the
-                # snippet Gmail returns.
+            if want_body:
+                # The total is in the body and practically never in the snippet
+                # Gmail returns, so anything that has to read an amount asks for
+                # the whole message rather than its headers.
                 item["bodyText"] = _extract_body_text(message)
+            if include_attachments:
                 item["attachments"] = self._save_receipt_attachments(
                     token,
                     message_id=message_id,
@@ -412,6 +417,7 @@ class GmailDigestRunner:
         *,
         query: "str | MailQuery" = DEFAULT_DIGEST_QUERY,
         max_results: int = GMAIL_MAX_DIGEST_MESSAGES,
+        include_body: bool = False,
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
@@ -420,6 +426,7 @@ class GmailDigestRunner:
             access_token,
             query=query,
             max_results=max_results,
+            include_body=include_body,
             include_attachments=include_attachments,
             attachment_output_dir=attachment_output_dir,
             attachment_url_prefix=attachment_url_prefix,

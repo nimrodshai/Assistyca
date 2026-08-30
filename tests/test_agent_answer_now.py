@@ -469,6 +469,18 @@ class AgentAnswerRunTests(unittest.TestCase):
 
         self.assertFalse(self.run_call.kwargs["include_attachments"])
 
+    def test_answering_a_question_still_reads_the_email_itself(self) -> None:
+        # Not downloading attachments is not the same as not opening the email:
+        # the total is in the body, so a headers-only read can only answer when
+        # the amount happens to be in the subject line.
+        self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertTrue(self.run_call.kwargs["include_body"])
+
 
 class _FakeGmailResponse:
     """One Gmail JSON reply, shaped like the object urlopen hands back."""
@@ -542,6 +554,79 @@ class GmailSearchReachTests(unittest.TestCase):
 
         self.assertEqual(len(items), GMAIL_MAX_DIGEST_MESSAGES)
         self.assertEqual(len(pages), 1)
+
+
+class GmailAnswerBodyTests(unittest.TestCase):
+    """A question asked in chat has to read the email, not just its headers."""
+
+    RECEIPT_HTML = (
+        "<html><body><p>Receipt from Render Services, Inc dba Render</p>"
+        "<table><tr><td>Amount paid</td><td>$13.35</td></tr></table></body></html>"
+    )
+
+    def _opener(self, urls: list[str]):
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            url = getattr(request, "full_url", str(request))
+            urls.append(url)
+            if "/messages?" in url:
+                return _FakeGmailResponse({"messages": [{"id": "receipt-1"}]})
+            return _FakeGmailResponse({
+                "id": "receipt-1",
+                "payload": {
+                    "mimeType": "text/html",
+                    "headers": [
+                        {"name": "Subject", "value": "Your receipt from Render #2021-3589"},
+                        {"name": "From", "value": "Render <invoice@stripe.com>"},
+                    ],
+                    "body": {"data": base64.urlsafe_b64encode(
+                        self.RECEIPT_HTML.encode("utf-8")
+                    ).decode("ascii")},
+                },
+                "snippet": "Receipt from Render Services, Inc dba Render",
+            })
+
+        return opener
+
+    def test_asking_for_the_body_asks_gmail_for_the_whole_message(self) -> None:
+        # The total lives in the body. Gmail only sends it for format=full, so
+        # a headers-only fetch can answer "how much" by luck alone.
+        urls: list[str] = []
+        items = GmailDigestRunner(opener=self._opener(urls)).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("receipt",)),
+            include_body=True,
+        )
+
+        self.assertIn("format=full", urls[1])
+        self.assertIn("$13.35", items[0]["bodyText"])
+
+    def test_a_body_read_saves_no_attachments(self) -> None:
+        # Answering in chat writes no files, so it must not start downloading
+        # attachments just because it now reads the body.
+        items = GmailDigestRunner(opener=self._opener([])).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("receipt",)),
+            include_body=True,
+        )
+
+        self.assertNotIn("attachments", items[0])
+
+    def test_a_digest_still_reads_headers_only(self) -> None:
+        urls: list[str] = []
+        GmailDigestRunner(opener=self._opener(urls)).fetch_message_summaries("token")
+
+        self.assertIn("format=metadata", urls[1])
+
+    def test_the_amount_survives_the_whole_way_into_the_answer(self) -> None:
+        items = GmailDigestRunner(opener=self._opener([])).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("receipt",)),
+            include_body=True,
+        )
+        answer = answer_receipt_question(items, vendor="Render", month_label="Aug 2026")
+
+        self.assertEqual(answer["totals"], {"USD": 13.35})
+        self.assertIn("13.35 USD", answer["answer"])
 
 
 class AgentAnswerChatTests(unittest.TestCase):
