@@ -454,6 +454,11 @@ const AGENT_MAX_FOLDERS = 80;
 const AGENT_MAX_FOLDER_TAGS = 40;
 const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
 const AGENT_ACTION_CHOICE_LIMIT = 20;
+// A folder listing is longer than a panel of folders is, so its picker
+// offers more. The server caps a delete request at the same number.
+const AGENT_FILE_CHOICE_LIMIT = 40;
+// Files travel only for the folders the chat has already opened.
+const AGENT_FILE_CONTEXT_FOLDER_LIMIT = 4;
 const AGENT_COMPOSER_MAX_LINES = 5;
 const VALID_AGENT_PANEL_MODES = new Set(["actions", "chats", "folders"]);
 const VALID_AGENT_FOLDER_SORTS = new Set(["recent", "name", "type", "count"]);
@@ -4592,6 +4597,9 @@ function normalizeAgentMessage(value = {}) {
       .filter((choice) => choice.name);
     metadata.actionChoiceMode = normalizeAgentActionChoiceMode(metadata.actionChoiceMode);
     metadata.choiceKind = normalizeAgentChoiceKind(metadata.choiceKind);
+    // Files are picked out of one folder, and a reloaded picker still has to
+    // say which one, both on the list and in what the pick sends back.
+    metadata.choiceFolder = String(metadata.choiceFolder || "").trim();
   }
 
   return {
@@ -16985,6 +16993,15 @@ const AGENT_CHOICE_KIND_WORDING = {
     pickOne: "Choose one of your folders",
     pickMany: "Choose one or more of your folders",
   },
+  // A folder is a list of files, so "delete some of the saved answers" is
+  // about what is inside one, not about the folder holding it.
+  file: {
+    noun: "file",
+    plural: "files",
+    eyebrow: "Files in this folder",
+    pickOne: "Choose one of the files in this folder",
+    pickMany: "Choose one or more files in this folder",
+  },
 };
 
 function normalizeAgentChoiceKind(value) {
@@ -16994,6 +17011,17 @@ function normalizeAgentChoiceKind(value) {
 
 function getAgentMessageChoiceWording(message) {
   return AGENT_CHOICE_KIND_WORDING[normalizeAgentChoiceKind(message?.metadata?.choiceKind)];
+}
+
+// Files are only ever picked out of one folder, and which folder that is
+// belongs on the list rather than in a sentence above it.
+function getAgentMessageChoiceEyebrow(message) {
+  const wording = getAgentMessageChoiceWording(message);
+  const folder = String(message?.metadata?.choiceFolder || "").trim();
+  if (normalizeAgentChoiceKind(message?.metadata?.choiceKind) === "file" && folder) {
+    return `Files in ${folder.replace(/\/$/, "")}`;
+  }
+  return wording.eyebrow;
 }
 
 function agentMessageAllowsMultipleActionChoices(message) {
@@ -17038,7 +17066,7 @@ function createAgentActionChoiceCard(message) {
 
   const eyebrow = document.createElement("span");
   eyebrow.className = "agent-message-action-picker-eyebrow";
-  eyebrow.textContent = wording.eyebrow;
+  eyebrow.textContent = getAgentMessageChoiceEyebrow(message);
   card.append(eyebrow);
 
   if (multiple) {
@@ -17071,7 +17099,11 @@ function createAgentActionChoiceCard(message) {
       button.setAttribute("aria-pressed", picked ? "true" : "false");
       button.append(createAgentActionChoiceTick());
     } else {
-      button.dataset.agentActionValue = getAgentActionChoiceValue(choice, message.metadata?.choiceKind);
+      button.dataset.agentActionValue = getAgentActionChoiceValue(
+        choice,
+        message.metadata?.choiceKind,
+        message.metadata?.choiceFolder,
+      );
     }
 
     const text = document.createElement("span");
@@ -17090,7 +17122,7 @@ function createAgentActionChoiceCard(message) {
       text.append(detail);
     }
     button.append(text);
-    row.append(button, createAgentActionChoiceDetailsButton(choice, wording.noun));
+    row.append(button, createAgentActionChoiceDetailsButton(choice, message.metadata?.choiceKind));
     list.append(row);
   }
   card.append(list);
@@ -17152,13 +17184,16 @@ function createAgentActionChoiceConfirmRow(message, selectedCount, resolved) {
   return row;
 }
 
-function createAgentActionChoiceDetailsButton(choice, noun = "action") {
+function createAgentActionChoiceDetailsButton(choice, kind = "action") {
   // Two entries can share a name, so the picker keeps a way to look one up
   // before committing to it.
+  const choiceKind = normalizeAgentChoiceKind(kind);
+  const noun = AGENT_CHOICE_KIND_WORDING[choiceKind].noun;
   const button = document.createElement("button");
   button.type = "button";
   button.className = "agent-message-action-picker-details";
   button.dataset.agentActionDetails = String(choice?.id || "");
+  button.dataset.agentActionDetailsKind = choiceKind;
   button.dataset.agentActionDetailsName = String(choice?.name || "");
   button.dataset.agentActionDetailsStatus = String(choice?.status || "");
   button.dataset.agentActionDetailsCreated = String(choice?.created || "");
@@ -17200,7 +17235,31 @@ function findAgentActionChoiceAction(choiceId) {
   return getRenderableAgentActions().find((action) => String(action?.id || "") === id) || null;
 }
 
+// What the two columns of a picked entry are called. An action reports a
+// status and when it was made; a folder reports what it holds and when it
+// last changed; a file reports its size and the same. Reusing the action's
+// words for the other two labelled a file size as a status.
+const AGENT_CHOICE_DETAIL_LABELS = {
+  action: ["Status", "Created"],
+  folder: ["Holds", "Updated"],
+  file: ["Size", "Updated"],
+};
+
+function getAgentChoiceDetailRows(kind, choice) {
+  const [statusLabel, createdLabel] = AGENT_CHOICE_DETAIL_LABELS[normalizeAgentChoiceKind(kind)];
+  return [
+    [statusLabel, String(choice?.status || "").trim()],
+    [createdLabel, String(choice?.created || "").trim()],
+  ].filter(([, value]) => Boolean(value));
+}
+
 function getAgentActionChoiceDetailRows(action, choice) {
+  // Only an action has a panel entry behind it to read details from. A folder
+  // and a file are described by what the picker showed.
+  const choiceKind = normalizeAgentChoiceKind(choice?.kind);
+  if (choiceKind !== "action") {
+    return getAgentChoiceDetailRows(choiceKind, choice);
+  }
   const payload = action?.payload && typeof action.payload === "object" ? action.payload : {};
   const timezone = action?.timezone || "";
   const statusClass = action ? getScheduledActionStatusClass(action.status, action) : "";
@@ -17316,7 +17375,10 @@ function createAgentActionChoiceDetailsBody(action, choice) {
     body.append(grid);
   }
 
-  if (!action) {
+  // Only an action has a panel entry to have gone missing from. A folder or a
+  // file shows what the picker recorded and says nothing about the Actions
+  // panel, which has nothing to do with either.
+  if (!action && normalizeAgentChoiceKind(choice?.kind) === "action") {
     const note = document.createElement("p");
     note.className = "agent-action-choice-details-note";
     note.textContent = "This action is no longer in the Actions panel, so only what the picker recorded is shown.";
@@ -17327,19 +17389,24 @@ function createAgentActionChoiceDetailsBody(action, choice) {
 }
 
 function openAgentActionChoiceDetails(button) {
+  const kind = normalizeAgentChoiceKind(button?.dataset.agentActionDetailsKind);
+  const wording = AGENT_CHOICE_KIND_WORDING[kind];
   const choice = {
     id: String(button?.dataset.agentActionDetails || "").trim(),
+    kind,
     name: String(button?.dataset.agentActionDetailsName || "").trim(),
     status: String(button?.dataset.agentActionDetailsStatus || "").trim(),
     created: String(button?.dataset.agentActionDetailsCreated || "").trim(),
   };
-  const action = findAgentActionChoiceAction(choice.id);
+  // A folder or a file is never in the Actions panel, so it is only ever the
+  // picked entry that is described here.
+  const action = kind === "action" ? findAgentActionChoiceAction(choice.id) : null;
   openAuthAlert(
-    action ? getScheduledActionTitle(action) : (choice.name || "Action"),
+    action ? getScheduledActionTitle(action) : (choice.name || capitalizeWords(wording.noun)),
     "",
     {
       hideMessage: true,
-      eyebrow: "Action details",
+      eyebrow: `${capitalizeWords(wording.noun)} details`,
       icon: "i",
       tone: "progress",
       bodyNode: createAgentActionChoiceDetailsBody(action, choice),
@@ -17542,6 +17609,7 @@ function getAgentMessageRenderSignature(messages) {
       : "",
     message.metadata?.kind === "action-choice" ? normalizeAgentActionChoiceMode(message.metadata?.actionChoiceMode) : "",
     message.metadata?.kind === "action-choice" ? normalizeAgentChoiceKind(message.metadata?.choiceKind) : "",
+    message.metadata?.kind === "action-choice" ? String(message.metadata?.choiceFolder || "") : "",
     message.metadata?.kind === "action-choice"
       ? Array.from(getAgentActionChoiceSelection(message.id)).sort()
       : "",
@@ -20121,15 +20189,16 @@ function getAgentActionChoices() {
     .filter((choice) => Boolean(choice.name));
 }
 
-function getAgentActionChoiceValue(choice, kind = "action") {
+function getAgentActionChoiceValue(choice, kind = "action", folderName = "") {
   // A picked choice goes back to the agent as ordinary chat text. The rendered
   // list already numbers repeated titles, so the name on its own names one
   // action or folder.
   const wording = AGENT_CHOICE_KIND_WORDING[normalizeAgentChoiceKind(kind)];
-  return `The “${String(choice?.name || "").trim()}” ${wording.noun}`;
+  const value = `The “${String(choice?.name || "").trim()}” ${wording.noun}`;
+  return `${value}${getAgentChoiceFolderClause(kind, folderName)}`;
 }
 
-function getAgentActionChoiceListValue(choices, kind = "action") {
+function getAgentActionChoiceListValue(choices, kind = "action", folderName = "") {
   // Several picks answer in one sentence, so the agent reads them as one turn
   // instead of a burst of separate messages.
   const wording = AGENT_CHOICE_KIND_WORDING[normalizeAgentChoiceKind(kind)];
@@ -20137,11 +20206,25 @@ function getAgentActionChoiceListValue(choices, kind = "action") {
     .map((choice) => String(choice?.name || "").trim())
     .filter(Boolean)
     .map((name) => `“${name}”`);
-  if (names.length <= 1) {
-    return names.length ? `The ${names[0]} ${wording.noun}` : "";
+  if (!names.length) {
+    return "";
+  }
+  const clause = getAgentChoiceFolderClause(kind, folderName);
+  if (names.length === 1) {
+    return `The ${names[0]} ${wording.noun}${clause}`;
   }
   const last = names[names.length - 1];
-  return `The ${names.slice(0, -1).join(", ")} and ${last} ${wording.plural}`;
+  return `The ${names.slice(0, -1).join(", ")} and ${last} ${wording.plural}${clause}`;
+}
+
+// A file name means nothing on its own: two folders can hold the same one.
+// Picking a file says which folder it came out of, so the next turn can name
+// both without asking again.
+function getAgentChoiceFolderClause(kind, folderName) {
+  const folder = String(folderName || "").trim().replace(/\/$/, "");
+  return normalizeAgentChoiceKind(kind) === "file" && folder
+    ? ` in the “${folder}” folder`
+    : "";
 }
 
 function buildAgentActionContext() {
@@ -20180,6 +20263,101 @@ function buildAgentFolderContext() {
     itemCount: choice.status,
     updated: choice.created,
   }));
+}
+
+// The files of a folder, in the same shape the picker reads. A file is only
+// pickable once the folder holding it has been opened, so these come from the
+// listing the panel already fetched rather than from anything stored locally.
+function getAgentFileChoices(folderName) {
+  const name = normalizeAgentTextItem(folderName, "");
+  const contents = agentFolderContents.get(name);
+  if (!contents || contents.status !== "ready") {
+    return [];
+  }
+  return (Array.isArray(contents.items) ? contents.items : [])
+    .slice(0, AGENT_FILE_CHOICE_LIMIT)
+    .map((item) => ({
+      id: String(item?.name || "").trim(),
+      name: String(item?.name || "").trim(),
+      status: formatAgentFolderFileSize(item?.size),
+      created: formatAgentFolderFileTime(item?.updatedAt),
+    }))
+    .filter((choice) => Boolean(choice.name));
+}
+
+// Only the folders the chat has already opened travel with a turn. Sending
+// every file the account owns would be a long context for a question that is
+// nearly always about one folder.
+function buildAgentFileContext() {
+  const context = [];
+  for (const [name, contents] of agentFolderContents) {
+    if (contents?.status !== "ready" || !Array.isArray(contents.items) || !contents.items.length) {
+      continue;
+    }
+    context.push({
+      folder: name,
+      files: getAgentFileChoices(name).map((choice) => ({
+        name: choice.name,
+        size: choice.status,
+        updated: choice.created,
+      })),
+    });
+    if (context.length >= AGENT_FILE_CONTEXT_FOLDER_LIMIT) {
+      break;
+    }
+  }
+  return context;
+}
+
+function formatAgentFolderFileTime(value) {
+  const timestamp = parseAgentTimestamp(value);
+  if (!timestamp) {
+    return "";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestamp));
+}
+
+// Deleting is the only thing the chat does to a file, the same way it is the
+// only thing it does to the folder holding it.
+const AGENT_FILE_COMMAND_WORDING = {
+  delete: {
+    question: "Delete",
+    confirm: "Delete them",
+    confirmOne: "Delete it",
+    keep: "Keep them",
+    keepOne: "Keep it",
+    done: "Deleted",
+    failed: "Couldn’t delete",
+    working: "Deleting files...",
+  },
+};
+
+function normalizeAgentFileCommand(value) {
+  const command = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(AGENT_FILE_COMMAND_WORDING, command) ? command : "";
+}
+
+// The names come back from the model as the ones the picker showed, so they
+// resolve against that same listing and a name it does not hold never matches.
+function findAgentFilesByName(folderName, names) {
+  const choices = getAgentFileChoices(folderName);
+  const matched = [];
+  const seen = new Set();
+  for (const name of (Array.isArray(names) ? names : [])) {
+    const key = String(name || "").trim().toLowerCase();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    const choice = choices.find((candidate) => candidate.name.toLowerCase() === key);
+    if (choice) {
+      seen.add(key);
+      matched.push(choice.name);
+    }
+  }
+  return matched;
 }
 
 const AGENT_FOLDER_COMMAND_WORDING = {
@@ -23601,6 +23779,7 @@ function handleAgentMessageAction(event) {
     const picked = getAgentActionChoiceListValue(
       getSelectedAgentActionChoices(pickerMessage),
       pickerMessage?.metadata?.choiceKind,
+      pickerMessage?.metadata?.choiceFolder,
     );
     if (!picked) {
       return true;
@@ -23709,6 +23888,18 @@ function handleAgentMessageAction(event) {
   }
 
   if (action === "cancel-folder-command") {
+    pushAgentMessage("assistant", "Kept them as they are.", { kind: "result" });
+    persistAgentWorkspace("Nothing changed.");
+    renderApp({ preserveStatus: true });
+    return true;
+  }
+
+  if (action === "run-file-command") {
+    void runAgentFileCommand(messageId);
+    return true;
+  }
+
+  if (action === "cancel-file-command") {
     pushAgentMessage("assistant", "Kept them as they are.", { kind: "result" });
     persistAgentWorkspace("Nothing changed.");
     renderApp({ preserveStatus: true });
@@ -24952,6 +25143,16 @@ async function applyAgentTurnResponse(turn, userText) {
     return true;
   }
 
+  if (outcome === "file_command" && await pushAgentFileCommandPrompt(turn)) {
+    return true;
+  }
+
+  // The file picker opens a folder before it can offer anything, so it is
+  // answered here rather than in the metadata the plain reply carries.
+  if (turn?.needsFileChoice && await pushAgentFileChoicePrompt(turn, reply)) {
+    return true;
+  }
+
   if (outcome === "proposal" || (outcome === "question" && turn?.proposalType)) {
     const proposal = createAgentProposalFromTurn(userText, turn);
     if (pushAgentDuplicateActionPrompt(proposal, userText)) {
@@ -25295,6 +25496,182 @@ function forgetAgentFolders(names) {
   persistClientState();
 }
 
+// A folder is a list of files, and deleting some of what it holds is a
+// different request from deleting the folder. Which files those are takes
+// seeing them, so the picker opens the folder the question named and offers
+// what is actually inside it.
+async function pushAgentFileChoicePrompt(turn, reply) {
+  const folder = findAgentFoldersByName(Array.isArray(turn?.folderNames) ? turn.folderNames : [])[0];
+  if (!folder) {
+    return false;
+  }
+
+  await loadAgentFolderContents(folder.name);
+  const contents = agentFolderContents.get(folder.name);
+  if (contents?.status === "error") {
+    pushAgentMessage("assistant", contents.message, { kind: "result" });
+    return true;
+  }
+
+  const choices = getAgentFileChoices(folder.name);
+  if (!choices.length) {
+    pushAgentMessage(
+      "assistant",
+      `There is nothing in “${folder.name}” yet, so there is nothing to delete there.`,
+      { kind: "result" },
+    );
+    return true;
+  }
+
+  const mode = normalizeAgentActionChoiceMode(turn?.fileChoiceMode);
+  return Boolean(pushAgentMessage(
+    "assistant",
+    String(reply || "").trim() || `Which files in “${folder.name}” should I delete?`,
+    {
+      kind: "action-choice",
+      choiceKind: "file",
+      choiceFolder: folder.name,
+      actionChoices: choices,
+      actionChoiceMode: mode,
+      actions: choices.map((choice) => createAgentAction(
+        "choose",
+        choice.name,
+        getAgentActionChoiceValue(choice, "file", folder.name),
+      )),
+    },
+  ));
+}
+
+// The same confirm-then-do a folder command gets, against the files the
+// listing showed. Deleting a few of them leaves the folder standing, which is
+// the whole difference between this and deleting the folder.
+async function pushAgentFileCommandPrompt(turn) {
+  const command = normalizeAgentFileCommand(turn?.fileCommand);
+  const folder = findAgentFoldersByName(Array.isArray(turn?.folderNames) ? turn.folderNames : [])[0];
+  const wanted = (Array.isArray(turn?.fileNames) ? turn.fileNames : [])
+    .map((name) => String(name || "").trim())
+    .filter(Boolean);
+  if (!command || !folder || !wanted.length) {
+    return false;
+  }
+
+  // A file typed rather than picked reaches here with the folder unopened, so
+  // the listing is fetched before any name is matched against it.
+  await loadAgentFolderContents(folder.name);
+  const names = findAgentFilesByName(folder.name, wanted);
+  if (!names.length) {
+    return Boolean(pushAgentMessage(
+      "assistant",
+      `I couldn’t find ${formatAgentActionNameList(wanted)} in “${folder.name}”. Open the folder and tell me which file you mean.`,
+      { kind: "result" },
+    ));
+  }
+
+  const wording = AGENT_FILE_COMMAND_WORDING[command];
+  const one = names.length === 1;
+  return Boolean(pushAgentMessage(
+    "assistant",
+    `${wording.question} ${formatAgentActionNameList(names)} from “${folder.name}”? The folder stays, and that can’t be undone.`,
+    {
+      kind: "result",
+      fileCommand: command,
+      fileCommandFolder: folder.name,
+      fileCommandNames: names,
+      actions: [
+        createAgentAction("run-file-command", one ? wording.confirmOne : wording.confirm, "", "primary"),
+        createAgentAction("cancel-file-command", one ? wording.keepOne : wording.keep, ""),
+      ],
+    },
+  ));
+}
+
+async function runAgentFileCommand(messageId) {
+  const message = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
+  const command = normalizeAgentFileCommand(message?.metadata?.fileCommand);
+  const folderName = String(message?.metadata?.fileCommandFolder || "").trim();
+  const names = (Array.isArray(message?.metadata?.fileCommandNames) ? message.metadata.fileCommandNames : [])
+    .map((name) => String(name || "").trim())
+    .filter(Boolean);
+  if (!command || !folderName || !names.length) {
+    return;
+  }
+
+  const wording = AGENT_FILE_COMMAND_WORDING[command];
+  persistAgentWorkspace(wording.working);
+  renderApp({ preserveStatus: true });
+
+  let result = null;
+  try {
+    result = await apiRequest("/api/agent/files/delete", {
+      method: "POST",
+      body: { folder: folderName, files: names },
+      timeoutMs: 30000,
+    });
+  } catch (error) {
+    const failure = formatApiErrorMessage(error, `${wording.failed} ${formatAgentActionNameList(names)}. Try again in a moment.`);
+    pushAgentMessage("assistant", failure, {
+      kind: "error",
+      technical: getAgentErrorTechnicalInfo(error),
+    });
+    persistAgentWorkspace(failure);
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  // A file the listing showed but disk no longer holds counts as done: the
+  // user asked for it gone, and it is. Only a file the server refused to
+  // remove stays.
+  const refused = new Set((Array.isArray(result?.failed) ? result.failed : [])
+    .map((name) => String(name || "").trim().toLowerCase()));
+  const removed = names.filter((name) => !refused.has(name.toLowerCase()));
+  forgetAgentFiles(folderName, removed, result?.remaining);
+
+  const lines = [];
+  if (removed.length) {
+    lines.push(`${wording.done} ${formatAgentActionNameList(removed)} from “${folderName}”.`);
+  }
+  if (refused.size) {
+    const stuck = names.filter((name) => refused.has(name.toLowerCase()));
+    lines.push(`${wording.failed} ${formatAgentActionNameList(stuck)}. You can try again from the Folders panel.`);
+  }
+  pushAgentMessage("assistant", lines.join(" ") || "Nothing changed.", { kind: "result" });
+  persistAgentWorkspace(lines[0] || "Nothing changed.");
+  renderApp({ preserveStatus: true });
+}
+
+// Drop the files from the listing the panel cached and from the count on the
+// folder, so a deleted file cannot come back as a stale row.
+function forgetAgentFiles(folderName, names, remaining) {
+  const name = normalizeAgentTextItem(folderName, "");
+  const gone = new Set((Array.isArray(names) ? names : [])
+    .map((entry) => String(entry || "").trim().toLowerCase())
+    .filter(Boolean));
+  if (!name || !gone.size) {
+    return;
+  }
+
+  const contents = agentFolderContents.get(name);
+  if (contents?.status === "ready") {
+    const items = (Array.isArray(contents.items) ? contents.items : [])
+      .filter((item) => !gone.has(String(item?.name || "").trim().toLowerCase()));
+    agentFolderContents.set(name, { ...contents, items });
+  }
+
+  const folder = getAgentWorkspace().folders
+    .find((candidate) => String(candidate?.name || "").trim().toLowerCase() === name.toLowerCase());
+  if (folder) {
+    // The server counted what is left, which is the honest number even when
+    // the panel's own count had drifted.
+    const left = Number.parseInt(remaining, 10);
+    folder.itemCount = Number.isFinite(left)
+      ? Math.max(0, left)
+      : Math.max(0, (Number(folder.itemCount) || 0) - gone.size);
+    folder.updatedAt = new Date().toISOString();
+    persistClientState();
+  }
+  renderAgentFolders();
+}
+
 function buildAgentReplyMetadata(turn, outcome) {
   // The agent asks which of the things the account already has the user means;
   // the picker answers it so nobody has to retype a name. Which list it offers
@@ -25401,6 +25778,7 @@ async function handleAgentUserText(text) {
         toolContext: buildAgentToolContext(),
         actionContext: buildAgentActionContext(),
         folderContext: buildAgentFolderContext(),
+        fileContext: buildAgentFileContext(),
         sourceContext,
       },
     });

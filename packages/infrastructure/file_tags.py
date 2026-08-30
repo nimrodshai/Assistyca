@@ -185,6 +185,38 @@ def write_file_tags(folder_path: Path, tags_by_file: dict[str, list[str]]) -> bo
     return True
 
 
+def forget_file_tags(folder_path: Path, names: Iterable[Any]) -> bool:
+    """Drop the tags of files the folder no longer holds.
+
+    Writing tags merges, because filing the same receipt twice must not lose
+    what the first save recorded. Removal is the one thing that cannot go
+    through that door: a tag left behind points at a file nobody can open, and
+    fills the folder's filter with names that match nothing.
+    """
+
+    folder = Path(folder_path)
+    kept = read_file_tags(folder)
+    if not kept:
+        return False
+    gone = {_clean(name).strip("/").casefold() for name in (names or [])}
+    gone.discard("")
+    remaining = {
+        name: tags for name, tags in kept.items() if name.strip("/").casefold() not in gone
+    }
+    if len(remaining) == len(kept):
+        return False
+    try:
+        _tags_path(folder).write_text(
+            json.dumps({"version": FILE_TAGS_VERSION, "files": remaining}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        # The file is gone either way. Its tag is a leftover, not the record.
+        print(f"Forgetting folder tags failed: {exc}", flush=True)
+        return False
+    return True
+
+
 def collect_folder_tags(tags_by_file: dict[str, list[str]]) -> list[str]:
     """Every tag used in one folder, once each, in alphabetical order."""
 

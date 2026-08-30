@@ -21,6 +21,7 @@ from packages.infrastructure.file_tags import FILE_TAGS_FILENAME
 from packages.infrastructure.file_tags import build_receipt_file_tags
 from packages.infrastructure.file_tags import collect_folder_tags
 from packages.infrastructure.file_tags import describe_document_kind
+from packages.infrastructure.file_tags import forget_file_tags
 from packages.infrastructure.file_tags import read_file_tags
 from packages.infrastructure.file_tags import write_file_tags
 
@@ -107,6 +108,20 @@ class FolderTagFileTests(unittest.TestCase):
         write_file_tags(self.folder, {"one.pdf": ["Render", "", None, "render"]})
 
         self.assertEqual(read_file_tags(self.folder), {"one.pdf": ["Render"]})
+
+    def test_a_deleted_file_takes_its_tags_with_it(self) -> None:
+        # Writing merges, so removal cannot go through it: a tag left behind
+        # points at a file nobody can open.
+        write_file_tags(self.folder, {"one.pdf": ["Render", "Jul"], "two.pdf": ["Render", "Aug"]})
+
+        self.assertTrue(forget_file_tags(self.folder, ["two.pdf"]))
+        self.assertEqual(read_file_tags(self.folder), {"one.pdf": ["Render", "Jul"]})
+
+    def test_forgetting_a_file_the_folder_never_tagged_changes_nothing(self) -> None:
+        write_file_tags(self.folder, {"one.pdf": ["Render", "Jul"]})
+
+        self.assertFalse(forget_file_tags(self.folder, ["gone.pdf"]))
+        self.assertEqual(read_file_tags(self.folder), {"one.pdf": ["Render", "Jul"]})
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to run the portal script")

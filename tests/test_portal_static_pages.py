@@ -1852,7 +1852,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function getAgentActionChoiceValue"):
             script.index("function buildAgentActionContext")
         ]
-        self.assertIn("return `The \u201c${String(choice?.name || \"\").trim()}\u201d ${wording.noun}`;", choice_value)
+        self.assertIn("const value = `The \u201c${String(choice?.name || \"\").trim()}\u201d ${wording.noun}`;", choice_value)
         self.assertIn("return refreshScheduledActionUniqueTitles([", script)
 
         picker = script[
@@ -1860,7 +1860,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function renderAgentMessageBubbleContent")
         ]
         self.assertIn('button.dataset.agentMessageAction = multiple ? "toggle-choice" : "choose";', picker)
-        self.assertIn("getAgentActionChoiceValue(choice, message.metadata?.choiceKind)", picker)
+        self.assertIn("getAgentActionChoiceValue(\n        choice,\n        message.metadata?.choiceKind,", picker)
         self.assertIn("areAgentMessageActionsResolved(message, agent.messages)", picker)
 
         # The card replaces the plain chip row rather than doubling it.
@@ -1876,7 +1876,10 @@ class PortalStaticPageTests(unittest.TestCase):
 
         # Each option carries its own details button, so a repeated title can be
         # checked before it is picked.
-        self.assertIn("row.append(button, createAgentActionChoiceDetailsButton(choice, wording.noun));", picker)
+        self.assertIn(
+            "row.append(button, createAgentActionChoiceDetailsButton(choice, message.metadata?.choiceKind));",
+            picker,
+        )
         self.assertIn('button.dataset.agentActionDetails = String(choice?.id || "");', picker)
         self.assertIn("bodyNode: createAgentActionChoiceDetailsBody(action, choice),", picker)
         self.assertIn("returnFocus: button,", picker)
@@ -1938,7 +1941,10 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function getAgentActionChoiceListValue"):
             script.index("function buildAgentActionContext")
         ]
-        self.assertIn("return `The ${names.slice(0, -1).join(\", \")} and ${last} ${wording.plural}`;", list_value)
+        self.assertIn(
+            "return `The ${names.slice(0, -1).join(\", \")} and ${last} ${wording.plural}${clause}`;",
+            list_value,
+        )
 
         # A re-render has to keep the ticks the user already made.
         self.assertIn("const agentActionChoiceSelections = new Map();", script)
@@ -1982,6 +1988,41 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function deleteAgentFolder", script)
         self.assertIn("[data-agent-folder-delete]", script)
         self.assertIn(".agent-folder-delete {", styles)
+
+    def test_deleting_some_of_what_a_folder_holds_uses_the_same_picker(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # A folder is a list of files, and deleting some of the saved answers
+        # is about those rather than the folder holding them. The picker that
+        # already answers "which ones" answers it here too.
+        self.assertIn('eyebrow: "Files in this folder",', script)
+        self.assertIn("function getAgentFileChoices", script)
+        self.assertIn("function buildAgentFileContext", script)
+        self.assertIn("fileContext: buildAgentFileContext(),", script)
+
+        # The files of a folder are only knowable once it has been opened, so
+        # the picker opens it before offering anything.
+        choice_prompt = script[
+            script.index("async function pushAgentFileChoicePrompt"):
+            script.index("async function pushAgentFileCommandPrompt")
+        ]
+        self.assertIn("await loadAgentFolderContents(folder.name)", choice_prompt)
+        self.assertIn('choiceKind: "file",', choice_prompt)
+        self.assertIn("choiceFolder: folder.name,", choice_prompt)
+        self.assertIn("actionChoiceMode: mode,", choice_prompt)
+        self.assertIn("turn?.needsFileChoice && await pushAgentFileChoicePrompt(turn, reply)", script)
+
+        # A file name means nothing without the folder it came out of, so the
+        # pick says both.
+        self.assertIn("function getAgentChoiceFolderClause", script)
+        self.assertIn("` in the \u201c${folder}\u201d folder`", script)
+
+        # Deleting is confirmed before anything goes, and the folder stays.
+        self.assertIn('outcome === "file_command" && await pushAgentFileCommandPrompt(turn)', script)
+        self.assertIn('createAgentAction("run-file-command"', script)
+        self.assertIn('createAgentAction("cancel-file-command"', script)
+        self.assertIn('apiRequest("/api/agent/files/delete"', script)
+        self.assertIn("function forgetAgentFiles", script)
 
     def test_page_scripts_resolve_from_the_url_the_page_is_served_at(self) -> None:
         """Resolve each <script src> the way a browser does, against the request URL.

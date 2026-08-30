@@ -50,6 +50,7 @@ from packages.infrastructure.agent_proposals import AGENT_TURN_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_action_context
+from packages.infrastructure.agent_proposals import normalize_agent_file_context
 from packages.infrastructure.agent_proposals import normalize_agent_folder_context
 from packages.infrastructure.agent_proposals import normalize_agent_tool_context
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
@@ -74,6 +75,7 @@ from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.file_tags import FILE_TAGS_FILENAME
 from packages.infrastructure.file_tags import build_receipt_file_tags
 from packages.infrastructure.file_tags import collect_folder_tags
+from packages.infrastructure.file_tags import forget_file_tags
 from packages.infrastructure.file_tags import read_file_tags
 from packages.infrastructure.file_tags import write_file_tags
 from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
@@ -225,6 +227,9 @@ AGENT_FOLDER_CONTENTS_LIMIT = 200
 # One request removes one pick from the Folders panel, and the picker
 # itself never offers more than a panel-sized list.
 AGENT_FOLDER_DELETE_LIMIT = 20
+# One request removes one pick from a folder's listing, and a listing is
+# longer than a panel of folders is.
+AGENT_FILE_DELETE_LIMIT = 40
 # A kept receipt is filed under the vendor that sent it, because that is how
 # anyone looks for one later. A receipt whose sender could not be read still
 # needs somewhere to go, and this is it.
@@ -2276,6 +2281,43 @@ def describe_saved_receipt_files(files: list[dict[str, Any]]) -> str:
     return f"{count} {noun}"
 
 
+def count_folder_files(folder_path: Path) -> int:
+    """How many files a folder still holds, counted the way the panel shows them.
+
+    The manifest and the tag file describe the folder rather than sitting in
+    it, so a folder holding only those reads as empty here, exactly as it does
+    in the listing.
+    """
+
+    if not folder_path.is_dir():
+        return 0
+    return sum(
+        1
+        for candidate in folder_path.rglob("*")
+        if candidate.is_file() and candidate.name not in (RECEIPT_MANIFEST_FILENAME, FILE_TAGS_FILENAME)
+    )
+
+
+def _prune_empty_subfolders(folder_root: Path) -> None:
+    """Clear the subfolders a deletion emptied, and leave the folder itself.
+
+    Deleting every attachment leaves an attachments folder holding nothing.
+    Nothing lists it, so it is invisible rather than harmful - but it is also
+    the kind of leftover that makes a folder look occupied when it is not.
+    """
+
+    if not folder_root.is_dir():
+        return
+    for candidate in sorted(folder_root.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+        if not candidate.is_dir():
+            continue
+        try:
+            candidate.rmdir()
+        except OSError:
+            # Not empty, or not ours to remove. Either way it stays.
+            continue
+
+
 def describe_saved_receipt_folders(folders: list[str]) -> str:
     """Name the folders the receipts went into, however many that is."""
 
@@ -3263,6 +3305,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
+            or path == "/api/agent/files/delete"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -3333,6 +3376,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
+            or path == "/api/agent/files/delete"
             or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
             or path == "/api/features"
@@ -3624,6 +3668,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/folders/delete":
             self._handle_agent_folder_delete_post()
+            return
+
+        if path == "/api/agent/files/delete":
+            self._handle_agent_file_delete_post()
             return
 
         if path == "/api/agent/proposals/run":
@@ -6147,6 +6195,119 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "failed": failed,
         })
 
+    def _handle_agent_file_delete_post(self) -> None:
+        """Remove single files from a folder, leaving the folder standing.
+
+        Deleting the folder was the only thing the chat could do to what it
+        had filed, so "delete some of the saved answers" had to take the whole
+        bundle with it or do nothing. A folder is a list of files, and picking
+        a few of them out of it is the ordinary version of that request.
+
+        The owner key comes from the session and both the folder and every
+        file name are resolved back against the folder's own directory, so a
+        caller can only ever delete inside their own output folder.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        requested_folder = normalize_text(payload.get("folder"))
+        if not requested_folder:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "folder_required",
+                "message": "Name the folder the files are in.",
+            })
+            return
+
+        raw_files = payload.get("files")
+        if not isinstance(raw_files, list):
+            raw_files = [payload.get("file")]
+        requested = [
+            name for name in (normalize_text(item) for item in raw_files[:AGENT_FILE_DELETE_LIMIT]) if name
+        ]
+        if not requested:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "file_required",
+                "message": "Name the files to delete.",
+            })
+            return
+
+        logical_folder = normalize_receipt_output_folder(requested_folder)
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        folder_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_folder,
+        )
+        try:
+            folder_root = folder_path.resolve()
+        except OSError:
+            folder_root = folder_path
+
+        deleted: list[str] = []
+        # A file the panel listed but disk no longer holds is not a failure:
+        # the user asked for it gone and it is gone. A file that refused to go
+        # is, and the chat has to say which is which.
+        missing: list[str] = []
+        failed: list[str] = []
+        for requested_file in requested:
+            # A listing carries the path inside the folder, so a name may hold
+            # a subfolder. Resolving it back against the folder is what keeps
+            # that from becoming a way out of it.
+            candidate = (folder_root / requested_file.lstrip("/"))
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                failed.append(requested_file)
+                continue
+            if folder_root not in resolved.parents:
+                failed.append(requested_file)
+                continue
+            # The manifest and the tag file describe the folder rather than
+            # sitting in it as answers, and the listing never offered them.
+            if resolved.name in (RECEIPT_MANIFEST_FILENAME, FILE_TAGS_FILENAME):
+                failed.append(requested_file)
+                continue
+            if not resolved.is_file():
+                missing.append(requested_file)
+                continue
+            try:
+                resolved.unlink()
+            except OSError as exc:
+                print(f"Portal agent file delete failed for {logical_folder}{requested_file}: {exc}", flush=True)
+                failed.append(requested_file)
+                continue
+            deleted.append(requested_file)
+
+        if deleted:
+            # A tag pointing at a file nobody can open is worse than no tag.
+            forget_file_tags(folder_root, deleted)
+            _prune_empty_subfolders(folder_root)
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "folder": logical_folder,
+            "deleted": deleted,
+            "missing": missing,
+            "failed": failed,
+            "remaining": count_folder_files(folder_root),
+        })
+
     def _handle_agent_folder_save_post(self) -> None:
         """File the receipts an answer was read from, under the vendor.
 
@@ -6593,6 +6754,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         source_context = normalize_agent_source_context(payload.get("sourceContext"))
         action_context = normalize_agent_action_context(payload.get("actionContext"))
         folder_context = normalize_agent_folder_context(payload.get("folderContext"))
+        file_context = normalize_agent_file_context(payload.get("fileContext"))
         prompt = build_agent_turn_prompt(
             user_message=user_message,
             conversation=conversation,
@@ -6603,6 +6765,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             source_context=source_context,
             action_context=action_context,
             folder_context=folder_context,
+            file_context=file_context,
         )
         model = resolve_task_model(
             AGENT_TURN_COMPLEXITY,

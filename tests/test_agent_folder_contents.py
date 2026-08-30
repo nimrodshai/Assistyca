@@ -14,6 +14,8 @@ from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import build_agent_receipt_owner_key
 from packages.infrastructure.portal_auth.server import build_saved_receipt_folder
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.file_tags import read_file_tags
+from packages.infrastructure.file_tags import write_file_tags
 
 
 class AgentFolderContentsTests(unittest.TestCase):
@@ -98,6 +100,114 @@ class AgentFolderContentsTests(unittest.TestCase):
         )
         with urllib_request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def _delete_files(self, body: dict[str, object], *, token: str | None = "") -> dict[str, object]:
+        headers = {"Content-Type": "application/json"}
+        auth_token = self.session_token if token == "" else token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/files/delete",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_deletes_picked_files_and_leaves_the_folder_standing(self) -> None:
+        folder = self._write_bundle()
+
+        payload = self._delete_files({
+            "folder": "Receipts/Jul2026",
+            # A listing carries the path inside the folder, so a pick can name
+            # a file in a subfolder.
+            "files": ["receipts.xlsx", "attachments/msg-1-01-receipt.png"],
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["deleted"], ["receipts.xlsx", "attachments/msg-1-01-receipt.png"])
+        self.assertEqual(payload["failed"], [])
+        self.assertTrue(folder.is_dir())
+        self.assertTrue((folder / "receipt-report.pdf").exists())
+        self.assertFalse((folder / "receipts.xlsx").exists())
+        self.assertFalse((folder / "attachments" / "msg-1-01-receipt.png").exists())
+        # An attachments folder holding nothing is a leftover, not content.
+        self.assertFalse((folder / "attachments").exists())
+        # bundle.json describes the folder rather than sitting in it, so what
+        # is left is the report alone.
+        self.assertEqual(payload["remaining"], 1)
+
+    def test_a_file_the_listing_showed_but_disk_lost_is_not_a_failure(self) -> None:
+        self._write_bundle()
+
+        payload = self._delete_files({"folder": "Receipts/Jul2026", "files": ["gone.pdf"]})
+
+        self.assertEqual(payload["deleted"], [])
+        self.assertEqual(payload["missing"], ["gone.pdf"])
+        self.assertEqual(payload["failed"], [])
+
+    def test_a_file_name_cannot_delete_outside_the_folder(self) -> None:
+        folder = self._write_bundle()
+        outside = self.output_dir / "secrets.txt"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("private", encoding="utf-8")
+        sibling = folder.parent / "Jun2026"
+        sibling.mkdir(parents=True, exist_ok=True)
+        (sibling / "receipt.pdf").write_bytes(b"other month")
+
+        payload = self._delete_files({
+            "folder": "Receipts/Jul2026",
+            "files": ["../../../secrets.txt", "../Jun2026/receipt.pdf", "/etc/hosts"],
+        })
+
+        self.assertEqual(payload["deleted"], [])
+        self.assertTrue(outside.exists())
+        self.assertTrue((sibling / "receipt.pdf").exists())
+
+    def test_the_manifest_is_not_a_file_the_chat_can_delete(self) -> None:
+        # It never appeared in a listing, so nothing could have picked it, and
+        # removing it would break reading the bundle back.
+        folder = self._write_bundle()
+
+        payload = self._delete_files({"folder": "Receipts/Jul2026", "files": ["bundle.json"]})
+
+        self.assertEqual(payload["failed"], ["bundle.json"])
+        self.assertTrue((folder / "bundle.json").exists())
+
+    def test_deleting_a_file_forgets_the_tags_that_described_it(self) -> None:
+        folder = self._write_bundle()
+        write_file_tags(folder, {
+            "receipt-report.pdf": ["Render", "Aug"],
+            "receipts.xlsx": ["Render", "Jul"],
+        })
+
+        self._delete_files({"folder": "Receipts/Jul2026", "files": ["receipts.xlsx"]})
+
+        self.assertEqual(read_file_tags(folder), {"receipt-report.pdf": ["Render", "Aug"]})
+
+    def test_deleting_files_needs_a_signed_in_owner(self) -> None:
+        folder = self._write_bundle()
+
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._delete_files(
+                {"folder": "Receipts/Jul2026", "files": ["receipts.xlsx"]},
+                token=None,
+            )
+
+        self.assertEqual(caught.exception.code, 401)
+        self.assertTrue((folder / "receipts.xlsx").exists())
+
+    def test_rejects_a_file_delete_with_nothing_named(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._delete_files({"folder": "Receipts/Jul2026", "files": []})
+
+        self.assertEqual(caught.exception.code, 400)
+
+        with self.assertRaises(urllib_error.HTTPError) as missing_folder:
+            self._delete_files({"files": ["receipts.xlsx"]})
+
+        self.assertEqual(missing_folder.exception.code, 400)
 
     def test_deletes_a_folder_with_the_files_inside_it(self) -> None:
         folder = self._write_bundle()

@@ -11,10 +11,12 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.agent_proposals import AGENT_ACTION_CONTEXT_MAX_ITEMS
+from packages.infrastructure.agent_proposals import AGENT_FILE_CONTEXT_MAX_FOLDERS
 from packages.infrastructure.agent_proposals import AGENT_FOLDER_CONTEXT_MAX_ITEMS
 from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_action_context
+from packages.infrastructure.agent_proposals import normalize_agent_file_context
 from packages.infrastructure.agent_proposals import normalize_agent_folder_context
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
@@ -470,6 +472,158 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertEqual(renamed["folderCommand"], "")
         self.assertEqual(nameless["outcome"], "message")
         self.assertEqual(nameless["folderNames"], [])
+
+    def test_turn_prompt_lists_the_files_of_the_folders_that_were_opened(self) -> None:
+        # A folder is a list of files, and deleting some of the saved answers
+        # is about those rather than about the folder holding them.
+        prompt = build_agent_turn_prompt(
+            user_message="Delete some of the saved answers in Render",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            folder_context=[{"name": "Render", "kind": "Receipts", "itemCount": "3 items"}],
+            file_context=[
+                {
+                    "folder": "Render",
+                    "files": [
+                        {"name": "receipt-report.pdf", "size": "12 KB", "updated": "Aug 28"},
+                        {"name": "attachments/aug-receipt.png"},
+                    ],
+                },
+            ],
+        )
+
+        self.assertIn('"existingFolderFiles"', prompt)
+        self.assertIn('"name":"receipt-report.pdf"', prompt)
+        self.assertIn("needsFileChoice=true", prompt)
+        self.assertIn("outcome=file_command", prompt)
+        self.assertIn("a folder missing from it is not an empty folder", prompt)
+
+    def test_file_context_keeps_only_folders_that_have_files(self) -> None:
+        folders = normalize_agent_file_context([
+            {
+                "folder": "  Render  ",
+                "files": [
+                    {"name": " receipt.pdf ", "size": "12 KB", "updatedAt": "Aug 28"},
+                    {"name": ""},
+                    "attachments/aug.png",
+                ],
+            },
+            # An opened folder with nothing in it says nothing the model can
+            # use, and an entry with no name is not a file.
+            {"folder": "Empty", "files": []},
+            "not a folder",
+        ])
+
+        self.assertEqual(folders, [
+            {
+                "folder": "Render",
+                "files": [
+                    {"name": "receipt.pdf", "size": "12 KB", "updated": "Aug 28"},
+                    {"name": "attachments/aug.png"},
+                ],
+            },
+        ])
+        self.assertEqual(
+            len(normalize_agent_file_context([
+                {"folder": f"Folder {index}", "files": [{"name": "a.pdf"}]}
+                for index in range(12)
+            ])),
+            AGENT_FILE_CONTEXT_MAX_FOLDERS,
+        )
+
+    def test_turn_response_keeps_a_file_picker_on_a_plain_question(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which of them should go?",
+                "needsFileChoice": True,
+                "fileChoiceMode": "Multiple",
+                "folderNames": ["Render"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertTrue(turn["needsFileChoice"])
+        self.assertEqual(turn["fileChoiceMode"], "multiple")
+        # Which files to offer takes knowing which folder they are in.
+        self.assertEqual(turn["folderNames"], ["Render"])
+        self.assertFalse(turn["needsFolderChoice"])
+
+    def test_turn_response_drops_a_file_picker_with_no_folder_to_open(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which of them should go?",
+                "needsFileChoice": True,
+                "fileChoiceMode": "multiple",
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertFalse(turn["needsFileChoice"])
+        self.assertEqual(turn["fileChoiceMode"], "")
+
+    def test_turn_response_shows_one_picker_at_a_time(self) -> None:
+        # Asking for two at once means the model did not decide which list the
+        # user meant, and guessing is the mistake these fields prevent.
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which ones?",
+                "needsFolderChoice": True,
+                "needsFileChoice": True,
+                "folderNames": ["Render"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertFalse(turn["needsFolderChoice"])
+        self.assertFalse(turn["needsFileChoice"])
+
+    def test_turn_response_carries_a_delete_command_for_the_named_files(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "file_command",
+                "reply": "Ready when you are.",
+                "fileCommand": "Delete",
+                "fileNames": ["receipt.pdf", "attachments/aug.png", "receipt.pdf"],
+                "folderNames": ["Render"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["outcome"], "file_command")
+        self.assertEqual(turn["fileCommand"], "delete")
+        self.assertEqual(turn["fileNames"], ["receipt.pdf", "attachments/aug.png"])
+        self.assertEqual(turn["folderNames"], ["Render"])
+
+    def test_turn_response_refuses_a_file_command_it_cannot_carry_out(self) -> None:
+        # Nothing renames or moves a file, and a file named without the folder
+        # holding it points at nothing.
+        renamed = normalize_agent_turn_response(
+            {
+                "outcome": "file_command",
+                "reply": "Renaming it.",
+                "fileCommand": "rename",
+                "fileNames": ["receipt.pdf"],
+                "folderNames": ["Render"],
+            },
+            has_active_proposal=False,
+        )
+        homeless = normalize_agent_turn_response(
+            {
+                "outcome": "file_command",
+                "reply": "Deleting it.",
+                "fileCommand": "delete",
+                "fileNames": ["receipt.pdf"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(renamed["outcome"], "message")
+        self.assertEqual(renamed["fileCommand"], "")
+        self.assertEqual(homeless["outcome"], "message")
+        self.assertEqual(homeless["fileNames"], [])
 
     def test_turn_response_leaves_the_folder_command_empty_elsewhere(self) -> None:
         turn = normalize_agent_turn_response(

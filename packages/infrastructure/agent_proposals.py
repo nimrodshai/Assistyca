@@ -13,6 +13,10 @@ AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS = 500
 AGENT_TURN_MAX_OUTPUT_TOKENS = 700
 AGENT_ACTION_CONTEXT_MAX_ITEMS = 20
 AGENT_FOLDER_CONTEXT_MAX_ITEMS = 20
+# Files travel only for the folders the chat has already opened, so this
+# caps a listing rather than the whole account.
+AGENT_FILE_CONTEXT_MAX_FOLDERS = 4
+AGENT_FILE_CONTEXT_MAX_ITEMS = 40
 AGENT_MAILBOX_CONTEXT_MAX_ITEMS = 12
 AGENT_PROPOSAL_REVISION_INSTRUCTIONS = (
     "You revise an existing Assistyca proposal from the user's latest message. "
@@ -77,6 +81,10 @@ _AGENT_ACTION_COMMAND_MAX_NAMES = 20
 # A folder holds files rather than running, so the only thing to do to one
 # from the chat is remove it. Nothing here pauses or resumes.
 _AGENT_FOLDER_COMMANDS = {"delete"}
+# A file inside a folder is one saved answer, one receipt, one export.
+# Removing it is the only change to make to it from the chat, the same way
+# it is for the folder holding it.
+_AGENT_FILE_COMMANDS = {"delete"}
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "email-digest": ["mailbox", "schedule", "timeWindow", "deliveryChannel"],
     "calendar-summary": ["calendar", "timeWindow", "deliveryChannel"],
@@ -261,6 +269,52 @@ def normalize_agent_folder_context(value: Any) -> list[dict[str, str]]:
         if updated:
             entry["updated"] = updated
         folders.append(entry)
+    return folders
+
+
+def normalize_agent_file_context(value: Any) -> list[dict[str, Any]]:
+    """The files inside the folders the chat has already looked into.
+
+    A folder is a list of files, and "delete some of the saved answers" is
+    about the files, not the folder holding them. Naming one takes seeing it,
+    so the listing of an opened folder travels with the turn and the model
+    copies names out of it instead of inventing them.
+
+    Only folders that were actually opened appear here. Sending every file the
+    account owns would be a large context for a question that is nearly always
+    about one folder.
+    """
+
+    raw_items = value if isinstance(value, list) else []
+    folders: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_item in raw_items[:AGENT_FILE_CONTEXT_MAX_FOLDERS]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        folder = _single_line(item.get("folder") or item.get("name"), 120)
+        key = folder.casefold()
+        if not folder or key in seen:
+            continue
+        raw_files = item.get("files") if isinstance(item.get("files"), list) else []
+        files: list[dict[str, str]] = []
+        for raw_file in raw_files[:AGENT_FILE_CONTEXT_MAX_ITEMS]:
+            entry_source = raw_file if isinstance(raw_file, dict) else {"name": raw_file}
+            # The same cap a command name gets, so every name the picker
+            # can show is a name a command can still carry back.
+            name = _single_line(entry_source.get("name"), 120)
+            if not name:
+                continue
+            entry = {"name": name}
+            size = _single_line(entry_source.get("size"), 20)
+            if size:
+                entry["size"] = size
+            updated = _single_line(entry_source.get("updated") or entry_source.get("updatedAt"), 60)
+            if updated:
+                entry["updated"] = updated
+            files.append(entry)
+        if not files:
+            continue
+        seen.add(key)
+        folders.append({"folder": folder, "files": files})
     return folders
 
 
@@ -500,6 +554,7 @@ def build_agent_turn_prompt(
     source_context: dict[str, Any] | None = None,
     action_context: Any = None,
     folder_context: Any = None,
+    file_context: Any = None,
 ) -> str:
     context = {
         "timezone": _single_line(timezone_name, 120) or "UTC",
@@ -510,6 +565,7 @@ def build_agent_turn_prompt(
         "sourceContext": normalize_agent_source_context(source_context),
         "existingActions": normalize_agent_action_context(action_context),
         "existingFolders": normalize_agent_folder_context(folder_context),
+        "existingFolderFiles": normalize_agent_file_context(file_context),
         "recentConversation": conversation,
         "latestUserMessage": _single_line(user_message, AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
     }
@@ -526,6 +582,7 @@ def build_agent_turn_prompt(
         "- action_command: delete, pause, or resume actions the account already has, once it is clear which "
         "ones.\n"
         "- folder_command: delete folders the account already keeps, once it is clear which ones.\n"
+        "- file_command: delete files inside one of those folders, once it is clear which ones.\n"
         "- message: answer conversationally without creating or executing anything.\n"
         "None of these covers everything a person might ask. When a message asks for something no outcome "
         "here can do, say so plainly in one line with outcome=message and offer the nearest thing you can "
@@ -594,7 +651,8 @@ def build_agent_turn_prompt(
         "names every month of that year in manualRunMonth, ending with the current month when the year is the "
         "one in progress. Leave outputFolder out, because an answer run saves nothing.\n"
         "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode, "
-        "actionCommand, actionNames, needsFolderChoice, folderChoiceMode, folderCommand, folderNames. reply is "
+        "actionCommand, actionNames, needsFolderChoice, folderChoiceMode, folderCommand, folderNames, "
+        "needsFileChoice, fileChoiceMode, fileCommand, fileNames. reply is "
         "required for every "
         "outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
@@ -676,6 +734,32 @@ def build_agent_turn_prompt(
         "the picker. The application shows its own confirmation naming those folders, deletes them and the "
         "files inside when the user confirms, and reports the result afterwards, so keep reply to one short "
         "line and never say the folders are gone.\n"
+        "A folder is a list of files, and a request can be about the files rather than the folder "
+        "holding them. Deleting some of the saved answers, a few of the receipts, or one file leaves the "
+        "folder itself standing; deleting the folder takes everything in it. Read which of the two the "
+        "message asks for, and when the wording says some, a few, several, or names a file, it is about "
+        "the files.\n"
+        "existingFolderFiles lists the files inside the folders the chat has already opened. Each entry "
+        "has folder and files, and each file has name, size, and updated. It holds only the folders that "
+        "were opened, so a folder missing from it is not an empty folder.\n"
+        "When the user wants files deleted, first name the folder they are in. If the message does not "
+        "say which folder, return outcome=question with needsFolderChoice=true and ask which folder they "
+        "mean; picking one is not a request to delete it. Once the folder is known but the message does "
+        "not identify the files, return outcome=question with needsFileChoice=true, folderNames holding "
+        "that one folder name copied exactly from existingFolders, no proposalType, and ask which files "
+        "they mean in one short sentence. The application opens that folder and shows its files as a "
+        "picker, so never name the files yourself, never ask the user to retype one, and never say the "
+        "folder is empty. fileChoiceMode works the way actionChoiceMode does. Only one picker is offered "
+        "per turn: never set needsFileChoice together with needsActionChoice or needsFolderChoice.\n"
+        "Once it is clear which files the user wants deleted, return outcome=file_command with "
+        "fileCommand=delete, folderNames holding the one folder they are in, and fileNames holding those "
+        "file names copied exactly from existingFolderFiles, one entry per file. A name there may carry a "
+        "subfolder, such as attachments/receipt.png; copy it whole. Deleting is the only thing this "
+        "command does; nothing renames or moves a file, and a request for one of those is outcome=message "
+        "saying so. Return the command as soon as the files are identified, including on the turn right "
+        "after the user answers the picker. The application shows its own confirmation naming those "
+        "files, deletes them when the user confirms, and reports the result afterwards, so keep reply to "
+        "one short line and never say the files are gone.\n"
         "Never set up a second copy of an action the account already has. Before returning outcome=proposal or "
         "outcome=question with a proposalType, compare the request with existingActions: if an entry has the same "
         "kind and covers the same job, return outcome=message instead. Say which action they already have, in "
@@ -864,15 +948,23 @@ def normalize_agent_turn_response(
     plain_question = turn["outcome"] == "question" and not turn["proposalType"]
     wants_actions = response.get("needsActionChoice") is True and plain_question
     wants_folders = response.get("needsFolderChoice") is True and plain_question
-    # Asking for both pickers at once means the model did not decide which of
-    # the two lists the user meant. Showing either would be a guess, and
+    wants_files = response.get("needsFileChoice") is True and plain_question
+    # Asking for more than one picker at once means the model did not decide
+    # which list the user meant. Showing any of them would be a guess, and
     # guessing the list is the mistake these fields exist to prevent, so the
     # reply stands on its own as an ordinary question.
-    if wants_actions and wants_folders:
+    if sum((wants_actions, wants_folders, wants_files)) > 1:
         wants_actions = False
         wants_folders = False
+        wants_files = False
+    # Which files to offer takes knowing which folder they are in, so a file
+    # picker without a folder named has nothing to open.
+    file_choice_folder = _normalize_agent_command_names(response.get("folderNames"))[:1]
+    if wants_files and not file_choice_folder:
+        wants_files = False
     turn["needsActionChoice"] = wants_actions
     turn["needsFolderChoice"] = wants_folders
+    turn["needsFileChoice"] = wants_files
     # A picker that is not shown has no mode, so the field stays empty there.
     turn["actionChoiceMode"] = (
         _normalize_choice_mode(response.get("actionChoiceMode")) if wants_actions else ""
@@ -880,12 +972,19 @@ def normalize_agent_turn_response(
     turn["folderChoiceMode"] = (
         _normalize_choice_mode(response.get("folderChoiceMode")) if wants_folders else ""
     )
+    turn["fileChoiceMode"] = (
+        _normalize_choice_mode(response.get("fileChoiceMode")) if wants_files else ""
+    )
     # Every turn carries these keys so the client never has to guess whether a
     # command was dropped or simply never asked for.
     turn.setdefault("actionCommand", "")
     turn.setdefault("actionNames", [])
     turn.setdefault("folderCommand", "")
     turn.setdefault("folderNames", [])
+    turn.setdefault("fileCommand", "")
+    turn.setdefault("fileNames", [])
+    if wants_files:
+        turn["folderNames"] = file_choice_folder
     return turn
 
 
@@ -1054,6 +1153,23 @@ def _normalize_agent_turn_outcome(
                 "folderNames": names,
             }
 
+    if outcome == "file_command":
+        command = _single_line(response.get("fileCommand"), 20).lower()
+        names = _normalize_agent_command_names(response.get("fileNames"))
+        # A file is only findable inside the folder holding it, so a command
+        # that names files but no folder points at nothing.
+        folders = _normalize_agent_command_names(response.get("folderNames"))[:1]
+        if command in _AGENT_FILE_COMMANDS and names and folders:
+            return {
+                "outcome": "file_command",
+                "reply": reply,
+                "proposalType": "",
+                "changes": {},
+                "fileCommand": command,
+                "fileNames": names,
+                "folderNames": folders,
+            }
+
     if outcome == "approve_proposal" and has_active_proposal:
         return {"outcome": "approve_proposal", "reply": reply, "proposalType": "", "changes": {}}
 
@@ -1087,6 +1203,7 @@ __all__ = [
     "normalize_agent_mailbox_context",
     "normalize_agent_tool_context",
     "normalize_agent_action_context",
+    "normalize_agent_file_context",
     "normalize_agent_folder_context",
     "normalize_agent_proposal_for_revision",
     "normalize_agent_proposal_for_turn",
