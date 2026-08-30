@@ -4452,6 +4452,63 @@ function normalizeAgentHelperDraft(value = {}) {
   };
 }
 
+// A chart an answer can carry, the way it carries buttons: plain data, and
+// nothing in it about mail, money, or months. Whatever builds one decides what
+// the bars mean and writes the label beside each of them; this layer only says
+// what a chart is made of, so a second kind of comparison can reuse the same
+// card without teaching the drawing code anything new.
+const AGENT_CHART_POINT_LIMIT = 24;
+const AGENT_CHART_TYPES = new Set(["bar"]);
+
+function createAgentChartPoint(label, value, display, note = "") {
+  return {
+    label: String(label || "").trim(),
+    value: Number.isFinite(Number(value)) ? Number(value) : 0,
+    // The number is drawn, but it is also written out, because a bar on its
+    // own is a shape and the client asked for an amount.
+    display: String(display || "").trim(),
+    // Why a bar is shorter than it looks like it should be - an empty month,
+    // receipts nobody could price. A bar that quietly stands for "unknown"
+    // reads as "nothing", which is a different answer.
+    note: String(note || "").trim(),
+  };
+}
+
+function createAgentChart(title, points, options = {}) {
+  return normalizeAgentChart({
+    type: options.type,
+    title,
+    caption: options.caption,
+    points,
+  });
+}
+
+// Charts are kept with the message they belong to and read back from storage
+// later, so what comes back is treated as untrusted: only the fields the card
+// draws survive, and a chart with fewer than two bars is no comparison and is
+// dropped rather than drawn.
+function normalizeAgentChart(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!source) {
+    return null;
+  }
+  const points = (Array.isArray(source.points) ? source.points : [])
+    .filter((point) => point && typeof point === "object")
+    .map((point) => createAgentChartPoint(point.label, point.value, point.display, point.note))
+    .filter((point) => point.label)
+    .slice(0, AGENT_CHART_POINT_LIMIT);
+  if (points.length < 2) {
+    return null;
+  }
+  const type = String(source.type || "").trim();
+  return {
+    type: AGENT_CHART_TYPES.has(type) ? type : "bar",
+    title: String(source.title || "").trim(),
+    caption: String(source.caption || "").trim(),
+    points,
+  };
+}
+
 function normalizeAgentMessage(value = {}) {
   const source = value && typeof value === "object" ? value : {};
   const text = normalizeAgentTextItem(source.text || source.content, "");
@@ -4473,6 +4530,12 @@ function normalizeAgentMessage(value = {}) {
       .filter((action) => action.id && action.label)
     : [];
   metadata.keepActions = Boolean(metadata.keepActions);
+  const chart = normalizeAgentChart(metadata.chart);
+  if (chart) {
+    metadata.chart = chart;
+  } else {
+    delete metadata.chart;
+  }
   if (Array.isArray(metadata.actionChoices)) {
     metadata.actionChoices = metadata.actionChoices
       .filter((choice) => choice && typeof choice === "object")
@@ -17096,6 +17159,71 @@ function handleAgentActionChoiceDetailsClick(event) {
   return true;
 }
 
+// The card that draws a chart. It reads the plain chart data and nothing else,
+// so it never has to know whether it is showing spending, hours, or message
+// counts - which is what keeps one card able to serve every comparison.
+function createAgentChartCard(chart) {
+  const figure = document.createElement("figure");
+  figure.className = "agent-message-chart";
+
+  if (chart.title) {
+    const caption = document.createElement("figcaption");
+    caption.className = "agent-message-chart-title";
+    caption.textContent = chart.title;
+    figure.append(caption);
+  }
+
+  // Bars are drawn against the largest one, so the smallest value is still a
+  // visible sliver rather than nothing at all.
+  const largest = chart.points.reduce((top, point) => Math.max(top, Math.abs(point.value)), 0);
+  const rows = document.createElement("div");
+  rows.className = "agent-message-chart-rows";
+  for (const point of chart.points) {
+    const row = document.createElement("div");
+    row.className = "agent-message-chart-row";
+
+    const label = document.createElement("span");
+    label.className = "agent-message-chart-label";
+    label.textContent = point.label;
+
+    const track = document.createElement("span");
+    track.className = "agent-message-chart-track";
+    // The bar is decoration: every number it stands for is written beside it,
+    // so a reader who cannot see the shape still gets the whole answer.
+    track.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = "agent-message-chart-fill";
+    const share = largest > 0 ? (Math.abs(point.value) / largest) * 100 : 0;
+    fill.style.width = `${share > 0 ? Math.max(share, 1.5) : 0}%`;
+    track.append(fill);
+
+    const value = document.createElement("span");
+    value.className = "agent-message-chart-value";
+    value.textContent = point.display;
+
+    row.append(label, track, value);
+    // The note sits on its own line under the bar rather than beside the
+    // amount, so a long one cannot squeeze the bars it is explaining down to
+    // nothing - which is exactly what a chart is there to avoid.
+    if (point.note) {
+      const note = document.createElement("span");
+      note.className = "agent-message-chart-note";
+      note.textContent = point.note;
+      row.append(note);
+    }
+    rows.append(row);
+  }
+  figure.append(rows);
+
+  if (chart.caption) {
+    const footnote = document.createElement("p");
+    footnote.className = "agent-message-chart-caption";
+    footnote.textContent = chart.caption;
+    figure.append(footnote);
+  }
+  return figure;
+}
+
 function renderAgentMessageBubbleContent(bubble, message, kind, proposal, displayText) {
   if (kind === "thinking") {
     const progressText = agentTurnProgressText || "Thinking";
@@ -17160,6 +17288,13 @@ function renderAgentMessage(message) {
   if (kind === "action-choice" && getAgentMessageActionChoices(message).length) {
     row.append(createAgentActionChoiceCard(message));
   }
+  // A chart rides along with whatever message carries one, rather than being a
+  // kind of its own, so an answer can keep its own kind and its buttons and
+  // still show the comparison it just described.
+  const chart = normalizeAgentChart(message.metadata?.chart);
+  if (chart) {
+    row.append(createAgentChartCard(chart));
+  }
 
   const actions = getAgentRenderableMessageActions(message, kind, proposal);
   if (actions.length && message.role !== "user") {
@@ -17208,6 +17343,7 @@ function getAgentMessageRenderSignature(messages) {
     message.metadata?.kind === "action-choice"
       ? Array.from(getAgentActionChoiceSelection(message.id)).sort()
       : "",
+    message.metadata?.chart || "",
     message.metadata?.proposalId || "",
     message.metadata?.actionId || "",
     message.metadata?.showActionLink ? "show-action-link" : "",
@@ -23303,9 +23439,10 @@ function getAgentAnswerRunFields(turn) {
 }
 
 // One question can name several months ("July and August"), but one lookup
-// reads one month. Six is more months than anyone asks about in a sentence,
-// and it keeps a stray list from turning into a long row of mailbox reads.
-const AGENT_ANSWER_RUN_MONTH_LIMIT = 6;
+// reads one month. A whole year is the longest comparison anyone asks for in a
+// sentence, so twelve reads is the ceiling: enough for "across 2026", and
+// still short of a stray list turning into an endless row of mailbox reads.
+const AGENT_ANSWER_RUN_MONTH_LIMIT = 12;
 // A month named in free text counts only when it is unmistakably a month:
 // "may" is an ordinary word, so it needs its year to be read as May.
 const AGENT_ANSWER_TEXT_MONTH_RE = /\b(?:\d{4}-\d{1,2}|may\s+\d{4}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?)\b/gi;
@@ -23332,18 +23469,25 @@ function getAgentAnswerRunMonths(fields) {
   }
   months.sort();
   return {
-    months: months.slice(0, AGENT_ANSWER_RUN_MONTH_LIMIT),
+    // A list too long to read in full loses its oldest months, not its newest.
+    // Asking to compare a long run of months and hearing about the start of it
+    // answers the least interesting half of the question.
+    months: months.slice(-AGENT_ANSWER_RUN_MONTH_LIMIT),
     trimmed: months.length > AGENT_ANSWER_RUN_MONTH_LIMIT,
   };
+}
+
+function formatAgentAnswerAmount(value, code) {
+  return `${Number(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} ${code}`;
 }
 
 function formatAgentAnswerAmounts(totals) {
   return Object.entries(totals && typeof totals === "object" ? totals : {})
     .filter(([, value]) => Number.isFinite(Number(value)))
-    .map(([code, value]) => `${Number(value).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })} ${code}`)
+    .map(([code, value]) => formatAgentAnswerAmount(value, code))
     .join(" and ");
 }
 
@@ -23393,9 +23537,13 @@ function describeAgentAnswerSkippedMailboxes(results) {
 // Several months asked about in one question deserve one answer: the total
 // first, then a line per month. Stacking one sentence per month leaves the
 // adding up to the reader, which is the part they asked for.
-function composeAgentMonthlyAnswer(results) {
-  const months = results.filter((entry) => entry && entry.totals && typeof entry.totals === "object"
+function getAgentAnswerMonthResults(results) {
+  return results.filter((entry) => entry && entry.totals && typeof entry.totals === "object"
     && String(entry.monthLabel || "").trim());
+}
+
+function composeAgentMonthlyAnswer(results) {
+  const months = getAgentAnswerMonthResults(results);
   if (months.length < 2) {
     return "";
   }
@@ -23423,6 +23571,60 @@ function composeAgentMonthlyAnswer(results) {
     `You paid ${amounts}${where} across ${span}, over ${receiptCount} ${receiptWord}.`,
     months.map(describeAgentAnswerMonth).join("\n"),
   ].join("\n\n");
+}
+
+// The same months the sentence above was written from, drawn instead of read.
+// It is built from the run's own results rather than asked for separately, so
+// the picture and the paragraph can never disagree about what was found.
+//
+// Two currencies make two scales, and bars drawn on two scales invent a
+// comparison that was never in the numbers - so a mixed-currency answer keeps
+// its text and skips the chart.
+function buildAgentAnswerMonthlyChart(results) {
+  const months = getAgentAnswerMonthResults(results);
+  if (months.length < 2) {
+    return null;
+  }
+
+  const codes = new Set();
+  months.forEach((entry) => {
+    Object.entries(entry.totals).forEach(([code, value]) => {
+      if (Number.isFinite(Number(value))) {
+        codes.add(code);
+      }
+    });
+  });
+  if (codes.size !== 1) {
+    return null;
+  }
+
+  const [code] = Array.from(codes);
+  const points = months.map((entry) => {
+    const amount = Number(entry.totals[code] || 0);
+    const receiptCount = Number(entry.receiptCount || 0);
+    const missing = Number(entry.missingAmountCount || 0);
+    // A month whose receipts nobody could price is not a month of no spending.
+    // The bar is as short as the numbers make it, and the note says why, so a
+    // gap in the reading is never drawn as a fact about the month.
+    let note = "";
+    if (!receiptCount) {
+      note = "nothing found";
+    } else if (missing) {
+      note = missing === 1
+        ? "1 receipt with no amount I could read"
+        : `${missing} receipts with no amount I could read`;
+    }
+    return createAgentChartPoint(
+      String(entry.monthLabel).trim(),
+      amount,
+      formatAgentAnswerAmount(amount, code),
+      note,
+    );
+  });
+
+  const vendorLabel = String(months.find((entry) => entry.vendor)?.vendor || "").trim();
+  const title = vendorLabel ? `What you paid ${vendorLabel}, by month` : "What you paid, by month";
+  return createAgentChart(title, points, { caption: `Amounts in ${code}.` });
 }
 
 function formatAgentAnswerMonthLabel(value) {
@@ -23582,7 +23784,7 @@ async function runAgentAnswerTask(task, setProgress) {
     answerLines.push(`I couldn’t check ${missed.join(" and ")} just now.`);
   }
   if (trimmed) {
-    answerLines.push(`That was more months than I check at once, so I stopped after ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
+    answerLines.push(`That was more months than I check at once, so I checked the most recent ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
   }
   // The mailbox that could not be read comes first, so the totals below it
   // are read as what they are: everything the other mailboxes had.
@@ -23591,6 +23793,9 @@ async function runAgentAnswerTask(task, setProgress) {
     ok: true,
     results,
     text: (skippedNote ? [skippedNote, ...answerLines] : answerLines).join("\n\n"),
+    // A month-by-month lookup is a comparison, and a comparison is easier to
+    // take in as bars than as a column of numbers.
+    chart: buildAgentAnswerMonthlyChart(results),
   };
 }
 
@@ -23848,7 +24053,7 @@ async function runAgentAnswerNow(turn, userText = "") {
         lastError = section.error;
       }
       runResults.push(...(section.results || []));
-      sections.push({ task, text: section.text });
+      sections.push({ task, text: section.text, chart: section.chart || null });
     }
 
     // One lookup keeps the sentence its run wrote. Several are stacked under
@@ -23859,6 +24064,11 @@ async function runAgentAnswerNow(turn, userText = "") {
         .map((section) => `${getAgentAnswerTaskHeading(section.task.proposalType)}\n\n${section.text}`)
         .join("\n\n");
     const everyTaskFailed = failureCount === sections.length;
+    // One message can ask for two comparisons, and one card cannot show both
+    // without saying which bars belong to which question. Two charts wait for
+    // a card that can be labelled; one chart draws.
+    const charts = sections.map((section) => section.chart).filter(Boolean);
+    const chart = charts.length === 1 ? charts[0] : null;
     // A one-off saves nothing on its own, so whatever it produced or worked
     // out is offered here, on the result, while it is still in front of the
     // user. Those buttons stay live for the rest of the conversation.
@@ -23866,6 +24076,7 @@ async function runAgentAnswerNow(turn, userText = "") {
     pushAgentMessage("assistant", answer, {
       kind: everyTaskFailed ? "error" : "result",
       technical: everyTaskFailed && lastError ? getAgentErrorTechnicalInfo(lastError) : undefined,
+      chart: everyTaskFailed ? undefined : chart || undefined,
       actions: resultActions,
       keepActions: resultActions.length > 0,
       oneOff: resultActions.length

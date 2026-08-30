@@ -737,6 +737,42 @@ class AgentAnswerChatTests(unittest.TestCase):
         # Several reads in a row look like one long stall otherwise.
         self.assertIn('agentTurnProgressText = monthLabel ? `Checking ${monthLabel}${step}` : label', runner)
 
+    def test_a_comparison_answer_carries_its_chart(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentAnswerTask"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        # The chart is built from the run's own results, so the picture and the
+        # paragraph above it can never disagree.
+        self.assertIn("chart: buildAgentAnswerMonthlyChart(results),", runner)
+        self.assertIn("const charts = sections.map((section) => section.chart).filter(Boolean);", runner)
+        # Two lookups in one message would need two labelled cards.
+        self.assertIn("const chart = charts.length === 1 ? charts[0] : null;", runner)
+        self.assertIn("chart: everyTaskFailed ? undefined : chart || undefined,", runner)
+
+    def test_a_chart_is_drawn_beside_the_message_that_carries_one(self) -> None:
+        renderer = self.script[
+            self.script.index("function renderAgentMessage(message) {"):
+            self.script.index("function getAgentMessageRenderSignature")
+        ]
+
+        # A chart is not a kind of message: it rides along with one, so an
+        # answer keeps its own kind and its buttons and still shows the chart.
+        self.assertIn("const chart = normalizeAgentChart(message.metadata?.chart);", renderer)
+        self.assertIn("row.append(createAgentChartCard(chart));", renderer)
+
+    def test_a_chart_knows_nothing_about_what_it_is_charting(self) -> None:
+        card = self.script[
+            self.script.index("function createAgentChartCard"):
+            self.script.index("function renderAgentMessageBubbleContent")
+        ]
+
+        # One card serves every comparison, so the moment it mentions receipts,
+        # months, or currencies it has stopped being reusable.
+        for word in ("receipt", "month", "vendor", "mailbox", "ILS", "totals"):
+            self.assertNotIn(word, card)
+
     def test_a_month_that_could_not_be_read_is_named(self) -> None:
         runner = self.script[
             self.script.index("async function runAgentAnswerTask"):
@@ -759,9 +795,16 @@ def _run_agent_answer_month_script(expression: str) -> Any:
         script.index("const AGENT_ANSWER_RUN_MONTH_LIMIT"):
         script.index("async function runAgentAnswerNow")
     ]
+    # The chart data itself is defined with the other message normalizers, so
+    # the builder below it has something to build.
+    chart_model = script[
+        script.index("const AGENT_CHART_POINT_LIMIT"):
+        script.index("function normalizeAgentMessage")
+    ]
     harness = "\n".join([
         'function getWorkspaceTimeZone() { return "UTC"; }',
         "function getAgentWorkspaceDateParts() { return new Date(Date.UTC(2026, 7, 15)); }",
+        chart_model,
         month_parser,
         answer_helpers,
         f"console.log(JSON.stringify({expression}));",
@@ -814,13 +857,29 @@ class AgentAnswerMonthSplitTests(unittest.TestCase):
 
         self.assertEqual(result["months"], [""])
 
-    def test_a_long_list_of_months_stops_and_says_so(self) -> None:
-        months = ",".join(f"2026-{month:02d}" for month in range(1, 10))
+    def test_a_whole_year_is_checked_month_by_month(self) -> None:
+        # "Compare 2026 month by month" used to come back six months short.
+        months = ",".join(f"2026-{month:02d}" for month in range(1, 9))
         result = _run_agent_answer_month_script(
             f'getAgentAnswerRunMonths({{ manualRunMonth: "{months}" }})'
         )
 
-        self.assertEqual(len(result["months"]), 6)
+        self.assertEqual(len(result["months"]), 8)
+        self.assertEqual(result["months"][-1], "2026-08")
+        self.assertFalse(result["trimmed"])
+
+    def test_a_long_list_of_months_keeps_the_newest_and_says_so(self) -> None:
+        months = ",".join(f"2025-{month:02d}" for month in range(1, 13))
+        months = f"{months},2026-01,2026-02"
+        result = _run_agent_answer_month_script(
+            f'getAgentAnswerRunMonths({{ manualRunMonth: "{months}" }})'
+        )
+
+        self.assertEqual(len(result["months"]), 12)
+        # The months that fall off the end are the oldest ones, because the
+        # newest are the half of a long comparison anyone is asking about.
+        self.assertEqual(result["months"][0], "2025-03")
+        self.assertEqual(result["months"][-1], "2026-02")
         self.assertTrue(result["trimmed"])
 
     def test_two_months_are_added_up_into_one_answer(self) -> None:
@@ -869,6 +928,82 @@ class AgentAnswerMonthSplitTests(unittest.TestCase):
             _run_agent_answer_month_script('formatAgentAnswerMonthLabel("2026-07")'),
             "Jul 2026",
         )
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the chat script")
+class AgentAnswerChartTests(unittest.TestCase):
+    """A month-by-month answer is a comparison, and gets drawn as one."""
+
+    def test_months_become_one_bar_each(self) -> None:
+        chart = _run_agent_answer_month_script(
+            "buildAgentAnswerMonthlyChart(["
+            ' { monthLabel: "Jul 2026", vendor: "Apple", totals: { ILS: 154.5 }, receiptCount: 6 },'
+            ' { monthLabel: "Aug 2026", vendor: "Apple", totals: { ILS: 314.1 }, receiptCount: 10 }'
+            "])"
+        )
+
+        self.assertEqual(chart["type"], "bar")
+        self.assertEqual(chart["title"], "What you paid Apple, by month")
+        self.assertEqual([point["label"] for point in chart["points"]], ["Jul 2026", "Aug 2026"])
+        self.assertEqual([point["value"] for point in chart["points"]], [154.5, 314.1])
+        # The bar is a shape; the amount beside it is the answer.
+        self.assertEqual(chart["points"][1]["display"], "314.10 ILS")
+        self.assertEqual(chart["caption"], "Amounts in ILS.")
+
+    def test_a_month_with_nothing_in_it_still_gets_a_bar(self) -> None:
+        chart = _run_agent_answer_month_script(
+            "buildAgentAnswerMonthlyChart(["
+            ' { monthLabel: "Jul 2026", totals: {}, receiptCount: 0 },'
+            ' { monthLabel: "Aug 2026", totals: { ILS: 314.1 }, receiptCount: 10 }'
+            "])"
+        )
+
+        self.assertEqual(chart["points"][0]["value"], 0)
+        self.assertEqual(chart["points"][0]["note"], "nothing found")
+
+    def test_receipts_with_no_readable_amount_say_so_on_the_bar(self) -> None:
+        # A short bar that stands for "I could not read it" would otherwise be
+        # read as a quiet month.
+        chart = _run_agent_answer_month_script(
+            "buildAgentAnswerMonthlyChart(["
+            ' { monthLabel: "Jul 2026", totals: { ILS: 10 }, receiptCount: 3, missingAmountCount: 2 },'
+            ' { monthLabel: "Aug 2026", totals: { ILS: 314.1 }, receiptCount: 10 }'
+            "])"
+        )
+
+        self.assertEqual(chart["points"][0]["note"], "2 receipts with no amount I could read")
+        self.assertEqual(chart["points"][1]["note"], "")
+
+    def test_two_currencies_are_not_drawn_on_one_scale(self) -> None:
+        chart = _run_agent_answer_month_script(
+            "buildAgentAnswerMonthlyChart(["
+            ' { monthLabel: "Jul 2026", totals: { USD: 19 }, receiptCount: 1 },'
+            ' { monthLabel: "Aug 2026", totals: { ILS: 44 }, receiptCount: 1 }'
+            "])"
+        )
+
+        self.assertIsNone(chart)
+
+    def test_one_month_is_not_a_comparison(self) -> None:
+        chart = _run_agent_answer_month_script(
+            'buildAgentAnswerMonthlyChart([{ monthLabel: "Aug 2026", totals: { ILS: 44 }, receiptCount: 1 }])'
+        )
+
+        self.assertIsNone(chart)
+
+    def test_a_stored_chart_is_read_back_as_data_not_as_given(self) -> None:
+        chart = _run_agent_answer_month_script(
+            'normalizeAgentChart({ type: "sunburst", title: "Kept", points: ['
+            ' { label: "Jul 2026", value: "154.5", display: "154.50 ILS", extra: "ignored" },'
+            ' { label: "", value: 1 },'
+            ' { label: "Aug 2026", value: 314.1, display: "314.10 ILS" }'
+            "] })"
+        )
+
+        self.assertEqual(chart["type"], "bar")
+        self.assertEqual(len(chart["points"]), 2)
+        self.assertEqual(chart["points"][0]["value"], 154.5)
+        self.assertNotIn("extra", chart["points"][0])
 
 
 if __name__ == "__main__":

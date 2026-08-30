@@ -3804,6 +3804,92 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.45;
 }
 
+.agent-message-chart {
+  width: min(100%, 34rem);
+  margin: 0.55rem 0 0;
+  padding: 0.85rem 0.9rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-soft);
+  box-shadow: var(--shadow-soft);
+}
+
+.agent-message-chart-title {
+  margin-bottom: 0.7rem;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.agent-message-chart-rows {
+  display: grid;
+  grid-template-columns: 4.6rem minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.6rem;
+  row-gap: 0.4rem;
+}
+
+/* Every bar is measured against the same grid, so the rows line up down the
+   card instead of each one sizing itself to its own label. */
+.agent-message-chart-row {
+  display: contents;
+}
+
+.agent-message-chart-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.agent-message-chart-track {
+  display: block;
+  height: 0.7rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
+
+.agent-message-chart-fill {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.agent-message-chart-value {
+  justify-self: end;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-message-chart-note {
+  grid-column: 2 / -1;
+  margin-top: -0.2rem;
+  color: var(--muted-strong);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.agent-message-chart-caption {
+  margin: 0.7rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 540px) {
+  .agent-message-chart-rows {
+    grid-template-columns: 3.9rem minmax(0, 1fr) auto;
+    column-gap: 0.45rem;
+  }
+
+  .agent-message-chart-label,
+  .agent-message-chart-value {
+    font-size: 0.72rem;
+  }
+}
+
 .agent-message-action-picker-option {
   display: flex;
   align-items: center;
