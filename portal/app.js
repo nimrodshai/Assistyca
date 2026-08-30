@@ -23744,7 +23744,7 @@ function applyAgentTurnProposalRevision(proposal, changes = {}) {
   return true;
 }
 
-const AGENT_ANSWER_RUN_TYPES = new Set(["calendar-summary", "email-digest", "custom"]);
+const AGENT_ANSWER_RUN_TYPES = new Set(["calendar-summary", "email-digest", "custom", "exchange-rate"]);
 
 function getAgentAnswerRunFields(turn) {
   const changes = turn?.changes && typeof turn.changes === "object" ? turn.changes : {};
@@ -23941,10 +23941,37 @@ function composeAgentMonthlyAnswer(results) {
   }
 
   const receiptWord = receiptCount === 1 ? "receipt" : "receipts";
+  const converted = describeAgentAnswerConversion(months);
+  const opening = `You paid ${amounts}${where} across ${span}, over ${receiptCount} ${receiptWord}.`;
   return [
-    `You paid ${amounts}${where} across ${span}, over ${receiptCount} ${receiptWord}.`,
+    converted ? `${opening} ${converted}` : opening,
     months.map(describeAgentAnswerMonth).join("\n"),
   ].join("\n\n");
+}
+
+// Months in two currencies are two totals nobody can add. Each month was
+// already read in one shared currency on the way here, at the rate standing
+// on each receipt's own date, so what is left is to add those up and say so.
+// Silence when a month is missing its conversion: half a span converted is a
+// figure that looks whole and is not.
+function describeAgentAnswerConversion(months) {
+  const codes = new Set();
+  let total = 0;
+  for (const entry of months) {
+    const converted = entry && entry.converted;
+    const code = String((converted && converted.currency) || "").trim();
+    const amount = Number((converted && converted.amount) || 0);
+    if (!code || !Number.isFinite(amount)) {
+      return "";
+    }
+    codes.add(code);
+    total += amount;
+  }
+  if (!months.length || codes.size !== 1) {
+    return "";
+  }
+  const [code] = Array.from(codes);
+  return `That comes to about ${formatAgentAnswerAmount(total, code)} in total, converted at each receipt’s own date.`;
 }
 
 // The same months the sentence above was written from, drawn instead of read.
@@ -24026,6 +24053,10 @@ function describeAgentAnswerMonthSpan(months) {
 
 // An answer run needs the same connection its saved counterpart would need.
 function getAgentAnswerRunBlocker(proposalType) {
+  if (proposalType === "exchange-rate") {
+    // A published rate belongs to nobody, so there is nothing to connect.
+    return "";
+  }
   if (proposalType === "calendar-summary") {
     return isCalendarConnectionReady()
       ? ""
@@ -24037,6 +24068,9 @@ function getAgentAnswerRunBlocker(proposalType) {
 }
 
 function getAgentAnswerRunFailureMessage(proposalType) {
+  if (proposalType === "exchange-rate") {
+    return "I couldn’t read a published rate for that just now. Ask me again in a moment.";
+  }
   if (proposalType === "calendar-summary") {
     return "I couldn’t read the connected calendar just now. Check Calendar setup and ask me again.";
   }
@@ -24051,6 +24085,9 @@ const AGENT_ANSWER_TASK_LIMIT = 3;
 // The progress line names the lookup in hand, so a message that asked for two
 // things does not sit behind one unexplained wait.
 function getAgentAnswerTaskLabel(proposalType) {
+  if (proposalType === "exchange-rate") {
+    return "Checking the rate";
+  }
   if (proposalType === "calendar-summary") {
     return "Checking your calendar";
   }
@@ -24062,6 +24099,9 @@ function getAgentAnswerTaskLabel(proposalType) {
 
 // A heading only earns its place when there is more than one answer under it.
 function getAgentAnswerTaskHeading(proposalType) {
+  if (proposalType === "exchange-rate") {
+    return "The rate";
+  }
   if (proposalType === "calendar-summary") {
     return "Your calendar";
   }

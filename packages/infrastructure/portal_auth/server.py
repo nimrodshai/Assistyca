@@ -135,8 +135,11 @@ from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.receipt_collector import RECEIPT_MANIFEST_FILENAME
 from packages.infrastructure.receipt_collector import answer_receipt_question
 from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
+from packages.infrastructure import fx_rates
+from packages.infrastructure.receipt_collector import convert_receipt_amounts
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import format_receipt_month_label
+from packages.infrastructure.receipt_collector import merge_receipt_amount_entries
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
@@ -2158,6 +2161,28 @@ def merge_receipt_month_totals(answers: list[dict[str, Any]]) -> dict[str, float
             except (TypeError, ValueError):
                 continue
     return totals
+
+
+def merge_receipt_month_conversion(answers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read a run of months as one figure, whatever each was paid in.
+
+    A span is converted from the receipts themselves rather than from the
+    month totals, because a total has already lost the dates its rates hang
+    on. Every month is then re-read in the currency the span settled on, so
+    the months and the figure over them can never speak in different money.
+    """
+
+    entries = merge_receipt_amount_entries(answers)
+    span = convert_receipt_amounts(entries, totals=merge_receipt_month_totals(answers))
+    if not span:
+        return {}
+    for answer in answers:
+        answer["converted"] = convert_receipt_amounts(
+            answer.get("amountEntries") or [],
+            totals=answer.get("totals") or {},
+            target_currency=span.get("currency"),
+        )
+    return span
 
 
 def build_agent_receipt_output_folder(
@@ -5304,6 +5329,50 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             **revision,
         })
 
+    def _answer_exchange_rate(self, fields: dict[str, Any]) -> None:
+        """Say what one currency is worth in another.
+
+        The only lookup here that reads nothing belonging to the account. It
+        exists because the receipts do arrive in two currencies, and a person
+        holding two totals they cannot add should not have to leave the chat
+        to find the number that joins them.
+        """
+
+        base = fx_rates.normalize_currency_code(fields.get("baseCurrency"))
+        quote = fx_rates.normalize_currency_code(fields.get("quoteCurrency"))
+        if not base or not quote:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_currency_pair",
+                "message": "Tell me which two currencies you mean and I will look the rate up.",
+            })
+            return
+
+        on_date = fx_rates.normalize_rate_date(fields.get("rateDate"))
+        rate = fx_rates.exchange_rate(base, quote, on_date)
+        if rate is None:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "exchange_rate_unavailable",
+                "message": (
+                    f"I couldn't read a published {base}/{quote} rate just now. "
+                    "The bank publishes on working days, so a very recent date or an unusual pair may have none."
+                ),
+            })
+            return
+
+        answer = fx_rates.describe_rate(rate)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "answer": answer,
+            "message": answer,
+            "summary": f"{base}/{quote} rate",
+            "rate": rate.describe(),
+            # The rate as a record, so the reply is written the same way every
+            # other answer is: from what the lookup read, not from a template.
+            "answerRecords": [fx_rates.describe_rate_record(rate)],
+        })
+
     def _handle_agent_proposal_run(self) -> None:
         """Execute a supported local proposal without routing it through chat."""
 
@@ -5328,6 +5397,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # and reports back in the reply, but saves no files and no action.
         answer_mode = normalize_text(payload.get("mode")).lower() == "answer"
         is_custom_google_batch = proposal_type == "custom" and is_custom_google_batch_proposal_fields(fields)
+        if proposal_type == "exchange-rate":
+            # A rate reads nothing of the account's own, so it runs before
+            # any of the mailbox and calendar machinery below it and needs no
+            # connection, no credential, and no folder to write into.
+            self._answer_exchange_rate(fields)
+            return
         if proposal_type not in {"calendar-summary", "email-digest"} and not is_custom_google_batch:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
@@ -5659,12 +5734,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # them up into one reply and draws the comparison, so what it
                 # needs back is the months themselves, not a single total that
                 # has already lost the shape of them.
+                span_conversion = merge_receipt_month_conversion(receipt_month_answers)
                 response_payload["months"] = [
                     {
                         "monthLabel": answer["monthLabel"],
                         "answer": answer["answer"],
                         "receiptCount": answer["receiptCount"],
                         "totals": answer["totals"],
+                        "converted": answer.get("converted") or {},
                         "vendor": answer["vendor"],
                         "missingAmountCount": answer["missingAmountCount"],
                         "receiptSources": answer["sources"][:AGENT_SAVED_ANSWER_SOURCE_LIMIT],
@@ -5681,6 +5758,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     int(answer["receiptCount"] or 0) for answer in receipt_month_answers
                 )
                 response_payload["totals"] = merge_receipt_month_totals(receipt_month_answers)
+                if span_conversion:
+                    response_payload["converted"] = span_conversion
                 response_payload["vendor"] = next(
                     (answer["vendor"] for answer in receipt_month_answers if answer["vendor"]),
                     "",
@@ -5707,6 +5786,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 response_payload["answer"] = receipt_answer["answer"]
                 response_payload["receiptCount"] = receipt_answer["receiptCount"]
                 response_payload["totals"] = receipt_answer["totals"]
+                # Two currencies in one month are two figures that cannot be
+                # added. This is what they come to together.
+                if receipt_answer.get("converted"):
+                    response_payload["converted"] = receipt_answer["converted"]
                 # A question can cover several months, and each month is its
                 # own run. These let the chat add the months up into one
                 # answer instead of stacking one sentence per month.

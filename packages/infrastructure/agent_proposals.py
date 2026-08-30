@@ -59,7 +59,11 @@ _AGENT_PROPOSAL_TYPES = {
 }
 # The lookups that already have a runner, so a question can be answered from
 # connected sources in the same chat turn instead of becoming a saved action.
-_AGENT_ANSWER_NOW_TYPES = {"calendar-summary", "email-digest", "custom"}
+_AGENT_ANSWER_NOW_TYPES = {"calendar-summary", "email-digest", "custom", "exchange-rate"}
+# Every type that carries fields, whether or not it can be saved as an action.
+# An exchange rate is only ever answered, never kept, but the fields it is
+# answered from still have to survive normalization.
+_AGENT_FIELD_SCHEMA_TYPES = _AGENT_PROPOSAL_TYPES | _AGENT_ANSWER_NOW_TYPES
 # One message can ask for more than one lookup ("what came in this week, and
 # what is on my calendar"). Each one runs on its own and the chat reports them
 # together. Three is more than a sentence usually carries, and it keeps a
@@ -77,6 +81,7 @@ _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "reengagement": ["inactivityPeriod", "frequency", "deliveryChannel"],
     "source-action": ["sourceType", "sourceUrl", "sourceFileName", "sourceMimeType", "frequency", "timezone"],
     "custom": ["result", "vendor", "manualRunMonth", "outputFolder", "frequency", "deliveryChannel", "calendar"],
+    "exchange-rate": ["baseCurrency", "quoteCurrency", "rateDate"],
 }
 _AGENT_PROPOSAL_FIELD_ALIASES = {
     "channel": "deliveryChannel",
@@ -129,6 +134,18 @@ _AGENT_PROPOSAL_FIELD_ALIASES = {
     "destinationfolder": "outputFolder",
     "report_folder": "outputFolder",
     "reportfolder": "outputFolder",
+    "base_currency": "baseCurrency",
+    "basecurrency": "baseCurrency",
+    "from_currency": "baseCurrency",
+    "fromcurrency": "baseCurrency",
+    "quote_currency": "quoteCurrency",
+    "quotecurrency": "quoteCurrency",
+    "to_currency": "quoteCurrency",
+    "tocurrency": "quoteCurrency",
+    "target_currency": "quoteCurrency",
+    "targetcurrency": "quoteCurrency",
+    "rate_date": "rateDate",
+    "ratedate": "rateDate",
     "month": "manualRunMonth",
     "run_month": "manualRunMonth",
     "runmonth": "manualRunMonth",
@@ -468,6 +485,13 @@ def build_agent_turn_prompt(
         "- action_command: delete, pause, or resume actions the account already has, once it is clear which "
         "ones.\n"
         "- message: answer conversationally without creating or executing anything.\n"
+        "What one currency is worth in another is a lookup, not small talk. A business that is charged in "
+        "shekels and dollars in the same month cannot read its own spending without it, so a question about "
+        "a rate is answered rather than declined. Use answer_now with proposalType exchange-rate, and put "
+        "the two three-letter codes in changes.fields as baseCurrency and quoteCurrency - baseCurrency is "
+        "the currency being priced and quoteCurrency the one it is priced in, so \"how much is the dollar "
+        "in shekels\" is baseCurrency USD and quoteCurrency ILS. Add rateDate, as YYYY-MM-DD, only when the "
+        "user asked about a particular past day rather than now.\n"
         "A message that is not about running this business is outcome=message with proposalType empty and "
         "nothing looked up. Decline it in one short, friendly line and offer something you can do with the "
         "account's sources or actions instead. Do not answer the off-topic part first, and do not carry scope "
@@ -477,7 +501,8 @@ def build_agent_turn_prompt(
         "Prefer answer_now over proposal whenever the user asks about something that already happened and a "
         "connected source holds the answer: how much they paid a vendor, which receipts or invoices arrived, "
         "what is on the calendar. Do not offer to create an action for these and do not ask for approval. Use "
-        "proposalType calendar-summary, email-digest, or custom, because only those lookups can run right now, "
+        "proposalType calendar-summary, email-digest, custom, or exchange-rate, because only those lookups can "
+        "run right now, "
         "and put what to look for in changes.fields. For answer_now the reply is one short line saying you are "
         "checking and it may take a moment; the application replaces it with the real answer when the lookup "
         "finishes, so never guess the answer yourself. Choose proposal instead when the user wants the work to "
@@ -815,6 +840,10 @@ def _agent_answer_task_is_runnable(proposal_type: str, changes: dict[str, Any]) 
     if proposal_type not in _AGENT_ANSWER_NOW_TYPES:
         return False
     fields = changes.get("fields") if isinstance(changes.get("fields"), dict) else {}
+    if proposal_type == "exchange-rate":
+        # A rate is two currencies. One of them named on its own is a
+        # question, not a lookup.
+        return bool(fields.get("baseCurrency")) and bool(fields.get("quoteCurrency"))
     # A receipt-style lookup is only runnable when it says what to look for;
     # the calendar and inbox runners have workable defaults.
     return proposal_type != "custom" or bool(fields.get("result"))
@@ -864,7 +893,7 @@ def _normalize_agent_turn_outcome(
     outcome = _single_line(response.get("outcome"), 40).lower()
     reply = _remove_ambiguous_duplicate_preface(_single_line(response.get("reply"), 500))
     proposal_type = _single_line(response.get("proposalType"), 80).lower()
-    changes_proposal_type = proposal_type if proposal_type in _AGENT_PROPOSAL_TYPES else active_proposal_type
+    changes_proposal_type = proposal_type if proposal_type in _AGENT_FIELD_SCHEMA_TYPES else active_proposal_type
     changes = _normalize_agent_turn_changes(response.get("changes"), changes_proposal_type)
 
     if not reply:

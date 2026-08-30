@@ -18,6 +18,7 @@ from typing import Any
 from urllib import parse as urllib_parse
 from xml.sax.saxutils import escape as xml_escape
 
+from packages.infrastructure import fx_rates
 from packages.infrastructure import receipt_pdf_sources
 
 RECEIPT_EXPORT_VERSION = 1
@@ -382,6 +383,8 @@ def answer_receipt_question(
     count = len(matched)
     receipt_word = "receipt" if count == 1 else "receipts"
 
+    converted: dict[str, Any] = {}
+    entries = describe_receipt_amounts(matched)
     if not count:
         answer = f"I couldn't find any receipts{where}{when}."
     elif not totals:
@@ -391,6 +394,12 @@ def answer_receipt_question(
     else:
         amounts = " and ".join(f"{value:,.2f} {code}" for code, value in totals.items())
         answer = f"You paid {amounts}{where}{when}, across {count} {receipt_word}."
+        # Two currencies in one answer is two figures the person has to add
+        # up themselves, with a rate they went and found somewhere else.
+        converted = convert_receipt_amounts(entries, totals=totals)
+        conversion_sentence = fx_rates.describe_conversion(converted)
+        if conversion_sentence:
+            answer += f" {conversion_sentence}"
         missing = int(summary.get("missingAmountCount") or 0)
         if missing:
             missing_word = "receipt" if missing == 1 else "receipts"
@@ -400,6 +409,14 @@ def answer_receipt_question(
         "answer": answer,
         "receiptCount": count,
         "totals": totals,
+        # One figure the two totals above can be read as, when they are in
+        # different currencies. Empty when everything was paid in one.
+        "converted": converted,
+        # What each receipt cost and when, stripped to what a conversion
+        # needs. A question spanning several months runs a month at a time,
+        # and the whole span is converted from these rather than from month
+        # totals that have already lost their dates.
+        "amountEntries": entries,
         "vendor": vendor_label,
         "monthLabel": month_label,
         "missingAmountCount": int(summary.get("missingAmountCount") or 0),
@@ -412,6 +429,137 @@ def answer_receipt_question(
         # for, can only be answered from the individual receipts behind it.
         "records": describe_receipt_records(matched, month_label=month_label),
     }
+
+
+def describe_receipt_amounts(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Each receipt as the three things a conversion needs of it."""
+
+    entries: list[dict[str, str]] = []
+    for row in rows:
+        amount = _clean_text(row.get("amount")).replace(",", "")
+        currency = fx_rates.normalize_currency_code(row.get("currency"))
+        if not amount or not currency:
+            continue
+        entries.append({
+            "amount": amount,
+            "currency": currency,
+            "date": fx_rates.normalize_rate_date(row.get("date")),
+        })
+    return entries
+
+
+def convert_receipt_amounts(
+    entries: list[dict[str, Any]],
+    *,
+    totals: dict[str, Any] | None = None,
+    target_currency: Any = "",
+) -> dict[str, Any]:
+    """Read a set of receipts as one figure, whatever they were paid in.
+
+    Receipts in a single currency are already one figure, so nothing is read
+    and no rate is fetched. It is the mixed month that needs this: each
+    receipt converted at the rate on its own date, so the total is what the
+    money was worth when it was spent.
+    """
+
+    currency_totals = totals if isinstance(totals, dict) else _entry_currency_totals(entries)
+    target = fx_rates.normalize_currency_code(target_currency)
+    explicit_target = bool(target)
+    if not entries:
+        return {}
+    if not target:
+        # Left to itself, a set already in one currency is one figure and
+        # needs no rate. A named target is a decision made further out - the
+        # months of one answer all speaking the same currency - and it holds
+        # even where this set alone would not have converted anything.
+        if len(currency_totals) < 2:
+            return {}
+        target = preferred_receipt_currency(entries, totals=currency_totals)
+    if not target:
+        return {}
+    converted = fx_rates.convert_amounts(entries, target=target)
+    if not int(converted.get("convertedCount") or 0):
+        return {}
+    # A conversion that reached nothing is not a conversion. Amounts already
+    # in the target currency came through without a rate, so a set where only
+    # those survived has converted nothing, and saying so leaves the answer as
+    # the two honest totals it already was. A named target is the exception:
+    # a month of one currency inside a span of two is still that span's
+    # figure, and dropping it would leave the months not adding up.
+    if not explicit_target and not int(converted.get("ratedCount") or 0):
+        return {}
+    return converted
+
+
+def merge_receipt_amount_entries(answers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every receipt a run of months read, in one list."""
+
+    return [
+        entry
+        for answer in answers
+        for entry in (answer.get("amountEntries") or [])
+        if isinstance(entry, dict)
+    ]
+
+
+def _entry_currency_totals(entries: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = defaultdict(float)
+    for entry in entries:
+        currency = fx_rates.normalize_currency_code(entry.get("currency"))
+        try:
+            amount = float(str(entry.get("amount") or "").replace(",", ""))
+        except ValueError:
+            continue
+        if currency:
+            totals[currency] += amount
+    return dict(totals)
+
+
+def preferred_receipt_currency(
+    entries: list[dict[str, Any]],
+    *,
+    totals: dict[str, Any] | None = None,
+) -> str:
+    """The currency a mixed set of receipts is best read in.
+
+    Whichever currency already holds most of the money, so the total rewrites
+    as little of what was actually paid as possible. Which one that is cannot
+    be read off the totals directly - 262 shekels against 55 dollars is 262
+    against 164, and treating the larger number as the larger sum is exactly
+    the mistake this conversion exists to stop - so the totals are weighed
+    against each other first, roughly and at today's rate, purely to decide
+    which currency to speak in. The figures the answer reports are converted
+    afterwards, receipt by receipt, at the rate on each one's own date.
+    """
+
+    currency_totals = totals if isinstance(totals, dict) else _entry_currency_totals(entries)
+    counts: Counter[str] = Counter()
+    for entry in entries:
+        currency = fx_rates.normalize_currency_code(entry.get("currency"))
+        if currency and str(entry.get("amount") or "").strip():
+            counts[currency] += 1
+    candidates = [code for code in (fx_rates.normalize_currency_code(c) for c in currency_totals) if code]
+    if not candidates:
+        return ""
+    # Most receipts, then alphabetical, so the yardstick never depends on
+    # which rate happened to be readable.
+    yardstick = max(candidates, key=lambda code: (counts.get(code, 0), code))
+    if len(candidates) == 1:
+        return yardstick
+
+    weights: dict[str, float] = {}
+    for code in candidates:
+        amount = float(currency_totals.get(code) or currency_totals.get(code.upper()) or 0.0)
+        if code == yardstick:
+            weights[code] = amount
+            continue
+        rate = fx_rates.exchange_rate(code, yardstick)
+        if rate is None:
+            # Without a rate there is nothing to weigh, and guessing here
+            # would pick the currency by the size of its numbers.
+            return yardstick
+        weights[code] = rate.convert(amount)
+    return max(candidates, key=lambda code: (weights.get(code, 0.0), counts.get(code, 0), code))
 
 
 def describe_receipt_records(
