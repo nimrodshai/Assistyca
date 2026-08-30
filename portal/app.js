@@ -7170,7 +7170,10 @@ function getSelectedGoogleOAuthScopeIds(container) {
     .filter(Boolean);
 }
 
-function openCalendarOAuthConnection(option) {
+function openCalendarOAuthConnection(option, flowOptions = {}) {
+  // Reached from the provider step, this card is the second half of one flow,
+  // so its way out leads back to that step instead of out of the flow.
+  const goBack = typeof flowOptions.onBack === "function" ? flowOptions.onBack : null;
   const connection = getPlatformConnectionByPlatform(option.id);
   const usesAggregateGoogleConnection = option.id === "calendar";
   const connectedGoogleConnections = usesAggregateGoogleConnection
@@ -7189,18 +7192,23 @@ function openCalendarOAuthConnection(option) {
   const connectedMailboxes = isEmailConnection ? getConnectedEmailConnections() : [];
   const mailboxCount = connectedMailboxes.length;
   const mailboxNoun = mailboxCount === 1 ? "mailbox" : "mailboxes";
+  // Google was already picked on the provider step, so this card names Gmail
+  // rather than asking the same question again in different words.
+  const providerChosen = isEmailConnection && Boolean(flowOptions.providerChosen);
   const setupTitle = isConnected
     ? (isEmailConnection
       ? (mailboxCount > 1 ? `${mailboxCount} mailboxes connected` : `${connectedEmailLabel} connected`)
       : "Google connected")
-    : (isEmailConnection ? "Connect your mailbox" : "Connect Google");
+    : (providerChosen ? "Connect Gmail" : (isEmailConnection ? "Connect your mailbox" : "Connect Google"));
   const setupMessage = isConnected
     ? (isEmailConnection
       ? `Your ${mailboxNoun} ${mailboxCount === 1 ? "is" : "are"} connected and ready to use.`
       : "These Google permissions are connected and ready to use.")
-    : (isEmailConnection
-      ? "Choose the mailbox Assistyca should read."
-      : "Choose the Google access Assistyca can use.");
+    : (providerChosen
+      ? "Choose the Gmail account Assistyca should read."
+      : isEmailConnection
+        ? "Choose the mailbox Assistyca should read."
+        : "Choose the Google access Assistyca can use.");
   const assistantSuccessMessage = isEmailConnection
     ? "Gmail is connected with read-only access. You can use it for email digest actions."
     : "Google is connected with the selected read-only access. You can use it in actions.";
@@ -7211,6 +7219,8 @@ function openCalendarOAuthConnection(option) {
     ? (isEmailConnection
       ? "Actions read all your connected mailboxes. Disconnect one to remove its access."
       : "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca.")
+    : providerChosen
+    ? "Sign in with Google so Assistyca can read your Gmail for email digest and receipt actions. Access is read-only."
     : isEmailConnection
     ? "Connect Gmail or Outlook so Assistyca can read your mail for email digest and receipt actions. Access is read-only."
     : "Sign in with Google so Assistyca can use the selected read-only Google permissions.";
@@ -7225,7 +7235,9 @@ function openCalendarOAuthConnection(option) {
   if (isEmailConnection && mailboxCount) {
     body.append(createConnectedMailboxList(option, connectedMailboxes));
   }
-  if (isEmailConnection) {
+  // Google or Microsoft has already been asked and answered on the provider
+  // step, so offering Outlook again here would ask it a second time.
+  if (isEmailConnection && !providerChosen) {
     // Shown whether or not a mailbox is already connected: a second mailbox is
     // now added alongside the first rather than replacing it.
     body.append(createOutlookConnectButton(setStatus, () => storageAvailable, {
@@ -7446,7 +7458,9 @@ function openCalendarOAuthConnection(option) {
       variant: "calendar-oauth",
       bodyNode: body,
       buttonLabel: primaryLabel,
-      secondaryButtonLabel: "Cancel",
+      secondaryButtonLabel: goBack ? "Back" : "Cancel",
+      closeOnSecondary: !goBack,
+      onSecondary: goBack,
       // Email keeps its button when connected, because it now adds a mailbox.
       hidePrimaryButton: isConnected && !isEmailConnection,
       primaryDisabled: !storageAvailable,
@@ -7524,7 +7538,8 @@ function createOutlookConnectButton(setStatus, isStorageAvailable, options = {})
 // Microsoft sits in the tool picker beside Google, so it needs a panel of its
 // own: the Outlook button inside the Google email card is only reachable once
 // you are already in that card.
-function openMicrosoftOAuthConnection(option) {
+function openMicrosoftOAuthConnection(option, flowOptions = {}) {
+  const goBack = typeof flowOptions.onBack === "function" ? flowOptions.onBack : null;
   const connectedMailboxes = getConnectedOutlookConnections();
   const isConnected = connectedMailboxes.length > 0;
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
@@ -7589,7 +7604,9 @@ function openMicrosoftOAuthConnection(option) {
       variant: "calendar-oauth",
       bodyNode: body,
       buttonLabel: primaryLabel,
-      secondaryButtonLabel: "Cancel",
+      secondaryButtonLabel: goBack ? "Back" : "Cancel",
+      closeOnSecondary: !goBack,
+      onSecondary: goBack,
       primaryDisabled: !storageAvailable,
       closeOnPrimary: false,
       returnFocus: elements.agentAddToolButton,
@@ -7601,6 +7618,80 @@ function openMicrosoftOAuthConnection(option) {
   setCalendarOAuthPrimaryButton(primaryLabel, { logo: createMicrosoftBrandLogo });
 }
 
+// The first mailbox is a choice between two providers, and burying Outlook
+// inside the Google card hid one of them. With nothing connected yet, where
+// the mail lives is its own step - the same two rows the add tool menu shows -
+// and each row opens that provider's own connect card.
+const MAILBOX_PROVIDER_CHOICES = [
+  {
+    id: "google",
+    label: "Google",
+    detail: "Read a Gmail mailbox",
+    icon: "google",
+  },
+  {
+    id: "microsoft",
+    label: "Microsoft",
+    detail: "Read an Outlook mailbox",
+    icon: "microsoft",
+  },
+];
+
+function openMailboxProviderChoice() {
+  const body = document.createElement("div");
+  body.className = "mailbox-provider-choice";
+
+  for (const provider of MAILBOX_PROVIDER_CHOICES) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "agent-add-tool-option mailbox-provider-option";
+
+    const icon = document.createElement("span");
+    icon.className = "agent-add-tool-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.append(createAgentAddToolLogo(provider));
+
+    const copy = document.createElement("span");
+    copy.className = "agent-tool-copy";
+    const label = document.createElement("strong");
+    label.textContent = provider.label;
+    const detail = document.createElement("span");
+    detail.textContent = provider.detail;
+    copy.append(label, detail);
+
+    item.append(icon, copy);
+    item.addEventListener("click", () => {
+      const platformId = provider.id === "microsoft" ? "microsoft" : "email";
+      const option = getPlatformConnectionOption(platformId);
+      if (!option) {
+        return;
+      }
+      const flowOptions = { providerChosen: true, onBack: openMailboxProviderChoice };
+      if (provider.id === "microsoft") {
+        openMicrosoftOAuthConnection(option, flowOptions);
+      } else {
+        openCalendarOAuthConnection(option, flowOptions);
+      }
+    });
+    body.append(item);
+  }
+
+  openAuthAlert(
+    "Connect your mailbox",
+    "Choose where your mail lives.",
+    {
+      eyebrow: "Mailbox",
+      iconNode: createAgentAddToolLogo({ icon: "email" }),
+      tone: "progress",
+      variant: "calendar-oauth",
+      bodyNode: body,
+      hidePrimaryButton: true,
+      secondaryButtonLabel: "Cancel",
+      returnFocus: elements.agentAddToolButton,
+    },
+  );
+}
+
 function openPlatformConnection(optionId, options = {}) {
   const option = getPlatformConnectionOption(optionId);
   if (!option) {
@@ -7608,6 +7699,13 @@ function openPlatformConnection(optionId, options = {}) {
   }
 
   setPlatformConnectionOrigin(options.origin);
+
+  // With no mailbox connected, the provider is the first question, not
+  // something to discover inside the Google card.
+  if (option.id === "email" && !getConnectedEmailConnections().length) {
+    openMailboxProviderChoice();
+    return;
+  }
 
   if (option.id === "microsoft") {
     openMicrosoftOAuthConnection(option);

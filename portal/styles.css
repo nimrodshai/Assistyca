@@ -2879,6 +2879,25 @@ body[data-modal="billing"] .app-shell {
   width: 100%;
 }
 
+/* The step before either provider card: one row per mailbox provider. */
+.mailbox-provider-choice {
+  display: grid;
+  gap: 0.35rem;
+  padding-top: 0.2rem;
+}
+
+/* The menu row this reuses is borderless and declared further down the
+   sheet, so the card look is scoped to beat it. */
+.mailbox-provider-choice .mailbox-provider-option {
+  padding: 0.7rem 0.72rem;
+  border: 1px solid rgba(20, 28, 38, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.mailbox-provider-choice .mailbox-provider-option .agent-tool-copy strong {
+  font-size: 0.95rem;
+}
+
 .calendar-oauth-permissions h3 {
   margin: 0;
   color: var(--text);
@@ -11764,6 +11783,11 @@ body.is-chat-view {
 
 :root[data-theme="dark"] .agent-add-tool-option {
   color: var(--text);
+}
+
+:root[data-theme="dark"] .mailbox-provider-choice .mailbox-provider-option {
+  border-color: rgba(224, 239, 244, 0.16);
+  background: rgba(224, 239, 244, 0.04);
 }
 
 :root[data-theme="dark"] .agent-add-tool-option .agent-tool-copy span {
