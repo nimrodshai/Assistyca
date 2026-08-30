@@ -1435,6 +1435,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function resolvePendingAgentMessageActions", script)
         self.assertIn("function areAgentMessageActionsResolved", script)
         self.assertIn("AGENT_PROPOSAL_FIELD_SCHEMAS", script)
+        # Someone with Gmail and Outlook both connected answers the mailbox
+        # question with "both", so it is a chip rather than a typed reply, and
+        # the answer has to record both providers instead of only the first.
+        self.assertIn(
+            'actions: ["Gmail", "Outlook", { label: "Both", value: "Gmail and Outlook" }],',
+            script,
+        )
+        self.assertIn('fields.mailbox = "Gmail and Outlook";', script)
+        self.assertIn("(namesGmail && namesOutlook)", script)
         self.assertIn("function getAgentNextMissingQuestionIndex", script)
         self.assertIn('question: "How often should this happen?",\n      actions: ["Daily", "Weekly", "Monthly"],', script)
         self.assertIn("function getAgentQuestionFieldIndexFromText", script)

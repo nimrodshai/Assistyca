@@ -868,7 +868,10 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
     {
       key: "mailbox",
       question: "Which mailbox should I summarize?",
-      actions: ["Gmail", "Outlook"],
+      // Someone with both providers connected wants one digest over both, so
+      // "Both" is an answer rather than a follow-up question. A digest reads
+      // every connected mailbox unless the action names a single account.
+      actions: ["Gmail", "Outlook", { label: "Both", value: "Gmail and Outlook" }],
     },
     {
       key: "schedule",
@@ -15123,9 +15126,16 @@ function inferAgentProposalFieldsFromText(text, proposalType) {
   }
 
   if (proposalType === "email-digest") {
-    if (/\b(gmail|google mail)\b/i.test(value)) {
+    const namesGmail = /\b(gmail|google mail)\b/i.test(value);
+    const namesOutlook = /\b(outlook|office 365|microsoft mail)\b/i.test(value);
+    // "Both" has to be read before either provider name, or an answer that
+    // names them together records only the first one and the digest quietly
+    // covers half the mail it was asked about.
+    if ((namesGmail && namesOutlook) || /\b(both|all (?:my )?(?:mailboxes|inboxes|mail))\b/i.test(value)) {
+      fields.mailbox = "Gmail and Outlook";
+    } else if (namesGmail) {
       fields.mailbox = "Gmail";
-    } else if (/\b(outlook|office 365|microsoft mail)\b/i.test(value)) {
+    } else if (namesOutlook) {
       fields.mailbox = "Outlook";
     }
     if (frequency) {
