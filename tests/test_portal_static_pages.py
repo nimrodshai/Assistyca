@@ -1038,6 +1038,30 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("|| fallbackFrequency,", script)
         self.assertIn("  return fallbackFrequency;\n}", script)
 
+    def test_a_new_email_digest_lands_in_the_active_list(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # A digest runs from the portal itself, the way a meeting summary does.
+        # While it claimed the Scheduled Web Monitor as its feature, a brand new
+        # digest was created cancelled — straight into History — for any account
+        # that had never turned that tool on.
+        blueprint = script.split("emailDigest: {", 1)[1].split("calendarSummary: {", 1)[0]
+        self.assertIn('relatedFeatureId: ""', blueprint)
+        self.assertNotIn("relatedFeatureId: MONITOR_FEATURE_ID", blueprint)
+
+        # "every evening at 20:00" is a daily cadence with an hour attached, not
+        # the absence of a cadence, which is what turned it into a manual action.
+        self.assertIn(
+            "(?:every|each)\\s+(day|morning|afternoon|evening|night|hour|week|month)",
+            script,
+        )
+        self.assertIn("function extractAgentRunTimeField", script)
+        self.assertIn("fields.schedule = runTime ? `${frequency} at ${runTime}` : frequency;", script)
+
+        # The digest keeps its cadence under "schedule", so the card has to read
+        # it from there instead of falling back to "As configured".
+        self.assertIn('|| getAgentProposalFieldValue(proposal, "schedule")', script)
+
     def test_every_scheduled_action_names_the_date_and_hour_it_runs(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")

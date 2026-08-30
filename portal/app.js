@@ -573,7 +573,11 @@ const AGENT_BLUEPRINTS = {
       "Create a daily assistant that reads new email, extracts the important items, and sends a concise digest on your schedule.",
     response:
       "I can set that up. I would add a mailbox reading skill, a scheduler, an Email Digest helper, and a delivery helper. Before it starts, I need approval plus your preferred delivery channel and time.",
-    relatedFeatureId: MONITOR_FEATURE_ID,
+    // A digest runs from the portal itself, the way a meeting summary does. It
+    // was filed under the Scheduled Web Monitor tool, and because the action
+    // reads that field as the thing that runs it, a brand new digest was
+    // marked cancelled for an account that had never turned that tool on.
+    relatedFeatureId: "",
     primaryActionLabel: "Create email digest helpers",
     setupActionLabel: "Review scheduler setup",
     missingCredential: "Mailbox access",
@@ -15019,7 +15023,43 @@ function extractAgentFrequencyField(text) {
     return `every ${amount} ${unit}`;
   }
   const namedMatch = value.match(/\b(hourly|daily|weekly|monthly|every day|every week|every month)\b/i);
-  return namedMatch ? namedMatch[0] : "";
+  if (namedMatch) {
+    return namedMatch[0];
+  }
+  // "every evening at 20:00" and "each morning" name a daily cadence with an
+  // hour attached. Reading them as no cadence at all quietly turned a
+  // scheduled digest into a manual one.
+  const cadenceMatch = value.match(/\b(?:every|each)\s+(day|morning|afternoon|evening|night|hour|week|month)\b/i);
+  if (cadenceMatch) {
+    const unit = cadenceMatch[1].toLowerCase();
+    if (unit === "hour") return "hourly";
+    if (unit === "week") return "weekly";
+    if (unit === "month") return "monthly";
+    return "daily";
+  }
+  return "";
+}
+
+// The hour a request names, so "every evening at 20:00" is saved to run at
+// 20:00 instead of the default morning slot.
+function extractAgentRunTimeField(text) {
+  const match = String(text || "").match(/\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  if (!match) {
+    return "";
+  }
+  const minute = match[2] ? Number.parseInt(match[2], 10) : 0;
+  const meridiem = String(match[3] || "").toLowerCase();
+  let hour = Number.parseInt(match[1], 10);
+  if (meridiem === "pm" && hour < 12) {
+    hour += 12;
+  }
+  if (meridiem === "am" && hour === 12) {
+    hour = 0;
+  }
+  if (hour > 23 || minute > 59) {
+    return "";
+  }
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 function buildAgentMonitorIntervalFromFrequency(value = "") {
@@ -15139,7 +15179,11 @@ function inferAgentProposalFieldsFromText(text, proposalType) {
       fields.mailbox = "Outlook";
     }
     if (frequency) {
-      fields.schedule = frequency;
+      const runTime = extractAgentRunTimeField(value);
+      fields.schedule = runTime ? `${frequency} at ${runTime}` : frequency;
+      if (runTime) {
+        fields.runTime = runTime;
+      }
     }
     if (deliveryChannel) {
       fields.deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannel);
@@ -15219,7 +15263,13 @@ function updateAgentProposalSummaryFromFields(proposal) {
     proposal.summary = `Monitor ${fields.watchQuery}${location}${frequency}${deliveryText}.`;
   } else if (proposal.type === "email-digest" && (fields.mailbox || fields.schedule)) {
     const mailbox = fields.mailbox || "the selected mailbox";
-    const schedule = fields.schedule ? ` on ${fields.schedule}` : "";
+    // "daily at 20:00" reads as a cadence already, so it does not take the
+    // "on" that a named day would.
+    const schedule = fields.schedule
+      ? (/^(?:every|each|hourly|daily|weekly|monthly)\b/i.test(fields.schedule.trim())
+        ? ` ${fields.schedule}`
+        : ` on ${fields.schedule}`)
+      : "";
     proposal.summary = `Summarize important messages from ${mailbox}${schedule}.`;
   } else if (proposal.type === "calendar-summary" && (fields.calendar || fields.timeWindow)) {
     const calendar = fields.calendar || "the selected calendar";
@@ -18628,7 +18678,13 @@ function createAgentProposalLocalAction(proposal) {
       result: getAgentProposalFieldValue(proposal, "result"),
       frequency: manualOnly
         ? "manual only"
-        : (proposal.executionPlan?.frequency || getAgentProposalFieldValue(proposal, "frequency")),
+        : (
+          proposal.executionPlan?.frequency
+          || getAgentProposalFieldValue(proposal, "frequency")
+          // A digest keeps its cadence under "schedule", so without this the
+          // card said "As configured" for an action that runs every evening.
+          || getAgentProposalFieldValue(proposal, "schedule")
+        ),
       manualOnly,
       actionLifecycleStatus: lifecycleStatus,
       runDate: runSchedule.runDate,
