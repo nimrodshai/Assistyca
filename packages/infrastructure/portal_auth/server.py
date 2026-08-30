@@ -203,6 +203,10 @@ AGENT_FOLDER_CONTENTS_LIMIT = 200
 # named. It sits beside the receipt bundles so the Folders panel shows both.
 AGENT_SAVED_ANSWER_FOLDER = "Saved answers"
 AGENT_SAVED_ANSWER_MAX_LENGTH = 20000
+# How many receipt emails an answer carries with it. A month of one vendor is
+# a handful; the ceiling is there so keeping an answer cannot turn into a
+# mailbox-wide download.
+AGENT_SAVED_ANSWER_SOURCE_LIMIT = 25
 # The feed keeps every notification, so the portal reads it a page at a time.
 NOTIFICATIONS_PAGE_SIZE = 20
 NOTIFICATIONS_PAGE_LIMIT = 100
@@ -1979,6 +1983,50 @@ def build_agent_saved_answer_filename(title: str, saved_at: datetime) -> str:
     stem = re.sub(r"[^\w -]+", "", str(title or ""), flags=re.UNICODE).strip()
     stem = re.sub(r"\s+", " ", stem)[:60].strip() or "Saved answer"
     return f"{stem} {saved_at.strftime('%Y-%m-%d %H%M%S')}.md"
+
+
+def normalize_saved_answer_sources(value: Any) -> list[dict[str, str]]:
+    """The receipt emails a kept answer asks to be filed alongside it.
+
+    These come back from the run that answered the question and are handed
+    straight back here, so everything in them is treated as untrusted: only
+    the fields this endpoint uses survive, and only up to the ceiling.
+    """
+
+    if not isinstance(value, list):
+        return []
+    sources: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        message_id = normalize_text(entry.get("messageId") or entry.get("id"))[:512]
+        mailbox = normalize_text(entry.get("mailbox"))[:200]
+        key = (message_id, mailbox.lower())
+        if not message_id or key in seen:
+            continue
+        seen.add(key)
+        sources.append({
+            "messageId": message_id,
+            "mailbox": mailbox,
+            "vendor": normalize_text(entry.get("vendor"))[:60],
+        })
+        if len(sources) >= AGENT_SAVED_ANSWER_SOURCE_LIMIT:
+            break
+    return sources
+
+
+def describe_saved_receipt_files(files: list[dict[str, Any]]) -> str:
+    """Say what landed in the folder besides the answer itself."""
+
+    if not files:
+        return ""
+    count = len(files)
+    if all(str(entry.get("name") or "").lower().endswith(".pdf") for entry in files):
+        noun = "receipt PDF" if count == 1 else "receipt PDFs"
+    else:
+        noun = "receipt file" if count == 1 else "receipt files"
+    return f"{count} {noun}"
 
 
 def build_agent_receipt_owner_key(email: str) -> str:
@@ -5310,6 +5358,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 response_payload["vendor"] = receipt_answer["vendor"]
                 response_payload["monthLabel"] = receipt_answer["monthLabel"]
                 response_payload["missingAmountCount"] = receipt_answer["missingAmountCount"]
+                # Nothing was written, so the receipts themselves are still in
+                # the mailbox. These name them, which is what lets the chat
+                # offer to keep the actual receipt and not only the sentence.
+                response_payload["receiptSources"] = receipt_answer["sources"][:AGENT_SAVED_ANSWER_SOURCE_LIMIT]
             if receipt_bundle:
                 response_payload.update({
                     "outputFolder": str(receipt_bundle.get("outputFolder") or ""),
@@ -5522,6 +5574,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         what makes it a one-off. Some answers are worth keeping anyway, so this
         writes the text the chat showed into a folder beside the bundles the
         receipt runs produce.
+
+        A spending answer is kept together with the receipts it was read from:
+        the sentence on its own is not what anyone files, and the receipt is
+        still sitting in the mailbox where the run found it.
         """
 
         authenticated = self._require_authenticated_user()
@@ -5568,10 +5624,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         file_name = build_agent_saved_answer_filename(title, saved_at)
         try:
             folder_path.mkdir(parents=True, exist_ok=True)
-            (folder_path / file_name).write_text(
-                f"# {title}\n\nSaved {saved_at.isoformat()}\n\n{text}\n",
-                encoding="utf-8",
-            )
         except OSError as exc:
             print(f"Saving an answer to a folder failed: {exc}", flush=True)
             json_response(self, HTTPStatus.BAD_GATEWAY, {
@@ -5581,13 +5633,134 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        # The receipts are fetched before the note is written, so the note can
+        # name the files sitting next to it.
+        receipt_files = self._save_answer_receipt_files(
+            session,
+            normalize_saved_answer_sources(payload.get("sources")),
+            folder_path=folder_path,
+            base_url=base_url,
+        )
+        note_lines = [f"# {title}", "", f"Saved {saved_at.isoformat()}", "", text]
+        if receipt_files:
+            note_lines.extend(["", "## Receipts saved with this answer", ""])
+            note_lines.extend(f"- {entry['name']}" for entry in receipt_files)
+        try:
+            (folder_path / file_name).write_text("\n".join(note_lines) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"Saving an answer to a folder failed: {exc}", flush=True)
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "folder_save_failed",
+                "message": "I couldn\u2019t save that to a folder just now. Try again.",
+            })
+            return
+
+        folder_label = logical_folder.rstrip("/")
+        receipt_note = describe_saved_receipt_files(receipt_files)
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "folder": logical_folder,
             "name": file_name,
             "url": "/".join([base_url, urllib_parse.quote(file_name)]),
-            "message": f"Saved to {logical_folder.rstrip('/')}.",
+            "receipts": receipt_files,
+            "message": (
+                f"Saved to {folder_label}, with {receipt_note}."
+                if receipt_note
+                else f"Saved to {folder_label}."
+            ),
         })
+
+    def _save_answer_receipt_files(
+        self,
+        session: Any,
+        sources: list[dict[str, str]],
+        *,
+        folder_path: Path,
+        base_url: str,
+    ) -> list[dict[str, Any]]:
+        """Copy the receipts an answer was read from into the same folder.
+
+        The answer run read the mailbox and wrote nothing, so the files are
+        fetched again here, one message at a time. A message that cannot be
+        read any more - moved, deleted, or in a mailbox that has since been
+        disconnected - is skipped: the answer is still worth keeping, and the
+        reply says how many receipts came with it.
+        """
+
+        if not sources:
+            return []
+        vault = self.credential_vault
+        records = self.database.list_platform_connection_secret_records(
+            session.email,
+            EMAIL_PLATFORM,
+            include_statuses=("connected", "needs_attention"),
+        )
+        if not records or vault is None:
+            return []
+
+        names = mailbox_display_names(records)
+        wanted: dict[str, list[dict[str, str]]] = {}
+        known_names = {name.lower() for name in names.values()}
+        for source in sources:
+            mailbox = normalize_text(source.get("mailbox")).lower()
+            # One mailbox owns everything it was asked about, including a
+            # receipt saved from a run that did not record a mailbox name.
+            if mailbox not in known_names and len(records) == 1:
+                mailbox = next(iter(known_names), "")
+            wanted.setdefault(mailbox, []).append(source)
+
+        saved_files: list[dict[str, Any]] = []
+        for record in records:
+            record_id = normalize_text(record.get("id"))
+            mailbox_name = names.get(record_id) or mailbox_display_name(record)
+            requested = wanted.get(mailbox_name.lower()) or []
+            if not requested:
+                continue
+            try:
+                stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")
+                record_provider = self._saved_email_provider(stored_email_secret)
+                access_token, _ = self._resolve_email_access_token(
+                    stored_email_secret,
+                    provider=record_provider,
+                )
+            except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                print(f"Keeping receipts from {mailbox_name} failed: {exc}", flush=True)
+                continue
+
+            runner = (
+                OutlookDigestRunner()
+                if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+                else GmailDigestRunner()
+            )
+            for source in requested:
+                try:
+                    attachments = runner.save_message_attachments(
+                        access_token,
+                        message_id=source["messageId"],
+                        output_dir=folder_path,
+                        url_prefix=base_url,
+                        # The file is filed next to a note, not behind a
+                        # report, so it is named after who it is from.
+                        filename_prefix=normalize_text(source.get("vendor")),
+                    )
+                except (
+                    GmailAuthorizationError,
+                    OutlookAuthorizationError,
+                    GmailSummaryError,
+                    OutlookSummaryError,
+                ) as exc:
+                    print(f"Keeping a receipt from {mailbox_name} failed: {exc}", flush=True)
+                    continue
+                for attachment in attachments:
+                    if not isinstance(attachment, dict) or attachment.get("status") != "saved":
+                        continue
+                    saved_files.append({
+                        "name": str(attachment.get("filename") or ""),
+                        "url": str(attachment.get("url") or ""),
+                        "size": int(attachment.get("size") or 0),
+                    })
+        return saved_files
 
     def _handle_agent_turn(self) -> None:
         authenticated = self._require_authenticated_user()

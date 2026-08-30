@@ -372,6 +372,8 @@ class AgentAnswerRunTests(unittest.TestCase):
             "summary": "Gmail digest - 1 message",
             "messageCount": 1,
             "items": [{
+                "id": "msg-1",
+                "mailbox": "owner@gmail.com",
                 "subject": "Your Render receipt",
                 "from": "Render <billing@render.com>",
                 "snippet": "Total charged $19.00",
@@ -412,6 +414,21 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertIn("19.00 USD", payload["answer"])
         self.assertIn("Render", payload["answer"])
         self.assertIn("Aug 2026", payload["answer"])
+
+    def test_a_question_names_the_emails_its_answer_came_from(self) -> None:
+        # Nothing is written, so the receipts stay in the mailbox. Naming them
+        # is what lets "Save to a folder" go back for the receipt itself
+        # rather than filing the sentence on its own.
+        payload = self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertEqual(
+            [(source["messageId"], source["mailbox"]) for source in payload["receiptSources"]],
+            [("msg-1", "owner@gmail.com")],
+        )
 
     def test_answering_a_question_saves_no_files(self) -> None:
         # The chat asked a question, not for a bundle. Writing one would also

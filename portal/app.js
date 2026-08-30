@@ -23604,6 +23604,30 @@ function getAgentAnswerArtifact(response, key) {
   return normalizeAgentNotificationHref(href);
 }
 
+// The receipts an answer was read from. A one-off writes no files, so the
+// emails the total came from are all that is left to go back to when the user
+// decides the answer - and the receipt behind it - is worth keeping.
+const AGENT_ANSWER_RECEIPT_SOURCE_LIMIT = 25;
+
+function collectAgentAnswerReceiptSources(results) {
+  const sources = [];
+  const seen = new Set();
+  results.forEach((response) => {
+    const entries = Array.isArray(response?.receiptSources) ? response.receiptSources : [];
+    entries.forEach((entry) => {
+      const messageId = String(entry?.messageId || "").trim();
+      const mailbox = String(entry?.mailbox || "").trim();
+      const key = `${mailbox.toLowerCase()}::${messageId}`;
+      if (!messageId || seen.has(key) || sources.length >= AGENT_ANSWER_RECEIPT_SOURCE_LIMIT) {
+        return;
+      }
+      seen.add(key);
+      sources.push({ messageId, mailbox, vendor: String(entry?.vendor || "").trim() });
+    });
+  });
+  return sources;
+}
+
 function getAgentAnswerResultFolder(results) {
   for (const response of results) {
     const folder = String(response?.outputFolder || "").trim().replace(/\/+$/, "");
@@ -23662,26 +23686,51 @@ function openAgentResultFolder(folderName) {
   }
 }
 
+// What was filed, in a sentence. A receipt that came as a plain email has no
+// file to keep, and saying so beats letting the client look for one.
+function describeAgentSavedAnswer(folder, response, sources) {
+  const receiptCount = Array.isArray(response?.receipts) ? response.receipts.length : 0;
+  const opener = folder
+    ? `Kept that in ${folder}. You can open it from the Folders panel.`
+    : "Kept that in your folders.";
+  if (receiptCount) {
+    const kept = receiptCount === 1 ? "the receipt itself" : `all ${receiptCount} receipts`;
+    return folder
+      ? `Kept that in ${folder}, with ${kept}. You can open it from the Folders panel.`
+      : `Kept that in your folders, with ${kept}.`;
+  }
+  if (sources.length) {
+    return `${opener} Those emails had nothing attached, so the answer is all there was to keep.`;
+  }
+  return opener;
+}
+
 async function saveAgentAnswerToFolder(message) {
   const text = String(message?.text || "").trim();
   if (!text) {
     return;
   }
   const title = String(message?.metadata?.oneOff?.requestText || "").trim() || "Saved answer";
+  // The receipts behind the answer are filed with it. Saving the sentence on
+  // its own leaves the client with a note about a receipt rather than the
+  // receipt, which is the thing they actually keep.
+  const sources = Array.isArray(message?.metadata?.oneOff?.receipts)
+    ? message.metadata.oneOff.receipts
+    : [];
   try {
     const response = await apiRequest("/api/agent/folders/save", {
       method: "POST",
-      body: { title, text },
-      timeoutMs: 30000,
+      body: sources.length ? { title, text, sources } : { title, text },
+      // Each receipt is fetched from the mailbox on the way in, so this waits
+      // longer than a note-sized save would need to.
+      timeoutMs: 90000,
     });
     const folder = String(response?.folder || "").trim().replace(/\/+$/, "");
     recordAgentAnswerFolder(response);
     // The chip is spent once the answer is filed; offering it again would
     // write a second copy of the same thing.
     removeAgentMessageAction(message.id, "save-answer-to-folder");
-    const confirmation = folder
-      ? `Kept that in ${folder}. You can open it from the Folders panel.`
-      : "Kept that in your folders.";
+    const confirmation = describeAgentSavedAnswer(folder, response, sources);
     // Without a folder name there is nothing for the button to open, so it is
     // not offered rather than offered and inert.
     const openActions = folder ? [createAgentAction("open-result-folder", "Open folder", folder)] : [];
@@ -23819,7 +23868,13 @@ async function runAgentAnswerNow(turn, userText = "") {
       technical: everyTaskFailed && lastError ? getAgentErrorTechnicalInfo(lastError) : undefined,
       actions: resultActions,
       keepActions: resultActions.length > 0,
-      oneOff: resultActions.length ? { requestText: String(userText || ""), tasks } : undefined,
+      oneOff: resultActions.length
+        ? {
+          requestText: String(userText || ""),
+          tasks,
+          receipts: collectAgentAnswerReceiptSources(runResults),
+        }
+        : undefined,
     });
     persistAgentWorkspace(answer);
   } catch (error) {

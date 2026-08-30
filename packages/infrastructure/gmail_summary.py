@@ -339,6 +339,44 @@ class GmailDigestRunner:
             summaries.append(item)
         return summaries
 
+    def save_message_attachments(
+        self,
+        access_token: str,
+        *,
+        message_id: str,
+        output_dir: Path | str,
+        url_prefix: str = "",
+        filename_prefix: str = "",
+    ) -> list[dict[str, Any]]:
+        """Save the receipt files attached to one known message.
+
+        A search run saves attachments as it reads the mailbox. Keeping an
+        answer happens later, when the only thing left of that run is the id
+        of the message the total came from, so that message is fetched on its
+        own here.
+        """
+
+        token = str(access_token or "").strip()
+        if not token:
+            raise GmailAuthorizationError(
+                "Gmail access needs attention: no usable access token is saved. Reconnect Gmail with read-only access, then try again."
+            )
+        safe_message_id = str(message_id or "").strip()
+        if not safe_message_id:
+            return []
+        directory = Path(output_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        encoded_message_id = urllib_parse.quote(safe_message_id, safe="")
+        message = self._get_json(f"{GMAIL_MESSAGES_API_URL}/{encoded_message_id}?format=full", token)
+        return self._save_receipt_attachments(
+            token,
+            message_id=safe_message_id,
+            message=message,
+            output_dir=directory,
+            url_prefix=url_prefix,
+            filename_prefix=filename_prefix,
+        )
+
     def _save_receipt_attachments(
         self,
         access_token: str,
@@ -347,6 +385,7 @@ class GmailDigestRunner:
         message: dict[str, Any],
         output_dir: Path | None,
         url_prefix: str = "",
+        filename_prefix: str = "",
     ) -> list[dict[str, Any]]:
         if output_dir is None:
             return []
@@ -370,6 +409,7 @@ class GmailDigestRunner:
                 mime_type=mime_type,
                 message_id=message_id,
                 part_index=attachment_index,
+                name_prefix=filename_prefix,
             )
             if size > GMAIL_MAX_RECEIPT_ATTACHMENT_BYTES:
                 attachments.append(mail_attachments.skipped_attachment(

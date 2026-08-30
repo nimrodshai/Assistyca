@@ -43,7 +43,16 @@ def safe_attachment_filename(
     mime_type: str,
     message_id: str,
     part_index: int,
+    name_prefix: str = "",
 ) -> str:
+    """Name one saved attachment.
+
+    A bundle names files after the message they came from, because the report
+    beside them is what a reader goes through. A file saved on its own into a
+    folder someone browses is named after the vendor instead, since there is
+    no report there to look it up in.
+    """
+
     raw_name = Path(str(filename or "").replace("\\", "/")).name.strip()
     if not raw_name:
         extension = mimetypes.guess_extension(str(mime_type or "").split(";", 1)[0].strip()) or ".bin"
@@ -53,6 +62,9 @@ def safe_attachment_filename(
     stem = Path(raw_name).stem.strip() or fallback
     suffix = Path(raw_name).suffix.lower() or ".bin"
     stem = _ATTACHMENT_FILENAME_RE.sub("-", stem).strip(" .-_") or fallback
+    readable_prefix = _ATTACHMENT_FILENAME_RE.sub("-", str(name_prefix or "")).strip(" .-_")[:40].strip()
+    if readable_prefix:
+        return f"{readable_prefix} - {stem[:50]}{suffix}"
     message_fragment = _ATTACHMENT_FILENAME_RE.sub("-", str(message_id or "message"))[:12].strip(" .-_") or "message"
     return f"{message_fragment}-{part_index:02d}-{stem[:50]}{suffix}"
 

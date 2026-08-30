@@ -59,4 +59,5 @@ jobs:
             tests.test_whatsapp_embedded_signup \
             tests.test_contact_api \
             tests.test_feature_activation \
-            tests.test_portal_runtime_paths
+            tests.test_portal_runtime_paths \
+            tests.test_saved_answer_receipts

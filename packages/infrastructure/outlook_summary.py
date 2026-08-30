@@ -394,6 +394,42 @@ class OutlookDigestRunner:
             url = next_link
         return summaries
 
+    def save_message_attachments(
+        self,
+        access_token: str,
+        *,
+        message_id: str,
+        output_dir: Path | str,
+        url_prefix: str = "",
+        filename_prefix: str = "",
+    ) -> list[dict[str, Any]]:
+        """Save the receipt files attached to one known message.
+
+        A search run saves attachments as it reads the mailbox. Keeping an
+        answer happens later, when the only thing left of that run is the id
+        of the message the total came from, so that message is asked for by
+        id here.
+        """
+
+        token = str(access_token or "").strip()
+        if not token:
+            raise OutlookAuthorizationError(
+                "Outlook access needs attention: no usable credential is saved. "
+                "Reconnect Outlook with read-only access, then try again."
+            )
+        safe_message_id = str(message_id or "").strip()
+        if not safe_message_id:
+            return []
+        directory = Path(output_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        return self._save_receipt_attachments(
+            token,
+            message_id=safe_message_id,
+            output_dir=directory,
+            url_prefix=url_prefix,
+            filename_prefix=filename_prefix,
+        )
+
     def _save_receipt_attachments(
         self,
         access_token: str,
@@ -401,6 +437,7 @@ class OutlookDigestRunner:
         message_id: str,
         output_dir: Path | None,
         url_prefix: str = "",
+        filename_prefix: str = "",
     ) -> list[dict[str, Any]]:
         if output_dir is None:
             return []
@@ -432,6 +469,7 @@ class OutlookDigestRunner:
                 mime_type=mime_type,
                 message_id=message_id,
                 part_index=attachment_index,
+                name_prefix=filename_prefix,
             )
             size = int(raw_attachment.get("size") or 0)
             if size > mail_attachments.MAX_RECEIPT_ATTACHMENT_BYTES:

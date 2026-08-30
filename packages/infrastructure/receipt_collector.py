@@ -24,6 +24,8 @@ RECEIPT_EXPORT_VERSION = 1
 RECEIPT_EXCEL_FILENAME = "receipts.xlsx"
 RECEIPT_PDF_FILENAME = "receipt-report.pdf"
 RECEIPT_MANIFEST_FILENAME = "bundle.json"
+# What a receipt row is called when the sender's name cannot be read.
+UNKNOWN_VENDOR_LABEL = "Unknown vendor"
 # Vendor slice colours, in fixed order, from the validated categorical palette.
 RECEIPT_CHART_COLORS = (
     "#2a78d6",
@@ -312,7 +314,7 @@ def summarize_receipt_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     vendor_counts: Counter[str] = Counter()
     missing_amounts = 0
     for row in rows:
-        vendor = _clean_text(row.get("vendor")) or "Unknown vendor"
+        vendor = _clean_text(row.get("vendor")) or UNKNOWN_VENDOR_LABEL
         vendor_counts[vendor] += 1
         currency = _clean_text(row.get("currency"))
         try:
@@ -398,7 +400,35 @@ def answer_receipt_question(
         "vendor": vendor_label,
         "monthLabel": month_label,
         "missingAmountCount": int(summary.get("missingAmountCount") or 0),
+        # The emails the total was read from. An answer run writes no files,
+        # so keeping the answer afterwards has to be able to go back for the
+        # receipts themselves, and these say which messages those are.
+        "sources": describe_receipt_sources(matched),
     }
+
+
+def describe_receipt_sources(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Name the messages behind a set of receipt rows."""
+
+    sources: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        message_id = _clean_text(row.get("sourceRef"))
+        mailbox = _clean_text(row.get("mailbox"))
+        if not message_id or (message_id, mailbox) in seen:
+            continue
+        seen.add((message_id, mailbox))
+        vendor = _clean_text(row.get("vendor"))
+        sources.append({
+            "messageId": message_id,
+            "mailbox": mailbox,
+            # A row with no readable sender is named "Unknown vendor" for the
+            # report's sake, which is not a name to put on a saved file.
+            "vendor": "" if vendor == UNKNOWN_VENDOR_LABEL else vendor,
+            "subject": _clean_text(row.get("subject")),
+            "date": _clean_text(row.get("date")),
+        })
+    return sources
 
 
 def load_previous_receipt_summary(
@@ -574,8 +604,11 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows.append({
             "index": str(index),
             "date": date,
-            "vendor": vendor or "Unknown vendor",
+            "vendor": vendor or UNKNOWN_VENDOR_LABEL,
             "subject": subject,
+            # Which mailbox this arrived in, so a receipt can still be fetched
+            # again later from the account that holds it.
+            "mailbox": _clean_text(source.get("mailbox")),
             "amount": amount,
             "currency": currency,
             "source": sender or "Gmail",
