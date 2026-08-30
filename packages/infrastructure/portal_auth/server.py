@@ -115,6 +115,14 @@ from packages.infrastructure.rate_limiter import (
 )
 from packages.infrastructure.portal_runtime_paths import resolve_portal_db_path
 from packages.infrastructure.portal_runtime_paths import resolve_runtime_path
+from packages.infrastructure.answer_composer import ANSWER_COMPOSER_INSTRUCTIONS
+from packages.infrastructure.answer_composer import ANSWER_COMPOSER_MAX_OUTPUT_TOKENS
+from packages.infrastructure.answer_composer import ANSWER_COMPOSER_MAX_RECORDS
+from packages.infrastructure.answer_composer import build_answer_prompt
+from packages.infrastructure.answer_composer import normalize_answer_conversation
+from packages.infrastructure.answer_composer import normalize_answer_question
+from packages.infrastructure.answer_composer import normalize_answer_records
+from packages.infrastructure.answer_composer import normalize_composed_answer
 from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.receipt_collector import RECEIPT_MANIFEST_FILENAME
@@ -212,6 +220,9 @@ NOTIFICATIONS_PAGE_SIZE = 20
 NOTIFICATIONS_PAGE_LIMIT = 100
 AGENT_PROPOSAL_REVISION_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_TURN_COMPLEXITY = TaskComplexity.IMPORTANT
+# Answering whatever was asked from the records a lookup read is open-ended
+# reasoning, not a structured edit, so it runs on the strongest model.
+AGENT_ANSWER_COMPOSE_COMPLEXITY = TaskComplexity.IMPORTANT
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
 CONTACT_AGENT_DONE_REPLY = (
     "מעולה, תודה. סיכמתי את הפרטים ואעביר אותם לנמרוד בצורה מסודרת, "
@@ -869,6 +880,33 @@ def normalize_contact_message(value: Any, max_length: int) -> str:
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in normalized.split("\n")]
     normalized = "\n".join(line for line in lines if line)
     return normalized[:max_length].strip()
+
+
+def build_mail_answer_records(items: Any) -> list[dict[str, str]]:
+    """Each message a mail lookup read, as one flat line.
+
+    A digest answers "what came in" with a summary. Anything else asked about
+    that mail - who wrote most, what is still unanswered, which of these is the
+    invoice - is answered from the messages themselves, so they travel back
+    with the answer in the same shape every other lookup uses.
+    """
+
+    records: list[dict[str, str]] = []
+    for item in (items if isinstance(items, list) else [])[:ANSWER_COMPOSER_MAX_RECORDS]:
+        if not isinstance(item, dict):
+            continue
+        record = {
+            "kind": "email",
+            "date": normalize_text(item.get("date")),
+            "from": normalize_text(item.get("from")),
+            "subject": normalize_text(item.get("subject")),
+            "detail": normalize_text(item.get("snippet")),
+            "mailbox": normalize_text(item.get("mailbox")),
+        }
+        trimmed = {key: value for key, value in record.items() if value}
+        if len(trimmed) > 1:
+            records.append(trimmed)
+    return normalize_answer_records(records)
 
 
 def looks_like_agent_secret(value: Any) -> bool:
@@ -2968,6 +3006,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
+            or path == "/api/agent/answer/compose"
             or path == "/api/agent/folders/save"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
@@ -3036,6 +3075,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/turn"
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
+            or path == "/api/agent/answer/compose"
             or path == "/api/agent/folders/save"
             or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
@@ -3328,6 +3368,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/proposals/run":
             self._handle_agent_proposal_run()
+            return
+
+        if path == "/api/agent/answer/compose":
+            self._handle_agent_answer_compose()
             return
 
         if path == "/api/platform-connections":
@@ -5362,6 +5406,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # the mailbox. These name them, which is what lets the chat
                 # offer to keep the actual receipt and not only the sentence.
                 response_payload["receiptSources"] = receipt_answer["sources"][:AGENT_SAVED_ANSWER_SOURCE_LIMIT]
+                # The receipts themselves, one line each. The total above
+                # answers how much; these are what a question about why, what
+                # for, or which one is answered from.
+                response_payload["answerRecords"] = receipt_answer["records"][:ANSWER_COMPOSER_MAX_RECORDS]
+            elif answer_mode:
+                # A question about the mail itself is answered from the
+                # messages that were read, the same way.
+                response_payload["answerRecords"] = build_mail_answer_records(result.get("items"))
             if receipt_bundle:
                 response_payload.update({
                     "outputFolder": str(receipt_bundle.get("outputFolder") or ""),
@@ -5804,6 +5856,106 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 result["missedCount"] += 1
         result["files"] = saved_files
         return result
+
+    def _handle_agent_answer_compose(self) -> None:
+        """Answer the question that was asked from what the lookup just read.
+
+        The lookup already ran and the application already worked out the
+        figures. What is left is the part a template cannot do: reading the
+        question, reading the records behind those figures, and saying the
+        thing that was actually asked for. The computed answer comes in with
+        the request and goes back out unchanged if this step cannot run, so a
+        question is never left unanswered because the model was unavailable.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        question = normalize_answer_question(payload.get("question"))
+        computed_answer = str(payload.get("answer") or "").strip()
+        if not question or not computed_answer:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_answer_request",
+                "message": "There is nothing to answer without the question and what the lookup found.",
+            })
+            return
+
+        raw_records = payload.get("records") if isinstance(payload.get("records"), list) else []
+        records = normalize_answer_records(raw_records)
+        # A question answered from part of what was read must say so, rather
+        # than sounding like it looked at everything.
+        record_note = (
+            f"Only {len(records)} of {len(raw_records)} items are listed here."
+            if len(raw_records) > len(records)
+            else ""
+        )
+        timezone_name = normalize_text(payload.get("timezone")) or "UTC"
+        prompt = build_answer_prompt(
+            question=question,
+            records=records,
+            computed_answer=computed_answer,
+            conversation=normalize_answer_conversation(payload.get("conversation")),
+            today=resolve_local_today(timezone_name),
+            timezone_name=timezone_name,
+            record_note=record_note,
+        )
+        model = resolve_task_model(
+            AGENT_ANSWER_COMPOSE_COMPLEXITY,
+            "PORTAL_ASSISTANT_MODEL",
+            "OPENAI_MODEL",
+        )
+
+        try:
+            result = call_openai_response(
+                tool_name="portal_answer_composer",
+                tool_id="portal_agent",
+                billing_email=session.email,
+                prompt=prompt,
+                model=model,
+                instructions=ANSWER_COMPOSER_INSTRUCTIONS,
+                max_output_tokens=ANSWER_COMPOSER_MAX_OUTPUT_TOKENS,
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                config=load_openai_config(
+                    default_model=model,
+                    strict_tracking=False,
+                    include_prompt_in_metadata=False,
+                ),
+                metadata={
+                    "source": "portal_agent",
+                    "recordCount": len(records),
+                },
+            )
+        except OpenAIError as exc:
+            # The lookup succeeded and its figures are already in hand, so the
+            # honest fallback is the answer the application built itself.
+            print(f"Portal answer composer failed: {exc.message}", flush=True)
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "answer": computed_answer,
+                "composed": False,
+            })
+            return
+
+        answer = normalize_composed_answer(result.output_text, fallback=computed_answer)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "answer": answer,
+            "composed": answer != computed_answer,
+        })
 
     def _handle_agent_turn(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -6799,6 +6951,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         subscription_status = normalize_text(billing_customer.get("subscriptionStatus"))
         is_paying = subscription_status in ACTIVE_SUBSCRIPTION_STATUSES
         client_type = normalize_client_type(user.get("clientType")) or ("paying" if is_paying else "demo")
+        spend = self._build_admin_user_spend(email, client_type)
         return {
             "email": email,
             "displayName": normalize_text(user.get("displayName")),
@@ -6819,8 +6972,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "checkoutUrl": normalize_text(billing_customer.get("checkoutUrl")),
                 "lastCheckedAt": billing_customer.get("lastCheckedAt"),
             },
+            "spend": spend,
             "assignedFeatureIds": assigned_feature_ids,
         }
+
+    def _build_admin_user_spend(self, email: str, client_type: str) -> dict[str, Any]:
+        is_billed = client_type == "paying"
+        summary = self.database.summarize_client_spend(email, is_billed=is_billed) or {}
+        summary["isBilled"] = is_billed
+        summary["clientType"] = client_type
+        if is_billed:
+            summary["billingNote"] = ""
+        elif client_type == "qa":
+            summary["billingNote"] = "QA account - usage is tracked but never billed."
+        else:
+            summary["billingNote"] = "Demo account - usage is tracked but never billed."
+        return summary
 
     def _handle_admin_opportunities_get(self, parsed: urllib_parse.ParseResult) -> None:
         authenticated = self._require_contact_opportunities_owner()

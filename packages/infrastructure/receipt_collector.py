@@ -45,6 +45,9 @@ RECEIPT_RULE = "#d7dee7"
 RECEIPT_VENDOR_LIMIT = 6
 # Enough of the email body to read the receipt itself, not the footer below it.
 RECEIPT_BODY_PREVIEW_CHARS = 900
+# How much of that body travels with a receipt when a question is being
+# answered from it. A line or two names what was bought; the rest is footer.
+RECEIPT_RECORD_DETAIL_CHARS = 240
 MONTH_FOLDER_LABELS = (
     "",
     "Jan",
@@ -404,7 +407,45 @@ def answer_receipt_question(
         # so keeping the answer afterwards has to be able to go back for the
         # receipts themselves, and these say which messages those are.
         "sources": describe_receipt_sources(matched),
+        # The receipts themselves, one line each. The total answers "how
+        # much"; a question about why a month jumped, or what a charge was
+        # for, can only be answered from the individual receipts behind it.
+        "records": describe_receipt_records(matched, month_label=month_label),
     }
+
+
+def describe_receipt_records(
+    rows: list[dict[str, Any]],
+    *,
+    month_label: str = "",
+) -> list[dict[str, str]]:
+    """Each receipt as one flat line, for answering questions about them.
+
+    The rows carry attachment lists, statuses, and report bookkeeping that a
+    question never asks about. What is left is what the receipt says: when it
+    arrived, who it came from, what it cost, and enough of the email itself to
+    tell a one-off purchase from the subscription beside it.
+    """
+
+    records: list[dict[str, str]] = []
+    for row in rows:
+        amount = _clean_text(row.get("amount"))
+        currency = _clean_text(row.get("currency"))
+        record = {
+            "kind": "receipt",
+            "date": _clean_text(row.get("date")),
+            "month": month_label,
+            "vendor": _clean_text(row.get("vendor")),
+            "subject": _clean_text(row.get("subject")),
+            "amount": f"{amount} {currency}".strip() if amount else "",
+            # What the receipt is for is in the body, not the subject line:
+            # "Your receipt from Apple" covers a 3.90 subscription and a 199.90
+            # one-off equally well.
+            "detail": _short_text(row.get("bodyPreview") or row.get("snippet"), RECEIPT_RECORD_DETAIL_CHARS),
+            "mailbox": _clean_text(row.get("mailbox")),
+        }
+        records.append({key: value for key, value in record.items() if value})
+    return records
 
 
 def describe_receipt_sources(rows: list[dict[str, Any]]) -> list[dict[str, str]]:

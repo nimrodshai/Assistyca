@@ -23833,6 +23833,68 @@ function collectAgentAnswerReceiptSources(results) {
   return sources;
 }
 
+// The records the lookups read, gathered from every run behind one answer.
+// The totals say how much; these are what a question about why an amount
+// jumped, what a charge was for, or which item stands out is answered from.
+const AGENT_ANSWER_RECORD_LIMIT = 60;
+
+function collectAgentAnswerRecords(results) {
+  const records = [];
+  results.forEach((response) => {
+    const entries = Array.isArray(response?.answerRecords) ? response.answerRecords : [];
+    entries.forEach((entry) => {
+      if (entry && typeof entry === "object" && records.length < AGENT_ANSWER_RECORD_LIMIT) {
+        records.push(entry);
+      }
+    });
+  });
+  return records;
+}
+
+// The last few turns, so a follow-up such as "why was that one so much
+// higher" knows which answer it is following up on.
+function buildAgentAnswerConversation() {
+  return getAgentWorkspace().messages
+    .slice(-8)
+    .filter((message) => !message.metadata?.excludeFromModel)
+    .map((message) => ({ role: message.role, text: message.text }));
+}
+
+// The figures were worked out in code, so they are right. What they mean, and
+// whether they answer what was actually asked, is the reading part: this hands
+// the question, the records behind those figures, and the figures themselves
+// back to the agent and takes the answer it writes. A question about a total
+// gets the total back; a question about why, what for, or which one gets an
+// answer that goes into the records rather than repeating the sum.
+//
+// The sentence the runs already wrote is the fallback the whole way down, so a
+// slow or unavailable model costs the phrasing, never the answer. A lookup
+// that reports no records, such as a calendar summary, keeps its own wording.
+async function composeAgentAnswer(question, answer, results) {
+  const records = collectAgentAnswerRecords(results);
+  const cleanQuestion = String(question || "").trim();
+  const cleanAnswer = String(answer || "").trim();
+  if (!cleanQuestion || !cleanAnswer || !records.length) {
+    return cleanAnswer || String(answer || "");
+  }
+  try {
+    const response = await apiRequest("/api/agent/answer/compose", {
+      method: "POST",
+      timeoutMs: 90000,
+      body: {
+        question: cleanQuestion,
+        answer: cleanAnswer,
+        records,
+        conversation: buildAgentAnswerConversation(),
+        timezone: getWorkspaceTimeZone(),
+      },
+    });
+    return String(response?.answer || "").trim() || cleanAnswer;
+  } catch (error) {
+    return cleanAnswer;
+  }
+}
+
 function getAgentAnswerResultFolder(results) {
   for (const response of results) {
     const folder = String(response?.outputFolder || "").trim().replace(/\/+$/, "");
@@ -24066,12 +24128,22 @@ async function runAgentAnswerNow(turn, userText = "") {
 
     // One lookup keeps the sentence its run wrote. Several are stacked under
     // headings, so the answer reads as the several things that were asked for.
-    const answer = sections.length === 1
+    const found = sections.length === 1
       ? sections[0].text
       : sections
         .map((section) => `${getAgentAnswerTaskHeading(section.task.proposalType)}\n\n${section.text}`)
         .join("\n\n");
     const everyTaskFailed = failureCount === sections.length;
+    // What was found is not yet what was asked. The reply is written from the
+    // records the lookups read, so a question the totals do not answer on
+    // their own is still answered.
+    if (!everyTaskFailed) {
+      agentTurnProgressText = "Working out the answer";
+      renderApp({ preserveStatus: true });
+    }
+    const answer = everyTaskFailed
+      ? found
+      : await composeAgentAnswer(userText, found, runResults);
     // One message can ask for two comparisons, and one card cannot show both
     // without saying which bars belong to which question. Two charts wait for
     // a card that can be labelled; one chart draws.

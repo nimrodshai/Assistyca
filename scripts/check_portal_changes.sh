@@ -10,6 +10,8 @@ python3 -m unittest \
   tests.test_agent_proposals \
   tests.test_agent_folder_contents \
   tests.test_saved_answer_receipts \
+  tests.test_answer_composer \
+  tests.test_agent_answer_now \
   tests.test_scheduled_monitor \
   tests.test_whatsapp_tool_delivery \
   tests.test_portal_manual_run \
