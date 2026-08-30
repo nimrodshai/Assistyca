@@ -365,7 +365,10 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function getAgentProposalWebMonitorManualOnly", script)
         self.assertIn("getSavedFeatureSettings(backendFeature).manualOnly", script)
         self.assertIn("agentWebMonitorTextSuggestsManualOnly", script)
-        self.assertIn("proposal.executionPlan?.backendFeatureId || proposal.relatedFeatureId", script)
+        # A monitor still reads the tool it runs on; only portal-run actions
+        # such as a digest ignore the tool they were filed under.
+        self.assertIn("proposal.executionPlan?.backendFeatureId || relatedFeatureId", script)
+        self.assertIn("    : proposal.relatedFeatureId;", script)
         self.assertIn("manualOnly,", script)
         self.assertNotIn("No background checks. Use Run now whenever you want a fresh top-five summary.", script)
         self.assertIn("function createAgentMonitorEditor", script)
@@ -1061,6 +1064,11 @@ class PortalStaticPageTests(unittest.TestCase):
         # The digest keeps its cadence under "schedule", so the card has to read
         # it from there instead of falling back to "As configured".
         self.assertIn('|| getAgentProposalFieldValue(proposal, "schedule")', script)
+
+        # A digest saved before this keeps its own copy of the tool it was filed
+        # under, so the action has to ignore that field as well — otherwise the
+        # digest already sitting in History stays stuck there.
+        self.assertIn('AGENT_ANSWER_RUN_TYPES.has(String(proposal.type || ""))', script)
 
     def test_every_scheduled_action_names_the_date_and_hour_it_runs(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

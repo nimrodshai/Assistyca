@@ -18636,7 +18636,14 @@ function createAgentProposalLocalAction(proposal) {
   const deliveryTarget = getAgentProposalDeliveryTarget(proposal, deliveryChannel);
   const deliveryLabel = formatAgentDeliveryTargetDetail(deliveryChannel, deliveryTarget);
   const approvedAt = String(proposal.approvedAt || proposal.updatedAt || proposal.createdAt || new Date().toISOString());
-  const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || proposal.relatedFeatureId || "").trim();
+  // Only a tool this action actually runs on decides whether it is alive. A
+  // digest or a meeting summary runs from the portal, so a tool it was merely
+  // filed under must not report it as cancelled — which is what digests saved
+  // before this still did, since each one keeps its own copy of that field.
+  const relatedFeatureId = AGENT_ANSWER_RUN_TYPES.has(String(proposal.type || ""))
+    ? ""
+    : proposal.relatedFeatureId;
+  const backendFeatureId = String(proposal.executionPlan?.backendFeatureId || relatedFeatureId || "").trim();
   const backendFeature = backendFeatureId ? getFeatureById(backendFeatureId) : null;
   const backendFeatureActive = backendFeatureId ? isFeatureActivated(backendFeature) : false;
   const manualOnly = getAgentProposalManualOnly(proposal, backendFeature);
