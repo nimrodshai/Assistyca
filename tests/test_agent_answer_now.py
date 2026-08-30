@@ -26,6 +26,7 @@ from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.gmail_summary import GMAIL_MAX_DIGEST_MESSAGES
 from packages.infrastructure.gmail_summary import GmailDigestRunner
 from packages.infrastructure.mail_search import MailQuery
+from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.mail_search import to_gmail_query
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.portal_auth.server import AGENT_RECEIPT_ANSWER_MAX_MESSAGES
@@ -419,6 +420,75 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertIn("19.00 USD", payload["answer"])
         self.assertIn("Render", payload["answer"])
         self.assertIn("Aug 2026", payload["answer"])
+
+    def test_the_adverts_a_receipt_search_dragged_in_are_not_totalled(self) -> None:
+        # A vendor that sends receipts sends far more mail carrying the words
+        # a receipt search asks for. Every message below names an amount, and
+        # only one of them is money that was actually paid.
+        judged: list[str] = []
+
+        def judge(**kwargs: Any) -> Any:
+            judged.append(kwargs["tool_name"])
+            return mock.Mock(output_text=json.dumps({"verdicts": [
+                {"ref": "1", "isReceipt": False, "reason": "a sale announcement"},
+                {"ref": "2", "isReceipt": False, "reason": "a delivery update"},
+                {"ref": "3", "isReceipt": True, "paidTo": "Render"},
+            ]}))
+
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=judge):
+            payload = self._run_answer(
+                {
+                    "result": "Find receipts from Render for August 2026",
+                    "vendor": "Render",
+                    "manualRunMonth": "2026-08",
+                },
+                digest={
+                    "summary": "Gmail digest - 3 messages",
+                    "messageCount": 3,
+                    "items": [
+                        {
+                            "id": "msg-1",
+                            "mailbox": "owner@gmail.com",
+                            "subject": "Big save! Up to 70% off",
+                            "from": "Render <deals@render.com>",
+                            "bodyText": "Super deals are live. Plans from $1.99.",
+                        },
+                        {
+                            "id": "msg-2",
+                            "mailbox": "owner@gmail.com",
+                            "subject": "Your order is on its way",
+                            "from": "Render <shipping@render.com>",
+                            "bodyText": "Your order has shipped. Order total $24.50.",
+                        },
+                        {
+                            "id": "msg-3",
+                            "mailbox": "owner@gmail.com",
+                            "subject": "Your Render receipt",
+                            "from": "Render <billing@render.com>",
+                            "bodyText": "Total charged $19.00",
+                        },
+                    ],
+                },
+            )
+
+        self.assertEqual(judged, ["portal_receipt_judge"])
+        self.assertIn("19.00 USD", payload["answer"])
+        self.assertIn("1 receipt", payload["answer"])
+        self.assertNotIn("45.49", payload["answer"])
+
+    def test_a_receipt_search_that_could_not_be_read_still_answers(self) -> None:
+        # The model was unreachable. The lookup found receipts either way, and
+        # an answer built from what the collector can see for itself beats no
+        # answer at all.
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=OpenAIError("no key")):
+            payload = self._run_answer({
+                "result": "Find receipts from Render for August 2026",
+                "vendor": "Render",
+                "manualRunMonth": "2026-08",
+            })
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("19.00 USD", payload["answer"])
 
     def test_a_question_names_the_emails_its_answer_came_from(self) -> None:
         # Nothing is written, so the receipts stay in the mailbox. Naming them

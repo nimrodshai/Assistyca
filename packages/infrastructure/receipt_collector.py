@@ -345,6 +345,11 @@ def filter_receipt_rows_by_vendor(rows: list[dict[str, Any]], vendor: Any) -> li
 
     The mailbox search casts a wide net on purpose, so narrowing to the vendor
     the question actually named happens here rather than in the query.
+
+    Who was paid is not always who sent the email. Plenty of vendors are paid
+    through a payment service or an app store, and their receipt arrives from
+    that service, so the merchant the message names counts as much as the
+    sender does when a question asks about a vendor by name.
     """
 
     needle = _clean_text(vendor).lower()
@@ -354,6 +359,7 @@ def filter_receipt_rows_by_vendor(rows: list[dict[str, Any]], vendor: Any) -> li
         row for row in rows
         if needle in " ".join([
             _clean_text(row.get("vendor")),
+            _clean_text(row.get("paidTo")),
             _clean_text(row.get("subject")),
             _clean_text(row.get("source")),
         ]).lower()
@@ -584,6 +590,9 @@ def describe_receipt_records(
             "date": _clean_text(row.get("date")),
             "month": month_label,
             "vendor": _clean_text(row.get("vendor")),
+            # The shop behind the sender, when a payment service sent it. An
+            # answer that says who was paid needs the shop, not the service.
+            "paidTo": _clean_text(row.get("paidTo")),
             "subject": _clean_text(row.get("subject")),
             "amount": f"{amount} {currency}".strip() if amount else "",
             # What the receipt is for is in the body, not the subject line:
@@ -763,9 +772,20 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         source_ref = _clean_text(source.get("id") or source.get("threadId"))
         # The preview is one clipped line; the body is what the receipt says.
         body_preview = _short_text(body_text, RECEIPT_BODY_PREVIEW_CHARS) if len(body_text) > len(snippet) else snippet
+        # What the message was read as, when it was read. A search for a few
+        # broad words returns plenty that is not a receipt, and only something
+        # that has read the message can tell an advert quoting a price from a
+        # payment that was taken.
+        verdict = source.get("receiptVerdict") if isinstance(source.get("receiptVerdict"), dict) else {}
+        judged = verdict.get("isReceipt") if isinstance(verdict.get("isReceipt"), bool) else None
+        paid_to = _clean_text(verdict.get("paidTo"))
         # A message the search returned still has to look like a receipt in
-        # its own right before it is counted as one.
-        if not (amount or _RECEIPT_EVIDENCE_RE.search(own_text)):
+        # its own right before it is counted as one. Where the message was
+        # read, that reading decides it: it is the only step here that knows
+        # the difference between "you paid" in a receipt and in an advert.
+        if judged is False:
+            status = RECEIPT_STATUS_NOT_A_RECEIPT
+        elif judged is None and not (amount or _RECEIPT_EVIDENCE_RE.search(own_text)):
             status = RECEIPT_STATUS_NOT_A_RECEIPT
         elif vendor and amount:
             status = RECEIPT_STATUS_READY
@@ -786,14 +806,24 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not amount:
             notes = "No amount detected. Review the source email or attachment."
         if status == RECEIPT_STATUS_NOT_A_RECEIPT:
+            # Why it was left out, in the words of whatever left it out, so a
+            # receipt wrongly dropped can be argued with rather than guessed at.
+            reason = _clean_text(verdict.get("reason"))
             notes = (
-                "The mailbox search matched this message, but the email itself names no "
-                "amount and reads nothing like a receipt. Left out of the totals."
+                f"Read as {reason} rather than a receipt. Left out of the totals."
+                if reason
+                else (
+                    "The mailbox search matched this message, but the email itself names no "
+                    "amount and reads nothing like a receipt. Left out of the totals."
+                )
             )
         rows.append({
             "index": str(index),
             "date": date,
             "vendor": vendor or UNKNOWN_VENDOR_LABEL,
+            # Who the money reached, where the sender only passed it on. A
+            # payment service's receipt is from the service and to the shop.
+            "paidTo": paid_to,
             "subject": subject,
             # Which mailbox this arrived in, so a receipt can still be fetched
             # again later from the account that holds it.

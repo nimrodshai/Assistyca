@@ -11,6 +11,7 @@ from pathlib import Path
 from packages.infrastructure.receipt_collector import build_receipt_spend_view
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import extract_receipt_rows
+from packages.infrastructure.receipt_collector import filter_receipt_rows_by_vendor
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import split_receipt_rows
 from packages.infrastructure.receipt_collector import summarize_receipt_rows
@@ -338,6 +339,51 @@ class ReceiptClassificationTests(unittest.TestCase):
             "snippet": "Total ILS 40.00",
         })[0]
         self.assertEqual(row["status"], "Ready")
+
+    def test_an_advert_that_quotes_a_price_is_not_a_receipt(self) -> None:
+        # Every word a receipt search looks for is in here, and so is an
+        # amount. Only reading the message tells it apart from a receipt.
+        row = self.rows_for({
+            "id": "msg-4",
+            "from": "Shop <deals@notice.shop.com>",
+            "subject": "Big save! Up to 70% off",
+            "bodyText": "Super deals are live. Items from $1.99, free shipping over $10.00.",
+            "receiptVerdict": {"isReceipt": False, "reason": "a sale announcement"},
+        })[0]
+        self.assertEqual(row["status"], "Not a receipt")
+        self.assertIn("Read as a sale announcement rather than a receipt", row["notes"])
+
+    def test_a_payment_with_no_readable_amount_is_still_a_receipt(self) -> None:
+        row = self.rows_for({
+            "id": "msg-5",
+            "from": "Shop <billing@shop.com>",
+            "subject": "Your payment went through",
+            "bodyText": "Thanks - your payment has been taken. The invoice is attached.",
+            "receiptVerdict": {"isReceipt": True},
+        })[0]
+        self.assertEqual(row["status"], "Needs review")
+
+    def test_a_message_nobody_read_is_still_judged_on_its_own_words(self) -> None:
+        # The model could not be reached, so the collector falls back to what
+        # it can see for itself rather than dropping the month.
+        rows = self.rows_for(
+            {"id": "a", "from": "noreply@office.wild.co", "subject": "Your signed NDA with Wild", "bodyText": self.NDA_BODY},
+            {"id": "b", "from": "Apple <no_reply@email.apple.com>", "subject": "Your receipt", "snippet": "Total ILS 40.00"},
+        )
+        self.assertEqual([row["status"] for row in rows], ["Not a receipt", "Ready"])
+
+    def test_a_receipt_is_found_by_the_shop_that_was_paid_not_the_sender(self) -> None:
+        # The payment service sent the email; the shop is named inside it.
+        rows = self.rows_for({
+            "id": "msg-6",
+            "from": "Pay <service@pay.example>",
+            "subject": "Receipt for your payment",
+            "bodyText": "You sent a payment of ILS 71.80 to Shenzhen Trading Co.",
+            "receiptVerdict": {"isReceipt": True, "paidTo": "Shenzhen Trading Co"},
+        })
+        self.assertEqual(rows[0]["paidTo"], "Shenzhen Trading Co")
+        self.assertEqual(len(filter_receipt_rows_by_vendor(rows, "shenzhen trading")), 1)
+        self.assertEqual(len(filter_receipt_rows_by_vendor(rows, "some other shop")), 0)
 
     def test_split_renumbers_each_list_from_one(self) -> None:
         rows = self.rows_for(

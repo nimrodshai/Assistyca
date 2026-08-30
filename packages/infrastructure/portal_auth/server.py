@@ -144,6 +144,9 @@ from packages.infrastructure.receipt_collector import format_receipt_month_label
 from packages.infrastructure.receipt_collector import merge_receipt_amount_entries
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
+from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
+from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
+from packages.infrastructure.receipt_judge import judge_receipt_items
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
@@ -238,6 +241,12 @@ AGENT_TURN_COMPLEXITY = TaskComplexity.IMPORTANT
 # Answering whatever was asked from the records a lookup read is open-ended
 # reasoning, not a structured edit, so it runs on the strongest model.
 AGENT_ANSWER_COMPOSE_COMPLEXITY = TaskComplexity.IMPORTANT
+# Telling a receipt from the advert beside it is short work, but it is not
+# mechanical: the two quote the same words and the same amounts, and what
+# separates them is what the message is telling the owner. The mid tier reads
+# that; the cheapest one sorts by vocabulary, which is the mistake this step
+# exists to stop.
+AGENT_RECEIPT_JUDGE_COMPLEXITY = TaskComplexity.MEDIUM
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
 CONTACT_AGENT_DONE_REPLY = (
     "מעולה, תודה. סיכמתי את הפרטים ואעביר אותם לנמרוד בצורה מסודרת, "
@@ -5667,6 +5676,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             undated_count = 0
             if is_custom_google_batch:
                 result = relabel_mail_digest_result(result, result_header)
+                if result_header == "Receipt search":
+                    # Before anything is counted, read what actually came back.
+                    # The mailbox was searched for a few broad words, and a
+                    # month of a busy vendor holds far more mail matching them
+                    # than it holds receipts.
+                    result = {
+                        **result,
+                        "items": self._judge_receipt_items(
+                            result.get("items") if isinstance(result.get("items"), list) else [],
+                            billing_email=session.email,
+                        ),
+                    }
                 if result_header == "Receipt search" and answer_mode:
                     answer_items = result.get("items") if isinstance(result.get("items"), list) else []
                     answer_vendor = fields.get("vendor") or payload.get("vendor")
@@ -6360,6 +6381,65 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             for logical_folder, count in folder_counts.items()
         ]
         return result
+
+    def _judge_receipt_items(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        billing_email: str,
+    ) -> list[dict[str, Any]]:
+        """Tell the receipts in a search's results apart from everything else.
+
+        A receipt search asks the mailbox for words - receipt, payment,
+        purchase, charged - and a vendor that sends receipts sends far more
+        mail carrying those words than it sends receipts: sales quoting a
+        price, coupons quoting a discount, dispatch notes restating an order
+        already paid for. Every one of them names an amount, so a total built
+        from the search results alone is a number about nothing.
+
+        Each message is read here and judged on what it tells the owner. When
+        the model cannot be reached the messages come back unjudged and the
+        collector falls back to what it can see for itself, because a run that
+        found receipts should still answer.
+        """
+
+        if not items:
+            return items
+
+        model = resolve_task_model(
+            AGENT_RECEIPT_JUDGE_COMPLEXITY,
+            "PORTAL_RECEIPT_JUDGE_MODEL",
+            "OPENAI_MODEL",
+        )
+
+        def ask(prompt: str) -> str:
+            try:
+                result = call_openai_response(
+                    tool_name="portal_receipt_judge",
+                    tool_id="portal_agent",
+                    billing_email=billing_email,
+                    prompt=prompt,
+                    model=model,
+                    instructions=RECEIPT_JUDGE_INSTRUCTIONS,
+                    max_output_tokens=RECEIPT_JUDGE_MAX_OUTPUT_TOKENS,
+                    # The same mail read twice should sort the same way, so
+                    # nothing here is left to the wording knobs.
+                    temperature=0.0,
+                    usage_recorder=self.database,
+                    price_resolver=self.database.get_model_price,
+                    config=load_openai_config(
+                        default_model=model,
+                        strict_tracking=False,
+                        include_prompt_in_metadata=False,
+                    ),
+                    metadata={"source": "portal_agent"},
+                )
+            except OpenAIError as exc:
+                print(f"Receipt judgement failed: {exc.message}", flush=True)
+                return ""
+            return result.output_text
+
+        return judge_receipt_items(items, ask=ask)
 
     def _handle_agent_answer_compose(self) -> None:
         """Answer the question that was asked from what the lookup just read.
