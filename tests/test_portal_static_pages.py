@@ -1232,7 +1232,36 @@ class PortalStaticPageTests(unittest.TestCase):
 
         # A name that already ends in "#2" is numbered from its root, so the
         # next duplicate is "#3" rather than "Receipt collector #2 #2".
-        self.assertIn('const rootTitle = baseTitle.replace(/\\s*#\\d+$/, "").trim() || baseTitle;', script)
+        self.assertIn("function getScheduledActionRootTitle", script)
+        self.assertIn('return baseTitle.replace(/\\s*#\\d+$/, "").trim() || baseTitle;', script)
+        self.assertIn("const rootTitle = getScheduledActionRootTitle(action);", script)
+
+    def test_a_repeat_request_names_the_action_that_already_exists(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # Numbering keeps the list readable, but a second "Receipt collector"
+        # is nearly always the same job asked for twice. The agent now says
+        # which action already exists and offers to change it.
+        self.assertIn("function findActiveAgentActionByRootTitle", script)
+        self.assertIn("function pushAgentDuplicateActionPrompt", script)
+        self.assertIn("if (pushAgentDuplicateActionPrompt(proposal, userText)) {", script)
+        self.assertIn("Want me to change that one instead of adding a second?", script)
+
+        # The prompt points at the existing action and offers both answers.
+        self.assertIn("showActionLink: true", script)
+        self.assertIn('createAgentAction("choose", "Change it"', script)
+        self.assertIn('createAgentAction("choose", "Add a separate one"', script)
+
+        # It never traps the user: a request that already asks for a separate
+        # action, or a title we just asked about, goes straight through.
+        self.assertIn("AGENT_SEPARATE_ACTION_PATTERN", script)
+        self.assertIn("didAgentAskAboutDuplicateAction(title)", script)
+        self.assertIn("isGenericAgentPurposeTitle(title)", script)
+
+        # The model gets the same signal, so it can answer before the guard has
+        # to step in.
+        self.assertIn("function getAgentActionProposalKind", script)
+        self.assertIn("kind: choice.kind,", script)
 
     def test_the_chat_carries_out_a_delete_instead_of_agreeing_to_one(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

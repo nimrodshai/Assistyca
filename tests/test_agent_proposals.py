@@ -139,6 +139,17 @@ class AgentProposalRevisionTests(unittest.TestCase):
             {"name": "Web monitor", "status": "Live"},
         ])
 
+    def test_action_context_keeps_the_kind_of_each_action(self) -> None:
+        actions = normalize_agent_action_context([
+            {"name": "Web monitor", "kind": "web-monitor", "status": "Live"},
+            {"name": "Meeting summary", "type": "calendar-summary"},
+        ])
+
+        self.assertEqual(actions, [
+            {"name": "Web monitor", "kind": "web-monitor", "status": "Live"},
+            {"name": "Meeting summary", "kind": "calendar-summary"},
+        ])
+
     def test_action_context_caps_the_list(self) -> None:
         actions = normalize_agent_action_context([
             {"name": f"Action {index}"} for index in range(40)
@@ -162,6 +173,20 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn('"name":"Receipt collector"', prompt)
         self.assertIn("needsActionChoice=true", prompt)
         self.assertIn("do not name the actions yourself", prompt)
+
+    def test_turn_prompt_forbids_a_second_copy_of_an_existing_action(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Collect my receipts every month.",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            action_context=[
+                {"name": "Receipt collector", "kind": "custom", "status": "Manual"},
+            ],
+        )
+
+        self.assertIn('"kind":"custom"', prompt)
+        self.assertIn("Never set up a second copy of an action the account already has", prompt)
+        self.assertIn("whether to change that one or add a separate action", prompt)
 
     def test_turn_response_keeps_action_choice_flag_on_a_plain_question(self) -> None:
         turn = normalize_agent_turn_response(

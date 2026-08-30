@@ -19132,6 +19132,24 @@ function normalizeScheduledActionTitleKey(title) {
   return String(title || "").trim().toLowerCase();
 }
 
+// The name without the "#2" the list adds, so two actions of the same kind
+// compare equal.
+function getScheduledActionRootTitle(action) {
+  const baseTitle = getScheduledActionBaseTitle(action);
+  return baseTitle.replace(/\s*#\d+$/, "").trim() || baseTitle;
+}
+
+function findActiveAgentActionByRootTitle(title) {
+  const wanted = normalizeScheduledActionTitleKey(title);
+  if (!wanted) {
+    return null;
+  }
+  return getRenderableAgentActions().find((action) => (
+    isActiveAgentActionStatus(action.status, action)
+    && normalizeScheduledActionTitleKey(getScheduledActionRootTitle(action)) === wanted
+  )) || null;
+}
+
 function refreshScheduledActionUniqueTitles(actions) {
   scheduledActionUniqueTitles.clear();
   const takenTitles = new Set();
@@ -19143,7 +19161,7 @@ function refreshScheduledActionUniqueTitles(actions) {
     ))
     .forEach(({ action }) => {
       const baseTitle = getScheduledActionBaseTitle(action);
-      const rootTitle = baseTitle.replace(/\s*#\d+$/, "").trim() || baseTitle;
+      const rootTitle = getScheduledActionRootTitle(action);
       let title = baseTitle;
       let suffix = 1;
       while (takenTitles.has(normalizeScheduledActionTitleKey(title))) {
@@ -19234,6 +19252,19 @@ function formatAgentActionChoiceCreated(action) {
   return formatScheduledActionDate(new Date(createdTime).toISOString(), action?.timezone);
 }
 
+// The proposal type an action grew out of, so a fresh request can be matched
+// against what the account already runs even when the wording differs.
+function getAgentActionProposalKind(action) {
+  const proposalType = String(getAgentLocalActionProposal(action)?.type || "").trim();
+  if (proposalType) {
+    return proposalType;
+  }
+  const actionType = String(action?.actionType || "").trim();
+  return actionType.startsWith("agent_")
+    ? actionType.replace(/^agent_/, "").replace(/_+/g, "-")
+    : "";
+}
+
 function getAgentActionChoices() {
   const active = sortScheduledActionsByCreatedAt(
     getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status, action)),
@@ -19243,6 +19274,7 @@ function getAgentActionChoices() {
     .map((action) => ({
       id: String(action.id || ""),
       name: getScheduledActionTitle(action),
+      kind: getAgentActionProposalKind(action),
       status: getScheduledActionStatusLabel(action.status, action),
       created: formatAgentActionChoiceCreated(action),
     }))
@@ -19273,6 +19305,7 @@ function getAgentActionChoiceListValue(choices) {
 function buildAgentActionContext() {
   return getAgentActionChoices().map((choice) => ({
     name: choice.name,
+    kind: choice.kind,
     status: choice.status,
     created: choice.created,
   }));
@@ -23252,6 +23285,9 @@ async function applyAgentTurnResponse(turn, userText) {
 
   if (outcome === "proposal" || (outcome === "question" && turn?.proposalType)) {
     const proposal = createAgentProposalFromTurn(userText, turn);
+    if (pushAgentDuplicateActionPrompt(proposal, userText)) {
+      return true;
+    }
     agent.proposals.push(proposal);
     agent.activeProposalId = proposal.id;
     pushAgentProposalNextStep(proposal, reply);
@@ -23262,6 +23298,56 @@ async function applyAgentTurnResponse(turn, userText) {
     pushAgentMessage("assistant", reply, buildAgentReplyMetadata(turn, outcome));
   }
   return true;
+}
+
+// A second request for something the account already runs used to become
+// "Receipt collector #2" without a word about it. Name the action that already
+// exists instead, and set a new one up only when the user asks for that on
+// purpose.
+const AGENT_DUPLICATE_ACTION_LOOKBACK = 6;
+const AGENT_SEPARATE_ACTION_PATTERN = /\b(?:separate|another|second|third|additional|extra|one more|as well|anyway|new one)\b/i;
+
+function didAgentAskAboutDuplicateAction(title) {
+  const wanted = normalizeScheduledActionTitleKey(title);
+  if (!wanted) {
+    return false;
+  }
+  return getAgentWorkspace().messages
+    .slice(-AGENT_DUPLICATE_ACTION_LOOKBACK)
+    .some((message) => normalizeScheduledActionTitleKey(message?.metadata?.duplicateActionTitle) === wanted);
+}
+
+function pushAgentDuplicateActionPrompt(proposal, userText) {
+  const title = getAgentProposalLocalActionTitle(proposal);
+  // A generic title says nothing about the job, so it can never stand in for
+  // "the same thing again".
+  if (!title || isGenericAgentPurposeTitle(title)) {
+    return false;
+  }
+  // Asked for on purpose, or already asked about once: let it through so the
+  // user is never stuck in the same question.
+  if (AGENT_SEPARATE_ACTION_PATTERN.test(String(userText || "")) || didAgentAskAboutDuplicateAction(title)) {
+    return false;
+  }
+  const existing = findActiveAgentActionByRootTitle(title);
+  if (!existing) {
+    return false;
+  }
+
+  return Boolean(pushAgentMessage(
+    "assistant",
+    `You already have a \u201C${title}\u201D action. Want me to change that one instead of adding a second?`,
+    {
+      kind: "result",
+      showActionLink: true,
+      actionId: String(existing.id || ""),
+      duplicateActionTitle: title,
+      actions: [
+        createAgentAction("choose", "Change it", `Change my \u201C${title}\u201D action.`, "primary"),
+        createAgentAction("choose", "Add a separate one", `Add a separate \u201C${title}\u201D action as well.`),
+      ],
+    },
+  ));
 }
 
 // Saying "consider it done" used to be the whole of it: nothing removed an

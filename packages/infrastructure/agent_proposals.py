@@ -175,9 +175,11 @@ def _normalize_safe_google_tool_context(value: Any) -> dict[str, Any]:
 def normalize_agent_action_context(value: Any) -> list[dict[str, str]]:
     """Keep only the display details of actions the account already has.
 
-    The agent needs these to ask which existing action the user means. Ids stay
-    out of the prompt: the picker in the chat resolves the choice locally, so
-    the model never has to hold an internal identifier.
+    The agent needs these to ask which existing action the user means, and to
+    recognize a request for something the account already runs instead of
+    setting up a second copy of it. Ids stay out of the prompt: the picker in
+    the chat resolves the choice locally, so the model never has to hold an
+    internal identifier.
     """
     raw_items = value if isinstance(value, list) else []
     actions: list[dict[str, str]] = []
@@ -187,6 +189,9 @@ def normalize_agent_action_context(value: Any) -> list[dict[str, str]]:
         if not name:
             continue
         entry = {"name": name}
+        kind = _single_line(item.get("kind") or item.get("type"), 60)
+        if kind:
+            entry["kind"] = kind
         status = _single_line(item.get("status"), 40)
         if status:
             entry["status"] = status
@@ -487,7 +492,8 @@ def build_agent_turn_prompt(
         "return outcome=revise_proposal with changes.fields containing the new or corrected field values. Do not "
         "restart questions whose values are already present in activeProposal.fields.\n"
         "existingActions lists the actions this account already has, in the order the user sees them in the "
-        "Actions panel. Use it to recognize what the user already set up. When the user wants to change, "
+        "Actions panel. Each entry has name, kind, status, and created, where kind is the proposal type the "
+        "action was built from. Use it to recognize what the user already set up. When the user wants to change, "
         "schedule, pause, run, or delete an action they already have, and the message does not identify which "
         "one, return outcome=question with needsActionChoice=true, leave proposalType empty because this is not a "
         "new setup, and ask which action they mean in one short sentence. The application shows the list as a "
@@ -512,6 +518,12 @@ def build_agent_turn_prompt(
         "for this outcome, so keep reply to one short line and put nothing in it that the user must read. There "
         "is no command for running an action now; when the user asks for that, use outcome=message and point "
         "them at the Run now button on the action in the Actions panel.\n"
+        "Never set up a second copy of an action the account already has. Before returning outcome=proposal or "
+        "outcome=question with a proposalType, compare the request with existingActions: if an entry has the same "
+        "kind and covers the same job, return outcome=message instead. Say which action they already have, in "
+        "their words, and ask whether to change that one or add a separate action alongside it. Do not scold the "
+        "user, do not use the word duplicate, and do not start a setup in that same turn. Propose a new action of "
+        "a kind they already have only once the user has said they want an additional, separate one.\n"
         "For action result notifications, default deliveryChannel to portal (the Notifications center) when the user has "
         "not explicitly chosen another channel. Do not ask where to notify merely to choose this default. If the "
         "user explicitly requests email, WhatsApp, Telegram, or another supported channel, preserve that choice.\n"
