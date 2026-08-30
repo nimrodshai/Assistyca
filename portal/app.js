@@ -1311,7 +1311,6 @@ const state = {
   agentFolderFilterOpen: false,
   agentFolderSortOpen: false,
   agentFolderOpenId: "",
-  agentHistoryExpanded: false,
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
   platformConnections: [],
@@ -1488,12 +1487,8 @@ const elements = {
   agentFolderCount: document.querySelector("#agentFolderCount"),
   agentPendingActionsCount: document.querySelector("#agentPendingActionsCount"),
   agentOnDemandActionsCount: document.querySelector("#agentOnDemandActionsCount"),
-  agentCompletedActionsCount: document.querySelector("#agentCompletedActionsCount"),
-  agentHistoryToggleButton: document.querySelector("#agentHistoryToggleButton"),
-  agentHistorySection: document.querySelector(".agent-history-section"),
   agentPendingActionList: document.querySelector("#agentPendingActionList"),
   agentOnDemandActionList: document.querySelector("#agentOnDemandActionList"),
-  agentCompletedActionList: document.querySelector("#agentCompletedActionList"),
   agentActionDetailView: document.querySelector("#agentActionDetailView"),
   agentActionDetailContent: document.querySelector("#agentActionDetailContent"),
   agentActionDetailBackButton: document.querySelector("#agentActionDetailBackButton"),
@@ -6883,6 +6878,7 @@ function setCalendarOAuthPrimaryButton(label, options = {}) {
     return;
   }
   const labelNode = document.createElement("span");
+  labelNode.className = "calendar-oauth-button-label";
   labelNode.textContent = String(label || "Sign in with Google");
   const icon = document.createElement("span");
   icon.className = options.loading ? "calendar-oauth-button-spinner" : "calendar-oauth-button-logo";
@@ -19821,13 +19817,8 @@ function showAgentActionInPanel(actionId) {
     return false;
   }
 
-  const targetAction = getRenderableAgentActions()
-    .find((action) => String(action.id || "") === normalizedActionId);
   agentActionSpotlightId = normalizedActionId;
   state.selectedScheduledActionId = "";
-  if (targetAction && !isActiveAgentActionStatus(targetAction.status, targetAction)) {
-    state.agentHistoryExpanded = true;
-  }
 
   setAgentToolsOpen(true);
   setAgentPanelMode("actions");
@@ -22324,7 +22315,7 @@ function ensureAgentActionsLoaded() {
 }
 
 function renderAgentActions() {
-  if (!elements.agentPendingActionList || !elements.agentCompletedActionList) {
+  if (!elements.agentPendingActionList) {
     return;
   }
 
@@ -22338,33 +22329,16 @@ function renderAgentActions() {
     active.filter((action) => !isAgentOnDemandAction(action)),
   );
   const onDemandActions = sortScheduledActionsByCreatedAt(active.filter(isAgentOnDemandAction));
-  const completed = sortScheduledActionsByCreatedAt(
-    actions.filter((action) => !isActiveAgentActionStatus(action.status, action)),
-  );
   const initialLoading = isAgentActionsInitialLoading();
 
   elements.agentPendingActionsCount.textContent = initialLoading ? "…" : String(recurringActions.length);
   if (elements.agentOnDemandActionsCount) {
     elements.agentOnDemandActionsCount.textContent = initialLoading ? "…" : String(onDemandActions.length);
   }
-  elements.agentCompletedActionsCount.textContent = initialLoading ? "…" : String(completed.length);
-  const historyExpanded = Boolean(state.agentHistoryExpanded);
-  elements.agentHistoryToggleButton?.setAttribute("aria-expanded", String(historyExpanded));
-  elements.agentHistoryToggleButton?.setAttribute(
-    "aria-label",
-    historyExpanded ? "Hide action history" : "Show action history",
-  );
-  if (elements.agentHistorySection) {
-    elements.agentHistorySection.classList.toggle("is-expanded", historyExpanded);
-  }
-  if (elements.agentCompletedActionList) {
-    elements.agentCompletedActionList.hidden = !historyExpanded;
-  }
   if (initialLoading) {
     ensureAgentActionsLoaded();
     renderScheduledActionLoadingList(elements.agentPendingActionList, "Loading actions…");
     renderScheduledActionLoadingList(elements.agentOnDemandActionList, "Loading actions…");
-    renderScheduledActionLoadingList(elements.agentCompletedActionList, "Loading history…");
   } else {
     renderScheduledActionList(elements.agentPendingActionList, recurringActions, "Nothing runs on a schedule yet.");
     renderScheduledActionList(
@@ -22372,7 +22346,6 @@ function renderAgentActions() {
       onDemandActions,
       "Ask me for something once, then save it here to run again.",
     );
-    renderScheduledActionList(elements.agentCompletedActionList, completed, "Action results and errors will appear here.");
   }
 
   const selectedAction = actions.find((action) => String(action.id) === String(state.selectedScheduledActionId));
@@ -31754,16 +31727,8 @@ function bindEvents() {
   for (const actionList of [
     elements.agentPendingActionList,
     elements.agentOnDemandActionList,
-    elements.agentCompletedActionList,
   ]) {
     actionList?.addEventListener("click", handleScheduledActionListClick, { capture: true });
-  }
-
-  if (elements.agentHistoryToggleButton) {
-    elements.agentHistoryToggleButton.addEventListener("click", () => {
-      state.agentHistoryExpanded = !state.agentHistoryExpanded;
-      renderAgentActions();
-    });
   }
 
   if (elements.agentActionDetailBackButton) {

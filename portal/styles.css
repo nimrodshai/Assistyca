@@ -2783,11 +2783,20 @@ body[data-modal="billing"] .app-shell {
   margin-left: var(--calendar-oauth-column-offset);
 }
 
+/* Cancel takes only the width its own label needs, so the branded button keeps
+   the rest. A fixed 0.62/1.38 split left "Add another Outlook mailbox" wider
+   than its button, which pushed the logo tile out past the rounded corner. */
 .auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions {
   display: grid;
-  grid-template-columns: minmax(5.5rem, 0.62fr) minmax(13.5rem, 1.38fr);
+  grid-template-columns: minmax(5.5rem, auto) minmax(13.5rem, 1fr);
   align-items: stretch;
   justify-content: stretch;
+}
+
+/* Both buttons in this row are the same height, so they share a corner too:
+   the branded button cannot be a pill, so Cancel matches its radius instead. */
+.auth-alert-dialog[data-variant="calendar-oauth"] .auth-alert-actions .ghost-button.small {
+  border-radius: 13px;
 }
 
 .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small {
@@ -3044,6 +3053,13 @@ body[data-modal="billing"] .app-shell {
 .calendar-oauth-button-logo svg {
   width: 1.18rem;
   height: 1.18rem;
+}
+
+/* Buttons are nowrap everywhere else, which here meant a long label could not
+   shrink and spilled out both ends of the button. This label wraps instead. */
+.calendar-oauth-button-label {
+  min-width: 0;
+  white-space: normal;
 }
 
 .calendar-oauth-button-spinner {
@@ -5173,65 +5189,12 @@ body[data-modal="billing"] .app-shell {
   font-variant-numeric: tabular-nums;
 }
 
-.agent-history-toggle {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  align-items: center;
-  width: 100%;
-  min-height: 2.75rem;
-  padding: 0.35rem 0.05rem;
-  color: var(--text);
-  text-align: left;
-  background: transparent;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: color 160ms ease, background 160ms ease;
-}
-
-.agent-history-toggle:hover {
-  color: var(--accent);
-  background: rgba(15, 118, 110, 0.045);
-}
-
-.agent-history-toggle:focus-visible {
-  outline: 2px solid rgba(15, 118, 110, 0.55);
-  outline-offset: 3px;
-}
-
-.agent-history-title {
-  font-size: 0.78rem;
-  font-weight: 750;
-  letter-spacing: 0.02em;
-}
-
-.agent-history-toggle-meta {
-  display: inline-flex;
-  gap: 0.55rem;
-  align-items: center;
-}
-
-.agent-history-chevron {
-  width: 0.55rem;
-  height: 0.55rem;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  transform: translateY(-0.12rem) rotate(45deg);
-  transition: transform 180ms ease;
-}
-
-.agent-history-section.is-expanded .agent-history-chevron {
-  transform: translateY(0.12rem) rotate(225deg);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .agent-panel-mode-button,
   .agent-chat-item,
   .agent-chat-item-open,
   .agent-chat-delete,
-  .agent-folder-item,
-  .agent-history-toggle,
-  .agent-history-chevron {
+  .agent-folder-item {
     transition: none;
   }
 }
@@ -5242,8 +5205,8 @@ body[data-modal="billing"] .app-shell {
   overflow-anchor: none;
 }
 
-/* The history list is collapsed with the native `hidden` attribute. Keep that
-   state authoritative even though the list has a layout display rule above. */
+/* A list hidden with the native `hidden` attribute stays hidden, even though
+   the layout rule above sets a display. */
 .agent-action-list[hidden] {
   display: none;
 }
@@ -5353,10 +5316,6 @@ body[data-modal="billing"] .app-shell {
 
 .agent-action-item.is-failed::before {
   background: #bd4f4f;
-}
-
-#agentCompletedActionList .agent-action-item::before {
-  display: none;
 }
 
 /* The band is two and a half times the card's width and already centred on it,
