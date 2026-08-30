@@ -85,6 +85,67 @@ class AgentFolderContentsTests(unittest.TestCase):
         with urllib_request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _delete_folders(self, body: dict[str, object], *, token: str | None = "") -> dict[str, object]:
+        headers = {"Content-Type": "application/json"}
+        auth_token = self.session_token if token == "" else token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/folders/delete",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_deletes_a_folder_with_the_files_inside_it(self) -> None:
+        folder = self._write_bundle()
+
+        payload = self._delete_folders({"folders": ["Receipts/Jul2026"]})
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["deleted"], ["Receipts/Jul2026"])
+        self.assertEqual(payload["failed"], [])
+        self.assertFalse(folder.exists())
+
+    def test_a_folder_the_panel_remembers_but_disk_never_held_is_not_a_failure(self) -> None:
+        # The user asked for it gone and it is gone. Reporting that as a
+        # failure would send them to a panel to retry something already done.
+        payload = self._delete_folders({"folders": ["Receipts/May2026"]})
+
+        self.assertEqual(payload["deleted"], [])
+        self.assertEqual(payload["missing"], ["Receipts/May2026"])
+        self.assertEqual(payload["failed"], [])
+
+    def test_a_folder_name_cannot_delete_outside_the_owner_directory(self) -> None:
+        outside = self.output_dir / "secrets.txt"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("private", encoding="utf-8")
+        other_owner = self.output_dir / "someone-else"
+        other_owner.mkdir(parents=True, exist_ok=True)
+        (other_owner / "receipt.pdf").write_bytes(b"theirs")
+
+        self._delete_folders({"folders": ["../../", "../someone-else", "../.."]})
+
+        self.assertTrue(outside.exists())
+        self.assertTrue((other_owner / "receipt.pdf").exists())
+
+    def test_deleting_needs_a_signed_in_owner(self) -> None:
+        folder = self._write_bundle()
+
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._delete_folders({"folders": ["Receipts/Jul2026"]}, token=None)
+
+        self.assertEqual(caught.exception.code, 401)
+        self.assertTrue(folder.exists())
+
+    def test_rejects_a_delete_with_no_folder_named(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._delete_folders({"folders": []})
+
+        self.assertEqual(caught.exception.code, 400)
+
     def test_an_answer_with_no_receipt_behind_it_is_refused(self) -> None:
         # What the save files is the receipt, not the sentence. An answer with
         # no receipt behind it has nothing to file.

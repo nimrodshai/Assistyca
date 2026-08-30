@@ -11,9 +11,11 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.agent_proposals import AGENT_ACTION_CONTEXT_MAX_ITEMS
+from packages.infrastructure.agent_proposals import AGENT_FOLDER_CONTEXT_MAX_ITEMS
 from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_action_context
+from packages.infrastructure.agent_proposals import normalize_agent_folder_context
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
@@ -343,6 +345,141 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("never say the change has happened", prompt)
         self.assertIn("right after the user answers the picker", prompt)
         self.assertIn("no command for running an action now", prompt)
+
+    def test_turn_prompt_lists_the_folders_beside_the_actions(self) -> None:
+        # The bug this covers: asking to delete saved answers reached the model
+        # with only the actions listed, so the one deletable list it could see
+        # was the wrong one and it offered that.
+        prompt = build_agent_turn_prompt(
+            user_message="Lets delete some saved answers",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            action_context=[
+                {"name": "Receipt collector", "kind": "custom", "status": "Manual"},
+            ],
+            folder_context=[
+                {"name": "Render", "kind": "Receipts", "itemCount": "4 files"},
+                {"name": "Anthropic", "kind": "Receipts", "itemCount": "2 files"},
+            ],
+        )
+
+        self.assertIn('"existingFolders"', prompt)
+        self.assertIn('"name":"Render"', prompt)
+        self.assertIn("Saved answers, kept answers, saved receipts, saved files", prompt)
+        self.assertIn("needsFolderChoice=true", prompt)
+        self.assertIn("outcome=folder_command", prompt)
+
+    def test_turn_prompt_forbids_answering_with_the_other_list(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Lets delete some saved answers",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+
+        self.assertIn("Never carry a request over onto a different object", prompt)
+        self.assertIn("never answered with a picker for another kind", prompt)
+
+    def test_folder_context_keeps_display_details_and_caps_the_list(self) -> None:
+        folders = normalize_agent_folder_context([
+            {"name": "  Render  ", "type": "Receipts", "itemCount": "4 files", "updated": "Aug 28"},
+            {"title": "Anthropic"},
+            {"name": ""},
+            "not a folder",
+        ])
+
+        self.assertEqual(folders, [
+            {"name": "Render", "kind": "Receipts", "itemCount": "4 files", "updated": "Aug 28"},
+            {"name": "Anthropic"},
+        ])
+        self.assertEqual(
+            len(normalize_agent_folder_context([{"name": f"Folder {index}"} for index in range(40)])),
+            AGENT_FOLDER_CONTEXT_MAX_ITEMS,
+        )
+
+    def test_turn_response_keeps_a_folder_picker_on_a_plain_question(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which folders should I delete?",
+                "needsFolderChoice": True,
+                "folderChoiceMode": "Multiple",
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertTrue(turn["needsFolderChoice"])
+        self.assertFalse(turn["needsActionChoice"])
+        self.assertEqual(turn["folderChoiceMode"], "multiple")
+        self.assertEqual(turn["actionChoiceMode"], "")
+
+    def test_turn_response_shows_no_picker_when_the_model_asks_for_both(self) -> None:
+        # Wanting both pickers means it never decided which list the user
+        # meant, and guessing the list is the mistake these flags exist to
+        # prevent. The reply stands on its own instead.
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "question",
+                "reply": "Which ones do you mean?",
+                "needsActionChoice": True,
+                "needsFolderChoice": True,
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertFalse(turn["needsActionChoice"])
+        self.assertFalse(turn["needsFolderChoice"])
+
+    def test_turn_response_carries_a_delete_command_for_the_named_folders(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "folder_command",
+                "reply": "Taking care of that.",
+                "folderCommand": "Delete",
+                "folderNames": ["Render", "Anthropic", "Render"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["outcome"], "folder_command")
+        self.assertEqual(turn["folderCommand"], "delete")
+        self.assertEqual(turn["folderNames"], ["Render", "Anthropic"])
+
+    def test_turn_response_refuses_a_folder_command_it_cannot_carry_out(self) -> None:
+        # Nothing renames, moves, or empties a folder, and a command with no
+        # folder named would delete nothing while sounding like it did.
+        renamed = normalize_agent_turn_response(
+            {
+                "outcome": "folder_command",
+                "reply": "Renaming that now.",
+                "folderCommand": "rename",
+                "folderNames": ["Render"],
+            },
+            has_active_proposal=False,
+        )
+        nameless = normalize_agent_turn_response(
+            {
+                "outcome": "folder_command",
+                "reply": "Deleting those.",
+                "folderCommand": "delete",
+                "folderNames": [],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(renamed["outcome"], "message")
+        self.assertEqual(renamed["folderCommand"], "")
+        self.assertEqual(nameless["outcome"], "message")
+        self.assertEqual(nameless["folderNames"], [])
+
+    def test_turn_response_leaves_the_folder_command_empty_elsewhere(self) -> None:
+        turn = normalize_agent_turn_response(
+            {"outcome": "message", "reply": "You have three folders."},
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["folderCommand"], "")
+        self.assertEqual(turn["folderNames"], [])
+        self.assertEqual(turn["folderChoiceMode"], "")
 
     def test_conversational_turn_prompt_uses_field_based_intake(self) -> None:
         prompt = build_agent_turn_prompt(

@@ -1852,7 +1852,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function getAgentActionChoiceValue"):
             script.index("function buildAgentActionContext")
         ]
-        self.assertIn("return `The \u201c${String(choice?.name || \"\").trim()}\u201d action`;", choice_value)
+        self.assertIn("return `The \u201c${String(choice?.name || \"\").trim()}\u201d ${wording.noun}`;", choice_value)
         self.assertIn("return refreshScheduledActionUniqueTitles([", script)
 
         picker = script[
@@ -1860,7 +1860,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function renderAgentMessageBubbleContent")
         ]
         self.assertIn('button.dataset.agentMessageAction = multiple ? "toggle-choice" : "choose";', picker)
-        self.assertIn("button.dataset.agentActionValue = getAgentActionChoiceValue(choice);", picker)
+        self.assertIn("getAgentActionChoiceValue(choice, message.metadata?.choiceKind)", picker)
         self.assertIn("areAgentMessageActionsResolved(message, agent.messages)", picker)
 
         # The card replaces the plain chip row rather than doubling it.
@@ -1876,7 +1876,7 @@ class PortalStaticPageTests(unittest.TestCase):
 
         # Each option carries its own details button, so a repeated title can be
         # checked before it is picked.
-        self.assertIn("row.append(button, createAgentActionChoiceDetailsButton(choice));", picker)
+        self.assertIn("row.append(button, createAgentActionChoiceDetailsButton(choice, wording.noun));", picker)
         self.assertIn('button.dataset.agentActionDetails = String(choice?.id || "");', picker)
         self.assertIn("bodyNode: createAgentActionChoiceDetailsBody(action, choice),", picker)
         self.assertIn("returnFocus: button,", picker)
@@ -1906,7 +1906,7 @@ class PortalStaticPageTests(unittest.TestCase):
 
         # The agent says how many actions the message pointed at; the picker
         # follows that instead of forcing one pick at a time.
-        self.assertIn("actionChoiceMode: normalizeAgentActionChoiceMode(turn?.actionChoiceMode),", script)
+        self.assertIn("actionChoiceMode: normalizeAgentActionChoiceMode(mode),", script)
         self.assertIn("function agentMessageAllowsMultipleActionChoices", script)
         self.assertIn('=== "multiple" ? "multiple" : "single"', script)
 
@@ -1938,7 +1938,7 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function getAgentActionChoiceListValue"):
             script.index("function buildAgentActionContext")
         ]
-        self.assertIn("return `The ${names.slice(0, -1).join(\", \")} and ${last} actions`;", list_value)
+        self.assertIn("return `The ${names.slice(0, -1).join(\", \")} and ${last} ${wording.plural}`;", list_value)
 
         # A re-render has to keep the ticks the user already made.
         self.assertIn("const agentActionChoiceSelections = new Map();", script)
@@ -1946,6 +1946,43 @@ class PortalStaticPageTests(unittest.TestCase):
 
         self.assertIn(".agent-message-action-picker-option.is-selected {", styles)
         self.assertIn(".agent-message-action-picker-confirm {", styles)
+    def test_a_request_about_folders_is_not_answered_with_the_actions_list(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # Asking to delete saved answers used to reach the agent with only the
+        # actions listed, so the one deletable list it could see was the wrong
+        # one and it offered that. The folders travel with every turn now.
+        self.assertIn("function buildAgentFolderContext", script)
+        self.assertIn("folderContext: buildAgentFolderContext(),", script)
+        self.assertIn("function getAgentFolderChoices", script)
+
+        # One picker, two lists: which one it offers follows the question.
+        reply_metadata = script[
+            script.index("function buildAgentReplyMetadata"):
+            script.index("async function handleAgentUserText")
+        ]
+        self.assertIn('turn?.needsFolderChoice', reply_metadata)
+        self.assertIn('["folder", getAgentFolderChoices(), turn?.folderChoiceMode]', reply_metadata)
+        self.assertIn("choiceKind,", reply_metadata)
+        self.assertIn("function normalizeAgentChoiceKind", script)
+        self.assertIn('eyebrow: "Your folders",', script)
+
+        # Deleting is confirmed before anything goes, the same way an action
+        # command is, and the files inside go with the folder.
+        self.assertIn("function pushAgentFolderCommandPrompt", script)
+        self.assertIn('outcome === "folder_command" && pushAgentFolderCommandPrompt(turn)', script)
+        self.assertIn('createAgentAction("run-folder-command"', script)
+        self.assertIn('createAgentAction("cancel-folder-command"', script)
+        self.assertIn('apiRequest("/api/agent/folders/delete"', script)
+        self.assertIn("function forgetAgentFolders", script)
+
+        # Removing a folder belongs on the folder itself, not only in chat.
+        self.assertIn("function createAgentFolderDeleteButton", script)
+        self.assertIn("function deleteAgentFolder", script)
+        self.assertIn("[data-agent-folder-delete]", script)
+        self.assertIn(".agent-folder-delete {", styles)
+
     def test_page_scripts_resolve_from_the_url_the_page_is_served_at(self) -> None:
         """Resolve each <script src> the way a browser does, against the request URL.
 

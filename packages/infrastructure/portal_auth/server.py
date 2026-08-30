@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import smtplib
 import sqlite3
 import ssl
@@ -49,6 +50,7 @@ from packages.infrastructure.agent_proposals import AGENT_TURN_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_action_context
+from packages.infrastructure.agent_proposals import normalize_agent_folder_context
 from packages.infrastructure.agent_proposals import normalize_agent_tool_context
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
@@ -217,6 +219,9 @@ CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_FOLDER_CONTENTS_LIMIT = 200
+# One request removes one pick from the Folders panel, and the picker
+# itself never offers more than a panel-sized list.
+AGENT_FOLDER_DELETE_LIMIT = 20
 # A kept receipt is filed under the vendor that sent it, because that is how
 # anyone looks for one later. A receipt whose sender could not be read still
 # needs somewhere to go, and this is it.
@@ -3248,6 +3253,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/folders/save"
+            or path == "/api/agent/folders/delete"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -3317,6 +3323,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/folders/save"
+            or path == "/api/agent/folders/delete"
             or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
             or path == "/api/features"
@@ -3604,6 +3611,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/folders/save":
             self._handle_agent_folder_save_post()
+            return
+
+        if path == "/api/agent/folders/delete":
+            self._handle_agent_folder_delete_post()
             return
 
         if path == "/api/agent/proposals/run":
@@ -6027,6 +6038,94 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "tags": collect_folder_tags(tags_by_file),
         })
 
+    def _handle_agent_folder_delete_post(self) -> None:
+        """Remove folders the account keeps, and the files inside them.
+
+        A folder is where a run left its files, so removing one is the only
+        change to it worth making from the chat. Until now nothing removed one
+        anywhere - not from the panel and not from the conversation - which is
+        why a request to delete saved files had no honest answer to give.
+
+        The owner key comes from the session and every name goes through the
+        same normalizer the writes use, so a caller can only ever delete
+        inside their own output folder.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        raw_folders = payload.get("folders")
+        if not isinstance(raw_folders, list):
+            raw_folders = [payload.get("folder")]
+        requested = [
+            name for name in (normalize_text(item) for item in raw_folders[:AGENT_FOLDER_DELETE_LIMIT]) if name
+        ]
+        if not requested:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "folder_required",
+                "message": "Name the folder to delete.",
+            })
+            return
+
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        owner_root = (output_root / owner_key).resolve()
+
+        deleted: list[str] = []
+        # A folder the panel remembers but disk never held is not a failure:
+        # the user asked for it gone and it is gone. A folder that refused to
+        # go is, and the chat has to say which is which.
+        missing: list[str] = []
+        failed: list[str] = []
+        for requested_folder in requested:
+            logical_folder = normalize_receipt_output_folder(requested_folder)
+            folder_path = resolve_receipt_bundle_folder(
+                output_root,
+                owner_key=owner_key,
+                output_folder=logical_folder,
+            )
+            try:
+                resolved = folder_path.resolve()
+            except OSError:
+                failed.append(requested_folder)
+                continue
+            # Normalization already strips traversal, so this is the belt to
+            # its braces: nothing outside the owner's own tree is removable,
+            # and neither is that tree itself.
+            if resolved == owner_root or owner_root not in resolved.parents:
+                failed.append(requested_folder)
+                continue
+            if not resolved.is_dir():
+                missing.append(requested_folder)
+                continue
+            try:
+                shutil.rmtree(resolved)
+            except OSError as exc:
+                print(f"Portal agent folder delete failed for {logical_folder}: {exc}", flush=True)
+                failed.append(requested_folder)
+                continue
+            deleted.append(requested_folder)
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "deleted": deleted,
+            "missing": missing,
+            "failed": failed,
+        })
+
     def _handle_agent_folder_save_post(self) -> None:
         """File the receipts an answer was read from, under the vendor.
 
@@ -6413,6 +6512,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         tool_context = normalize_agent_tool_context(payload.get("toolContext"))
         source_context = normalize_agent_source_context(payload.get("sourceContext"))
         action_context = normalize_agent_action_context(payload.get("actionContext"))
+        folder_context = normalize_agent_folder_context(payload.get("folderContext"))
         prompt = build_agent_turn_prompt(
             user_message=user_message,
             conversation=conversation,
@@ -6422,6 +6522,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             tool_context=tool_context,
             source_context=source_context,
             action_context=action_context,
+            folder_context=folder_context,
         )
         model = resolve_task_model(
             AGENT_TURN_COMPLEXITY,

@@ -4591,6 +4591,7 @@ function normalizeAgentMessage(value = {}) {
       }))
       .filter((choice) => choice.name);
     metadata.actionChoiceMode = normalizeAgentActionChoiceMode(metadata.actionChoiceMode);
+    metadata.choiceKind = normalizeAgentChoiceKind(metadata.choiceKind);
   }
 
   return {
@@ -16967,6 +16968,34 @@ function normalizeAgentActionChoiceMode(value) {
   return String(value || "").trim().toLowerCase() === "multiple" ? "multiple" : "single";
 }
 
+// One picker, two lists. What the user is choosing between decides the words
+// on it, so a folder question never comes back wearing the word action.
+const AGENT_CHOICE_KIND_WORDING = {
+  action: {
+    noun: "action",
+    plural: "actions",
+    eyebrow: "Your active actions",
+    pickOne: "Choose one of your actions",
+    pickMany: "Choose one or more of your actions",
+  },
+  folder: {
+    noun: "folder",
+    plural: "folders",
+    eyebrow: "Your folders",
+    pickOne: "Choose one of your folders",
+    pickMany: "Choose one or more of your folders",
+  },
+};
+
+function normalizeAgentChoiceKind(value) {
+  const kind = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(AGENT_CHOICE_KIND_WORDING, kind) ? kind : "action";
+}
+
+function getAgentMessageChoiceWording(message) {
+  return AGENT_CHOICE_KIND_WORDING[normalizeAgentChoiceKind(message?.metadata?.choiceKind)];
+}
+
 function agentMessageAllowsMultipleActionChoices(message) {
   return normalizeAgentActionChoiceMode(message?.metadata?.actionChoiceMode) === "multiple";
 }
@@ -16999,16 +17028,17 @@ function getSelectedAgentActionChoices(message) {
 
 function createAgentActionChoiceCard(message) {
   const multiple = agentMessageAllowsMultipleActionChoices(message);
+  const wording = getAgentMessageChoiceWording(message);
   const card = document.createElement("section");
   card.className = "agent-message-action-picker";
-  card.setAttribute("aria-label", multiple ? "Choose one or more of your actions" : "Choose one of your actions");
+  card.setAttribute("aria-label", multiple ? wording.pickMany : wording.pickOne);
   if (multiple) {
     card.classList.add("is-multi");
   }
 
   const eyebrow = document.createElement("span");
   eyebrow.className = "agent-message-action-picker-eyebrow";
-  eyebrow.textContent = "Your active actions";
+  eyebrow.textContent = wording.eyebrow;
   card.append(eyebrow);
 
   if (multiple) {
@@ -17041,7 +17071,7 @@ function createAgentActionChoiceCard(message) {
       button.setAttribute("aria-pressed", picked ? "true" : "false");
       button.append(createAgentActionChoiceTick());
     } else {
-      button.dataset.agentActionValue = getAgentActionChoiceValue(choice);
+      button.dataset.agentActionValue = getAgentActionChoiceValue(choice, message.metadata?.choiceKind);
     }
 
     const text = document.createElement("span");
@@ -17049,7 +17079,7 @@ function createAgentActionChoiceCard(message) {
 
     const name = document.createElement("span");
     name.className = "agent-message-action-picker-name";
-    name.textContent = String(choice?.name || "Action");
+    name.textContent = String(choice?.name || "").trim() || wording.noun;
     text.append(name);
 
     const meta = [choice?.status, choice?.created].map((part) => String(part || "").trim()).filter(Boolean);
@@ -17060,7 +17090,7 @@ function createAgentActionChoiceCard(message) {
       text.append(detail);
     }
     button.append(text);
-    row.append(button, createAgentActionChoiceDetailsButton(choice));
+    row.append(button, createAgentActionChoiceDetailsButton(choice, wording.noun));
     list.append(row);
   }
   card.append(list);
@@ -17101,12 +17131,13 @@ function createAgentActionChoiceTick() {
 }
 
 function createAgentActionChoiceConfirmRow(message, selectedCount, resolved) {
+  const wording = getAgentMessageChoiceWording(message);
   const row = document.createElement("div");
   row.className = "agent-message-action-picker-confirm";
 
   const count = document.createElement("span");
   count.className = "agent-message-action-picker-count";
-  count.textContent = selectedCount === 1 ? "1 action picked" : `${selectedCount} actions picked`;
+  count.textContent = `${selectedCount} ${selectedCount === 1 ? wording.noun : wording.plural} picked`;
   count.setAttribute("aria-live", "polite");
 
   const button = document.createElement("button");
@@ -17121,8 +17152,8 @@ function createAgentActionChoiceConfirmRow(message, selectedCount, resolved) {
   return row;
 }
 
-function createAgentActionChoiceDetailsButton(choice) {
-  // Two actions can share a title, so the picker keeps a way to look one up
+function createAgentActionChoiceDetailsButton(choice, noun = "action") {
+  // Two entries can share a name, so the picker keeps a way to look one up
   // before committing to it.
   const button = document.createElement("button");
   button.type = "button";
@@ -17132,7 +17163,7 @@ function createAgentActionChoiceDetailsButton(choice) {
   button.dataset.agentActionDetailsStatus = String(choice?.status || "");
   button.dataset.agentActionDetailsCreated = String(choice?.created || "");
   button.title = "Show details";
-  button.setAttribute("aria-label", `Show details for ${String(choice?.name || "this action")}`);
+  button.setAttribute("aria-label", `Show details for ${String(choice?.name || "").trim() || `this ${noun}`}`);
 
   const icon = createSvgElement("svg", {
     class: "agent-message-action-picker-details-icon",
@@ -17510,6 +17541,7 @@ function getAgentMessageRenderSignature(messages) {
       ? getAgentMessageActionChoices(message).map((choice) => [choice?.name || "", choice?.status || "", choice?.created || ""])
       : "",
     message.metadata?.kind === "action-choice" ? normalizeAgentActionChoiceMode(message.metadata?.actionChoiceMode) : "",
+    message.metadata?.kind === "action-choice" ? normalizeAgentChoiceKind(message.metadata?.choiceKind) : "",
     message.metadata?.kind === "action-choice"
       ? Array.from(getAgentActionChoiceSelection(message.id)).sort()
       : "",
@@ -18300,12 +18332,99 @@ function createAgentFolderItem(folder) {
   time.textContent = formatAgentFolderTime(folder);
 
   openButton.append(createAgentFolderIcon(), copy, time);
-  item.append(openButton);
+  item.append(openButton, createAgentFolderDeleteButton(folder));
 
   if (isOpen) {
     item.append(createAgentFolderBody(folder));
   }
   return item;
+}
+
+// Adding a folder was the only thing the panel could do to one. Removing it
+// belongs on the folder itself, the same way removing a conversation sits on
+// the conversation.
+function createAgentFolderDeleteButton(folder) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "agent-chat-delete agent-folder-delete";
+  button.dataset.agentFolderDelete = folder.id;
+  button.setAttribute("aria-label", `Delete folder: ${folder.name}`);
+  button.title = "Delete folder";
+  const icon = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "16",
+    height: "16",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  icon.append(
+    createSvgElement("path", {
+      d: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
+      stroke: "currentColor",
+      "stroke-width": "1.8",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+    }),
+  );
+  button.append(icon);
+  return button;
+}
+
+function deleteAgentFolder(folderId, options = {}) {
+  const agent = getAgentWorkspace();
+  const folder = (Array.isArray(agent.folders) ? agent.folders : [])
+    .find((candidate) => candidate.id === folderId);
+  if (!folder) {
+    return;
+  }
+
+  openAuthAlert(
+    "Delete folder?",
+    `Delete “${folder.name}”? The files inside it go too, and that can’t be undone.`,
+    {
+      eyebrow: "Delete folder",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Delete",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Cancel",
+      focusTarget: "secondary",
+      returnFocus: options.returnFocus || elements.agentFolderCreateToggleButton,
+      onPrimary: () => {
+        void confirmAgentFolderDelete(folder.id);
+      },
+    },
+  );
+}
+
+async function confirmAgentFolderDelete(folderId) {
+  const agent = getAgentWorkspace();
+  const folder = (Array.isArray(agent.folders) ? agent.folders : [])
+    .find((candidate) => candidate.id === folderId);
+  if (!folder) {
+    return;
+  }
+
+  const name = folder.name;
+  try {
+    const result = await apiRequest("/api/agent/folders/delete", {
+      method: "POST",
+      body: { folders: [name] },
+      timeoutMs: 30000,
+    });
+    const refused = (Array.isArray(result?.failed) ? result.failed : [])
+      .some((entry) => String(entry || "").trim().toLowerCase() === name.toLowerCase());
+    if (refused) {
+      setStatus(`Couldn’t delete “${name}”. Try again in a moment.`);
+      return;
+    }
+    forgetAgentFolders([name]);
+    setStatus(`Deleted “${name}”.`);
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, `Couldn’t delete “${name}”. Try again in a moment.`));
+  }
+  renderApp({ preserveStatus: true });
 }
 
 // The filter box completes tags that are actually in use, so "Re" offers
@@ -20002,25 +20121,27 @@ function getAgentActionChoices() {
     .filter((choice) => Boolean(choice.name));
 }
 
-function getAgentActionChoiceValue(choice) {
+function getAgentActionChoiceValue(choice, kind = "action") {
   // A picked choice goes back to the agent as ordinary chat text. The rendered
   // list already numbers repeated titles, so the name on its own names one
-  // action.
-  return `The “${String(choice?.name || "").trim()}” action`;
+  // action or folder.
+  const wording = AGENT_CHOICE_KIND_WORDING[normalizeAgentChoiceKind(kind)];
+  return `The “${String(choice?.name || "").trim()}” ${wording.noun}`;
 }
 
-function getAgentActionChoiceListValue(choices) {
+function getAgentActionChoiceListValue(choices, kind = "action") {
   // Several picks answer in one sentence, so the agent reads them as one turn
   // instead of a burst of separate messages.
+  const wording = AGENT_CHOICE_KIND_WORDING[normalizeAgentChoiceKind(kind)];
   const names = (Array.isArray(choices) ? choices : [])
     .map((choice) => String(choice?.name || "").trim())
     .filter(Boolean)
     .map((name) => `“${name}”`);
   if (names.length <= 1) {
-    return names.length ? `The ${names[0]} action` : "";
+    return names.length ? `The ${names[0]} ${wording.noun}` : "";
   }
   const last = names[names.length - 1];
-  return `The ${names.slice(0, -1).join(", ")} and ${last} actions`;
+  return `The ${names.slice(0, -1).join(", ")} and ${last} ${wording.plural}`;
 }
 
 function buildAgentActionContext() {
@@ -20030,6 +20151,72 @@ function buildAgentActionContext() {
     status: choice.status,
     created: choice.created,
   }));
+}
+
+// The folders the panel shows, in the same shape the picker reads. Asking to
+// delete saved answers used to reach the agent with only the actions listed,
+// so the one deletable list it could see was the wrong one and it offered
+// that. The folders travel with every turn now, so the two are told apart
+// before anything is offered.
+function getAgentFolderChoices() {
+  const agent = getAgentWorkspace();
+  const folders = Array.isArray(agent.folders) ? agent.folders : [];
+  return folders
+    .slice(0, AGENT_ACTION_CHOICE_LIMIT)
+    .map((folder) => ({
+      id: String(folder.id || ""),
+      name: String(folder.name || "").trim(),
+      kind: getAgentFolderTypeOption(folder.type).label,
+      status: formatAgentFolderItemCount(folder.itemCount),
+      created: formatAgentFolderTime(folder),
+    }))
+    .filter((choice) => Boolean(choice.name));
+}
+
+function buildAgentFolderContext() {
+  return getAgentFolderChoices().map((choice) => ({
+    name: choice.name,
+    kind: choice.kind,
+    itemCount: choice.status,
+    updated: choice.created,
+  }));
+}
+
+const AGENT_FOLDER_COMMAND_WORDING = {
+  delete: {
+    question: "Delete",
+    confirm: "Delete them",
+    confirmOne: "Delete it",
+    keep: "Keep them",
+    keepOne: "Keep it",
+    done: "Deleted",
+    failed: "Couldn’t delete",
+    working: "Deleting folders...",
+  },
+};
+
+function normalizeAgentFolderCommand(value) {
+  const command = String(value || "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(AGENT_FOLDER_COMMAND_WORDING, command) ? command : "";
+}
+
+function findAgentFoldersByName(names) {
+  const wanted = Array.isArray(names) ? names : [];
+  const folders = Array.isArray(getAgentWorkspace().folders) ? getAgentWorkspace().folders : [];
+  const matched = [];
+  const seen = new Set();
+  for (const name of wanted) {
+    const key = String(name || "").trim().toLowerCase();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    const folder = folders.find((candidate) => String(candidate?.name || "").trim().toLowerCase() === key);
+    if (folder) {
+      seen.add(key);
+      matched.push(folder);
+    }
+  }
+  return matched;
 }
 
 // Chat asks for a change to actions the user already has; the names it sends
@@ -23410,8 +23597,10 @@ function handleAgentMessageAction(event) {
   }
 
   if (action === "choose-multiple") {
+    const pickerMessage = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
     const picked = getAgentActionChoiceListValue(
-      getSelectedAgentActionChoices(getAgentWorkspace().messages.find((candidate) => candidate.id === messageId)),
+      getSelectedAgentActionChoices(pickerMessage),
+      pickerMessage?.metadata?.choiceKind,
     );
     if (!picked) {
       return true;
@@ -23509,6 +23698,18 @@ function handleAgentMessageAction(event) {
 
   if (action === "cancel-action-command") {
     pushAgentMessage("assistant", "Left as they are.", { kind: "result" });
+    persistAgentWorkspace("Nothing changed.");
+    renderApp({ preserveStatus: true });
+    return true;
+  }
+
+  if (action === "run-folder-command") {
+    void runAgentFolderCommand(messageId);
+    return true;
+  }
+
+  if (action === "cancel-folder-command") {
+    pushAgentMessage("assistant", "Kept them as they are.", { kind: "result" });
     persistAgentWorkspace("Nothing changed.");
     renderApp({ preserveStatus: true });
     return true;
@@ -24747,6 +24948,10 @@ async function applyAgentTurnResponse(turn, userText) {
     return true;
   }
 
+  if (outcome === "folder_command" && pushAgentFolderCommandPrompt(turn)) {
+    return true;
+  }
+
   if (outcome === "proposal" || (outcome === "question" && turn?.proposalType)) {
     const proposal = createAgentProposalFromTurn(userText, turn);
     if (pushAgentDuplicateActionPrompt(proposal, userText)) {
@@ -24957,19 +25162,157 @@ async function runAgentActionCommand(messageId) {
   renderApp({ preserveStatus: true });
 }
 
+// Folders were the one thing the account owned that nothing could remove, so
+// "delete some saved answers" had no honest path and took the one that
+// existed: the actions list. A folder command now becomes the same
+// confirm-then-do the actions have, against the folders the panel shows.
+function pushAgentFolderCommandPrompt(turn) {
+  const command = normalizeAgentFolderCommand(turn?.folderCommand);
+  if (!command) {
+    return false;
+  }
+  const wanted = (Array.isArray(turn?.folderNames) ? turn.folderNames : [])
+    .map((name) => String(name || "").trim())
+    .filter(Boolean);
+  if (!wanted.length) {
+    return false;
+  }
+
+  const folders = findAgentFoldersByName(wanted);
+  if (!folders.length) {
+    return Boolean(pushAgentMessage(
+      "assistant",
+      `I couldn’t find ${formatAgentActionNameList(wanted)} among your folders. Open the Folders panel and tell me which one you mean.`,
+      { kind: "result" },
+    ));
+  }
+
+  const wording = AGENT_FOLDER_COMMAND_WORDING[command];
+  const one = folders.length === 1;
+  return Boolean(pushAgentMessage(
+    "assistant",
+    `${wording.question} ${formatAgentActionNameList(folders.map((folder) => folder.name))}? The files inside ${one ? "it go" : "them go"} too, and that can’t be undone.`,
+    {
+      kind: "result",
+      folderCommand: command,
+      folderCommandIds: folders.map((folder) => String(folder.id || "")),
+      actions: [
+        createAgentAction("run-folder-command", one ? wording.confirmOne : wording.confirm, "", "primary"),
+        createAgentAction("cancel-folder-command", one ? wording.keepOne : wording.keep, ""),
+      ],
+    },
+  ));
+}
+
+async function runAgentFolderCommand(messageId) {
+  const message = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
+  const command = normalizeAgentFolderCommand(message?.metadata?.folderCommand);
+  const folderIds = Array.isArray(message?.metadata?.folderCommandIds) ? message.metadata.folderCommandIds : [];
+  if (!command || !folderIds.length) {
+    return;
+  }
+
+  const wording = AGENT_FOLDER_COMMAND_WORDING[command];
+  const agent = getAgentWorkspace();
+  const folders = folderIds
+    .map((folderId) => (Array.isArray(agent.folders) ? agent.folders : [])
+      .find((candidate) => String(candidate?.id || "") === String(folderId || "")))
+    .filter(Boolean);
+  if (!folders.length) {
+    pushAgentMessage("assistant", "Those folders were already gone, so there was nothing to delete.", { kind: "result" });
+    persistAgentWorkspace("Nothing changed.");
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  persistAgentWorkspace(wording.working);
+  renderApp({ preserveStatus: true });
+
+  const names = folders.map((folder) => folder.name);
+  let result = null;
+  try {
+    result = await apiRequest("/api/agent/folders/delete", {
+      method: "POST",
+      body: { folders: names },
+      timeoutMs: 30000,
+    });
+  } catch (error) {
+    const failure = formatApiErrorMessage(error, `${wording.failed} ${formatAgentActionNameList(names)}. Try again in a moment.`);
+    pushAgentMessage("assistant", failure, {
+      kind: "error",
+      technical: getAgentErrorTechnicalInfo(error),
+    });
+    persistAgentWorkspace(failure);
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  // A folder the panel remembers but the server never wrote counts as done:
+  // the user asked for it gone, and removing the panel entry is all there was
+  // to do. Only a folder the server refused to remove stays.
+  const refused = new Set((Array.isArray(result?.failed) ? result.failed : [])
+    .map((name) => String(name || "").trim().toLowerCase()));
+  const removed = names.filter((name) => !refused.has(name.toLowerCase()));
+  forgetAgentFolders(removed);
+
+  const lines = [];
+  if (removed.length) {
+    lines.push(`${wording.done} ${formatAgentActionNameList(removed)}.`);
+  }
+  if (refused.size) {
+    const stuck = names.filter((name) => refused.has(name.toLowerCase()));
+    lines.push(`${wording.failed} ${formatAgentActionNameList(stuck)}. You can try again from the Folders panel.`);
+  }
+  pushAgentMessage("assistant", lines.join(" "), { kind: "result" });
+  persistAgentWorkspace(lines[0] || "Nothing changed.");
+  renderApp({ preserveStatus: true });
+}
+
+// Drop the folders from the panel and from what it cached about them, so a
+// deleted folder cannot come back as a stale listing.
+function forgetAgentFolders(names) {
+  const gone = new Set((Array.isArray(names) ? names : [])
+    .map((name) => String(name || "").trim().toLowerCase())
+    .filter(Boolean));
+  if (!gone.size) {
+    return;
+  }
+  const agent = getAgentWorkspace();
+  const folders = Array.isArray(agent.folders) ? agent.folders : [];
+  const kept = folders.filter((folder) => !gone.has(String(folder?.name || "").trim().toLowerCase()));
+  const removedIds = folders
+    .filter((folder) => gone.has(String(folder?.name || "").trim().toLowerCase()))
+    .map((folder) => String(folder?.id || ""));
+  agent.folders = kept;
+  for (const folder of folders) {
+    if (gone.has(String(folder?.name || "").trim().toLowerCase())) {
+      agentFolderContents.delete(String(folder?.name || ""));
+    }
+  }
+  if (removedIds.includes(String(state.agentFolderOpenId || ""))) {
+    state.agentFolderOpenId = "";
+  }
+  persistClientState();
+}
+
 function buildAgentReplyMetadata(turn, outcome) {
-  // The agent asks which existing action the user means; the picker answers it
-  // so nobody has to retype an action title.
-  const choices = turn?.needsActionChoice ? getAgentActionChoices() : [];
+  // The agent asks which of the things the account already has the user means;
+  // the picker answers it so nobody has to retype a name. Which list it offers
+  // follows the question that was asked, never whichever list happens to be
+  // handy.
+  const [choiceKind, choices, mode] = turn?.needsFolderChoice
+    ? ["folder", getAgentFolderChoices(), turn?.folderChoiceMode]
+    : ["action", turn?.needsActionChoice ? getAgentActionChoices() : [], turn?.actionChoiceMode];
   if (choices.length) {
     return {
       kind: "action-choice",
+      choiceKind,
       actionChoices: choices,
-      actionChoiceMode: normalizeAgentActionChoiceMode(turn?.actionChoiceMode),
+      actionChoiceMode: normalizeAgentActionChoiceMode(mode),
       actions: choices.map((choice) => createAgentAction(
         "choose",
         choice.name,
-        getAgentActionChoiceValue(choice),
+        getAgentActionChoiceValue(choice, choiceKind),
       )),
     };
   }
@@ -25057,6 +25400,7 @@ async function handleAgentUserText(text) {
         activeProposal: activeProposalPayload,
         toolContext: buildAgentToolContext(),
         actionContext: buildAgentActionContext(),
+        folderContext: buildAgentFolderContext(),
         sourceContext,
       },
     });
@@ -32756,6 +33100,13 @@ function bindEvents() {
       const tagButton = event.target?.closest?.("[data-agent-folder-tag]");
       if (tagButton && elements.agentFolderList.contains(tagButton)) {
         setAgentFolderSearch(tagButton.dataset.agentFolderTag || "");
+        return;
+      }
+      const deleteButton = event.target?.closest?.("[data-agent-folder-delete]");
+      if (deleteButton && elements.agentFolderList.contains(deleteButton)) {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteAgentFolder(deleteButton.dataset.agentFolderDelete || "", { returnFocus: deleteButton });
         return;
       }
       const openButton = event.target?.closest?.("[data-agent-folder-open]");

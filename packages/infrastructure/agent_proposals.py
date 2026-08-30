@@ -12,6 +12,7 @@ AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH = 900
 AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS = 500
 AGENT_TURN_MAX_OUTPUT_TOKENS = 700
 AGENT_ACTION_CONTEXT_MAX_ITEMS = 20
+AGENT_FOLDER_CONTEXT_MAX_ITEMS = 20
 AGENT_MAILBOX_CONTEXT_MAX_ITEMS = 12
 AGENT_PROPOSAL_REVISION_INSTRUCTIONS = (
     "You revise an existing Assistyca proposal from the user's latest message. "
@@ -73,6 +74,9 @@ AGENT_ANSWER_TASK_LIMIT = 3
 # here: a manual run sends real messages, so it stays a button in the panel.
 _AGENT_ACTION_COMMANDS = {"delete", "pause", "resume"}
 _AGENT_ACTION_COMMAND_MAX_NAMES = 20
+# A folder holds files rather than running, so the only thing to do to one
+# from the chat is remove it. Nothing here pauses or resumes.
+_AGENT_FOLDER_COMMANDS = {"delete"}
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "email-digest": ["mailbox", "schedule", "timeWindow", "deliveryChannel"],
     "calendar-summary": ["calendar", "timeWindow", "deliveryChannel"],
@@ -223,6 +227,41 @@ def normalize_agent_action_context(value: Any) -> list[dict[str, str]]:
             entry["created"] = created
         actions.append(entry)
     return actions
+
+
+def normalize_agent_folder_context(value: Any) -> list[dict[str, str]]:
+    """Keep the display details of the folders the account already keeps files in.
+
+    Actions and folders are two different things the account owns, and only
+    one of them used to reach this prompt. That left a request to delete saved
+    answers with a single deletable noun to land on, so it landed on actions -
+    the wrong list, offered confidently. The folders sit beside the actions
+    now, so the model can tell which list a request is about and answer about
+    that one.
+
+    Ids stay out for the same reason they do for actions: the picker in the
+    chat resolves the choice locally.
+    """
+
+    raw_items = value if isinstance(value, list) else []
+    folders: list[dict[str, str]] = []
+    for raw_item in raw_items[:AGENT_FOLDER_CONTEXT_MAX_ITEMS]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        name = _single_line(item.get("name") or item.get("title"), 120)
+        if not name:
+            continue
+        entry = {"name": name}
+        kind = _single_line(item.get("kind") or item.get("type"), 60)
+        if kind:
+            entry["kind"] = kind
+        item_count = _single_line(item.get("itemCount") or item.get("item_count"), 20)
+        if item_count:
+            entry["itemCount"] = item_count
+        updated = _single_line(item.get("updated") or item.get("updatedAt"), 60)
+        if updated:
+            entry["updated"] = updated
+        folders.append(entry)
+    return folders
 
 
 def normalize_agent_mailbox_context(value: Any) -> list[dict[str, str]]:
@@ -460,6 +499,7 @@ def build_agent_turn_prompt(
     tool_context: dict[str, Any] | None = None,
     source_context: dict[str, Any] | None = None,
     action_context: Any = None,
+    folder_context: Any = None,
 ) -> str:
     context = {
         "timezone": _single_line(timezone_name, 120) or "UTC",
@@ -469,6 +509,7 @@ def build_agent_turn_prompt(
         "toolContext": normalize_agent_tool_context(tool_context),
         "sourceContext": normalize_agent_source_context(source_context),
         "existingActions": normalize_agent_action_context(action_context),
+        "existingFolders": normalize_agent_folder_context(folder_context),
         "recentConversation": conversation,
         "latestUserMessage": _single_line(user_message, AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
     }
@@ -484,7 +525,14 @@ def build_agent_turn_prompt(
         "- question: one missing detail is required before a safe proposal can be shown.\n"
         "- action_command: delete, pause, or resume actions the account already has, once it is clear which "
         "ones.\n"
+        "- folder_command: delete folders the account already keeps, once it is clear which ones.\n"
         "- message: answer conversationally without creating or executing anything.\n"
+        "None of these covers everything a person might ask. When a message asks for something no outcome "
+        "here can do, say so plainly in one line with outcome=message and offer the nearest thing you can "
+        "actually do. Never carry a request over onto a different object because that object is the one you "
+        "have a command for: a request about files is not answered by offering to change actions, and a "
+        "request about one kind of thing is never answered with a picker for another kind. Naming what you "
+        "cannot do is a better answer than confidently doing something nobody asked for.\n"
         "What one currency is worth in another is a lookup, not small talk. A business that is charged in "
         "shekels and dollars in the same month cannot read its own spending without it, so a question about "
         "a rate is answered rather than declined. Use answer_now with proposalType exchange-rate, and put "
@@ -546,7 +594,7 @@ def build_agent_turn_prompt(
         "names every month of that year in manualRunMonth, ending with the current month when the year is the "
         "one in progress. Leave outputFolder out, because an answer run saves nothing.\n"
         "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode, "
-        "actionCommand, actionNames. reply is "
+        "actionCommand, actionNames, needsFolderChoice, folderChoiceMode, folderCommand, folderNames. reply is "
         "required for every "
         "outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
@@ -606,6 +654,28 @@ def build_agent_turn_prompt(
         "for this outcome, so keep reply to one short line and put nothing in it that the user must read. There "
         "is no command for running an action now; when the user asks for that, use outcome=message and point "
         "them at the Run now button on the action in the Actions panel.\n"
+        "existingFolders lists the folders this account keeps files in, the ones the user sees in the Folders "
+        "panel. A folder holds what a run produced - the receipts and invoices an answer filed, under the "
+        "vendor that sent them. An action runs; a folder holds. They are separate lists and a request about "
+        "one is never answered with the other. Saved answers, kept answers, saved receipts, saved files, "
+        "documents, and anything the user calls a folder are entries in existingFolders, never in "
+        "existingActions. Read which of the two a message is about before answering it.\n"
+        "When the user wants folders deleted and the message does not identify which ones, return "
+        "outcome=question with needsFolderChoice=true, leave proposalType empty, and ask which folders they "
+        "mean in one short sentence. The application shows the folder list as a picker, so do not name the "
+        "folders yourself and do not ask the user to retype one. folderChoiceMode works the way "
+        "actionChoiceMode does: multiple for plural or open-ended wording such as some, a few, several, or "
+        "all the old ones, and single when the message points at exactly one. Set needsFolderChoice=true "
+        "only when existingFolders has entries, and never set needsFolderChoice and needsActionChoice in the "
+        "same turn - decide which list the user meant.\n"
+        "Once it is clear which folders the user wants deleted, return outcome=folder_command with "
+        "folderCommand=delete and folderNames holding those names copied exactly from existingFolders, one "
+        "entry per folder. Deleting is the only thing this command does; there is nothing that renames, "
+        "moves, or empties a folder, and a request for one of those is outcome=message saying so. Return the "
+        "command as soon as the folders are identified, including on the turn right after the user answers "
+        "the picker. The application shows its own confirmation naming those folders, deletes them and the "
+        "files inside when the user confirms, and reports the result afterwards, so keep reply to one short "
+        "line and never say the folders are gone.\n"
         "Never set up a second copy of an action the account already has. Before returning outcome=proposal or "
         "outcome=question with a proposalType, compare the request with existingActions: if an entry has the same "
         "kind and covers the same job, return outcome=message instead. Say which action they already have, in "
@@ -789,37 +859,48 @@ def normalize_agent_turn_response(
         has_active_proposal=has_active_proposal,
         active_proposal_type=active_proposal_type,
     )
-    # The action picker only makes sense for a plain conversational question.
-    # A question that belongs to a proposal is already asking for a field.
-    turn["needsActionChoice"] = bool(
-        response.get("needsActionChoice") is True
-        and turn["outcome"] == "question"
-        and not turn["proposalType"]
-    )
+    # A picker only makes sense for a plain conversational question. A question
+    # that belongs to a proposal is already asking for a field.
+    plain_question = turn["outcome"] == "question" and not turn["proposalType"]
+    wants_actions = response.get("needsActionChoice") is True and plain_question
+    wants_folders = response.get("needsFolderChoice") is True and plain_question
+    # Asking for both pickers at once means the model did not decide which of
+    # the two lists the user meant. Showing either would be a guess, and
+    # guessing the list is the mistake these fields exist to prevent, so the
+    # reply stands on its own as an ordinary question.
+    if wants_actions and wants_folders:
+        wants_actions = False
+        wants_folders = False
+    turn["needsActionChoice"] = wants_actions
+    turn["needsFolderChoice"] = wants_folders
     # A picker that is not shown has no mode, so the field stays empty there.
     turn["actionChoiceMode"] = (
-        _normalize_action_choice_mode(response.get("actionChoiceMode"))
-        if turn["needsActionChoice"]
-        else ""
+        _normalize_choice_mode(response.get("actionChoiceMode")) if wants_actions else ""
+    )
+    turn["folderChoiceMode"] = (
+        _normalize_choice_mode(response.get("folderChoiceMode")) if wants_folders else ""
     )
     # Every turn carries these keys so the client never has to guess whether a
     # command was dropped or simply never asked for.
     turn.setdefault("actionCommand", "")
     turn.setdefault("actionNames", [])
+    turn.setdefault("folderCommand", "")
+    turn.setdefault("folderNames", [])
     return turn
 
 
-def _normalize_action_choice_mode(value: Any) -> str:
+def _normalize_choice_mode(value: Any) -> str:
     mode = _single_line(value, 20).lower()
     return "multiple" if mode == "multiple" else "single"
 
 
-def _normalize_agent_action_names(value: Any) -> list[str]:
-    """Keep the action names a command points at, in the order they arrived.
+def _normalize_agent_command_names(value: Any) -> list[str]:
+    """Keep the names a command points at, in the order they arrived.
 
-    These are the names the user already sees in the Actions panel, not
-    internal ids. The application still matches them against its own list, so a
-    name it does not recognize simply drops out there.
+    These are the names the user already sees in the panel, whether they name
+    actions or folders, not internal ids. The application still matches them
+    against its own list, so a name it does not recognize simply drops out
+    there.
     """
     raw_names = value if isinstance(value, list) else []
     names: list[str] = []
@@ -949,7 +1030,7 @@ def _normalize_agent_turn_outcome(
 
     if outcome == "action_command":
         command = _single_line(response.get("actionCommand"), 20).lower()
-        names = _normalize_agent_action_names(response.get("actionNames"))
+        names = _normalize_agent_command_names(response.get("actionNames"))
         if command in _AGENT_ACTION_COMMANDS and names:
             return {
                 "outcome": "action_command",
@@ -958,6 +1039,19 @@ def _normalize_agent_turn_outcome(
                 "changes": {},
                 "actionCommand": command,
                 "actionNames": names,
+            }
+
+    if outcome == "folder_command":
+        command = _single_line(response.get("folderCommand"), 20).lower()
+        names = _normalize_agent_command_names(response.get("folderNames"))
+        if command in _AGENT_FOLDER_COMMANDS and names:
+            return {
+                "outcome": "folder_command",
+                "reply": reply,
+                "proposalType": "",
+                "changes": {},
+                "folderCommand": command,
+                "folderNames": names,
             }
 
     if outcome == "approve_proposal" and has_active_proposal:
@@ -993,6 +1087,7 @@ __all__ = [
     "normalize_agent_mailbox_context",
     "normalize_agent_tool_context",
     "normalize_agent_action_context",
+    "normalize_agent_folder_context",
     "normalize_agent_proposal_for_revision",
     "normalize_agent_proposal_for_turn",
     "normalize_agent_proposal_revision_conversation",
