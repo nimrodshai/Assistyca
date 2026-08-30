@@ -5962,6 +5962,12 @@ function getConnectedOutlookConnections() {
   ));
 }
 
+function getConnectedGmailConnections() {
+  return getConnectedEmailConnections().filter((connection) => (
+    getEmailConnectionProvider(connection) === EMAIL_PROVIDER_GMAIL
+  ));
+}
+
 function getConnectedEmailProvider() {
   const [connection] = getConnectedEmailConnections();
   return connection ? getEmailConnectionProvider(connection) : "";
@@ -7121,44 +7127,36 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const body = document.createElement("div");
   body.className = "calendar-oauth-flow";
-  const primaryLabel = "Sign in with Google";
   const isEmailConnection = option.id === "email";
-  const connectedEmailLabel = getConnectedEmailProviderLabel();
-  const connectedMailboxes = isEmailConnection ? getConnectedEmailConnections() : [];
-  const mailboxCount = connectedMailboxes.length;
-  const mailboxNoun = mailboxCount === 1 ? "mailbox" : "mailboxes";
-  // Google was already picked on the provider step, so this card names Gmail
-  // rather than asking the same question again in different words.
-  const providerChosen = isEmailConnection && Boolean(flowOptions.providerChosen);
-  const setupTitle = isConnected
-    ? (isEmailConnection
-      ? (mailboxCount > 1 ? `${mailboxCount} mailboxes connected` : `${connectedEmailLabel} connected`)
-      : "Google connected")
-    : (providerChosen ? "Connect Gmail" : (isEmailConnection ? "Connect your mailbox" : "Connect Google"));
-  const setupMessage = isConnected
-    ? (isEmailConnection
-      ? `Your ${mailboxNoun} ${mailboxCount === 1 ? "is" : "are"} connected and ready to use.`
-      : "These Google permissions are connected and ready to use.")
-    : (providerChosen
-      ? "Choose the Gmail account Assistyca should read."
-      : isEmailConnection
-        ? "Choose the mailbox Assistyca should read."
-        : "Choose the Google access Assistyca can use.");
+  // Google was already picked on the provider step, so the mailbox card names
+  // Gmail and does one thing: add a mailbox beside the ones already connected.
+  // Removing one is managing what is there, and that lives on the Google tool.
+  const connectedGmailMailboxes = getConnectedGmailConnections();
+  const gmailCount = connectedGmailMailboxes.length;
+  const primaryLabel = isEmailConnection && gmailCount
+    ? "Add another Gmail mailbox"
+    : "Sign in with Google";
+  const setupTitle = isEmailConnection
+    ? (gmailCount ? "Add a Gmail mailbox" : "Connect Gmail")
+    : (isConnected ? "Google connected" : "Connect Google");
+  const setupMessage = isEmailConnection
+    ? "Choose the Gmail account Assistyca should read."
+    : (isConnected
+      ? "These Google permissions are connected and ready to use."
+      : "Choose the Google access Assistyca can use.");
   const assistantSuccessMessage = isEmailConnection
     ? "Gmail is connected with read-only access. You can use it for email digest actions."
     : "Google is connected with the selected read-only access. You can use it in actions.";
 
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
-  intro.textContent = isConnected
-    ? (isEmailConnection
-      ? "Actions read all your connected mailboxes. Disconnect one to remove its access."
-      : "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca.")
-    : providerChosen
-    ? "Sign in with Google so Assistyca can read your Gmail for email digest and receipt actions. Access is read-only."
-    : isEmailConnection
-    ? "Connect Gmail or Outlook so Assistyca can read your mail for email digest and receipt actions. Access is read-only."
-    : "Sign in with Google so Assistyca can use the selected read-only Google permissions.";
+  intro.textContent = isEmailConnection
+    ? (gmailCount
+      ? "Sign in with Google to add another Gmail mailbox. Actions read it alongside the mailboxes already connected, and access stays read-only."
+      : "Sign in with Google so Assistyca can read your Gmail for email digest and receipt actions. Access is read-only.")
+    : (isConnected
+      ? "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca."
+      : "Sign in with Google so Assistyca can use the selected read-only Google permissions.");
 
   const { status, setStatus } = createCalendarOAuthStatusNode();
   if (!storageAvailable) {
@@ -7167,20 +7165,19 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
 
   const permissionList = createGoogleOAuthPermissionList(option, { readOnly: isConnected });
   body.append(intro, permissionList, status);
-  if (isEmailConnection && mailboxCount) {
-    body.append(createConnectedMailboxList(option, connectedMailboxes));
+  // The connected mailboxes are listed on the Google tool, which is where
+  // removing one belongs. The add flow only adds.
+  const gmailList = usesAggregateGoogleConnection
+    ? createConnectedMailboxList(getPlatformConnectionOption("email") || option, connectedGmailMailboxes)
+    : null;
+  if (gmailList) {
+    const gmailHeading = document.createElement("p");
+    gmailHeading.className = "connected-mailbox-heading";
+    gmailHeading.textContent = gmailCount === 1 ? "Connected mailbox" : "Connected mailboxes";
+    body.append(gmailHeading, gmailList);
   }
-  // Google or Microsoft has already been asked and answered on the provider
-  // step, so offering Outlook again here would ask it a second time.
-  if (isEmailConnection && !providerChosen) {
-    // Shown whether or not a mailbox is already connected: a second mailbox is
-    // now added alongside the first rather than replacing it.
-    body.append(createOutlookConnectButton(setStatus, () => storageAvailable, {
-      addingAnother: mailboxCount > 0,
-    }));
-  }
-  // Email disconnects live on each mailbox row above, so the card-level
-  // button would be ambiguous once there is more than one.
+  // A card-level email disconnect would be ambiguous once there is more than
+  // one mailbox, so each mailbox row carries its own.
   const disconnectButton = usesAggregateGoogleConnection
     ? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)
     : (isEmailConnection ? null : createPlatformConnectionDisconnectButton(option, connection));
@@ -7198,7 +7195,7 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
       elements.authAlertMessage.textContent = setupMessage;
     }
     if (elements.authAlertIcon) {
-      elements.authAlertIcon.dataset.tone = isConnected ? "success" : "progress";
+      elements.authAlertIcon.dataset.tone = isConnected && !isEmailConnection ? "success" : "progress";
       elements.authAlertIcon.classList.remove("is-spinner");
       elements.authAlertIcon.replaceChildren(createAgentAddToolLogo(option));
     }
@@ -7389,7 +7386,7 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
     {
       eyebrow: "Google",
       iconNode: createAgentAddToolLogo(option),
-      tone: isConnected ? "success" : "progress",
+      tone: isConnected && !isEmailConnection ? "success" : "progress",
       variant: "calendar-oauth",
       bodyNode: body,
       buttonLabel: primaryLabel,
@@ -7407,9 +7404,7 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
     },
   );
   if (!isConnected || isEmailConnection) {
-    setCalendarOAuthPrimaryButton(
-      isEmailConnection && isConnected ? "Add another Google mailbox" : primaryLabel,
-    );
+    setCalendarOAuthPrimaryButton(primaryLabel);
   }
 }
 
@@ -7428,48 +7423,6 @@ async function requestMicrosoftEmailSignInUrl() {
   return authUrl;
 }
 
-function createOutlookConnectButton(setStatus, isStorageAvailable, options = {}) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "calendar-oauth-alternate";
-
-  const separator = document.createElement("p");
-  separator.className = "calendar-oauth-alternate-label";
-  // "Not a Gmail mailbox?" read as an either/or, which is no longer what
-  // happens: an Outlook mailbox is added next to whatever is connected.
-  separator.textContent = options.addingAnother
-    ? "Add another mailbox"
-    : "Not a Gmail mailbox?";
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ghost-button calendar-oauth-alternate-button";
-  button.textContent = "Sign in with Microsoft";
-
-  let starting = false;
-  button.addEventListener("click", async () => {
-    if (starting || !isStorageAvailable()) {
-      return;
-    }
-    starting = true;
-    button.disabled = true;
-    setStatus("loading", "Opening Microsoft", "Choose the Microsoft account to connect.");
-    try {
-      window.location.assign(await requestMicrosoftEmailSignInUrl());
-    } catch (requestError) {
-      starting = false;
-      button.disabled = false;
-      setStatus(
-        "error",
-        "Outlook not connected",
-        normalizeText(requestError?.message) || "Outlook could not be connected right now. Try again.",
-      );
-    }
-  });
-
-  wrapper.append(separator, button);
-  return wrapper;
-}
-
 // Microsoft sits in the tool picker beside Google, so it needs a panel of its
 // own: the Outlook button inside the Google email card is only reachable once
 // you are already in that card.
@@ -7477,11 +7430,16 @@ function openMicrosoftOAuthConnection(option, flowOptions = {}) {
   const goBack = typeof flowOptions.onBack === "function" ? flowOptions.onBack : null;
   const connectedMailboxes = getConnectedOutlookConnections();
   const isConnected = connectedMailboxes.length > 0;
+  // Reached by choosing Microsoft on the provider step, this card only adds a
+  // mailbox. Opened from the Microsoft tool instead, it manages what is there.
+  const isAddingMailbox = Boolean(flowOptions.providerChosen);
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
   const primaryLabel = isConnected ? "Add another Outlook mailbox" : "Sign in with Microsoft";
-  const setupTitle = isConnected ? "Microsoft is connected" : "Connect Microsoft";
-  const setupMessage = isConnected
+  const setupTitle = isAddingMailbox
+    ? (isConnected ? "Add an Outlook mailbox" : "Connect Outlook")
+    : (isConnected ? "Microsoft is connected" : "Connect Microsoft");
+  const setupMessage = isConnected && !isAddingMailbox
     ? `${connectedMailboxes.length === 1 ? "This Outlook mailbox is" : "These Outlook mailboxes are"} connected and ready to use.`
     : "Choose the Outlook mailbox Assistyca should read.";
 
@@ -7490,7 +7448,9 @@ function openMicrosoftOAuthConnection(option, flowOptions = {}) {
 
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
-  intro.textContent = isConnected
+  intro.textContent = isConnected && isAddingMailbox
+    ? "Sign in with Microsoft to add another Outlook mailbox. Actions read it alongside the mailboxes already connected, and access stays read-only."
+    : isConnected
     ? "Actions read all your connected mailboxes. Disconnect one to remove its access."
     : "Sign in with Microsoft so Assistyca can read your Outlook mail for email digest and receipt actions. Access is read-only.";
 
@@ -7499,7 +7459,11 @@ function openMicrosoftOAuthConnection(option, flowOptions = {}) {
     setStatus("error", "Storage unavailable", storageMessage);
   }
   body.append(intro, status);
-  const mailboxList = createConnectedMailboxList(option, connectedMailboxes);
+  // Disconnecting a mailbox belongs on the Microsoft tool, not in a flow whose
+  // whole job is to connect one more.
+  const mailboxList = isAddingMailbox
+    ? null
+    : createConnectedMailboxList(option, connectedMailboxes);
   if (mailboxList) {
     body.append(mailboxList);
   }
@@ -7535,7 +7499,7 @@ function openMicrosoftOAuthConnection(option, flowOptions = {}) {
     {
       eyebrow: "Microsoft",
       iconNode: createMicrosoftBrandLogo(),
-      tone: isConnected ? "success" : "progress",
+      tone: isConnected && !isAddingMailbox ? "success" : "progress",
       variant: "calendar-oauth",
       bodyNode: body,
       buttonLabel: primaryLabel,
@@ -7553,26 +7517,29 @@ function openMicrosoftOAuthConnection(option, flowOptions = {}) {
   setCalendarOAuthPrimaryButton(primaryLabel, { logo: createMicrosoftBrandLogo });
 }
 
-// The first mailbox is a choice between two providers, and burying Outlook
-// inside the Google card hid one of them. With nothing connected yet, where
-// the mail lives is its own step - the same two rows the add tool menu shows -
-// and each row opens that provider's own connect card.
+// Every mailbox is a choice between providers, and burying Outlook inside the
+// Google card hid one of them. Where the mail lives is its own step - the same
+// two rows the add tool menu shows - and each row opens that provider's own
+// connect card. Room for a third provider is why this stays a list.
 const MAILBOX_PROVIDER_CHOICES = [
   {
     id: "google",
     label: "Google",
     detail: "Read a Gmail mailbox",
+    addDetail: "Add a Gmail mailbox",
     icon: "google",
   },
   {
     id: "microsoft",
     label: "Microsoft",
     detail: "Read an Outlook mailbox",
+    addDetail: "Add an Outlook mailbox",
     icon: "microsoft",
   },
 ];
 
 function openMailboxProviderChoice() {
+  const hasMailbox = getConnectedEmailConnections().length > 0;
   const body = document.createElement("div");
   body.className = "mailbox-provider-choice";
 
@@ -7591,7 +7558,7 @@ function openMailboxProviderChoice() {
     const label = document.createElement("strong");
     label.textContent = provider.label;
     const detail = document.createElement("span");
-    detail.textContent = provider.detail;
+    detail.textContent = hasMailbox ? provider.addDetail : provider.detail;
     copy.append(label, detail);
 
     item.append(icon, copy);
@@ -7612,8 +7579,8 @@ function openMailboxProviderChoice() {
   }
 
   openAuthAlert(
-    "Connect your mailbox",
-    "Choose where your mail lives.",
+    hasMailbox ? "Add a mailbox" : "Connect your mailbox",
+    hasMailbox ? "Choose where the next mailbox lives." : "Choose where your mail lives.",
     {
       eyebrow: "Mailbox",
       iconNode: createAgentAddToolLogo({ icon: "email" }),
@@ -7635,9 +7602,10 @@ function openPlatformConnection(optionId, options = {}) {
 
   setPlatformConnectionOrigin(options.origin);
 
-  // With no mailbox connected, the provider is the first question, not
-  // something to discover inside the Google card.
-  if (option.id === "email" && !getConnectedEmailConnections().length) {
+  // Adding a mailbox always starts with where the mail lives, connected
+  // mailboxes or not. The second one is as much a choice between providers as
+  // the first, and it was the Google card that answered it before.
+  if (option.id === "email") {
     openMailboxProviderChoice();
     return;
   }

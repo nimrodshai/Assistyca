@@ -806,11 +806,15 @@ class PortalStaticPageTests(unittest.TestCase):
         # in the module node can actually run.
         identity = (self.root / "portal" / "connection-identity.js").read_text(encoding="utf-8")
         self.assertIn('const EMAIL_PROVIDER_OUTLOOK = "microsoft_outlook";', identity)
-        self.assertIn("function createOutlookConnectButton", script)
+        # Which provider a mailbox lives on is asked once, on its own step,
+        # so neither connect card offers the other provider again.
+        self.assertNotIn("function createOutlookConnectButton", script)
+        self.assertIn("function openMailboxProviderChoice", script)
         self.assertIn("/api/oauth/microsoft/email/start", script)
         self.assertIn("function consumeEmailOAuthReturn", script)
         self.assertNotIn("function isGmailConnectionReady", script)
-        self.assertIn(".calendar-oauth-alternate", styles)
+        self.assertNotIn(".calendar-oauth-alternate", styles)
+        self.assertIn(".mailbox-provider-choice", styles)
         self.assertIn(".agent-action-item.is-spotlighted", styles)
         self.assertIn(".agent-action-item.is-spotlighted::after", styles)
         # One pass, not two, and the last stretch of it is a fade rather than a
@@ -914,6 +918,13 @@ class PortalStaticPageTests(unittest.TestCase):
             script,
         )
         self.assertIn('openPlatformConnection(requirement.setupPlatformId || "calendar", { origin: "chat" });', script)
+        self.assertIn(
+            'if (option.id === "email") {\n    openMailboxProviderChoice();',
+            script,
+        )
+        self.assertIn('addDetail: "Add a Gmail mailbox"', script)
+        self.assertIn('addDetail: "Add an Outlook mailbox"', script)
+        self.assertIn('hasMailbox ? "Add a mailbox" : "Connect your mailbox"', script)
         self.assertIn("GOOGLE_CONNECTION_SCOPE_OPTIONS", script)
         self.assertIn("https://www.googleapis.com/auth/calendar.events.readonly", script)
         self.assertIn("https://www.googleapis.com/auth/gmail.readonly", script)
@@ -952,15 +963,17 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("const connectedGoogleConnections = usesAggregateGoogleConnection", calendar_oauth_flow)
         self.assertIn("? getConnectedGoogleOAuthConnections()", calendar_oauth_flow)
         self.assertIn("? connectedGoogleConnections.length > 0", calendar_oauth_flow)
-        # The Email card counts the connected mailboxes; the Google card still
-        # talks about Google permissions.
-        self.assertIn('? (mailboxCount > 1 ? `${mailboxCount} mailboxes connected` : `${connectedEmailLabel} connected`)', calendar_oauth_flow)
+        # The mailbox card only ever adds one; the Google card is where the
+        # connected mailboxes and their disconnects live.
+        self.assertIn('? (gmailCount ? "Add a Gmail mailbox" : "Connect Gmail")', calendar_oauth_flow)
         self.assertIn('"These Google permissions are connected and ready to use."', calendar_oauth_flow)
-        # The Outlook button is offered whether or not a mailbox is connected,
-        # because a second mailbox is added rather than swapped in.
-        self.assertIn("createOutlookConnectButton(setStatus, () => storageAvailable, {", calendar_oauth_flow)
-        self.assertIn("addingAnother: mailboxCount > 0,", calendar_oauth_flow)
-        self.assertIn("createConnectedMailboxList(option, connectedMailboxes)", calendar_oauth_flow)
+        self.assertNotIn("createOutlookConnectButton", calendar_oauth_flow)
+        self.assertNotIn("Disconnect one to remove its access.", calendar_oauth_flow[:calendar_oauth_flow.index("const permissionList")])
+        self.assertIn("const gmailList = usesAggregateGoogleConnection", calendar_oauth_flow)
+        self.assertIn(
+            "createConnectedMailboxList(getPlatformConnectionOption(\"email\") || option, connectedGmailMailboxes)",
+            calendar_oauth_flow,
+        )
         self.assertIn("createGoogleOAuthPermissionList(option, { readOnly: isConnected });", calendar_oauth_flow)
         self.assertIn("? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)", calendar_oauth_flow)
         self.assertIn("hidePrimaryButton: isConnected && !isEmailConnection,", calendar_oauth_flow)
@@ -970,7 +983,19 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('elements.authAlertIcon.classList.add("is-spinner");', calendar_oauth_flow)
         self.assertIn('setCalendarOAuthPrimaryButton("Opening Google", { loading: true });', calendar_oauth_flow)
         self.assertIn("if (!isConnected || isEmailConnection) {", calendar_oauth_flow)
-        self.assertIn('isEmailConnection && isConnected ? "Add another Google mailbox" : primaryLabel', calendar_oauth_flow)
+        self.assertIn('? "Add another Gmail mailbox"', calendar_oauth_flow)
+        self.assertIn("function getConnectedGmailConnections", script)
+        # A card that adds a mailbox never wears the connected chrome.
+        self.assertIn('tone: isConnected && !isEmailConnection ? "success" : "progress",', calendar_oauth_flow)
+        microsoft_oauth_flow = script[
+            script.index("function openMicrosoftOAuthConnection"):
+            script.index("// Every mailbox is a choice between providers")
+        ]
+        self.assertIn(
+            "const isAddingMailbox = Boolean(flowOptions.providerChosen);",
+            microsoft_oauth_flow,
+        )
+        self.assertIn("const mailboxList = isAddingMailbox\n    ? null", microsoft_oauth_flow)
         self.assertIn("function getConnectedGoogleOAuthConnections", script)
         self.assertIn("function createGoogleConnectionDisconnectButton", script)
         self.assertIn("/api/oauth/google/calendar/start?scopes=", script)
