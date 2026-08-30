@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from typing import Any
 import re
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -2057,6 +2061,109 @@ class PortalStaticPageTests(unittest.TestCase):
             declarations[name] = declarations.get(name, 0) + 1
         duplicates = sorted(name for name, count in declarations.items() if count > 1)
         self.assertEqual(duplicates, [], f"declared more than once in app.js: {duplicates}")
+
+
+def _run_reengagement_live_action_script(feature_literal: str) -> Any:
+    """Build the follow-up action card in node, with its feature state fixed."""
+
+    script = (Path(__file__).resolve().parents[1] / "portal" / "app.js").read_text(encoding="utf-8")
+    builders = script[
+        script.index("function isAgentReengagementLiveAction"):
+        script.index("function getRenderableAgentActions")
+    ]
+    harness = "\n".join([
+        'const REENGAGEMENT_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer";',
+        "function isAgentFeatureLiveAction(action) { return action?.payload?.source === \"feature\"; }",
+        "function createMonitorFeatureLiveAction() { return null; }",
+        "function normalizeMonitorIntervalDays(value) { return Number(value) || 7; }",
+        "function isReengagementFeature(feature) { return feature?.id === REENGAGEMENT_FEATURE_ID; }",
+        "function isFeatureActivated(feature) { return Boolean(feature?.activated); }",
+        "function getSavedFeatureSettings(feature) { return feature?.savedSettings || {}; }",
+        "function getReengagementScheduleTimezone(feature) { return feature?.savedSettings?.scheduleTimezone || \"UTC\"; }",
+        "function getReengagementScheduleTime(feature) { return feature?.savedSettings?.scheduleTimeLocal || \"09:00\"; }",
+        "function formatReengagementInactivityLabel(settings) { return `${settings.inactivityValue} ${settings.inactivityUnit}`; }",
+        f"const clientState = {{ features: [{feature_literal}] }};",
+        builders,
+        "console.log(JSON.stringify(getAgentFeatureLiveActions()));",
+    ])
+    completed = subprocess.run(
+        ["node", "-e", harness],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+ACTIVE_REENGAGEMENT_FEATURE = """{
+  id: "whatsapp-business-follow-up-outreach-writer",
+  description: "Helps you reconnect with past customers.",
+  activated: true,
+  activatedAt: "2026-08-01T09:00:00+00:00",
+  settingsSavedAt: "2026-08-01T09:00:00+00:00",
+  lastRunAt: "2026-08-30T06:00:00+00:00",
+  lastRunStatus: "completed",
+  nextRunAt: "2026-09-06T06:00:00+00:00",
+  savedSettings: {
+    intervalDays: 7,
+    scheduleTimeLocal: "09:00",
+    scheduleTimezone: "Asia/Jerusalem",
+    inactivityValue: 6,
+    inactivityUnit: "months",
+  },
+}"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the portal script")
+class AgentReengagementActionCardTests(unittest.TestCase):
+    """The weekly follow-up writer runs on a schedule, so it belongs in Actions."""
+
+    def test_an_active_follow_up_tool_gets_a_recurring_card(self) -> None:
+        actions = _run_reengagement_live_action_script(ACTIVE_REENGAGEMENT_FEATURE)
+
+        self.assertEqual(len(actions), 1)
+        action = actions[0]
+        self.assertEqual(action["status"], "running")
+        self.assertEqual(action["payload"]["title"], "WhatsApp follow-ups")
+        self.assertEqual(action["runAt"], "2026-09-06T06:00:00+00:00")
+        self.assertEqual(action["payload"]["lastRunAt"], "2026-08-30T06:00:00+00:00")
+        # Nothing about this action is manual, so it must not land in On demand.
+        self.assertFalse(action["payload"]["manualOnly"])
+
+    def test_a_weekly_schedule_is_not_reported_as_manual(self) -> None:
+        # The monitor's formatter reads a manualOnly flag the follow-up writer
+        # never sets, which made a weekly schedule read as "manual only".
+        actions = _run_reengagement_live_action_script(ACTIVE_REENGAGEMENT_FEATURE)
+
+        self.assertEqual(actions[0]["payload"]["frequency"], "weekly")
+
+    def test_a_tool_that_was_never_set_up_stays_out_of_the_list(self) -> None:
+        actions = _run_reengagement_live_action_script("""{
+          id: "whatsapp-business-follow-up-outreach-writer",
+          activated: false,
+          savedSettings: { intervalDays: 7, inactivityValue: 6, inactivityUnit: "months" },
+        }""")
+
+        self.assertEqual(actions, [])
+
+    def test_stopping_it_leaves_the_card_in_place(self) -> None:
+        # Otherwise the card disappears on Stop and there is nowhere to start it.
+        actions = _run_reengagement_live_action_script("""{
+          id: "whatsapp-business-follow-up-outreach-writer",
+          activated: false,
+          settingsSavedAt: "2026-08-01T09:00:00+00:00",
+          lastRunAt: "2026-08-30T06:00:00+00:00",
+          savedSettings: {
+            intervalDays: 7,
+            scheduleTimeLocal: "09:00",
+            inactivityValue: 6,
+            inactivityUnit: "months",
+          },
+        }""")
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["status"], "paused")
+
 
 
 if __name__ == "__main__":
