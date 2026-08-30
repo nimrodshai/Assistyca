@@ -23599,11 +23599,30 @@ function getAgentAnswerRunFields(turn) {
   return { ...fields };
 }
 
-// One question can name several months ("July and August"), but one lookup
-// reads one month. A whole year is the longest comparison anyone asks for in a
-// sentence, so twelve reads is the ceiling: enough for "across 2026", and
-// still short of a stray list turning into an endless row of mailbox reads.
-const AGENT_ANSWER_RUN_MONTH_LIMIT = 12;
+// One question can name several months ("July and August"), and a run of them
+// is read in one go rather than one at a time. Three years is the ceiling:
+// long enough for the comparisons people actually ask for, short enough that
+// a stray list cannot turn into an unbounded wait.
+const AGENT_ANSWER_RUN_MONTH_LIMIT = 36;
+// How many months travel in one request. The mailbox is searched once for the
+// whole group, so this is what turns a year from twelve searches into two.
+// It matches the span one run will cover on the other side.
+const AGENT_ANSWER_RUN_MONTH_CHUNK = 6;
+
+function chunkAgentAnswerRunMonths(months) {
+  const chunks = [];
+  for (let index = 0; index < months.length; index += AGENT_ANSWER_RUN_MONTH_CHUNK) {
+    chunks.push(months.slice(index, index + AGENT_ANSWER_RUN_MONTH_CHUNK));
+  }
+  return chunks;
+}
+
+// A group of months is one read, so it waits longer than a single month would
+// before giving up on it - but never so long that a stalled request looks like
+// a working one.
+function getAgentAnswerRunTimeout(monthCount) {
+  return Math.min(300000, 90000 + 30000 * Math.max(0, monthCount - 1));
+}
 // A month named in free text counts only when it is unmistakably a month:
 // "may" is an ordinary word, so it needs its year to be read as May.
 const AGENT_ANSWER_TEXT_MONTH_RE = /\b(?:\d{4}-\d{1,2}|may\s+\d{4}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?)\b/gi;
@@ -23709,8 +23728,8 @@ function describeAgentAnswerCappedMailboxes(results) {
       if (!mailbox) {
         return;
       }
-      const month = String(entry?.monthLabel || "").trim();
-      const note = month ? `${mailbox} in ${month}` : mailbox;
+      const span = String(entry?.readSpanLabel || entry?.monthLabel || "").trim();
+      const note = span ? `${mailbox} in ${span}` : mailbox;
       limit = Math.max(limit, Number(item?.limit || 0));
       if (!notes.includes(note)) {
         notes.push(note);
@@ -23721,6 +23740,19 @@ function describeAgentAnswerCappedMailboxes(results) {
     return "";
   }
   return `${joinAgentAnswerLabels(notes)} had more matching emails than I read in one go. I read the newest ${limit}, so this total may be short.`;
+}
+
+// A message that came back from the search but carries no date I could read
+// belongs to no month, so it is in no month's total. That is a small hole in
+// an answer, and a small hole nobody mentions is still money missing.
+function describeAgentAnswerUndatedReceipts(results) {
+  const total = results.reduce((count, entry) => count + Math.max(0, Number(entry?.undatedCount || 0)), 0);
+  if (!total) {
+    return "";
+  }
+  const emailWord = total === 1 ? "email" : "emails";
+  const verb = total === 1 ? "is" : "are";
+  return `${total} ${emailWord} came back with no date I could read, so ${verb} not counted in any month above.`;
 }
 
 // Several months asked about in one question deserve one answer: the total
@@ -23828,6 +23860,17 @@ function formatAgentAnswerMonthLabel(value) {
   return `${label} ${match[1]}`;
 }
 
+// What the progress line says while a group of months is being read. One
+// month keeps its own name; a group is named end to end, so the wait is
+// obviously the several months it is.
+function describeAgentAnswerMonthSpan(months) {
+  const labels = months.map(formatAgentAnswerMonthLabel).filter(Boolean);
+  if (!labels.length) {
+    return "";
+  }
+  return labels.length === 1 ? labels[0] : `${labels[0]} to ${labels[labels.length - 1]}`;
+}
+
 // An answer run needs the same connection its saved counterpart would need.
 function getAgentAnswerRunBlocker(proposalType) {
   if (proposalType === "calendar-summary") {
@@ -23919,32 +23962,53 @@ async function runAgentAnswerTask(task, setProgress) {
   const missedMonths = [];
   let lastError = null;
 
-  // The months run one after another so each one reports its own total,
-  // including the months that turn out to have nothing in them.
-  for (const month of months) {
-    // Several months take several reads, so the progress line names the
-    // month in hand rather than leaving one long unexplained wait.
-    setProgress(months.length > 1 ? formatAgentAnswerMonthLabel(month) : "");
+  // Months travel in groups, because one search covers a run of them. Each
+  // month still reports its own total, including the months that turn out to
+  // have nothing in them.
+  for (const chunk of chunkAgentAnswerRunMonths(months)) {
+    // Several groups take several reads, so the progress line names the
+    // months in hand rather than leaving one long unexplained wait.
+    setProgress(months.length > 1 ? describeAgentAnswerMonthSpan(chunk) : "");
     try {
       const response = await apiRequest("/api/agent/proposals/run", {
         method: "POST",
         body: {
           proposalType,
           mode: runMode,
-          fields: month ? { ...fields, manualRunMonth: month } : fields,
+          fields: chunk[0] ? { ...fields, manualRunMonth: chunk.join(",") } : fields,
           deliveryChannel: "portal",
           timezone: getWorkspaceTimeZone(),
         },
-        timeoutMs: 90000,
+        timeoutMs: getAgentAnswerRunTimeout(chunk.length),
       });
-      results.push(response);
-      const line = String(response.answer || response.message || response.summary || "").trim();
-      if (line) {
-        lines.push(line);
-      }
+      // A group comes back as its months. A run that answered about one month
+      // is that one month, which is the shape this has always had.
+      const monthResults = Array.isArray(response.months) && response.months.length
+        ? response.months.map((entry) => ({ ...entry }))
+        : [response];
+      // What went wrong belongs to the read, not to any one month inside it,
+      // so it rides on the first of them and is said once.
+      monthResults[0] = {
+        ...monthResults[0],
+        skippedMailboxes: response.skippedMailboxes,
+        cappedMailboxes: response.cappedMailboxes,
+        undatedCount: response.undatedCount,
+        // What a ceiling was hit across. Naming the first month of a group
+        // would blame one month for a limit the whole group ran into.
+        readSpanLabel: describeAgentAnswerMonthSpan(chunk),
+      };
+      results.push(...monthResults);
+      monthResults.forEach((entry) => {
+        const line = String(entry.answer || entry.message || entry.summary || "").trim();
+        if (line) {
+          lines.push(line);
+        }
+      });
     } catch (error) {
       lastError = error;
-      missedMonths.push(formatAgentAnswerMonthLabel(month) || String(month || "").trim());
+      chunk.forEach((month) => {
+        missedMonths.push(formatAgentAnswerMonthLabel(month) || String(month || "").trim());
+      });
     }
   }
 
@@ -23970,7 +24034,7 @@ async function runAgentAnswerTask(task, setProgress) {
   // never passes for a complete one.
   const missed = missedMonths.filter(Boolean);
   if (missed.length) {
-    answerLines.push(`I couldn’t check ${missed.join(" and ")} just now.`);
+    answerLines.push(`I couldn’t check ${joinAgentAnswerLabels(missed)} just now.`);
   }
   if (trimmed) {
     answerLines.push(`That was more months than I check at once, so I checked the most recent ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
@@ -23980,6 +24044,10 @@ async function runAgentAnswerTask(task, setProgress) {
   const cappedNote = describeAgentAnswerCappedMailboxes(results);
   if (cappedNote) {
     answerLines.push(cappedNote);
+  }
+  const undatedNote = describeAgentAnswerUndatedReceipts(results);
+  if (undatedNote) {
+    answerLines.push(undatedNote);
   }
   // The mailbox that could not be read comes first, so the totals below it
   // are read as what they are: everything the other mailboxes had.

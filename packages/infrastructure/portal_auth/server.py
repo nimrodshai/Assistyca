@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from email.message import EmailMessage
 from email.utils import formataddr
+from email.utils import parsedate_to_datetime
 from email.utils import parseaddr
 from functools import partial
 from html import escape
@@ -70,6 +71,7 @@ from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATU
 from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
 from packages.infrastructure.mail_search import MailQuery
+from packages.infrastructure.mail_search import month_span_window
 from packages.infrastructure.mail_search import month_window
 from packages.infrastructure.mail_search import normalize_terms
 from packages.infrastructure.mail_search import parse_gmail_query
@@ -405,6 +407,9 @@ AGENT_MONTH_NAME_INDEX = {
 # because the total is in the body; saving a bundle also downloads every
 # attachment, which is why it stays the lower of the two.
 AGENT_RECEIPT_ANSWER_MAX_MESSAGES = 100
+# The most one request will read, however many months it spans. Past this the
+# answer says it stopped rather than reading on.
+AGENT_RECEIPT_ANSWER_MAX_SPAN_MESSAGES = 400
 AGENT_RECEIPT_BUNDLE_MAX_MESSAGES = 50
 # The words a receipt-ish email actually uses. A vendor that never writes
 # "receipt" - and plenty say "Payment confirmation" or "You were charged"
@@ -1952,6 +1957,31 @@ def parse_agent_run_month_value(*values: Any) -> Optional[tuple[int, int]]:
     return None
 
 
+# How many months one request may cover. A run of months shares one search,
+# but it still reads every receipt in them, so a span is bounded to keep one
+# request inside a wait a person will sit through.
+AGENT_ANSWER_MAX_SPAN_MONTHS = 6
+
+
+def parse_agent_run_month_list(*values: Any) -> list[tuple[int, int]]:
+    """Every month a value names, oldest first and without repeats.
+
+    A question covering several months arrives as one comma-separated field,
+    because the months were worked out where the question was read.
+    """
+
+    months: list[tuple[int, int]] = []
+    for value in values:
+        text = normalize_text(value)
+        if not text:
+            continue
+        for piece in re.split(r"[,;]", text):
+            month = parse_agent_run_month_value(piece)
+            if month and month not in months:
+                months.append(month)
+    return sorted(months)
+
+
 def get_previous_agent_run_month(now: Optional[datetime] = None) -> tuple[int, int]:
     current = now or datetime.now(timezone.utc)
     year = current.year
@@ -2017,6 +2047,112 @@ def resolve_agent_batch_run_month(fields: dict[str, Any], payload: dict[str, Any
         return get_previous_agent_run_month()
 
     return None
+
+
+def resolve_agent_batch_run_months(
+    fields: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[tuple[int, int]]:
+    """Every month this run covers, oldest first.
+
+    One month is the ordinary case and resolves exactly as it always has,
+    including the runs that name no month and let the words decide.
+    """
+
+    months = parse_agent_run_month_list(
+        fields.get("manualRunMonth"),
+        payload.get("manualRunMonth"),
+    )
+    if len(months) > 1:
+        return months[:AGENT_ANSWER_MAX_SPAN_MONTHS]
+    single = resolve_agent_batch_run_month(fields, payload)
+    return [single] if single else []
+
+
+def month_of_mail_item(item: Any) -> Optional[tuple[int, int]]:
+    """Which month a message belongs to, read from its own date header.
+
+    The sender's own offset is kept rather than converted, because a receipt
+    timed just after midnight belongs to the month the person reading it sees
+    on the email, not to the one UTC would put it in.
+    """
+
+    if not isinstance(item, dict):
+        return None
+    text = normalize_text(item.get("date"))
+    if not text:
+        return None
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (IndexError, TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    return parsed.year, parsed.month
+
+
+def group_mail_items_by_month(
+    items: Any,
+    months: list[tuple[int, int]],
+) -> tuple[dict[tuple[int, int], list[dict[str, Any]]], int]:
+    """The messages one search returned, sorted back into the months asked for.
+
+    Every month asked about gets an entry, including the months that turn out
+    to be empty: a month left out of the answer reads as a month never checked.
+
+    A message whose date cannot be read belongs to no month here, so it is
+    counted rather than quietly dropped - it came back from the search, and an
+    amount that falls out of the answer without a word is money going missing.
+    """
+
+    buckets: dict[tuple[int, int], list[dict[str, Any]]] = {month: [] for month in months}
+    unplaced = 0
+    for item in items if isinstance(items, list) else []:
+        month = month_of_mail_item(item)
+        if month in buckets:
+            buckets[month].append(item)
+        else:
+            unplaced += 1
+    return buckets, unplaced
+
+
+def answer_receipt_months(
+    items: Any,
+    *,
+    vendor: Any,
+    months: list[tuple[int, int]],
+) -> tuple[list[dict[str, Any]], int]:
+    """One answer per month, all of them from a single read of the mailbox.
+
+    The months were read together but they are counted apart, because the
+    question that spans them is a comparison and a comparison needs the
+    months kept separate. The count beside them is the messages that landed in
+    no month at all.
+    """
+
+    buckets, unplaced = group_mail_items_by_month(items, months)
+    answers = [
+        answer_receipt_question(
+            buckets.get(month, []),
+            vendor=vendor,
+            month_label=format_receipt_month_label(month),
+        )
+        for month in months
+    ]
+    return answers, unplaced
+
+
+def merge_receipt_month_totals(answers: list[dict[str, Any]]) -> dict[str, float]:
+    """What the months add up to, currency by currency."""
+
+    totals: dict[str, float] = {}
+    for answer in answers:
+        for code, value in (answer.get("totals") or {}).items():
+            try:
+                totals[code] = totals.get(code, 0.0) + float(value)
+            except (TypeError, ValueError):
+                continue
+    return totals
 
 
 def build_agent_receipt_output_folder(
@@ -2144,9 +2280,12 @@ def build_custom_batch_mail_query(fields: dict[str, Any], payload: dict[str, Any
     # so a vendor left out of the query can sit past the end of the results
     # and read back as "no receipts" when the receipt is right there.
     required_terms = normalize_terms([normalize_text(fields.get("vendor") or payload.get("vendor"))])
-    month_value = resolve_agent_batch_run_month(fields, payload)
-    if month_value:
-        window = month_window(*month_value)
+    # One search covers every month the run was asked about. A month-by-month
+    # comparison used to search the mailbox once per month, which is the same
+    # mail read over and over with a different window around it.
+    months = resolve_agent_batch_run_months(fields, payload)
+    if months:
+        window = month_span_window(months)
         return MailQuery(
             terms=terms,
             required_terms=required_terms,
@@ -5200,11 +5339,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # A digest reports the newest few messages, so its default stands.
             # A receipt search is asked about a whole month and has to read all
             # of it, or a receipt sitting past the newest few reads as missing.
+            # Every month this run covers. They share one search and are
+            # counted apart afterwards.
+            answer_months: list[tuple[int, int]] = []
+            if answer_mode and is_custom_google_batch:
+                answer_months = resolve_agent_batch_run_months(fields, payload)
             search_max_results = GMAIL_MAX_DIGEST_MESSAGES
             if is_custom_google_batch:
-                search_max_results = (
-                    AGENT_RECEIPT_ANSWER_MAX_MESSAGES if answer_mode else AGENT_RECEIPT_BUNDLE_MAX_MESSAGES
-                )
+                if answer_mode:
+                    # The ceiling follows the span: six months of receipts is
+                    # six months' worth of mail, and holding it to one month's
+                    # ceiling would cut the older end off every long question.
+                    search_max_results = min(
+                        AGENT_RECEIPT_ANSWER_MAX_MESSAGES * max(1, len(answer_months)),
+                        AGENT_RECEIPT_ANSWER_MAX_SPAN_MESSAGES,
+                    )
+                else:
+                    search_max_results = AGENT_RECEIPT_BUNDLE_MAX_MESSAGES
             # A digest is meant to be the newest few, so filling its ceiling is
             # the point rather than something to report. A receipt search is
             # asked about a whole month and reads one message past its ceiling
@@ -5212,9 +5363,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             probe_max_results = search_max_results + 1 if is_custom_google_batch else search_max_results
             receipt_bundle: Optional[dict[str, Any]] = None
             result_header = get_custom_google_batch_result_header(fields) if is_custom_google_batch else ""
-            answer_month: tuple[int, int] | None = None
-            if answer_mode and is_custom_google_batch:
-                answer_month = resolve_agent_batch_run_month(fields, payload)
+            answer_month: tuple[int, int] | None = answer_months[0] if len(answer_months) == 1 else None
             receipt_month: tuple[int, int] | None = None
             receipt_output_folder = ""
             receipt_output_root: Path | None = None
@@ -5371,16 +5520,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
             result = merge_mail_digest_results(mailbox_results)
             receipt_answer: Optional[dict[str, Any]] = None
+            # One answer per month, when the run covered several.
+            receipt_month_answers: list[dict[str, Any]] = []
+            undated_count = 0
             if is_custom_google_batch:
                 result = relabel_mail_digest_result(result, result_header)
                 if result_header == "Receipt search" and answer_mode:
-                    receipt_answer = answer_receipt_question(
-                        result.get("items") if isinstance(result.get("items"), list) else [],
-                        vendor=fields.get("vendor") or payload.get("vendor"),
-                        month_label=format_receipt_month_label(answer_month) if answer_month else "",
-                    )
-                    result["summary"] = receipt_answer["answer"]
-                    result["message"] = receipt_answer["answer"]
+                    answer_items = result.get("items") if isinstance(result.get("items"), list) else []
+                    answer_vendor = fields.get("vendor") or payload.get("vendor")
+                    if len(answer_months) > 1:
+                        receipt_month_answers, undated_count = answer_receipt_months(
+                            answer_items,
+                            vendor=answer_vendor,
+                            months=answer_months,
+                        )
+                    else:
+                        receipt_answer = answer_receipt_question(
+                            answer_items,
+                            vendor=answer_vendor,
+                            month_label=format_receipt_month_label(answer_month) if answer_month else "",
+                        )
+                        result["summary"] = receipt_answer["answer"]
+                        result["message"] = receipt_answer["answer"]
                 elif result_header == "Receipt search":
                     receipt_items = result.get("items") if isinstance(result.get("items"), list) else []
                     try:
@@ -5437,6 +5598,53 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 response_payload["skippedMailboxes"] = summarize_mailbox_failures(mailbox_failures)
             if capped_mailboxes:
                 response_payload["cappedMailboxes"] = capped_mailboxes
+            if receipt_month_answers:
+                # A run of months answers one month at a time. The chat adds
+                # them up into one reply and draws the comparison, so what it
+                # needs back is the months themselves, not a single total that
+                # has already lost the shape of them.
+                response_payload["months"] = [
+                    {
+                        "monthLabel": answer["monthLabel"],
+                        "answer": answer["answer"],
+                        "receiptCount": answer["receiptCount"],
+                        "totals": answer["totals"],
+                        "vendor": answer["vendor"],
+                        "missingAmountCount": answer["missingAmountCount"],
+                        "receiptSources": answer["sources"][:AGENT_SAVED_ANSWER_SOURCE_LIMIT],
+                        "answerRecords": answer["records"][:ANSWER_COMPOSER_MAX_RECORDS],
+                    }
+                    for answer in receipt_month_answers
+                ]
+                # The whole-span figures as well, so anything reading this the
+                # old way still gets a true answer rather than an empty one.
+                response_payload["answer"] = "\n\n".join(
+                    answer["answer"] for answer in receipt_month_answers if answer["answer"]
+                )
+                response_payload["receiptCount"] = sum(
+                    int(answer["receiptCount"] or 0) for answer in receipt_month_answers
+                )
+                response_payload["totals"] = merge_receipt_month_totals(receipt_month_answers)
+                response_payload["vendor"] = next(
+                    (answer["vendor"] for answer in receipt_month_answers if answer["vendor"]),
+                    "",
+                )
+                response_payload["receiptSources"] = [
+                    source
+                    for answer in receipt_month_answers
+                    for source in answer["sources"]
+                ][:AGENT_SAVED_ANSWER_SOURCE_LIMIT]
+                # The receipts themselves, from every month in the span. These
+                # are receipt records, which is what a question about why a
+                # month moved is answered from - the mail fallback below would
+                # hand back plain messages instead.
+                response_payload["answerRecords"] = [
+                    record
+                    for answer in receipt_month_answers
+                    for record in answer["records"]
+                ][:ANSWER_COMPOSER_MAX_RECORDS]
+                if undated_count:
+                    response_payload["undatedCount"] = undated_count
             if receipt_answer:
                 # A question asked in chat is answered in chat; there is no
                 # bundle to link because nothing was written.
@@ -5457,7 +5665,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # answers how much; these are what a question about why, what
                 # for, or which one is answered from.
                 response_payload["answerRecords"] = receipt_answer["records"][:ANSWER_COMPOSER_MAX_RECORDS]
-            elif answer_mode:
+            elif answer_mode and not receipt_month_answers:
                 # A question about the mail itself is answered from the
                 # messages that were read, the same way.
                 response_payload["answerRecords"] = build_mail_answer_records(result.get("items"))

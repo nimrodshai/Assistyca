@@ -319,6 +319,23 @@ def month_window(year: int, month: int) -> MailQuery:
     return MailQuery(after=start, before=end)
 
 
+def month_span_window(months: list[tuple[int, int]]) -> MailQuery:
+    """One window covering every month in the list, oldest to newest.
+
+    Asking a mailbox once for a run of months costs one search instead of one
+    per month. The months are still counted apart afterwards; only the reading
+    is shared.
+    """
+
+    ordered = sorted(months)
+    if not ordered:
+        return MailQuery()
+    return MailQuery(
+        after=month_window(*ordered[0]).after,
+        before=month_window(*ordered[-1]).before,
+    )
+
+
 def build_query(
     *,
     terms: Any = (),

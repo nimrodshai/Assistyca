@@ -461,6 +461,97 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertEqual(query.required_terms, ("Render",))
         self.assertIn("Render", to_gmail_query(query))
 
+    def _receipt_item(self, index: int, date_header: str, amount: str) -> dict[str, object]:
+        return {
+            "id": f"msg-{index}",
+            "mailbox": "owner@gmail.com",
+            "subject": "Your Render receipt",
+            "from": "Render <billing@render.com>",
+            "date": date_header,
+            "snippet": f"Total charged {amount}",
+            "bodyText": f"Total charged {amount}",
+        }
+
+    def _run_span(self, months: str, items: list[dict[str, object]]) -> dict[str, object]:
+        return self._run_answer(
+            {
+                "result": "Find receipts from Render across 2026",
+                "vendor": "Render",
+                "manualRunMonth": months,
+            },
+            digest={"summary": "Gmail digest", "messageCount": len(items), "items": items},
+        )
+
+    def test_a_run_of_months_searches_the_mailbox_once(self) -> None:
+        # Twelve months used to mean twelve searches of the same mailbox, each
+        # one asking for the same mail with a different window around it.
+        self._run_span("2026-07,2026-08,2026-09", [
+            self._receipt_item(1, "Tue, 14 Jul 2026 10:00:00 +0300", "$10.00"),
+        ])
+
+        query = self.run_call.kwargs["query"]
+        self.assertEqual(query.after.isoformat(), "2026-07-01")
+        self.assertEqual(query.before.isoformat(), "2026-10-01")
+
+    def test_the_months_are_still_counted_apart(self) -> None:
+        payload = self._run_span("2026-07,2026-08,2026-09", [
+            self._receipt_item(1, "Tue, 14 Jul 2026 10:00:00 +0300", "$10.00"),
+            self._receipt_item(2, "Sat, 01 Aug 2026 09:00:00 +0300", "$19.00"),
+            self._receipt_item(3, "Mon, 31 Aug 2026 23:30:00 +0300", "$1.00"),
+        ])
+
+        months = payload["months"]
+        self.assertEqual([month["monthLabel"] for month in months], ["Jul 2026", "Aug 2026", "Sep 2026"])
+        self.assertEqual(months[0]["totals"], {"USD": 10.0})
+        self.assertEqual(months[1]["totals"], {"USD": 20.0})
+        # A month with nothing in it is still reported, or it reads as a month
+        # that was never checked.
+        self.assertEqual(months[2]["receiptCount"], 0)
+        self.assertEqual(payload["totals"], {"USD": 30.0})
+
+    def test_a_receipt_keeps_the_month_its_own_date_says(self) -> None:
+        # Half past midnight in Jerusalem is still the previous day in UTC, and
+        # the month a person sees on the email is the month it belongs to.
+        payload = self._run_span("2026-07,2026-08", [
+            self._receipt_item(1, "Sat, 01 Aug 2026 00:30:00 +0300", "$5.00"),
+        ])
+
+        months = {month["monthLabel"]: month for month in payload["months"]}
+        self.assertEqual(months["Aug 2026"]["receiptCount"], 1)
+        self.assertEqual(months["Jul 2026"]["receiptCount"], 0)
+
+    def test_an_email_with_no_readable_date_is_counted_out_loud(self) -> None:
+        payload = self._run_span("2026-07,2026-08", [
+            self._receipt_item(1, "Tue, 14 Jul 2026 10:00:00 +0300", "$10.00"),
+            self._receipt_item(2, "not a date", "$99.00"),
+        ])
+
+        # It cannot go in a month, so it goes in the sentence instead.
+        self.assertEqual(payload["undatedCount"], 1)
+        self.assertEqual(payload["totals"], {"USD": 10.0})
+
+    def test_the_ceiling_follows_the_span(self) -> None:
+        self._run_span("2026-07,2026-08,2026-09", [
+            self._receipt_item(1, "Tue, 14 Jul 2026 10:00:00 +0300", "$10.00"),
+        ])
+
+        # Three months of receipts held to one month's ceiling would cut the
+        # older end off every long question.
+        self.assertEqual(
+            self.run_call.kwargs["max_results"],
+            AGENT_RECEIPT_ANSWER_MAX_MESSAGES * 3 + 1,
+        )
+
+    def test_one_month_answers_exactly_as_it_always_has(self) -> None:
+        payload = self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertNotIn("months", payload)
+        self.assertEqual(payload["monthLabel"], "Aug 2026")
+
     def test_a_mailbox_with_more_than_one_read_holds_says_so(self) -> None:
         # Reading the first 100 and reporting the total as if that were all of
         # it is the same failure as a mailbox that could not be opened: a
@@ -803,8 +894,11 @@ class AgentAnswerChatTests(unittest.TestCase):
             self.script.index("async function applyAgentTurnResponse")
         ]
 
-        self.assertIn("for (const month of months)", runner)
-        self.assertIn("manualRunMonth: month", runner)
+        self.assertIn("for (const chunk of chunkAgentAnswerRunMonths(months))", runner)
+        # The months of a group travel together in one request and come back
+        # counted apart, which is what makes a year two reads instead of twelve.
+        self.assertIn('manualRunMonth: chunk.join(",")', runner)
+        self.assertIn("Array.isArray(response.months) && response.months.length", runner)
         # Every month's result is kept, so an empty month still reports.
         self.assertIn("composeAgentMonthlyAnswer(results)", runner)
 
@@ -958,19 +1052,62 @@ class AgentAnswerMonthSplitTests(unittest.TestCase):
         self.assertEqual(result["months"][-1], "2026-08")
         self.assertFalse(result["trimmed"])
 
-    def test_a_long_list_of_months_keeps_the_newest_and_says_so(self) -> None:
-        months = ",".join(f"2025-{month:02d}" for month in range(1, 13))
-        months = f"{months},2026-01,2026-02"
+    def test_three_years_of_months_all_get_checked(self) -> None:
+        months = ",".join(
+            f"{year}-{month:02d}"
+            for year in (2024, 2025, 2026)
+            for month in range(1, 13)
+        )
         result = _run_agent_answer_month_script(
             f'getAgentAnswerRunMonths({{ manualRunMonth: "{months}" }})'
         )
 
-        self.assertEqual(len(result["months"]), 12)
+        self.assertEqual(len(result["months"]), 36)
+        self.assertFalse(result["trimmed"])
+
+    def test_a_long_list_of_months_keeps_the_newest_and_says_so(self) -> None:
+        months = ",".join(
+            f"{year}-{month:02d}"
+            for year in (2023, 2024, 2025, 2026)
+            for month in range(1, 13)
+        )
+        result = _run_agent_answer_month_script(
+            f'getAgentAnswerRunMonths({{ manualRunMonth: "{months}" }})'
+        )
+
+        self.assertEqual(len(result["months"]), 36)
         # The months that fall off the end are the oldest ones, because the
         # newest are the half of a long comparison anyone is asking about.
-        self.assertEqual(result["months"][0], "2025-03")
-        self.assertEqual(result["months"][-1], "2026-02")
+        self.assertEqual(result["months"][0], "2024-01")
+        self.assertEqual(result["months"][-1], "2026-12")
         self.assertTrue(result["trimmed"])
+
+    def test_months_travel_in_groups_of_six(self) -> None:
+        chunks = _run_agent_answer_month_script(
+            'chunkAgentAnswerRunMonths(["2026-01","2026-02","2026-03","2026-04",'
+            '"2026-05","2026-06","2026-07","2026-08"])'
+        )
+
+        # A year is two reads of the mailbox, not twelve.
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(len(chunks[0]), 6)
+        self.assertEqual(chunks[1], ["2026-07", "2026-08"])
+
+    def test_a_group_waits_longer_than_a_single_month_does(self) -> None:
+        single = _run_agent_answer_month_script("getAgentAnswerRunTimeout(1)")
+        group = _run_agent_answer_month_script("getAgentAnswerRunTimeout(6)")
+
+        self.assertEqual(single, 90000)
+        self.assertGreater(group, single)
+        # Never so long that a stalled request looks like a working one.
+        self.assertLessEqual(group, 300000)
+
+    def test_the_progress_line_names_the_group_end_to_end(self) -> None:
+        span = _run_agent_answer_month_script(
+            'describeAgentAnswerMonthSpan(["2026-01","2026-02","2026-03"])'
+        )
+
+        self.assertEqual(span, "Jan 2026 to Mar 2026")
 
     def test_two_months_are_added_up_into_one_answer(self) -> None:
         answer = _run_agent_answer_month_script(
@@ -1044,6 +1181,21 @@ class AgentAnswerCappedReadTests(unittest.TestCase):
         )
 
         self.assertIn("Gmail in Jul 2026 and Gmail in Aug 2026", note)
+
+    def test_an_email_in_no_month_is_named_rather_than_dropped(self) -> None:
+        note = _run_agent_answer_month_script(
+            'describeAgentAnswerUndatedReceipts([{ monthLabel: "Aug 2026", undatedCount: 2 }])'
+        )
+
+        self.assertIn("2 emails", note)
+        self.assertIn("not counted in any month", note)
+
+    def test_a_run_where_every_email_had_a_date_says_nothing(self) -> None:
+        note = _run_agent_answer_month_script(
+            'describeAgentAnswerUndatedReceipts([{ monthLabel: "Aug 2026" }])'
+        )
+
+        self.assertEqual(note, "")
 
     def test_a_run_that_fit_says_nothing(self) -> None:
         note = _run_agent_answer_month_script(
