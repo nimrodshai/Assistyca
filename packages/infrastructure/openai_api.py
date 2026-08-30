@@ -41,11 +41,58 @@ DEFAULT_OPENAI_RETRY_BASE_DELAY_SECONDS = 0.5
 DEFAULT_OPENAI_RETRY_MAX_DELAY_SECONDS = 8.0
 RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
+# The knobs that move wording rather than substance. Some models take them and
+# some refuse them outright, and which is which changes with every release, so
+# a model that refuses is remembered here after its first refusal instead of
+# being hardcoded into a list that goes stale.
+SAMPLING_CONTROL_KEYS = ("temperature", "top_p")
+_MODELS_REFUSING_SAMPLING_CONTROLS: set[str] = set()
+
 OpenAIEventSink = Callable[[dict[str, Any]], None]
 OpenAIPriceResolver = Callable[
     [str],
     Optional[Union[dict[str, Any], Tuple[Optional[float], Optional[float]]]],
 ]
+
+
+def model_refuses_sampling_controls(model: str) -> bool:
+    """Whether this model has already refused temperature in this process."""
+
+    return normalize_text(model).lower() in _MODELS_REFUSING_SAMPLING_CONTROLS
+
+
+def remember_model_refuses_sampling_controls(model: str) -> None:
+    name = normalize_text(model).lower()
+    if name:
+        _MODELS_REFUSING_SAMPLING_CONTROLS.add(name)
+
+
+def is_unsupported_sampling_error(error: "OpenAIRequestError") -> bool:
+    """Whether a rejection was about temperature rather than about the request.
+
+    A model that does not take temperature answers a request carrying one with
+    a 400. The request itself is fine, so it is worth sending again without the
+    knob rather than reporting a failure the user can do nothing about.
+    """
+
+    if error.status_code != 400:
+        return False
+    haystack = f"{error.message} {error.details}".lower()
+    if not any(key in haystack for key in SAMPLING_CONTROL_KEYS):
+        return False
+    return any(
+        phrase in haystack
+        for phrase in ("unsupported", "not supported", "unknown parameter", "does not support", "unrecognized")
+    )
+
+
+def strip_sampling_controls(payload: dict[str, Any]) -> bool:
+    """Take the wording knobs back out. True when there was one to remove."""
+
+    removed = [key for key in SAMPLING_CONTROL_KEYS if key in payload]
+    for key in removed:
+        payload.pop(key, None)
+    return bool(removed)
 
 
 def _sleep_before_retry(attempt: int, *, retry_after: str | None = None) -> None:
@@ -514,11 +561,15 @@ class OpenAIGateway:
         if request.max_output_tokens is not None:
             payload["max_output_tokens"] = int(request.max_output_tokens)
 
-        if request.temperature is not None:
-            payload["temperature"] = float(request.temperature)
+        # A model that already refused these once in this process is not asked
+        # again: the refusal costs a round trip, and the reply is the same
+        # either way.
+        if not model_refuses_sampling_controls(model):
+            if request.temperature is not None:
+                payload["temperature"] = float(request.temperature)
 
-        if request.top_p is not None:
-            payload["top_p"] = float(request.top_p)
+            if request.top_p is not None:
+                payload["top_p"] = float(request.top_p)
 
         if request.extra_payload:
             payload.update(request.extra_payload)
@@ -704,12 +755,24 @@ class OpenAIGateway:
         )
 
         try:
-            response_body, status_code = _json_request(
-                _request_url(self.config.base_url, "/responses"),
-                request_payload,
-                api_key=api_key,
-                timeout_seconds=timeout_seconds,
-            )
+            try:
+                response_body, status_code = _json_request(
+                    _request_url(self.config.base_url, "/responses"),
+                    request_payload,
+                    api_key=api_key,
+                    timeout_seconds=timeout_seconds,
+                )
+            except OpenAIRequestError as exc:
+                # Wording knobs are worth having and never worth failing over.
+                if not (is_unsupported_sampling_error(exc) and strip_sampling_controls(request_payload)):
+                    raise
+                remember_model_refuses_sampling_controls(model)
+                response_body, status_code = _json_request(
+                    _request_url(self.config.base_url, "/responses"),
+                    request_payload,
+                    api_key=api_key,
+                    timeout_seconds=timeout_seconds,
+                )
         except OpenAIRequestError as exc:
             self._emit(
                 "openai.request.failed",
@@ -969,6 +1032,7 @@ def call_openai_response(
 
 __all__ = [
     "DEFAULT_OPENAI_API_BASE",
+    "SAMPLING_CONTROL_KEYS",
     "DEFAULT_OPENAI_CURRENCY",
     "DEFAULT_OPENAI_MODEL",
     "DEFAULT_OPENAI_TIMEOUT_SECONDS",
@@ -983,5 +1047,9 @@ __all__ = [
     "OpenAITrackingError",
     "call_openai_response",
     "create_openai_gateway",
+    "is_unsupported_sampling_error",
     "load_openai_config",
+    "model_refuses_sampling_controls",
+    "remember_model_refuses_sampling_controls",
+    "strip_sampling_controls",
 ]

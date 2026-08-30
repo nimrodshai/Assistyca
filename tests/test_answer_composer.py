@@ -22,11 +22,16 @@ from urllib import request as urllib_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from datetime import datetime
+
+from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.answer_composer import ANSWER_COMPOSER_MAX_RECORDS
 from packages.infrastructure.answer_composer import build_answer_prompt
 from packages.infrastructure.answer_composer import normalize_answer_records
 from packages.infrastructure.answer_composer import normalize_composed_answer
+from packages.infrastructure.calendar_summary import describe_calendar_records
 from packages.infrastructure.openai_api import OpenAIError
+from packages.infrastructure.portal_auth.server import AGENT_ANSWER_TEMPERATURE
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import build_mail_answer_records
 from packages.infrastructure.portal_auth.server import create_server
@@ -145,6 +150,73 @@ class AnswerPromptTests(unittest.TestCase):
     def test_a_follow_up_is_read_against_the_answer_before_it(self) -> None:
         self.assertIn("How much did I pay Apple?", self.prompt)
         self.assertIn("recentConversation", self.prompt)
+
+
+class DynamicAnswerTests(unittest.TestCase):
+    """Nothing a client reads should be a sentence with the blanks filled in."""
+
+    def test_the_reply_is_asked_to_sound_different_each_time(self) -> None:
+        prompt = build_answer_prompt(question="q", records=[], computed_answer="a")
+
+        self.assertIn("not the way you said it last time", prompt)
+
+    def test_finding_nothing_is_answered_rather_than_reported(self) -> None:
+        # "I couldn't find any receipts" is as canned as the total is.
+        prompt = build_answer_prompt(question="q", records=[], computed_answer="a")
+
+        self.assertIn("found nothing that matched", prompt)
+
+    def test_the_reply_is_asked_to_compare_before_it_writes(self) -> None:
+        prompt = build_answer_prompt(question="q", records=[], computed_answer="a")
+
+        self.assertIn("Separate what repeats", prompt)
+        self.assertIn("Group the records", prompt)
+
+    def test_the_chat_calls_ask_for_wording_that_moves(self) -> None:
+        server = (Path(__file__).resolve().parents[1] / "packages" / "infrastructure"
+                  / "portal_auth" / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn("temperature=AGENT_TURN_TEMPERATURE", server)
+        self.assertIn("temperature=AGENT_ANSWER_TEMPERATURE", server)
+        # The figures are never what varies.
+        self.assertGreater(AGENT_ANSWER_TEMPERATURE, 0)
+
+    def test_a_why_question_reads_what_it_is_compared_against(self) -> None:
+        # One month on its own cannot explain how it differs from the one before.
+        prompt = build_agent_turn_prompt(
+            user_message="why was June so much higher?",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+
+        self.assertIn("the one before it in manualRunMonth", prompt)
+
+
+class CalendarAnswerTests(unittest.TestCase):
+    """A meeting question is answered from the meetings, not from the digest."""
+
+    def test_the_meetings_travel_back_with_the_summary(self) -> None:
+        records = describe_calendar_records([{
+            "title": "Site visit",
+            "start": datetime(2026, 9, 1, 14, 0),
+            "end": datetime(2026, 9, 1, 15, 0),
+            "location": "Herzliya",
+            "description": "bring   the samples",
+        }])
+
+        self.assertEqual(records[0]["kind"], "meeting")
+        self.assertEqual(records[0]["title"], "Site visit")
+        self.assertIn("Sep 1", records[0]["when"])
+        self.assertEqual(records[0]["detail"], "bring the samples")
+
+    def test_a_meeting_with_nothing_but_a_time_still_reports(self) -> None:
+        records = describe_calendar_records([{
+            "title": "",
+            "start": datetime(2026, 9, 1, 14, 0),
+            "allDay": True,
+        }])
+
+        self.assertEqual(list(records[0]), ["kind", "when"])
 
 
 class AnswerRecordNormalizationTests(unittest.TestCase):
@@ -343,8 +415,15 @@ class AnswerComposeChatTests(unittest.TestCase):
         ]
 
         self.assertIn("catch (error) {\n    return cleanAnswer;\n  }", composer)
-        # A lookup that reported no records keeps its own wording.
-        self.assertIn("if (!cleanQuestion || !cleanAnswer || !records.length)", composer)
+
+    def test_a_lookup_that_found_nothing_is_still_answered_in_words(self) -> None:
+        composer = self.script[
+            self.script.index("async function composeAgentAnswer"):
+            self.script.index("function getAgentAnswerResultFolder")
+        ]
+
+        self.assertIn("if (!cleanQuestion || !cleanAnswer) {", composer)
+        self.assertNotIn("!records.length", composer)
 
 
 if __name__ == "__main__":

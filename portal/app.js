@@ -24030,12 +24030,14 @@ function buildAgentAnswerConversation() {
 //
 // The sentence the runs already wrote is the fallback the whole way down, so a
 // slow or unavailable model costs the phrasing, never the answer. A lookup
-// that reports no records, such as a calendar summary, keeps its own wording.
+// that found nothing goes through here too: "I couldn't find any receipts" is
+// as much a canned sentence as the total is, and a client hearing it deserves
+// a reply that reads like someone who went and looked.
 async function composeAgentAnswer(question, answer, results) {
   const records = collectAgentAnswerRecords(results);
   const cleanQuestion = String(question || "").trim();
   const cleanAnswer = String(answer || "").trim();
-  if (!cleanQuestion || !cleanAnswer || !records.length) {
+  if (!cleanQuestion || !cleanAnswer) {
     return cleanAnswer || String(answer || "");
   }
   try {

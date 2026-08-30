@@ -297,6 +297,29 @@ def _display_range(date_range: CalendarDateRange) -> str:
     return f"{start.strftime('%b %-d, %Y')}–{end.strftime('%b %-d, %Y')}"
 
 
+def describe_calendar_records(events: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Each meeting as one flat line, for answering questions about them.
+
+    The summary reads the diary out in order, which answers "what is on this
+    week" and nothing else. A question about which meeting moved, where the
+    afternoon is free, or who keeps booking an hour is answered from the
+    meetings themselves, so they travel back in the same shape every other
+    lookup uses.
+    """
+
+    records: list[dict[str, str]] = []
+    for event in events:
+        record = {
+            "kind": "meeting",
+            "when": _format_event_time(event),
+            "title": str(event.get("title") or "").strip(),
+            "location": str(event.get("location") or "").strip(),
+            "detail": re.sub(r"\s+", " ", str(event.get("description") or "")).strip()[:240],
+        }
+        records.append({key: value for key, value in record.items() if value})
+    return records
+
+
 def build_calendar_summary(
     events: list[dict[str, Any]],
     date_range: CalendarDateRange,
@@ -550,6 +573,9 @@ class CalendarSummaryRunner:
         return {
             "message": summary,
             "summary": summary,
+            # The meetings themselves, so a question about them can be answered
+            # from what is in the diary rather than from the summary of it.
+            "items": describe_calendar_records(events),
             "eventCount": len(events),
             "calendars": wanted,
             "skippedCalendars": skipped,

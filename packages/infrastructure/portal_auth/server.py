@@ -1447,6 +1447,17 @@ def read_float_env(name: str, default: float) -> float:
         return default
 
 
+# How much the wording is allowed to move between replies. Two people asking
+# the same thing, or one person asking twice, should not get the same sentence
+# back word for word - that is what makes an assistant read as a form rather
+# than as someone answering. None of the figures come from here: they are
+# worked out in code and handed to the model already settled, so this moves
+# only how the answer is put. A turn also has to return valid JSON around its
+# reply, which is why it sits lower than a plain answer does.
+AGENT_TURN_TEMPERATURE = read_float_env("PORTAL_AGENT_TURN_TEMPERATURE", 0.8)
+AGENT_ANSWER_TEMPERATURE = read_float_env("PORTAL_AGENT_ANSWER_TEMPERATURE", 0.95)
+
+
 def read_email_list_env(name: str) -> frozenset[str]:
     raw = os.getenv(name, "")
     if not raw.strip():
@@ -5044,6 +5055,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 model=model,
                 instructions=AGENT_PROPOSAL_REVISION_INSTRUCTIONS,
                 max_output_tokens=AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_TURN_TEMPERATURE,
                 usage_recorder=self.database,
                 price_resolver=self.database.get_model_price,
                 config=load_openai_config(
@@ -5542,6 +5554,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "dateRange": result.get("dateRange") if isinstance(result.get("dateRange"), dict) else {},
             "calendar": calendar_label,
             "calendars": result.get("calendars") if isinstance(result.get("calendars"), list) else calendar_ids,
+            # The meetings the summary was built from. A question asked in chat
+            # is answered from these, so "what is on Thursday" and "which of
+            # these clashes" are not the same sentence with a different date.
+            "answerRecords": (
+                normalize_answer_records(result.get("items")) if answer_mode else []
+            ),
             # A calendar that could not be read is reported rather than quietly
             # leaving its meetings out of the summary.
             "skippedCalendars": [
@@ -5927,6 +5945,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 model=model,
                 instructions=ANSWER_COMPOSER_INSTRUCTIONS,
                 max_output_tokens=ANSWER_COMPOSER_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_ANSWER_TEMPERATURE,
                 usage_recorder=self.database,
                 price_resolver=self.database.get_model_price,
                 config=load_openai_config(
@@ -6032,6 +6051,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 model=model,
                 instructions=AGENT_TURN_INSTRUCTIONS,
                 max_output_tokens=AGENT_TURN_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_TURN_TEMPERATURE,
                 usage_recorder=self.database,
                 price_resolver=self.database.get_model_price,
                 config=load_openai_config(
