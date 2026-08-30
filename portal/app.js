@@ -19137,9 +19137,101 @@ function createMonitorFeatureLiveAction(feature) {
   };
 }
 
+// A tool that runs on a schedule of its own belongs in the list of scheduled
+// things, not only inside the tool that owns it. The follow-up writer had no
+// card at all, so its weekly report arrived with nothing in Actions to explain
+// where it came from.
+function isAgentReengagementLiveAction(action) {
+  return Boolean(
+    isAgentFeatureLiveAction(action)
+    && String(action?.payload?.backendFeatureId || "").trim() === REENGAGEMENT_FEATURE_ID,
+  );
+}
+
+// The monitor's formatter reads manualOnly, which follow-ups never set, so it
+// called a weekly schedule "manual only". This one goes by the interval alone.
+function formatAgentReengagementFrequency(settings = {}) {
+  const intervalDays = normalizeMonitorIntervalDays(settings.intervalDays);
+  if (intervalDays === 1) {
+    return "daily";
+  }
+  if (intervalDays % 30 === 0) {
+    const months = intervalDays / 30;
+    return months === 1 ? "monthly" : `every ${months} months`;
+  }
+  if (intervalDays % 7 === 0) {
+    const weeks = intervalDays / 7;
+    return weeks === 1 ? "weekly" : `every ${weeks} weeks`;
+  }
+  return `every ${intervalDays} days`;
+}
+
+function getReengagementFeatureLiveActionPreview(feature, settings = getSavedFeatureSettings(feature)) {
+  return `Quiet WhatsApp conversations older than ${formatReengagementInactivityLabel(settings)} · drafts only`;
+}
+
+function createReengagementFeatureLiveAction(feature) {
+  if (!feature || !isReengagementFeature(feature)) {
+    return null;
+  }
+
+  const backendFeatureActive = isFeatureActivated(feature);
+  const settingsSavedAt = String(feature.settingsSavedAt || feature.setupStatus?.settingsSavedAt || "").trim();
+  const lastRunAt = String(feature.lastRunAt || feature.setupStatus?.lastRunAt || "").trim();
+  // Stopping it must not make the card vanish, or there is nowhere to start it
+  // again. Anything set up or already run stays listed once it is switched off.
+  if (!backendFeatureActive && !settingsSavedAt && !lastRunAt) {
+    return null;
+  }
+
+  const settings = getSavedFeatureSettings(feature);
+  const nextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
+  const createdAt = String(feature.activatedAt || settingsSavedAt || lastRunAt || nextRunAt).trim();
+  return {
+    id: `feature:${feature.id}`,
+    actionType: "agent_whatsapp_reengagement",
+    channel: "portal",
+    recipientRef: "portal",
+    runAt: nextRunAt || lastRunAt || createdAt,
+    timezone: getReengagementScheduleTimezone(feature),
+    status: backendFeatureActive ? "running" : "paused",
+    attemptCount: 0,
+    providerMessageId: "",
+    payload: {
+      source: "feature",
+      backendFeatureId: feature.id,
+      backendFeatureActive,
+      title: "WhatsApp follow-ups",
+      preview: getReengagementFeatureLiveActionPreview(feature, settings),
+      summary: String(feature.description || "").trim(),
+      frequency: formatAgentReengagementFrequency(settings),
+      manualOnly: false,
+      actionLifecycleStatus: backendFeatureActive ? "active" : "paused",
+      deliveryChannel: "portal",
+      deliveryTarget: "",
+      deliveryLabel: "Your notifications",
+      inactivityLabel: formatReengagementInactivityLabel(settings),
+      scheduleTimeLocal: getReengagementScheduleTime(feature),
+      lastRunAt,
+      lastRunStatus: String(feature.lastRunStatus || feature.setupStatus?.lastRunStatus || "").trim(),
+      nextRunAt,
+    },
+    local: true,
+    lastError: "",
+    claimedAt: "",
+    completedAt: "",
+    createdAt,
+    updatedAt: lastRunAt || createdAt,
+  };
+}
+
+function createFeatureLiveAction(feature) {
+  return createMonitorFeatureLiveAction(feature) || createReengagementFeatureLiveAction(feature);
+}
+
 function getAgentFeatureLiveActions() {
   return clientState.features
-    .map(createMonitorFeatureLiveAction)
+    .map(createFeatureLiveAction)
     .filter(Boolean);
 }
 
@@ -19275,6 +19367,18 @@ function createAgentActionDetailActions(action) {
       ariaLabel: `${nextLabel} ${getScheduledActionTitle(action)}`,
       dataset,
     });
+  }
+
+  // Removing this one would mean deleting the tool itself, which belongs in the
+  // tool rather than in a card. The card stops it or opens where it is edited.
+  if (isAgentReengagementLiveAction(action)) {
+    appendAgentActionButton(actions, {
+      className: "ghost-button small",
+      text: "Open setup",
+      ariaLabel: `Open ${getScheduledActionTitle(action)} setup`,
+      dataset: { agentOpenFeatureSetup: featureId },
+    });
+    return actions;
   }
 
   if (isAgentLocalAction(action)) {
@@ -22272,6 +22376,44 @@ function createSourceActionEditor(action) {
   return form;
 }
 
+function createReengagementActionDetailBody(action) {
+  const payload = action.payload && typeof action.payload === "object" ? action.payload : {};
+  const paused = getScheduledActionStatusClass(action.status, action) === "paused";
+  const body = document.createDocumentFragment();
+
+  const details = document.createElement("dl");
+  details.className = "agent-action-detail-grid";
+  details.append(
+    createScheduledActionDetailRow("Looks for", `Conversations quiet for ${payload.inactivityLabel || "6 months"}`),
+    createScheduledActionDetailRow(
+      "Frequency",
+      `${capitalizeWords(payload.frequency || "weekly")} at ${payload.scheduleTimeLocal || "09:00"}`,
+    ),
+    createScheduledActionDetailRow(
+      paused ? "Status" : "Next run",
+      paused
+        ? "Stopped until you start it"
+        : formatScheduledActionDate(payload.nextRunAt || action.runAt, action.timezone),
+    ),
+  );
+  if (payload.lastRunAt) {
+    details.append(createScheduledActionDetailRow(
+      "Last run",
+      `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(payload.lastRunStatus || "completed")}`,
+    ));
+  }
+  details.append(createScheduledActionDetailRow("Reports to", payload.deliveryLabel || "Your notifications"));
+  body.append(details);
+
+  const note = document.createElement("p");
+  note.className = "agent-action-note";
+  note.textContent = paused
+    ? "Stopped, so no follow-ups are drafted. Start it to go back to the weekly report."
+    : "Drafts only — nothing is sent to your customers. The report lands in your notifications, and the schedule and quiet window are edited in the follow-up setup.";
+  body.append(note);
+  return body;
+}
+
 function createScheduledActionDetail(action) {
   const card = document.createElement("div");
   card.className = "agent-action-detail-card";
@@ -22346,6 +22488,15 @@ function createScheduledActionDetail(action) {
       runMessage.textContent = String(payload.initialRunMessage);
       runNote.append(runTitle, runMessage);
       card.append(runNote);
+    }
+
+    if (isAgentReengagementLiveAction(action)) {
+      card.append(createReengagementActionDetailBody(action));
+      const reengagementControls = createAgentActionDetailActions(action);
+      if (reengagementControls) {
+        card.append(reengagementControls);
+      }
+      return card;
     }
 
     if (isFeatureAction) {
@@ -25773,6 +25924,14 @@ function handleAgentWorkspaceClick(event) {
     return;
   }
 
+  const openFeatureSetupButton = target?.closest("[data-agent-open-feature-setup]");
+  if (openFeatureSetupButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    openAgentFeatureActionSetup(openFeatureSetupButton.dataset.agentOpenFeatureSetup || "");
+    return;
+  }
+
   const removeLocalActionButton = target?.closest("[data-agent-remove-local-action]");
   if (removeLocalActionButton) {
     event.preventDefault();
@@ -25989,6 +26148,19 @@ function openAgentToolDetails(featureId) {
   state.agentAddToolMenuOpen = false;
   openFeatureStudio(feature.id, getAgentToolDetailsView(feature));
   setStatus(isWhatsAppFeature(feature) ? "WhatsApp details opened." : `${getAgentToolLabel(feature)} details opened.`);
+}
+
+// The card's own setup link goes to the tool's editor. openAgentToolDetails
+// sends WhatsApp tools to the connection form instead, which is the wrong place
+// to change a follow-up schedule.
+function openAgentFeatureActionSetup(featureId) {
+  const feature = getFeatureById(featureId);
+  if (!feature) {
+    return;
+  }
+
+  openFeatureStudio(feature.id, getDefaultFeatureStudioView(feature));
+  setStatus(`${getAgentToolLabel(feature)} setup opened.`);
 }
 
 function getAgentAddToolOption(id) {
