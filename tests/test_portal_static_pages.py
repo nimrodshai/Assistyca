@@ -357,29 +357,43 @@ class PortalStaticPageTests(unittest.TestCase):
         # "Disconnect Google" removes several connections in one go, and it
         # gathered them by platform. Gmail and Outlook share the email
         # platform, so the sweep took the Outlook mailbox with it - credential
-        # included. Whose a connection is is a question about the provider.
-        self.assertIn("function isGoogleOwnedPlatformConnection", script)
-        self.assertIn("function getPlatformConnectionProvider", script)
-        self.assertIn(
-            'return platform !== "email" || getPlatformConnectionProvider(connection) === EMAIL_PROVIDER_GMAIL;',
-            script,
-        )
-
+        # included. Whose a connection is is a question about its vendor, and
+        # tests/connection_identity.test.mjs is where that is proved; this only
+        # pins that the sweep asks.
         google_sweep = script[
             script.index("function getUniqueConnectedGoogleOAuthConnections"):
             script.index("function createGoogleConnectionDisconnectButton")
         ]
-        self.assertIn("isGoogleOwnedPlatformConnection(connection)", google_sweep)
-        self.assertNotIn("isGoogleToolPlatformConnection(connection.platform)", google_sweep)
+        self.assertIn("isVendorOwnedPlatformConnection(connection, VENDOR_GOOGLE)", google_sweep)
+        self.assertNotIn("isGoogleToolPlatformConnection", google_sweep)
 
         # A confirmation that lists what Google can do rather than what this
         # account has is how a mailbox gets removed by someone who never knew
         # it was included.
-        self.assertIn("function describeGoogleConnectionsToDisconnect", script)
+        self.assertIn("describeConnectionsToDisconnect(connectedConnections)", script)
         self.assertNotIn(
             "Any actions that use Calendar, Email, or Drive will need setup again",
             script,
         )
+
+    def test_the_page_loads_the_connection_identity_module_before_the_app(self) -> None:
+        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # app.js calls into the module at load, so the order is not cosmetic.
+        module_tag = html.index("connection-identity.js")
+        app_tag = html.index("app.js?v=")
+        self.assertLess(module_tag, app_tag)
+
+        # And the decisions must not have been copied back into app.js, where
+        # nothing can run them.
+        for moved in (
+            "function getPlatformConnectionVendor",
+            "function isVendorOwnedPlatformConnection",
+            "function getEmailConnectionName",
+            "function describeConnectionsToDisconnect",
+        ):
+            self.assertNotIn(moved, script)
 
     def test_calendar_action_picks_calendars_from_inside_the_account(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -784,7 +798,10 @@ class PortalStaticPageTests(unittest.TestCase):
         # Email is a mailbox, not a Google product: either provider satisfies it.
         self.assertIn("function isEmailConnectionReady", script)
         self.assertIn("function getConnectedEmailProvider", script)
-        self.assertIn('const EMAIL_PROVIDER_OUTLOOK = "microsoft_outlook";', script)
+        # The provider constants live with the rest of the identity model now,
+        # in the module node can actually run.
+        identity = (self.root / "portal" / "connection-identity.js").read_text(encoding="utf-8")
+        self.assertIn('const EMAIL_PROVIDER_OUTLOOK = "microsoft_outlook";', identity)
         self.assertIn("function createOutlookConnectButton", script)
         self.assertIn("/api/oauth/microsoft/email/start", script)
         self.assertIn("function consumeEmailOAuthReturn", script)
@@ -876,10 +893,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('if (option.id === "microsoft") {\n    openMicrosoftOAuthConnection(option);', script)
         self.assertIn('["calendar", "email", "microsoft"].includes(option.id) ? "oauth"', script)
         # A connected Outlook mailbox is stored on the email platform, so the
-        # tool shelf has to name its provider or Microsoft never shows up.
-        self.assertIn("function isOutlookPlatformConnection", script)
+        # tool shelf has to ask whose it is or Microsoft never shows up.
         self.assertIn('platform: "microsoft",\n        label: "Microsoft",', script)
-        self.assertIn("&& !isOutlookPlatformConnection(connection)", script)
+        self.assertIn("isVendorOwnedPlatformConnection(connection, VENDOR_GOOGLE)", script)
         # Connecting an app from the tools panel is not a chat turn, so nothing
         # about it is announced in chat.
         self.assertIn("function wasPlatformConnectionStartedFromChat", script)
@@ -1069,7 +1085,7 @@ class PortalStaticPageTests(unittest.TestCase):
         ]
         self.assertIn('"email"', action_only_connection_ids)
         self.assertIn('"drive"', action_only_connection_ids)
-        self.assertIn("GOOGLE_TOOL_PLATFORM_CONNECTION_IDS", script)
+        self.assertNotIn("GOOGLE_TOOL_PLATFORM_CONNECTION_IDS", script)
         self.assertIn("function shouldRenderAgentToolShelfConnection", script)
         self.assertIn("function getAgentToolShelfConnections", script)
         self.assertIn("function isAgentToolsInitialLoading", script)
@@ -1466,7 +1482,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
         self.assertIn("styles.css?v=160", html)
-        self.assertIn("app.js?v=201", html)
+        self.assertIn("app.js?v=202", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
         self.assertIn('id="featureActivationResult"', html)

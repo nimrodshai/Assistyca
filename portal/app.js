@@ -462,11 +462,6 @@ const AGENT_RECEIPT_RECURRING_OUTPUT_FOLDER = "Receipts/{RunMonth}/";
 const GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly";
 const GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
-const GOOGLE_TOOL_PLATFORM_CONNECTION_IDS = new Set([
-  "calendar",
-  "drive",
-  "email",
-]);
 const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
   {
     id: "calendar",
@@ -5881,13 +5876,30 @@ function getPlatformConnectionOption(platform) {
   return PLATFORM_CONNECTION_OPTIONS.find((option) => option.id === normalized) || null;
 }
 
-function getPlatformConnectionByPlatform(platform) {
+// The one connection on a platform that holds one account - Slack, Telegram,
+// WhatsApp, Calendar, Drive. It returns whichever row comes first, which is
+// the right answer only while a platform means an account.
+//
+// The email platform stopped meaning an account the day two mailboxes could
+// coexist, and this returned an arbitrary one of them: that is how the agent
+// was told Gmail was connected when the only mailbox was Outlook. It answers
+// nothing for mailboxes now. Ask getConnectedEmailConnections, which returns
+// all of them, or getConnectedMailboxForProvider for a particular one.
+function getSinglePlatformConnection(platform) {
   const normalized = String(platform || "").trim().toLowerCase();
+  if (normalized === EMAIL_PLATFORM) {
+    return null;
+  }
   return state.platformConnections.find((connection) => connection.platform === normalized) || null;
 }
 
-function getPlatformConnectionPlatformId(connection) {
-  return String(connection?.platform || connection?.id || "").trim().toLowerCase();
+// One mailbox, named by whose it is. The only safe way to ask about a single
+// mailbox, because an address cannot tell two providers apart and a platform
+// cannot either.
+function getConnectedMailboxForProvider(provider) {
+  return getConnectedEmailConnections().find(
+    (connection) => getPlatformConnectionProvider(connection) === provider,
+  ) || null;
 }
 
 // Where a connection flow was started. Connecting an app from the tools panel
@@ -5916,51 +5928,23 @@ function wasPlatformConnectionStartedFromChat() {
   return origin === "chat";
 }
 
-function isGoogleToolPlatformConnection(platform) {
-  const normalized = String(platform || "").trim().toLowerCase();
-  return GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(normalized);
-}
-
-// A Google tool platform says what a connection can do, not whose account it
-// is: the email platform holds Outlook mailboxes too. Everything that treats
-// Google as one thing - counting it connected, disconnecting it - has to ask
-// the provider as well, or it reaches into Microsoft's row. Calendar and Drive
-// have only ever been Google's, so the platform answers for them; for a
-// mailbox only a stated Gmail provider does, because a wrong guess here
-// deletes the other provider's credential.
-function isGoogleOwnedPlatformConnection(connection) {
-  const platform = getPlatformConnectionPlatformId(connection);
-  if (!isGoogleToolPlatformConnection(platform)) {
-    return false;
-  }
-  return platform !== "email" || getPlatformConnectionProvider(connection) === EMAIL_PROVIDER_GMAIL;
-}
-
 function getConnectedGoogleOAuthConnections() {
   return state.platformConnections.filter((connection) => (
-    isGoogleOwnedPlatformConnection(connection)
+    isVendorOwnedPlatformConnection(connection, VENDOR_GOOGLE)
     && isPlatformConnectionConnected(connection)
     && connection.authType === "oauth"
   ));
 }
 
 function isGoogleOAuthPlatformConnectionReady(platform, provider = "") {
-  const connection = getPlatformConnectionByPlatform(platform);
-  const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
+  const connection = getSinglePlatformConnection(platform);
   return Boolean(
     connection
     && connection.connectionStatus === "connected"
     && connection.authType === "oauth"
-    && (!provider || metadata.provider === provider)
+    && (!provider || getResolvedPlatformConnectionProvider(connection) === provider)
   );
 }
-
-const EMAIL_PROVIDER_GMAIL = "google_gmail";
-const EMAIL_PROVIDER_OUTLOOK = "microsoft_outlook";
-const EMAIL_PROVIDER_LABELS = {
-  [EMAIL_PROVIDER_GMAIL]: "Gmail",
-  [EMAIL_PROVIDER_OUTLOOK]: "Outlook",
-};
 
 // An account can hold several mailboxes, so the email platform is the one
 // place where a lookup returns a list rather than a single connection.
@@ -5976,33 +5960,6 @@ function getConnectedOutlookConnections() {
   return getConnectedEmailConnections().filter((connection) => (
     getEmailConnectionProvider(connection) === EMAIL_PROVIDER_OUTLOOK
   ));
-}
-
-// What the connection itself says its provider is, with no default. A caller
-// deciding what to delete needs to know the difference between "Gmail" and
-// "this row never said", which the display default below hides.
-function getPlatformConnectionProvider(connection) {
-  const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
-  return normalizeText(connection?.provider || metadata.provider).toLowerCase();
-}
-
-// The provider a mailbox is shown as. Gmail is the default because it was the
-// only mailbox provider before Outlook, so a row that names none is one of
-// those. Naming a mailbox is all this is for - see the reader above before
-// using it to decide anything.
-function getEmailConnectionProvider(connection) {
-  return getPlatformConnectionProvider(connection) === EMAIL_PROVIDER_OUTLOOK
-    ? EMAIL_PROVIDER_OUTLOOK
-    : EMAIL_PROVIDER_GMAIL;
-}
-
-// What to call one mailbox in the interface: its address if the provider let
-// us read it, otherwise a name the user gave it, otherwise the provider.
-function getEmailConnectionName(connection) {
-  return normalizeText(connection?.accountAddress)
-    || normalizeText(connection?.accountLabel)
-    || EMAIL_PROVIDER_LABELS[getEmailConnectionProvider(connection)]
-    || "Email";
 }
 
 function getConnectedEmailProvider() {
@@ -6025,7 +5982,7 @@ function isOutlookConnectionReady() {
 }
 
 function isCalendarConnectionReady() {
-  return getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected";
+  return getSinglePlatformConnection("calendar")?.connectionStatus === "connected";
 }
 
 function isGoogleDriveConnectionReady() {
@@ -6517,7 +6474,7 @@ function getUniqueConnectedGoogleOAuthConnections(connections = []) {
   for (const connection of source) {
     if (
       connection?.id
-      && isGoogleOwnedPlatformConnection(connection)
+      && isVendorOwnedPlatformConnection(connection, VENDOR_GOOGLE)
       && isPlatformConnectionConnected(connection)
       && connection.authType === "oauth"
     ) {
@@ -6611,41 +6568,13 @@ async function disconnectPlatformConnection(option, connection) {
   }
 }
 
-// One button removes several connections at once, so the confirmation names
-// them. "Calendar, Email, or Drive" listed what Google can do rather than what
-// this account has, which is how a mailbox could be removed by a reader who
-// had no idea one was included.
-function describeGoogleConnectionsToDisconnect(connections = []) {
-  // The permission's own name, not the shelf's: a calendar connection is
-  // labelled "Google" on the shelf, which in a list of Google things to remove
-  // would say nothing at all.
-  const permissionNames = { calendar: "Calendar", drive: "Drive" };
-  const mailboxes = [];
-  const permissions = [];
-  for (const connection of connections) {
-    const platform = getPlatformConnectionPlatformId(connection);
-    if (platform === "email") {
-      mailboxes.push(`the mailbox ${getEmailConnectionName(connection)}`);
-    } else {
-      permissions.push(permissionNames[platform] || normalizeText(connection?.label) || platform);
-    }
-  }
-  // Permissions first, mailboxes last: the mailbox is the surprising one, and
-  // the end of the sentence is where it is read.
-  const names = [...permissions, ...mailboxes].filter(Boolean);
-  if (names.length <= 1) {
-    return names[0] || "";
-  }
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-
 function openGoogleConnectionDisconnectConfirmation(option, connections = []) {
   const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
   if (!option || !connectedConnections.length) {
     return;
   }
   const label = option.label || "Google";
-  const removedNames = describeGoogleConnectionsToDisconnect(connectedConnections);
+  const removedNames = describeConnectionsToDisconnect(connectedConnections);
   const removedSentence = removedNames
     ? `This removes ${removedNames} from Assistyca.`
     : `This removes the saved ${label} access from Assistyca.`;
@@ -6721,7 +6650,7 @@ async function disconnectGoogleConnections(option, connections = []) {
 }
 
 function createPlatformConnectionForm(option) {
-  const connection = getPlatformConnectionByPlatform(option.id);
+  const connection = getSinglePlatformConnection(option.id);
   const connectionStatus = getPlatformConnectionStatus(connection);
   const isCalendar = option.id === "calendar";
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
@@ -7104,7 +7033,7 @@ function createCalendarOAuthStatusNode() {
 
 function getGoogleOAuthPermissionState(scopeOption, options = {}) {
   const readOnly = Boolean(options.readOnly);
-  const connected = getPlatformConnectionByPlatform(scopeOption.platformId)?.connectionStatus === "connected";
+  const connected = getSinglePlatformConnection(scopeOption.platformId)?.connectionStatus === "connected";
   return {
     checked: readOnly ? connected : true,
     disabled: readOnly,
@@ -7174,13 +7103,19 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
   // Reached from the provider step, this card is the second half of one flow,
   // so its way out leads back to that step instead of out of the flow.
   const goBack = typeof flowOptions.onBack === "function" ? flowOptions.onBack : null;
-  const connection = getPlatformConnectionByPlatform(option.id);
+  const isEmailCard = option.id === "email";
+  const connection = isEmailCard ? null : getSinglePlatformConnection(option.id);
   const usesAggregateGoogleConnection = option.id === "calendar";
   const connectedGoogleConnections = usesAggregateGoogleConnection
     ? getConnectedGoogleOAuthConnections()
     : [];
+  // Three cards, three different questions. Google is connected if any of its
+  // permissions are; a mailbox card is connected if any mailbox is; everything
+  // else holds one account and can be asked directly.
   const isConnected = usesAggregateGoogleConnection
     ? connectedGoogleConnections.length > 0
+    : isEmailCard
+    ? getConnectedEmailConnections().length > 0
     : isPlatformConnectionConnected(connection);
   const storageAvailable = state.platformConnectionStorageAvailable !== false;
   const storageMessage = state.platformConnectionStorageMessage || PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE;
@@ -8640,7 +8575,7 @@ function getWhatsAppConnectionSetupState(feature = getFeatureById(WHATSAPP_REPLY
   return {
     feature,
     ready: hasRequiredDetails(readyConfig),
-    genericPlatformConnected: Boolean(getPlatformConnectionByPlatform("whatsapp")),
+    genericPlatformConnected: Boolean(getSinglePlatformConnection("whatsapp")),
     connectionStatus: readyConfig.connection_status || "not_connected",
     missingFields,
   };
@@ -8652,9 +8587,9 @@ function isWhatsAppConnectionReady(feature = getFeatureById(WHATSAPP_REPLY_ASSIS
 
 function buildAgentToolContext() {
   const whatsapp = getWhatsAppConnectionSetupState();
-  const calendar = getPlatformConnectionByPlatform("calendar");
-  const gmail = getPlatformConnectionByPlatform("email");
-  const drive = getPlatformConnectionByPlatform("drive");
+  const calendar = getSinglePlatformConnection("calendar");
+  const gmail = getConnectedMailboxForProvider(EMAIL_PROVIDER_GMAIL);
+  const drive = getSinglePlatformConnection("drive");
   return {
     whatsapp: {
       ready: whatsapp.ready,
@@ -14816,7 +14751,7 @@ function switchAgentProposalToCalendarSummary(proposal, requestText) {
   if (previousDeliveryChannel && !replacement.fields.deliveryChannel) {
     replacement.fields.deliveryChannel = previousDeliveryChannel;
   }
-  if (getPlatformConnectionByPlatform("calendar")?.connectionStatus === "connected") {
+  if (getSinglePlatformConnection("calendar")?.connectionStatus === "connected") {
     replacement.fields.calendar = "Connected calendar";
   }
   if (previousManualOnly) {
@@ -15785,7 +15720,7 @@ function isAgentCalendarAddressTag(value) {
 // ("connected Google Calendar", "Connected calendar"); the connection itself is
 // the honest source, so that text is dropped and this replaces it.
 function getConnectedCalendarTagLabel() {
-  const connection = getPlatformConnectionByPlatform("calendar");
+  const connection = getSinglePlatformConnection("calendar");
   if (!connection || connection.connectionStatus === "disconnected") {
     return "";
   }
@@ -18871,7 +18806,7 @@ function getConnectedPlatformAddress(platform) {
     }
   }
 
-  const connection = getPlatformConnectionByPlatform(normalized);
+  const connection = getSinglePlatformConnection(normalized);
   const metadata = connection?.metadata && typeof connection.metadata === "object" ? connection.metadata : {};
   return formatAgentPlatformAddress(normalized, metadata.account || metadata.workspace || metadata.label);
 }
@@ -26328,11 +26263,6 @@ function shouldRenderAgentToolShelfConnection(connection) {
 
 // An Outlook mailbox is stored on the email platform, the same as Gmail, so
 // only the provider behind it says whether it belongs to Microsoft or Google.
-function isOutlookPlatformConnection(connection) {
-  return getPlatformConnectionPlatformId(connection) === "email"
-    && getEmailConnectionProvider(connection) === EMAIL_PROVIDER_OUTLOOK;
-}
-
 function getAgentToolShelfConnections(connections = []) {
   const source = Array.isArray(connections) ? connections : [];
   const visibleConnections = source.filter(shouldRenderAgentToolShelfConnection);
@@ -26341,8 +26271,7 @@ function getAgentToolShelfConnections(connections = []) {
   ));
   if (!hasVisibleGoogle) {
     const googleConnection = source.find((connection) => (
-      GOOGLE_TOOL_PLATFORM_CONNECTION_IDS.has(getPlatformConnectionPlatformId(connection))
-      && !isOutlookPlatformConnection(connection)
+      isVendorOwnedPlatformConnection(connection, VENDOR_GOOGLE)
     ));
     if (googleConnection) {
       visibleConnections.push({
