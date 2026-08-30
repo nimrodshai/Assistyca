@@ -3370,12 +3370,6 @@ body[data-modal="billing"] .app-shell {
   font-size: 0.94rem;
 }
 
-@property --agent-morph-sweep {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
-
 /* A sent message rises out from behind the composer. The distance and the
    duration come from the message's own size, so a long one does not whip up
    the screen faster than a short one. */
@@ -3410,8 +3404,8 @@ body[data-modal="billing"] .app-shell {
   }
 }
 
-/* The thinking bubble draws a border, sheds its label, grows to the size of
-   the reply, and then the reply text fades in. */
+/* The thinking bubble sheds its label and hands off to the reply: a soft sheen
+   travels out to the width of the reply and fades as the text settles in. */
 .agent-message.is-morphing .agent-message-line {
   position: relative;
 }
@@ -3419,16 +3413,18 @@ body[data-modal="billing"] .app-shell {
 .agent-message.is-morphing .agent-message-bubble,
 .agent-message.is-morphing .agent-message-help-button,
 .agent-message.is-morphing > *:not(.agent-message-line) {
-  animation: agent-message-text-in 240ms ease 620ms both;
+  animation: agent-message-text-in 260ms ease 300ms both;
 }
 
 @keyframes agent-message-text-in {
   from {
     opacity: 0;
+    transform: translateY(4px);
   }
 
   to {
     opacity: 1;
+    transform: none;
   }
 }
 
@@ -3442,29 +3438,27 @@ body[data-modal="billing"] .app-shell {
   box-sizing: border-box;
   width: var(--agent-morph-from-width, 7rem);
   height: var(--agent-morph-from-height, 1.6rem);
-  border-radius: 14px;
   pointer-events: none;
   animation:
-    agent-morph-expand 260ms cubic-bezier(0.22, 0.68, 0.32, 1) 380ms both,
-    agent-morph-clear 180ms ease 640ms both;
+    agent-morph-expand 300ms cubic-bezier(0.22, 0.68, 0.32, 1) 120ms both,
+    agent-morph-clear 240ms ease 360ms both;
 }
 
 .agent-message-morph::after {
   content: "";
   position: absolute;
-  inset: 0;
-  padding: 1px;
-  border-radius: inherit;
-  background: conic-gradient(
-    from -90deg,
-    var(--accent) 0deg var(--agent-morph-sweep),
-    rgba(55, 184, 171, 0) var(--agent-morph-sweep)
+  inset: -0.1rem -0.2rem;
+  background: linear-gradient(
+    90deg,
+    rgba(55, 184, 171, 0),
+    rgba(55, 184, 171, 0.22) 55%,
+    rgba(55, 184, 171, 0)
   );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  animation: agent-morph-sweep 380ms ease both;
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 12rem 100%;
+  filter: blur(10px);
+  animation: agent-morph-sheen-in 160ms ease both;
 }
 
 .agent-message-morph-ghost {
@@ -3472,28 +3466,26 @@ body[data-modal="billing"] .app-shell {
   color: var(--muted);
   font-size: 0.94rem;
   white-space: nowrap;
-  animation: agent-morph-ghost-out 180ms ease 220ms both;
+  animation: agent-morph-ghost-out 160ms ease 60ms both;
 }
 
-@keyframes agent-morph-sweep {
+@keyframes agent-morph-sheen-in {
   from {
-    --agent-morph-sweep: 0deg;
+    opacity: 0;
   }
 
   to {
-    --agent-morph-sweep: 360deg;
+    opacity: 1;
   }
 }
 
 @keyframes agent-morph-expand {
   from {
     width: var(--agent-morph-from-width, 7rem);
-    height: var(--agent-morph-from-height, 1.6rem);
   }
 
   to {
     width: var(--agent-morph-to-width, 100%);
-    height: var(--agent-morph-to-height, 100%);
   }
 }
 
