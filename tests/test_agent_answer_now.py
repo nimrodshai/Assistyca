@@ -28,6 +28,7 @@ from packages.infrastructure.gmail_summary import GmailDigestRunner
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import to_gmail_query
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
+from packages.infrastructure.portal_auth.server import AGENT_RECEIPT_ANSWER_MAX_MESSAGES
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_SECRET_TYPE
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
@@ -367,8 +368,12 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def _run_answer(self, fields: dict[str, object]) -> dict[str, object]:
-        digest = {
+    def _run_answer(
+        self,
+        fields: dict[str, object],
+        digest: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        digest = digest or {
             "summary": "Gmail digest - 1 message",
             "messageCount": 1,
             "items": [{
@@ -455,6 +460,68 @@ class AgentAnswerRunTests(unittest.TestCase):
         query = self.run_call.kwargs["query"]
         self.assertEqual(query.required_terms, ("Render",))
         self.assertIn("Render", to_gmail_query(query))
+
+    def test_a_mailbox_with_more_than_one_read_holds_says_so(self) -> None:
+        # Reading the first 100 and reporting the total as if that were all of
+        # it is the same failure as a mailbox that could not be opened: a
+        # partial answer passing for the whole one.
+        overflowing = {
+            "summary": "Gmail digest",
+            "messageCount": AGENT_RECEIPT_ANSWER_MAX_MESSAGES + 1,
+            "items": [
+                {
+                    "id": f"msg-{index}",
+                    "mailbox": "owner@gmail.com",
+                    "subject": "Your Render receipt",
+                    "from": "Render <billing@render.com>",
+                    "snippet": "Total charged $1.00",
+                    "bodyText": "Total charged $1.00",
+                }
+                for index in range(AGENT_RECEIPT_ANSWER_MAX_MESSAGES + 1)
+            ],
+        }
+        payload = self._run_answer(
+            {
+                "result": "Find receipts from Render for August 2026",
+                "vendor": "Render",
+                "manualRunMonth": "2026-08",
+            },
+            digest=overflowing,
+        )
+
+        self.assertEqual(
+            payload["cappedMailboxes"],
+            # The mailbox is named the way every other message names it, which
+            # is the connection's display name and not the address on the row.
+            [{"mailbox": "Gmail", "limit": AGENT_RECEIPT_ANSWER_MAX_MESSAGES}],
+        )
+        # Only what was actually read is counted, so the total and the caveat
+        # describe the same set of receipts.
+        self.assertEqual(payload["receiptCount"], AGENT_RECEIPT_ANSWER_MAX_MESSAGES)
+
+    def test_a_mailbox_that_fits_says_nothing_about_a_ceiling(self) -> None:
+        payload = self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertNotIn("cappedMailboxes", payload)
+
+    def test_the_read_looks_one_past_its_own_ceiling(self) -> None:
+        # Filling the ceiling exactly is not the same as having more behind it,
+        # and warning about a month that happened to hold exactly 100 would be
+        # a caveat on a complete answer.
+        self._run_answer({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertEqual(
+            self.run_call.kwargs["max_results"],
+            AGENT_RECEIPT_ANSWER_MAX_MESSAGES + 1,
+        )
 
     def test_the_search_knows_the_words_a_receipt_actually_uses(self) -> None:
         # A vendor that writes "Payment confirmation" and never "receipt" was
@@ -786,6 +853,16 @@ class AgentAnswerChatTests(unittest.TestCase):
         for word in ("receipt", "month", "vendor", "mailbox", "ILS", "totals"):
             self.assertNotIn(word, card)
 
+    def test_a_capped_read_is_said_out_loud_after_the_total(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentAnswerTask"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        self.assertIn("const cappedNote = describeAgentAnswerCappedMailboxes(results);", runner)
+        # A caveat on a real number belongs after it, not in front of it.
+        self.assertLess(runner.index("composeAgentMonthlyAnswer(results)"), runner.index("cappedNote"))
+
     def test_a_month_that_could_not_be_read_is_named(self) -> None:
         runner = self.script[
             self.script.index("async function runAgentAnswerTask"):
@@ -941,6 +1018,39 @@ class AgentAnswerMonthSplitTests(unittest.TestCase):
             _run_agent_answer_month_script('formatAgentAnswerMonthLabel("2026-07")'),
             "Jul 2026",
         )
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to run the chat script")
+class AgentAnswerCappedReadTests(unittest.TestCase):
+    """Reading as much as you are allowed to read is not the same as reading all of it."""
+
+    def test_the_note_names_the_mailbox_the_month_and_the_ceiling(self) -> None:
+        note = _run_agent_answer_month_script(
+            "describeAgentAnswerCappedMailboxes(["
+            ' { monthLabel: "Aug 2026", cappedMailboxes: [{ mailbox: "Gmail", limit: 100 }] }'
+            "])"
+        )
+
+        self.assertIn("Gmail in Aug 2026", note)
+        self.assertIn("newest 100", note)
+        self.assertIn("may be short", note)
+
+    def test_two_mailboxes_are_named_in_one_sentence(self) -> None:
+        note = _run_agent_answer_month_script(
+            "describeAgentAnswerCappedMailboxes(["
+            ' { monthLabel: "Jul 2026", cappedMailboxes: [{ mailbox: "Gmail", limit: 100 }] },'
+            ' { monthLabel: "Aug 2026", cappedMailboxes: [{ mailbox: "Gmail", limit: 100 }] }'
+            "])"
+        )
+
+        self.assertIn("Gmail in Jul 2026 and Gmail in Aug 2026", note)
+
+    def test_a_run_that_fit_says_nothing(self) -> None:
+        note = _run_agent_answer_month_script(
+            'describeAgentAnswerCappedMailboxes([{ monthLabel: "Aug 2026", totals: { USD: 19 } }])'
+        )
+
+        self.assertEqual(note, "")
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to run the chat script")

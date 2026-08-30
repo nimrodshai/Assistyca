@@ -5205,6 +5205,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 search_max_results = (
                     AGENT_RECEIPT_ANSWER_MAX_MESSAGES if answer_mode else AGENT_RECEIPT_BUNDLE_MAX_MESSAGES
                 )
+            # A digest is meant to be the newest few, so filling its ceiling is
+            # the point rather than something to report. A receipt search is
+            # asked about a whole month and reads one message past its ceiling
+            # to find out whether it left anything behind.
+            probe_max_results = search_max_results + 1 if is_custom_google_batch else search_max_results
             receipt_bundle: Optional[dict[str, Any]] = None
             result_header = get_custom_google_batch_result_header(fields) if is_custom_google_batch else ""
             answer_month: tuple[int, int] | None = None
@@ -5241,6 +5246,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # loop continues; the run only fails if every mailbox failed.
             mailbox_results: list[dict[str, Any]] = []
             mailbox_failures: list[dict[str, Any]] = []
+            # A mailbox that had more matching mail than one read returns. The
+            # total under it is real but short, and the client says so: a
+            # partial answer that keeps quiet is the same failure as a mailbox
+            # that could not be opened at all.
+            capped_mailboxes: list[dict[str, Any]] = []
             email_provider = GOOGLE_GMAIL_OAUTH_PROVIDER
             mailbox_names = mailbox_display_names(mailbox_records)
             for record in mailbox_records:
@@ -5284,7 +5294,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     result = runner.run(
                         access_token,
                         query=mail_query,
-                        max_results=search_max_results,
+                        # One more than will be kept, so "there was more behind
+                        # this" is something the run knows rather than infers
+                        # from having filled its own ceiling exactly.
+                        max_results=probe_max_results,
                         # A receipt run has to name an amount, and the amount is
                         # in the body of the email. Asking for headers alone
                         # leaves a question answerable only when the total
@@ -5324,6 +5337,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     },
                 )
                 email_provider = record_provider
+                mailbox_items = result.get("items") if isinstance(result.get("items"), list) else []
+                if len(mailbox_items) > search_max_results:
+                    capped_mailboxes.append({"mailbox": mailbox_name, "limit": search_max_results})
+                    # The newest are kept, which is the order the providers
+                    # return them in, so a capped month is the recent end of
+                    # itself rather than an arbitrary slice.
+                    result = {
+                        **result,
+                        "items": mailbox_items[:search_max_results],
+                        "messageCount": search_max_results,
+                    }
                 mailbox_results.append({"mailbox": mailbox_name, "result": result})
 
             if not mailbox_results:
@@ -5411,6 +5435,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # A partial run is still a result, but it must say what it missed
                 # rather than quietly reporting fewer receipts than exist.
                 response_payload["skippedMailboxes"] = summarize_mailbox_failures(mailbox_failures)
+            if capped_mailboxes:
+                response_payload["cappedMailboxes"] = capped_mailboxes
             if receipt_answer:
                 # A question asked in chat is answered in chat; there is no
                 # bundle to link because nothing was written.

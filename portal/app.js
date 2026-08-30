@@ -23695,6 +23695,34 @@ function describeAgentAnswerSkippedMailboxes(results) {
   return `I couldn’t read ${joinAgentAnswerLabels(names)} just now - you can try that again later. Here is what I found in the rest of your mail:`;
 }
 
+// A run that read as much as it is allowed to read in one go may have left
+// receipts behind it. The total underneath is real, but it is the total of
+// what was read, and a total that keeps quiet about that passes for the whole
+// one - the same failure as a mailbox that could not be opened.
+function describeAgentAnswerCappedMailboxes(results) {
+  const notes = [];
+  let limit = 0;
+  results.forEach((entry) => {
+    const capped = Array.isArray(entry?.cappedMailboxes) ? entry.cappedMailboxes : [];
+    capped.forEach((item) => {
+      const mailbox = String(item?.mailbox || "").trim();
+      if (!mailbox) {
+        return;
+      }
+      const month = String(entry?.monthLabel || "").trim();
+      const note = month ? `${mailbox} in ${month}` : mailbox;
+      limit = Math.max(limit, Number(item?.limit || 0));
+      if (!notes.includes(note)) {
+        notes.push(note);
+      }
+    });
+  });
+  if (!notes.length || !limit) {
+    return "";
+  }
+  return `${joinAgentAnswerLabels(notes)} had more matching emails than I read in one go. I read the newest ${limit}, so this total may be short.`;
+}
+
 // Several months asked about in one question deserve one answer: the total
 // first, then a line per month. Stacking one sentence per month leaves the
 // adding up to the reader, which is the part they asked for.
@@ -23946,6 +23974,12 @@ async function runAgentAnswerTask(task, setProgress) {
   }
   if (trimmed) {
     answerLines.push(`That was more months than I check at once, so I checked the most recent ${AGENT_ANSWER_RUN_MONTH_LIMIT}.`);
+  }
+  // Said after the total rather than before it, because it is a caveat on a
+  // real number and not a reason the number is missing.
+  const cappedNote = describeAgentAnswerCappedMailboxes(results);
+  if (cappedNote) {
+    answerLines.push(cappedNote);
   }
   // The mailbox that could not be read comes first, so the totals below it
   // are read as what they are: everything the other mailboxes had.
