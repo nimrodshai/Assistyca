@@ -69,6 +69,11 @@ from packages.infrastructure.credential_vault import credential_hint
 from packages.infrastructure.credential_vault import normalize_platform_connection_metadata
 from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
 from packages.infrastructure.feature_activation import FeatureActivationService
+from packages.infrastructure.file_tags import FILE_TAGS_FILENAME
+from packages.infrastructure.file_tags import build_receipt_file_tags
+from packages.infrastructure.file_tags import collect_folder_tags
+from packages.infrastructure.file_tags import read_file_tags
+from packages.infrastructure.file_tags import write_file_tags
 from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import month_span_window
@@ -209,10 +214,10 @@ CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_FOLDER_CONTENTS_LIMIT = 200
-# Where an answer goes when the chat is asked to keep it and no folder is
-# named. It sits beside the receipt bundles so the Folders panel shows both.
-AGENT_SAVED_ANSWER_FOLDER = "Saved answers"
-AGENT_SAVED_ANSWER_MAX_LENGTH = 20000
+# A kept receipt is filed under the vendor that sent it, because that is how
+# anyone looks for one later. A receipt whose sender could not be read still
+# needs somewhere to go, and this is it.
+AGENT_SAVED_RECEIPT_FOLDER = "Saved receipts"
 # How many receipt emails an answer carries with it. A month of one vendor is
 # a handful; the ceiling is there so keeping an answer cannot turn into a
 # mailbox-wide download.
@@ -2166,19 +2171,6 @@ def build_agent_receipt_output_folder(
     )
 
 
-def build_agent_saved_answer_filename(title: str, saved_at: datetime) -> str:
-    """A readable file name for a kept answer, safe to write to disk.
-
-    The timestamp keeps two answers with the same title from overwriting each
-    other, which matters most for the repeated question - the same weekly
-    summary asked for again a week later.
-    """
-
-    stem = re.sub(r"[^\w -]+", "", str(title or ""), flags=re.UNICODE).strip()
-    stem = re.sub(r"\s+", " ", stem)[:60].strip() or "Saved answer"
-    return f"{stem} {saved_at.strftime('%Y-%m-%d %H%M%S')}.md"
-
-
 def normalize_saved_answer_sources(value: Any) -> list[dict[str, str]]:
     """The receipt emails a kept answer asks to be filed alongside it.
 
@@ -2204,14 +2196,36 @@ def normalize_saved_answer_sources(value: Any) -> list[dict[str, str]]:
             "messageId": message_id,
             "mailbox": mailbox,
             "vendor": normalize_text(entry.get("vendor"))[:60],
+            # Who it is from decides the folder; the subject and the date
+            # decide the tags. Both come back from the run that answered.
+            "subject": normalize_text(entry.get("subject"))[:200],
+            "date": normalize_text(entry.get("date"))[:80],
         })
         if len(sources) >= AGENT_SAVED_ANSWER_SOURCE_LIMIT:
             break
     return sources
 
 
+def build_saved_receipt_folder(vendor: Any) -> str:
+    """The folder one kept receipt belongs in: the vendor that sent it.
+
+    A client looking for a Render invoice looks under Render, not under the
+    question they once asked. The vendor name goes through the same
+    traversal-safe normalizer the receipt bundles use.
+    """
+
+    name = normalize_text(vendor)
+    folder = normalize_receipt_output_folder(name) if name else ""
+    # A vendor name made only of characters a folder name cannot hold falls
+    # back to the same place a nameless sender does, rather than to the
+    # unsorted bundle folder the normalizer defaults to.
+    if not folder or folder == normalize_receipt_output_folder(""):
+        folder = normalize_receipt_output_folder(AGENT_SAVED_RECEIPT_FOLDER)
+    return folder
+
+
 def describe_saved_receipt_files(files: list[dict[str, Any]]) -> str:
-    """Say what landed in the folder besides the answer itself."""
+    """Say what landed in the folder."""
 
     if not files:
         return ""
@@ -2221,6 +2235,48 @@ def describe_saved_receipt_files(files: list[dict[str, Any]]) -> str:
     else:
         noun = "receipt file" if count == 1 else "receipt files"
     return f"{count} {noun}"
+
+
+def describe_saved_receipt_folders(folders: list[str]) -> str:
+    """Name the folders the receipts went into, however many that is."""
+
+    names = [str(folder or "").rstrip("/") for folder in folders if str(folder or "").strip()]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def describe_saved_receipt_result(
+    files: list[dict[str, Any]],
+    *,
+    missed: int,
+    folders: list[str],
+) -> str:
+    """What the save actually did, in one sentence.
+
+    A mailbox that would not hand a receipt over and an email that carried no
+    file leave the same empty folder behind, and only one of them means the
+    client has everything there was to keep.
+    """
+
+    missed_count = max(0, int(missed or 0))
+    receipt_word = "receipt" if missed_count == 1 else "receipts"
+    missed_note = (
+        f" I couldn\u2019t fetch {missed_count} {receipt_word} from your mailbox."
+        if missed_count
+        else ""
+    )
+    if files:
+        where = describe_saved_receipt_folders(folders)
+        kept = describe_saved_receipt_files(files)
+        return f"Saved {kept} to {where}.{missed_note}" if where else f"Saved {kept}.{missed_note}"
+    if missed_count:
+        return missed_note.strip()
+    return "Those emails carried no file, so there was nothing to keep."
 
 
 def build_agent_receipt_owner_key(email: str) -> str:
@@ -5846,6 +5902,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
         base_url = build_receipt_bundle_base_url(owner_key=owner_key, output_folder=logical_folder)
 
+        # Tags are what makes one receipt findable among a year of them, so
+        # the listing carries them and the panel can filter on them.
+        tags_by_file = read_file_tags(folder_path) if folder_path.is_dir() else {}
         items: list[dict[str, Any]] = []
         if folder_path.is_dir():
             # Top-level exports (the PDF and the Excel) before the attachment
@@ -5860,37 +5919,43 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             for file_path in paths:
                 if len(items) >= AGENT_FOLDER_CONTENTS_LIMIT:
                     break
-                if file_path.name == RECEIPT_MANIFEST_FILENAME or not file_path.is_file():
+                if file_path.name in (RECEIPT_MANIFEST_FILENAME, FILE_TAGS_FILENAME) or not file_path.is_file():
                     continue
                 relative_parts = file_path.relative_to(folder_path).parts
                 try:
                     stats = file_path.stat()
                 except OSError:
                     continue
+                relative_name = "/".join(relative_parts)
                 items.append({
-                    "name": "/".join(relative_parts),
+                    "name": relative_name,
                     "url": "/".join([base_url, *(urllib_parse.quote(part) for part in relative_parts)]),
                     "size": int(stats.st_size),
                     "updatedAt": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
+                    "tags": tags_by_file.get(relative_name, []),
                 })
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "folder": logical_folder,
             "items": items,
+            # Every tag in use here, so the filter box can complete a tag the
+            # client half remembers.
+            "tags": collect_folder_tags(tags_by_file),
         })
 
     def _handle_agent_folder_save_post(self) -> None:
-        """Keep an answer the chat gave as a file in one of the owner's folders.
+        """File the receipts an answer was read from, under the vendor.
 
-        A one-off run answers in the conversation and saves nothing, which is
-        what makes it a one-off. Some answers are worth keeping anyway, so this
-        writes the text the chat showed into a folder beside the bundles the
-        receipt runs produce.
+        A one-off answers in the conversation and saves nothing, which is what
+        makes it a one-off. What is worth keeping afterwards is not the
+        sentence - it is the PDF the vendor sent, which is still sitting in
+        the mailbox where the run found it.
 
-        A spending answer is kept together with the receipts it was read from:
-        the sentence on its own is not what anyone files, and the receipt is
-        still sitting in the mailbox where the run found it.
+        So the receipts are fetched and filed under the vendor's own name, and
+        each file is tagged with who it is from, the month and year it is
+        from, and whether it calls itself an invoice or a receipt. The answer
+        itself stays where it was said.
         """
 
         authenticated = self._require_authenticated_user()
@@ -5908,89 +5973,45 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        text = normalize_contact_message(payload.get("text"), AGENT_SAVED_ANSWER_MAX_LENGTH)
-        if not text:
+        sources = normalize_saved_answer_sources(payload.get("sources"))
+        if not sources:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
-                "error": "answer_required",
-                "message": "There is nothing in that answer to save.",
+                "error": "nothing_to_file",
+                "message": "There is no receipt behind that answer to file.",
             })
             return
 
-        title = normalize_text(payload.get("title")) or "Saved answer"
-        # The owner key comes from the session, and the folder name is put
-        # through the same traversal-safe normalizer the bundles use, so a
+        # The owner key comes from the session rather than the request, so a
         # caller can only ever write inside their own output folder.
-        logical_folder = normalize_receipt_output_folder(
-            normalize_text(payload.get("folder")) or AGENT_SAVED_ANSWER_FOLDER
-        )
         owner_key = build_agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
-        folder_path = resolve_receipt_bundle_folder(
-            output_root,
-            owner_key=owner_key,
-            output_folder=logical_folder,
-        )
-        base_url = build_receipt_bundle_base_url(owner_key=owner_key, output_folder=logical_folder)
-
-        saved_at = datetime.now(timezone.utc)
-        file_name = build_agent_saved_answer_filename(title, saved_at)
-        try:
-            folder_path.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            print(f"Saving an answer to a folder failed: {exc}", flush=True)
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "folder_save_failed",
-                "message": "I couldn\u2019t save that to a folder just now. Try again.",
-            })
-            return
-
-        # The receipts are fetched before the note is written, so the note can
-        # name the files sitting next to it.
-        receipt_result = self._save_answer_receipt_files(
+        result = self._save_answer_receipt_files(
             session,
-            normalize_saved_answer_sources(payload.get("sources")),
-            folder_path=folder_path,
-            base_url=base_url,
+            sources,
+            output_root=output_root,
+            owner_key=owner_key,
         )
-        receipt_files = receipt_result["files"]
-        missed_count = int(receipt_result["missedCount"])
-        note_lines = [f"# {title}", "", f"Saved {saved_at.isoformat()}", "", text]
-        if receipt_files:
-            note_lines.extend(["", "## Receipts saved with this answer", ""])
-            note_lines.extend(f"- {entry['name']}" for entry in receipt_files)
-        try:
-            (folder_path / file_name).write_text("\n".join(note_lines) + "\n", encoding="utf-8")
-        except OSError as exc:
-            print(f"Saving an answer to a folder failed: {exc}", flush=True)
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "folder_save_failed",
-                "message": "I couldn\u2019t save that to a folder just now. Try again.",
-            })
-            return
+        receipt_files = result["files"]
+        folders = result["folders"]
+        missed_count = int(result["missedCount"])
 
-        folder_label = logical_folder.rstrip("/")
-        receipt_note = describe_saved_receipt_files(receipt_files)
-        if receipt_note:
-            message = f"Saved to {folder_label}, with {receipt_note}."
-        elif missed_count:
-            receipt_word = "receipt" if missed_count == 1 else "receipts"
-            message = f"Saved to {folder_label}. I couldn\u2019t fetch {missed_count} {receipt_word} from your mailbox."
-        else:
-            message = f"Saved to {folder_label}."
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "folder": logical_folder,
-            "name": file_name,
-            "url": "/".join([base_url, urllib_parse.quote(file_name)]),
+            # The folder to open afterwards. One vendor is the ordinary case;
+            # a question spanning two vendors files each under its own name.
+            "folder": folders[0]["name"] if folders else "",
+            "folders": folders,
             "receipts": receipt_files,
             # Receipts the mailbox would not hand over. Without this a save
             # that fetched nothing reads exactly like an email that carried
             # nothing, and only one of those is fine.
             "receiptsMissed": missed_count,
-            "message": message,
+            "message": describe_saved_receipt_result(
+                receipt_files,
+                missed=missed_count,
+                folders=[folder["name"] for folder in folders],
+            ),
         })
 
     def _save_answer_receipt_files(
@@ -5998,13 +6019,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         session: Any,
         sources: list[dict[str, str]],
         *,
-        folder_path: Path,
-        base_url: str,
+        output_root: Path,
+        owner_key: str,
     ) -> dict[str, Any]:
-        """Copy the receipts an answer was read from into the same folder.
+        """Fetch the receipts an answer was read from and file them by vendor.
 
         The answer run read the mailbox and wrote nothing, so the files are
-        fetched again here, one message at a time.
+        fetched again here, one message at a time, each into the folder its
+        vendor owns.
 
         A receipt that cannot be fetched is counted rather than passed over in
         silence. "Nothing was attached" and "I could not read your mailbox"
@@ -6012,7 +6034,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         client has everything there was to keep.
         """
 
-        result: dict[str, Any] = {"files": [], "missedCount": 0}
+        result: dict[str, Any] = {"files": [], "missedCount": 0, "folders": []}
         if not sources:
             return result
         vault = self.credential_vault
@@ -6059,7 +6081,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return readers[record_id]
 
         saved_files: list[dict[str, Any]] = []
+        # Tags are written once per folder at the end, so two receipts from
+        # the same vendor do not rewrite the same file twice.
+        tags_by_folder: dict[str, dict[str, list[str]]] = {}
+        folder_paths: dict[str, Path] = {}
+        folder_counts: dict[str, int] = {}
         for source in sources:
+            vendor = normalize_text(source.get("vendor"))
+            logical_folder = build_saved_receipt_folder(vendor)
+            folder_path = folder_paths.get(logical_folder) or resolve_receipt_bundle_folder(
+                output_root,
+                owner_key=owner_key,
+                output_folder=logical_folder,
+            )
+            folder_paths[logical_folder] = folder_path
+            base_url = build_receipt_bundle_base_url(owner_key=owner_key, output_folder=logical_folder)
             mailbox = normalize_text(source.get("mailbox")).lower()
             matched = [record for record in records if mailbox_name_for(record).lower() == mailbox]
             # A mailbox named differently now than it was during the run - a
@@ -6086,9 +6122,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         message_id=source["messageId"],
                         output_dir=folder_path,
                         url_prefix=base_url,
-                        # The file is filed next to a note, not behind a
-                        # report, so it is named after who it is from.
-                        filename_prefix=normalize_text(source.get("vendor")),
+                        # The file is browsed and downloaded rather than read
+                        # from a report, so it carries the vendor's name even
+                        # once it has left the folder of that name.
+                        filename_prefix=vendor,
                     )
                 except (
                     GmailAuthorizationError,
@@ -6107,15 +6144,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 for attachment in attachments:
                     if not isinstance(attachment, dict) or attachment.get("status") != "saved":
                         continue
+                    file_name = str(attachment.get("filename") or "")
+                    # The vendor sends both an invoice and a receipt for the
+                    # same charge often enough that the file has to say which
+                    # it is, and the file name alone rarely does.
+                    tags = build_receipt_file_tags(
+                        vendor=vendor,
+                        subject=source.get("subject"),
+                        filename=file_name,
+                        date_text=source.get("date"),
+                    )
                     saved_files.append({
-                        "name": str(attachment.get("filename") or ""),
+                        "name": file_name,
                         "url": str(attachment.get("url") or ""),
                         "size": int(attachment.get("size") or 0),
+                        "folder": logical_folder,
+                        "tags": tags,
                     })
+                    tags_by_folder.setdefault(logical_folder, {})[file_name] = tags
+                    folder_counts[logical_folder] = folder_counts.get(logical_folder, 0) + 1
                 break
             if not fetched:
                 result["missedCount"] += 1
+
+        for logical_folder, tags_by_file in tags_by_folder.items():
+            write_file_tags(folder_paths[logical_folder], tags_by_file)
+
         result["files"] = saved_files
+        # Only the folders something was actually filed into. An email that
+        # carried nothing leaves no folder worth opening.
+        result["folders"] = [
+            {"name": logical_folder, "itemCount": count}
+            for logical_folder, count in folder_counts.items()
+        ]
         return result
 
     def _handle_agent_answer_compose(self) -> None:

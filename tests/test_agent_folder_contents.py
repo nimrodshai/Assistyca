@@ -12,6 +12,7 @@ from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import build_agent_receipt_owner_key
+from packages.infrastructure.portal_auth.server import build_saved_receipt_folder
 from packages.infrastructure.portal_auth.server import create_server
 
 
@@ -84,47 +85,24 @@ class AgentFolderContentsTests(unittest.TestCase):
         with urllib_request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def test_an_answer_can_be_kept_in_a_folder(self) -> None:
-        payload = self._save_answer({
-            "title": "Email summary",
-            "text": "14 messages this week.",
-            "folder": "Saved answers",
-        })
-
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["folder"], "Saved answers/")
-        saved = self.output_dir / self.owner_key / "Saved answers" / str(payload["name"])
-        self.assertTrue(saved.is_file())
-        self.assertIn("14 messages this week.", saved.read_text(encoding="utf-8"))
-
-    def test_a_kept_answer_shows_up_in_the_folder_listing(self) -> None:
-        saved = self._save_answer({"title": "Email summary", "text": "14 messages."})
-
-        contents = self._get_contents("Saved answers")
-
-        self.assertIn(saved["name"], [item["name"] for item in contents["items"]])
-
-    def test_a_folder_name_cannot_climb_out_of_the_owner_directory(self) -> None:
-        payload = self._save_answer({
-            "title": "../../escape",
-            "text": "nope",
-            "folder": "../../../etc",
-        })
-
-        self.assertTrue(payload["ok"])
-        written = list((self.output_dir / self.owner_key).rglob("*.md"))
-        self.assertEqual(len(written), 1)
-        self.assertIn(self.owner_key, written[0].as_posix())
-
-    def test_an_empty_answer_is_refused(self) -> None:
+    def test_an_answer_with_no_receipt_behind_it_is_refused(self) -> None:
+        # What the save files is the receipt, not the sentence. An answer with
+        # no receipt behind it has nothing to file.
         with self.assertRaises(urllib_error.HTTPError) as caught:
-            self._save_answer({"title": "Nothing", "text": "   "})
+            self._save_answer({"title": "Email summary", "text": "14 messages this week."})
 
         self.assertEqual(caught.exception.code, 400)
 
+    def test_a_vendor_name_cannot_climb_out_of_the_owner_directory(self) -> None:
+        # The vendor names the folder, and a vendor name arrives from a
+        # mailbox, so it is put through the same traversal-safe normalizer the
+        # receipt bundles use.
+        self.assertEqual(build_saved_receipt_folder("../../../etc"), "etc/")
+        self.assertEqual(build_saved_receipt_folder("../.."), "Saved receipts/")
+
     def test_saving_needs_a_signed_in_owner(self) -> None:
         with self.assertRaises(urllib_error.HTTPError) as caught:
-            self._save_answer({"title": "Email summary", "text": "14 messages."}, token=None)
+            self._save_answer({"sources": [{"messageId": "msg-1"}]}, token=None)
 
         self.assertEqual(caught.exception.code, 401)
 

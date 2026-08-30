@@ -856,7 +856,10 @@ class AgentAnswerChatTests(unittest.TestCase):
         # offered on the result itself while the user is looking at it.
         self.assertIn('createAgentAction("open-result-file", "Read PDF"', runner)
         self.assertIn('createAgentAction("open-result-folder", "Open folder"', runner)
-        self.assertIn('createAgentAction("save-answer-to-folder", "Save to a folder")', runner)
+        # What is worth keeping is the receipt, not the sentence, so the
+        # offer only shows up when there is a receipt behind the answer.
+        self.assertIn('createAgentAction("save-answer-to-folder", "Save the receipts")', runner)
+        self.assertIn("} else if (collectAgentAnswerReceiptSources(results).length) {", runner)
         self.assertIn('createAgentAction("save-one-off-as-action", "Save as an action")', runner)
         # Two lookups do not fold into one saved action.
         self.assertIn("if (tasks.length === 1) {", runner)

@@ -10,7 +10,7 @@
     />
     <meta name="color-scheme" content="light dark" />
     <script src="./theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="./styles.css?v=162" />
+    <link rel="stylesheet" href="./styles.css?v=163" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -261,8 +261,15 @@
             </form>
 
             <div id="agentFolderFilterPanel" class="agent-folder-controls is-hidden" hidden>
-              <label class="sr-only" for="agentFolderSearchInput">Filter folders</label>
-              <input id="agentFolderSearchInput" type="search" autocomplete="off" placeholder="Filter folders" />
+              <label class="sr-only" for="agentFolderSearchInput">Filter folders and files by name or tag</label>
+              <input
+                id="agentFolderSearchInput"
+                type="search"
+                autocomplete="off"
+                list="agentFolderTagOptions"
+                placeholder="Filter by name or tag"
+              />
+              <datalist id="agentFolderTagOptions"></datalist>
             </div>
 
             <div id="agentFolderSortPanel" class="agent-folder-sort-panel is-hidden" hidden>
@@ -1770,6 +1777,6 @@ Owner said afternoons are easier."
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
     <script src="./connection-identity.js?v=1"></script>
-    <script src="./app.js?v=212"></script>
+    <script src="./app.js?v=213"></script>
   </body>
 </html>

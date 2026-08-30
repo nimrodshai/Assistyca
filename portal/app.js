@@ -447,6 +447,11 @@ let notificationSearchTimer = null;
 
 const AGENT_MAX_CHATS = 30;
 const AGENT_MAX_FOLDERS = 80;
+// A folder's tags are the union of its files' tags: a vendor, the months and
+// years it has receipts for, and the kinds of document in it. A year of one
+// vendor is well inside this; the ceiling is there so a stored folder cannot
+// grow without limit.
+const AGENT_MAX_FOLDER_TAGS = 40;
 const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
 const AGENT_ACTION_CHOICE_LIMIT = 20;
 const AGENT_COMPOSER_MAX_LINES = 5;
@@ -1477,6 +1482,7 @@ const elements = {
   agentFolderNameInput: document.querySelector("#agentFolderNameInput"),
   agentFolderTypeSelect: document.querySelector("#agentFolderTypeSelect"),
   agentFolderSearchInput: document.querySelector("#agentFolderSearchInput"),
+  agentFolderTagOptions: document.querySelector("#agentFolderTagOptions"),
   agentFolderSortSelect: document.querySelector("#agentFolderSortSelect"),
   agentFolderList: document.querySelector("#agentFolderList"),
   agentFolderCount: document.querySelector("#agentFolderCount"),
@@ -4702,6 +4708,9 @@ function createAgentFolderRecord(name, type = "general", options = {}) {
     ) || 0),
     createdAt,
     updatedAt: normalizeAgentTextItem(source.updatedAt || source.updated_at, createdAt),
+    // What the files inside are tagged with, so the filter box can match a
+    // folder by a tag before the folder has been opened.
+    tags: mergeAgentFolderTags(source.tags),
   };
 }
 
@@ -17929,7 +17938,52 @@ function getAgentFolderSearchText(folder) {
     type.value,
     type.label,
     formatAgentFolderItemCount(folder?.itemCount),
+    // "Aug" finds the folder holding August's receipts, whatever it is called.
+    ...(Array.isArray(folder?.tags) ? folder.tags : []),
+    // A folder whose files are already loaded is searchable by their names.
+    ...getAgentFolderFileSearchTerms(folder?.name),
   ].join(" ").toLowerCase();
+}
+
+// The file names and tags of a folder the panel has already opened. A folder
+// that has never been opened is matched on its own name and its stored tags.
+function getAgentFolderFileSearchTerms(folderName) {
+  const contents = agentFolderContents.get(normalizeAgentTextItem(folderName, ""));
+  if (!contents || contents.status !== "ready") {
+    return [];
+  }
+  return contents.items.flatMap((file) => [
+    String(file?.name || ""),
+    ...(Array.isArray(file?.tags) ? file.tags : []),
+  ]);
+}
+
+// Every tag the panel knows about, for completing one the client half
+// remembers. Folders keep their tags between sessions, so this works before
+// anything has been opened.
+function getKnownAgentFolderTags(agent = getAgentWorkspace()) {
+  const folders = Array.isArray(agent.folders) ? agent.folders : [];
+  const fromContents = [...agentFolderContents.values()].flatMap((contents) => (
+    contents?.status === "ready"
+      ? contents.items.flatMap((file) => (Array.isArray(file?.tags) ? file.tags : []))
+      : []
+  ));
+  return mergeAgentFolderTags(
+    folders.flatMap((folder) => (Array.isArray(folder.tags) ? folder.tags : [])),
+    fromContents,
+  ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+// Does one file answer what was typed into the filter box? Its name and its
+// tags both count, so "Aug" and "invoice" each narrow an open folder.
+function agentFolderFileMatchesSearch(file, query) {
+  if (!query) {
+    return true;
+  }
+  return [
+    String(file?.name || ""),
+    ...(Array.isArray(file?.tags) ? file.tags : []),
+  ].join(" ").toLowerCase().includes(query);
 }
 
 function getFilteredAgentFolders(agent = getAgentWorkspace()) {
@@ -17970,29 +18024,69 @@ function recordAgentReceiptFolder(response = {}) {
   return name;
 }
 
-// A kept answer lands in a folder the panel has never heard of, the same way
-// a receipts bundle does. Record it so the folder is there to open.
-function recordAgentAnswerFolder(response = {}) {
-  const rawFolder = String(response?.folder || "").trim().replace(/\/+$/, "");
-  const name = normalizeAgentFolderName(rawFolder, "");
-  if (!name) {
-    return null;
-  }
-
+// Filed receipts land in folders the panel has never heard of - one per
+// vendor - the same way a receipts bundle does. Record them so they are there
+// to open, and keep the tags that came back so the filter box knows them
+// before the folder has ever been opened.
+function recordAgentSavedReceiptFolders(response = {}) {
+  const receipts = Array.isArray(response?.receipts) ? response.receipts : [];
+  const entries = Array.isArray(response?.folders) ? response.folders : [];
   const agent = getAgentWorkspace();
   const now = new Date().toISOString();
-  const existing = agent.folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase());
-  if (existing) {
-    existing.itemCount = Math.max(0, Number(existing.itemCount) || 0) + 1;
-    existing.updatedAt = now;
-  } else {
-    agent.folders.unshift(createAgentFolderRecord(name, "general", { itemCount: 1, createdAt: now }));
+  const saved = [];
+
+  entries.forEach((entry) => {
+    const rawFolder = String(entry?.name || "").trim().replace(/\/+$/, "");
+    const name = normalizeAgentFolderName(rawFolder, "");
+    if (!name) {
+      return;
+    }
+    const added = Math.max(0, Number.parseInt(entry?.itemCount ?? 0, 10) || 0);
+    const tags = collectAgentReceiptTags(
+      receipts.filter((receipt) => String(receipt?.folder || "").replace(/\/+$/, "") === rawFolder),
+    );
+    const existing = agent.folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      existing.itemCount = Math.max(0, Number(existing.itemCount) || 0) + added;
+      existing.tags = mergeAgentFolderTags(existing.tags, tags);
+      existing.updatedAt = now;
+    } else {
+      agent.folders.unshift(createAgentFolderRecord(name, "receipts", {
+        itemCount: added,
+        createdAt: now,
+        tags,
+      }));
+    }
+    // The folder on disk has changed, so what the panel cached about it has not.
+    agentFolderContents.delete(name);
+    saved.push(name);
+  });
+
+  if (!saved.length) {
+    return saved;
   }
   agent.folders = sortAgentFolders(agent.folders, state.agentFolderSort).slice(0, AGENT_MAX_FOLDERS);
-  agentFolderContents.delete(name);
   persistClientState();
   renderAgentFolders();
-  return name;
+  return saved;
+}
+
+// Tags on a folder are the union of the tags on its files, kept in the order
+// they first appeared so the vendor stays in front.
+function mergeAgentFolderTags(...lists) {
+  const tags = [];
+  const seen = new Set();
+  lists.forEach((list) => {
+    (Array.isArray(list) ? list : []).forEach((value) => {
+      const tag = String(value || "").trim().slice(0, 40);
+      if (!tag || seen.has(tag.toLowerCase())) {
+        return;
+      }
+      seen.add(tag.toLowerCase());
+      tags.push(tag);
+    });
+  });
+  return tags.slice(0, AGENT_MAX_FOLDER_TAGS);
 }
 
 function formatAgentFolderFileSize(size) {
@@ -18026,6 +18120,13 @@ async function loadAgentFolderContents(folderName) {
     const response = await apiRequest(`/api/agent/folder-contents?folder=${encodeURIComponent(name)}`);
     const items = Array.isArray(response?.items) ? response.items : [];
     agentFolderContents.set(name, { status: "ready", items, message: "" });
+    // The folder keeps the tags of what is inside it, so the filter box can
+    // still complete them next session, before anything is opened.
+    const folder = getAgentWorkspace().folders.find((entry) => entry.name === name);
+    if (folder) {
+      folder.tags = mergeAgentFolderTags(response?.tags, folder.tags);
+      persistClientState();
+    }
   } catch (error) {
     agentFolderContents.set(name, {
       status: "error",
@@ -18099,9 +18200,23 @@ function createAgentFolderBody(folder) {
     return body;
   }
 
+  // A folder is opened because it matched what was typed, so the files that
+  // matched come first - and on their own, when some of them did. A query
+  // that no file answers leaves the whole folder listed rather than an empty
+  // panel under a folder that plainly has files in it.
+  const query = normalizeAgentTextItem(state.agentFolderSearch, "").toLowerCase();
+  const matching = contents.items.filter((file) => agentFolderFileMatchesSearch(file, query));
+  const visible = matching.length ? matching : contents.items;
+  if (query && matching.length && matching.length < contents.items.length) {
+    const note = document.createElement("p");
+    note.className = "agent-folder-body-note";
+    note.textContent = `${matching.length} of ${contents.items.length} files match “${state.agentFolderSearch}”.`;
+    body.append(note);
+  }
+
   const list = document.createElement("ul");
   list.className = "agent-folder-file-list";
-  for (const file of contents.items) {
+  for (const file of visible) {
     const href = normalizeAgentNotificationHref(file?.url);
     const name = normalizeAgentTextItem(file?.name, "");
     if (!href || !name) {
@@ -18125,6 +18240,29 @@ function createAgentFolderBody(folder) {
 
     link.append(label, size);
     row.append(link);
+
+    // The tags a file was filed with, and a way to use them: clicking one
+    // filters by it, which is how you get from one August receipt to the rest
+    // of August.
+    const tags = Array.isArray(file?.tags) ? file.tags : [];
+    if (tags.length) {
+      const tagList = document.createElement("div");
+      tagList.className = "agent-folder-file-tags";
+      for (const value of tags) {
+        const tag = normalizeAgentTextItem(value, "");
+        if (!tag) {
+          continue;
+        }
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "agent-folder-tag";
+        chip.dataset.agentFolderTag = tag;
+        chip.textContent = tag;
+        chip.title = `Filter by ${tag}`;
+        tagList.append(chip);
+      }
+      row.append(tagList);
+    }
     list.append(row);
   }
   body.append(list);
@@ -18170,6 +18308,20 @@ function createAgentFolderItem(folder) {
   return item;
 }
 
+// The filter box completes tags that are actually in use, so "Re" offers
+// Receipt and Render rather than nothing.
+function renderAgentFolderTagOptions(agent = getAgentWorkspace()) {
+  if (!elements.agentFolderTagOptions) {
+    return;
+  }
+  const tags = getKnownAgentFolderTags(agent);
+  elements.agentFolderTagOptions.replaceChildren(...tags.map((tag) => {
+    const option = document.createElement("option");
+    option.value = tag;
+    return option;
+  }));
+}
+
 function renderAgentFolders() {
   if (!elements.agentFolderList) {
     return;
@@ -18193,6 +18345,7 @@ function renderAgentFolders() {
   if (elements.agentFolderSearchInput && elements.agentFolderSearchInput.value !== state.agentFolderSearch) {
     elements.agentFolderSearchInput.value = state.agentFolderSearch;
   }
+  renderAgentFolderTagOptions(agent);
   if (elements.agentFolderSortSelect && elements.agentFolderSortSelect.value !== state.agentFolderSort) {
     elements.agentFolderSortSelect.value = state.agentFolderSort;
   }
@@ -24090,7 +24243,15 @@ function collectAgentAnswerReceiptSources(results) {
         return;
       }
       seen.add(key);
-      sources.push({ messageId, mailbox, vendor: String(entry?.vendor || "").trim() });
+      sources.push({
+        messageId,
+        mailbox,
+        vendor: String(entry?.vendor || "").trim(),
+        // The vendor decides which folder the receipt is filed under; the
+        // subject and the date decide the tags it is found by.
+        subject: String(entry?.subject || "").trim(),
+        date: String(entry?.date || "").trim(),
+      });
     });
   });
   return sources;
@@ -24190,8 +24351,10 @@ function buildAgentAnswerResultActions(results, tasks) {
     // The run already wrote these, so the honest offer is to show the user
     // where they landed, not to save them a second time.
     actions.push(createAgentAction("open-result-folder", "Open folder", folder));
-  } else {
-    actions.push(createAgentAction("save-answer-to-folder", "Save to a folder"));
+  } else if (collectAgentAnswerReceiptSources(results).length) {
+    // What gets filed is the receipt, not the sentence about it. An answer
+    // with no receipt behind it has nothing to keep, so nothing is offered.
+    actions.push(createAgentAction("save-answer-to-folder", "Save the receipts"));
   }
   // Two lookups in one message do not fold into one saved action, and picking
   // the first of them would save something the user did not ask for.
@@ -24220,60 +24383,93 @@ function openAgentResultFolder(folderName) {
 
 // What was filed, in a sentence. A receipt that came as a plain email has no
 // file to keep, and saying so beats letting the client look for one.
-function describeAgentSavedAnswer(folder, response, sources) {
-  const receiptCount = Array.isArray(response?.receipts) ? response.receipts.length : 0;
+function describeAgentSavedReceipts(response, sources) {
+  const receipts = Array.isArray(response?.receipts) ? response.receipts : [];
   const missed = Number(response?.receiptsMissed || 0);
-  const opener = folder
-    ? `Kept that in ${folder}. You can open it from the Folders panel.`
-    : "Kept that in your folders.";
-  if (receiptCount) {
-    const kept = receiptCount === 1 ? "the receipt itself" : `all ${receiptCount} receipts`;
-    return folder
-      ? `Kept that in ${folder}, with ${kept}. You can open it from the Folders panel.`
-      : `Kept that in your folders, with ${kept}.`;
+  const folders = (Array.isArray(response?.folders) ? response.folders : [])
+    .map((folder) => String(folder?.name || "").replace(/\/+$/, "").trim())
+    .filter(Boolean);
+  const missedNote = missed
+    ? ` I couldn’t fetch ${missed === 1 ? "one more receipt" : `${missed} more receipts`} from your mailbox just now.`
+    : "";
+
+  if (receipts.length) {
+    const what = receipts.length === 1 ? "the receipt" : `all ${receipts.length} receipts`;
+    const where = folders.length ? formatAgentFolderNameList(folders) : "your folders";
+    // The tags are the point of filing it here rather than anywhere else, so
+    // the chat says which ones it put on.
+    const tags = collectAgentReceiptTags(receipts);
+    const tagNote = tags.length ? ` Tagged ${tags.join(", ")}.` : "";
+    return `Filed ${what} in ${where}.${tagNote}${missedNote} You can open it from the Folders panel.`;
   }
   // A mailbox that would not hand the receipt over is not the same as an
   // email that had nothing to hand over, and the client can act on one of
   // them. Saying "nothing attached" for both would be a guess.
   if (missed) {
     const which = missed === 1 ? "that receipt" : `those ${missed} receipts`;
-    return `${opener} I couldn’t fetch ${which} from your mailbox just now, so the answer is in there on its own.`;
+    return `I couldn’t fetch ${which} from your mailbox just now, so there was nothing to file.`;
   }
   if (sources.length) {
-    return `${opener} Those emails had nothing attached, so the answer is all there was to keep.`;
+    return "Those emails carried no file, so there was nothing to keep beyond the answer above.";
   }
-  return opener;
+  return "There was no receipt behind that answer to file.";
+}
+
+function formatAgentFolderNameList(names) {
+  if (names.length === 1) {
+    return names[0];
+  }
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]}`;
+  }
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+// Every tag the save put on, once each, in the order they were put on.
+function collectAgentReceiptTags(receipts) {
+  const tags = [];
+  const seen = new Set();
+  receipts.forEach((receipt) => {
+    (Array.isArray(receipt?.tags) ? receipt.tags : []).forEach((value) => {
+      const tag = String(value || "").trim();
+      if (!tag || seen.has(tag.toLowerCase())) {
+        return;
+      }
+      seen.add(tag.toLowerCase());
+      tags.push(tag);
+    });
+  });
+  return tags;
 }
 
 async function saveAgentAnswerToFolder(message) {
-  const text = String(message?.text || "").trim();
-  if (!text) {
-    return;
-  }
-  const title = String(message?.metadata?.oneOff?.requestText || "").trim() || "Saved answer";
-  // The receipts behind the answer are filed with it. Saving the sentence on
-  // its own leaves the client with a note about a receipt rather than the
+  // The receipts behind the answer are what gets filed. Saving the sentence
+  // on its own leaves the client with a note about a receipt rather than the
   // receipt, which is the thing they actually keep.
   const sources = Array.isArray(message?.metadata?.oneOff?.receipts)
     ? message.metadata.oneOff.receipts
     : [];
+  if (!sources.length) {
+    return;
+  }
   try {
     const response = await apiRequest("/api/agent/folders/save", {
       method: "POST",
-      body: sources.length ? { title, text, sources } : { title, text },
+      body: { sources },
       // Each receipt is fetched from the mailbox on the way in, so this waits
       // longer than a note-sized save would need to.
       timeoutMs: 90000,
     });
-    const folder = String(response?.folder || "").trim().replace(/\/+$/, "");
-    recordAgentAnswerFolder(response);
-    // The chip is spent once the answer is filed; offering it again would
-    // write a second copy of the same thing.
+    const folders = recordAgentSavedReceiptFolders(response);
+    // The chip is spent once the receipts are filed; offering it again would
+    // fetch the same files a second time.
     removeAgentMessageAction(message.id, "save-answer-to-folder");
-    const confirmation = describeAgentSavedAnswer(folder, response, sources);
+    const confirmation = describeAgentSavedReceipts(response, sources);
     // Without a folder name there is nothing for the button to open, so it is
     // not offered rather than offered and inert.
-    const openActions = folder ? [createAgentAction("open-result-folder", "Open folder", folder)] : [];
+    const openActions = folders.length
+      ? [createAgentAction("open-result-folder", "Open folder", folders[0])]
+      : [];
     pushAgentMessage("assistant", confirmation, {
       kind: "result",
       keepActions: openActions.length > 0,
@@ -24281,7 +24477,7 @@ async function saveAgentAnswerToFolder(message) {
     });
     persistAgentWorkspace(confirmation);
   } catch (error) {
-    const failure = formatApiErrorMessage(error, "I couldn’t save that to a folder just now. Try again.");
+    const failure = formatApiErrorMessage(error, "I couldn’t file those receipts just now. Try again.");
     pushAgentMessage("assistant", failure, {
       kind: "error",
       technical: getAgentErrorTechnicalInfo(error),
@@ -32517,6 +32713,11 @@ function bindEvents() {
 
   if (elements.agentFolderList) {
     elements.agentFolderList.addEventListener("click", (event) => {
+      const tagButton = event.target?.closest?.("[data-agent-folder-tag]");
+      if (tagButton && elements.agentFolderList.contains(tagButton)) {
+        setAgentFolderSearch(tagButton.dataset.agentFolderTag || "");
+        return;
+      }
       const openButton = event.target?.closest?.("[data-agent-folder-open]");
       if (!openButton || !elements.agentFolderList.contains(openButton)) {
         return;

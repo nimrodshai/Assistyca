@@ -5088,6 +5088,35 @@ body[data-modal="billing"] .app-shell {
   white-space: nowrap;
 }
 
+/* The tags a filed receipt carries: who it is from, when, and what it is.
+   Each one is a button, because the way you get from one August receipt to
+   the rest of August is to click "Aug". */
+.agent-folder-file-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.26rem;
+  padding: 0.3rem 0.16rem 0.1rem;
+}
+
+.agent-folder-tag {
+  padding: 0.14rem 0.42rem;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.64rem;
+  line-height: 1.5;
+  background: rgba(20, 28, 38, 0.045);
+  border: 1px solid rgba(20, 28, 38, 0.075);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.agent-folder-tag:hover,
+.agent-folder-tag:focus-visible {
+  color: var(--accent);
+  border-color: rgba(15, 118, 110, 0.28);
+  background: rgba(15, 118, 110, 0.08);
+}
+
 .agent-folder-copy {
   display: grid;
   min-width: 0;
@@ -11698,6 +11727,18 @@ body.is-chat-view {
 :root[data-theme="dark"] .agent-folder-file {
   border-color: var(--line-strong);
   background: var(--surface-soft);
+}
+
+:root[data-theme="dark"] .agent-folder-tag {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .agent-folder-tag:hover,
+:root[data-theme="dark"] .agent-folder-tag:focus-visible {
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.16);
 }
 
 :root[data-theme="dark"] .agent-folder-body-note.is-error {

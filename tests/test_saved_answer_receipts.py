@@ -1,9 +1,13 @@
-"""Keeping a spending answer keeps the receipt it was read from.
+"""Keeping a spending answer keeps the receipts, filed under the vendor.
 
-A question asked in chat runs, answers and writes nothing. "Save to a folder"
-used to write the sentence and nothing else, which left the client with a note
-about a receipt instead of the receipt. The emails behind the answer are named
-in the run's reply, so keeping the answer goes back to the mailbox for them.
+A question asked in chat runs, answers and writes nothing. Keeping it used to
+write the sentence into a folder called "Saved answers", which left the client
+with a note about a receipt instead of the receipt.
+
+What a client files is the PDF the vendor sent. So the emails behind the
+answer are fetched, the files land in a folder named after the vendor, and
+each one is tagged with who it is from, the month and year it is from, and
+whether it calls itself an invoice or a receipt.
 """
 
 from __future__ import annotations
@@ -18,6 +22,8 @@ import threading
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -27,6 +33,8 @@ from packages.infrastructure.mail_attachments import safe_attachment_filename
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import build_agent_receipt_owner_key
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.file_tags import FILE_TAGS_FILENAME
+from packages.infrastructure.file_tags import read_file_tags
 from packages.infrastructure.portal_auth.server import normalize_saved_answer_sources
 from packages.infrastructure.receipt_collector import answer_receipt_question
 
@@ -115,11 +123,33 @@ class SavedAnswerReceiptTests(unittest.TestCase):
         with urllib_request.urlopen(request, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def _saved_folder(self) -> Path:
-        return self.output_dir / self.owner_key / "Saved answers"
+    def _save_answer_refusal(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        try:
+            self._save_answer(body)
+        except urllib_error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+        raise AssertionError("the save was expected to refuse")
+
+    def _folder(self, name: str = "Render") -> Path:
+        return self.output_dir / self.owner_key / name
+
+    def _list_folder(self, name: str) -> dict[str, object]:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/folder-contents?folder={urllib_parse.quote(name)}",
+            method="GET",
+            headers={"Authorization": f"Bearer {self.session_token}"},
+        )
+        with urllib_request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
 
     def _render_sources(self, mailbox: str = "owner@gmail.com") -> list[dict[str, str]]:
-        return [{"messageId": "msg-1", "mailbox": mailbox, "vendor": "Render"}]
+        return [{
+            "messageId": "msg-1",
+            "mailbox": mailbox,
+            "vendor": "Render",
+            "subject": "Your receipt from Render",
+            "date": "Fri, 1 Aug 2026 09:00:00 +0000",
+        }]
 
     def test_keeping_an_answer_keeps_the_receipt_pdf_from_the_email(self) -> None:
         self._connect_gmail("owner@gmail.com")
@@ -128,67 +158,113 @@ class SavedAnswerReceiptTests(unittest.TestCase):
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             return_value=_gmail_message_with_pdf(),
         ):
-            payload = self._save_answer({
-                "title": "How much am i paying to render?",
-                "text": "You paid 13.35 USD to Render in Aug 2026, across 1 receipt.",
-                "sources": self._render_sources(),
-            })
+            payload = self._save_answer({"sources": self._render_sources()})
 
         self.assertTrue(payload["ok"])
         receipts = payload["receipts"]
         self.assertEqual(len(receipts), 1)
-        saved = self._saved_folder() / str(receipts[0]["name"])
+        saved = self._folder() / str(receipts[0]["name"])
         self.assertTrue(saved.is_file())
         self.assertEqual(saved.read_bytes(), PDF_BYTES)
 
-    def test_the_kept_receipt_is_named_after_who_sent_it(self) -> None:
-        # The file sits next to a note in a folder someone browses, so the
-        # vendor's name beats the message id a bundle would use.
+    def test_the_receipt_is_filed_under_the_vendor_that_sent_it(self) -> None:
+        # A client looking for a Render invoice looks under Render, not under
+        # the question they once asked.
         self._connect_gmail("owner@gmail.com")
 
         with mock.patch(
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             return_value=_gmail_message_with_pdf(),
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(),
-            })
+            payload = self._save_answer({"sources": self._render_sources()})
 
+        self.assertEqual(payload["folder"], "Render/")
+        self.assertEqual(payload["folders"], [{"name": "Render/", "itemCount": 1}])
         self.assertEqual(payload["receipts"][0]["name"], "Render - invoice-8891.pdf")
 
-    def test_the_reply_says_the_receipt_came_with_the_answer(self) -> None:
+    def test_the_answer_itself_is_not_written_to_the_folder(self) -> None:
+        # The sentence was said in the conversation. What is kept is the file
+        # the vendor sent, and nothing beside it but the tags.
         self._connect_gmail("owner@gmail.com")
 
         with mock.patch(
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             return_value=_gmail_message_with_pdf(),
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(),
-            })
+            self._save_answer({"sources": self._render_sources()})
 
-        self.assertEqual(payload["message"], "Saved to Saved answers, with 1 receipt PDF.")
+        written = sorted(path.name for path in self._folder().iterdir())
+        self.assertEqual(written, ["Render - invoice-8891.pdf", FILE_TAGS_FILENAME])
 
-    def test_the_note_names_the_receipts_filed_beside_it(self) -> None:
+    def test_a_kept_receipt_is_tagged_with_who_when_and_what(self) -> None:
+        self._connect_gmail("owner@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
+            return_value=_gmail_message_with_pdf("receipt-8891.pdf"),
+        ):
+            payload = self._save_answer({"sources": self._render_sources()})
+
+        self.assertEqual(payload["receipts"][0]["tags"], ["Render", "Aug", "2026", "Receipt"])
+        self.assertEqual(
+            read_file_tags(self._folder()),
+            {"Render - receipt-8891.pdf": ["Render", "Aug", "2026", "Receipt"]},
+        )
+
+    def test_an_invoice_and_a_receipt_are_not_tagged_the_same(self) -> None:
+        # A vendor sends both for the same charge, and the difference is the
+        # one thing a bookkeeper sorts on.
+        self._connect_gmail("owner@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
+            return_value=_gmail_message_with_pdf("invoice-8891.pdf"),
+        ):
+            payload = self._save_answer({"sources": self._render_sources()})
+
+        self.assertIn("Invoice", payload["receipts"][0]["tags"])
+        self.assertNotIn("Receipt", payload["receipts"][0]["tags"])
+
+    def test_receipts_from_two_vendors_go_to_two_folders(self) -> None:
         self._connect_gmail("owner@gmail.com")
 
         with mock.patch(
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             return_value=_gmail_message_with_pdf(),
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(),
-            })
+            payload = self._save_answer({"sources": [
+                {"messageId": "msg-1", "mailbox": "owner@gmail.com", "vendor": "Render"},
+                {"messageId": "msg-2", "mailbox": "owner@gmail.com", "vendor": "Netlify"},
+            ]})
 
-        note = (self._saved_folder() / str(payload["name"])).read_text(encoding="utf-8")
-        self.assertIn("You paid 13.35 USD to Render.", note)
-        self.assertIn("- Render - invoice-8891.pdf", note)
+        self.assertEqual(
+            sorted(folder["name"] for folder in payload["folders"]),
+            ["Netlify/", "Render/"],
+        )
+        self.assertTrue((self._folder("Netlify") / "Netlify - invoice-8891.pdf").is_file())
+        self.assertTrue((self._folder("Render") / "Render - invoice-8891.pdf").is_file())
+
+    def test_a_receipt_whose_sender_could_not_be_read_still_has_somewhere_to_go(self) -> None:
+        self._connect_gmail("owner@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
+            return_value=_gmail_message_with_pdf(),
+        ):
+            payload = self._save_answer({"sources": [{"messageId": "msg-1", "mailbox": "owner@gmail.com"}]})
+
+        self.assertEqual(payload["folder"], "Saved receipts/")
+
+    def test_the_reply_says_what_was_filed_and_where(self) -> None:
+        self._connect_gmail("owner@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
+            return_value=_gmail_message_with_pdf(),
+        ):
+            payload = self._save_answer({"sources": self._render_sources()})
+
+        self.assertEqual(payload["message"], "Saved 1 receipt PDF to Render.")
 
     def test_a_source_with_no_mailbox_name_belongs_to_the_only_mailbox(self) -> None:
         # An answer run records the mailbox each item came from, but an answer
@@ -199,11 +275,7 @@ class SavedAnswerReceiptTests(unittest.TestCase):
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             return_value=_gmail_message_with_pdf(),
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": [{"messageId": "msg-1", "vendor": "Render"}],
-            })
+            payload = self._save_answer({"sources": [{"messageId": "msg-1", "vendor": "Render"}]})
 
         self.assertEqual(len(payload["receipts"]), 1)
 
@@ -218,11 +290,7 @@ class SavedAnswerReceiptTests(unittest.TestCase):
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             return_value=_gmail_message_with_pdf(),
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(mailbox="an-old-name@gmail.com"),
-            })
+            payload = self._save_answer({"sources": self._render_sources(mailbox="an-old-name@gmail.com")})
 
         self.assertEqual(len(payload["receipts"]), 1)
 
@@ -233,16 +301,14 @@ class SavedAnswerReceiptTests(unittest.TestCase):
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             side_effect=GmailSummaryError("Gmail is unhappy.", code="gmail_provider_error"),
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(),
-            })
+            payload = self._save_answer({"sources": self._render_sources()})
 
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["receipts"], [])
         self.assertEqual(payload["receiptsMissed"], 1)
         self.assertEqual(
             payload["message"],
-            "Saved to Saved answers. I couldn\u2019t fetch 1 receipt from your mailbox.",
+            "I couldn\u2019t fetch 1 receipt from your mailbox.",
         )
 
     def test_an_email_that_carried_no_file_is_not_counted_as_a_miss(self) -> None:
@@ -254,61 +320,36 @@ class SavedAnswerReceiptTests(unittest.TestCase):
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
             return_value={"id": "msg-1", "payload": {"parts": []}},
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(),
-            })
+            payload = self._save_answer({"sources": self._render_sources()})
 
         self.assertEqual(payload["receipts"], [])
         self.assertEqual(payload["receiptsMissed"], 0)
-        self.assertEqual(payload["message"], "Saved to Saved answers.")
+        self.assertEqual(payload["message"], "Those emails carried no file, so there was nothing to keep.")
 
-    def test_a_receipt_that_cannot_be_read_does_not_lose_the_answer(self) -> None:
+    def test_an_answer_with_no_receipt_behind_it_has_nothing_to_file(self) -> None:
+        status, payload = self._save_answer_refusal({"title": "Email summary", "text": "14 messages this week."})
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "nothing_to_file")
+
+    def test_a_kept_receipt_shows_up_in_the_folder_listing_with_its_tags(self) -> None:
         self._connect_gmail("owner@gmail.com")
 
         with mock.patch(
             f"{SERVER_MODULE}.GmailDigestRunner._get_json",
-            side_effect=GmailSummaryError("Gmail is unhappy.", code="gmail_provider_error"),
+            return_value=_gmail_message_with_pdf("receipt-8891.pdf"),
         ):
-            payload = self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(),
-            })
+            self._save_answer({"sources": self._render_sources()})
 
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["receipts"], [])
-        self.assertTrue((self._saved_folder() / str(payload["name"])).is_file())
+        contents = self._list_folder("Render")
 
-    def test_an_answer_with_no_receipts_behind_it_saves_as_it_always_did(self) -> None:
-        payload = self._save_answer({"title": "Email summary", "text": "14 messages this week."})
-
-        self.assertEqual(payload["receipts"], [])
-        self.assertEqual(payload["message"], "Saved to Saved answers.")
-
-    def test_a_kept_receipt_shows_up_in_the_folder_listing(self) -> None:
-        self._connect_gmail("owner@gmail.com")
-
-        with mock.patch(
-            f"{SERVER_MODULE}.GmailDigestRunner._get_json",
-            return_value=_gmail_message_with_pdf(),
-        ):
-            self._save_answer({
-                "title": "Render receipts",
-                "text": "You paid 13.35 USD to Render.",
-                "sources": self._render_sources(),
-            })
-
-        request = urllib_request.Request(
-            f"{self.base_url}/api/agent/folder-contents?folder=Saved%20answers",
-            method="GET",
-            headers={"Authorization": f"Bearer {self.session_token}"},
+        self.assertEqual(
+            [(item["name"], item["tags"]) for item in contents["items"]],
+            [("Render - receipt-8891.pdf", ["Render", "Aug", "2026", "Receipt"])],
         )
-        with urllib_request.urlopen(request, timeout=10) as response:
-            contents = json.loads(response.read().decode("utf-8"))
-
-        self.assertIn("Render - invoice-8891.pdf", [item["name"] for item in contents["items"]])
+        # The tag file is bookkeeping, not something to open.
+        self.assertNotIn(FILE_TAGS_FILENAME, [item["name"] for item in contents["items"]])
+        self.assertEqual(contents["tags"], ["2026", "Aug", "Receipt", "Render"])
 
 
 class SavedAnswerSourceTests(unittest.TestCase):
@@ -358,7 +399,13 @@ class SavedAnswerSourceTests(unittest.TestCase):
             {"messageId": "msg-1", "mailbox": "owner@gmail.com", "vendor": "Render", "path": "/etc/passwd"},
         ])
 
-        self.assertEqual(sources, [{"messageId": "msg-1", "mailbox": "owner@gmail.com", "vendor": "Render"}])
+        self.assertEqual(sources, [{
+            "messageId": "msg-1",
+            "mailbox": "owner@gmail.com",
+            "vendor": "Render",
+            "subject": "",
+            "date": "",
+        }])
 
     def test_the_endpoint_refuses_to_fetch_a_mailbox_full_of_messages(self) -> None:
         sources = normalize_saved_answer_sources([
@@ -397,7 +444,7 @@ class SavedAnswerChatTests(unittest.TestCase):
             self.script.index("const AGENT_ANSWER_RECEIPT_SOURCE_LIMIT"):
             self.script.index("function getAgentAnswerResultFolder")
         ] + self.script[
-            self.script.index("function describeAgentSavedAnswer"):
+            self.script.index("function describeAgentSavedReceipts"):
             self.script.index("async function saveAgentAnswerToFolder")
         ]
         completed = subprocess.run(
@@ -411,10 +458,19 @@ class SavedAnswerChatTests(unittest.TestCase):
     def test_the_chat_remembers_which_emails_the_answer_came_from(self) -> None:
         sources = self._run(
             'collectAgentAnswerReceiptSources([{ receiptSources: '
-            '[{ messageId: "msg-1", mailbox: "owner@gmail.com", vendor: "Render" }] }])'
+            '[{ messageId: "msg-1", mailbox: "owner@gmail.com", vendor: "Render", '
+            'subject: "Your receipt from Render", date: "Fri, 1 Aug 2026 09:00:00 +0000" }] }])'
         )
 
-        self.assertEqual(sources, [{"messageId": "msg-1", "mailbox": "owner@gmail.com", "vendor": "Render"}])
+        self.assertEqual(sources, [{
+            "messageId": "msg-1",
+            "mailbox": "owner@gmail.com",
+            "vendor": "Render",
+            # Who it is from names the folder; the subject and the date make
+            # the tags it is found by.
+            "subject": "Your receipt from Render",
+            "date": "Fri, 1 Aug 2026 09:00:00 +0000",
+        }])
 
     def test_a_question_answered_month_by_month_keeps_each_months_receipts(self) -> None:
         sources = self._run(
@@ -429,34 +485,40 @@ class SavedAnswerChatTests(unittest.TestCase):
     def test_a_run_that_saved_files_of_its_own_carries_no_sources(self) -> None:
         self.assertEqual(self._run("collectAgentAnswerReceiptSources([{ outputFolder: 'Receipts/Aug2026' }])"), [])
 
-    def test_the_chat_says_the_receipt_was_kept_too(self) -> None:
+    def test_the_chat_says_where_the_receipt_was_filed_and_how_it_is_tagged(self) -> None:
         sentence = self._run(
-            'describeAgentSavedAnswer("Saved answers", { receipts: [{ name: "Render - invoice.pdf" }] }, '
+            'describeAgentSavedReceipts({ folders: [{ name: "Render/" }], receipts: '
+            '[{ name: "Render - invoice.pdf", tags: ["Render", "Aug", "2026", "Invoice"] }] }, '
             '[{ messageId: "msg-1" }])'
         )
 
         self.assertEqual(
             sentence,
-            "Kept that in Saved answers, with the receipt itself. You can open it from the Folders panel.",
+            "Filed the receipt in Render. Tagged Render, Aug, 2026, Invoice. "
+            "You can open it from the Folders panel.",
         )
 
-    def test_an_email_with_nothing_attached_is_said_out_loud(self) -> None:
-        sentence = self._run('describeAgentSavedAnswer("Saved answers", { receipts: [] }, [{ messageId: "msg-1" }])')
+    def test_receipts_from_two_vendors_name_both_folders(self) -> None:
+        sentence = self._run(
+            'describeAgentSavedReceipts({ folders: [{ name: "Render/" }, { name: "Netlify/" }], '
+            'receipts: [{ name: "a.pdf", tags: ["Render"] }, { name: "b.pdf", tags: ["Netlify"] }] }, '
+            '[{ messageId: "msg-1" }, { messageId: "msg-2" }])'
+        )
 
-        self.assertIn("nothing attached", str(sentence))
+        self.assertIn("all 2 receipts in Render and Netlify", str(sentence))
+
+    def test_an_email_with_nothing_attached_is_said_out_loud(self) -> None:
+        sentence = self._run('describeAgentSavedReceipts({ receipts: [] }, [{ messageId: "msg-1" }])')
+
+        self.assertIn("carried no file", str(sentence))
 
     def test_a_mailbox_that_would_not_hand_the_receipt_over_reads_differently(self) -> None:
         sentence = self._run(
-            'describeAgentSavedAnswer("Saved answers", { receipts: [], receiptsMissed: 1 }, [{ messageId: "msg-1" }])'
+            'describeAgentSavedReceipts({ receipts: [], receiptsMissed: 1 }, [{ messageId: "msg-1" }])'
         )
 
         self.assertIn("couldn\u2019t fetch that receipt from your mailbox", str(sentence))
-        self.assertNotIn("nothing attached", str(sentence))
-
-    def test_an_answer_with_no_receipts_reads_as_it_always_did(self) -> None:
-        sentence = self._run('describeAgentSavedAnswer("Saved answers", {}, [])')
-
-        self.assertEqual(sentence, "Kept that in Saved answers. You can open it from the Folders panel.")
+        self.assertNotIn("carried no file", str(sentence))
 
     def test_the_save_sends_the_receipts_it_remembered(self) -> None:
         saver = self.script[
@@ -464,18 +526,17 @@ class SavedAnswerChatTests(unittest.TestCase):
             self.script.index("async function saveAgentOneOffAsAction")
         ]
 
-        self.assertIn("body: sources.length ? { title, text, sources } : { title, text },", saver)
+        # The receipts are the whole request now: the answer itself stays in
+        # the conversation, so there is nothing else to send.
+        self.assertIn("body: { sources },", saver)
+        self.assertNotIn("text", saver.split("apiRequest")[1].split("});")[0])
         # Fetching a receipt per email takes longer than writing a note.
         self.assertIn("timeoutMs: 90000,", saver)
 
-    def test_a_finished_answer_remembers_its_receipts(self) -> None:
-        runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
-            self.script.index("async function applyAgentTurnResponse")
+    def test_an_answer_with_no_receipt_behind_it_is_never_sent(self) -> None:
+        saver = self.script[
+            self.script.index("async function saveAgentAnswerToFolder"):
+            self.script.index("async function saveAgentOneOffAsAction")
         ]
 
-        self.assertIn("receipts: collectAgentAnswerReceiptSources(runResults),", runner)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertIn("if (!sources.length) {\n    return;\n  }", saver)
