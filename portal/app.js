@@ -18431,7 +18431,6 @@ function createAgentFolderItem(folder) {
   openButton.append(
     createAgentFolderIcon(),
     Object.assign(document.createElement("span"), { className: "agent-folder-copy" }),
-    Object.assign(document.createElement("span"), { className: "agent-folder-time" }),
   );
 
   // The contents sit in a wrapper that grows and shrinks, and a clip that
@@ -18463,15 +18462,19 @@ function updateAgentFolderItem(item, folder) {
     if (copy) {
       const title = document.createElement("strong");
       title.textContent = folder.name;
+
+      // What it holds and when it last changed sit together under the name,
+      // so the name itself has the full width of the card to be read in.
       const meta = document.createElement("span");
       meta.className = "agent-folder-meta";
-      meta.textContent = `${type.label} · ${formatAgentFolderItemCount(folder.itemCount)}`;
-      copy.replaceChildren(title, meta);
-    }
-
-    const time = openButton.querySelector(".agent-folder-time");
-    if (time) {
+      const detail = document.createElement("span");
+      detail.textContent = `${type.label} · ${formatAgentFolderItemCount(folder.itemCount)}`;
+      const time = document.createElement("span");
+      time.className = "agent-folder-time";
       time.textContent = formatAgentFolderTime(folder);
+      meta.append(detail, time);
+
+      copy.replaceChildren(title, meta);
     }
   }
 
