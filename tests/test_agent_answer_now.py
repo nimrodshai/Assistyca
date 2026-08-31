@@ -1307,7 +1307,7 @@ class AgentAnswerChatTests(unittest.TestCase):
         self.assertIn('createAgentAction("save-one-off-as-action", "Save as an action")', runner)
         # Two lookups do not fold into one saved action.
         self.assertIn("if (tasks.length === 1) {", runner)
-        self.assertIn("keepActions: resultActions.length > 0", runner)
+        self.assertIn("keepActions: messageActions.length > 0", runner)
 
     def test_a_result_button_outlives_the_messages_after_it(self) -> None:
         # "Read PDF" has to still work once the conversation has moved on.
@@ -1430,6 +1430,84 @@ class AgentAnswerChatTests(unittest.TestCase):
         # Two lookups in one message would need two labelled cards.
         self.assertIn("const chart = charts.length === 1 ? charts[0] : null;", runner)
         self.assertIn("chart: everyTaskFailed ? undefined : chart || undefined,", runner)
+
+    def test_a_question_blocked_on_a_mailbox_offers_the_button_that_connects_one(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentAnswerNow"):
+            self.script.index("async function completeAgentAnswerRun")
+        ]
+
+        # Being told to go and connect something, with nothing to press, is
+        # the dead end this replaces.
+        self.assertIn("actions: getAgentAnswerRunConnectionActions(tasks),", runner)
+        # The connection is still missing however much is said afterwards.
+        self.assertIn("keepActions: true,", runner)
+
+    def test_the_connect_button_opens_the_flow_that_asks_which_mailbox(self) -> None:
+        actions = self.script[
+            self.script.index("function getAgentAnswerRunConnection(proposalType)"):
+            self.script.index("function rememberAgentAnswerRunForConnection")
+        ]
+
+        # Gmail or Outlook is a question the connect flow already asks, so the
+        # chat offers one button rather than answering it twice.
+        self.assertIn('{ platformId: "email", label: "Connect a mailbox" }', actions)
+        self.assertIn('{ platformId: "calendar", label: "Connect your calendar" }', actions)
+        # Two lookups waiting on the same mailbox are one button.
+        self.assertIn("const connections = new Map();", actions)
+
+        handler = self.script[
+            self.script.index("function handleAgentMessageAction"):
+            self.script.index("function setAgentToolsOpen")
+        ]
+        self.assertIn(
+            'openPlatformConnection(value === "calendar" ? "calendar" : "email", { origin: "chat" });',
+            handler,
+        )
+        # Backing out of the sign-in has to leave the button pressable, so it
+        # is handled before the branch that spends a message's buttons.
+        self.assertLess(
+            handler.index('if (action === "open-connection")'),
+            handler.index(
+                "\n  resolveAgentMessageActions(messageId, action);"
+                "\n  persistClientState();"
+            ),
+        )
+
+    def test_connecting_the_mailbox_picks_the_question_back_up(self) -> None:
+        resume = self.script[
+            self.script.index("function rememberAgentAnswerRunForConnection"):
+            self.script.index("// One message can ask for more than one lookup")
+        ]
+
+        # Nothing else remembers a question: it makes no proposal and no
+        # action, so without this the whole question has to be typed again.
+        self.assertIn("agent.pendingAnswerRun = normalizeAgentPendingAnswerRun({", resume)
+        self.assertIn("completeAgentAnswerRun({", resume)
+        # A question belongs to the chat that asked it.
+        self.assertIn("if (pending.chatId && pending.chatId !== agent.activeChatId) {", resume)
+        # One connection does not always clear the way.
+        self.assertIn(
+            "if (pending.tasks.some((task) => getAgentAnswerRunBlocker(task.proposalType))) {",
+            resume,
+        )
+
+        # Every place a connection completes goes through the proposal resume,
+        # so the question rides in on the same call.
+        connection = self.script[
+            self.script.index("function resumeAgentProposalAfterConnectedPlatforms"):
+            self.script.index("function isPlatformConnectionConnected")
+        ]
+        self.assertIn("if (resumeAgentAnswerRunAfterConnection(options)) {", connection)
+
+    def test_a_remembered_question_survives_the_trip_through_the_sign_in_page(self) -> None:
+        # OAuth leaves the page, so a question kept only in memory is gone by
+        # the time the mailbox is connected.
+        self.assertIn("pendingAnswerRun: null,", self.script)
+        self.assertIn(
+            "pendingAnswerRun: normalizeAgentPendingAnswerRun(source.pendingAnswerRun || source.pending_answer_run),",
+            self.script,
+        )
 
     def test_a_chart_is_drawn_beside_the_message_that_carries_one(self) -> None:
         renderer = self.script[

@@ -1247,23 +1247,17 @@ const state = {
   settingsMode: "account",
   settingsOpen: false,
   adminUsers: [],
-  adminFeatures: [],
   adminUsersLoading: false,
   adminUsersNeedsRender: false,
   adminUsersError: "",
   adminAddUserBusy: false,
   adminEditUserBusy: false,
-  adminSaveBusyByEmail: {},
-  adminSaveQueuedByEmail: {},
   adminStatusBusyByEmail: {},
   adminTypeBusyByEmail: {},
   adminDeleteBusyByEmail: {},
-  adminUserDrafts: {},
   adminView: "list",
   adminSelectedUserEmail: "",
   adminUserSearch: "",
-  adminFeatureSearch: "",
-  adminFeaturePickerOpen: false,
   adminNewUserEmail: "",
   adminNewUserDisplayName: "",
   adminEditUserEmail: "",
@@ -2081,17 +2075,6 @@ function normalizeSettingsMode(mode) {
   return nextMode;
 }
 
-function normalizeAdminFeatureRecord(feature = {}) {
-  return {
-    featureId: String(feature.featureId || feature.id || "").trim(),
-    name: String(feature.name || "").trim() || "Untitled tool",
-    description: String(feature.description || "").trim(),
-    channel: String(feature.channel || "").trim(),
-    mode: String(feature.mode || "").trim(),
-    sortOrder: Number(feature.sortOrder || 100),
-  };
-}
-
 function normalizeFeatureSortOrder(feature = {}, fallback = 100) {
   const rawValue = feature?.sortOrder ?? feature?.sort_order ?? fallback;
   const numericValue = Number(rawValue);
@@ -2113,14 +2096,6 @@ function compareFeaturesByDisplayOrder(left = {}, right = {}) {
 
 function sortFeaturesByDisplayOrder(features = []) {
   return [...features].sort(compareFeaturesByDisplayOrder);
-}
-
-function sortUniqueFeatureIds(featureIds = []) {
-  return Array.from(new Set(
-    Array.isArray(featureIds)
-      ? featureIds.map((featureId) => String(featureId || "").trim()).filter(Boolean)
-      : [],
-  )).sort();
 }
 
 function normalizeAdminPaymentStatus(paymentStatus = null) {
@@ -2218,7 +2193,6 @@ function normalizeAdminUserRecord(user = {}) {
     billing: user.billing && typeof user.billing === "object" ? user.billing : {},
     paymentStatus,
     spend: normalizeAdminSpend(user.spend || user.spend_summary || null),
-    assignedFeatureIds: sortUniqueFeatureIds(user.assignedFeatureIds || user.featureIds || []),
   };
 }
 
@@ -2298,7 +2272,6 @@ function upsertAdminUserState(user) {
   const nextUsers = state.adminUsers.filter((entry) => entry.email !== normalizedUser.email);
   nextUsers.push(normalizedUser);
   state.adminUsers = sortAdminUsers(nextUsers);
-  setAdminUserDraftFeatureIds(normalizedUser.email, normalizedUser.assignedFeatureIds);
   return normalizedUser;
 }
 
@@ -2309,24 +2282,11 @@ function replaceAdminUserState(previousEmail, user) {
     return null;
   }
 
-  const preservedDraftFeatureIds = getAdminUserDraftFeatureIds(
-    normalizedPreviousEmail,
-    normalizedUser.assignedFeatureIds,
-  );
   state.adminUsers = sortAdminUsers([
     ...state.adminUsers.filter((entry) => entry.email !== normalizedPreviousEmail && entry.email !== normalizedUser.email),
     normalizedUser,
   ]);
 
-  const { [normalizedPreviousEmail]: _previousDraft, ...nextDrafts } = state.adminUserDrafts;
-  state.adminUserDrafts = nextDrafts;
-  setAdminUserDraftFeatureIds(normalizedUser.email, preservedDraftFeatureIds);
-
-  const { [normalizedPreviousEmail]: _saveBusy, ...nextSaveBusy } = state.adminSaveBusyByEmail;
-  state.adminSaveBusyByEmail = nextSaveBusy;
-
-  const { [normalizedPreviousEmail]: _saveQueued, ...nextSaveQueued } = state.adminSaveQueuedByEmail;
-  state.adminSaveQueuedByEmail = nextSaveQueued;
 
   const { [normalizedPreviousEmail]: _statusBusy, ...nextStatusBusy } = state.adminStatusBusyByEmail;
   state.adminStatusBusyByEmail = nextStatusBusy;
@@ -2351,15 +2311,6 @@ function removeAdminUserState(email) {
   }
 
   state.adminUsers = state.adminUsers.filter((user) => user.email !== normalizedEmail);
-
-  const { [normalizedEmail]: _draft, ...nextDrafts } = state.adminUserDrafts;
-  state.adminUserDrafts = nextDrafts;
-
-  const { [normalizedEmail]: _saveBusy, ...nextSaveBusy } = state.adminSaveBusyByEmail;
-  state.adminSaveBusyByEmail = nextSaveBusy;
-
-  const { [normalizedEmail]: _saveQueued, ...nextSaveQueued } = state.adminSaveQueuedByEmail;
-  state.adminSaveQueuedByEmail = nextSaveQueued;
 
   const { [normalizedEmail]: _statusBusy, ...nextStatusBusy } = state.adminStatusBusyByEmail;
   state.adminStatusBusyByEmail = nextStatusBusy;
@@ -2403,101 +2354,11 @@ function getSettingsModeContent(mode = state.settingsMode) {
       title: user
         ? (user.displayName || deriveDisplayName(user.email))
         : SETTINGS_MODE_CONTENT.users.title,
-      description: user?.email || "Manage which tools this client can see in the portal.",
+      description: user?.email || "Usage, account details, and client type.",
     };
   }
 
   return SETTINGS_MODE_CONTENT.users;
-}
-
-function getAdminUserDraftFeatureIds(email, fallback = []) {
-  const key = normalizeEmail(email);
-  return sortUniqueFeatureIds(state.adminUserDrafts[key] || fallback);
-}
-
-function setAdminUserDraftFeatureIds(email, featureIds) {
-  const key = normalizeEmail(email);
-  if (!key) {
-    return;
-  }
-  state.adminUserDrafts = {
-    ...state.adminUserDrafts,
-    [key]: sortUniqueFeatureIds(featureIds),
-  };
-}
-
-function addAdminUserDraftFeature(email, featureId) {
-  const normalizedFeatureId = String(featureId || "").trim();
-  if (!normalizedFeatureId) {
-    return;
-  }
-
-  const nextFeatureIds = new Set(getAdminUserDraftFeatureIds(email));
-  nextFeatureIds.add(normalizedFeatureId);
-  setAdminUserDraftFeatureIds(email, Array.from(nextFeatureIds));
-}
-
-function removeAdminUserDraftFeature(email, featureId) {
-  const normalizedFeatureId = String(featureId || "").trim();
-  if (!normalizedFeatureId) {
-    return;
-  }
-
-  const nextFeatureIds = new Set(getAdminUserDraftFeatureIds(email));
-  nextFeatureIds.delete(normalizedFeatureId);
-  setAdminUserDraftFeatureIds(email, Array.from(nextFeatureIds));
-}
-
-function setAdminUserSaveQueued(email, isQueued) {
-  const key = normalizeEmail(email);
-  if (!key) {
-    return;
-  }
-
-  if (isQueued) {
-    state.adminSaveQueuedByEmail = {
-      ...state.adminSaveQueuedByEmail,
-      [key]: true,
-    };
-    return;
-  }
-
-  if (!(key in state.adminSaveQueuedByEmail)) {
-    return;
-  }
-
-  const { [key]: _queued, ...nextQueued } = state.adminSaveQueuedByEmail;
-  state.adminSaveQueuedByEmail = nextQueued;
-}
-
-function queueAdminUserFeatureAutosave(email) {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail || !canManageClients()) {
-    return;
-  }
-
-  if (state.adminSaveBusyByEmail[normalizedEmail]) {
-    setAdminUserSaveQueued(normalizedEmail, true);
-    return;
-  }
-
-  void saveAdminUserFeatures(normalizedEmail);
-}
-
-function buildAdminUserDrafts(users = [], previousUsersByEmail = new Map(), previousDrafts = {}) {
-  return Object.fromEntries(users.map((user) => {
-    const previousUser = previousUsersByEmail.get(user.email) || null;
-    const previousAssigned = previousUser?.assignedFeatureIds || [];
-    const previousDraft = sortUniqueFeatureIds(previousDrafts[user.email] || previousAssigned);
-    const shouldPreserveDraft = previousUser && !featureIdListsMatch(previousDraft, previousAssigned);
-    return [user.email, shouldPreserveDraft ? previousDraft : [...user.assignedFeatureIds]];
-  }));
-}
-
-function featureIdListsMatch(first = [], second = []) {
-  const left = sortUniqueFeatureIds(first);
-  const right = sortUniqueFeatureIds(second);
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function syncAdminUsersError() {
@@ -2542,30 +2403,6 @@ function getAdminUserActiveDisabledReason(user, nextIsActive = !Boolean(user?.is
   }
 
   return "";
-}
-
-function getAdminFeatureName(featureId) {
-  const normalizedFeatureId = String(featureId || "").trim();
-  if (!normalizedFeatureId) {
-    return "";
-  }
-  const feature = state.adminFeatures.find((entry) => entry.featureId === normalizedFeatureId);
-  return feature?.name || normalizedFeatureId;
-}
-
-function getAdminUserToolNames(user) {
-  return sortUniqueFeatureIds(user?.assignedFeatureIds || []).map(getAdminFeatureName).filter(Boolean);
-}
-
-function formatAdminUserTools(user, maxVisible = 2) {
-  const names = getAdminUserToolNames(user);
-  if (!names.length) {
-    return "No tools";
-  }
-  if (names.length <= maxVisible) {
-    return names.join(", ");
-  }
-  return `${names.slice(0, maxVisible).join(", ")} +${names.length - maxVisible}`;
 }
 
 function createAdminStateBadge(label, className = "") {
@@ -2643,23 +2480,17 @@ function getAdminClientStats(users = state.adminUsers) {
 
 function resetAdminState() {
   state.adminUsers = [];
-  state.adminFeatures = [];
   state.adminUsersLoading = false;
   state.adminUsersNeedsRender = false;
   state.adminUsersError = "";
   state.adminAddUserBusy = false;
   state.adminEditUserBusy = false;
-  state.adminSaveBusyByEmail = {};
-  state.adminSaveQueuedByEmail = {};
   state.adminStatusBusyByEmail = {};
   state.adminTypeBusyByEmail = {};
   state.adminDeleteBusyByEmail = {};
-  state.adminUserDrafts = {};
   state.adminView = "list";
   state.adminSelectedUserEmail = "";
   state.adminUserSearch = "";
-  state.adminFeatureSearch = "";
-  state.adminFeaturePickerOpen = false;
   state.adminNewUserEmail = "";
   state.adminNewUserDisplayName = "";
   state.adminEditUserEmail = "";
@@ -2677,7 +2508,6 @@ function getFilteredAdminUsers() {
     return state.adminUsers;
   }
 
-  const featureNameById = new Map(state.adminFeatures.map((feature) => [feature.featureId, feature.name]));
   return state.adminUsers.filter((user) => {
     const searchable = [
       user.displayName,
@@ -2686,28 +2516,8 @@ function getFilteredAdminUsers() {
       user.isActive ? "active" : "inactive",
       user.paymentStatus?.isPaying ? "paying" : "not paying",
       user.paymentStatus?.subscriptionStatus,
-      ...user.assignedFeatureIds,
-      ...user.assignedFeatureIds.map((featureId) => featureNameById.get(featureId) || ""),
     ].join(" ").toLowerCase();
     return searchable.includes(query);
-  });
-}
-
-function getFilteredAdminFeatures(query = state.adminFeatureSearch) {
-  const normalizedQuery = normalizeText(query).toLowerCase();
-  if (!normalizedQuery) {
-    return state.adminFeatures;
-  }
-
-  return state.adminFeatures.filter((feature) => {
-    const searchable = [
-      feature.name,
-      feature.description,
-      feature.channel,
-      feature.mode,
-      feature.featureId,
-    ].join(" ").toLowerCase();
-    return searchable.includes(normalizedQuery);
   });
 }
 
@@ -2739,8 +2549,6 @@ function showClientsTab(options = {}) {
 function openAdminUsersList(options = {}) {
   state.adminView = "list";
   state.adminSelectedUserEmail = "";
-  state.adminFeatureSearch = "";
-  state.adminFeaturePickerOpen = false;
   state.adminEditUserEmail = "";
   state.adminEditUserDisplayName = "";
   if (options.preserveSearch !== true) {
@@ -2763,8 +2571,6 @@ function openAdminAddUser() {
   state.adminView = "add";
   state.adminSelectedUserEmail = "";
   state.adminUsersError = "";
-  state.adminFeatureSearch = "";
-  state.adminFeaturePickerOpen = false;
   state.adminNewUserEmail = "";
   state.adminNewUserDisplayName = "";
   state.adminEditUserEmail = "";
@@ -2798,8 +2604,6 @@ function openAdminUserDetail(email) {
   state.adminView = "detail";
   state.adminSelectedUserEmail = normalizedEmail;
   state.adminUsersError = "";
-  state.adminFeatureSearch = "";
-  state.adminFeaturePickerOpen = false;
   state.adminEditUserEmail = "";
   state.adminEditUserDisplayName = "";
 
@@ -2815,8 +2619,6 @@ function openAdminEditUser(email) {
   state.adminView = "edit";
   state.adminSelectedUserEmail = user.email;
   state.adminUsersError = "";
-  state.adminFeatureSearch = "";
-  state.adminFeaturePickerOpen = false;
   state.adminEditUserEmail = user.email;
   state.adminEditUserDisplayName = user.displayName || "";
 
@@ -4843,6 +4645,29 @@ function createDefaultAgentWorkspace() {
     proposals: [],
     helpers: [],
     activeProposalId: "",
+    pendingAnswerRun: null,
+  };
+}
+
+// A question that stopped for a missing connection is the only piece of work
+// with nothing behind it: no proposal, no saved action, nothing on the server.
+// It waits here so that connecting the mailbox can pick it up, including after
+// the round trip through the provider's sign-in page.
+function normalizeAgentPendingAnswerRun(source) {
+  const pending = source && typeof source === "object" ? source : null;
+  if (!pending) {
+    return null;
+  }
+  const tasks = getAgentAnswerRunTasks(pending);
+  if (!tasks.length) {
+    return null;
+  }
+  return {
+    tasks,
+    userText: normalizeAgentTextItem(pending.userText || pending.user_text, ""),
+    chatId: normalizeAgentTextItem(pending.chatId || pending.chat_id, ""),
+    createdAt: normalizeAgentTextItem(pending.createdAt || pending.created_at, "")
+      || new Date().toISOString(),
   };
 }
 
@@ -4910,6 +4735,7 @@ function normalizeAgentWorkspace(agent = {}) {
     proposals,
     helpers,
     activeProposalId,
+    pendingAnswerRun: normalizeAgentPendingAnswerRun(source.pendingAnswerRun || source.pending_answer_run),
   };
 }
 
@@ -6437,6 +6263,12 @@ function didAgentAskForConnection(proposal) {
 }
 
 function resumeAgentProposalAfterConnectedPlatforms(platforms = [], options = {}) {
+  // A question waits for a connection the same way a plan does, and it waits
+  // with nothing saved behind it, so it is picked up first.
+  if (resumeAgentAnswerRunAfterConnection(options)) {
+    return true;
+  }
+
   const proposal = findAgentProposalReadyAfterConnection(platforms);
   if (!proposal) {
     return false;
@@ -12935,49 +12767,6 @@ async function refreshPricingSnapshot(options = {}) {
   return pricingRefreshPromise;
 }
 
-function buildAdminFeatureSummary(feature) {
-  return [feature.channel, feature.mode].filter(Boolean).join(" · ");
-}
-
-function createAdminFeatureOption(feature, options = {}) {
-  const option = document.createElement("label");
-  option.className = "admin-feature-option";
-  if (options.compact) {
-    option.classList.add("is-compact");
-  }
-
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.checked = Boolean(options.checked);
-  checkbox.disabled = Boolean(options.disabled);
-  checkbox.dataset.adminFeatureId = feature.featureId;
-  if (options.userEmail) {
-    checkbox.dataset.adminUserEmail = options.userEmail;
-  } else {
-    checkbox.dataset.adminFeatureTarget = "new";
-  }
-
-  const copy = document.createElement("span");
-  copy.className = "admin-feature-option-copy";
-
-  const name = document.createElement("strong");
-  name.textContent = feature.name;
-
-  const meta = document.createElement("span");
-  meta.className = "admin-feature-option-meta";
-  meta.textContent = buildAdminFeatureSummary(feature) || "Tool";
-
-  copy.append(name, meta);
-  if (options.showDescription && feature.description) {
-    const description = document.createElement("span");
-    description.className = "admin-feature-option-description";
-    description.textContent = feature.description;
-    copy.append(description);
-  }
-  option.append(checkbox, copy);
-  return option;
-}
-
 function createAdminEmptyState(titleText, copyText) {
   const empty = document.createElement("article");
   empty.className = "glass-card empty-state admin-users-empty";
@@ -13126,21 +12915,6 @@ function createAdminDetailRow(labelText, valueText) {
   return row;
 }
 
-function focusAdminFeatureSearchInput(selectionStart = null, selectionEnd = selectionStart) {
-  window.requestAnimationFrame(() => {
-    const input = elements.adminUsersPane?.querySelector('[data-admin-feature-search-input="true"]');
-    if (!(input instanceof HTMLInputElement)) {
-      return;
-    }
-
-    input.focus();
-    if (typeof selectionStart === "number") {
-      const safeEnd = typeof selectionEnd === "number" ? selectionEnd : selectionStart;
-      input.setSelectionRange(selectionStart, safeEnd);
-    }
-  });
-}
-
 function getEventTargetElement(event) {
   const target = event.target;
   if (target instanceof Element) {
@@ -13148,58 +12922,6 @@ function getEventTargetElement(event) {
   }
 
   return target instanceof Node ? target.parentElement : null;
-}
-
-function createAdminAssignedFeatureBadge(feature, options = {}) {
-  const badge = document.createElement("div");
-  badge.className = "admin-tool-badge";
-
-  const label = document.createElement("span");
-  label.className = "admin-tool-badge-label";
-  label.textContent = feature?.name || "Untitled tool";
-
-  const removeButton = document.createElement("button");
-  removeButton.type = "button";
-  removeButton.className = "admin-tool-badge-remove";
-  removeButton.dataset.adminRemoveFeature = String(feature?.featureId || "").trim();
-  removeButton.dataset.adminUserEmail = normalizeEmail(options.userEmail || "");
-  removeButton.disabled = Boolean(options.disabled);
-  removeButton.setAttribute("aria-label", `Remove ${feature?.name || "tool"}`);
-  removeButton.textContent = "×";
-
-  badge.append(label, removeButton);
-  return badge;
-}
-
-function createAdminFeatureSearchResult(feature, options = {}) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "admin-tool-result";
-  button.disabled = Boolean(options.disabled);
-  button.dataset.adminAddFeature = String(feature?.featureId || "").trim();
-  button.dataset.adminUserEmail = normalizeEmail(options.userEmail || "");
-
-  const copy = document.createElement("span");
-  copy.className = "admin-tool-result-copy";
-
-  const title = document.createElement("strong");
-  title.textContent = feature?.name || "Untitled tool";
-  copy.append(title);
-
-  const metaText = [feature?.channel, feature?.mode].filter(Boolean).join(" · ");
-  if (metaText) {
-    const meta = document.createElement("span");
-    meta.className = "admin-tool-result-meta";
-    meta.textContent = metaText;
-    copy.append(meta);
-  }
-
-  const stateBadge = document.createElement("span");
-  stateBadge.className = "admin-tool-result-state";
-  stateBadge.textContent = "Add";
-
-  button.append(copy, stateBadge);
-  return button;
 }
 
 function createAdminUsersListView() {
@@ -13267,7 +12989,7 @@ function createAdminUsersListView() {
   if (!state.adminUsers.length) {
     wrapper.append(createAdminEmptyState(
       "No clients yet",
-      "Add the first client here, then open them to manage which tools they can see.",
+      "Add the first client here, then open them to see their usage and account details.",
     ));
     return wrapper;
   }
@@ -13288,7 +13010,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Client type", "This month", "Active", "Visible tools", "Last login", ""]) {
+  for (const heading of ["Client", "Email", "Client type", "This month", "Active", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -13324,14 +13046,6 @@ function createAdminUsersListView() {
       disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
     }));
 
-    const toolsCell = document.createElement("td");
-    toolsCell.className = "admin-tools-cell";
-    const toolSummary = document.createElement("span");
-    toolSummary.className = "admin-tools-summary";
-    toolSummary.textContent = formatAdminUserTools(user, 2);
-    toolSummary.title = getAdminUserToolNames(user).join(", ");
-    toolsCell.append(toolSummary);
-
     const lastLoginCell = document.createElement("td");
     lastLoginCell.textContent = user.lastLoginAt
       ? formatAdminDateTime(user.lastLoginAt)
@@ -13346,7 +13060,7 @@ function createAdminUsersListView() {
     actionCell.append(manageButton);
 
     row.classList.toggle("is-inactive-client", !user.isActive);
-    row.append(nameCell, emailCell, clientTypeCell, spendCell, activeCell, toolsCell, lastLoginCell, actionCell);
+    row.append(nameCell, emailCell, clientTypeCell, spendCell, activeCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 
@@ -13495,25 +13209,9 @@ function createAdminUserDetailView(user) {
     );
   }
 
-  const draftFeatureIds = getAdminUserDraftFeatureIds(user.email, user.assignedFeatureIds);
-  const hasChanges = !featureIdListsMatch(draftFeatureIds, user.assignedFeatureIds);
-  const isSaving = Boolean(state.adminSaveBusyByEmail[user.email]);
   const isDeleting = Boolean(state.adminDeleteBusyByEmail[user.email]);
   const isStatusSaving = Boolean(state.adminStatusBusyByEmail[user.email]);
   const deleteDisabledReason = getAdminUserDeleteDisabledReason(user);
-  const toolInputsDisabled = isDeleting || isStatusSaving;
-  const featureLookup = new Map(state.adminFeatures.map((feature) => [feature.featureId, feature]));
-  const assignedFeatures = draftFeatureIds.map((featureId) => (
-    featureLookup.get(featureId) || {
-      featureId,
-      name: featureId,
-      description: "",
-      channel: "",
-      mode: "",
-    }
-  ));
-  const filteredFeatures = getFilteredAdminFeatures();
-  const showToolResults = state.adminFeaturePickerOpen;
 
   const wrapper = document.createElement("div");
   wrapper.className = "admin-users-view admin-users-detail-view";
@@ -13532,11 +13230,7 @@ function createAdminUserDetailView(user) {
     user.isActive ? "is-active-client" : "is-inactive-client",
   );
 
-  const toolsBadge = document.createElement("span");
-  toolsBadge.className = "feature-status";
-  toolsBadge.textContent = `${draftFeatureIds.length} visible tool${draftFeatureIds.length === 1 ? "" : "s"}`;
-
-  strip.append(roleBadge, clientTypeBadge, activeBadge, toolsBadge);
+  strip.append(roleBadge, clientTypeBadge, activeBadge);
 
   const grid = document.createElement("div");
   grid.className = "admin-detail-grid";
@@ -13559,10 +13253,10 @@ function createAdminUserDetailView(user) {
   infoActions.className = "admin-detail-panel-actions";
 
   const statusControl = createAdminActiveSwitch(user, {
-    disabled: isSaving || isDeleting,
+    disabled: isDeleting,
   });
   const clientTypeControl = createAdminClientTypeSelect(user, {
-    disabled: isSaving || isDeleting || isStatusSaving,
+    disabled: isDeleting || isStatusSaving,
   });
   infoActions.append(clientTypeControl);
   infoActions.append(statusControl);
@@ -13571,7 +13265,7 @@ function createAdminUserDetailView(user) {
   editButton.type = "button";
   editButton.className = "ghost-button small";
   editButton.dataset.adminOpenEditUser = user.email;
-  editButton.disabled = isSaving || isDeleting || isStatusSaving;
+  editButton.disabled = isDeleting || isStatusSaving;
   editButton.textContent = "Edit client";
   infoActions.append(editButton);
 
@@ -13579,7 +13273,7 @@ function createAdminUserDetailView(user) {
   deleteButton.type = "button";
   deleteButton.className = "ghost-button danger small";
   deleteButton.dataset.adminDeleteUser = user.email;
-  deleteButton.disabled = isSaving || isDeleting || isStatusSaving || Boolean(deleteDisabledReason);
+  deleteButton.disabled = isDeleting || isStatusSaving || Boolean(deleteDisabledReason);
   deleteButton.textContent = isDeleting ? "Deleting..." : "Delete client";
   infoActions.append(deleteButton);
 
@@ -13591,116 +13285,7 @@ function createAdminUserDetailView(user) {
     infoPanel.append(deleteNote);
   }
 
-  const accessPanel = document.createElement("section");
-  accessPanel.className = "admin-detail-panel admin-detail-access-panel";
-
-  const accessTitle = document.createElement("h4");
-  accessTitle.textContent = "Visible tools";
-
-  const availableFeatures = filteredFeatures.filter((feature) => !draftFeatureIds.includes(feature.featureId));
-
-  const picker = document.createElement("div");
-  picker.className = "admin-tool-picker";
-  picker.dataset.adminFeaturePicker = "true";
-
-  const searchField = document.createElement("label");
-  searchField.className = "field admin-tool-search-field";
-
-  const searchLabel = document.createElement("span");
-  searchLabel.textContent = "Search tools";
-
-  const searchInput = document.createElement("input");
-  searchInput.type = "text";
-  searchInput.placeholder = "Click to browse all tools or type to filter";
-  searchInput.value = state.adminFeatureSearch;
-  searchInput.autocomplete = "off";
-  searchInput.disabled = toolInputsDisabled;
-  searchInput.dataset.adminFeatureSearchInput = "true";
-  searchInput.setAttribute("aria-expanded", String(showToolResults));
-
-  searchField.append(searchLabel, searchInput);
-
-  const results = document.createElement("div");
-  results.className = `admin-tool-results${showToolResults ? "" : " is-hidden"}`;
-
-  if (!state.adminFeatures.length) {
-    const empty = document.createElement("p");
-    empty.className = "admin-empty-copy";
-    empty.textContent = "No active tools are available to assign.";
-    results.append(empty);
-  } else if (!availableFeatures.length && !state.adminFeatureSearch) {
-    const empty = document.createElement("p");
-    empty.className = "admin-empty-copy";
-    empty.textContent = "All tools are already assigned.";
-    results.append(empty);
-  } else if (!availableFeatures.length) {
-    const empty = document.createElement("p");
-    empty.className = "admin-empty-copy";
-    empty.textContent = "No tools match that search.";
-    results.append(empty);
-  } else {
-    results.append(
-      ...availableFeatures.map((feature) => createAdminFeatureSearchResult(feature, {
-        disabled: toolInputsDisabled,
-        userEmail: user.email,
-      })),
-    );
-  }
-
-  picker.append(searchField, results);
-
-  const assignedShell = document.createElement("div");
-  assignedShell.className = "admin-assigned-tools-shell";
-
-  const assignedHead = document.createElement("div");
-  assignedHead.className = "admin-assigned-tools-head";
-
-  const assignedTitle = document.createElement("h5");
-  assignedTitle.textContent = "Assigned tools";
-
-  const assignedCount = document.createElement("span");
-  assignedCount.className = "status-pill";
-  assignedCount.textContent = `${assignedFeatures.length} selected`;
-
-  assignedHead.append(assignedTitle, assignedCount);
-
-  const assignedList = document.createElement("div");
-  assignedList.className = "admin-assigned-tools";
-  if (!assignedFeatures.length) {
-    const empty = document.createElement("p");
-    empty.className = "admin-tool-badge-empty";
-    empty.textContent = "No tools assigned yet.";
-    assignedList.append(empty);
-  } else {
-    assignedList.append(
-      ...assignedFeatures.map((feature) => createAdminAssignedFeatureBadge(feature, {
-        userEmail: user.email,
-        disabled: toolInputsDisabled,
-      })),
-    );
-  }
-
-  assignedShell.append(assignedHead, assignedList);
-
-  const actions = document.createElement("div");
-  actions.className = "card-actions admin-user-actions";
-
-  const summary = document.createElement("span");
-  summary.className = "admin-user-summary";
-  if (isDeleting) {
-    summary.textContent = "Deleting user…";
-  } else if (isSaving) {
-    summary.textContent = "Saving changes…";
-  } else if (hasChanges) {
-    summary.textContent = "Changes not saved";
-  } else {
-    summary.textContent = "All access changes saved";
-  }
-
-  actions.append(summary);
-  accessPanel.append(accessTitle, picker, assignedShell, actions);
-
-  grid.append(infoPanel, accessPanel, createAdminSpendPanel(user));
+  grid.append(infoPanel, createAdminSpendPanel(user));
   wrapper.append(strip, grid);
   return wrapper;
 }
@@ -13793,27 +13378,13 @@ async function refreshAdminUsers(options = {}) {
   }
 
   try {
-    const previousUsersByEmail = new Map(state.adminUsers.map((user) => [user.email, user]));
-    const previousDrafts = state.adminUserDrafts;
     const response = await apiRequest("/api/admin/users", {
       timeoutMs: options.timeoutMs || 15000,
     });
 
-    state.adminFeatures = (Array.isArray(response.features) ? response.features : [])
-      .map((feature) => normalizeAdminFeatureRecord(feature))
-      .filter((feature) => feature.featureId)
-      .sort((left, right) => {
-        const leftSort = Number.isFinite(left.sortOrder) ? left.sortOrder : 100;
-        const rightSort = Number.isFinite(right.sortOrder) ? right.sortOrder : 100;
-        if (leftSort !== rightSort) {
-          return leftSort - rightSort;
-        }
-        return left.name.localeCompare(right.name);
-      });
     state.adminUsers = sortAdminUsers((Array.isArray(response.users) ? response.users : [])
       .map((user) => normalizeAdminUserRecord(user))
       .filter((user) => user.email));
-    state.adminUserDrafts = buildAdminUserDrafts(state.adminUsers, previousUsersByEmail, previousDrafts);
     if (state.adminView === "detail" && !state.adminUsers.some((user) => user.email === state.adminSelectedUserEmail)) {
       state.adminView = "list";
       state.adminSelectedUserEmail = "";
@@ -13928,7 +13499,6 @@ async function addAdminUser() {
     const createdUser = upsertAdminUserState(response.user || {
       email,
       displayName,
-      assignedFeatureIds: [],
     });
 
     state.adminView = "detail";
@@ -14110,76 +13680,6 @@ async function saveAdminUserClientType(email, clientType) {
   }
 }
 
-async function saveAdminUserFeatures(email) {
-  const normalizedEmail = normalizeEmail(email);
-  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
-  if (!canManageClients() || !user || state.adminSaveBusyByEmail[normalizedEmail]) {
-    return;
-  }
-
-  const requestedFeatureIds = getAdminUserDraftFeatureIds(normalizedEmail, user.assignedFeatureIds);
-  state.adminSaveBusyByEmail = {
-    ...state.adminSaveBusyByEmail,
-    [normalizedEmail]: true,
-  };
-  state.adminUsersError = "";
-  renderApp();
-
-  let didSucceed = false;
-  try {
-    await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/features`, {
-      method: "POST",
-      body: {
-        assignedFeatureIds: requestedFeatureIds,
-      },
-    });
-
-    state.adminUsers = state.adminUsers.map((entry) => (
-      entry.email === normalizedEmail
-        ? {
-          ...entry,
-          assignedFeatureIds: [...requestedFeatureIds],
-        }
-        : entry
-    ));
-
-    if (normalizedEmail === activeEmail) {
-      await refreshFeatureActivationStates({ render: false });
-      try {
-        await refreshWhatsAppConnection({ render: false });
-      } catch {
-        // Keep the user access update even if the follow-up refresh fails.
-      }
-    }
-
-    await refreshAdminUsers({ render: false });
-    didSucceed = true;
-  } catch (error) {
-    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t save tool access right now.");
-  } finally {
-    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminSaveBusyByEmail;
-    state.adminSaveBusyByEmail = nextBusy;
-    const latestUser = state.adminUsers.find((entry) => entry.email === normalizedEmail) || null;
-    const shouldRetry = didSucceed
-      && Boolean(latestUser)
-      && (
-        Boolean(state.adminSaveQueuedByEmail[normalizedEmail])
-        || !featureIdListsMatch(
-          getAdminUserDraftFeatureIds(normalizedEmail, latestUser.assignedFeatureIds),
-          latestUser.assignedFeatureIds,
-        )
-      );
-    setAdminUserSaveQueued(normalizedEmail, false);
-    renderApp();
-    if (didSucceed) {
-      setStatus("Client access saved");
-    }
-    if (shouldRetry && !state.adminDeleteBusyByEmail[normalizedEmail]) {
-      void saveAdminUserFeatures(normalizedEmail);
-    }
-  }
-}
-
 function deleteAdminUser(email) {
   const normalizedEmail = normalizeEmail(email);
   const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
@@ -14235,8 +13735,6 @@ async function confirmAdminUserDelete(email) {
 
     persistJson(getClientKey(normalizedEmail), null);
     removeAdminUserState(normalizedEmail);
-    state.adminFeatureSearch = "";
-    state.adminFeaturePickerOpen = false;
     didSucceed = true;
     void refreshAdminUsers({ render: false });
   } catch (error) {
@@ -24834,6 +24332,9 @@ function getAgentActionIntentText(action, value = "") {
   if (normalizedAction === "open-setup") {
     return "Open setup";
   }
+  if (normalizedAction === "open-connection") {
+    return value === "calendar" ? "Connect my calendar" : "Connect a mailbox";
+  }
   if (normalizedAction === "credential-help") {
     return "Help me get it";
   }
@@ -24924,6 +24425,16 @@ function handleAgentMessageAction(event) {
 
   if (action === "save-one-off-as-action") {
     void saveAgentOneOffAsAction(resultMessage);
+    return true;
+  }
+
+  // Someone who backs out of the sign-in has to be able to press it again, so
+  // this button survives being used.
+  if (action === "open-connection") {
+    pushAgentActionIntentMessage(action, value);
+    persistClientState();
+    renderAgentMessages();
+    openPlatformConnection(value === "calendar" ? "calendar" : "email", { origin: "chat" });
     return true;
   }
 
@@ -25597,11 +25108,11 @@ function getAgentAnswerRunBlocker(proposalType) {
   if (proposalType === "calendar-summary") {
     return isCalendarConnectionReady()
       ? ""
-      : "I need your calendar connected before I can look that up. Open Calendar setup and connect it with read access.";
+      : "I need your calendar connected before I can look that up. Connect it with read-only access.";
   }
   return isEmailConnectionReady()
     ? ""
-    : "I need a mailbox connected before I can look that up. Connect Gmail or Outlook with read access, then ask me again.";
+    : "I need a mailbox connected before I can look that up. Connect Gmail or Outlook with read access.";
 }
 
 function getAgentAnswerRunFailureMessage(proposalType) {
@@ -25615,6 +25126,96 @@ function getAgentAnswerRunFailureMessage(proposalType) {
     return "I couldn’t read the connected calendar just now. Check Calendar setup and ask me again.";
   }
   return "I couldn’t finish looking that up just now. Check Email setup and ask me again.";
+}
+
+// The connection a blocked lookup is waiting on. Naming it here is what lets
+// the message that reports the block carry the button that clears it, because
+// connecting a mailbox is something to do rather than somewhere to be sent.
+function getAgentAnswerRunConnection(proposalType) {
+  if (!getAgentAnswerRunBlocker(proposalType)) {
+    return null;
+  }
+  return proposalType === "calendar-summary"
+    ? { platformId: "calendar", label: "Connect your calendar" }
+    : { platformId: "email", label: "Connect a mailbox" };
+}
+
+// Two lookups waiting on the same mailbox are one button. Which mailbox it is
+// stays with the connect flow, which already asks Gmail or Outlook and knows
+// how to sign in to either.
+function getAgentAnswerRunConnectionActions(tasks = []) {
+  const connections = new Map();
+  for (const task of tasks) {
+    const connection = getAgentAnswerRunConnection(task?.proposalType);
+    if (connection && !connections.has(connection.platformId)) {
+      connections.set(connection.platformId, connection);
+    }
+  }
+  return Array.from(connections.values()).map((connection, index) => createAgentAction(
+    "open-connection",
+    connection.label,
+    connection.platformId,
+    index === 0 ? "primary" : "secondary",
+  ));
+}
+
+// Keep the question itself, not just the sentence saying it cannot be answered.
+// Nothing else remembers it - a question makes no proposal and no action - so
+// without this, connecting the mailbox answers nothing and the whole question
+// has to be typed again.
+function rememberAgentAnswerRunForConnection(tasks, userText) {
+  const agent = getAgentWorkspace();
+  agent.pendingAnswerRun = normalizeAgentPendingAnswerRun({
+    tasks,
+    userText,
+    chatId: agent.activeChatId,
+    createdAt: new Date().toISOString(),
+  });
+  return agent.pendingAnswerRun;
+}
+
+// The connection has arrived, so the question that stopped for it runs now.
+function resumeAgentAnswerRunAfterConnection(options = {}) {
+  const agent = getAgentWorkspace();
+  const pending = agent.pendingAnswerRun;
+  if (!pending) {
+    return false;
+  }
+
+  // The question belongs to the chat it was asked in. Answering it into a
+  // different one puts the answer where nobody is looking.
+  if (pending.chatId && pending.chatId !== agent.activeChatId) {
+    return false;
+  }
+
+  // One connection does not always clear the way: a message that asked about
+  // the mailbox and the calendar is still waiting on the other one.
+  if (pending.tasks.some((task) => getAgentAnswerRunBlocker(task.proposalType))) {
+    return false;
+  }
+
+  agent.pendingAnswerRun = null;
+  const connectionMessage = String(options.connectionMessage || "").trim();
+  const reply = joinAgentResumeSentences(
+    connectionMessage || "That connection is ready",
+    "Picking your question back up now.",
+  );
+  pushAgentMessage("assistant", reply, { kind: "text" });
+  persistAgentWorkspace(reply);
+  agentTurnProgressText = "Running task";
+  agentTurnBusy = true;
+  renderApp({ preserveStatus: true });
+  void completeAgentAnswerRun({
+    tasks: pending.tasks,
+    userText: pending.userText,
+    decisions: [],
+    tokens: {},
+  }).finally(() => {
+    agentTurnBusy = false;
+    agentTurnProgressText = "Thinking";
+    renderApp({ preserveStatus: true });
+  });
+  return true;
 }
 
 // One message can ask for more than one lookup. Each one runs on its own and
@@ -26188,8 +25789,19 @@ async function runAgentAnswerNow(turn, userText = "") {
   if (blockers.every(Boolean)) {
     // Two lookups can be waiting on two different connections, and asking for
     // one of them is only half of what the message needs.
-    const blocked = Array.from(new Set(blockers)).join("\n\n");
-    pushAgentMessage("assistant", blocked, { kind: "credential" });
+    const blocked = [
+      ...new Set(blockers),
+      "I’ll pick this question back up as soon as it’s connected.",
+    ].join("\n\n");
+    rememberAgentAnswerRunForConnection(tasks, userText);
+    pushAgentMessage("assistant", blocked, {
+      kind: "credential",
+      actions: getAgentAnswerRunConnectionActions(tasks),
+      // The connection is still missing however much is said afterwards, so
+      // the button that makes it stays usable rather than greying out behind
+      // the next message.
+      keepActions: true,
+    });
     persistAgentWorkspace(blocked);
     renderApp({ preserveStatus: true });
     return true;
@@ -26287,12 +25899,21 @@ async function completeAgentAnswerRun(run) {
     // out is offered here, on the result, while it is still in front of the
     // user. Those buttons stay live for the rest of the conversation.
     const resultActions = everyTaskFailed ? [] : buildAgentAnswerResultActions(runResults, tasks);
+    // Half an answer is still half a question waiting on a connection. The
+    // part that could not run is kept and offered the same button, so the
+    // owner is not left to ask that half over again.
+    const blockedTasks = tasks.filter((task, index) => Boolean(blockers[index]));
+    const connectActions = getAgentAnswerRunConnectionActions(blockedTasks);
+    if (connectActions.length) {
+      rememberAgentAnswerRunForConnection(blockedTasks, userText);
+    }
+    const messageActions = [...connectActions, ...resultActions];
     pushAgentMessage("assistant", answer, {
       kind: everyTaskFailed ? "error" : "result",
       technical: everyTaskFailed && lastError ? getAgentErrorTechnicalInfo(lastError) : undefined,
       chart: everyTaskFailed ? undefined : chart || undefined,
-      actions: resultActions,
-      keepActions: resultActions.length > 0,
+      actions: messageActions,
+      keepActions: messageActions.length > 0,
       oneOff: resultActions.length
         ? {
           requestText: String(userText || ""),
@@ -34424,20 +34045,6 @@ function bindEvents() {
     });
   }
   if (elements.adminUsersPane) {
-    elements.adminUsersPane.addEventListener("focusin", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement) || target.dataset.adminFeatureSearchInput !== "true") {
-        return;
-      }
-
-      if (!state.adminFeaturePickerOpen) {
-        const caret = target.selectionStart;
-        state.adminFeaturePickerOpen = true;
-        renderAdminUsersPane();
-        focusAdminFeatureSearchInput(caret);
-      }
-    });
-
     elements.adminUsersPane.addEventListener("input", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement)) {
@@ -34455,15 +34062,6 @@ function bindEvents() {
             nextInput.setSelectionRange(caret, caret);
           }
         }
-        return;
-      }
-
-      if (target.dataset.adminFeatureSearchInput === "true") {
-        const caret = target.selectionStart;
-        state.adminFeatureSearch = target.value;
-        state.adminFeaturePickerOpen = true;
-        renderAdminUsersPane();
-        focusAdminFeatureSearchInput(caret);
         return;
       }
 
@@ -34510,25 +34108,6 @@ function bindEvents() {
         return;
       }
 
-      const featureId = String(target.dataset.adminFeatureId || "").trim();
-      if (!featureId) {
-        return;
-      }
-
-      const userEmail = normalizeEmail(target.dataset.adminUserEmail || "");
-      if (!userEmail) {
-        return;
-      }
-
-      const nextFeatureIds = new Set(getAdminUserDraftFeatureIds(userEmail));
-      if (target.checked) {
-        nextFeatureIds.add(featureId);
-      } else {
-        nextFeatureIds.delete(featureId);
-      }
-      setAdminUserDraftFeatureIds(userEmail, Array.from(nextFeatureIds));
-      queueAdminUserFeatureAutosave(userEmail);
-      renderAdminUsersPane();
     });
 
     elements.adminUsersPane.addEventListener("click", (event) => {
@@ -34552,31 +34131,6 @@ function bindEvents() {
       const openEditUserButton = target.closest("[data-admin-open-edit-user]");
       if (openEditUserButton) {
         openAdminEditUser(openEditUserButton.dataset.adminOpenEditUser || "");
-        return;
-      }
-
-      const addFeatureButton = target.closest("[data-admin-add-feature]");
-      if (addFeatureButton) {
-        addAdminUserDraftFeature(
-          addFeatureButton.dataset.adminUserEmail || "",
-          addFeatureButton.dataset.adminAddFeature || "",
-        );
-        queueAdminUserFeatureAutosave(addFeatureButton.dataset.adminUserEmail || "");
-        state.adminFeatureSearch = "";
-        state.adminFeaturePickerOpen = true;
-        renderAdminUsersPane();
-        focusAdminFeatureSearchInput();
-        return;
-      }
-
-      const removeFeatureButton = target.closest("[data-admin-remove-feature]");
-      if (removeFeatureButton) {
-        removeAdminUserDraftFeature(
-          removeFeatureButton.dataset.adminUserEmail || "",
-          removeFeatureButton.dataset.adminRemoveFeature || "",
-        );
-        queueAdminUserFeatureAutosave(removeFeatureButton.dataset.adminUserEmail || "");
-        renderAdminUsersPane();
         return;
       }
 
@@ -34618,15 +34172,6 @@ function bindEvents() {
     elements.adminUsersPane.addEventListener("keydown", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLInputElement)) {
-        return;
-      }
-
-      if (target.dataset.adminFeatureSearchInput === "true" && event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        state.adminFeatureSearch = "";
-        state.adminFeaturePickerOpen = false;
-        renderAdminUsersPane();
         return;
       }
 
@@ -35122,7 +34667,6 @@ function bindEvents() {
     const billingHelpButton = elements.billingHelpButton;
     const billingHelpPopover = elements.billingHelpPopover;
     const target = getEventTargetElement(event);
-    const pickerTarget = target?.closest("[data-admin-feature-picker=\"true\"]") || null;
     if (
       state.billingHelpOpen
       && billingHelpPopover
@@ -35131,11 +34675,6 @@ function bindEvents() {
       && !billingHelpButton.contains(event.target)
     ) {
       closeBillingHelp();
-    }
-
-    if (state.adminFeaturePickerOpen && !pickerTarget) {
-      state.adminFeaturePickerOpen = false;
-      renderAdminUsersPane();
     }
 
     if (
