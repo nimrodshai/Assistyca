@@ -7073,7 +7073,7 @@ body.is-agent-dragging {
 
 .agent-tool-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 0.7rem;
   align-items: center;
   width: 100%;
@@ -7133,17 +7133,6 @@ body.is-agent-dragging {
 .agent-tools-empty {
   color: var(--muted);
   font-size: 0.78rem;
-}
-
-.agent-tool-arrow {
-  color: var(--muted-strong);
-  font-size: 1rem;
-  transition: transform 160ms ease;
-}
-
-.agent-tool-item:hover .agent-tool-arrow,
-.agent-tool-item:focus-visible .agent-tool-arrow {
-  transform: translateX(0.15rem);
 }
 
 .agent-tools-empty {

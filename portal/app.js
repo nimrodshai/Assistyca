@@ -30283,12 +30283,7 @@ function createAgentToolItem(feature) {
     : (needsWhatsAppDetails ? "Needs details" : "Available");
   copy.append(title, detail);
 
-  const arrow = document.createElement("span");
-  arrow.className = "agent-tool-arrow";
-  arrow.setAttribute("aria-hidden", "true");
-  arrow.textContent = "→";
-
-  item.append(icon, copy, arrow);
+  item.append(icon, copy);
   return item;
 }
 
@@ -30382,11 +30377,7 @@ function createAgentPlatformConnectionItem(connection) {
   detail.textContent = getPlatformConnectionStatus(connection).label;
   copy.append(title, detail);
 
-  const arrow = document.createElement("span");
-  arrow.className = "agent-tool-arrow";
-  arrow.setAttribute("aria-hidden", "true");
-  arrow.textContent = "→";
-  item.append(icon, copy, arrow);
+  item.append(icon, copy);
   return item;
 }
 
