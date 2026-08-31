@@ -3181,19 +3181,117 @@ body[data-modal="billing"] .app-shell {
 /* What "my calendar" means for a connected Google account: the calendars a
    question asked in chat reads, listed on the tool that manages the account. */
 .connected-calendars {
+  width: 100%;
+}
+
+/* A connected account is a summary of three things - the access, the
+   calendars, the mailboxes - so each one gets the same quiet label and the
+   same spacing, and the card reads as a list rather than as a pile. */
+.connection-section {
   display: grid;
   gap: 0.4rem;
   width: 100%;
 }
 
-/* The calendar-oauth dialog stretches its small ghost buttons to full width,
-   which is right for the stacked connect buttons but not for a button sitting
-   beside a mailbox address. Matched specificity to opt this one row out. */
-.auth-alert-dialog[data-variant="calendar-oauth"] .ghost-button.small.connected-mailbox-disconnect {
+.connection-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.connection-section-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+/* The way into a section, sitting on its heading line: a link, so it never
+   competes with the one real button on the card. */
+.connection-section-action {
   flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.connection-section-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+/* The permissions a connected account already granted, stated rather than
+   explained: three words instead of three sentences. */
+.google-access-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.google-access-chip {
+  padding: 0.24rem 0.62rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(15, 118, 110, 0.09);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Disconnecting is the one destructive thing on the card, so it reads as a
+   quiet, clearly different link rather than as another button the same size
+   and colour as the way into a list. */
+.auth-alert-dialog[data-variant="calendar-oauth"] .connection-danger-link,
+.connection-danger-link {
+  flex: 0 0 auto;
+  justify-self: start;
   width: auto;
+  min-width: 0;
   min-height: 0;
-  padding: 0.42rem 0.75rem;
+  padding: 0.1rem 0;
+  border: 0;
+  background: transparent;
+  color: #a4402b;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.connection-danger-link:hover,
+.connection-danger-link:focus-visible {
+  color: #8c2f14;
+  background: transparent;
+  transform: none;
+  text-decoration: underline;
+}
+
+/* The card-level disconnect closes the card, so it sits apart from the
+   sections above it rather than reading as the end of the last one. */
+.auth-alert-dialog[data-variant="calendar-oauth"] .connection-danger-link.platform-connection-disconnect {
+  margin-top: 0.35rem;
+  padding-top: 0.62rem;
+  border-top: 1px solid rgba(20, 28, 38, 0.08);
+  width: 100%;
+  text-align: left;
+}
+
+/* A row-level disconnect keeps its distance from the address beside it. */
+.connected-mailbox-row .connection-danger-link {
+  margin-left: 0.15rem;
+}
+
+/* A message where a calendar name would be: it explains rather than names, so
+   it wraps instead of being cut off mid-sentence. */
+.connected-mailbox-name-muted {
+  color: var(--muted);
+  white-space: normal;
   font-size: 0.8rem;
 }
 
@@ -12682,6 +12780,40 @@ body.is-chat-view {
 
 :root[data-theme="dark"] .calendar-color-dot {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .connection-danger-link.platform-connection-disconnect {
+  border-top-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .connection-danger-link {
+  color: #ff9f86;
+  background: transparent;
+}
+
+:root[data-theme="dark"] .connection-danger-link:hover,
+:root[data-theme="dark"] .connection-danger-link:focus-visible {
+  color: #ffb9a5;
+  background: transparent;
+}
+
+/* The generic dark ghost-button colour outranks .ghost-button.danger, so a
+   destructive button read as an ordinary one until it was said again here. */
+:root[data-theme="dark"] .ghost-button.danger {
+  color: #ff9f86;
+  border-color: rgba(255, 120, 98, 0.28);
+}
+
+:root[data-theme="dark"] .ghost-button.danger:hover,
+:root[data-theme="dark"] .ghost-button.danger:focus-visible {
+  color: #ffb9a5;
+  border-color: rgba(255, 120, 98, 0.44);
+  background: rgba(255, 120, 98, 0.12);
+}
+
+:root[data-theme="dark"] .google-access-chip {
+  color: var(--accent-strong);
+  background: rgba(55, 184, 171, 0.14);
 }
 
 :root[data-theme="dark"] .calendar-oauth-permission-access {

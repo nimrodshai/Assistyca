@@ -6409,7 +6409,7 @@ function createConnectedMailboxList(option, connections = []) {
 
     const disconnect = document.createElement("button");
     disconnect.type = "button";
-    disconnect.className = "ghost-button danger small connected-mailbox-disconnect";
+    disconnect.className = "text-button connection-danger-link connected-mailbox-disconnect";
     // The provider is part of the name here: two mailboxes can share an
     // address, and a confirmation has to say which one it would remove.
     const mailboxName = `${getEmailConnectionName(connection)} (${provider.textContent})`;
@@ -6454,7 +6454,7 @@ function createGoogleConnectionDisconnectButton(option, connections = []) {
   const label = option.label || "Google";
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "ghost-button danger small platform-connection-disconnect";
+  button.className = "text-button connection-danger-link platform-connection-disconnect";
   button.textContent = `Disconnect ${label}`;
   button.setAttribute("aria-label", `Disconnect ${label}`);
   button.addEventListener("click", () => {
@@ -7144,6 +7144,45 @@ function createGoogleOAuthPermissionList(option, options = {}) {
   return wrapper;
 }
 
+// Once Google is connected the permissions are a fact, not a choice, so the
+// card states them in one line of chips instead of repeating a tick, a badge
+// and a sentence of explanation for each one. The full list with its wording
+// belongs to the step where the access is actually being chosen.
+function createGoogleOAuthPermissionSummary() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "connection-section google-access";
+
+  const heading = document.createElement("p");
+  heading.className = "connection-section-label";
+  heading.textContent = "Read-only access";
+
+  const list = document.createElement("ul");
+  list.className = "google-access-chips";
+  const missing = [];
+  for (const scopeOption of GOOGLE_CONNECTION_SCOPE_OPTIONS) {
+    const permissionState = getGoogleOAuthPermissionState(scopeOption, { readOnly: true });
+    if (!permissionState.checked) {
+      missing.push(scopeOption.label);
+      continue;
+    }
+    const chip = document.createElement("li");
+    chip.className = "google-access-chip";
+    chip.textContent = scopeOption.label;
+    list.append(chip);
+  }
+
+  wrapper.append(heading, list);
+  // Only said when there is something to say: a permission left out is worth a
+  // line, and an account holding all three needs no sentence at all.
+  if (missing.length) {
+    const note = document.createElement("p");
+    note.className = "connection-section-note";
+    note.textContent = `Not connected: ${missing.join(" and ")}.`;
+    wrapper.append(note);
+  }
+  return wrapper;
+}
+
 function getSelectedGoogleOAuthScopeIds(container) {
   return Array.from(container?.querySelectorAll("input[data-google-scope-id]") || [])
     .filter((input) => input.checked)
@@ -7179,16 +7218,22 @@ function createCalendarColorDot(color) {
 // what a question asked in chat would actually read.
 function createGoogleConnectedCalendarsSection(option) {
   const section = document.createElement("div");
-  section.className = "connected-calendars";
+  section.className = "connection-section connected-calendars";
 
+  const head = document.createElement("div");
+  head.className = "connection-section-head";
   const heading = document.createElement("p");
-  heading.className = "connected-mailbox-heading";
+  heading.className = "connection-section-label";
+  heading.textContent = "Calendars";
   const list = document.createElement("ul");
   list.className = "connected-mailbox-list";
+  // Changing the calendars sits beside the heading as a link, not below the
+  // list as a button: it is a way into this list, not a second thing the card
+  // offers next to disconnecting.
   const changeButton = document.createElement("button");
   changeButton.type = "button";
-  changeButton.className = "ghost-button small connected-calendars-change";
-  changeButton.textContent = "Choose calendars";
+  changeButton.className = "text-button connection-section-action connected-calendars-change";
+  changeButton.textContent = "Choose";
   changeButton.addEventListener("click", () => {
     openGoogleCalendarChoice(option, {
       // Changing the calendars is a detour from the tool, so it leads back to
@@ -7212,18 +7257,19 @@ function createGoogleConnectedCalendarsSection(option) {
           source?.message
           || state.agentCalendarSourcesError
           // Connected but never asked. Saying "not chosen yet" is the honest
-          // reading: nothing is being read, and the button beside it is what
-          // changes that.
+          // reading: nothing is being read, and the link beside the heading is
+          // what changes that.
           || (source
-            ? "Not chosen yet, so none are read. Choose calendars to let Assistyca answer calendar questions."
+            ? "None chosen yet, so none are read."
             : "The calendar of this Google account.")
         );
+      name.classList.add("connected-mailbox-name-muted");
       row.append(name);
       list.append(row);
-      heading.textContent = "Calendar";
+      changeButton.textContent = "Choose";
       return;
     }
-    heading.textContent = chosen.length === 1 ? "Calendar Assistyca reads" : "Calendars Assistyca reads";
+    changeButton.textContent = "Change";
     for (const calendar of chosen) {
       const row = document.createElement("li");
       row.className = "connected-mailbox-row";
@@ -7245,7 +7291,8 @@ function createGoogleConnectedCalendarsSection(option) {
     }
   };
 
-  section.append(heading, list, changeButton);
+  head.append(heading, changeButton);
+  section.append(head, list);
   render();
   // The card is already on screen, so the list fills in when the account
   // answers rather than holding the card closed until it does.
@@ -7555,7 +7602,9 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
   const setupMessage = isEmailConnection
     ? "Choose the Gmail account Assistyca should read."
     : (isConnected
-      ? "These Google permissions are connected and ready to use."
+      // Connected, the card is a summary of what Assistyca reads, so its one
+      // line of copy says that and the sections below say the rest.
+      ? "Here is what Assistyca reads from this account."
       : "Choose the Google access Assistyca can use.");
   const assistantSuccessMessage = isEmailConnection
     ? "Gmail is connected with read-only access. You can use it for email digest actions."
@@ -7576,8 +7625,19 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
     setStatus("error", "Storage unavailable", storageMessage);
   }
 
-  const permissionList = createGoogleOAuthPermissionList(option, { readOnly: isConnected });
-  body.append(intro, permissionList, status);
+  // A connected Google account has nothing left to choose here - its primary
+  // button is gone - so the card drops the paragraph and the three explained
+  // checkboxes for a line of chips. The connect step keeps both, because there
+  // the wording is what the choice is made on.
+  const showsAccessSummary = usesAggregateGoogleConnection && isConnected;
+  const permissionList = showsAccessSummary
+    ? createGoogleOAuthPermissionSummary()
+    : createGoogleOAuthPermissionList(option, { readOnly: isConnected });
+  if (showsAccessSummary) {
+    body.append(permissionList, status);
+  } else {
+    body.append(intro, permissionList, status);
+  }
   // What "my calendar" means for this account. The Google tool is where a
   // connection is managed, so the calendars it reads are listed here beside the
   // permissions and the mailboxes rather than only inside an action.
@@ -7590,10 +7650,13 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
     ? createConnectedMailboxList(getPlatformConnectionOption("email") || option, connectedGmailMailboxes)
     : null;
   if (gmailList) {
+    const gmailSection = document.createElement("div");
+    gmailSection.className = "connection-section";
     const gmailHeading = document.createElement("p");
-    gmailHeading.className = "connected-mailbox-heading";
-    gmailHeading.textContent = gmailCount === 1 ? "Connected mailbox" : "Connected mailboxes";
-    body.append(gmailHeading, gmailList);
+    gmailHeading.className = "connection-section-label";
+    gmailHeading.textContent = gmailCount === 1 ? "Mailbox" : "Mailboxes";
+    gmailSection.append(gmailHeading, gmailList);
+    body.append(gmailSection);
   }
   // A card-level email disconnect would be ambiguous once there is more than
   // one mailbox, so each mailbox row carries its own.
