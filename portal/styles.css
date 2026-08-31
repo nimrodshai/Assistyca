@@ -6804,7 +6804,8 @@ body[data-modal="billing"] .app-shell {
 
 .agent-tools-empty {
   margin: 0;
-  padding: 0.5rem 0;
+  padding: 0.8rem;
+  text-align: center;
 }
 
 .agent-loading-row {
