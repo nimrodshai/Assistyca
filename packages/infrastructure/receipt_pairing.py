@@ -39,6 +39,7 @@ import hashlib
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from itertools import combinations
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import date
@@ -79,8 +80,11 @@ RECEIPT_PAIRING_MAX_OUTPUT_TOKENS = 1000
 # How long a question put to the owner may be. It is one sentence naming what
 # is being asked about and what the two answers would mean.
 RECEIPT_PAIRING_QUESTION_CHARS = 240
-# What an answer can say. Nothing else is stored and nothing else is applied.
-RECEIPT_PAIRING_DECISIONS = ("same", "separate")
+# What an answer can say. "skip" is the owner saying they cannot tell either:
+# the receipts stay counted apart, which is the higher and arguable total, and
+# the pair is left alone for the rest of the run rather than asked again.
+# Nothing else is applied, and only the first two are ever written down.
+RECEIPT_PAIRING_DECISIONS = ("same", "separate", "skip")
 
 RECEIPT_PAIRING_INSTRUCTIONS = (
     "You are looking at receipts from one mailbox that are all for the same amount within a few "
@@ -345,27 +349,20 @@ def pair_receipt_rows(
 
     settled = normalize_duplicate_decisions(decisions)
     paired = [dict(row) for row in rows]
-    open_clusters: list[list[int]] = []
+    open_clusters: list[tuple[list[int], _Answered]] = []
     for cluster in clusters:
-        answer = settled.get(duplicate_pair_key([rows[index] for index in cluster]))
-        if answer is None:
-            open_clusters.append(cluster)
+        answered = _apply_answers(paired, rows, cluster, settled, duplicate_status=duplicate_status)
+        # Everything in this cluster is spoken for, so there is nothing left
+        # to ask the model and nothing left to ask the owner.
+        if answered.settles(cluster):
             continue
-        if answer["decision"] == "same":
-            _merge_group(
-                paired,
-                cluster,
-                _answered_group(rows, cluster, answer),
-                duplicate_status=duplicate_status,
-            )
-        # An answer of "separate" is the receipts left as they are, which is
-        # what the rows already say.
+        open_clusters.append((cluster, answered))
     if not open_clusters:
         return ReceiptPairing(paired, [])
 
     prompts = [
         build_receipt_pairing_prompt(describe_pairing_candidates([rows[index] for index in cluster]))
-        for cluster in open_clusters
+        for cluster, _ in open_clusters
     ]
     if len(prompts) == 1:
         # One cluster is the common case, and running it here keeps a single
@@ -376,16 +373,99 @@ def pair_receipt_rows(
             replies = list(pool.map(ask, prompts))
 
     questions: list[dict[str, Any]] = []
-    for cluster, reply in zip(open_clusters, replies):
+    for (cluster, answered), reply in zip(open_clusters, replies):
         if not str(reply or "").strip():
             continue
         candidates = describe_pairing_candidates([rows[index] for index in cluster])
-        groups = read_receipt_pairings(reply, candidates)
+        # A receipt already merged by an answer is spoken for, and a pair the
+        # owner has ruled on is not the model's to overrule or to raise again.
+        groups = [
+            group for group in read_receipt_pairings(reply, candidates)
+            if answered.leaves_open(rows, cluster, group["refs"])
+        ]
         for group in groups:
             _merge_group(paired, cluster, group, duplicate_status=duplicate_status)
         for unsure in read_receipt_pairing_questions(reply, candidates, merged=groups):
+            if not answered.leaves_open(rows, cluster, unsure["refs"]):
+                # Asked and answered. Raising it again is how one question
+                # becomes the same question forever.
+                continue
             questions.append(_describe_pairing_question(rows, cluster, unsure))
     return ReceiptPairing(paired, questions)
+
+
+@dataclass(frozen=True)
+class _Answered:
+    """What the owner's answers already settled inside one cluster.
+
+    ``merged`` are the receipts an answer has folded into another, by their
+    place in the cluster. ``keys`` are the pairs that have an answer of any
+    kind, so a question already put and answered is never put again.
+    ``whole`` is true when one answer covered the entire cluster, which is
+    every cluster of two: there is then nothing left in it to ask about.
+    """
+
+    merged: set[int] = field(default_factory=set)
+    keys: set[str] = field(default_factory=set)
+    whole: bool = False
+
+    def settles(self, cluster: list[int]) -> bool:
+        return self.whole or len(self.merged) == len(cluster)
+
+    def leaves_open(self, rows: list[dict[str, Any]], cluster: list[int], refs: list[str]) -> bool:
+        positions = {int(ref) for ref in refs if str(ref).isdigit()}
+        if positions.intersection(self.merged):
+            return False
+        return duplicate_pair_key([rows[cluster[position - 1]] for position in sorted(positions)]) not in self.keys
+
+
+def _apply_answers(
+    paired: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    cluster: list[int],
+    settled: dict[str, dict[str, str]],
+    *,
+    duplicate_status: str,
+) -> _Answered:
+    """Apply every answer the owner has given about receipts in this cluster.
+
+    An answer is about the receipts it was asked about, which need not be the
+    whole cluster: three look-alike receipts can have one pair settled and the
+    third still open. So every combination inside the cluster is looked up,
+    largest first, and a receipt settled by one answer is not claimed by
+    another. Matching only the whole cluster - which is what this did at first
+    - left the answer to a pair unfindable, and the same question came back
+    after every answer to it.
+    """
+
+    merged: set[int] = set()
+    keys: set[str] = set()
+    whole = False
+    size = len(cluster)
+    for count in range(size, 1, -1):
+        for combo in combinations(range(1, size + 1), count):
+            if merged.intersection(combo):
+                continue
+            picked = [cluster[position - 1] for position in combo]
+            key = duplicate_pair_key([rows[index] for index in picked])
+            answer = settled.get(key)
+            if not answer:
+                continue
+            keys.add(key)
+            whole = whole or count == size
+            if answer["decision"] != "same":
+                # Two payments, or a pair the owner could not tell apart. Both
+                # are the receipts left as they are, which is what the rows
+                # already say; what matters is that it is not asked again.
+                continue
+            merged.update(combo)
+            _merge_group(
+                paired,
+                picked,
+                _answered_group(rows, picked, answer),
+                duplicate_status=duplicate_status,
+            )
+    return _Answered(merged, keys, whole)
 
 
 def _answered_group(

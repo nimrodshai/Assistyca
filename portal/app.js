@@ -24599,8 +24599,11 @@ function handleAgentMessageAction(event) {
     return true;
   }
 
-  if (action === "receipt-one-payment" || action === "receipt-two-payments") {
-    void answerAgentReceiptQuestion(messageId, action === "receipt-one-payment" ? "same" : "separate");
+  if (action === "receipt-one-payment" || action === "receipt-two-payments" || action === "receipt-unsure") {
+    const decision = action === "receipt-one-payment"
+      ? "same"
+      : (action === "receipt-two-payments" ? "separate" : "skip");
+    void answerAgentReceiptQuestion(messageId, decision);
     return true;
   }
 
@@ -25300,13 +25303,17 @@ async function runAgentAnswerTask(task, setProgress, pending = null) {
       // run stops here rather than reporting one: the owner is asked, and the
       // read is held open until they answer.
       if (response?.needsReceiptDecision) {
-        const question = (Array.isArray(response.receiptQuestions) ? response.receiptQuestions : [])[0];
-        if (question) {
+        const questions = (Array.isArray(response.receiptQuestions) ? response.receiptQuestions : [])
+          .filter((entry) => entry && String(entry.question || "").trim());
+        if (questions.length) {
           return {
             ok: true,
             results,
             needsDecision: true,
-            question,
+            // All of them, so a month with three coin tosses in it is three
+            // questions in a row rather than three reads of the mailbox.
+            questions,
+            questionCount: Math.max(questions.length, Number(response.receiptQuestionCount || 0)),
             tokens: { ...tokens, [chunkKey]: String(response.runToken || "") },
           };
         }
@@ -25778,8 +25785,15 @@ async function completeAgentAnswerRun(run) {
       // exactly like an answer.
       if (section.needsDecision) {
         tokens = section.tokens || tokens;
-        pushAgentReceiptQuestion({ tasks, userText, decisions, tokens }, section.question);
-        persistAgentWorkspace(section.question.question);
+        askAgentReceiptQuestions({
+          tasks,
+          userText,
+          decisions,
+          tokens,
+          queue: section.questions,
+          asked: 0,
+          total: section.questionCount || section.questions.length,
+        });
         renderApp({ preserveStatus: true });
         return true;
       }
@@ -25847,13 +25861,27 @@ async function completeAgentAnswerRun(run) {
   return true;
 }
 
-// The question itself, in the words the reading wrote it in, with the two
-// answers as buttons. The run it belongs to rides along on the message, so a
-// click has everything it needs to carry on counting.
-function pushAgentReceiptQuestion(run, question) {
-  return pushAgentMessage("assistant", String(question?.question || "").trim(), {
+// The next question in the run, in the words the reading wrote it in, with
+// the answers as buttons. The run rides along on the message, so a click has
+// everything it needs to put the next question or carry on counting.
+//
+// A month can throw up more than one of these. They are asked one after the
+// other, out of what one read already found, rather than one per read of the
+// mailbox - and each says where it sits in the set, so nobody is answering
+// into the dark wondering how many more there are.
+function askAgentReceiptQuestions(run) {
+  const queue = Array.isArray(run?.queue) ? run.queue : [];
+  const [question, ...rest] = queue;
+  if (!question) {
+    return null;
+  }
+  const asked = Number(run.asked || 0) + 1;
+  const total = Math.max(Number(run.total || 0), asked + rest.length);
+  const position = total > 1 ? ` (${asked} of ${total})` : "";
+  const text = `${String(question.question || "").trim()}${position}`;
+  const message = pushAgentMessage("assistant", text, {
     kind: "result",
-    receiptQuestion: { run, question },
+    receiptQuestion: { run: { ...run, queue: rest, asked }, question },
     // The buttons outlive the next thing the owner types. A question they
     // walked away from and came back to is still answerable, and answering it
     // is what finishes the count that is waiting on it.
@@ -25861,13 +25889,28 @@ function pushAgentReceiptQuestion(run, question) {
     actions: [
       createAgentAction("receipt-one-payment", "One payment", "One payment", "primary"),
       createAgentAction("receipt-two-payments", "Two payments", "Two separate payments"),
+      // Not knowing is an answer too, and without it a question nobody can
+      // answer is a total nobody ever gets. It counts them apart for this
+      // run - the higher figure, and the one that can be argued with - and
+      // is not remembered, because not knowing today says nothing about
+      // next month.
+      createAgentAction("receipt-unsure", "I’m not sure", "I’m not sure"),
     ],
   });
+  persistAgentWorkspace(text);
+  return message;
 }
 
-// What the owner said, applied and remembered. The answer goes back with the
-// run that was waiting on it; the server writes it down against those two
-// emails, so this pair is never asked about again.
+const AGENT_RECEIPT_ANSWER_LABELS = {
+  same: "One payment",
+  separate: "Two separate payments",
+  skip: "I’m not sure",
+};
+
+// What the owner said, applied and - unless it was "not sure" - remembered.
+// The answer joins the run that was waiting on it. If more questions came out
+// of the same read they are asked now, one after the other; the count only
+// starts again once there is nothing left to ask.
 async function answerAgentReceiptQuestion(messageId, decision) {
   const message = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
   const pending = message?.metadata?.receiptQuestion;
@@ -25875,26 +25918,33 @@ async function answerAgentReceiptQuestion(messageId, decision) {
   if (!question) {
     return false;
   }
-  const same = decision === "same";
-  pushAgentActionIntentMessage(
-    same ? "receipt-one-payment" : "receipt-two-payments",
-    same ? "One payment" : "Two separate payments",
-  );
-  removeAgentMessageAction(messageId, "receipt-one-payment");
-  removeAgentMessageAction(messageId, "receipt-two-payments");
+  const label = AGENT_RECEIPT_ANSWER_LABELS[decision] || AGENT_RECEIPT_ANSWER_LABELS.skip;
+  pushAgentActionIntentMessage(`receipt-${decision}`, label);
+  ["receipt-one-payment", "receipt-two-payments", "receipt-unsure"].forEach((actionId) => {
+    removeAgentMessageAction(messageId, actionId);
+  });
 
   const run = pending.run || {};
   const answered = {
     key: String(question.key || ""),
-    decision: same ? "same" : "separate",
+    decision,
     // Which of the two to count, when they are one payment. It is the first
     // of them, which is the receipt nearest the money.
-    keepRef: same ? String(question.receipts?.[0]?.keepRef || "") : "",
+    keepRef: decision === "same" ? String(question.receipts?.[0]?.keepRef || "") : "",
     question: String(question.question || ""),
     amount: String(question.amount || ""),
     currency: String(question.currency || ""),
     receipts: Array.isArray(question.receipts) ? question.receipts : [],
   };
+  const decisions = [...(run.decisions || []), answered];
+
+  // The read that found these is still open, and it found them together. The
+  // rest are asked from what is already in hand.
+  if (Array.isArray(run.queue) && run.queue.length) {
+    askAgentReceiptQuestions({ ...run, decisions });
+    renderApp({ preserveStatus: true });
+    return true;
+  }
 
   agentTurnBusy = true;
   agentTurnProgressText = "Working out the answer";
@@ -25903,7 +25953,7 @@ async function answerAgentReceiptQuestion(messageId, decision) {
     await completeAgentAnswerRun({
       tasks: run.tasks || [],
       userText: run.userText || "",
-      decisions: [...(run.decisions || []), answered],
+      decisions,
       tokens: run.tokens || {},
     });
   } finally {

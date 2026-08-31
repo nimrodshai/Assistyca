@@ -623,6 +623,39 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertIn("143.60 ILS", payload["answer"])
         self.assertEqual(payload["receiptCount"], 2)
 
+    def test_not_knowing_answers_the_run_without_being_remembered(self) -> None:
+        tools: list[str] = []
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
+            asked = self._run_answer(self.TWIN_FIELDS, digest=self.TWIN_DIGEST)
+            payload = self._run_answer(
+                self.TWIN_FIELDS,
+                digest=self.TWIN_DIGEST,
+                runToken=asked["runToken"],
+                receiptDecisions=[{
+                    "key": asked["receiptQuestions"][0]["key"],
+                    "decision": "skip",
+                }],
+            )
+
+        # Counted apart, which is the higher figure and the arguable one.
+        self.assertIn("143.60 ILS", payload["answer"])
+        # Nothing is written down: not knowing today says nothing about next
+        # month, so a later run is free to ask again.
+        user = self.server.database.get_user("owner@example.com") or {}
+        self.assertEqual(
+            self.server.database.list_receipt_duplicate_decisions(user_id=int(user["id"])),
+            [],
+        )
+
+    def test_the_chat_is_told_how_many_questions_there_are(self) -> None:
+        tools: list[str] = []
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
+            asked = self._run_answer(self.TWIN_FIELDS, digest=self.TWIN_DIGEST)
+
+        # One read finds them all, so the chat can say "1 of 3" instead of
+        # letting the owner discover the second one by answering the first.
+        self.assertEqual(asked["receiptQuestionCount"], len(asked["receiptQuestions"]))
+
     def test_the_same_pair_is_never_asked_about_twice(self) -> None:
         tools: list[str] = []
         with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
@@ -1191,24 +1224,35 @@ class AgentAnswerChatTests(unittest.TestCase):
         # the owner has said which it is.
         run = self.script[
             self.script.index("async function completeAgentAnswerRun"):
-            self.script.index("function pushAgentReceiptQuestion")
+            self.script.index("function askAgentReceiptQuestions")
         ]
 
         self.assertIn("if (section.needsDecision) {", run)
-        self.assertIn("pushAgentReceiptQuestion({ tasks, userText, decisions, tokens }, section.question)", run)
+        self.assertIn("queue: section.questions,", run)
         # The composed answer is below this, and the run returns before it.
         self.assertLess(run.index("section.needsDecision"), run.index("composeAgentAnswer"))
 
-    def test_the_question_offers_both_answers_as_buttons(self) -> None:
+    def test_the_question_offers_every_answer_as_a_button(self) -> None:
         question = self.script[
-            self.script.index("function pushAgentReceiptQuestion"):
-            self.script.index("async function answerAgentReceiptQuestion")
+            self.script.index("function askAgentReceiptQuestions"):
+            self.script.index("const AGENT_RECEIPT_ANSWER_LABELS")
         ]
 
         self.assertIn('createAgentAction("receipt-one-payment", "One payment"', question)
         self.assertIn('createAgentAction("receipt-two-payments", "Two payments"', question)
+        # Not knowing has to be answerable too, or a pair nobody can tell
+        # apart is a total nobody ever gets.
+        self.assertIn('createAgentAction("receipt-unsure"', question)
         # The owner can type something else first and still answer afterwards.
         self.assertIn("keepActions: true,", question)
+
+    def test_several_questions_say_which_one_this_is(self) -> None:
+        question = self.script[
+            self.script.index("function askAgentReceiptQuestions"):
+            self.script.index("const AGENT_RECEIPT_ANSWER_LABELS")
+        ]
+
+        self.assertIn("const position = total > 1 ? ` (${asked} of ${total})` : \"\";", question)
 
     def test_answering_carries_the_decision_back_into_the_same_run(self) -> None:
         answering = self.script[
@@ -1216,11 +1260,22 @@ class AgentAnswerChatTests(unittest.TestCase):
             self.script.index("async function applyAgentTurnResponse")
         ]
 
-        self.assertIn('decision: same ? "same" : "separate",', answering)
-        self.assertIn("decisions: [...(run.decisions || []), answered],", answering)
+        self.assertIn("const decisions = [...(run.decisions || []), answered];", answering)
         # The read is still held open, so the answer costs a click rather than
         # another minute of reading the mailbox.
         self.assertIn("tokens: run.tokens || {},", answering)
+
+    def test_the_rest_of_the_questions_are_asked_before_counting_again(self) -> None:
+        # One read found them all. Asking the second question does not need
+        # another read, and the count waits until there is nothing left to ask.
+        answering = self.script[
+            self.script.index("async function answerAgentReceiptQuestion"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        self.assertIn("if (Array.isArray(run.queue) && run.queue.length) {", answering)
+        self.assertIn("askAgentReceiptQuestions({ ...run, decisions });", answering)
+        self.assertLess(answering.index("run.queue.length"), answering.index("completeAgentAnswerRun"))
 
     def test_a_job_asked_for_once_runs_in_full_rather_than_answering(self) -> None:
         runner = self.script[

@@ -251,6 +251,95 @@ class AnsweredPairTests(unittest.TestCase):
         self.assertEqual(len(pairing.questions), 1)
 
 
+class ThreeOfAKindTests(unittest.TestCase):
+    """A cluster where one pair is settled and the third receipt is not.
+
+    The answer is about the receipts it was asked about, which is not always
+    the whole cluster. Looking it up by the cluster instead made the answer
+    unfindable, so the same question came back after every answer to it.
+    """
+
+    def setUp(self) -> None:
+        self.rows = [
+            row(sourceRef="m1", date="Mon, 03 Aug 2026 10:00:00 +0300"),
+            row(sourceRef="m2", date="Wed, 05 Aug 2026 10:00:00 +0300"),
+            row(sourceRef="m3", date="Fri, 07 Aug 2026 10:00:00 +0300"),
+        ]
+        self.asked: list[str] = []
+
+    def _ask(self, prompt: str) -> str:
+        self.asked.append(prompt)
+        return unsure_reply({"refs": ["1", "2"], "question": ASK_QUESTION})
+
+    def _paired(self, decisions: list[dict] | None = None):
+        return pair_receipt_rows(
+            self.rows,
+            ask=self._ask,
+            duplicate_status=DUPLICATE,
+            decisions=decisions,
+        )
+
+    def test_the_question_is_about_the_two_it_named(self) -> None:
+        question = self._paired().questions[0]
+        self.assertEqual([entry["sourceRef"] for entry in question["receipts"]], ["m1", "m2"])
+
+    def test_answering_it_settles_it_and_ends_it(self) -> None:
+        question = self._paired().questions[0]
+        answered = self._paired([{
+            "key": question["key"],
+            "decision": "same",
+            "keepRef": question["receipts"][0]["keepRef"],
+        }])
+
+        self.assertEqual([entry["status"] for entry in answered.rows], ["Ready", DUPLICATE, "Ready"])
+        self.assertEqual(answered.questions, [])
+
+    def test_two_payments_is_settled_the_same_way(self) -> None:
+        question = self._paired().questions[0]
+        answered = self._paired([{"key": question["key"], "decision": "separate"}])
+
+        self.assertEqual([entry["status"] for entry in answered.rows], ["Ready", "Ready", "Ready"])
+        self.assertEqual(answered.questions, [])
+
+    def test_the_third_receipt_is_still_open_to_a_question_of_its_own(self) -> None:
+        # Settling one pair does not settle the cluster, so the model is still
+        # asked about what is left. It is the answered pair that must not come
+        # back, not the rest of the month.
+        question = self._paired().questions[0]
+        self.asked.clear()
+        self._paired([{"key": question["key"], "decision": "separate"}])
+
+        self.assertEqual(len(self.asked), 1)
+
+
+class UnsureTests(unittest.TestCase):
+    """The owner cannot tell either, and says so."""
+
+    def _paired(self, asked: list[str]):
+        question_key = duplicate_pair_key([row(), PAYPAL])
+
+        def ask(prompt: str) -> str:
+            asked.append(prompt)
+            return unsure_reply({"refs": ["1", "2"], "question": ASK_QUESTION})
+
+        return pair_receipt_rows(
+            [row(), PAYPAL],
+            ask=ask,
+            duplicate_status=DUPLICATE,
+            decisions=[{"key": question_key, "decision": "skip"}],
+        )
+
+    def test_not_knowing_counts_them_apart_and_stops_the_asking(self) -> None:
+        asked: list[str] = []
+        pairing = self._paired(asked)
+
+        # Apart is the higher total, and the one that can be argued with.
+        self.assertEqual([entry["status"] for entry in pairing.rows], ["Ready", "Ready"])
+        # It is not put again in this run, to the owner or to the model.
+        self.assertEqual(pairing.questions, [])
+        self.assertEqual(asked, [])
+
+
 class PairingTests(unittest.TestCase):
     def _paired(self, reply: str) -> list[dict]:
         return pair_receipt_rows([row(), PAYPAL], ask=lambda prompt: reply, duplicate_status=DUPLICATE).rows

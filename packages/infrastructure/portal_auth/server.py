@@ -2241,6 +2241,10 @@ def normalize_receipt_decisions_payload(value: Any) -> list[dict[str, Any]]:
     This is a chat payload, so it says only what it is allowed to say: which
     pair, which way, and which of them to count. Everything else about those
     receipts is read from the mailbox, never from the client.
+
+    "skip" is the owner saying they cannot tell. It counts for the run in
+    front of them and is never written down, because not knowing today is not
+    an answer to be held against them next month.
     """
 
     decisions: list[dict[str, Any]] = []
@@ -2248,7 +2252,7 @@ def normalize_receipt_decisions_payload(value: Any) -> list[dict[str, Any]]:
         entry = raw if isinstance(raw, dict) else {}
         key = normalize_text(entry.get("key") or entry.get("pairKey"))[:64]
         decision = normalize_text(entry.get("decision")).lower()
-        if not key or decision not in {"same", "separate"}:
+        if not key or decision not in {"same", "separate", "skip"}:
             continue
         decisions.append({
             "pair_key": key,
@@ -5946,6 +5950,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                                 capped_mailboxes=capped_mailboxes,
                             ),
                             "receiptQuestions": pending_questions[:AGENT_RECEIPT_MAX_QUESTIONS],
+                            # How many are open in all, so the chat can say
+                            # whether this is the last one or the first of
+                            # several rather than making the owner find out by
+                            # answering.
+                            "receiptQuestionCount": len(pending_questions),
                             "message": pending_questions[0]["question"],
                         })
                         return
@@ -6958,7 +6967,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         user_id = int(user.get("id") or 0)
         if user_id <= 0:
             return []
-        for entry in normalize_receipt_decisions_payload(payload.get("receiptDecisions")):
+        given = normalize_receipt_decisions_payload(payload.get("receiptDecisions"))
+        for entry in given:
+            if entry["decision"] == "skip":
+                # Not an answer, so there is nothing to remember. It still has
+                # to reach this run, which is what the return below is for.
+                continue
             try:
                 self.database.save_receipt_duplicate_decision(user_id=user_id, **entry)
             except (ValueError, sqlite3.Error) as exc:
@@ -6966,7 +6980,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # run in front of the owner; it is being asked again that they
                 # would notice, and that is what the log is for.
                 print(f"Receipt decision could not be saved: {exc}", flush=True)
-        return self.database.list_receipt_duplicate_decisions(user_id=user_id)
+        remembered = self.database.list_receipt_duplicate_decisions(user_id=user_id)
+        return remembered + [
+            {"key": entry["pair_key"], "decision": "skip"}
+            for entry in given
+            if entry["decision"] == "skip"
+        ]
 
     def _hold_receipt_run(
         self,
