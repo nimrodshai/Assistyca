@@ -394,6 +394,19 @@ class OutlookDigestRunner:
                         if has_attachment
                         else []
                     )
+                    item["attachmentNames"] = [
+                        str(attachment.get("filename") or "").strip()
+                        for attachment in item["attachments"]
+                        if isinstance(attachment, dict) and str(attachment.get("filename") or "").strip()
+                    ]
+                elif want_body and not has_attachment:
+                    # Graph says outright that this message carries nothing,
+                    # and that is worth passing on. What a message does carry
+                    # is a request of its own per message, which a run that
+                    # was not asked to save anything does not make - so those
+                    # messages travel with nothing said about their files
+                    # rather than with a wrong "none".
+                    item["attachmentNames"] = []
                 summaries.append(item)
 
             next_link = str(payload.get("@odata.nextLink") or "").strip()

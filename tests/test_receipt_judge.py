@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_BATCH_SIZE
 from packages.infrastructure.receipt_judge import build_receipt_judgement_prompt
+from packages.infrastructure.receipt_judge import describe_attached_files
 from packages.infrastructure.receipt_judge import describe_receipt_candidates
 from packages.infrastructure.receipt_judge import judge_receipt_items
 from packages.infrastructure.receipt_judge import read_receipt_verdicts
@@ -16,6 +17,77 @@ from packages.infrastructure.receipt_judge import read_receipt_verdicts
 
 def verdicts_reply(*verdicts: dict) -> str:
     return json.dumps({"verdicts": list(verdicts)})
+
+
+ORDER_CONFIRMATION = {
+    "id": "msg-3",
+    "from": "AliExpress <transaction@notice.aliexpress.com>",
+    "subject": "Your order is confirmed",
+    "bodyText": (
+        "Hi Nimrod Shai, Your order 1121474222027734 is confirmed. Click below to track its "
+        "progress. Dog Cat Flap Door with 4 Way, black XL, x1. Order total ILS 72.46."
+    ),
+    "attachmentNames": [],
+}
+
+
+class AttachedFilesTests(unittest.TestCase):
+    """What the message was sent with, told apart from never having looked."""
+
+    def test_a_message_whose_files_were_read_says_what_they_were(self) -> None:
+        self.assertEqual(
+            describe_attached_files({"attachmentNames": ["receipt-2026-06.pdf", "terms.pdf"]}),
+            "receipt-2026-06.pdf, terms.pdf",
+        )
+
+    def test_a_message_that_carried_nothing_says_so(self) -> None:
+        self.assertEqual(describe_attached_files({"attachmentNames": []}), "none")
+
+    def test_a_message_nobody_looked_at_says_nothing_at_all(self) -> None:
+        # Not "none". A run that never read the files must not be read as a
+        # run that read them and found none.
+        self.assertEqual(describe_attached_files({"subject": "Your order is confirmed"}), "")
+
+    def test_the_files_a_bundle_already_saved_are_read_as_they_are(self) -> None:
+        self.assertEqual(
+            describe_attached_files({"attachments": [{"filename": "invoice.pdf", "status": "saved"}]}),
+            "invoice.pdf",
+        )
+
+    def test_the_field_is_left_off_a_message_whose_files_are_unknown(self) -> None:
+        candidate = describe_receipt_candidates([{"subject": "Your order is confirmed"}])[0]
+        self.assertNotIn("attached", candidate)
+
+    def test_a_message_that_carried_nothing_travels_with_that_fact(self) -> None:
+        candidate = describe_receipt_candidates([ORDER_CONFIRMATION])[0]
+        self.assertEqual(candidate["attached"], "none")
+
+
+class OrderConfirmationTests(unittest.TestCase):
+    """An order confirmed is not money taken, and the prompt has to say so."""
+
+    def test_the_prompt_does_not_count_an_order_confirmation_on_its_own(self) -> None:
+        prompt = build_receipt_judgement_prompt(describe_receipt_candidates([ORDER_CONFIRMATION]))
+        self.assertIn("An order total is what the order came to, not a statement that it was charged", prompt)
+        self.assertIn("Unless the message itself says the money was taken", prompt)
+
+    def test_the_prompt_never_offers_an_order_confirmation_as_a_receipt(self) -> None:
+        # The line this replaced read "an order confirmation for an order that
+        # was charged", and a shop's own note is not evidence it was.
+        prompt = build_receipt_judgement_prompt(describe_receipt_candidates([ORDER_CONFIRMATION]))
+        self.assertNotIn("an order confirmation for an order that was charged", prompt)
+
+    def test_the_prompt_says_what_an_enclosed_file_is_worth_and_what_it_is_not(self) -> None:
+        prompt = build_receipt_judgement_prompt(describe_receipt_candidates([ORDER_CONFIRMATION]))
+        # A receipt file settles it; carrying no file settles nothing, because
+        # plenty of real receipts are written in the body of the email.
+        self.assertIn("settles the question", prompt)
+        self.assertIn("which settles nothing on its own", prompt)
+        self.assertIn("read nothing into the silence", prompt)
+
+    def test_a_message_calling_itself_a_receipt_is_taken_at_its_word(self) -> None:
+        prompt = build_receipt_judgement_prompt(describe_receipt_candidates([ORDER_CONFIRMATION]))
+        self.assertIn("calls itself a receipt or an invoice", prompt)
 
 
 class ReceiptJudgeTests(unittest.TestCase):

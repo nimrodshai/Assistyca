@@ -335,6 +335,11 @@ class GmailDigestRunner:
                 # Gmail returns, so anything that has to read an amount asks for
                 # the whole message rather than its headers.
                 item["bodyText"] = _extract_body_text(message)
+                # What the message carries, by name. The whole message is
+                # already in hand, so the names cost nothing to read, and
+                # whether the sender enclosed its own receipt is part of
+                # telling a receipt from a note about an order.
+                item["attachmentNames"] = list_attachment_filenames(message)
             if include_attachments:
                 item["attachments"] = self._save_receipt_attachments(
                     token,
@@ -531,6 +536,45 @@ def _extract_body_text(message: dict[str, Any]) -> str:
         else:
             html_chunks.append(mail_body.html_to_text(decoded))
     return mail_body.limit_body_text(" ".join(plain_chunks or html_chunks))
+
+
+def list_attachment_filenames(message: dict[str, Any]) -> list[str]:
+    """The names of the files a message actually carries.
+
+    A picture the sender laid inside the HTML - a logo, a mascot, the
+    thumbnail of the thing that was bought - is part of how the mail looks
+    rather than a file that was sent with it, so it is left out. What remains
+    is what the owner would call an attachment, named as the sender named it.
+    """
+
+    payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+    names: list[str] = []
+    for part in _iter_payload_parts(payload):
+        if not isinstance(part, dict):
+            continue
+        filename = str(part.get("filename") or "").strip()
+        if not filename or _is_embedded_part(part):
+            continue
+        names.append(filename)
+        if len(names) >= GMAIL_MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE:
+            break
+    return names
+
+
+def _is_embedded_part(part: dict[str, Any]) -> bool:
+    """Whether this part is drawn into the message rather than sent with it."""
+
+    headers = part.get("headers") if isinstance(part.get("headers"), list) else []
+    for header in headers:
+        if not isinstance(header, dict):
+            continue
+        name = str(header.get("name") or "").strip().lower()
+        value = str(header.get("value") or "").strip().lower()
+        if name == "content-id" and value:
+            return True
+        if name == "content-disposition" and value.startswith("inline"):
+            return True
+    return False
 
 
 def _iter_payload_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:

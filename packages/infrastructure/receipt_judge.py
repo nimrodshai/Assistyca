@@ -43,6 +43,7 @@ RECEIPT_JUDGE_SUBJECT_CHARS = 200
 RECEIPT_JUDGE_SENDER_CHARS = 160
 RECEIPT_JUDGE_REASON_CHARS = 160
 RECEIPT_JUDGE_PAID_TO_CHARS = 80
+RECEIPT_JUDGE_ATTACHED_CHARS = 200
 # One short verdict per message, plus the reason under it.
 RECEIPT_JUDGE_MAX_OUTPUT_TOKENS = 1600
 
@@ -90,9 +91,35 @@ def describe_receipt_candidates(items: Any) -> list[dict[str, str]]:
             "subject": _clip(_flatten(source.get("subject")), RECEIPT_JUDGE_SUBJECT_CHARS),
             "date": _clip(_flatten(source.get("date")), 60),
             "body": body or snippet,
+            "attached": describe_attached_files(source),
         }
         candidates.append({key: value for key, value in candidate.items() if value})
     return candidates
+
+
+def describe_attached_files(source: Any) -> str:
+    """What the message was sent with, in the words the judgement gets it in.
+
+    "none" is a fact - the files were looked at and there were none. An empty
+    string is the absence of one, and it leaves the field off the message
+    entirely, because a run that never looked at the files must not be read as
+    a run that looked and found nothing.
+    """
+
+    message = source if isinstance(source, dict) else {}
+    names = message.get("attachmentNames")
+    if not isinstance(names, list):
+        saved = message.get("attachments")
+        if not isinstance(saved, list):
+            return ""
+        names = [
+            (item.get("filename") or item.get("name")) if isinstance(item, dict) else item
+            for item in saved
+        ]
+    cleaned = [name for name in (_flatten(value) for value in names) if name]
+    if not cleaned:
+        return "none"
+    return _clip(", ".join(cleaned), RECEIPT_JUDGE_ATTACHED_CHARS)
 
 
 def build_receipt_judgement_prompt(candidates: list[dict[str, str]]) -> str:
@@ -100,10 +127,10 @@ def build_receipt_judgement_prompt(candidates: list[dict[str, str]]) -> str:
 
     return (
         "Decide, for each message in CONTEXT.messages, whether it is a receipt.\n"
-        "A receipt records money that has already left the owner's account: a payment "
-        "confirmation, an order confirmation for an order that was charged, a card or bank charge "
-        "notice, a subscription renewal that was billed, an invoice the message says has been paid. "
-        "It names an amount that was actually taken.\n"
+        "A receipt records money that has already left the owner's account, and says so: a payment "
+        "confirmation, a card or bank charge notice, a subscription renewal that was billed, an "
+        "invoice the message says has been paid, an order confirmation that states the payment was "
+        "taken. It names an amount that was actually taken.\n"
         "These are not receipts, however much they look like one. Advertising, sales, discounts, "
         "coupons, vouchers, price drops, reward points and recommendations - the amounts in them are "
         "prices being offered, not money spent. Abandoned cart and wish-list reminders. Dispatch, "
@@ -113,6 +140,22 @@ def build_receipt_judgement_prompt(candidates: list[dict[str, str]]) -> str:
         "was cancelled. A refund or a credit, which is money coming back rather than going out. "
         "Account, security, policy and delivery-address notices. Anything the search matched on a "
         "word inside an attachment while the message itself records no payment.\n"
+        "An order confirmation is the hardest of these and the most often got wrong. \"Your order is "
+        "confirmed\", \"thank you for your order\", an order number, the items, an order total and a "
+        "button to track it - that is a shop telling the owner what was ordered. An order total is "
+        "what the order came to, not a statement that it was charged. Unless the message itself says "
+        "the money was taken - paid, charged, payment received, a card or account it came off - it is "
+        "not a receipt, and the payment behind it is recorded by whoever took it, in its own mail.\n"
+        "attached lists the files the message was sent with. A file the sender calls a receipt or an "
+        "invoice is the sender's own record of the payment and settles the question: it is a receipt. "
+        "\"none\" means the message carried no file, which settles nothing on its own - plenty of real "
+        "receipts are written in the body of the email and enclose nothing - but a message that only "
+        "confirms an order and encloses no receipt either has nothing in it saying money moved. When a "
+        "message has no attached field at all, its files were never looked at: judge it on its words "
+        "and read nothing into the silence.\n"
+        "Where the message calls itself a receipt or an invoice - in its subject, in its own words, or "
+        "in the name of a file it carries - take it at its word unless it goes on to say the money has "
+        "not been taken yet.\n"
         "Judge the message in front of you, not the sender. A sender whose other mail is all "
         "advertising still sends real receipts, and a sender who normally sends receipts also sends "
         "adverts. Nothing about who sent it settles this.\n"
@@ -228,6 +271,7 @@ __all__ = [
     "RECEIPT_JUDGE_INSTRUCTIONS",
     "RECEIPT_JUDGE_MAX_OUTPUT_TOKENS",
     "build_receipt_judgement_prompt",
+    "describe_attached_files",
     "describe_receipt_candidates",
     "judge_receipt_items",
     "normalize_receipt_verdict",
