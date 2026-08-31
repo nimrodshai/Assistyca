@@ -645,6 +645,124 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("fileDestination", prompt)
         self.assertIn("never the same as the destination", prompt)
 
+    def test_a_new_account_is_not_told_how_to_delete_things_it_has_none_of(self) -> None:
+        # Every rule used to travel with every message, so "hi" carried the
+        # folder commands and the action pickers. An account with no folders
+        # has no folder to be tempted into offering.
+        prompt = build_agent_turn_prompt(
+            user_message="hi",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+
+        self.assertNotIn("folder_command", prompt)
+        self.assertNotIn("action_command", prompt)
+        self.assertNotIn("needsFileChoice=true", prompt)
+        self.assertNotIn("existingFolders lists", prompt)
+        # What it can still do is all there.
+        self.assertIn("- proposal:", prompt)
+        self.assertIn("answer_now", prompt)
+        self.assertIn("exchange-rate", prompt)
+
+    def test_an_account_with_actions_is_told_how_to_change_them(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="pause that one",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            action_context=[{"name": "Daily digest", "kind": "email-digest", "status": "active"}],
+        )
+
+        self.assertIn("action_command", prompt)
+        self.assertIn("actionChoiceMode", prompt)
+        self.assertIn("Never set up a second copy", prompt)
+        # It still has no folders.
+        self.assertNotIn("folder_command", prompt)
+
+    def test_an_account_with_folders_is_told_about_folders_and_the_files_in_them(self) -> None:
+        # The file rules ride with the folder rules: a folder the chat has not
+        # opened still holds files, and asking which ones is how it opens.
+        prompt = build_agent_turn_prompt(
+            user_message="delete the August receipts",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            folder_context=[{"name": "Receipts/Aug2026", "kind": "Receipts", "itemCount": "3 items"}],
+        )
+
+        self.assertIn("folder_command", prompt)
+        self.assertIn("existingFolderFiles lists", prompt)
+        self.assertIn("fileCommand=move", prompt)
+        self.assertIn("saved-files whenever the user asks", prompt)
+
+    def test_the_rules_for_a_pending_proposal_arrive_with_one(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="yes, set it up",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            active_proposal={"id": "p1", "type": "email-digest", "fields": {}},
+        )
+
+        self.assertIn("approve_proposal", prompt)
+        self.assertIn("revise_proposal", prompt)
+
+    def test_a_first_message_is_not_told_how_to_approve_something_pending(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="hi",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+
+        self.assertNotIn("- approve_proposal:", prompt)
+        self.assertNotIn("- reject_proposal:", prompt)
+
+    def test_what_the_agent_can_set_up_never_depends_on_what_is_connected(self) -> None:
+        # A client can ask for a meeting summary before connecting anything,
+        # and these are the rules that stop that setup asking for a mailbox.
+        prompt = build_agent_turn_prompt(
+            user_message="can you summarise my meetings?",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+
+        self.assertIn("Never ask for Gmail or mailbox access", prompt)
+        self.assertIn("whatsapp-replies", prompt)
+        self.assertIn("web-monitor", prompt)
+        self.assertIn("scheduled-message", prompt)
+
+    def test_the_mailbox_rule_waits_until_there_is_a_mailbox(self) -> None:
+        bare = build_agent_turn_prompt(
+            user_message="which mailboxes did you read?",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+        connected = build_agent_turn_prompt(
+            user_message="which mailboxes did you read?",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            tool_context={"mailboxes": [{"address": "owner@example.com", "provider": "Gmail"}]},
+        )
+
+        self.assertNotIn("toolContext.mailboxes lists", bare)
+        self.assertIn("toolContext.mailboxes lists", connected)
+
+    def test_a_new_account_carries_far_less_than_a_full_one(self) -> None:
+        bare = build_agent_turn_prompt(
+            user_message="hi",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+        )
+        full = build_agent_turn_prompt(
+            user_message="hi",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            active_proposal={"id": "p1", "type": "email-digest", "fields": {}},
+            action_context=[{"name": "Daily digest", "kind": "email-digest", "status": "active"}],
+            folder_context=[{"name": "Receipts/Aug2026", "kind": "Receipts", "itemCount": "3 items"}],
+            tool_context={"mailboxes": [{"address": "owner@example.com", "provider": "Gmail"}]},
+            source_context={"sourceType": "url", "sourceUrl": "https://example.com"},
+        )
+
+        self.assertLess(len(bare), len(full) * 0.7)
+
     def test_turn_response_keeps_a_file_picker_on_a_plain_question(self) -> None:
         turn = normalize_agent_turn_response(
             {
