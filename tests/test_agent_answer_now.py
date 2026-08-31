@@ -421,6 +421,44 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertIn("Render", payload["answer"])
         self.assertIn("Aug 2026", payload["answer"])
 
+    def test_a_question_that_checks_an_earlier_answer_still_runs(self) -> None:
+        # "Are you sure?" is the same search over the same month as the
+        # question before it. It used to be told the lookup had no runner,
+        # because the words it was phrased with were not on a list.
+        payload = self._run_answer(
+            {
+                "result": "Re-check the Netflix receipts for August 2026 and verify the one on 20 Aug",
+                "vendor": "Netflix",
+                "manualRunMonth": "2026-08",
+            },
+            digest={
+                "summary": "Gmail digest - 1 message",
+                "messageCount": 1,
+                "items": [{
+                    "id": "msg-1",
+                    "mailbox": "owner@gmail.com",
+                    "subject": "Your payment to Netflix.com",
+                    "from": "PayPal <service@paypal.com>",
+                    "snippet": "You sent a payment of 71.80 ILS to Netflix.com",
+                    "bodyText": "You sent a payment of 71.80 ILS to Netflix.com",
+                }],
+            },
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("71.80 ILS", payload["answer"])
+
+    def test_a_vendor_and_a_month_are_enough_to_run(self) -> None:
+        # A follow-up need not name receipts at all: the vendor and the month
+        # it carries are what this search is built out of.
+        payload = self._run_answer({
+            "result": "Was there really a Netflix charge on 20 Aug?",
+            "vendor": "Netflix",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertTrue(payload["ok"])
+
     def test_the_adverts_a_receipt_search_dragged_in_are_not_totalled(self) -> None:
         # A vendor that sends receipts sends far more mail carrying the words
         # a receipt search asks for. Every message below names an amount, and

@@ -406,10 +406,6 @@ AGENT_GOOGLE_BATCH_OBJECT_RE = re.compile(
     r"\b(?:receipts?|invoices?|statements?|expenses?|bills?|transactions?|bookkeeping|reconciliation)\b",
     re.IGNORECASE,
 )
-AGENT_GOOGLE_BATCH_VERB_RE = re.compile(
-    r"\b(?:pull|fetch|find|collect|gather|get|export|search|summari[sz]e|prepare|reconcile)\b",
-    re.IGNORECASE,
-)
 AGENT_MONTH_VALUE_RE = re.compile(r"\b(\d{4})-(\d{1,2})\b")
 AGENT_MONTH_NAME_RE = re.compile(
     r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?\b",
@@ -1970,8 +1966,24 @@ def get_agent_proposal_field_text(fields: dict[str, Any]) -> str:
 
 
 def is_custom_google_batch_proposal_fields(fields: dict[str, Any]) -> bool:
+    """Whether a custom lookup is the mailbox receipt search this can run.
+
+    What settles it is what the lookup is about, not the verb it happens to be
+    phrased with. "Find the August receipts" and "check whether that receipt on
+    the 20th is really there" are the same search over the same month, and a
+    list of accepted verbs answers the first while telling the second it has no
+    runner - a difference nobody asking it can see.
+    """
+
     text = get_agent_proposal_field_text(fields)
-    return bool(text and AGENT_GOOGLE_BATCH_OBJECT_RE.search(text) and AGENT_GOOGLE_BATCH_VERB_RE.search(text))
+    if text and AGENT_GOOGLE_BATCH_OBJECT_RE.search(text):
+        return True
+    # A vendor and a month are what this search is built out of, so a lookup
+    # carrying both is one of these however it was worded.
+    return bool(
+        normalize_text(fields.get("vendor"))
+        and parse_agent_run_month_list(fields.get("manualRunMonth"))
+    )
 
 
 def parse_agent_run_month_value(*values: Any) -> Optional[tuple[int, int]]:
