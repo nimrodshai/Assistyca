@@ -1331,11 +1331,17 @@ class PortalStaticPageTests(unittest.TestCase):
     def test_saved_chats_can_actually_be_deleted(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
 
-        # The trash button renders for every chat that is not the open one, so
-        # the delete guard must use that same test. Refusing on chat.status too
-        # left a visible button that silently did nothing.
-        self.assertIn("if (!chat || chat.id === agent.activeChatId) {", script)
+        # The trash button renders on every chat, the open one included, so
+        # neither the prompt nor the delete may refuse a chat for being open.
+        # A visible button that silently does nothing is the older bug here.
+        self.assertNotIn("if (!chat || chat.id === agent.activeChatId) {", script)
         self.assertNotIn('chat.id === agent.activeChatId || chat.status === "active"', script)
+
+        # Deleting the open chat leaves an empty one behind rather than
+        # dropping the client into the next conversation in the list.
+        self.assertIn("const wasActive = chat.id === agent.activeChatId;", script)
+        self.assertIn("agent.activeChatId = replacement.id;", script)
+        self.assertIn("agent.messages = replacement.messages;", script)
 
         # status is re-anchored to activeChatId so the two cannot drift apart.
         self.assertIn('chat.status = chat.id === activeChat?.id ? "active" : "historical";', script)

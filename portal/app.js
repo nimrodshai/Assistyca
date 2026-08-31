@@ -13957,14 +13957,16 @@ function selectAgentChat(chatId) {
 function deleteAgentChat(chatId, options = {}) {
   const agent = getAgentWorkspace();
   const chat = agent.chats.find((candidate) => candidate.id === chatId);
-  if (!chat || chat.id === agent.activeChatId) {
+  if (!chat) {
     return;
   }
 
   const title = getAgentChatTitle(chat);
+  const isActive = chat.id === agent.activeChatId;
+  const body = `Delete “${title}”? This conversation will be removed from your chat history.`;
   openAuthAlert(
     "Delete conversation?",
-    `Delete “${title}”? This conversation will be removed from your chat history.`,
+    isActive ? `${body} You’ll be left on an empty chat.` : body,
     {
       eyebrow: "Delete conversation",
       icon: "!",
@@ -13984,13 +13986,44 @@ function deleteAgentChat(chatId, options = {}) {
 function confirmAgentChatDelete(chatId) {
   const agent = getAgentWorkspace();
   const chat = agent.chats.find((candidate) => candidate.id === chatId);
-  if (!chat || chat.id === agent.activeChatId) {
+  if (!chat) {
     return;
   }
 
+  const wasActive = chat.id === agent.activeChatId;
   agent.chats = agent.chats.filter((candidate) => candidate.id !== chat.id);
+  // A question waiting on a connection belongs to the chat it was asked in.
+  // Once that chat is gone there is nowhere to answer it, so it goes too.
+  if (agent.pendingAnswerRun?.chatId === chat.id) {
+    agent.pendingAnswerRun = null;
+  }
+  if (!wasActive) {
+    persistClientState();
+    renderAgentChats();
+    setStatus("Conversation deleted");
+    return;
+  }
+
+  // Deleting the open chat opens an empty one in its place, rather than
+  // dropping you into somebody else's conversation. Build it here instead of
+  // through createAndActivateAgentChat: that one first flushes agent.messages
+  // into whatever chat is active, and the active one just stopped existing --
+  // the flush would land on the next chat in the list and wipe it. An empty
+  // chat stays out of the list until the first message is sent, so a client
+  // who deletes their last conversation is left with an empty list and the
+  // empty chat page.
+  const replacement = createAgentChat([], {
+    title: "New chat",
+    status: "active",
+    lastOpenedAt: new Date().toISOString(),
+  });
+  agent.chats.unshift(replacement);
+  agent.chats = sortAgentChats(agent.chats).slice(0, AGENT_MAX_CHATS);
+  agent.activeChatId = replacement.id;
+  agent.messages = replacement.messages;
+  elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
   persistClientState();
-  renderAgentChats();
+  renderApp({ preserveStatus: true });
   setStatus("Conversation deleted");
 }
 
@@ -17531,35 +17564,36 @@ function createAgentChatItem(chat, activeChatId) {
   openButton.append(head, time, preview);
   item.append(openButton);
 
-  if (!isActive) {
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "agent-chat-delete";
-    deleteButton.dataset.agentChatDelete = chat.id;
-    deleteButton.setAttribute("aria-label", `Delete conversation: ${getAgentChatTitle(chat)}`);
-    deleteButton.title = "Delete conversation";
-    deleteButton.append(
-      createSvgElement("svg", {
-        viewBox: "0 0 24 24",
-        width: "16",
-        height: "16",
-        fill: "none",
-        "aria-hidden": "true",
-        focusable: "false",
-      }),
-    );
-    const deleteIcon = deleteButton.firstElementChild;
-    deleteIcon.append(
-      createSvgElement("path", {
-        d: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
-        stroke: "currentColor",
-        "stroke-width": "1.8",
-        "stroke-linecap": "round",
-        "stroke-linejoin": "round",
-      }),
-    );
-    item.append(deleteButton);
-  }
+  // The chat you are reading is deletable like any other. Being open is not a
+  // reason to keep something you asked to throw away -- deleting it leaves you
+  // on an empty chat, the same place "New chat" puts you.
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "agent-chat-delete";
+  deleteButton.dataset.agentChatDelete = chat.id;
+  deleteButton.setAttribute("aria-label", `Delete conversation: ${getAgentChatTitle(chat)}`);
+  deleteButton.title = "Delete conversation";
+  deleteButton.append(
+    createSvgElement("svg", {
+      viewBox: "0 0 24 24",
+      width: "16",
+      height: "16",
+      fill: "none",
+      "aria-hidden": "true",
+      focusable: "false",
+    }),
+  );
+  const deleteIcon = deleteButton.firstElementChild;
+  deleteIcon.append(
+    createSvgElement("path", {
+      d: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
+      stroke: "currentColor",
+      "stroke-width": "1.8",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+    }),
+  );
+  item.append(deleteButton);
 
   return item;
 }
