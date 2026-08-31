@@ -4982,7 +4982,7 @@ body[data-modal="billing"] .app-shell {
 
 .agent-folder-item-open {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.68rem;
   align-items: center;
   width: 100%;
@@ -5024,7 +5024,7 @@ body[data-modal="billing"] .app-shell {
     opacity 150ms ease;
 }
 
-.agent-folder-item.is-open .agent-folder-body-wrap {
+.agent-folder-item.is-open > .agent-folder-body-wrap {
   grid-template-rows: 1fr;
   opacity: 1;
   transition:
@@ -5047,15 +5047,76 @@ body[data-modal="billing"] .app-shell {
   border-radius: 11px;
 }
 
-.agent-folder-item .agent-folder-icon {
+.agent-folder-item > .agent-folder-item-open .agent-folder-icon {
   transition:
     transform 280ms cubic-bezier(0.32, 0.72, 0, 1),
     color 220ms ease,
     background 220ms ease;
 }
 
-.agent-folder-item.is-open .agent-folder-icon {
+.agent-folder-item.is-open > .agent-folder-item-open .agent-folder-icon {
   transform: translateY(-1px) scale(1.06) rotate(-4deg);
+}
+
+/* Every row opens, so every row says so. */
+.agent-folder-chevron {
+  display: grid;
+  place-items: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--muted);
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1), color 200ms ease;
+}
+
+.agent-folder-item.is-open > .agent-folder-item-open .agent-folder-chevron {
+  color: var(--accent);
+  transform: rotate(90deg);
+}
+
+.agent-folder-chevron svg {
+  pointer-events: none;
+}
+
+/* The folders filed inside this one, indented under it with a rail back to
+   the row they belong to. */
+.agent-folder-list.is-nested {
+  gap: 0.4rem;
+  margin-left: 1.16rem;
+  padding: 0 0.6rem 0.66rem 0.52rem;
+  border-left: 1px solid rgba(20, 28, 38, 0.12);
+}
+
+/* `.agent-chat-delete` sets a display, which outranks the one the browser
+   gives a hidden element - so a row with no folder of its own to delete kept
+   showing the button anyway. */
+.agent-folder-list.is-nested[hidden],
+.agent-folder-own[hidden],
+.agent-folder-delete[hidden] {
+  display: none;
+}
+
+/* A nested card sits on the card holding it, so it reads as contents rather
+   than as another folder in the panel. */
+.agent-folder-item .agent-folder-item {
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: none;
+}
+
+/* A nested row has less width to work with, so it spends less of it on
+   everything that is not the name. */
+.agent-folder-item .agent-folder-item > .agent-folder-item-open {
+  gap: 0.5rem;
+  padding: 0.6rem 0.5rem 0.6rem 0.56rem;
+}
+
+.agent-folder-item .agent-folder-item .agent-folder-icon {
+  width: 1.9rem;
+  height: 1.9rem;
+}
+
+.agent-folder-item .agent-folder-item .agent-folder-icon svg {
+  width: 1.12rem;
+  height: 1.12rem;
 }
 
 .agent-folder-icon svg {
@@ -5069,17 +5130,17 @@ body[data-modal="billing"] .app-shell {
   pointer-events: none;
 }
 
-.agent-folder-item.is-reports .agent-folder-icon {
+.agent-folder-item.is-reports > .agent-folder-item-open .agent-folder-icon {
   color: #2f6eb7;
   background: rgba(47, 110, 183, 0.1);
 }
 
-.agent-folder-item.is-receipts .agent-folder-icon {
+.agent-folder-item.is-receipts > .agent-folder-item-open .agent-folder-icon {
   color: #946118;
   background: rgba(148, 97, 24, 0.1);
 }
 
-.agent-folder-item.is-sources .agent-folder-icon {
+.agent-folder-item.is-sources > .agent-folder-item-open .agent-folder-icon {
   color: #596778;
   background: rgba(89, 103, 120, 0.1);
 }
@@ -5386,10 +5447,13 @@ body[data-modal="billing"] .app-shell {
   gap: 0.42rem;
 }
 
+.agent-folder-detail {
+  padding-right: 0.42rem;
+  border-right: 1px solid rgba(20, 28, 38, 0.16);
+}
+
 .agent-folder-time {
-  padding-left: 0.42rem;
   white-space: nowrap;
-  border-left: 1px solid rgba(20, 28, 38, 0.16);
 }
 
 .agent-chat-list {
@@ -5568,9 +5632,10 @@ body[data-modal="billing"] .app-shell {
   .agent-chat-delete,
   .agent-folder-delete,
   .agent-folder-item,
-  .agent-folder-item .agent-folder-icon,
+  .agent-folder-item > .agent-folder-item-open .agent-folder-icon,
+  .agent-folder-chevron,
   .agent-folder-body-wrap,
-  .agent-folder-item.is-open .agent-folder-body-wrap,
+  .agent-folder-item.is-open > .agent-folder-body-wrap,
   .agent-folder-file-row,
   .agent-folder-file-menu-button,
   .agent-file-menu,
@@ -5579,7 +5644,7 @@ body[data-modal="billing"] .app-shell {
   }
 
   /* A folder still opens and closes; it just does it at once. */
-  .agent-folder-item.is-open .agent-folder-icon {
+  .agent-folder-item.is-open > .agent-folder-item-open .agent-folder-icon {
     transform: none;
   }
 
@@ -11971,22 +12036,22 @@ body.is-chat-view {
   background: rgba(55, 184, 171, 0.09);
 }
 
-:root[data-theme="dark"] .agent-folder-icon {
+:root[data-theme="dark"] .agent-folder-item > .agent-folder-item-open .agent-folder-icon {
   color: #58cfc2;
   background: rgba(88, 207, 194, 0.14);
 }
 
-:root[data-theme="dark"] .agent-folder-item.is-reports .agent-folder-icon {
+:root[data-theme="dark"] .agent-folder-item.is-reports > .agent-folder-item-open .agent-folder-icon {
   color: #83b4f0;
   background: rgba(131, 180, 240, 0.14);
 }
 
-:root[data-theme="dark"] .agent-folder-item.is-receipts .agent-folder-icon {
+:root[data-theme="dark"] .agent-folder-item.is-receipts > .agent-folder-item-open .agent-folder-icon {
   color: #e3b566;
   background: rgba(227, 181, 102, 0.14);
 }
 
-:root[data-theme="dark"] .agent-folder-item.is-sources .agent-folder-icon {
+:root[data-theme="dark"] .agent-folder-item.is-sources > .agent-folder-item-open .agent-folder-icon {
   color: #a9bacb;
   background: rgba(169, 186, 203, 0.14);
 }
@@ -12015,8 +12080,16 @@ body.is-chat-view {
   border-color: rgba(55, 184, 171, 0.3);
 }
 
-:root[data-theme="dark"] .agent-folder-time {
+:root[data-theme="dark"] .agent-folder-detail {
+  border-right-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .agent-folder-list.is-nested {
   border-left-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .agent-folder-item .agent-folder-item {
+  background: var(--surface-soft);
 }
 
 :root[data-theme="dark"] .agent-folder-file-menu-button:hover,

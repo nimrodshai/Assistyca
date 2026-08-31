@@ -18631,6 +18631,9 @@ function updateAgentFolderItem(item, node) {
       meta.append(detail);
       const timeText = formatAgentFolderTimestamp(node.updatedAt);
       if (timeText) {
+        // The rule between the two belongs to the left one, so a narrow card
+        // that wraps leaves it at the end of a line rather than starting one.
+        detail.className = "agent-folder-detail";
         const time = document.createElement("span");
         time.className = "agent-folder-time";
         time.textContent = timeText;
@@ -18663,6 +18666,13 @@ function updateAgentFolderItem(item, node) {
   if (own) {
     own.hidden = !node.folder;
     if (node.folder && isOpen) {
+      // An open folder nobody has fetched yet would otherwise sit on
+      // "Opening folder..." forever. Asking from inside a render would
+      // re-enter it, so the request waits until this one is finished.
+      if (!agentFolderContents.has(node.folder.name)) {
+        const name = node.folder.name;
+        void Promise.resolve().then(() => loadAgentFolderContents(name));
+      }
       const signature = getAgentFolderBodySignature(node.folder);
       if (own.dataset.agentFolderBody !== signature) {
         own.dataset.agentFolderBody = signature;
@@ -19102,24 +19112,27 @@ function noteAgentFolderGainedFiles(folderName, remaining, sourceType) {
   // Whatever was cached for it is a listing short one file.
   agentFolderContents.delete(name);
 
-  const left = Number.parseInt(remaining, 10);
-  const agent = getAgentWorkspace();
-  const folder = (Array.isArray(agent.folders) ? agent.folders : [])
+  const findFolder = () => (Array.isArray(getAgentWorkspace().folders) ? getAgentWorkspace().folders : [])
     .find((candidate) => String(candidate?.name || "").trim().toLowerCase() === name.toLowerCase());
-  if (folder) {
-    folder.itemCount = Number.isFinite(left) ? Math.max(0, left) : (Number(folder.itemCount) || 0) + 1;
-    folder.updatedAt = new Date().toISOString();
-    persistClientState();
-    return;
-  }
 
   // A folder that only exists because a file was just moved into it still
   // belongs in the panel, filed the way the folder it came from was.
-  const added = addAgentFolder(name, sourceType || "general");
-  if (added) {
-    added.itemCount = Number.isFinite(left) ? Math.max(0, left) : 1;
-    persistClientState();
+  if (!findFolder()) {
+    addAgentFolder(name, sourceType || "general");
   }
+
+  // Look the record up again rather than trusting what addAgentFolder handed
+  // back: persisting the workspace round-trips it, so what the panel lists is
+  // not the object that was created.
+  const folder = findFolder();
+  if (!folder) {
+    return;
+  }
+
+  const left = Number.parseInt(remaining, 10);
+  folder.itemCount = Number.isFinite(left) ? Math.max(0, left) : (Number(folder.itemCount) || 0) + 1;
+  folder.updatedAt = new Date().toISOString();
+  persistClientState();
 }
 
 function deleteAgentFolder(folderId, options = {}) {
