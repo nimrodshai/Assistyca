@@ -883,12 +883,20 @@ class PortalAuthStore:
         max_attempts: int,
         session_secret: str,
         registered_email_lookup: Callable[[str], bool],
+        record_revocation: Callable[[str, float], None] | None = None,
+        revocation_lookup: Callable[[str], bool] | None = None,
     ) -> None:
         self.otp_ttl_seconds = otp_ttl_seconds
         self.session_ttl_seconds = session_ttl_seconds
         self.max_attempts = max_attempts
         self.session_secret = session_secret.encode("utf-8") if session_secret else b""
         self.registered_email_lookup = registered_email_lookup
+        # Where signing out is written down. A caller that hands us a durable
+        # pair keeps its revocations across restarts; without one they live in
+        # this process and die with it, which is only good enough for a store
+        # standing on its own in a test.
+        self.record_revocation = record_revocation
+        self.revocation_lookup = revocation_lookup
         self._challenges: dict[str, OtpChallenge] = {}
         self._sessions: dict[str, PortalSession] = {}
         self._revoked_tokens: dict[str, float] = {}
@@ -982,15 +990,11 @@ class PortalAuthStore:
             return None
 
         now = time.time()
+        if self._is_revoked(normalized_token, now):
+            return None
+
         with self._lock:
             self._purge_expired_locked(now)
-            revoked_expires_at = self._revoked_tokens.get(hash_session_token(normalized_token))
-            if revoked_expires_at is not None:
-                if now > revoked_expires_at:
-                    self._revoked_tokens.pop(hash_session_token(normalized_token), None)
-                else:
-                    return None
-
             if self.session_secret:
                 session = parse_session_token(normalized_token, self.session_secret)
                 if session is not None and self.is_registered_email(session.email):
@@ -1016,15 +1020,39 @@ class PortalAuthStore:
         if not normalized_token:
             return False
 
-        with self._lock:
-            revoked = False
-            if self.session_secret:
-                session = parse_session_token(normalized_token, self.session_secret, validate_expiry=False)
-                if session is not None and time.time() <= session.expires_at:
-                    self._revoked_tokens[hash_session_token(normalized_token)] = session.expires_at
-                    revoked = True
+        revoked = False
+        if self.session_secret:
+            session = parse_session_token(normalized_token, self.session_secret, validate_expiry=False)
+            if session is not None and time.time() <= session.expires_at:
+                self._remember_revocation(hash_session_token(normalized_token), session.expires_at)
+                revoked = True
 
+        with self._lock:
             return self._sessions.pop(normalized_token, None) is not None or revoked
+
+    def _remember_revocation(self, token_hash: str, expires_at: float) -> None:
+        if self.record_revocation is not None:
+            self.record_revocation(token_hash, expires_at)
+            return
+
+        with self._lock:
+            self._revoked_tokens[token_hash] = expires_at
+
+    def _is_revoked(self, token: str, now: float) -> bool:
+        token_hash = hash_session_token(token)
+        if self.revocation_lookup is not None:
+            return bool(self.revocation_lookup(token_hash))
+
+        with self._lock:
+            expires_at = self._revoked_tokens.get(token_hash)
+            if expires_at is None:
+                return False
+
+            if now > expires_at:
+                self._revoked_tokens.pop(token_hash, None)
+                return False
+
+            return True
 
     def _purge_expired_locked(self, now: float) -> None:
         expired_emails = [email for email, challenge in self._challenges.items() if now > challenge.expires_at]
@@ -3806,7 +3834,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "signedIn": True,
                 "email": session.email,
-                "token": session.token,
                 "displayName": normalize_text(user.get("displayName")),
                 "profile": normalize_user_profile(user.get("profile")),
                 "isAdmin": bool(user.get("isAdmin")),
@@ -5522,7 +5549,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "email": result["email"],
-            "sessionToken": result["token"],
             "displayName": normalize_text(user.get("displayName")),
             "profile": normalize_user_profile(user.get("profile")),
             "isAdmin": bool(user.get("isAdmin")),
@@ -12243,6 +12269,8 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
         max_attempts=config.max_attempts,
         session_secret=config.session_secret,
         registered_email_lookup=server.database.is_registered_email,
+        record_revocation=server.database.revoke_session_token,
+        revocation_lookup=server.database.is_session_token_revoked,
     )  # type: ignore[attr-defined]
     server.rate_limiter = SlidingWindowRateLimiter()  # type: ignore[attr-defined]
     server.whatsapp_stores = {}  # type: ignore[attr-defined]
