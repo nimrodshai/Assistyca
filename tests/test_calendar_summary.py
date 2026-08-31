@@ -22,7 +22,10 @@ from packages.infrastructure.calendar_summary import describe_availability
 from packages.infrastructure.calendar_summary import normalize_calendar_event
 from packages.infrastructure.calendar_summary import parse_calendar_date_range
 from packages.infrastructure.calendar_summary import parse_calendar_ids
+from packages.infrastructure.calendar_summary import resolve_calendar_ids
 from packages.infrastructure.gmail_summary import GmailDigestRunner
+from packages.infrastructure.portal_auth.server import CALENDAR_SELECTION_METADATA_KEY
+from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_LIST_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_SECRET_TYPE
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_TOKEN_URL
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -200,6 +203,27 @@ class CalendarSummaryTests(unittest.TestCase):
             ["primary", "alex@example.com"],
         )
         self.assertEqual(parse_calendar_ids(["Google Calendar", "dana@example.org"]), ["primary", "dana@example.org"])
+
+    def test_a_question_about_my_calendar_reads_every_calendar_the_account_chose(self) -> None:
+        # "What is on my calendar" names no calendar, so it reads all of them.
+        self.assertEqual(
+            resolve_calendar_ids(
+                "Connected calendar",
+                account_calendar_ids=["primary", "family@group.calendar.google.com"],
+            ),
+            ["primary", "family@group.calendar.google.com"],
+        )
+        # An action that named calendars asked a narrower question and keeps it.
+        self.assertEqual(
+            resolve_calendar_ids(
+                "dana@example.org",
+                account_calendar_ids=["primary", "family@group.calendar.google.com"],
+            ),
+            ["dana@example.org"],
+        )
+        # Nothing chosen yet still reads the account's own calendar.
+        self.assertEqual(resolve_calendar_ids("Connected calendar", account_calendar_ids=[]), ["primary"])
+        self.assertEqual(resolve_calendar_ids(""), ["primary"])
 
     def test_calendar_id_is_never_a_url_or_a_path(self) -> None:
         self.assertEqual(parse_calendar_ids("https://example.com/../secrets"), ["primary"])
@@ -871,6 +895,183 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
             urllib_request.urlopen(request, timeout=5)
 
         self.assertEqual(context.exception.code, 401)
+
+    def _set_chosen_calendars(self, calendars: list[dict[str, str]], *, granted_list_scope: bool = True) -> None:
+        metadata: dict[str, object] = {CALENDAR_SELECTION_METADATA_KEY: calendars}
+        if granted_list_scope:
+            metadata["grantedScope"] = GOOGLE_CALENDAR_LIST_OAUTH_SCOPE
+        self.server.database.update_platform_connection_status(
+            "owner@example.com",
+            platform="calendar",
+            connection_status="connected",
+            metadata_updates=metadata,
+        )
+
+    def _post_chosen_calendars(self, payload: dict[str, object]) -> dict[str, object]:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/platform-connections/calendars",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _run_calendar_question(self, calendar_field: str) -> mock.MagicMock:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/proposals/run",
+            data=json.dumps({
+                "proposalType": "calendar-summary",
+                "fields": {
+                    "calendar": calendar_field,
+                    "timeWindow": "next week",
+                    "deliveryChannel": "portal",
+                },
+                "timezone": "UTC",
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.run",
+            return_value={
+                "message": "Meeting summary · Aug 31–Sep 6, 2026",
+                "summary": "Meeting summary · Aug 31–Sep 6, 2026",
+                "eventCount": 0,
+                "dateRange": {"display": "Aug 31–Sep 6, 2026"},
+            },
+        ) as run:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                response.read()
+        return run
+
+    def test_a_calendar_question_reads_every_calendar_the_account_chose(self) -> None:
+        self._set_chosen_calendars([
+            {"id": "primary", "label": "My calendar"},
+            {"id": "family@group.calendar.google.com", "label": "Family"},
+        ])
+
+        run = self._run_calendar_question("Connected calendar")
+
+        self.assertEqual(
+            run.call_args.kwargs["calendar_ids"],
+            ["primary", "family@group.calendar.google.com"],
+        )
+
+    def test_an_action_that_named_a_calendar_keeps_reading_only_that_one(self) -> None:
+        self._set_chosen_calendars([
+            {"id": "primary", "label": "My calendar"},
+            {"id": "family@group.calendar.google.com", "label": "Family"},
+        ])
+
+        run = self._run_calendar_question("dana@example.org")
+
+        self.assertEqual(run.call_args.kwargs["calendar_ids"], ["dana@example.org"])
+
+    def test_a_connection_never_asked_discovers_its_calendars_once_and_remembers_them(self) -> None:
+        self.server.database.update_platform_connection_status(
+            "owner@example.com",
+            platform="calendar",
+            connection_status="connected",
+            metadata_updates={"grantedScope": GOOGLE_CALENDAR_LIST_OAUTH_SCOPE},
+        )
+        listed = [
+            {"id": "primary", "label": "Alex Rivera", "primary": True, "accessRole": "owner"},
+            {
+                "id": "c_family@group.calendar.google.com",
+                "label": "Family",
+                "primary": False,
+                "accessRole": "reader",
+            },
+        ]
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
+            return_value=listed,
+        ) as fetch:
+            run = self._run_calendar_question("Connected calendar")
+
+        fetch.assert_called_once()
+        self.assertEqual(
+            run.call_args.kwargs["calendar_ids"],
+            ["primary", "c_family@group.calendar.google.com"],
+        )
+        connection = self.server.database.list_platform_connections("owner@example.com")[0]
+        self.assertEqual(
+            [entry["id"] for entry in connection["metadata"][CALENDAR_SELECTION_METADATA_KEY]],
+            ["primary", "c_family@group.calendar.google.com"],
+        )
+
+    def test_a_connection_without_the_list_grant_reads_its_own_calendar_without_asking(self) -> None:
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
+        ) as fetch:
+            run = self._run_calendar_question("Connected calendar")
+
+        fetch.assert_not_called()
+        self.assertEqual(run.call_args.kwargs["calendar_ids"], ["primary"])
+
+    def test_chosen_calendars_are_saved_on_the_connection(self) -> None:
+        payload = self._post_chosen_calendars({
+            "calendarIds": ["primary", "family@group.calendar.google.com"],
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            payload["selectedCalendarIds"],
+            ["primary", "family@group.calendar.google.com"],
+        )
+        connection = self.server.database.list_platform_connections("owner@example.com")[0]
+        self.assertEqual(
+            [entry["id"] for entry in connection["metadata"][CALENDAR_SELECTION_METADATA_KEY]],
+            ["primary", "family@group.calendar.google.com"],
+        )
+        # Choosing calendars says nothing about the credential's health.
+        self.assertEqual(connection["connectionStatus"], "connected")
+
+    def test_choosing_no_calendar_is_refused_rather_than_read_as_all_of_them(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as context:
+            self._post_chosen_calendars({"calendarIds": []})
+
+        self.assertEqual(context.exception.code, 400)
+
+    def test_calendar_sources_offer_every_calendar_until_the_account_has_chosen(self) -> None:
+        listed = [
+            {"id": "primary", "label": "Alex Rivera", "primary": True, "accessRole": "owner"},
+            {
+                "id": "c_family@group.calendar.google.com",
+                "label": "Family",
+                "primary": False,
+                "accessRole": "reader",
+            },
+        ]
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
+            return_value=listed,
+        ):
+            payload = self._get_calendar_sources()
+
+        source = payload["sources"][0]  # type: ignore[index]
+        self.assertEqual(
+            source["selectedCalendarIds"],
+            ["primary", "c_family@group.calendar.google.com"],
+        )
+
+        self._set_chosen_calendars([{"id": "primary", "label": "Alex Rivera"}])
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
+            return_value=listed,
+        ):
+            payload = self._get_calendar_sources()
+
+        source = payload["sources"][0]  # type: ignore[index]
+        self.assertEqual(source["selectedCalendarIds"], ["primary"])
+        self.assertEqual([entry["label"] for entry in source["selectedCalendars"]], ["Alex Rivera"])
 
     def test_calendar_proposal_run_rejects_external_delivery_until_supported(self) -> None:
         request = urllib_request.Request(

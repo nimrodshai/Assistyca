@@ -3140,6 +3140,14 @@ body[data-modal="billing"] .app-shell {
   flex: 0 0 auto;
 }
 
+/* What "my calendar" means for a connected Google account: the calendars a
+   question asked in chat reads, listed on the tool that manages the account. */
+.connected-calendars {
+  display: grid;
+  gap: 0.4rem;
+  width: 100%;
+}
+
 /* The calendar-oauth dialog stretches its small ghost buttons to full width,
    which is right for the stacked connect buttons but not for a button sitting
    beside a mailbox address. Matched specificity to opt this one row out. */

@@ -7067,7 +7067,13 @@ function createCalendarOAuthStatusNode() {
 
 function getGoogleOAuthPermissionState(scopeOption, options = {}) {
   const readOnly = Boolean(options.readOnly);
-  const connected = getSinglePlatformConnection(scopeOption.platformId)?.connectionStatus === "connected";
+  // The email platform holds several mailboxes, so it cannot be asked for one
+  // connection. Reading Gmail is granted once any Gmail mailbox is connected,
+  // and asking the platform for a single row answered "no" while the card
+  // listed the connected mailbox directly underneath.
+  const connected = scopeOption.platformId === EMAIL_PLATFORM
+    ? getConnectedGmailConnections().length > 0
+    : getSinglePlatformConnection(scopeOption.platformId)?.connectionStatus === "connected";
   return {
     checked: readOnly ? connected : true,
     disabled: readOnly,
@@ -7133,6 +7139,303 @@ function getSelectedGoogleOAuthScopeIds(container) {
     .filter(Boolean);
 }
 
+// The calendars this Google account reads, listed on the Google tool with the
+// way to change them. Drawn from the same endpoint the picker uses, so it says
+// what a question asked in chat would actually read.
+function createGoogleConnectedCalendarsSection(option) {
+  const section = document.createElement("div");
+  section.className = "connected-calendars";
+
+  const heading = document.createElement("p");
+  heading.className = "connected-mailbox-heading";
+  const list = document.createElement("ul");
+  list.className = "connected-mailbox-list";
+  const changeButton = document.createElement("button");
+  changeButton.type = "button";
+  changeButton.className = "ghost-button small connected-calendars-change";
+  changeButton.textContent = "Choose calendars";
+  changeButton.addEventListener("click", () => {
+    openGoogleCalendarChoice(option, {
+      // Changing the calendars is a detour from the tool, so it leads back to
+      // it rather than leaving the card closed behind it.
+      onDone: () => openCalendarOAuthConnection(option),
+    });
+  });
+
+  const render = () => {
+    const chosen = getChosenGoogleCalendars();
+    const source = getGoogleCalendarSource();
+    list.replaceChildren();
+    if (!chosen.length) {
+      const row = document.createElement("li");
+      row.className = "connected-mailbox-row";
+      const name = document.createElement("span");
+      name.className = "connected-mailbox-name";
+      name.textContent = state.agentCalendarSourcesLoading
+        ? "Loading the calendars in this account…"
+        : (source?.message || state.agentCalendarSourcesError || "The calendar of this Google account.");
+      row.append(name);
+      list.append(row);
+      heading.textContent = "Calendar";
+      return;
+    }
+    heading.textContent = chosen.length === 1 ? "Calendar Assistyca reads" : "Calendars Assistyca reads";
+    for (const calendar of chosen) {
+      const row = document.createElement("li");
+      row.className = "connected-mailbox-row";
+      const name = document.createElement("span");
+      name.className = "connected-mailbox-name";
+      name.textContent = calendar.label;
+      row.append(name);
+      if (calendar.primary) {
+        const badge = document.createElement("span");
+        badge.className = "connected-mailbox-provider";
+        badge.textContent = "Your own";
+        row.append(badge);
+      }
+      list.append(row);
+    }
+  };
+
+  section.append(heading, list, changeButton);
+  render();
+  // The card is already on screen, so the list fills in when the account
+  // answers rather than holding the card closed until it does.
+  void refreshAgentCalendarSources().then(render).catch(render);
+  return section;
+}
+
+// The calendars an account has chosen, named. Falls back to the names saved
+// beside the choice, so the list still reads as calendars when the account can
+// no longer be asked what it holds.
+function getChosenGoogleCalendars() {
+  const source = getGoogleCalendarSource();
+  if (!source) {
+    return [];
+  }
+  const chosenIds = source.selectedCalendarIds;
+  if (!chosenIds.length) {
+    return [];
+  }
+  return chosenIds.map((calendarId) => {
+    const listed = source.calendars.find((calendar) => calendar.id === calendarId);
+    const saved = source.selectedCalendars.find((calendar) => calendar.id === calendarId);
+    return {
+      id: calendarId,
+      label: listed?.label
+        || saved?.label
+        || (calendarId === AGENT_CALENDAR_PRIMARY_ID ? "My calendar" : calendarId),
+      primary: Boolean(listed?.primary) || calendarId === AGENT_CALENDAR_PRIMARY_ID,
+    };
+  });
+}
+
+// One checkbox per calendar in the account, ticked for the ones Assistyca
+// reads. The account's own calendar sorts first, which is the order the list
+// endpoint returns and the order someone expects to read it in.
+function createGoogleCalendarChoiceList(source, selectedIds) {
+  const chosen = new Set(selectedIds);
+  const list = document.createElement("div");
+  list.className = "calendar-oauth-permission-list";
+  for (const calendar of source.calendars) {
+    const item = document.createElement("label");
+    item.className = "calendar-oauth-permission";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = chosen.has(calendar.id);
+    checkbox.dataset.googleCalendarId = calendar.id;
+    // The name travels with the choice so the Google tool can still list the
+    // calendars by name on a connection that has lost the grant to list them.
+    checkbox.dataset.googleCalendarLabel = calendar.label;
+
+    const copy = document.createElement("span");
+    copy.className = "calendar-oauth-permission-copy";
+    const row = document.createElement("span");
+    row.className = "calendar-oauth-permission-row";
+    const label = document.createElement("strong");
+    label.textContent = calendar.label;
+    row.append(label);
+    if (calendar.primary) {
+      const badge = document.createElement("span");
+      badge.className = "calendar-oauth-permission-access";
+      badge.textContent = "Your own";
+      row.append(badge);
+    }
+    copy.append(row);
+    item.append(checkbox, copy);
+    list.append(item);
+  }
+  return list;
+}
+
+function getSelectedGoogleCalendars(container) {
+  return Array.from(container?.querySelectorAll("input[data-google-calendar-id]") || [])
+    .filter((input) => input.checked)
+    .map((input) => ({
+      id: String(input.dataset.googleCalendarId || "").trim(),
+      label: String(input.dataset.googleCalendarLabel || "").trim(),
+    }))
+    .filter((calendar) => calendar.id);
+}
+
+// The question asked once Google Calendar is connected, and again whenever
+// someone opens it from the Google tool: which of this account's calendars is
+// "my calendar". A Google account usually holds several, and a question asked
+// in chat reads every one of these rather than only the account's own.
+function openGoogleCalendarChoice(option, flowOptions = {}) {
+  const onDone = typeof flowOptions.onDone === "function" ? flowOptions.onDone : null;
+  const body = document.createElement("div");
+  body.className = "calendar-oauth-flow";
+
+  const intro = document.createElement("p");
+  intro.className = "calendar-oauth-copy";
+  intro.textContent = "Choose the calendars Assistyca should read. When you ask what is on your calendar, it checks every calendar you tick here.";
+
+  const listWrapper = document.createElement("div");
+  listWrapper.className = "calendar-oauth-permissions";
+  const heading = document.createElement("h3");
+  heading.textContent = "Calendars in this account";
+  const listSlot = document.createElement("div");
+  listWrapper.append(heading, listSlot);
+
+  const { status, setStatus } = createCalendarOAuthStatusNode();
+  body.append(intro, listWrapper, status);
+
+  let saving = false;
+  let canSave = false;
+
+  const showLoading = () => {
+    const loading = document.createElement("p");
+    loading.className = "calendar-oauth-copy";
+    loading.textContent = "Loading the calendars in this account…";
+    listSlot.replaceChildren(loading);
+  };
+
+  const showUnavailable = (message) => {
+    const note = document.createElement("p");
+    note.className = "calendar-oauth-copy";
+    // Never a dead end: without the list, the account's own calendar is still
+    // read, and the way to get the list is named rather than implied.
+    note.textContent = message
+      || "This connection cannot list the calendars in the account yet, so Assistyca reads the account's own calendar. Reconnect Google to choose from all of them.";
+    listSlot.replaceChildren(note);
+  };
+
+  const render = () => {
+    const source = getGoogleCalendarSource();
+    if (!source && state.agentCalendarSourcesLoading) {
+      showLoading();
+      return;
+    }
+    if (!source) {
+      canSave = false;
+      showUnavailable(state.agentCalendarSourcesError);
+      setCalendarOAuthPrimaryButton("Done");
+      return;
+    }
+    if (!source.calendars.length) {
+      canSave = false;
+      showUnavailable(source.message);
+      setCalendarOAuthPrimaryButton("Done");
+      return;
+    }
+    canSave = true;
+    listSlot.replaceChildren(createGoogleCalendarChoiceList(source, source.selectedCalendarIds));
+    setCalendarOAuthPrimaryButton("Save calendars", { logo: () => createAgentAddToolLogo(option) });
+  };
+
+  const save = async () => {
+    if (saving) {
+      return;
+    }
+    if (!canSave) {
+      closeAuthAlert();
+      if (onDone) {
+        onDone();
+      }
+      return;
+    }
+    const calendars = getSelectedGoogleCalendars(listSlot);
+    if (!calendars.length) {
+      setStatus("error", "Choose a calendar", "Tick at least one calendar for Assistyca to read.");
+      return;
+    }
+    if (calendars.length > AGENT_CALENDAR_TAG_LIMIT) {
+      setStatus(
+        "error",
+        "Too many calendars",
+        `Assistyca reads up to ${AGENT_CALENDAR_TAG_LIMIT} calendars. Untick a few and save again.`,
+      );
+      return;
+    }
+    saving = true;
+    setStatus("loading", "Saving", "Remembering which calendars to read.");
+    setCalendarOAuthPrimaryButton("Saving", { loading: true });
+    try {
+      const source = getGoogleCalendarSource();
+      const response = await apiRequest("/api/platform-connections/calendars", {
+        method: "POST",
+        body: { connectionId: source?.connectionId || "", calendars },
+        timeoutMs: 20000,
+      });
+      // The saved answer is what the picker and the Google tool show next, so
+      // it is taken from the response rather than from what was ticked.
+      await refreshAgentCalendarSources({ force: true });
+      closeAuthAlert();
+      if (onDone) {
+        onDone();
+        return;
+      }
+      openAuthAlert(
+        "Calendars saved",
+        normalizeText(response.message) || "Assistyca will read those calendars.",
+        {
+          eyebrow: "Google",
+          iconNode: createFeatureActivationResultIcon("check"),
+          tone: "success",
+          buttonLabel: "Done",
+          returnFocus: elements.agentAddToolButton,
+        },
+      );
+    } catch (error) {
+      setStatus(
+        "error",
+        "Couldn’t save",
+        formatApiErrorMessage(error, "I couldn’t save those calendars right now. Please try again."),
+      );
+      setCalendarOAuthPrimaryButton("Save calendars", { logo: () => createAgentAddToolLogo(option) });
+      saving = false;
+    }
+  };
+
+  openAuthAlert(
+    "Which calendars should I read?",
+    "Assistyca checks every calendar you choose here.",
+    {
+      eyebrow: "Google Calendar",
+      iconNode: createAgentAddToolLogo(option),
+      tone: "progress",
+      variant: "calendar-oauth",
+      bodyNode: body,
+      buttonLabel: "Save calendars",
+      secondaryButtonLabel: "Not now",
+      closeOnSecondary: true,
+      onSecondary: onDone,
+      closeOnPrimary: false,
+      returnFocus: elements.agentAddToolButton,
+      onPrimary: () => {
+        void save();
+      },
+    },
+  );
+
+  showLoading();
+  setCalendarOAuthPrimaryButton("Save calendars", { logo: () => createAgentAddToolLogo(option) });
+  // Reading the list is a live question about the account, so a reconnect or a
+  // calendar added in Google since the last look is picked up here.
+  void refreshAgentCalendarSources({ force: true }).then(render).catch(render);
+}
+
 function openCalendarOAuthConnection(option, flowOptions = {}) {
   // Reached from the provider step, this card is the second half of one flow,
   // so its way out leads back to that step instead of out of the flow.
@@ -7193,6 +7496,12 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
 
   const permissionList = createGoogleOAuthPermissionList(option, { readOnly: isConnected });
   body.append(intro, permissionList, status);
+  // What "my calendar" means for this account. The Google tool is where a
+  // connection is managed, so the calendars it reads are listed here beside the
+  // permissions and the mailboxes rather than only inside an action.
+  if (usesAggregateGoogleConnection && isCalendarConnectionReady()) {
+    body.append(createGoogleConnectedCalendarsSection(option));
+  }
   // The connected mailboxes are listed on the Google tool, which is where
   // removing one belongs. The add flow only adds.
   const gmailList = usesAggregateGoogleConnection
@@ -7344,30 +7653,41 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
           .filter(Boolean);
       const connectionMessage = saveResponse.message || assistantSuccessMessage;
       const startedFromChat = wasPlatformConnectionStartedFromChat();
-      if (resumeAgentProposalAfterConnectedPlatforms(connectedPlatforms, {
-        connectionMessage,
-        startedFromChat,
-      })) {
-        closeAuthAlert();
-        elements.agentComposerInput?.focus();
+      const finishConnection = () => {
+        if (resumeAgentProposalAfterConnectedPlatforms(connectedPlatforms, {
+          connectionMessage,
+          startedFromChat,
+        })) {
+          closeAuthAlert();
+          elements.agentComposerInput?.focus();
+          return;
+        }
+        openAuthAlert(
+          "Google connected",
+          connectionMessage || "Google is connected with read-only Calendar access.",
+          {
+            eyebrow: "Google",
+            iconNode: createFeatureActivationResultIcon("check"),
+            tone: "success",
+            buttonLabel: "OK",
+            returnFocus: elements.agentAddToolButton,
+          },
+        );
+        if (startedFromChat) {
+          pushAgentMessage("assistant", connectionMessage);
+          persistAgentWorkspace("Google connected through OAuth.");
+        }
+        renderApp({ preserveStatus: true });
+      };
+      // A Google account holds several calendars, so connecting one is only
+      // half the answer to "read my calendar". The question is asked here,
+      // while the connection is the thing on screen, and whatever came next -
+      // resuming an action, or the success card - still follows it.
+      if (connectedPlatforms.includes("calendar")) {
+        openGoogleCalendarChoice(option, { onDone: finishConnection });
         return;
       }
-      openAuthAlert(
-        "Google connected",
-        connectionMessage || "Google is connected with read-only Calendar access.",
-        {
-          eyebrow: "Google",
-          iconNode: createFeatureActivationResultIcon("check"),
-          tone: "success",
-          buttonLabel: "OK",
-          returnFocus: elements.agentAddToolButton,
-        },
-      );
-      if (startedFromChat) {
-        pushAgentMessage("assistant", connectionMessage);
-        persistAgentWorkspace("Google connected through OAuth.");
-      }
-      renderApp({ preserveStatus: true });
+      finishConnection();
     } catch (requestError) {
       const errorCode = normalizeText(requestError?.code);
       const shouldUseRedirectFallback = fallbackAuthUrl
@@ -15539,9 +15859,12 @@ function renderOpenAgentMailboxFields() {
   }
 }
 
-// A calendar action reads one calendar per tag. Five is well past what anyone
-// watches at once, and it caps how many provider reads one run makes.
-const AGENT_CALENDAR_TAG_LIMIT = 5;
+// A calendar action reads one calendar per tag, and an account chooses up to the
+// same number for questions asked in chat. Eight is past what anyone watches at
+// once, and it caps how many provider reads one run makes. It mirrors
+// CALENDAR_MAX_CALENDARS on the server: choosing more than a run reads would
+// drop calendars without saying so.
+const AGENT_CALENDAR_TAG_LIMIT = 8;
 const AGENT_CALENDAR_TAG_EMAIL_PATTERN = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]{2,}$/;
 // The connected account's own calendar: the one ID in a saved field that is not
 // an address. Google accepts the same alias, so it keeps meaning the right
@@ -15626,6 +15949,9 @@ function renderOpenAgentCalendarFields() {
 }
 
 function resetAgentCalendarSources() {
+  // A load still in flight belongs to the connection that just changed, so it
+  // is dropped rather than handed to the next caller as this account's answer.
+  agentCalendarSourcesPending = null;
   state.agentCalendarSources = [];
   state.agentCalendarSourcesSignature = "";
   state.agentCalendarSourcesLoading = false;
@@ -15646,6 +15972,8 @@ function getAgentCalendarConnectionSignature() {
 
 function normalizeAgentCalendarSource(source) {
   const calendars = Array.isArray(source?.calendars) ? source.calendars : [];
+  const selectedCalendars = Array.isArray(source?.selectedCalendars) ? source.selectedCalendars : [];
+  const selectedIds = Array.isArray(source?.selectedCalendarIds) ? source.selectedCalendarIds : [];
   return {
     connectionId: normalizeText(source?.connectionId),
     platform: normalizeText(source?.platform) || "calendar",
@@ -15660,12 +15988,40 @@ function normalizeAgentCalendarSource(source) {
         primary: Boolean(calendar?.primary),
       }))
       .filter((calendar) => calendar.id),
+    // Which of the account's calendars a question about "my calendar" reads.
+    // The server answers with every readable calendar until the account has
+    // been asked, so this is never empty just because nobody chose yet.
+    selectedCalendarIds: selectedIds
+      .map((calendarId) => normalizeText(calendarId))
+      .filter(Boolean),
+    // The chosen calendars with their names, so the Google tool can list them
+    // even when the account can no longer be asked what it holds.
+    selectedCalendars: selectedCalendars
+      .map((calendar) => ({
+        id: normalizeText(calendar?.id),
+        label: normalizeText(calendar?.label) || normalizeText(calendar?.id),
+      }))
+      .filter((calendar) => calendar.id),
   };
+}
+
+// The one calendar account behind the Google tool. Calendar holds a single
+// connection per user; the list shape is what the endpoint returns so a second
+// account becomes another entry rather than a new response.
+function getGoogleCalendarSource() {
+  const sources = Array.isArray(state.agentCalendarSources) ? state.agentCalendarSources : [];
+  return sources.find((source) => source.platform === "calendar") || null;
 }
 
 function getAgentCalendarSourceHeading(source) {
   return source.accountAddress ? `${source.label} (${source.accountAddress})` : source.label;
 }
+
+// The load already in flight, so a second caller waits for the answer instead
+// of being handed the empty list that is there while it is being fetched. The
+// calendar picker opens straight after a connect, which is exactly when a
+// refresh is already running.
+let agentCalendarSourcesPending = null;
 
 async function refreshAgentCalendarSources(options = {}) {
   const signature = getAgentCalendarConnectionSignature();
@@ -15674,10 +16030,26 @@ async function refreshAgentCalendarSources(options = {}) {
     return [];
   }
   const isCached = state.agentCalendarSourcesLoadedAt > 0 && state.agentCalendarSourcesSignature === signature;
-  if (state.agentCalendarSourcesLoading || (isCached && !options.force)) {
+  if (state.agentCalendarSourcesLoading) {
+    return agentCalendarSourcesPending || state.agentCalendarSources;
+  }
+  if (isCached && !options.force) {
     return state.agentCalendarSources;
   }
 
+  const load = loadAgentCalendarSources();
+  agentCalendarSourcesPending = load;
+  try {
+    return await load;
+  } finally {
+    if (agentCalendarSourcesPending === load) {
+      agentCalendarSourcesPending = null;
+    }
+  }
+}
+
+async function loadAgentCalendarSources() {
+  const signature = getAgentCalendarConnectionSignature();
   state.agentCalendarSourcesLoading = true;
   state.agentCalendarSourcesError = "";
   renderOpenAgentCalendarFields();

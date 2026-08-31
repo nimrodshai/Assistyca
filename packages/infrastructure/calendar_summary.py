@@ -39,8 +39,10 @@ PRIMARY_CALENDAR_ID = "primary"
 # so it is never offered as something an action could read.
 CALENDAR_READABLE_ACCESS_ROLES = ("reader", "writer", "owner")
 # One read per calendar, so the list has to stay short enough that a run does
-# not turn into a long chain of provider calls.
-CALENDAR_MAX_CALENDARS = 5
+# not turn into a long chain of provider calls. It also caps what an account can
+# choose to have read: choosing more calendars than a run reads would drop the
+# rest without saying so.
+CALENDAR_MAX_CALENDARS = 8
 # A calendar ID is either the connected account's own calendar or the address
 # of a calendar shared with it. Nothing else is ever put in the request path.
 CALENDAR_ID_PATTERN = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$")
@@ -93,13 +95,8 @@ def normalize_calendar_id(value: Any) -> str:
     return candidate if CALENDAR_ID_PATTERN.match(candidate) else "primary"
 
 
-def parse_calendar_ids(value: Any) -> list[str]:
-    """Turn the saved calendar field into the calendars a run should read.
-
-    The field holds one tag per calendar: the connected account, whatever it is
-    labelled, plus any address the user added.  Every tag that is not an address
-    means the connected account's own calendar, which Google calls "primary".
-    """
+def _calendar_id_entries(value: Any) -> list[str]:
+    """Every calendar named by a field or a saved selection, as safe IDs."""
 
     if isinstance(value, (list, tuple, set)):
         entries = [str(item) for item in value]
@@ -112,7 +109,62 @@ def parse_calendar_ids(value: Any) -> list[str]:
         calendar_id = normalize_calendar_id(entry)
         if calendar_id not in calendar_ids:
             calendar_ids.append(calendar_id)
-    return calendar_ids[:CALENDAR_MAX_CALENDARS] or ["primary"]
+    return calendar_ids[:CALENDAR_MAX_CALENDARS]
+
+
+def parse_calendar_ids(value: Any) -> list[str]:
+    """Turn the saved calendar field into the calendars a run should read.
+
+    The field holds one tag per calendar: the connected account, whatever it is
+    labelled, plus any address the user added.  Every tag that is not an address
+    means the connected account's own calendar, which Google calls "primary".
+    """
+
+    return _calendar_id_entries(value) or ["primary"]
+
+
+def normalize_selected_calendar_ids(value: Any) -> list[str]:
+    """The calendars an account chose to have read, as IDs.
+
+    Unlike ``parse_calendar_ids`` an empty answer stays empty: "nothing has been
+    chosen yet" and "only the account's own calendar" are different states, and
+    the first is the one that should go and ask.
+    """
+
+    return _calendar_id_entries(value)
+
+
+def calendar_field_names_a_calendar(value: Any) -> bool:
+    """True when the saved field picked calendars rather than the connection.
+
+    Every tag that is not an address names the account rather than a calendar
+    inside it, which is what "Connected calendar" and every question typed in
+    chat amount to.  Those read whatever the account chose; a field that named
+    real calendars is a narrower request and is left exactly as it was written.
+    """
+
+    if isinstance(value, (list, tuple, set)):
+        entries = [str(item) for item in value]
+    else:
+        entries = re.split(r"[,\n;]+", str(value or ""))
+    return any(
+        CALENDAR_ID_PATTERN.match(str(entry).strip().strip("<>").lower())
+        for entry in entries
+        if str(entry).strip()
+    )
+
+
+def resolve_calendar_ids(value: Any, *, account_calendar_ids: Any = None) -> list[str]:
+    """Which calendars one run should read, given what the account chose.
+
+    "What is on my calendar" is a question about all of them.  A Google account
+    holds several - work, family, a shared one someone added - and reading only
+    the account's own calendar answers a question nobody asked.
+    """
+
+    if calendar_field_names_a_calendar(value):
+        return parse_calendar_ids(value)
+    return normalize_selected_calendar_ids(account_calendar_ids) or parse_calendar_ids(value)
 
 
 @dataclass(frozen=True)

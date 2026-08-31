@@ -68,7 +68,11 @@ from packages.infrastructure.calendar_summary import CalendarAuthorizationError
 from packages.infrastructure.calendar_summary import CalendarListUnavailableError
 from packages.infrastructure.calendar_summary import CalendarSummaryError
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
+from packages.infrastructure.calendar_summary import CALENDAR_MAX_CALENDARS
+from packages.infrastructure.calendar_summary import calendar_field_names_a_calendar
+from packages.infrastructure.calendar_summary import normalize_selected_calendar_ids
 from packages.infrastructure.calendar_summary import parse_calendar_ids
+from packages.infrastructure.calendar_summary import resolve_calendar_ids
 from packages.infrastructure.credential_vault import CredentialVault
 from packages.infrastructure.credential_vault import CredentialVaultError
 from packages.infrastructure.credential_vault import credential_hint
@@ -392,6 +396,64 @@ EMAIL_PROVIDER_LABELS = {
 CALENDAR_PROVIDER_LABELS = {
     GOOGLE_CALENDAR_OAUTH_PROVIDER: "Google Calendar",
 }
+# Where a calendar connection remembers which of the account's calendars
+# Assistyca may read. A Google account holds several - work, family, one that
+# was shared in - and "my calendar" means whichever of them the owner chose,
+# not whichever one Google happens to call primary.
+CALENDAR_SELECTION_METADATA_KEY = "selectedCalendars"
+
+
+def normalize_calendar_selection(value: Any) -> list[dict[str, str]]:
+    """The saved choice of calendars, as ID-and-label pairs.
+
+    The label is kept beside the ID so the Google tool can name the calendars
+    without a provider call, and can still name them when the account has lost
+    the grant that lists them.
+    """
+
+    entries = value if isinstance(value, (list, tuple)) else []
+    selection: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, dict):
+            raw_id = entry.get("id")
+            label = normalize_text(entry.get("label"))
+        else:
+            raw_id = entry
+            label = ""
+        calendar_ids = normalize_selected_calendar_ids([raw_id])
+        if not calendar_ids or calendar_ids[0] in seen:
+            continue
+        calendar_id = calendar_ids[0]
+        seen.add(calendar_id)
+        selection.append({
+            "id": calendar_id,
+            "label": (label or ("My calendar" if calendar_id == "primary" else calendar_id))[:200],
+        })
+        if len(selection) >= CALENDAR_MAX_CALENDARS:
+            break
+    return selection
+
+
+def connection_calendar_selection(connection: dict[str, Any] | None) -> list[dict[str, str]]:
+    metadata = connection.get("metadata") if isinstance(connection, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+    return normalize_calendar_selection(metadata.get(CALENDAR_SELECTION_METADATA_KEY))
+
+
+def connection_lists_calendars(connection: dict[str, Any] | None) -> bool:
+    """Whether this connection may ask Google which calendars the account has.
+
+    Reading a calendar and listing them are separate grants, so a connection
+    made before the second one was asked for cannot answer the question at all.
+    Checking first keeps a run from spending a provider call to be told no.
+    """
+
+    metadata = connection.get("metadata") if isinstance(connection, dict) else None
+    if not isinstance(metadata, dict):
+        return False
+    return GOOGLE_CALENDAR_LIST_OAUTH_SCOPE in normalize_text(metadata.get("grantedScope"))
 # Which vendor each provider belongs to. Belonging is a property of the
 # provider and never of the platform: Gmail and Outlook share the email
 # platform and belong to different vendors, and Google spans three platforms.
@@ -3653,6 +3715,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/files/move"
             or path == "/api/agent/folders/move"
             or path == "/api/platform-connections"
+            or path == "/api/platform-connections/calendars"
             or path.startswith("/api/admin/")
             or path == "/api/features"
             or path.startswith("/api/features/")
@@ -3974,6 +4037,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_platform_connection_post()
             return
 
+        if path == "/api/platform-connections/calendars":
+            self._handle_platform_connection_calendars_post()
+            return
+
         if path == "/api/whatsapp/test":
             self._handle_whatsapp_test()
             return
@@ -4174,6 +4241,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return f"{', '.join(labels[:-1])}, and {labels[-1]} connected with read-only access."
         return "Google connected with the selected read-only access."
 
+    def _calendar_connection_record(self, email: str) -> dict[str, Any] | None:
+        """The calendar connection a run reads, or None when there is none."""
+
+        statuses = ("connected", "needs_verification", "needs_attention")
+        for connection in self.database.list_platform_connections(email):
+            if (
+                normalize_text(connection.get("platform")).lower() == CALENDAR_PLATFORM
+                and normalize_text(connection.get("connectionStatus")).lower() in statuses
+            ):
+                return connection
+        return None
+
     def _handle_platform_connection_calendars_get(self) -> None:
         """List the calendars inside every connected calendar account.
 
@@ -4210,6 +4289,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         sources: list[dict[str, Any]] = []
         for record in records:
             provider = resolved_connection_provider(record) or GOOGLE_CALENDAR_OAUTH_PROVIDER
+            saved_selection = connection_calendar_selection(record)
             source: dict[str, Any] = {
                 "connectionId": normalize_text(record.get("id")),
                 "platform": CALENDAR_PLATFORM,
@@ -4217,6 +4297,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "label": CALENDAR_PROVIDER_LABELS.get(provider, "Calendar"),
                 "accountAddress": normalize_text(record.get("accountAddress")),
                 "calendars": [],
+                # Which of them a question about "my calendar" reads. Empty
+                # means the account has never been asked, and everything it can
+                # read is offered below rather than the picker opening blank.
+                "selectedCalendars": saved_selection,
+                "selectedCalendarIds": [entry["id"] for entry in saved_selection],
                 "status": "ok",
                 "message": "",
             }
@@ -4228,6 +4313,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             try:
                 access_token, _credential_source = self._resolve_calendar_access_token(vault.decrypt(ciphertext))
                 source["calendars"] = CalendarSummaryRunner().fetch_calendar_list(access_token)
+                if not saved_selection:
+                    # Never asked, so everything readable counts as chosen:
+                    # someone who ignores the question still gets the answer
+                    # they asked for, which is all of their calendars.
+                    source["selectedCalendarIds"] = [
+                        calendar["id"] for calendar in source["calendars"][:CALENDAR_MAX_CALENDARS]
+                    ]
             except CredentialVaultError:
                 source["status"] = "unavailable"
                 source["message"] = "The saved calendar connection could not be opened securely. Reconnect it."
@@ -4244,6 +4336,81 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "sources": sources,
+        })
+
+    def _handle_platform_connection_calendars_post(self) -> None:
+        """Save which of the account's calendars Assistyca may read.
+
+        Asked once when Google Calendar is connected, and changeable afterwards
+        from the Google tool. The choice lives on the connection rather than on
+        each action, because it answers "which calendars are mine" and not
+        "what should this one action look at".
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        statuses = ("connected", "needs_verification", "needs_attention")
+        requested_connection_id = normalize_text(payload.get("connectionId"))
+        records = [
+            connection
+            for connection in self.database.list_platform_connections(session.email)
+            if normalize_text(connection.get("platform")).lower() == CALENDAR_PLATFORM
+            and normalize_text(connection.get("connectionStatus")).lower() in statuses
+            and (not requested_connection_id or normalize_text(connection.get("id")) == requested_connection_id)
+        ]
+        if not records:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_setup_required",
+                "message": "Connect Google Calendar before choosing which calendars it reads.",
+            })
+            return
+
+        record = records[0]
+        selection = normalize_calendar_selection(
+            payload.get("calendars")
+            if isinstance(payload.get("calendars"), list)
+            else payload.get("calendarIds")
+        )
+        if not selection:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "no_calendars_chosen",
+                "message": "Choose at least one calendar for Assistyca to read.",
+            })
+            return
+
+        connection = self.database.update_platform_connection_status(
+            session.email,
+            connection_id=normalize_text(record.get("id")),
+            # The choice says nothing about whether Google still accepts the
+            # credential, so the health the connection already has is kept.
+            connection_status=normalize_text(record.get("connectionStatus")).lower() or "connected",
+            metadata_updates={CALENDAR_SELECTION_METADATA_KEY: selection},
+        )
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": (
+                "Assistyca will read that calendar."
+                if len(selection) == 1
+                else f"Assistyca will read those {len(selection)} calendars."
+            ),
+            "selectedCalendars": selection,
+            "selectedCalendarIds": [entry["id"] for entry in selection],
+            "connection": connection,
         })
 
     def _handle_google_calendar_oauth_start(self, parsed: urllib_parse.ParseResult) -> None:
@@ -4499,8 +4666,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         validation_results: dict[str, dict[str, Any]] = {}
         if "calendar" in granted_scope_ids:
-            CalendarSummaryRunner().run(access_token, time_window="today", timezone_name="UTC")
+            calendar_runner = CalendarSummaryRunner()
+            calendar_runner.run(access_token, time_window="today", timezone_name="UTC")
             validation_results["calendar"] = {"calendarValidation": "ok"}
+            # Which calendars this account holds, so the portal can ask which
+            # of them Assistyca should read - and so that someone who never
+            # answers still has all of them read rather than only the one
+            # Google calls primary. A declined list grant simply leaves the
+            # question unasked.
+            if GOOGLE_CALENDAR_LIST_OAUTH_SCOPE in granted_scope:
+                try:
+                    available_calendars = normalize_calendar_selection(
+                        calendar_runner.fetch_calendar_list(access_token)
+                    )
+                except CalendarSummaryError:
+                    available_calendars = []
+                if available_calendars:
+                    # Reconnecting rewrites this row's metadata, so a choice
+                    # already made is carried across rather than quietly widened
+                    # back to every calendar. A calendar that is no longer
+                    # readable drops out of it.
+                    previous_ids = {
+                        entry["id"]
+                        for entry in connection_calendar_selection(
+                            self._calendar_connection_record(session.email)
+                        )
+                    }
+                    kept = [entry for entry in available_calendars if entry["id"] in previous_ids]
+                    validation_results["calendar"][CALENDAR_SELECTION_METADATA_KEY] = (
+                        kept or available_calendars
+                    )
         if "gmail" in granted_scope_ids:
             validation_results["gmail"] = GmailAccessValidator().validate(access_token)
 
@@ -6529,7 +6724,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # under whatever label, plus any address shared with it. Every label
         # that is not an address means the connected account's own calendar, so
         # a saved label can never be read as a URL.
-        calendar_ids = parse_calendar_ids(calendar_label)
+        #
+        # A field that names no calendar of its own - which is every question
+        # asked in chat - reads the calendars this account chose when it was
+        # connected. A Google account holds several, and "what is on my
+        # calendar" is a question about all of them.
+        calendar_connection = self._calendar_connection_record(session.email)
+        calendar_selection = connection_calendar_selection(calendar_connection)
+        discovered_calendars: list[dict[str, str]] = []
+        if (
+            not calendar_selection
+            and not calendar_field_names_a_calendar(calendar_label)
+            and connection_lists_calendars(calendar_connection)
+        ):
+            # A connection made before the question was asked has no choice
+            # saved, so everything it can read counts as chosen. The list is
+            # remembered below, so this costs one provider call and not one per
+            # run. An account without the grant that lists calendars falls back
+            # to its own calendar rather than failing the run.
+            try:
+                discovered_calendars = normalize_calendar_selection(
+                    CalendarSummaryRunner().fetch_calendar_list(access_token)
+                )
+            except CalendarSummaryError:
+                discovered_calendars = []
+        calendar_ids = resolve_calendar_ids(
+            calendar_label,
+            account_calendar_ids=[
+                entry["id"] for entry in (calendar_selection or discovered_calendars)
+            ],
+        )
 
         try:
             result = CalendarSummaryRunner().run(
@@ -6563,16 +6787,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        calendar_metadata_updates: dict[str, Any] = {
+            "provider": "google_calendar",
+            "validationStatus": "verified",
+            "credentialSource": credential_source,
+            "validatedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        if discovered_calendars:
+            # What this account's calendars turned out to be, so the next run
+            # reads them without asking Google the same question again.
+            calendar_metadata_updates[CALENDAR_SELECTION_METADATA_KEY] = discovered_calendars
         self.database.update_platform_connection_status(
             session.email,
             platform="calendar",
             connection_status="connected",
-            metadata_updates={
-                "provider": "google_calendar",
-                "validationStatus": "verified",
-                "credentialSource": credential_source,
-                "validatedAt": datetime.now(timezone.utc).isoformat(),
-            },
+            metadata_updates=calendar_metadata_updates,
         )
         json_response(self, HTTPStatus.OK, {
             "ok": True,

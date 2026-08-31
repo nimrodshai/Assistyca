@@ -281,6 +281,26 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("item.replaceChildren(trigger, expansion);", action_item_renderer)
         self.assertNotIn("item.append(trigger, expansion);", action_item_renderer)
 
+    def test_google_tool_shows_the_calendars_it_reads_and_asks_which_they_are(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # Connecting Google Calendar is only half of "read my calendar": a
+        # Google account holds several, so the question follows the connect.
+        self.assertIn("function openGoogleCalendarChoice", script)
+        self.assertIn('if (connectedPlatforms.includes("calendar")) {', script)
+        self.assertIn("openGoogleCalendarChoice(option, { onDone: finishConnection });", script)
+
+        # The Google tool is where a connection is managed, so it names the
+        # calendars alongside the permissions, the mailboxes and disconnect.
+        self.assertIn("function createGoogleConnectedCalendarsSection", script)
+        self.assertIn("body.append(createGoogleConnectedCalendarsSection(option));", script)
+        self.assertIn(".connected-calendars {", styles)
+
+        # A mailbox cannot be found by asking the email platform for one row,
+        # so the Gmail permission is read from the connected mailboxes.
+        self.assertIn("? getConnectedGmailConnections().length > 0", script)
+
     def test_calendar_action_lists_calendars_as_tags(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
@@ -294,7 +314,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('return address ? `Google Calendar (${address})` : "Google Calendar";', script)
         self.assertIn("function getAgentCalendarAddressTags", script)
         self.assertIn("function formatAgentCalendarFieldValue", script)
-        self.assertIn("const AGENT_CALENDAR_TAG_LIMIT = 5;", script)
+        # The same cap as CALENDAR_MAX_CALENDARS on the server: an account that
+        # could choose more calendars than a run reads would lose the rest.
+        self.assertIn("const AGENT_CALENDAR_TAG_LIMIT = 8;", script)
 
         tags_field = script[
             script.index("function createAgentCalendarTagsField"):
