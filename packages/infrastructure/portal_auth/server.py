@@ -57,6 +57,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_for
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
+from packages.infrastructure.account_erasure import erase_account
 from packages.infrastructure.agent_proposals import normalize_agent_source_context
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.agent_proposals import parse_agent_proposal_revision_json
@@ -170,7 +171,6 @@ from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_acc
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
-from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
 from packages.infrastructure.whatsapp_portal_service import normalize_portal_owner_wa_id
 from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
 from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
@@ -8654,14 +8654,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        store_connection = self.database.get_whatsapp_connection(email) or {
-            "userId": int(target_user.get("id") or 0),
-            "email": email,
-        }
         deleted_user_payload = self._serialize_admin_user(target_user)
 
         try:
-            self.database.delete_user(email)
+            erasure = erase_account(
+                database=self.database,
+                email=email,
+                root=self.root,
+                receipt_output_root=resolve_runtime_path(self.config.agent_output_dir, root=self.root),
+                receipt_owner_key=build_agent_receipt_owner_key(email),
+                whatsapp_store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
+                whatsapp_store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
+                revoke_grant=self._revoke_connection_grant,
+            )
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -8929,6 +8934,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 code="google_oauth_provider_error",
             )
         return parsed
+
+    def _revoke_connection_grant(self, record: dict[str, str]) -> tuple[bool, str]:
+        """Hand one stored connection back to the provider that issued it.
+
+        Google is the only provider with a revoke endpoint. A Microsoft mailbox
+        can only be withdrawn by its owner from their own account page, so it
+        reports nothing here rather than a warning the admin cannot act on.
+        """
+
+        is_google_oauth = (
+            connection_vendor(record) == GOOGLE_VENDOR
+            and normalize_text(record.get("authType")).lower() == "oauth"
+        )
+        if not is_google_oauth:
+            return False, ""
+
+        return self._revoke_google_calendar_connection(normalize_text(record.get("secretCiphertext")))
 
     def _revoke_google_calendar_connection(self, encrypted_secret: str) -> tuple[bool, str]:
         """Best-effort revoke of a stored Google OAuth grant before deletion.

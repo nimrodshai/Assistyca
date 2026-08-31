@@ -2740,6 +2740,24 @@ class PortalDatabase:
             conn.execute("DELETE FROM users WHERE email = ?", (normalized_email,))
             return user
 
+    def delete_contact_opportunities_for_email(self, email: str) -> int:
+        """Delete the website contact submissions sent from one address.
+
+        These rows are keyed by the address that filled the form rather than by
+        a user id, so ``delete_user`` never reaches them.
+        """
+
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return 0
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM contact_opportunities WHERE lower(email) = ?",
+                (normalized_email,),
+            )
+            return int(cursor.rowcount or 0)
+
     def set_user_billing(
         self,
         email: str,
@@ -3073,22 +3091,29 @@ class PortalDatabase:
     def list_platform_connection_secret_records(
         self,
         email: str,
-        platform: str,
+        platform: str = "",
         *,
         include_statuses: tuple[str, ...] = ("connected",),
+        include_inactive_user: bool = False,
     ) -> list[dict[str, str]]:
-        """Return every account on a platform, with ciphertext, for server-side runs.
+        """Return accounts with their ciphertext, for server-side runs.
 
         This is the multi-account counterpart of
         ``get_platform_connection_ciphertext``. Callers must keep
         ``secretCiphertext`` inside the server process; it is never serialized
         to the portal or into an agent prompt. Ordering is stable so a fan-out
         reads a user's mailboxes in the same order every run.
+
+        A run names the platform it reads and the statuses worth reading.
+        Erasing an account is the case that names neither: it has to reach
+        every connection whatever its platform or status, and the account it
+        is clearing may be one an admin disabled first, which is what
+        ``include_inactive_user`` is for.
         """
 
         normalized_email = normalize_email(email)
         normalized_platform = normalize_text(platform).lower()
-        if not normalized_email or not normalized_platform:
+        if not normalized_email:
             return []
 
         statuses = tuple(
@@ -3098,26 +3123,34 @@ class PortalDatabase:
             )
             if normalized_status
         )
-        if not statuses:
-            return []
 
-        placeholders = ", ".join("?" for _ in statuses)
+        filters = ["user_id = ?"]
+        parameters: list[Any] = []
+        if normalized_platform:
+            filters.append("platform = ?")
+        if statuses:
+            filters.append(f"connection_status IN ({', '.join('?' for _ in statuses)})")
+        where_sql = " AND ".join(filters)
         with self._connection() as conn:
             try:
-                user_id = self._resolve_active_user_id(conn, normalized_email)
+                user_id = self._resolve_user_id(conn, normalized_email, include_inactive=include_inactive_user)
             except (KeyError, ValueError):
                 return []
             if user_id <= 0:
                 return []
+            parameters.append(user_id)
+            if normalized_platform:
+                parameters.append(normalized_platform)
+            parameters.extend(statuses)
             rows = conn.execute(
                 f"""
-                SELECT id, platform, provider, auth_type, secret_ciphertext,
+                SELECT id, platform, provider, auth_type, secret_ciphertext, secret_fingerprint,
                        account_address, account_label, connection_status, metadata_json
                 FROM platform_connections
-                WHERE user_id = ? AND platform = ? AND connection_status IN ({placeholders})
+                WHERE {where_sql}
                 ORDER BY account_address ASC, connected_at ASC, id ASC
                 """,
-                (user_id, normalized_platform, *statuses),
+                tuple(parameters),
             ).fetchall()
             return [
                 {
@@ -3126,6 +3159,7 @@ class PortalDatabase:
                     "provider": normalize_text(row["provider"]).lower(),
                     "authType": normalize_text(row["auth_type"]).lower() or "api_token",
                     "secretCiphertext": normalize_text(row["secret_ciphertext"]),
+                    "secretFingerprint": normalize_text(row["secret_fingerprint"]),
                     "accountAddress": normalize_text(row["account_address"]),
                     "accountLabel": normalize_text(row["account_label"]),
                     "connectionStatus": normalize_text(row["connection_status"]).lower() or "connected",

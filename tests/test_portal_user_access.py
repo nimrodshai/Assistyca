@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from packages.infrastructure.account_erasure import erase_account
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
 from packages.infrastructure.whatsapp_portal_service import portal_whatsapp_store_path_for_connection
@@ -271,6 +272,151 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertEqual(deleted_path, store_path.resolve())
         self.assertFalse(store_path.exists())
         self.assertEqual(store_cache, {})
+
+
+    def test_erase_account_removes_receipt_bundles_and_contact_submissions(self) -> None:
+        self.database.register_user("owner@example.com")
+        self.database.create_contact_opportunity(
+            email="Owner@example.com",
+            name="Owner",
+            phone="+972500000000",
+            transcript=[{"role": "user", "text": "I need help with receipts"}],
+        )
+        self.database.create_contact_opportunity(email="someone.else@example.com", name="Someone Else")
+        root = Path(self.temp_dir.name)
+        receipt_root = root / "agent-receipts"
+        owner_folder = receipt_root / "owner-key" / "receipts-2026-08"
+        owner_folder.mkdir(parents=True)
+        (owner_folder / "receipts.xlsx").write_text("rows", encoding="utf-8")
+        neighbour_folder = receipt_root / "another-owner-key"
+        neighbour_folder.mkdir(parents=True)
+        (neighbour_folder / "receipts.xlsx").write_text("rows", encoding="utf-8")
+        store_path = portal_whatsapp_store_path_for_connection(root, {"userId": 1, "email": "owner@example.com"})
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        store_path.write_text('{"threads":{},"approvals":{}}\n', encoding="utf-8")
+
+        erasure = erase_account(
+            database=self.database,
+            email="owner@example.com",
+            root=root,
+            receipt_output_root=receipt_root,
+            receipt_owner_key="owner-key",
+        )
+
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+        self.assertFalse((receipt_root / "owner-key").exists())
+        self.assertFalse(store_path.exists())
+        self.assertEqual(erasure.contact_submissions_removed, 1)
+        self.assertEqual(erasure.failed_paths, [])
+        self.assertEqual(
+            {path.name for path in erasure.removed_paths},
+            {"owner-key", store_path.name},
+        )
+        # Nothing outside the account being erased is touched.
+        self.assertTrue((neighbour_folder / "receipts.xlsx").exists())
+        self.assertEqual(len(self.database.list_contact_opportunities()), 1)
+
+    def test_erase_account_revokes_each_google_grant_once(self) -> None:
+        self.database.register_user("owner@example.com")
+        # One Google sign-in backing a mailbox and a drive shares a refresh
+        # token, so it is one grant to revoke, not two.
+        for platform, address in (("email", "owner@example.com"), ("drive", "")):
+            self.database.save_platform_connection(
+                "owner@example.com",
+                platform=platform,
+                auth_type="oauth",
+                secret_ciphertext=f"cipher-google-{platform}",
+                secret_hint="google",
+                secret_fingerprint="shared-google-grant",
+                provider="google",
+                account_address=address,
+            )
+        self.database.save_platform_connection(
+            "owner@example.com",
+            platform="email",
+            auth_type="oauth",
+            secret_ciphertext="cipher-microsoft",
+            secret_hint="microsoft",
+            secret_fingerprint="microsoft-grant",
+            provider="microsoft",
+            account_address="owner@outlook.com",
+        )
+        revoked: list[str] = []
+
+        def revoke_grant(record: dict[str, str]) -> tuple[bool, str]:
+            if record.get("provider") != "google":
+                return False, ""
+            revoked.append(record.get("secretCiphertext", ""))
+            return True, ""
+
+        erasure = erase_account(
+            database=self.database,
+            email="owner@example.com",
+            root=Path(self.temp_dir.name),
+            revoke_grant=revoke_grant,
+        )
+
+        self.assertEqual(len(revoked), 1)
+        self.assertEqual(erasure.revoked_grants, 1)
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+
+    def test_erase_account_revokes_grants_of_a_disabled_account(self) -> None:
+        self.database.register_user("owner@example.com")
+        self.database.save_platform_connection(
+            "owner@example.com",
+            platform="email",
+            auth_type="oauth",
+            secret_ciphertext="cipher-google",
+            secret_hint="google",
+            secret_fingerprint="google-grant",
+            provider="google",
+            account_address="owner@example.com",
+        )
+        self.database.update_user_status("owner@example.com", is_active=False)
+        seen: list[dict[str, str]] = []
+
+        erasure = erase_account(
+            database=self.database,
+            email="owner@example.com",
+            root=Path(self.temp_dir.name),
+            revoke_grant=lambda record: (seen.append(record) or (True, "")),
+        )
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(erasure.revoked_grants, 1)
+
+    def test_erase_account_reports_a_warning_the_provider_returned(self) -> None:
+        self.database.register_user("owner@example.com")
+        self.database.save_platform_connection(
+            "owner@example.com",
+            platform="email",
+            auth_type="oauth",
+            secret_ciphertext="cipher-google",
+            secret_hint="google",
+            secret_fingerprint="google-grant",
+            provider="google",
+            account_address="owner@example.com",
+        )
+
+        erasure = erase_account(
+            database=self.database,
+            email="owner@example.com",
+            root=Path(self.temp_dir.name),
+            revoke_grant=lambda record: (False, "Google could not confirm revocation."),
+        )
+
+        self.assertEqual(erasure.revoked_grants, 0)
+        self.assertEqual(erasure.revocation_warnings, ["Google could not confirm revocation."])
+        # A provider that would not answer never keeps the rows alive.
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+
+    def test_erase_account_rejects_an_unknown_account(self) -> None:
+        with self.assertRaises(KeyError):
+            erase_account(
+                database=self.database,
+                email="nobody@example.com",
+                root=Path(self.temp_dir.name),
+            )
 
 
 if __name__ == "__main__":
