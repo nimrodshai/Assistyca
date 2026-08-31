@@ -15,11 +15,13 @@ from email.utils import parseaddr
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from typing import Callable
 from urllib import parse as urllib_parse
 from xml.sax.saxutils import escape as xml_escape
 
 from packages.infrastructure import fx_rates
 from packages.infrastructure import receipt_pdf_sources
+from packages.infrastructure.receipt_pairing import pair_receipt_rows
 
 RECEIPT_EXPORT_VERSION = 1
 RECEIPT_EXCEL_FILENAME = "receipts.xlsx"
@@ -144,6 +146,10 @@ _RECEIPT_EVIDENCE_RE = re.compile(
 RECEIPT_STATUS_READY = "Ready"
 RECEIPT_STATUS_REVIEW = "Needs review"
 RECEIPT_STATUS_NOT_A_RECEIPT = "Not a receipt"
+# A real receipt for a payment that another receipt in the same month is
+# already counting. It is left out of the totals and kept in the report,
+# because the money was spent once and the message is not a mistake.
+RECEIPT_STATUS_DUPLICATE = "Same payment"
 
 
 def format_receipt_folder_month(year: int, month: int) -> str:
@@ -185,8 +191,13 @@ def create_receipt_bundle(
     query: str = "",
     created_at: datetime | None = None,
     url_prefix: str = "/output/agent_receipts",
+    ask: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
-    """Write Excel and PDF receipt exports, returning artifact metadata."""
+    """Write Excel and PDF receipt exports, returning artifact metadata.
+
+    ``ask`` runs one prompt. It is what lets a purchase that arrived twice -
+    once from the shop, once from whoever took the money - be counted once.
+    """
 
     created = created_at or datetime.now(timezone.utc)
     logical_folder = normalize_receipt_output_folder(output_folder, month_value=month_value)
@@ -199,7 +210,7 @@ def create_receipt_bundle(
     )
     folder_path.mkdir(parents=True, exist_ok=True)
 
-    rows, skipped_rows = split_receipt_rows(extract_receipt_rows(items))
+    rows, skipped_rows = collect_receipt_rows(items, ask=ask)
     metadata = {
         "createdAt": created.isoformat(),
         "outputFolder": logical_folder,
@@ -215,6 +226,11 @@ def create_receipt_bundle(
                 "subject": row["subject"],
                 "source": row["source"],
                 "date": row["date"],
+                # Why it is not in the totals. A message the search dragged in
+                # and a real receipt already counted under another mail are
+                # both out of the sum for entirely different reasons.
+                "status": row.get("status") or "",
+                "notes": row.get("notes") or "",
             }
             for row in skipped_rows
         ],
@@ -350,20 +366,37 @@ def filter_receipt_rows_by_vendor(rows: list[dict[str, Any]], vendor: Any) -> li
     through a payment service or an app store, and their receipt arrives from
     that service, so the merchant the message names counts as much as the
     sender does when a question asks about a vendor by name.
+
+    Where one payment reached the mailbox twice, the mail that was counted is
+    often the payment service's and the one naming the shop is the one that
+    was set aside. So the row answers to the names on both: dropping the shop's
+    own mail must never be what loses the shop's receipt.
     """
 
     needle = _clean_text(vendor).lower()
     if not needle:
         return list(rows)
-    return [
-        row for row in rows
-        if needle in " ".join([
-            _clean_text(row.get("vendor")),
-            _clean_text(row.get("paidTo")),
-            _clean_text(row.get("subject")),
-            _clean_text(row.get("source")),
-        ]).lower()
+    return [row for row in rows if needle in _vendor_haystack(row)]
+
+
+def _vendor_haystack(row: dict[str, Any]) -> str:
+    """Every name a receipt can be asked for by, in one lowercase line."""
+
+    parts = [
+        _clean_text(row.get("vendor")),
+        _clean_text(row.get("paidTo")),
+        _clean_text(row.get("subject")),
+        _clean_text(row.get("source")),
     ]
+    for linked in row.get("pairedWith") if isinstance(row.get("pairedWith"), list) else []:
+        if not isinstance(linked, dict):
+            continue
+        parts.extend([
+            _clean_text(linked.get("vendor")),
+            _clean_text(linked.get("subject")),
+            _clean_text(linked.get("source")),
+        ])
+    return " ".join(part for part in parts if part).lower()
 
 
 def answer_receipt_question(
@@ -371,14 +404,18 @@ def answer_receipt_question(
     *,
     vendor: Any = "",
     month_label: str = "",
+    ask: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Answer a one-off spending question, writing no files.
 
     A question asked in chat wants a sentence back, not an export bundle, so
     the rows are summed in memory and nothing is saved anywhere.
+
+    ``ask`` runs one prompt, and is what keeps one purchase that the mailbox
+    was told about twice from being answered as two.
     """
 
-    receipts, _ = split_receipt_rows(extract_receipt_rows(items))
+    receipts, _ = collect_receipt_rows(items, ask=ask)
     matched = filter_receipt_rows_by_vendor(receipts, vendor)
     summary = summarize_receipt_rows(matched)
     totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
@@ -606,26 +643,39 @@ def describe_receipt_records(
 
 
 def describe_receipt_sources(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Name the messages behind a set of receipt rows."""
+    """Name the messages behind a set of receipt rows.
+
+    A payment the mailbox was told about twice is one row, but it is still two
+    messages, and the one that is not counted is often the one holding the
+    receipt worth keeping - the shop's own mail, naming the item. Both are
+    named here, so saving the receipts afterwards can still go and get them.
+    """
 
     sources: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for row in rows:
-        message_id = _clean_text(row.get("sourceRef"))
-        mailbox = _clean_text(row.get("mailbox"))
+
+    def add(source: dict[str, Any]) -> None:
+        message_id = _clean_text(source.get("sourceRef"))
+        mailbox = _clean_text(source.get("mailbox"))
         if not message_id or (message_id, mailbox) in seen:
-            continue
+            return
         seen.add((message_id, mailbox))
-        vendor = _clean_text(row.get("vendor"))
+        vendor = _clean_text(source.get("vendor"))
         sources.append({
             "messageId": message_id,
             "mailbox": mailbox,
             # A row with no readable sender is named "Unknown vendor" for the
             # report's sake, which is not a name to put on a saved file.
             "vendor": "" if vendor == UNKNOWN_VENDOR_LABEL else vendor,
-            "subject": _clean_text(row.get("subject")),
-            "date": _clean_text(row.get("date")),
+            "subject": _clean_text(source.get("subject")),
+            "date": _clean_text(source.get("date")),
         })
+
+    for row in rows:
+        add(row)
+        for linked in row.get("pairedWith") if isinstance(row.get("pairedWith"), list) else []:
+            if isinstance(linked, dict):
+                add(linked)
     return sources
 
 
@@ -843,15 +893,50 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def collect_receipt_rows(
+    items: list[dict[str, Any]],
+    *,
+    ask: Callable[[str], str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read the search results into the rows a total is built from.
+
+    ``ask`` runs one prompt and returns the reply. Given one, a purchase that
+    reached the mailbox more than once is counted once; without one, every
+    receipt is counted on its own, which is what a run that cannot reach the
+    model has always done.
+
+    Only the receipts are paired. What the search dragged in has been ruled
+    out already, and an advert quoting the same price as a real receipt is
+    exactly the pair that would be merged - leaving the advert to be counted
+    and the receipt to be dropped as its duplicate.
+    """
+
+    receipts, skipped = split_receipt_rows(extract_receipt_rows(items))
+    if ask is None or len(receipts) < 2:
+        return receipts, skipped
+    receipts, merged = split_receipt_rows(
+        pair_receipt_rows(receipts, ask=ask, duplicate_status=RECEIPT_STATUS_DUPLICATE)
+    )
+    skipped.extend(merged)
+    for position, row in enumerate(skipped, start=1):
+        row["index"] = str(position)
+    return receipts, skipped
+
+
 def split_receipt_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Separate the real receipts from what the search net dragged in.
+
+    A receipt for a payment another row is already counting is set aside here
+    too. It is a receipt, and it stays in the report saying so; it is only not
+    a second amount to add up.
 
     Both lists are renumbered from 1, so "Receipt 3" in the report means the
     third receipt rather than the third search hit.
     """
 
-    receipts = [row for row in rows if row.get("status") != RECEIPT_STATUS_NOT_A_RECEIPT]
-    skipped = [row for row in rows if row.get("status") == RECEIPT_STATUS_NOT_A_RECEIPT]
+    set_aside = (RECEIPT_STATUS_NOT_A_RECEIPT, RECEIPT_STATUS_DUPLICATE)
+    receipts = [row for row in rows if row.get("status") not in set_aside]
+    skipped = [row for row in rows if row.get("status") in set_aside]
     for position, row in enumerate(receipts, start=1):
         row["index"] = str(position)
     for position, row in enumerate(skipped, start=1):
@@ -1870,7 +1955,12 @@ def _build_reportlab_image(
 
 
 def _skipped_lines(metadata: dict[str, Any]) -> list[str]:
-    """Name what the search returned that was not a receipt."""
+    """Name what came back that is in none of the totals.
+
+    A receipt held back because another row already counts the same payment
+    carries its reason with it, because that one is a real receipt and its
+    absence from the sum is the surprising part.
+    """
 
     skipped = metadata.get("skipped") if isinstance(metadata.get("skipped"), list) else []
     lines: list[str] = []
@@ -1879,7 +1969,11 @@ def _skipped_lines(metadata: dict[str, Any]) -> list[str]:
             continue
         vendor = _clean_text(entry.get("vendor")) or "Unknown sender"
         subject = _clean_text(entry.get("subject")) or "(no subject)"
-        lines.append(f"{vendor} - {subject}")
+        line = f"{vendor} - {subject}"
+        if _clean_text(entry.get("status")) == RECEIPT_STATUS_DUPLICATE:
+            note = _clean_text(entry.get("notes"))
+            line = f"{line} - {note}" if note else line
+        lines.append(line)
     return lines
 
 
@@ -1895,11 +1989,12 @@ def _skipped_story(
         return []
     story: list[Any] = [
         spacer_cls(1, 12),
-        paragraph_cls("Not counted as receipts", heading_style),
+        paragraph_cls("Not counted", heading_style),
         paragraph_cls(
-            "The mailbox search matches whole messages, attachments included, so these "
-            "came back without being receipts. They are named here rather than dropped "
-            "quietly, and they are in none of the totals.",
+            "The mailbox search matches whole messages, attachments included, so some of "
+            "these came back without being receipts. The rest are receipts for a payment "
+            "another receipt above already counts, which says so on its line. They are "
+            "named here rather than dropped quietly, and they are in none of the totals.",
             small_style,
         ),
     ]

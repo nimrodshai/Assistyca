@@ -7,6 +7,8 @@ python3 -m unittest \
   tests.test_task_complexity \
   tests.test_calendar_summary \
   tests.test_receipt_collector \
+  tests.test_receipt_judge \
+  tests.test_receipt_pairing \
   tests.test_agent_proposals \
   tests.test_agent_folder_contents \
   tests.test_saved_answer_receipts \

@@ -149,6 +149,8 @@ from packages.infrastructure.receipt_collector import resolve_receipt_bundle_fol
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_judge import judge_receipt_items
+from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_INSTRUCTIONS
+from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
@@ -252,6 +254,12 @@ AGENT_ANSWER_COMPOSE_COMPLEXITY = TaskComplexity.IMPORTANT
 # that; the cheapest one sorts by vocabulary, which is the mistake this step
 # exists to stop.
 AGENT_RECEIPT_JUDGE_COMPLEXITY = TaskComplexity.MEDIUM
+# Telling one payment reported twice from two payments of the same price is
+# the same kind of work: everything mechanical about the two messages already
+# matches, and what separates them is what they are about. The same tier reads
+# it, and getting it wrong here loses money from a total rather than adding to
+# one, so it is not a place to save on.
+AGENT_RECEIPT_PAIRING_COMPLEXITY = TaskComplexity.MEDIUM
 CONTACT_AGENT_INITIAL_REPLY = "היי 😊 אשמח להכיר אותך ואת העסק שלך. איך קוראים לך?"
 CONTACT_AGENT_DONE_REPLY = (
     "מעולה, תודה. סיכמתי את הפרטים ואעביר אותם לנמרוד בצורה מסודרת, "
@@ -2148,6 +2156,7 @@ def answer_receipt_months(
     *,
     vendor: Any,
     months: list[tuple[int, int]],
+    ask: Callable[[str], str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """One answer per month, all of them from a single read of the mailbox.
 
@@ -2155,6 +2164,10 @@ def answer_receipt_months(
     question that spans them is a comparison and a comparison needs the
     months kept separate. The count beside them is the messages that landed in
     no month at all.
+
+    A purchase reported twice is reported twice within days, so it is inside
+    one of these months rather than across two, and each month can be counted
+    on its own without a payment escaping over the boundary.
     """
 
     buckets, unplaced = group_mail_items_by_month(items, months)
@@ -2163,6 +2176,7 @@ def answer_receipt_months(
             buckets.get(month, []),
             vendor=vendor,
             month_label=format_receipt_month_label(month),
+            ask=ask,
         )
         for month in months
     ]
@@ -5739,17 +5753,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 if result_header == "Receipt search" and answer_mode:
                     answer_items = result.get("items") if isinstance(result.get("items"), list) else []
                     answer_vendor = fields.get("vendor") or payload.get("vendor")
+                    # One purchase is told to a mailbox by everyone who
+                    # touched it, and every one of those messages is honestly
+                    # a receipt. Counting them all is a month that never
+                    # happened, so they are paired before they are added up.
+                    pairing_ask = self._receipt_pairing_ask(billing_email=session.email)
                     if len(answer_months) > 1:
                         receipt_month_answers, undated_count = answer_receipt_months(
                             answer_items,
                             vendor=answer_vendor,
                             months=answer_months,
+                            ask=pairing_ask,
                         )
                     else:
                         receipt_answer = answer_receipt_question(
                             answer_items,
                             vendor=answer_vendor,
                             month_label=format_receipt_month_label(answer_month) if answer_month else "",
+                            ask=pairing_ask,
                         )
                         result["summary"] = receipt_answer["answer"]
                         result["message"] = receipt_answer["answer"]
@@ -5763,6 +5784,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             output_folder=receipt_output_folder,
                             month_value=receipt_month,
                             query=mail_query.describe(),
+                            ask=self._receipt_pairing_ask(billing_email=session.email),
                         )
                     except Exception as exc:
                         print(f"Receipt export failed: {exc}", flush=True)
@@ -6566,23 +6588,72 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if not items:
             return items
+        return judge_receipt_items(items, ask=self._receipt_prompt_ask(
+            billing_email=billing_email,
+            tool_name="portal_receipt_judge",
+            model_env="PORTAL_RECEIPT_JUDGE_MODEL",
+            complexity=AGENT_RECEIPT_JUDGE_COMPLEXITY,
+            instructions=RECEIPT_JUDGE_INSTRUCTIONS,
+            max_output_tokens=RECEIPT_JUDGE_MAX_OUTPUT_TOKENS,
+            failure_label="Receipt judgement",
+        ))
 
-        model = resolve_task_model(
-            AGENT_RECEIPT_JUDGE_COMPLEXITY,
-            "PORTAL_RECEIPT_JUDGE_MODEL",
-            "OPENAI_MODEL",
+    def _receipt_pairing_ask(self, *, billing_email: str) -> Callable[[str], str]:
+        """A way to ask which receipts are one payment reported more than once.
+
+        A purchase reaches a mailbox from everyone who touched it: the shop
+        confirming the order, the payment service confirming the money, the
+        courier restating the total. Each of those, read alone, is a record of
+        money that left the account, so the step that reads messages one at a
+        time keeps them all and the month is counted twice.
+
+        The application narrows that to the receipts sharing an amount and a
+        few days, which decides nothing on its own - a shop charges the same
+        price twice often enough. This is what decides it, from what the
+        messages are about. Unreachable, it returns "" and the month is
+        counted as it was before, which is too high rather than short.
+        """
+
+        return self._receipt_prompt_ask(
+            billing_email=billing_email,
+            tool_name="portal_receipt_pairing",
+            model_env="PORTAL_RECEIPT_PAIRING_MODEL",
+            complexity=AGENT_RECEIPT_PAIRING_COMPLEXITY,
+            instructions=RECEIPT_PAIRING_INSTRUCTIONS,
+            max_output_tokens=RECEIPT_PAIRING_MAX_OUTPUT_TOKENS,
+            failure_label="Receipt pairing",
         )
+
+    def _receipt_prompt_ask(
+        self,
+        *,
+        billing_email: str,
+        tool_name: str,
+        model_env: str,
+        complexity: TaskComplexity,
+        instructions: str,
+        max_output_tokens: int,
+        failure_label: str,
+    ) -> Callable[[str], str]:
+        """One way to run one prompt about receipts, billed and recorded.
+
+        The steps that read receipts all want the same thing: one question,
+        one reply, and an empty string when the model could not be reached, so
+        each of them can carry on with what it can see for itself.
+        """
+
+        model = resolve_task_model(complexity, model_env, "OPENAI_MODEL")
 
         def ask(prompt: str) -> str:
             try:
                 result = call_openai_response(
-                    tool_name="portal_receipt_judge",
+                    tool_name=tool_name,
                     tool_id="portal_agent",
                     billing_email=billing_email,
                     prompt=prompt,
                     model=model,
-                    instructions=RECEIPT_JUDGE_INSTRUCTIONS,
-                    max_output_tokens=RECEIPT_JUDGE_MAX_OUTPUT_TOKENS,
+                    instructions=instructions,
+                    max_output_tokens=max_output_tokens,
                     # The same mail read twice should sort the same way, so
                     # nothing here is left to the wording knobs.
                     temperature=0.0,
@@ -6596,11 +6667,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     metadata={"source": "portal_agent"},
                 )
             except OpenAIError as exc:
-                print(f"Receipt judgement failed: {exc.message}", flush=True)
+                print(f"{failure_label} failed: {exc.message}", flush=True)
                 return ""
             return result.output_text
 
-        return judge_receipt_items(items, ask=ask)
+        return ask
 
     def _handle_agent_answer_compose(self) -> None:
         """Answer the question that was asked from what the lookup just read.

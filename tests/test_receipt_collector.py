@@ -14,6 +14,8 @@ from packages.infrastructure.receipt_collector import extract_receipt_rows
 from packages.infrastructure.receipt_collector import filter_receipt_rows_by_vendor
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import split_receipt_rows
+from packages.infrastructure.receipt_collector import answer_receipt_question
+from packages.infrastructure.receipt_collector import describe_receipt_sources
 from packages.infrastructure.receipt_collector import summarize_receipt_rows
 
 
@@ -415,6 +417,122 @@ class ReceiptClassificationTests(unittest.TestCase):
             self.assertEqual(len(manifest["receipts"]), 1)
             self.assertEqual(manifest["skipped"][0]["subject"], "Your signed NDA with Wild")
             self.assertEqual(manifest["metadata"]["summary"]["receiptCount"], 1)
+
+
+class OnePurchaseToldTwiceTests(unittest.TestCase):
+    """A purchase reaches a mailbox from everyone who touched it.
+
+    The shop confirms the order, the payment service confirms the money. Both
+    messages are honestly receipts, both name the same amount, and the numbers
+    they quote - an order number in one, an item number in the other - differ
+    in a single digit while being different fields entirely. Counting both is
+    a month that never happened; matching on the numbers is a coin toss.
+    """
+
+    ALIEXPRESS = {
+        "id": "msg-ali",
+        "from": "AliExpress <transaction@notice.aliexpress.com>",
+        "subject": "Your order has shipped",
+        "date": "Wed, 12 Aug 2026 10:03:00 +0300",
+        "bodyText": (
+            "Your order 1122139840307734 has shipped. AiQUE Rechargeable Mesh Nebulizer, Blue, x1. "
+            "Order total ILS 43.24"
+        ),
+        "receiptVerdict": {"isReceipt": True, "paidTo": "AliExpress", "reason": ""},
+    }
+    PAYPAL = {
+        "id": "msg-pp",
+        "from": "PayPal <service@paypal.com>",
+        "subject": "You paid 43.24 ILS to AISG E-COMMERCE PRIV",
+        "date": "Wed, 12 Aug 2026 09:51:00 +0300",
+        "bodyText": (
+            "You paid ILS 43.24 to AISG E-COMMERCE PRIV. Transaction ID 4UN30485X64637737. "
+            "AiQUE Rechargeable M... Item# 1122139840317734"
+        ),
+        "receiptVerdict": {"isReceipt": True, "paidTo": "AISG E-COMMERCE PRIV", "reason": ""},
+    }
+
+    def ask(self, prompt: str) -> str:
+        # The PayPal mail is kept: it is the one that is itself evidence the
+        # money moved. That is also the harder case, because it is the shop's
+        # own mail - the only one saying "AliExpress" - that is set aside.
+        return json.dumps({"groups": [{
+            "refs": ["1", "2"],
+            "keep": "2",
+            "reason": "the PayPal receipt and AliExpress's own note for the same order",
+        }]})
+
+    def test_the_month_is_counted_once(self) -> None:
+        answer = answer_receipt_question(
+            [self.ALIEXPRESS, self.PAYPAL],
+            month_label="Aug 2026",
+            ask=self.ask,
+        )
+        self.assertEqual(answer["receiptCount"], 1)
+        self.assertEqual(answer["totals"], {"ILS": 43.24})
+
+    def test_without_a_way_to_ask_the_month_is_counted_as_it_always_was(self) -> None:
+        answer = answer_receipt_question([self.ALIEXPRESS, self.PAYPAL], month_label="Aug 2026")
+        self.assertEqual(answer["totals"], {"ILS": 86.48})
+
+    def test_the_shop_can_still_be_asked_for_by_name(self) -> None:
+        # The receipt that was counted came from PayPal and never says
+        # "AliExpress" anywhere. Losing the question is not an option.
+        answer = answer_receipt_question(
+            [self.ALIEXPRESS, self.PAYPAL],
+            vendor="AliExpress",
+            month_label="Aug 2026",
+            ask=self.ask,
+        )
+        self.assertEqual(answer["receiptCount"], 1)
+        self.assertEqual(answer["totals"], {"ILS": 43.24})
+
+    def test_both_emails_can_still_be_fetched_afterwards(self) -> None:
+        # One row, still two messages, and the one not counted is the one
+        # holding the shop's own receipt for the item.
+        answer = answer_receipt_question([self.ALIEXPRESS, self.PAYPAL], ask=self.ask)
+        self.assertEqual({source["messageId"] for source in answer["sources"]}, {"msg-ali", "msg-pp"})
+
+    def test_an_advert_of_the_same_price_is_never_what_a_receipt_is_merged_into(self) -> None:
+        # The search net drags in adverts, and one quoting the same price sits
+        # exactly where a duplicate would. It was ruled out already; it must
+        # not now take a real receipt down with it.
+        advert = {
+            "id": "msg-ad",
+            "from": "AliExpress <deals@notice.aliexpress.com>",
+            "subject": "Deals from 43.24 ILS",
+            "date": "Wed, 12 Aug 2026 08:00:00 +0300",
+            "bodyText": "Big save! Items from ILS 43.24 this week only.",
+            "receiptVerdict": {"isReceipt": False, "reason": "a sale announcement"},
+        }
+        asked: list[str] = []
+
+        def ask(prompt: str) -> str:
+            asked.append(prompt)
+            return json.dumps({"groups": []})
+
+        answer = answer_receipt_question([advert, self.PAYPAL], month_label="Aug 2026", ask=ask)
+        self.assertEqual(answer["totals"], {"ILS": 43.24})
+        # One receipt left, so there was never a pair to ask about.
+        self.assertEqual(asked, [])
+
+    def test_the_receipt_left_out_says_why_rather_than_disappearing(self) -> None:
+        rows = extract_receipt_rows([self.ALIEXPRESS, self.PAYPAL])
+        self.assertEqual(len(describe_receipt_sources(rows)), 2)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundle = create_receipt_bundle(
+                [self.ALIEXPRESS, self.PAYPAL],
+                output_root=Path(temp_dir),
+                owner_key="owner@example.com",
+                month_value=(2026, 8),
+                created_at=datetime(2026, 8, 30, 10, 34, tzinfo=timezone.utc),
+                ask=self.ask,
+            )
+            self.assertEqual(bundle["receiptCount"], 1)
+            manifest = json.loads((Path(bundle["folderPath"]) / "bundle.json").read_text(encoding="utf-8"))
+            skipped = manifest["skipped"][0]
+            self.assertEqual(skipped["status"], "Same payment")
+            self.assertIn("The same payment as", skipped["notes"])
 
 
 if __name__ == "__main__":
