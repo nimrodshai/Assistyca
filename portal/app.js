@@ -1309,7 +1309,7 @@ const state = {
   featureActivationInitialLoadPending: false,
   featureActivationLoadedAt: 0,
   selectedScheduledActionId: "",
-  agentPanelMode: "actions",
+  agentPanelMode: "chats",
   agentFolderSearch: "",
   agentFolderSort: "recent",
   agentFolderCreateOpen: false,
@@ -4617,7 +4617,9 @@ function normalizeAgentMessage(value = {}) {
 
 function normalizeAgentPanelMode(value) {
   const mode = String(value || "").trim().toLowerCase();
-  return VALID_AGENT_PANEL_MODES.has(mode) ? mode : "actions";
+  // Chats is where the panel opens, so it is also where an unreadable saved
+  // mode lands.
+  return VALID_AGENT_PANEL_MODES.has(mode) ? mode : "chats";
 }
 
 function parseAgentTimestamp(value) {
@@ -4837,7 +4839,7 @@ function createDefaultAgentWorkspace() {
     chats: [defaultChat],
     folders: [],
     activeChatId: defaultChat.id,
-    panelMode: "actions",
+    panelMode: "chats",
     folderSort: "recent",
     proposals: [],
     helpers: [],
@@ -29331,7 +29333,11 @@ function createAgentToolItem(feature) {
 }
 
 function shouldRenderAgentToolShelfFeature(feature) {
-  return Boolean(feature && !isMonitorFeature(feature));
+  // The shelf lists what this account actually has connected, the way a
+  // mailbox drops off it the moment it is disconnected. A tool nobody has set
+  // up yet is not a tool the account holds, and saying otherwise is what made
+  // a brand new account look like it already had one.
+  return Boolean(feature && !isMonitorFeature(feature) && isFeatureSetupComplete(feature));
 }
 
 const ACTION_ONLY_PLATFORM_CONNECTION_IDS = new Set([

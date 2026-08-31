@@ -4502,7 +4502,7 @@ body[data-modal="billing"] .app-shell {
   --agent-panel-mode-index: 0;
 }
 
-.agent-panel-mode-switch[data-agent-panel-current-mode="chats"] {
+.agent-panel-mode-switch[data-agent-panel-current-mode="actions"] {
   --agent-panel-mode-index: 1;
 }
 
@@ -4750,6 +4750,12 @@ body[data-modal="billing"] .app-shell {
   align-items: center;
 }
 
+/* The tab above already says Chats, so this head holds nothing but its one
+   action, and the button takes the width the heading used to share. */
+.agent-chats-list-head .primary-button {
+  flex: 1;
+}
+
 .agent-folder-head-actions {
   display: flex;
   align-items: center;
@@ -4762,7 +4768,6 @@ body[data-modal="billing"] .app-shell {
   margin-right: 0.18rem;
 }
 
-.agent-chats-list-head .eyebrow,
 .agent-folders-list-head .eyebrow {
   margin: 0 0 0.15rem;
   color: var(--muted-strong);
@@ -4770,7 +4775,6 @@ body[data-modal="billing"] .app-shell {
   letter-spacing: 0.13em;
 }
 
-.agent-chats-list-head h3,
 .agent-folders-list-head h3 {
   margin: 0;
   color: var(--text);

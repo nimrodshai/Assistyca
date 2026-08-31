@@ -124,26 +124,26 @@
         <div class="agent-tools-head agent-actions-head agent-panel-mode-head">
           <div id="agentPanelModeSwitch" class="agent-panel-mode-switch" role="tablist" aria-label="Agent panel mode">
             <button
-              id="agentPanelActionsModeButton"
+              id="agentPanelChatsModeButton"
               class="agent-panel-mode-button is-active"
               type="button"
               role="tab"
               aria-selected="true"
-              aria-controls="agentActionsListView"
-              data-agent-panel-mode="actions"
-            >
-              Actions
-            </button>
-            <button
-              id="agentPanelChatsModeButton"
-              class="agent-panel-mode-button"
-              type="button"
-              role="tab"
-              aria-selected="false"
               aria-controls="agentChatsListView"
               data-agent-panel-mode="chats"
             >
               Chats
+            </button>
+            <button
+              id="agentPanelActionsModeButton"
+              class="agent-panel-mode-button"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="agentActionsListView"
+              data-agent-panel-mode="actions"
+            >
+              Actions
             </button>
             <button
               id="agentPanelFoldersModeButton"
@@ -189,12 +189,8 @@
             </section>
           </div>
 
-          <div id="agentChatsListView" class="agent-chats-list-view is-hidden" aria-labelledby="agentChatsTitle">
+          <div id="agentChatsListView" class="agent-chats-list-view is-hidden" aria-label="Chats">
             <div class="agent-chats-list-head">
-              <div>
-                <p class="eyebrow">Chat history</p>
-                <h3 id="agentChatsTitle">Chats</h3>
-              </div>
               <button id="agentNewChatButton" class="primary-button small" type="button">
                 New chat
               </button>

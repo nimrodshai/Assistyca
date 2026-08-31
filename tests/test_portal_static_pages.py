@@ -735,6 +735,23 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('class="agent-actions-sync-row"', html)
         self.assertIn('id="agentPanelActionsModeButton"', html)
         self.assertIn('id="agentPanelChatsModeButton"', html)
+        # Chats leads the switch and opens selected; the tab is the only place
+        # the list is named, so its head carries the new chat button alone.
+        self.assertLess(
+            html.index('id="agentPanelChatsModeButton"'),
+            html.index('id="agentPanelActionsModeButton"'),
+        )
+        chats_head = html[
+            html.index('<div id="agentChatsListView"'):
+            html.index('<div id="agentChatList"')
+        ]
+        self.assertIn('is-active', chats_head[:0] + html[
+            html.index('id="agentPanelChatsModeButton"'):
+            html.index('id="agentPanelActionsModeButton"')
+        ])
+        self.assertNotIn("<h3", chats_head)
+        self.assertNotIn("Chat history", chats_head)
+        self.assertIn('id="agentNewChatButton"', chats_head)
         self.assertIn('id="agentPanelFoldersModeButton"', html)
         self.assertIn('id="agentPanelModeSwitch"', html)
         self.assertIn('role="tablist" aria-label="Agent panel mode"', html)
@@ -802,7 +819,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('<div id="agentAddToolMenu" class="agent-add-tool-menu is-hidden"', html)
         self.assertIn(".agent-action-error", styles)
         self.assertIn(".agent-panel-mode-switch", styles)
-        self.assertIn('.agent-panel-mode-switch[data-agent-panel-current-mode="chats"]', styles)
+        # Chats sits at index 0 now, so it is the modes after it that offset
+        # the sliding pill.
+        self.assertIn('.agent-panel-mode-switch[data-agent-panel-current-mode="actions"]', styles)
+        self.assertIn('.agent-panel-mode-switch[data-agent-panel-current-mode="folders"]', styles)
+        self.assertIn(".agent-chats-list-head .primary-button", styles)
         self.assertIn(".agent-panel-mode-switch::before", styles)
         self.assertIn(".agent-panel-mode-button.is-active", styles)
         self.assertIn(".agent-panel-mode-button.is-guided", styles)
@@ -1114,7 +1135,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function openAgentToolDetails", script)
         self.assertIn("function getAgentToolDetailsView", script)
         self.assertIn("function shouldRenderAgentToolShelfFeature", script)
-        self.assertIn("return Boolean(feature && !isMonitorFeature(feature));", script)
+        # The shelf lists what is connected, so an unset-up tool stays off it.
+        self.assertIn(
+            "return Boolean(feature && !isMonitorFeature(feature) && isFeatureSetupComplete(feature));",
+            script,
+        )
         self.assertIn("if (!shouldRenderAgentToolShelfFeature(feature))", script)
         self.assertIn("ACTION_ONLY_PLATFORM_CONNECTION_IDS", script)
         action_only_connection_ids = script[
