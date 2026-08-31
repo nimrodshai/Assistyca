@@ -5081,13 +5081,13 @@ body[data-modal="billing"] .app-shell {
   pointer-events: none;
 }
 
-/* The folders filed inside this one, indented under it with a rail back to
-   the row they belong to. */
+/* The folders filed inside this one. The indent and the card they are sitting
+   on already say they are inside it, so there is no rail: a line down the
+   left of them was one more thing to read in a panel this narrow. */
 .agent-folder-list.is-nested {
   gap: 0.4rem;
   margin-left: 1.16rem;
   padding: 0 0.6rem 0.66rem 0.52rem;
-  border-left: 1px solid rgba(20, 28, 38, 0.12);
 }
 
 .agent-folder-list.is-nested[hidden],
@@ -11899,10 +11899,6 @@ body.is-chat-view {
 
 :root[data-theme="dark"] .agent-folder-item.is-open {
   border-color: rgba(55, 184, 171, 0.3);
-}
-
-:root[data-theme="dark"] .agent-folder-list.is-nested {
-  border-left-color: var(--line-strong);
 }
 
 :root[data-theme="dark"] .agent-folder-item .agent-folder-item {
