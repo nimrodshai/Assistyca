@@ -401,6 +401,12 @@ CALENDAR_PROVIDER_LABELS = {
 # was shared in - and "my calendar" means whichever of them the owner chose,
 # not whichever one Google happens to call primary.
 CALENDAR_SELECTION_METADATA_KEY = "selectedCalendars"
+# What the account holds, which is not the same as what it chose. Connecting
+# Google says nothing about which calendars Assistyca may read, so the list is
+# cached here for the picker to offer while the answer stays unwritten. An
+# account that has never answered has this and no selection, and a question
+# asked in chat stops to ask rather than reading a calendar nobody named.
+CALENDAR_AVAILABLE_METADATA_KEY = "availableCalendars"
 
 
 def normalize_calendar_selection(value: Any) -> list[dict[str, str]]:
@@ -440,6 +446,19 @@ def connection_calendar_selection(connection: dict[str, Any] | None) -> list[dic
     if not isinstance(metadata, dict):
         return []
     return normalize_calendar_selection(metadata.get(CALENDAR_SELECTION_METADATA_KEY))
+
+
+def connection_available_calendars(connection: dict[str, Any] | None) -> list[dict[str, str]]:
+    """The calendars this account was found to hold, as of the last look.
+
+    Kept apart from the chosen ones so that "we know about it" can never be
+    mistaken for "they said yes to it".
+    """
+
+    metadata = connection.get("metadata") if isinstance(connection, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+    return normalize_calendar_selection(metadata.get(CALENDAR_AVAILABLE_METADATA_KEY))
 
 
 def connection_lists_calendars(connection: dict[str, Any] | None) -> bool:
@@ -4298,10 +4317,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "accountAddress": normalize_text(record.get("accountAddress")),
                 "calendars": [],
                 # Which of them a question about "my calendar" reads. Empty
-                # means the account has never been asked, and everything it can
-                # read is offered below rather than the picker opening blank.
+                # means the account has never answered, and it stays empty:
+                # reading it as "all of them" is the thing that let a dismissed
+                # picker turn into permission to read every calendar.
                 "selectedCalendars": saved_selection,
                 "selectedCalendarIds": [entry["id"] for entry in saved_selection],
+                # Whether the question has been answered at all, which is what
+                # separates "chose these" from "was never asked".
+                "choiceMade": bool(saved_selection),
+                # What the picker opens with when nothing is chosen yet. A
+                # suggestion inside a dialog someone has to confirm, and not a
+                # decision made on their behalf.
+                "suggestedCalendarIds": [],
                 "status": "ok",
                 "message": "",
             }
@@ -4314,10 +4341,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 access_token, _credential_source = self._resolve_calendar_access_token(vault.decrypt(ciphertext))
                 source["calendars"] = CalendarSummaryRunner().fetch_calendar_list(access_token)
                 if not saved_selection:
-                    # Never asked, so everything readable counts as chosen:
-                    # someone who ignores the question still gets the answer
-                    # they asked for, which is all of their calendars.
-                    source["selectedCalendarIds"] = [
+                    # Ticked when the picker opens, so answering the question is
+                    # one click for someone who does want all of them - but it
+                    # is only ticked, never saved, until they say so.
+                    source["suggestedCalendarIds"] = [
                         calendar["id"] for calendar in source["calendars"][:CALENDAR_MAX_CALENDARS]
                     ]
             except CredentialVaultError:
@@ -4682,10 +4709,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 except CalendarSummaryError:
                     available_calendars = []
                 if available_calendars:
+                    # What the account holds is remembered so the picker can
+                    # offer it without asking Google twice. What it may read is
+                    # a different question, and connecting is not an answer to
+                    # it: the selection below is only ever carried across from
+                    # a choice already made, never widened to every calendar
+                    # because nobody has been asked yet.
+                    validation_results["calendar"][CALENDAR_AVAILABLE_METADATA_KEY] = available_calendars
                     # Reconnecting rewrites this row's metadata, so a choice
-                    # already made is carried across rather than quietly widened
-                    # back to every calendar. A calendar that is no longer
-                    # readable drops out of it.
+                    # already made is carried across rather than being lost. A
+                    # calendar that is no longer readable drops out of it.
                     previous_ids = {
                         entry["id"]
                         for entry in connection_calendar_selection(
@@ -4693,9 +4726,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         )
                     }
                     kept = [entry for entry in available_calendars if entry["id"] in previous_ids]
-                    validation_results["calendar"][CALENDAR_SELECTION_METADATA_KEY] = (
-                        kept or available_calendars
-                    )
+                    if kept:
+                        validation_results["calendar"][CALENDAR_SELECTION_METADATA_KEY] = kept
         if "gmail" in granted_scope_ids:
             validation_results["gmail"] = GmailAccessValidator().validate(access_token)
 
@@ -6726,9 +6758,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # a saved label can never be read as a URL.
         #
         # A field that names no calendar of its own - which is every question
-        # asked in chat - reads the calendars this account chose when it was
-        # connected. A Google account holds several, and "what is on my
-        # calendar" is a question about all of them.
+        # asked in chat - reads the calendars this account chose. Connecting
+        # Google is not that choice: the grant covers every calendar in the
+        # account, including ones another person shared in, and someone who
+        # dismissed the picker has not said Assistyca may read any of them.
+        # So an unanswered account is asked here rather than read, and the run
+        # stops with the question instead of a summary.
         calendar_connection = self._calendar_connection_record(session.email)
         calendar_selection = connection_calendar_selection(calendar_connection)
         discovered_calendars: list[dict[str, str]] = []
@@ -6737,22 +6772,47 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             and not calendar_field_names_a_calendar(calendar_label)
             and connection_lists_calendars(calendar_connection)
         ):
-            # A connection made before the question was asked has no choice
-            # saved, so everything it can read counts as chosen. The list is
-            # remembered below, so this costs one provider call and not one per
-            # run. An account without the grant that lists calendars falls back
-            # to its own calendar rather than failing the run.
-            try:
-                discovered_calendars = normalize_calendar_selection(
-                    CalendarSummaryRunner().fetch_calendar_list(access_token)
-                )
-            except CalendarSummaryError:
-                discovered_calendars = []
+            # Which calendars there are to choose between, so the question can
+            # name them. The cached list is what connecting wrote down; an
+            # older connection has none, so it is looked up once and remembered
+            # rather than asked for again on the next question.
+            discovered_calendars = connection_available_calendars(calendar_connection)
+            if not discovered_calendars:
+                try:
+                    discovered_calendars = normalize_calendar_selection(
+                        CalendarSummaryRunner().fetch_calendar_list(access_token)
+                    )
+                except CalendarSummaryError:
+                    discovered_calendars = []
+                if discovered_calendars:
+                    self.database.update_platform_connection_status(
+                        session.email,
+                        platform="calendar",
+                        connection_status="connected",
+                        metadata_updates={
+                            "provider": "google_calendar",
+                            CALENDAR_AVAILABLE_METADATA_KEY: discovered_calendars,
+                        },
+                    )
+            if discovered_calendars:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "calendar_selection_required",
+                    "message": (
+                        "Before I read your calendar I need to know which calendars to look at. "
+                        "Choose them and I'll pick this question straight back up."
+                    ),
+                    # Named here so the question can be asked in place rather
+                    # than sending someone off to find the setting.
+                    "availableCalendars": discovered_calendars,
+                })
+                return
+            # Nothing to choose between - the account never granted the list
+            # permission - so there is no question to ask, and its own calendar
+            # is the only thing the connection can point at.
         calendar_ids = resolve_calendar_ids(
             calendar_label,
-            account_calendar_ids=[
-                entry["id"] for entry in (calendar_selection or discovered_calendars)
-            ],
+            account_calendar_ids=[entry["id"] for entry in calendar_selection],
         )
 
         try:
@@ -6793,10 +6853,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "credentialSource": credential_source,
             "validatedAt": datetime.now(timezone.utc).isoformat(),
         }
-        if discovered_calendars:
-            # What this account's calendars turned out to be, so the next run
-            # reads them without asking Google the same question again.
-            calendar_metadata_updates[CALENDAR_SELECTION_METADATA_KEY] = discovered_calendars
         self.database.update_platform_connection_status(
             session.email,
             platform="calendar",

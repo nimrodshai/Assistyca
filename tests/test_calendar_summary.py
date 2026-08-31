@@ -24,6 +24,7 @@ from packages.infrastructure.calendar_summary import parse_calendar_date_range
 from packages.infrastructure.calendar_summary import parse_calendar_ids
 from packages.infrastructure.calendar_summary import resolve_calendar_ids
 from packages.infrastructure.gmail_summary import GmailDigestRunner
+from packages.infrastructure.portal_auth.server import CALENDAR_AVAILABLE_METADATA_KEY
 from packages.infrastructure.portal_auth.server import CALENDAR_SELECTION_METADATA_KEY
 from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_LIST_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_SECRET_TYPE
@@ -985,7 +986,11 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
 
         self.assertEqual(run.call_args.kwargs["calendar_ids"], ["dana@example.org"])
 
-    def test_a_connection_never_asked_discovers_its_calendars_once_and_remembers_them(self) -> None:
+    def test_a_connection_never_asked_stops_and_asks_rather_than_reading_them_all(self) -> None:
+        # Connecting Google grants access to every calendar in the account,
+        # shared-in ones included. Someone who dismissed the picker has said
+        # nothing about which of them may be read, so the question is asked
+        # instead of being answered on their behalf.
         self.server.database.update_platform_connection_status(
             "owner@example.com",
             platform="calendar",
@@ -1005,18 +1010,52 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
             "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
             return_value=listed,
         ) as fetch:
-            run = self._run_calendar_question("Connected calendar")
+            with self.assertRaises(urllib_error.HTTPError) as context:
+                self._run_calendar_question("Connected calendar")
 
+        self.assertEqual(context.exception.code, 409)
+        payload = json.loads(context.exception.read().decode("utf-8"))
+        self.assertEqual(payload["error"], "calendar_selection_required")
+        # The question names the calendars there are to choose between, so it
+        # can be asked in place rather than sending someone off to find it.
+        self.assertEqual(
+            [entry["id"] for entry in payload["availableCalendars"]],
+            ["primary", "c_family@group.calendar.google.com"],
+        )
         fetch.assert_called_once()
-        self.assertEqual(
-            run.call_args.kwargs["calendar_ids"],
-            ["primary", "c_family@group.calendar.google.com"],
-        )
+
         connection = self.server.database.list_platform_connections("owner@example.com")[0]
+        # What the account holds is remembered so the next question does not
+        # ask Google again - but knowing about a calendar is never stored as
+        # permission to read it.
         self.assertEqual(
-            [entry["id"] for entry in connection["metadata"][CALENDAR_SELECTION_METADATA_KEY]],
+            [entry["id"] for entry in connection["metadata"][CALENDAR_AVAILABLE_METADATA_KEY]],
             ["primary", "c_family@group.calendar.google.com"],
         )
+        self.assertNotIn(CALENDAR_SELECTION_METADATA_KEY, connection["metadata"])
+
+    def test_a_second_question_asks_again_without_asking_google_again(self) -> None:
+        self.server.database.update_platform_connection_status(
+            "owner@example.com",
+            platform="calendar",
+            connection_status="connected",
+            metadata_updates={
+                "grantedScope": GOOGLE_CALENDAR_LIST_OAUTH_SCOPE,
+                CALENDAR_AVAILABLE_METADATA_KEY: [
+                    {"id": "primary", "label": "Alex Rivera"},
+                    {"id": "c_family@group.calendar.google.com", "label": "Family"},
+                ],
+            },
+        )
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.CalendarSummaryRunner.fetch_calendar_list",
+        ) as fetch:
+            with self.assertRaises(urllib_error.HTTPError) as context:
+                self._run_calendar_question("Connected calendar")
+
+        self.assertEqual(context.exception.code, 409)
+        fetch.assert_not_called()
 
     def test_a_connection_without_the_list_grant_reads_its_own_calendar_without_asking(self) -> None:
         with mock.patch(
@@ -1051,7 +1090,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
 
         self.assertEqual(context.exception.code, 400)
 
-    def test_calendar_sources_offer_every_calendar_until_the_account_has_chosen(self) -> None:
+    def test_calendar_sources_suggest_every_calendar_without_calling_it_chosen(self) -> None:
         listed = [
             {"id": "primary", "label": "Alex Rivera", "primary": True, "accessRole": "owner"},
             {
@@ -1068,8 +1107,13 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
             payload = self._get_calendar_sources()
 
         source = payload["sources"][0]  # type: ignore[index]
+        # Never asked, so nothing is chosen and the portal is told so plainly.
+        self.assertEqual(source["selectedCalendarIds"], [])
+        self.assertFalse(source["choiceMade"])
+        # Everything readable is offered as the picker's opening state, which
+        # keeps "yes, all of them" one click without deciding it for anyone.
         self.assertEqual(
-            source["selectedCalendarIds"],
+            source["suggestedCalendarIds"],
             ["primary", "c_family@group.calendar.google.com"],
         )
 
@@ -1082,6 +1126,7 @@ class CalendarSummaryEndpointTests(unittest.TestCase):
 
         source = payload["sources"][0]  # type: ignore[index]
         self.assertEqual(source["selectedCalendarIds"], ["primary"])
+        self.assertTrue(source["choiceMade"])
         self.assertEqual([entry["label"] for entry in source["selectedCalendars"]], ["Alex Rivera"])
 
     def test_calendar_proposal_run_rejects_external_delivery_until_supported(self) -> None:

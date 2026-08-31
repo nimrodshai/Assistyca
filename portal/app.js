@@ -16056,6 +16056,7 @@ function normalizeAgentCalendarSource(source) {
   const calendars = Array.isArray(source?.calendars) ? source.calendars : [];
   const selectedCalendars = Array.isArray(source?.selectedCalendars) ? source.selectedCalendars : [];
   const selectedIds = Array.isArray(source?.selectedCalendarIds) ? source.selectedCalendarIds : [];
+  const suggestedIds = Array.isArray(source?.suggestedCalendarIds) ? source.suggestedCalendarIds : [];
   return {
     connectionId: normalizeText(source?.connectionId),
     platform: normalizeText(source?.platform) || "calendar",
@@ -16075,9 +16076,19 @@ function normalizeAgentCalendarSource(source) {
       }))
       .filter((calendar) => calendar.id),
     // Which of the account's calendars a question about "my calendar" reads.
-    // The server answers with every readable calendar until the account has
-    // been asked, so this is never empty just because nobody chose yet.
+    // Empty means the account has never answered, which is a different thing
+    // from choosing none, and is why the two fields below exist: the portal
+    // has to be able to tell "said yes to these" from "was never asked".
     selectedCalendarIds: selectedIds
+      .map((calendarId) => normalizeText(calendarId))
+      .filter(Boolean),
+    // Whether the question has been answered at all. A lookup stops on this,
+    // so dropping it here would quietly hand back the old behaviour where
+    // connecting Google counted as permission to read every calendar.
+    choiceMade: Boolean(source?.choiceMade),
+    // What the picker opens with when nothing is chosen yet - a suggestion
+    // inside a dialog someone still has to confirm.
+    suggestedCalendarIds: suggestedIds
       .map((calendarId) => normalizeText(calendarId))
       .filter(Boolean),
     // The chosen calendars with their names, so the Google tool can list them
@@ -25365,6 +25376,9 @@ function getAgentActionIntentText(action, value = "") {
   if (normalizedAction === "open-connection") {
     return value === "calendar" ? "Connect my calendar" : "Connect a mailbox";
   }
+  if (normalizedAction === "choose-calendars") {
+    return "Choose my calendars";
+  }
   if (normalizedAction === "credential-help") {
     return "Help me get it";
   }
@@ -25455,6 +25469,29 @@ function handleAgentMessageAction(event) {
 
   if (action === "save-one-off-as-action") {
     void saveAgentOneOffAsAction(resultMessage);
+    return true;
+  }
+
+  // The calendar is connected; what is missing is the answer to which of its
+  // calendars may be read. Saving that answer picks the question back up, the
+  // same way connecting does. Like the sign-in button beside it, this survives
+  // being pressed so someone who backs out can press it again.
+  if (action === "choose-calendars") {
+    pushAgentActionIntentMessage(action, value);
+    persistClientState();
+    renderAgentMessages();
+    const calendarOption = getPlatformConnectionOption("calendar");
+    if (calendarOption) {
+      setPlatformConnectionOrigin("chat");
+      openGoogleCalendarChoice(calendarOption, {
+        onDone: () => {
+          closeAuthAlert();
+          if (!resumeAgentProposalAfterConnectedPlatforms(["calendar"], { startedFromChat: true })) {
+            renderApp({ preserveStatus: true });
+          }
+        },
+      });
+    }
     return true;
   }
 
@@ -26201,6 +26238,22 @@ function getAgentAnswerRunConnectionActions(tasks = []) {
   ));
 }
 
+// What the blocked question is waiting on, said in its own terms. A calendar
+// that is already connected is not waiting to be connected - it is waiting for
+// an answer - and promising to resume "as soon as it's connected" would point
+// at a button nobody needs to press.
+function getAgentAnswerRunResumeLine(tasks = []) {
+  const waitsOnChoiceOnly = tasks.length
+    && tasks.every((task) => (
+      task?.proposalType === "calendar-summary"
+      && isCalendarConnectionReady()
+      && !isGoogleCalendarChoiceMade()
+    ));
+  return waitsOnChoiceOnly
+    ? "I’ll pick this question back up as soon as you’ve chosen."
+    : "I’ll pick this question back up as soon as it’s connected.";
+}
+
 // Keep the question itself, not just the sentence saying it cannot be answered.
 // Nothing else remembers it - a question makes no proposal and no action - so
 // without this, connecting the mailbox answers nothing and the whole question
@@ -26214,6 +26267,33 @@ function rememberAgentAnswerRunForConnection(tasks, userText) {
     createdAt: new Date().toISOString(),
   });
   return agent.pendingAnswerRun;
+}
+
+// Part of the way there, and still short of an answer. The question stays
+// remembered; this says what it is waiting on now and carries the button for
+// it, so backing out of the calendar picker leaves a way forward rather than a
+// question that quietly never gets answered.
+function pushAgentAnswerRunStillBlocked(pending) {
+  const tasks = Array.isArray(pending?.tasks) ? pending.tasks : [];
+  const blockers = [...new Set(tasks.map((task) => getAgentAnswerRunBlocker(task.proposalType)).filter(Boolean))];
+  if (!blockers.length) {
+    return;
+  }
+  const text = [...blockers, getAgentAnswerRunResumeLine(tasks)].join("\n\n");
+  // Pressing a button that leads back here should not stack the same paragraph
+  // twice, so the message is only said when it is not already the last thing
+  // said.
+  const messages = getAgentWorkspace().messages;
+  const last = messages.length ? messages[messages.length - 1] : null;
+  if (last && last.role === "assistant" && String(last.text || "").trim() === text) {
+    return;
+  }
+  pushAgentMessage("assistant", text, {
+    kind: "credential",
+    actions: getAgentAnswerRunConnectionActions(tasks),
+    keepActions: true,
+  });
+  persistAgentWorkspace(text);
 }
 
 // The connection has arrived, so the question that stopped for it runs now.
@@ -26231,8 +26311,11 @@ function resumeAgentAnswerRunAfterConnection(options = {}) {
   }
 
   // One connection does not always clear the way: a message that asked about
-  // the mailbox and the calendar is still waiting on the other one.
+  // the mailbox and the calendar is still waiting on the other one, and so is
+  // a calendar that got connected but never answered which calendars to read.
+  // Saying what is still missing keeps the question from going quiet.
   if (pending.tasks.some((task) => getAgentAnswerRunBlocker(task.proposalType))) {
+    pushAgentAnswerRunStillBlocked(pending);
     return false;
   }
 
@@ -26824,6 +26907,13 @@ async function runAgentAnswerNow(turn, userText = "") {
   const reply = String(turn?.reply || "").trim() || "Let me check — this might take a minute.";
   pushAgentMessage("assistant", reply, { kind: "text" });
 
+  // Whether the account has said which calendars may be read is a question
+  // about the connection, not about this turn, so it is asked once here rather
+  // than guessed at. Without it a lookup would run on a stale answer.
+  if (tasks.some((task) => task.proposalType === "calendar-summary") && isCalendarConnectionReady()) {
+    await refreshAgentCalendarSources().catch(() => {});
+  }
+
   // A lookup with nothing connected behind it cannot run, but the lookups
   // beside it still can. Only a turn where every lookup is blocked comes back
   // as a connection message and nothing else.
@@ -26833,7 +26923,7 @@ async function runAgentAnswerNow(turn, userText = "") {
     // one of them is only half of what the message needs.
     const blocked = [
       ...new Set(blockers),
-      "I’ll pick this question back up as soon as it’s connected.",
+      getAgentAnswerRunResumeLine(tasks),
     ].join("\n\n");
     rememberAgentAnswerRunForConnection(tasks, userText);
     pushAgentMessage("assistant", blocked, {
