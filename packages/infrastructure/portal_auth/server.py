@@ -147,6 +147,7 @@ from packages.infrastructure.receipt_collector import answer_receipt_rows
 from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
 from packages.infrastructure import fx_rates
 from packages.infrastructure import saved_files
+from packages.infrastructure.receipt_grouping import group_receipt_records
 from packages.infrastructure.receipt_collector import convert_receipt_amounts
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import format_receipt_month_label
@@ -3649,7 +3650,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         parsed = urllib_parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if (
-            path.startswith("/api/admin/")
+            path == "/api/account"
+            or path.startswith("/api/admin/")
             or path.startswith("/api/features/")
             or path.startswith("/api/platform-connections/")
             or path == "/api/whatsapp/connection"
@@ -3991,6 +3993,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def _handle_api_delete(self, parsed: urllib_parse.ParseResult) -> None:
         path = parsed.path.rstrip("/") or "/"
+        if path == "/api/account":
+            self._handle_account_delete()
+            return
         if path.startswith("/api/admin/users/"):
             self._handle_admin_users_delete(parsed)
             return
@@ -5295,6 +5300,81 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "displayName": normalize_text(user.get("displayName")),
             "profile": normalize_user_profile(user.get("profile")),
         })
+
+    def _handle_account_delete(self) -> None:
+        """Erase the signed-in account at its owner's own request."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, user = authenticated
+        email = normalize_email(session.email)
+        # Erasure belongs to the account holder, so being an admin is not a
+        # reason to refuse it. Leaving the portal with nobody able to
+        # administer it is. A seeded admin is the exception: that email is an
+        # admin again the moment the account is registered back, below.
+        is_last_admin = bool(user.get("isAdmin")) and self.database.count_admin_users() <= 1
+        if is_last_admin and email not in self.config.seed_admin_emails:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "last_admin",
+                "message": "Add another admin before deleting the only admin account.",
+            })
+            return
+
+        try:
+            erasure = erase_account(
+                database=self.database,
+                email=email,
+                root=self.root,
+                receipt_output_root=resolve_runtime_path(self.config.agent_output_dir, root=self.root),
+                receipt_owner_key=build_agent_receipt_owner_key(email),
+                whatsapp_store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
+                whatsapp_store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
+                revoke_grant=self._revoke_connection_grant,
+            )
+        except KeyError as exc:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "not_found",
+                "message": str(exc),
+            })
+            return
+        except sqlite3.IntegrityError as exc:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "delete_blocked",
+                "message": f"Delete blocked by related saved data: {exc}",
+            })
+            return
+
+        for failed_path in erasure.failed_paths:
+            print(f"Portal account erase left {failed_path} in place for {email}", flush=True)
+
+        # The seed list decides who exists when the portal boots. An address
+        # named there is registered again now rather than at the next restart,
+        # so erasing it empties the account without locking its owner out of
+        # the portal until someone redeploys.
+        seeded_admin = email in self.config.seed_admin_emails
+        registered_again = seeded_admin or email in self.config.seed_registered_emails
+        if registered_again:
+            self.database.register_user(email, is_admin=seeded_admin)
+
+        for token in self._extract_session_tokens():
+            self.store.revoke_session(token)
+
+        json_response(
+            self,
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "message": "Your account and everything saved with it were deleted.",
+                "grantsRevoked": erasure.revoked_grants,
+                "registeredAgain": registered_again,
+            },
+            extra_headers={"Set-Cookie": self._build_cleared_session_cookie()},
+        )
 
     def _handle_account_profile_post(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -7636,6 +7716,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             else ""
         )
         timezone_name = normalize_text(payload.get("timezone")) or "UTC"
+        # The same records, grouped. Which vendor is biggest, what each month
+        # came to, what repeats and what is new are questions about arithmetic,
+        # and arithmetic is the one part of an answer that must not be done in
+        # the model's head over sixty receipts. Records with no money in them -
+        # a calendar, a plain mailbox read - group to nothing and pass none of
+        # this along.
+        groups = group_receipt_records(raw_records)
         prompt = build_answer_prompt(
             question=question,
             records=records,
@@ -7644,6 +7731,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             today=resolve_local_today(timezone_name),
             timezone_name=timezone_name,
             record_note=record_note,
+            groups=groups,
         )
         model = resolve_task_model(
             AGENT_ANSWER_COMPOSE_COMPLEXITY,

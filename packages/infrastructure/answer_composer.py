@@ -104,6 +104,7 @@ def build_answer_prompt(
     today: str = "",
     timezone_name: str = "",
     record_note: str = "",
+    groups: dict[str, Any] | None = None,
 ) -> str:
     """Ask for the answer to this question, given what the lookup read."""
 
@@ -116,6 +117,8 @@ def build_answer_prompt(
         "recentConversation": normalize_answer_conversation(conversation),
         "records": normalize_answer_records(records),
     }
+    if isinstance(groups, dict) and groups:
+        context["groupedFigures"] = groups
     return (
         "Answer the question in CONTEXT.question using the records the lookup read, in CONTEXT.records.\n"
         "computedAnswer is what the application worked out from those same records. Its figures are "
@@ -128,6 +131,14 @@ def build_answer_prompt(
         "read the records and say what they show: name the individual items that account for it, with "
         "their dates and amounts. Treat a follow-up as being about the answer just before it in "
         "recentConversation.\n"
+        "groupedFigures holds the same records already grouped, and its figures are computed and correct "
+        "in exactly the way computedAnswer's are: what each vendor came to, what each month came to, the "
+        "largest single charges, and which vendors bill in several months, appear only in the latest one, "
+        "or have gone quiet. Take the ranking, the totals and the counts from there rather than adding "
+        "receipts up yourself - a question about the biggest vendor, what repeats, or what is new is "
+        "answered from it directly. Totals are grouped inside one currency and never across two, so an "
+        "account paying in both has a ranking per currency and the answer says which one it is talking "
+        "about. It is offered, not required: use the part that answers the question and ignore the rest.\n"
         "Do the work the question needs before you write. Group the records by whatever the question is "
         "really about - vendor, month, sender, day, size - and compare the groups. Separate what repeats "
         "from what happened once, because a total that moved is almost always one unusual item rather than "

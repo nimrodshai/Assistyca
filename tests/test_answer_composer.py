@@ -426,5 +426,43 @@ class AnswerComposeChatTests(unittest.TestCase):
         self.assertNotIn("!records.length", composer)
 
 
+class GroupedFigureTests(unittest.TestCase):
+    """The arithmetic arrives settled, rather than being done while writing."""
+
+    def test_the_prompt_carries_the_groupings_when_there_are_any(self) -> None:
+        prompt = build_answer_prompt(
+            question="Which vendor cost me the most in August?",
+            records=[{"vendor": "Render", "amount": "20.00 USD"}],
+            computed_answer="You paid 20.00 USD in August 2026, across 1 receipt.",
+            groups={
+                "countedReceipts": 1,
+                "byVendor": [{"vendor": "Render", "currency": "USD", "total": 20.0, "count": 1}],
+            },
+        )
+
+        self.assertIn('"groupedFigures"', prompt)
+        self.assertIn('"byVendor"', prompt)
+        self.assertIn("Take the ranking, the totals and the counts from there", prompt)
+
+    def test_a_lookup_with_nothing_to_group_carries_no_grouping(self) -> None:
+        prompt = build_answer_prompt(
+            question="What is on my calendar?",
+            records=[{"kind": "event", "title": "Standup"}],
+            computed_answer="You have 1 meeting.",
+            groups={},
+        )
+
+        self.assertNotIn('"groupedFigures"', prompt)
+
+    def test_the_grouping_is_optional_altogether(self) -> None:
+        prompt = build_answer_prompt(
+            question="What is on my calendar?",
+            records=[{"kind": "event", "title": "Standup"}],
+            computed_answer="You have 1 meeting.",
+        )
+
+        self.assertNotIn('"groupedFigures"', prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
