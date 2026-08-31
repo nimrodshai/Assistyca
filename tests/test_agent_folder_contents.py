@@ -115,6 +115,20 @@ class AgentFolderContentsTests(unittest.TestCase):
         with urllib_request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _move_files(self, body: dict[str, object], *, token: str | None = "") -> dict[str, object]:
+        headers = {"Content-Type": "application/json"}
+        auth_token = self.session_token if token == "" else token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/files/move",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     def test_deletes_picked_files_and_leaves_the_folder_standing(self) -> None:
         folder = self._write_bundle()
 
@@ -208,6 +222,168 @@ class AgentFolderContentsTests(unittest.TestCase):
             self._delete_files({"files": ["receipts.xlsx"]})
 
         self.assertEqual(missing_folder.exception.code, 400)
+
+    def test_moves_picked_files_into_another_folder(self) -> None:
+        folder = self._write_bundle()
+        destination = self.output_dir / self.owner_key / "Receipts" / "Aug2026"
+
+        payload = self._move_files({
+            "folder": "Receipts/Jul2026",
+            "destination": "Receipts/Aug2026",
+            # A listing carries the path inside the folder, so a pick can name
+            # a file in a subfolder.
+            "files": ["receipts.xlsx", "attachments/msg-1-01-receipt.png"],
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["moved"], ["receipts.xlsx", "attachments/msg-1-01-receipt.png"])
+        self.assertEqual(payload["failed"], [])
+        self.assertFalse((folder / "receipts.xlsx").exists())
+        # The path inside the folder travels with the file, so an attachment
+        # lands as an attachment.
+        self.assertEqual((destination / "receipts.xlsx").read_bytes(), b"xlsx-bytes")
+        self.assertEqual(
+            (destination / "attachments" / "msg-1-01-receipt.png").read_bytes(),
+            b"png-bytes",
+        )
+        # An attachments folder holding nothing is a leftover, not content.
+        self.assertFalse((folder / "attachments").exists())
+        self.assertEqual(payload["remaining"], 1)
+        self.assertEqual(payload["destinationRemaining"], 2)
+
+    def test_moving_a_file_carries_the_tags_that_describe_it(self) -> None:
+        folder = self._write_bundle()
+        destination = self.output_dir / self.owner_key / "Receipts" / "Aug2026"
+        write_file_tags(folder, {
+            "receipt-report.pdf": ["Render", "Aug"],
+            "receipts.xlsx": ["Render", "Jul"],
+        })
+
+        self._move_files({
+            "folder": "Receipts/Jul2026",
+            "destination": "Receipts/Aug2026",
+            "files": ["receipts.xlsx"],
+        })
+
+        self.assertEqual(read_file_tags(folder), {"receipt-report.pdf": ["Render", "Aug"]})
+        self.assertEqual(read_file_tags(destination), {"receipts.xlsx": ["Render", "Jul"]})
+
+    def test_a_move_never_writes_over_a_file_already_there(self) -> None:
+        self._write_bundle()
+        destination = self.output_dir / self.owner_key / "Receipts" / "Aug2026"
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "receipts.xlsx").write_bytes(b"august-xlsx")
+
+        payload = self._move_files({
+            "folder": "Receipts/Jul2026",
+            "destination": "Receipts/Aug2026",
+            "files": ["receipts.xlsx"],
+        })
+
+        self.assertEqual(payload["moved"], ["receipts.xlsx"])
+        self.assertEqual(payload["landed"], ["receipts (2).xlsx"])
+        self.assertEqual((destination / "receipts.xlsx").read_bytes(), b"august-xlsx")
+        self.assertEqual((destination / "receipts (2).xlsx").read_bytes(), b"xlsx-bytes")
+
+    def test_a_file_name_cannot_move_something_outside_the_folder(self) -> None:
+        folder = self._write_bundle()
+        outside = self.output_dir / "secrets.txt"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("private", encoding="utf-8")
+        sibling = folder.parent / "Jun2026"
+        sibling.mkdir(parents=True, exist_ok=True)
+        (sibling / "receipt.pdf").write_bytes(b"other month")
+
+        payload = self._move_files({
+            "folder": "Receipts/Jul2026",
+            "destination": "Receipts/Aug2026",
+            "files": ["../../../secrets.txt", "../Jun2026/receipt.pdf", "/etc/hosts"],
+        })
+
+        self.assertEqual(payload["moved"], [])
+        self.assertTrue(outside.exists())
+        self.assertTrue((sibling / "receipt.pdf").exists())
+
+    def test_a_destination_cannot_climb_out_of_the_owner_directory(self) -> None:
+        self._write_bundle()
+        escaped = self.output_dir.parent / "escaped"
+
+        payload = self._move_files({
+            "folder": "Receipts/Jul2026",
+            "destination": "../../escaped",
+            "files": ["receipts.xlsx"],
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(escaped.exists())
+        landing = self.output_dir / self.owner_key / "escaped" / "receipts.xlsx"
+        self.assertTrue(landing.exists())
+
+    def test_the_manifest_is_not_a_file_the_chat_can_move(self) -> None:
+        folder = self._write_bundle()
+
+        payload = self._move_files({
+            "folder": "Receipts/Jul2026",
+            "destination": "Receipts/Aug2026",
+            "files": ["bundle.json"],
+        })
+
+        self.assertEqual(payload["failed"], ["bundle.json"])
+        self.assertTrue((folder / "bundle.json").exists())
+
+    def test_a_file_the_listing_showed_but_disk_lost_is_not_a_failed_move(self) -> None:
+        self._write_bundle()
+
+        payload = self._move_files({
+            "folder": "Receipts/Jul2026",
+            "destination": "Receipts/Aug2026",
+            "files": ["gone.pdf"],
+        })
+
+        self.assertEqual(payload["moved"], [])
+        self.assertEqual(payload["missing"], ["gone.pdf"])
+        self.assertEqual(payload["failed"], [])
+
+    def test_rejects_a_move_that_is_missing_a_name(self) -> None:
+        self._write_bundle()
+
+        with self.assertRaises(urllib_error.HTTPError) as no_destination:
+            self._move_files({"folder": "Receipts/Jul2026", "files": ["receipts.xlsx"]})
+        self.assertEqual(no_destination.exception.code, 400)
+
+        with self.assertRaises(urllib_error.HTTPError) as no_files:
+            self._move_files({
+                "folder": "Receipts/Jul2026",
+                "destination": "Receipts/Aug2026",
+                "files": [],
+            })
+        self.assertEqual(no_files.exception.code, 400)
+
+        # Moving a folder's files into the folder they are already in is not a
+        # move, and pretending it worked would be a lie about what changed.
+        with self.assertRaises(urllib_error.HTTPError) as same_folder:
+            self._move_files({
+                "folder": "Receipts/Jul2026",
+                "destination": "Receipts/Jul2026",
+                "files": ["receipts.xlsx"],
+            })
+        self.assertEqual(same_folder.exception.code, 400)
+
+    def test_moving_files_needs_a_signed_in_owner(self) -> None:
+        folder = self._write_bundle()
+
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._move_files(
+                {
+                    "folder": "Receipts/Jul2026",
+                    "destination": "Receipts/Aug2026",
+                    "files": ["receipts.xlsx"],
+                },
+                token=None,
+            )
+
+        self.assertEqual(caught.exception.code, 401)
+        self.assertTrue((folder / "receipts.xlsx").exists())
 
     def test_deletes_a_folder_with_the_files_inside_it(self) -> None:
         folder = self._write_bundle()

@@ -18317,95 +18317,204 @@ function createAgentFolderBody(folder) {
   const list = document.createElement("ul");
   list.className = "agent-folder-file-list";
   for (const file of visible) {
-    const href = normalizeAgentNotificationHref(file?.url);
-    const name = normalizeAgentTextItem(file?.name, "");
-    if (!href || !name) {
-      continue;
+    const row = createAgentFolderFileRow(folder, file);
+    if (row) {
+      list.append(row);
     }
-
-    const row = document.createElement("li");
-    const link = document.createElement("a");
-    link.className = "agent-folder-file";
-    link.href = href;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-
-    const label = document.createElement("span");
-    label.className = "agent-folder-file-name";
-    label.textContent = name;
-
-    const size = document.createElement("span");
-    size.className = "agent-folder-file-size";
-    size.textContent = formatAgentFolderFileSize(file?.size);
-
-    link.append(label, size);
-    row.append(link);
-
-    // The tags a file was filed with, and a way to use them: clicking one
-    // filters by it, which is how you get from one August receipt to the rest
-    // of August.
-    const tags = Array.isArray(file?.tags) ? file.tags : [];
-    if (tags.length) {
-      const tagList = document.createElement("div");
-      tagList.className = "agent-folder-file-tags";
-      for (const value of tags) {
-        const tag = normalizeAgentTextItem(value, "");
-        if (!tag) {
-          continue;
-        }
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "agent-folder-tag";
-        chip.dataset.agentFolderTag = tag;
-        chip.textContent = tag;
-        chip.title = `Filter by ${tag}`;
-        tagList.append(chip);
-      }
-      row.append(tagList);
-    }
-    list.append(row);
   }
   body.append(list);
   return body;
 }
 
+// One file, as a card wide enough to read its whole name off. A saved receipt
+// is named after the vendor that sent it, and those names are long enough
+// that a single clipped line told you nothing about which file you were
+// looking at.
+function createAgentFolderFileRow(folder, file) {
+  const href = normalizeAgentNotificationHref(file?.url);
+  const name = normalizeAgentTextItem(file?.name, "");
+  if (!href || !name) {
+    return null;
+  }
+
+  const row = document.createElement("li");
+  row.className = "agent-folder-file-row";
+
+  const link = document.createElement("a");
+  link.className = "agent-folder-file";
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+
+  const label = document.createElement("span");
+  label.className = "agent-folder-file-name";
+  label.textContent = name;
+
+  const size = document.createElement("span");
+  size.className = "agent-folder-file-size";
+  size.textContent = formatAgentFolderFileSize(file?.size);
+
+  link.append(label, size);
+  row.append(link, createAgentFolderFileMenuButton(folder, file, href));
+
+  // The tags a file was filed with, and a way to use them: clicking one
+  // filters by it, which is how you get from one August receipt to the rest
+  // of August.
+  const tags = Array.isArray(file?.tags) ? file.tags : [];
+  if (tags.length) {
+    const tagList = document.createElement("div");
+    tagList.className = "agent-folder-file-tags";
+    for (const value of tags) {
+      const tag = normalizeAgentTextItem(value, "");
+      if (!tag) {
+        continue;
+      }
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "agent-folder-tag";
+      chip.dataset.agentFolderTag = tag;
+      chip.textContent = tag;
+      chip.title = `Filter by ${tag}`;
+      tagList.append(chip);
+    }
+    row.append(tagList);
+  }
+  return row;
+}
+
+// Opening a file was the only thing the panel could do with one, so keeping a
+// copy, filing it somewhere else, or throwing it away all had to be asked for
+// in the chat. They belong on the file itself.
+function createAgentFolderFileMenuButton(folder, file, href) {
+  const name = normalizeAgentTextItem(file?.name, "");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "agent-folder-file-menu-button";
+  button.dataset.agentFileMenu = name;
+  button.dataset.agentFileFolder = normalizeAgentTextItem(folder?.name, "");
+  button.dataset.agentFileUrl = href;
+  button.setAttribute("aria-haspopup", "menu");
+  button.setAttribute("aria-expanded", "false");
+  button.setAttribute("aria-label", `More options for ${name}`);
+  button.title = "More options";
+
+  const icon = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "16",
+    height: "16",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  for (const cy of [6, 12, 18]) {
+    icon.append(createSvgElement("circle", {
+      cx: "12",
+      cy: String(cy),
+      r: "1.7",
+      fill: "currentColor",
+    }));
+  }
+  button.append(icon);
+  return button;
+}
+
+// The card is built once and updated in place afterwards, so opening and
+// closing a folder is a class change on a node that is already on screen -
+// which is what gives CSS something to animate. Rebuilding the card would
+// drop the collapsed height it has to grow from.
 function createAgentFolderItem(folder) {
   const item = document.createElement("article");
-  const type = getAgentFolderTypeOption(folder?.type);
-  const isOpen = state.agentFolderOpenId === folder.id;
-  item.className = `agent-folder-item is-${type.value}`;
-  item.classList.toggle("is-open", isOpen);
-  item.dataset.agentFolderId = folder.id;
   item.setAttribute("role", "listitem");
 
   const openButton = document.createElement("button");
   openButton.type = "button";
   openButton.className = "agent-folder-item-open";
-  openButton.dataset.agentFolderOpen = folder.id;
-  openButton.setAttribute("aria-expanded", String(isOpen));
-  openButton.setAttribute("aria-label", `${isOpen ? "Close" : "Open"} folder: ${folder.name}`);
+  openButton.append(
+    createAgentFolderIcon(),
+    Object.assign(document.createElement("span"), { className: "agent-folder-copy" }),
+    Object.assign(document.createElement("span"), { className: "agent-folder-time" }),
+  );
 
-  const copy = document.createElement("span");
-  copy.className = "agent-folder-copy";
-  const title = document.createElement("strong");
-  title.textContent = folder.name;
+  // The contents sit in a wrapper that grows and shrinks, and a clip that
+  // hides what is spilling out of it while it does.
+  const wrap = document.createElement("div");
+  wrap.className = "agent-folder-body-wrap";
+  const clip = document.createElement("div");
+  clip.className = "agent-folder-body-clip";
+  wrap.append(clip);
 
-  const meta = document.createElement("span");
-  meta.className = "agent-folder-meta";
-  meta.textContent = `${type.label} · ${formatAgentFolderItemCount(folder.itemCount)}`;
-  copy.append(title, meta);
+  item.append(openButton, createAgentFolderDeleteButton(folder), wrap);
+  return updateAgentFolderItem(item, folder);
+}
 
-  const time = document.createElement("span");
-  time.className = "agent-folder-time";
-  time.textContent = formatAgentFolderTime(folder);
+function updateAgentFolderItem(item, folder) {
+  const type = getAgentFolderTypeOption(folder?.type);
+  const isOpen = state.agentFolderOpenId === folder.id;
+  item.className = `agent-folder-item is-${type.value}`;
+  item.classList.toggle("is-open", isOpen);
+  item.dataset.agentFolderId = folder.id;
 
-  openButton.append(createAgentFolderIcon(), copy, time);
-  item.append(openButton, createAgentFolderDeleteButton(folder));
+  const openButton = item.querySelector(".agent-folder-item-open");
+  if (openButton) {
+    openButton.dataset.agentFolderOpen = folder.id;
+    openButton.setAttribute("aria-expanded", String(isOpen));
+    openButton.setAttribute("aria-label", `${isOpen ? "Close" : "Open"} folder: ${folder.name}`);
 
-  if (isOpen) {
-    item.append(createAgentFolderBody(folder));
+    const copy = openButton.querySelector(".agent-folder-copy");
+    if (copy) {
+      const title = document.createElement("strong");
+      title.textContent = folder.name;
+      const meta = document.createElement("span");
+      meta.className = "agent-folder-meta";
+      meta.textContent = `${type.label} · ${formatAgentFolderItemCount(folder.itemCount)}`;
+      copy.replaceChildren(title, meta);
+    }
+
+    const time = openButton.querySelector(".agent-folder-time");
+    if (time) {
+      time.textContent = formatAgentFolderTime(folder);
+    }
+  }
+
+  const deleteButton = item.querySelector(".agent-folder-delete");
+  if (deleteButton) {
+    deleteButton.dataset.agentFolderDelete = folder.id;
+    deleteButton.setAttribute("aria-label", `Delete folder: ${folder.name}`);
+  }
+
+  // A folder that is closing keeps what it last showed, because a panel that
+  // empties before it collapses reads as a glitch rather than as closing. And
+  // an open one is only rebuilt when its listing actually changed: a poll
+  // that redraws the panel every few seconds must not throw away the menu the
+  // user has open on one of these files.
+  const clip = item.querySelector(".agent-folder-body-clip");
+  if (clip && isOpen) {
+    const signature = getAgentFolderBodySignature(folder);
+    if (clip.dataset.agentFolderBody !== signature) {
+      clip.dataset.agentFolderBody = signature;
+      clip.replaceChildren(createAgentFolderBody(folder));
+    }
   }
   return item;
+}
+
+// Everything the listing of one folder is drawn from. Same string, same
+// panel - so there is nothing to gain from building it again.
+function getAgentFolderBodySignature(folder) {
+  const contents = agentFolderContents.get(folder.name);
+  const parts = [
+    folder.name,
+    contents?.status || "loading",
+    contents?.message || "",
+    state.agentFolderSearch || "",
+  ];
+  for (const file of (Array.isArray(contents?.items) ? contents.items : [])) {
+    parts.push([
+      normalizeAgentTextItem(file?.name, ""),
+      String(file?.size ?? ""),
+      (Array.isArray(file?.tags) ? file.tags : []).join(","),
+    ].join("|"));
+  }
+  return parts.join("\u0001");
 }
 
 // Adding a folder was the only thing the panel could do to one. Removing it
@@ -18437,6 +18546,375 @@ function createAgentFolderDeleteButton(folder) {
   );
   button.append(icon);
   return button;
+}
+
+// The menu floats over the panel rather than sitting inside the folder card,
+// because an open folder clips whatever spills out of it - which is exactly
+// what a menu hanging off the last file in the list does.
+let agentFileMenu = null;
+
+const AGENT_FILE_MENU_ICONS = {
+  download: "M12 4v10m0 0 3.6-3.6M12 14l-3.6-3.6M5 16.5v1.2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1.2",
+  move: "M4 7.6a2 2 0 0 1 2-2h3l1.6 2H18a2 2 0 0 1 2 2v6.8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Zm6.5 6.4h6m0 0-2.2-2.2m2.2 2.2-2.2 2.2",
+  delete: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
+};
+
+function createAgentFileMenuIcon(kind) {
+  const icon = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "16",
+    height: "16",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  icon.append(createSvgElement("path", {
+    d: AGENT_FILE_MENU_ICONS[kind] || AGENT_FILE_MENU_ICONS.download,
+    stroke: "currentColor",
+    "stroke-width": "1.7",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+  }));
+  return icon;
+}
+
+function positionAgentFileMenu(node, button) {
+  const anchor = button.getBoundingClientRect();
+  const menu = node.getBoundingClientRect();
+  const margin = 8;
+  // Right-aligned with the button, because the button is at the right edge of
+  // the card and a menu that hangs the other way falls off the panel.
+  let left = anchor.right - menu.width;
+  left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - menu.width - margin));
+  // Below the button, unless below is where the panel ends.
+  let top = anchor.bottom + 6;
+  if (top + menu.height > window.innerHeight - margin) {
+    top = anchor.top - menu.height - 6;
+  }
+  top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - menu.height - margin));
+  node.style.left = `${Math.round(left)}px`;
+  node.style.top = `${Math.round(top)}px`;
+}
+
+function handleAgentFileMenuPointerDown(event) {
+  if (!agentFileMenu) {
+    return;
+  }
+  if (agentFileMenu.node.contains(event.target) || agentFileMenu.button.contains(event.target)) {
+    return;
+  }
+  closeAgentFileMenu();
+}
+
+function handleAgentFileMenuKeyDown(event) {
+  if (event.key === "Escape") {
+    event.stopPropagation();
+    closeAgentFileMenu({ returnFocus: true });
+  }
+}
+
+function handleAgentFileMenuReposition() {
+  if (agentFileMenu) {
+    positionAgentFileMenu(agentFileMenu.node, agentFileMenu.button);
+  }
+}
+
+function closeAgentFileMenu(options = {}) {
+  const open = agentFileMenu;
+  agentFileMenu = null;
+  document.removeEventListener("pointerdown", handleAgentFileMenuPointerDown, true);
+  document.removeEventListener("keydown", handleAgentFileMenuKeyDown, true);
+  window.removeEventListener("resize", handleAgentFileMenuReposition, true);
+  window.removeEventListener("scroll", handleAgentFileMenuReposition, true);
+  if (!open) {
+    return;
+  }
+  open.node.remove();
+  if (open.button.isConnected) {
+    open.button.setAttribute("aria-expanded", "false");
+    if (options.returnFocus) {
+      open.button.focus();
+    }
+  }
+}
+
+function createAgentFileMenuOption(kind, label, onChoose) {
+  const option = document.createElement("button");
+  option.type = "button";
+  option.className = `agent-file-menu-option is-${kind}`;
+  option.setAttribute("role", "menuitem");
+  const text = document.createElement("span");
+  text.textContent = label;
+  option.append(createAgentFileMenuIcon(kind), text);
+  option.addEventListener("click", onChoose);
+  return option;
+}
+
+function openAgentFileMenu(button) {
+  if (agentFileMenu?.button === button) {
+    closeAgentFileMenu({ returnFocus: true });
+    return;
+  }
+  closeAgentFileMenu();
+
+  const fileName = normalizeAgentTextItem(button.dataset.agentFileMenu, "");
+  const folderName = normalizeAgentTextItem(button.dataset.agentFileFolder, "");
+  const href = normalizeAgentNotificationHref(button.dataset.agentFileUrl);
+  if (!fileName || !folderName) {
+    return;
+  }
+
+  const node = document.createElement("div");
+  node.className = "agent-file-menu";
+  node.setAttribute("role", "menu");
+  node.setAttribute("aria-label", `Options for ${fileName}`);
+
+  // The file is served from the portal itself, so the browser can be asked to
+  // keep it rather than open it in a tab.
+  const download = document.createElement("a");
+  download.className = "agent-file-menu-option is-download";
+  download.setAttribute("role", "menuitem");
+  download.href = href || "#";
+  download.download = fileName.split("/").pop() || fileName;
+  const downloadLabel = document.createElement("span");
+  downloadLabel.textContent = "Download";
+  download.append(createAgentFileMenuIcon("download"), downloadLabel);
+  download.addEventListener("click", () => {
+    closeAgentFileMenu();
+  });
+
+  const move = createAgentFileMenuOption("move", "Move to…", () => {
+    closeAgentFileMenu();
+    openAgentFileMoveDialog(folderName, fileName, button);
+  });
+
+  const remove = createAgentFileMenuOption("delete", "Delete", () => {
+    closeAgentFileMenu();
+    deleteAgentFolderFile(folderName, fileName, button);
+  });
+
+  node.append(download, move, remove);
+  document.body.append(node);
+  positionAgentFileMenu(node, button);
+  agentFileMenu = { node, button, folderName, fileName };
+  button.setAttribute("aria-expanded", "true");
+
+  document.addEventListener("pointerdown", handleAgentFileMenuPointerDown, true);
+  document.addEventListener("keydown", handleAgentFileMenuKeyDown, true);
+  window.addEventListener("resize", handleAgentFileMenuReposition, true);
+  window.addEventListener("scroll", handleAgentFileMenuReposition, true);
+  // Reading the layout commits the collapsed starting state, so the class that
+  // follows animates from it rather than snapping past it.
+  void node.offsetHeight;
+  node.classList.add("is-open");
+  download.focus();
+}
+
+function deleteAgentFolderFile(folderName, fileName, returnFocus) {
+  openAuthAlert(
+    "Delete file?",
+    `Delete “${fileName}” from “${folderName}”? That can’t be undone.`,
+    {
+      eyebrow: "Delete file",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Delete",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Cancel",
+      focusTarget: "secondary",
+      returnFocus: returnFocus || elements.agentFolderCreateToggleButton,
+      onPrimary: () => {
+        void confirmAgentFolderFileDelete(folderName, fileName);
+      },
+    },
+  );
+}
+
+async function confirmAgentFolderFileDelete(folderName, fileName) {
+  let result = null;
+  try {
+    result = await apiRequest("/api/agent/files/delete", {
+      method: "POST",
+      body: { folder: folderName, files: [fileName] },
+      timeoutMs: 30000,
+    });
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, `Couldn’t delete “${fileName}”. Try again in a moment.`));
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  // A file the listing showed but disk no longer holds counts as done: it is
+  // gone, which is what was asked for. Only a refusal stays.
+  const refused = (Array.isArray(result?.failed) ? result.failed : [])
+    .some((entry) => String(entry || "").trim().toLowerCase() === fileName.toLowerCase());
+  if (refused) {
+    setStatus(`Couldn’t delete “${fileName}”. Try again in a moment.`);
+  } else {
+    forgetAgentFiles(folderName, [fileName], result?.remaining);
+    setStatus(`Deleted “${fileName}”.`);
+  }
+  renderApp({ preserveStatus: true });
+}
+
+// Where a file goes is a choice between folders the account already has, so
+// the dialog offers them - and a box for a folder that does not exist yet,
+// because "somewhere else" is often somewhere new.
+function openAgentFileMoveDialog(folderName, fileName, returnFocus) {
+  const agent = getAgentWorkspace();
+  const source = (Array.isArray(agent.folders) ? agent.folders : [])
+    .find((folder) => String(folder?.name || "").trim().toLowerCase() === folderName.toLowerCase());
+  const others = (Array.isArray(agent.folders) ? agent.folders : [])
+    .filter((folder) => String(folder?.name || "").trim().toLowerCase() !== folderName.toLowerCase());
+
+  let picked = "";
+  const body = document.createElement("div");
+  body.className = "agent-file-move";
+
+  const newFolderInput = document.createElement("input");
+  newFolderInput.type = "text";
+  newFolderInput.className = "agent-file-move-input";
+  newFolderInput.placeholder = others.length ? "Or a new folder name" : "New folder name";
+  newFolderInput.setAttribute("aria-label", "New folder name");
+  newFolderInput.maxLength = 80;
+
+  const destination = () => normalizeAgentFolderName(newFolderInput.value, "") || picked;
+  const syncPrimary = () => {
+    if (elements.authAlertDismissButton) {
+      elements.authAlertDismissButton.disabled = !destination();
+    }
+  };
+
+  const optionButtons = [];
+  if (others.length) {
+    const list = document.createElement("div");
+    list.className = "agent-file-move-options";
+    list.setAttribute("role", "radiogroup");
+    list.setAttribute("aria-label", "Folder to move into");
+    for (const folder of others) {
+      const type = getAgentFolderTypeOption(folder?.type);
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "agent-file-move-option";
+      option.setAttribute("role", "radio");
+      option.setAttribute("aria-checked", "false");
+      const name = document.createElement("strong");
+      name.textContent = folder.name;
+      const meta = document.createElement("span");
+      meta.textContent = `${type.label} · ${formatAgentFolderItemCount(folder.itemCount)}`;
+      option.append(name, meta);
+      option.addEventListener("click", () => {
+        picked = folder.name;
+        newFolderInput.value = "";
+        for (const other of optionButtons) {
+          const chosen = other === option;
+          other.classList.toggle("is-selected", chosen);
+          other.setAttribute("aria-checked", String(chosen));
+        }
+        syncPrimary();
+      });
+      optionButtons.push(option);
+      list.append(option);
+    }
+    body.append(list);
+  }
+
+  newFolderInput.addEventListener("input", () => {
+    if (newFolderInput.value.trim()) {
+      picked = "";
+      for (const option of optionButtons) {
+        option.classList.remove("is-selected");
+        option.setAttribute("aria-checked", "false");
+      }
+    }
+    syncPrimary();
+  });
+  body.append(newFolderInput);
+
+  openAuthAlert(
+    "Move file",
+    `Where should “${fileName}” go?`,
+    {
+      eyebrow: "Move file",
+      icon: "→",
+      tone: "progress",
+      bodyNode: body,
+      buttonLabel: "Move",
+      primaryDisabled: true,
+      secondaryButtonLabel: "Cancel",
+      returnFocus: returnFocus || elements.agentFolderCreateToggleButton,
+      onPrimary: () => {
+        const target = destination();
+        if (target) {
+          void moveAgentFolderFile(folderName, fileName, target, source?.type);
+        }
+      },
+    },
+  );
+}
+
+async function moveAgentFolderFile(folderName, fileName, destination, sourceType) {
+  let result = null;
+  try {
+    result = await apiRequest("/api/agent/files/move", {
+      method: "POST",
+      body: { folder: folderName, files: [fileName], destination },
+      timeoutMs: 30000,
+    });
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, `Couldn’t move “${fileName}”. Try again in a moment.`));
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  const moved = (Array.isArray(result?.moved) ? result.moved : [])
+    .some((entry) => String(entry || "").trim().toLowerCase() === fileName.toLowerCase());
+  if (!moved) {
+    const gone = (Array.isArray(result?.missing) ? result.missing : []).length > 0;
+    setStatus(gone
+      ? `“${fileName}” is no longer in “${folderName}”.`
+      : `Couldn’t move “${fileName}”. Try again in a moment.`);
+    if (gone) {
+      forgetAgentFiles(folderName, [fileName], result?.remaining);
+    }
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  forgetAgentFiles(folderName, [fileName], result?.remaining);
+  noteAgentFolderGainedFiles(destination, result?.destinationRemaining, sourceType);
+  setStatus(`Moved “${fileName}” to “${destination}”.`);
+  renderApp({ preserveStatus: true });
+}
+
+// The folder a file landed in now holds one more than the panel last saw, and
+// may not have been a folder the panel knew about at all.
+function noteAgentFolderGainedFiles(folderName, remaining, sourceType) {
+  const name = normalizeAgentFolderName(folderName, "");
+  if (!name) {
+    return;
+  }
+  // Whatever was cached for it is a listing short one file.
+  agentFolderContents.delete(name);
+
+  const left = Number.parseInt(remaining, 10);
+  const agent = getAgentWorkspace();
+  const folder = (Array.isArray(agent.folders) ? agent.folders : [])
+    .find((candidate) => String(candidate?.name || "").trim().toLowerCase() === name.toLowerCase());
+  if (folder) {
+    folder.itemCount = Number.isFinite(left) ? Math.max(0, left) : (Number(folder.itemCount) || 0) + 1;
+    folder.updatedAt = new Date().toISOString();
+    persistClientState();
+    return;
+  }
+
+  // A folder that only exists because a file was just moved into it still
+  // belongs in the panel, filed the way the folder it came from was.
+  const added = addAgentFolder(name, sourceType || "general");
+  if (added) {
+    added.itemCount = Number.isFinite(left) ? Math.max(0, left) : 1;
+    persistClientState();
+  }
 }
 
 function deleteAgentFolder(folderId, options = {}) {
@@ -18543,12 +19021,35 @@ function renderAgentFolders() {
     empty.className = "agent-action-empty";
     empty.textContent = state.agentFolderSearch ? "No matching folders." : "No folders yet.";
     elements.agentFolderList.replaceChildren(empty);
+    closeStaleAgentFileMenu();
     return;
   }
 
-  elements.agentFolderList.replaceChildren(
-    ...folders.map(createAgentFolderItem),
-  );
+  syncAgentFolderListItems(folders);
+  closeStaleAgentFileMenu();
+}
+
+// The menu is anchored to a button inside the list, and a render can take
+// that button away. A menu pointing at nothing is worse than no menu.
+function closeStaleAgentFileMenu() {
+  if (agentFileMenu && !agentFileMenu.button.isConnected) {
+    closeAgentFileMenu();
+  }
+}
+
+// Keep the cards that are already on screen when the list itself has not
+// changed, and only swap the whole list when it has. A card that survives a
+// render is a card whose open/close animation survives one too.
+function syncAgentFolderListItems(folders) {
+  const list = elements.agentFolderList;
+  const current = [...list.children];
+  const sameList = current.length === folders.length
+    && folders.every((folder, index) => current[index]?.dataset?.agentFolderId === folder.id);
+  if (sameList) {
+    folders.forEach((folder, index) => updateAgentFolderItem(current[index], folder));
+    return;
+  }
+  list.replaceChildren(...folders.map(createAgentFolderItem));
 }
 
 function syncAgentPanelModeControls() {
@@ -33475,6 +33976,13 @@ function bindEvents() {
 
   if (elements.agentFolderList) {
     elements.agentFolderList.addEventListener("click", (event) => {
+      const fileMenuButton = event.target?.closest?.("[data-agent-file-menu]");
+      if (fileMenuButton && elements.agentFolderList.contains(fileMenuButton)) {
+        event.preventDefault();
+        event.stopPropagation();
+        openAgentFileMenu(fileMenuButton);
+        return;
+      }
       const tagButton = event.target?.closest?.("[data-agent-folder-tag]");
       if (tagButton && elements.agentFolderList.contains(tagButton)) {
         setAgentFolderSearch(tagButton.dataset.agentFolderTag || "");

@@ -232,6 +232,9 @@ AGENT_FOLDER_DELETE_LIMIT = 20
 # One request removes one pick from a folder's listing, and a listing is
 # longer than a panel of folders is.
 AGENT_FILE_DELETE_LIMIT = 40
+# Moving files is the same pick from the same listing, so it carries the same
+# ceiling as removing them does.
+AGENT_FILE_MOVE_LIMIT = 40
 # A kept receipt is filed under the vendor that sent it, because that is how
 # anyone looks for one later. A receipt whose sender could not be read still
 # needs somewhere to go, and this is it.
@@ -2332,6 +2335,25 @@ def _prune_empty_subfolders(folder_root: Path) -> None:
             continue
 
 
+def _free_file_path(target: Path) -> Path:
+    """A path in the destination that no file is using yet.
+
+    Two folders can each hold a receipt-report.pdf, so moving one into the
+    other would otherwise write over an answer nobody asked to lose. Numbering
+    the newcomer keeps both, which is the outcome a move was asking for.
+    """
+
+    if not target.exists():
+        return target
+    stem = target.stem
+    suffix = target.suffix
+    for attempt in range(2, 1000):
+        candidate = target.with_name(f"{stem} ({attempt}){suffix}")
+        if not candidate.exists():
+            return candidate
+    return target.with_name(f"{stem} (copy){suffix}")
+
+
 def describe_saved_receipt_folders(folders: list[str]) -> str:
     """Name the folders the receipts went into, however many that is."""
 
@@ -3320,6 +3342,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
+            or path == "/api/agent/files/move"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -3391,6 +3414,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
+            or path == "/api/agent/files/move"
             or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
             or path == "/api/features"
@@ -3686,6 +3710,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/files/delete":
             self._handle_agent_file_delete_post()
+            return
+
+        if path == "/api/agent/files/move":
+            self._handle_agent_file_move_post()
             return
 
         if path == "/api/agent/proposals/run":
@@ -6328,6 +6356,178 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "missing": missing,
             "failed": failed,
             "remaining": count_folder_files(folder_root),
+        })
+
+    def _handle_agent_file_move_post(self) -> None:
+        """Carry single files from one folder to another, tags and all.
+
+        A file lands in the folder the run that made it was pointed at, and
+        that is not always where it belongs afterwards - an August receipt
+        filed under the vendor still wants to sit with the rest of August. Up
+        to now the only way to correct that was to delete the file and run
+        again, which is not a correction at all.
+
+        Both folder names go through the same normalizer the writes use and
+        every file is resolved back against its own folder, so a caller can
+        only ever move inside their own output folder.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        requested_folder = normalize_text(payload.get("folder"))
+        if not requested_folder:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "folder_required",
+                "message": "Name the folder the files are in.",
+            })
+            return
+
+        requested_destination = normalize_text(payload.get("destination") or payload.get("toFolder"))
+        if not requested_destination:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "destination_required",
+                "message": "Name the folder to move the files into.",
+            })
+            return
+
+        raw_files = payload.get("files")
+        if not isinstance(raw_files, list):
+            raw_files = [payload.get("file")]
+        requested = [
+            name for name in (normalize_text(item) for item in raw_files[:AGENT_FILE_MOVE_LIMIT]) if name
+        ]
+        if not requested:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "file_required",
+                "message": "Name the files to move.",
+            })
+            return
+
+        logical_folder = normalize_receipt_output_folder(requested_folder)
+        logical_destination = normalize_receipt_output_folder(requested_destination)
+        if logical_folder == logical_destination:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "same_folder",
+                "message": "Those files are already in that folder.",
+            })
+            return
+
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        folder_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_folder,
+        )
+        destination_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_destination,
+        )
+        try:
+            folder_root = folder_path.resolve()
+        except OSError:
+            folder_root = folder_path
+        # The destination is created on demand: moving into a folder that does
+        # not exist yet is how a file gets filed somewhere new.
+        try:
+            destination_path.mkdir(parents=True, exist_ok=True)
+            destination_root = destination_path.resolve()
+        except OSError as exc:
+            print(f"Portal agent file move could not open {logical_destination}: {exc}", flush=True)
+            json_response(self, HTTPStatus.OK, {
+                "ok": False,
+                "error": "destination_unavailable",
+                "message": "I couldn’t open that folder.",
+                "folder": logical_folder,
+                "destination": logical_destination,
+                "moved": [],
+                "missing": [],
+                "failed": requested,
+            })
+            return
+
+        source_tags = read_file_tags(folder_root)
+        moved: list[str] = []
+        landed: dict[str, str] = {}
+        # A file the listing showed but disk no longer holds is not a failure:
+        # there is nothing left to move. A file that refused to go is.
+        missing: list[str] = []
+        failed: list[str] = []
+        for requested_file in requested:
+            # A listing carries the path inside the folder, so a name may hold
+            # a subfolder. Resolving it back against the folder is what keeps
+            # that from becoming a way out of it.
+            candidate = (folder_root / requested_file.lstrip("/"))
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                failed.append(requested_file)
+                continue
+            if folder_root not in resolved.parents:
+                failed.append(requested_file)
+                continue
+            # The manifest and the tag file describe the folder rather than
+            # sitting in it as answers, and the listing never offered them.
+            if resolved.name in (RECEIPT_MANIFEST_FILENAME, FILE_TAGS_FILENAME):
+                failed.append(requested_file)
+                continue
+            if not resolved.is_file():
+                missing.append(requested_file)
+                continue
+
+            relative = resolved.relative_to(folder_root)
+            target = _free_file_path(destination_root / relative)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(resolved), str(target))
+            except OSError as exc:
+                print(f"Portal agent file move failed for {logical_folder}{requested_file}: {exc}", flush=True)
+                failed.append(requested_file)
+                continue
+            moved.append(requested_file)
+            landed[requested_file] = target.relative_to(destination_root).as_posix()
+
+        if moved:
+            # The tags are how the file is found again, so they travel with it
+            # rather than staying behind pointing at nothing.
+            carried = {
+                landed[name]: source_tags[name]
+                for name in moved
+                if name in source_tags and name in landed
+            }
+            if carried:
+                write_file_tags(destination_root, carried)
+            forget_file_tags(folder_root, moved)
+            _prune_empty_subfolders(folder_root)
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "folder": logical_folder,
+            "destination": logical_destination,
+            "moved": moved,
+            "landed": [landed[name] for name in moved],
+            "missing": missing,
+            "failed": failed,
+            "remaining": count_folder_files(folder_root),
+            "destinationRemaining": count_folder_files(destination_root),
         })
 
     def _handle_agent_folder_save_post(self) -> None:
