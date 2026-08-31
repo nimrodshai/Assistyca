@@ -6522,10 +6522,13 @@ function openGoogleConnectionDisconnectConfirmation(option, connections = []) {
   const removedSentence = removedNames
     ? `This removes ${removedNames} from Assistyca.`
     : `This removes the saved ${label} access from Assistyca.`;
+  // One permission can be given back on its own now, so the sentence has to be
+  // able to say "it": this used to be asked only about a whole account.
+  const removedPronoun = connectedConnections.length === 1 ? "it" : "them";
 
   openAuthAlert(
     `Disconnect ${label}?`,
-    `${removedSentence} Any action that uses them will need setup again before it can run.`,
+    `${removedSentence} Any action that uses ${removedPronoun} will need setup again before it can run.`,
     {
       eyebrow: "Disconnect app",
       icon: "!",
@@ -7150,7 +7153,38 @@ function createGoogleOAuthPermissionSummary() {
     }
     const chip = document.createElement("li");
     chip.className = "google-access-chip";
-    chip.textContent = scopeOption.label;
+    const name = document.createElement("span");
+    name.textContent = scopeOption.label;
+    chip.append(name);
+    // A permission this account granted can be given back on its own, so the
+    // chip carries the way to do it. A chip is the permission, so Email's is
+    // every Gmail mailbox at once; removing one of several is a different
+    // question, and the mailbox rows below ask it, each naming its account.
+    const scopeConnections = scopeOption.platformId === EMAIL_PLATFORM
+      ? getConnectedGmailConnections()
+      : [getSinglePlatformConnection(scopeOption.platformId)]
+        .filter((scopeConnection) => isPlatformConnectionConnected(scopeConnection));
+    if (scopeConnections.length) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "google-access-chip-remove";
+      remove.textContent = "×";
+      remove.title = `Disconnect ${scopeOption.label}`;
+      remove.setAttribute("aria-label", `Disconnect ${scopeOption.label}`);
+      remove.addEventListener("click", () => {
+        openGoogleConnectionDisconnectConfirmation(
+          {
+            ...(getPlatformConnectionOption(scopeOption.platformId) || {}),
+            // The permission names itself in the confirmation. The platform's
+            // own label is "Google", which in a question about giving one
+            // permission back would ask about all three.
+            label: scopeOption.label,
+          },
+          scopeConnections,
+        );
+      });
+      chip.append(remove);
+    }
     list.append(chip);
   }
 

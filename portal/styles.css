@@ -3283,12 +3283,45 @@ body[data-modal="billing"] .app-shell {
 }
 
 .google-access-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
   padding: 0.24rem 0.62rem;
   border-radius: 999px;
   color: var(--accent);
   background: rgba(15, 118, 110, 0.09);
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+/* Giving one permission back. It sits on the chip because that is where the
+   permission is: a row of its own for each would rebuild the list this card
+   just stopped being. */
+.google-access-chip-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-right: -0.2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.google-access-chip-remove:hover,
+.google-access-chip-remove:focus-visible {
+  color: #a4402b;
+  background: rgba(164, 64, 43, 0.14);
+  outline: none;
+}
+
+.google-access-chip-remove:focus-visible {
+  box-shadow: 0 0 0 2px rgba(164, 64, 43, 0.3);
 }
 
 /* Disconnecting is the one destructive thing on the card, so it reads as a
@@ -12845,6 +12878,16 @@ body.is-chat-view {
 :root[data-theme="dark"] .google-access-chip {
   color: var(--accent-strong);
   background: rgba(55, 184, 171, 0.14);
+}
+
+:root[data-theme="dark"] .google-access-chip-remove {
+  color: rgba(224, 239, 244, 0.6);
+}
+
+:root[data-theme="dark"] .google-access-chip-remove:hover,
+:root[data-theme="dark"] .google-access-chip-remove:focus-visible {
+  color: #ff9f86;
+  background: rgba(255, 120, 98, 0.18);
 }
 
 :root[data-theme="dark"] .calendar-oauth-permission-access {
