@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
 from packages.infrastructure.mail_search import MAIL_QUERY_MAX_LENGTH
 from packages.infrastructure.mail_search import MailQuery
+from packages.infrastructure.mail_search import describe_widening
 from packages.infrastructure.mail_search import matches
+from packages.infrastructure.mail_search import widen_query
 from packages.infrastructure.mail_search import month_window
 from packages.infrastructure.mail_search import parse_gmail_query
 from packages.infrastructure.mail_search import parse_time_window_days
@@ -259,6 +261,69 @@ class TimeWindowTests(unittest.TestCase):
 
     def test_an_absurd_window_is_capped_rather_than_read_literally(self) -> None:
         self.assertEqual(parse_time_window_days("the last 500 years"), 366)
+
+
+class WideningTests(unittest.TestCase):
+    """A search that finds nothing is asked again, less narrowly."""
+
+    def test_the_topic_words_are_what_a_wider_search_gives_up(self) -> None:
+        # A receipt does not have to say "receipt". Vendors send "Your Render
+        # statement", and the narrow search misses every one of them.
+        query = MailQuery(
+            terms=("receipt", "invoice"),
+            required_terms=("Render",),
+            after=date(2026, 8, 1),
+            before=date(2026, 9, 1),
+        )
+
+        wider = widen_query(query)
+
+        self.assertIsNotNone(wider)
+        self.assertEqual(wider.terms, ())
+        self.assertEqual(wider.required_terms, ("Render",))
+        self.assertEqual(wider.after, date(2026, 8, 1))
+        self.assertEqual(wider.before, date(2026, 9, 1))
+
+    def test_a_search_with_nothing_holding_it_down_has_no_wider_version(self) -> None:
+        # Dropping the topic words here would read a whole month of mail to
+        # answer a question about receipts.
+        query = MailQuery(terms=("receipt", "invoice"), after=date(2026, 8, 1))
+
+        self.assertIsNone(widen_query(query))
+
+    def test_a_vendor_with_no_window_is_not_widened_either(self) -> None:
+        # Every message they ever sent is a different question, not a wider
+        # answer to this one.
+        query = MailQuery(terms=("receipt",), required_terms=("Render",))
+
+        self.assertIsNone(widen_query(query))
+
+    def test_a_search_that_is_already_wide_stays_where_it_is(self) -> None:
+        query = MailQuery(required_terms=("Render",), after=date(2026, 8, 1))
+
+        self.assertIsNone(widen_query(query))
+
+    def test_an_attachment_requirement_is_given_up_with_the_words(self) -> None:
+        query = MailQuery(
+            terms=("receipt",),
+            required_terms=("Render",),
+            newer_than_days=31,
+            has_attachment=True,
+        )
+
+        wider = widen_query(query)
+
+        self.assertFalse(wider.has_attachment)
+        self.assertEqual(wider.newer_than_days, 31)
+
+    def test_the_widening_is_described_in_the_words_someone_asked_in(self) -> None:
+        note = describe_widening(MailQuery(terms=("receipt",), required_terms=("Render",)))
+
+        self.assertIn("Render", note)
+        self.assertIn("not only the mail that calls itself a receipt", note)
+
+    def test_a_widening_with_no_vendor_has_nothing_to_describe(self) -> None:
+        self.assertEqual(describe_widening(MailQuery(terms=("receipt",))), "")
 
 
 if __name__ == "__main__":

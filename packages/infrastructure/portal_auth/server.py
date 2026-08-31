@@ -87,6 +87,8 @@ from packages.infrastructure.mail_search import month_span_window
 from packages.infrastructure.mail_search import month_window
 from packages.infrastructure.mail_search import normalize_terms
 from packages.infrastructure.mail_search import parse_gmail_query
+from packages.infrastructure.mail_search import describe_widening
+from packages.infrastructure.mail_search import widen_query
 from packages.infrastructure.mail_search import parse_time_window_days
 from packages.infrastructure.outlook_summary import OutlookAccessValidator
 from packages.infrastructure.outlook_summary import OutlookAuthorizationError
@@ -5976,102 +5978,131 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             capped_mailboxes: list[dict[str, Any]] = []
             email_provider = GOOGLE_GMAIL_OAUTH_PROVIDER
             mailbox_names = mailbox_display_names(mailbox_records)
-            for record in (mailbox_records if held_run is None else []):
-                mailbox_name = mailbox_names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
-                record_provider = connection_provider(record) or GOOGLE_GMAIL_OAUTH_PROVIDER
-                try:
-                    stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")
-                    # The credential overrules the row here, and only here:
-                    # this picks which reader can use this token, and the
-                    # token itself is the authority on that. Everything about
-                    # whose mailbox it is still comes from the row.
-                    record_provider = self._saved_email_provider(stored_email_secret)
-                    access_token, credential_source = self._resolve_email_access_token(
-                        stored_email_secret,
-                        provider=record_provider,
-                    )
-                except CredentialVaultError:
-                    mailbox_failures.append({
-                        "mailbox": mailbox_name,
-                        "status": HTTPStatus.CONFLICT,
-                        "error": "email_setup_required",
-                        "message": f"The saved connection for {mailbox_name} could not be opened securely. Reconnect it and try again.",
-                    })
-                    continue
-                except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                    self._flag_mailbox_needs_attention(session.email, record, record_provider)
-                    mailbox_failures.append({
-                        "mailbox": mailbox_name,
-                        "status": HTTPStatus.CONFLICT,
-                        "error": exc.code,
-                        "message": str(exc),
-                    })
-                    continue
+            # A receipt does not have to say "receipt". Vendors send "Your
+            # Render statement" and "Payment confirmation", and a search built
+            # from the words a receipt usually carries comes back with nothing -
+            # which reads, to whoever asked, as "you were never charged". So a
+            # read that finds nothing is asked once more, less narrowly, while
+            # the vendor and the window still hold it down.
+            search_query = mail_query
+            widened_from: MailQuery | None = None
+            while True:
+                for record in (mailbox_records if held_run is None else []):
+                    mailbox_name = mailbox_names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
+                    record_provider = connection_provider(record) or GOOGLE_GMAIL_OAUTH_PROVIDER
+                    try:
+                        stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")
+                        # The credential overrules the row here, and only here:
+                        # this picks which reader can use this token, and the
+                        # token itself is the authority on that. Everything about
+                        # whose mailbox it is still comes from the row.
+                        record_provider = self._saved_email_provider(stored_email_secret)
+                        access_token, credential_source = self._resolve_email_access_token(
+                            stored_email_secret,
+                            provider=record_provider,
+                        )
+                    except CredentialVaultError:
+                        mailbox_failures.append({
+                            "mailbox": mailbox_name,
+                            "status": HTTPStatus.CONFLICT,
+                            "error": "email_setup_required",
+                            "message": f"The saved connection for {mailbox_name} could not be opened securely. Reconnect it and try again.",
+                        })
+                        continue
+                    except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                        self._flag_mailbox_needs_attention(session.email, record, record_provider)
+                        mailbox_failures.append({
+                            "mailbox": mailbox_name,
+                            "status": HTTPStatus.CONFLICT,
+                            "error": exc.code,
+                            "message": str(exc),
+                        })
+                        continue
 
-                runner = (
-                    OutlookDigestRunner()
-                    if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
-                    else GmailDigestRunner()
-                )
-                try:
-                    result = runner.run(
-                        access_token,
-                        query=mail_query,
-                        # One more than will be kept, so "there was more behind
-                        # this" is something the run knows rather than infers
-                        # from having filled its own ceiling exactly.
-                        max_results=probe_max_results,
-                        # A receipt run has to name an amount, and the amount is
-                        # in the body of the email. Asking for headers alone
-                        # leaves a question answerable only when the total
-                        # happens to be in the subject line.
-                        include_body=is_custom_google_batch,
-                        include_attachments=receipt_attachment_dir is not None,
-                        attachment_output_dir=receipt_attachment_dir,
-                        attachment_url_prefix=receipt_attachment_url_prefix,
+                    runner = (
+                        OutlookDigestRunner()
+                        if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+                        else GmailDigestRunner()
                     )
-                except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                    self._flag_mailbox_needs_attention(session.email, record, record_provider)
-                    mailbox_failures.append({
-                        "mailbox": mailbox_name,
-                        "status": HTTPStatus.CONFLICT,
-                        "error": exc.code,
-                        "message": str(exc),
-                    })
-                    continue
-                except (GmailSummaryError, OutlookSummaryError) as exc:
-                    mailbox_failures.append({
-                        "mailbox": mailbox_name,
-                        "status": HTTPStatus.BAD_GATEWAY,
-                        "error": exc.code,
-                        "message": str(exc),
-                    })
-                    continue
+                    try:
+                        result = runner.run(
+                            access_token,
+                            query=search_query,
+                            # One more than will be kept, so "there was more behind
+                            # this" is something the run knows rather than infers
+                            # from having filled its own ceiling exactly.
+                            max_results=probe_max_results,
+                            # A receipt run has to name an amount, and the amount is
+                            # in the body of the email. Asking for headers alone
+                            # leaves a question answerable only when the total
+                            # happens to be in the subject line.
+                            include_body=is_custom_google_batch,
+                            include_attachments=receipt_attachment_dir is not None,
+                            attachment_output_dir=receipt_attachment_dir,
+                            attachment_url_prefix=receipt_attachment_url_prefix,
+                        )
+                    except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                        self._flag_mailbox_needs_attention(session.email, record, record_provider)
+                        mailbox_failures.append({
+                            "mailbox": mailbox_name,
+                            "status": HTTPStatus.CONFLICT,
+                            "error": exc.code,
+                            "message": str(exc),
+                        })
+                        continue
+                    except (GmailSummaryError, OutlookSummaryError) as exc:
+                        mailbox_failures.append({
+                            "mailbox": mailbox_name,
+                            "status": HTTPStatus.BAD_GATEWAY,
+                            "error": exc.code,
+                            "message": str(exc),
+                        })
+                        continue
 
-                self.database.update_platform_connection_status(
-                    session.email,
-                    connection_id=normalize_text(record.get("id")),
-                    connection_status="connected",
-                    metadata_updates={
-                        "provider": record_provider,
-                        "validationStatus": "verified",
-                        "credentialSource": credential_source,
-                        "validatedAt": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-                email_provider = record_provider
-                mailbox_items = result.get("items") if isinstance(result.get("items"), list) else []
-                if len(mailbox_items) > search_max_results:
-                    capped_mailboxes.append({"mailbox": mailbox_name, "limit": search_max_results})
-                    # The newest are kept, which is the order the providers
-                    # return them in, so a capped month is the recent end of
-                    # itself rather than an arbitrary slice.
-                    result = {
-                        **result,
-                        "items": mailbox_items[:search_max_results],
-                        "messageCount": search_max_results,
-                    }
-                mailbox_results.append({"mailbox": mailbox_name, "result": result})
+                    self.database.update_platform_connection_status(
+                        session.email,
+                        connection_id=normalize_text(record.get("id")),
+                        connection_status="connected",
+                        metadata_updates={
+                            "provider": record_provider,
+                            "validationStatus": "verified",
+                            "credentialSource": credential_source,
+                            "validatedAt": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    email_provider = record_provider
+                    mailbox_items = result.get("items") if isinstance(result.get("items"), list) else []
+                    if len(mailbox_items) > search_max_results:
+                        capped_mailboxes.append({"mailbox": mailbox_name, "limit": search_max_results})
+                        # The newest are kept, which is the order the providers
+                        # return them in, so a capped month is the recent end of
+                        # itself rather than an arbitrary slice.
+                        result = {
+                            **result,
+                            "items": mailbox_items[:search_max_results],
+                            "messageCount": search_max_results,
+                        }
+                    mailbox_results.append({"mailbox": mailbox_name, "result": result})
+                # A read that found nothing is worth asking again. A read that
+                # could not happen at all is not: a wider search of a mailbox
+                # that would not open comes back just as empty.
+                if held_run is not None or not mailbox_results or any(
+                    entry["result"].get("items") for entry in mailbox_results
+                ):
+                    break
+                wider = widen_query(search_query)
+                if wider is None:
+                    break
+                widened_from = search_query
+                search_query = wider
+                mailbox_results = []
+                mailbox_failures = []
+                capped_mailboxes = []
+
+            # What was actually read, so everything downstream reports the
+            # search that found the answer rather than the one that missed it.
+            mail_query = search_query
+
 
             if held_run is not None:
                 mailbox_results = held_run["mailboxResults"]
@@ -6220,6 +6251,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "mailboxes": mailbox_names,
                 "query": mail_query.describe(),
             }
+            if widened_from is not None:
+                # The narrow search found nothing and the wider one ran in its
+                # place. Whoever asked has to be told, because "everything from
+                # this vendor" and "their receipts" are not the same question
+                # and the second answer is standing in for the first.
+                response_payload["widenedSearch"] = describe_widening(widened_from)
             if mailbox_failures:
                 # A partial run is still a result, but it must say what it missed
                 # rather than quietly reporting fewer receipts than exist.

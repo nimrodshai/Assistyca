@@ -336,6 +336,47 @@ def month_span_window(months: list[tuple[int, int]]) -> MailQuery:
     )
 
 
+def widen_query(query: MailQuery) -> MailQuery | None:
+    """The same search, asked less narrowly, or None when there is no wider one.
+
+    A receipt does not have to say "receipt". Vendors send "Your Render
+    statement", "Payment confirmation", "Thanks for your order", and a search
+    built from the words a receipt usually carries comes back with nothing at
+    all - which reads, to the person who asked, as "you were never charged".
+
+    Widening drops those topic words and keeps everything that still narrows
+    the search: the vendor, and the window it was asked about. That is only
+    safe when something is left holding it down, so a search with no required
+    term has no wider version - dropping the topic words there would mean
+    reading a whole month of mail to answer a question about receipts.
+    """
+
+    if not query.required_terms or not query.terms:
+        return None
+    if not (query.after or query.before or query.newer_than_days):
+        # A vendor with no window is every message they ever sent. That is not
+        # a wider answer to the question, it is a different question.
+        return None
+    return MailQuery(
+        terms=(),
+        required_terms=query.required_terms,
+        after=query.after,
+        before=query.before,
+        newer_than_days=query.newer_than_days,
+        in_inbox=query.in_inbox,
+        has_attachment=False,
+    )
+
+
+def describe_widening(query: MailQuery) -> str:
+    """What was given up, in words the person who asked would use."""
+
+    vendors = " and ".join(query.required_terms)
+    if not vendors:
+        return ""
+    return f"everything from {vendors} in that period, not only the mail that calls itself a receipt"
+
+
 def build_query(
     *,
     terms: Any = (),

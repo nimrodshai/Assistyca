@@ -412,6 +412,105 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.mailbox_reads = runner.call_count
         return payload
 
+    def _run_answer_with_reader(self, fields: dict[str, object], reader) -> dict[str, object]:
+        """Run a lookup against a mailbox that answers differently per query."""
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/proposals/run",
+            data=json.dumps({
+                "proposalType": "custom",
+                "mode": "answer",
+                "fields": fields,
+                "deliveryChannel": "portal",
+                "timezone": "Asia/Jerusalem",
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        with _token_endpoint_patch():
+            with mock.patch(f"{SERVER_MODULE}.GmailDigestRunner.run", side_effect=reader) as runner:
+                with urllib_request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+        self.reader_queries = [call.kwargs["query"] for call in runner.call_args_list]
+        return payload
+
+    def test_a_search_that_finds_nothing_is_asked_again_less_narrowly(self) -> None:
+        # The vendor called it a statement, not a receipt. The narrow search
+        # comes back empty, which reads as "you were never charged".
+        def reader(_token, *, query, **_kwargs):
+            if query.terms:
+                return {"summary": "Gmail digest - 0 messages", "messageCount": 0, "items": []}
+            return {
+                "summary": "Gmail digest - 1 message",
+                "messageCount": 1,
+                "items": [{
+                    "id": "msg-1",
+                    "mailbox": "owner@gmail.com",
+                    "subject": "Your Render statement",
+                    "from": "Render <billing@render.com>",
+                    "snippet": "Total charged $19.00",
+                    "bodyText": "Total charged $19.00",
+                }],
+            }
+
+        payload = self._run_answer_with_reader({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        }, reader)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("19.00 USD", payload["answer"])
+        # The second read gave up the topic words and kept the vendor.
+        self.assertEqual(len(self.reader_queries), 2)
+        self.assertTrue(self.reader_queries[0].terms)
+        self.assertEqual(self.reader_queries[1].terms, ())
+        self.assertEqual(self.reader_queries[1].required_terms, ("Render",))
+        # A wider search is a different question, so the answer says so.
+        self.assertIn("Render", payload["widenedSearch"])
+
+    def test_a_search_that_finds_something_is_never_widened(self) -> None:
+        def reader(_token, *, query, **_kwargs):
+            return {
+                "summary": "Gmail digest - 1 message",
+                "messageCount": 1,
+                "items": [{
+                    "id": "msg-1",
+                    "mailbox": "owner@gmail.com",
+                    "subject": "Your receipt from Render",
+                    "from": "Render <billing@render.com>",
+                    "snippet": "Total charged $19.00",
+                    "bodyText": "Total charged $19.00",
+                }],
+            }
+
+        payload = self._run_answer_with_reader({
+            "result": "Find receipts from Render for August 2026",
+            "vendor": "Render",
+            "manualRunMonth": "2026-08",
+        }, reader)
+
+        self.assertEqual(len(self.reader_queries), 1)
+        self.assertNotIn("widenedSearch", payload)
+
+    def test_a_search_with_no_vendor_is_left_alone_when_it_finds_nothing(self) -> None:
+        # There is nothing holding this one down, so widening it would read a
+        # whole month of mail to answer a question about receipts.
+        def reader(_token, *, query, **_kwargs):
+            return {"summary": "Gmail digest - 0 messages", "messageCount": 0, "items": []}
+
+        payload = self._run_answer_with_reader({
+            "result": "Find receipts for August 2026",
+            "manualRunMonth": "2026-08",
+        }, reader)
+
+        self.assertEqual(len(self.reader_queries), 1)
+        self.assertNotIn("widenedSearch", payload)
+
     def test_a_question_comes_back_with_the_amount(self) -> None:
         payload = self._run_answer({
             "result": "Find receipts from Render for August 2026",
