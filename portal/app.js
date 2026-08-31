@@ -7394,6 +7394,10 @@ function getSelectedGoogleCalendars(container) {
 // in chat reads every one of these rather than only the account's own.
 function openGoogleCalendarChoice(option, flowOptions = {}) {
   const onDone = typeof flowOptions.onDone === "function" ? flowOptions.onDone : null;
+  // "Not now" is a step being skipped, so it only fits inside the connection
+  // flow, where this card follows the sign-in. Opened on its own, the card is
+  // one question and backing out of it is a plain cancel.
+  const secondaryLabel = flowOptions.duringConnection ? "Not now" : "Cancel";
   const body = document.createElement("div");
   body.className = "calendar-oauth-flow";
 
@@ -7530,7 +7534,7 @@ function openGoogleCalendarChoice(option, flowOptions = {}) {
       variant: "calendar-picker",
       bodyNode: body,
       buttonLabel: "Save calendars",
-      secondaryButtonLabel: "Not now",
+      secondaryButtonLabel: secondaryLabel,
       closeOnSecondary: true,
       onSecondary: onDone,
       closeOnPrimary: false,
@@ -7821,7 +7825,7 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
       // while the connection is the thing on screen, and whatever came next -
       // resuming an action, or the success card - still follows it.
       if (connectedPlatforms.includes("calendar")) {
-        openGoogleCalendarChoice(option, { onDone: finishConnection });
+        openGoogleCalendarChoice(option, { onDone: finishConnection, duringConnection: true });
         return;
       }
       finishConnection();
