@@ -4839,7 +4839,6 @@ function createDefaultAgentWorkspace() {
     chats: [defaultChat],
     folders: [],
     activeChatId: defaultChat.id,
-    panelMode: "chats",
     folderSort: "recent",
     proposals: [],
     helpers: [],
@@ -4907,7 +4906,6 @@ function normalizeAgentWorkspace(agent = {}) {
     chats,
     folders,
     activeChatId: activeChat?.id || activeChatId || fallback.activeChatId,
-    panelMode: normalizeAgentPanelMode(source.panelMode || source.panel_mode),
     folderSort: normalizeAgentFolderSort(source.folderSort || source.folder_sort),
     proposals,
     helpers,
@@ -14389,7 +14387,12 @@ function recordAgentPortalOpened(options = {}) {
 
 function syncAgentStateFromClientState(options = {}) {
   const agent = getAgentWorkspace();
-  state.agentPanelMode = normalizeAgentPanelMode(agent.panelMode || state.agentPanelMode);
+  // The panel opens on Chats every time the portal opens. Which tab someone
+  // left it on is where they were, not where they want to start: a saved
+  // Actions from a week ago kept greeting them with the emptiest thing the
+  // account owns. The tab is view state for as long as the page is open, and
+  // nothing outlives the page.
+  state.agentPanelMode = "chats";
   state.agentFolderSort = normalizeAgentFolderSort(agent.folderSort || state.agentFolderSort);
   if (options.recordOpen) {
     recordAgentPortalOpened({ persist: options.persistOpen !== false });
@@ -14418,7 +14421,6 @@ function startNewAgentChat() {
   }
   createAndActivateAgentChat(agent, { title: "New chat" });
   state.agentPanelMode = "chats";
-  agent.panelMode = "chats";
   elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
   persistClientState();
   renderApp({ preserveStatus: true });
@@ -14444,7 +14446,6 @@ function selectAgentChat(chatId) {
   chat.status = "active";
   chat.lastOpenedAt = new Date().toISOString();
   state.agentPanelMode = "chats";
-  agent.panelMode = "chats";
   elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
   persistClientState();
   renderApp({ preserveStatus: true });
@@ -14495,14 +14496,8 @@ function confirmAgentChatDelete(chatId) {
   setStatus("Conversation deleted");
 }
 
-function setAgentPanelMode(mode, options = {}) {
-  const nextMode = normalizeAgentPanelMode(mode);
-  state.agentPanelMode = nextMode;
-  const agent = getAgentWorkspace();
-  agent.panelMode = nextMode;
-  if (options.persist !== false) {
-    persistClientState();
-  }
+function setAgentPanelMode(mode) {
+  state.agentPanelMode = normalizeAgentPanelMode(mode);
   updateAgentWorkspace();
 }
 
@@ -14613,7 +14608,6 @@ function addAgentFolder(name, type = "general") {
   const folder = createAgentFolderRecord(folderName, type);
   agent.folders.unshift(folder);
   agent.folders = sortAgentFolders(agent.folders, state.agentFolderSort).slice(0, AGENT_MAX_FOLDERS);
-  agent.panelMode = "folders";
   state.agentPanelMode = "folders";
   persistClientState();
   updateAgentWorkspace();
@@ -26016,7 +26010,6 @@ function openAgentResultFolder(folderName) {
     return;
   }
   const agent = getAgentWorkspace();
-  agent.panelMode = "folders";
   state.agentPanelMode = "folders";
   const folder = agent.folders.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
   openAgentFolderPath(folder?.name || name);

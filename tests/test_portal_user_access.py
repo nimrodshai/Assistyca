@@ -47,27 +47,19 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertEqual(updated_user["clientType"], "qa")
         self.assertEqual(users[0]["clientType"], "qa")
 
-    def test_set_user_feature_assignments_can_clear_and_replace_defaults(self) -> None:
+    def test_every_client_sees_every_active_tool(self) -> None:
         self.database.register_user("owner@example.com")
 
-        self.database.set_user_feature_assignments("owner@example.com", [])
-        assigned_after_clear = self.database.list_assigned_features("owner@example.com")
+        available_features = self.database.list_available_features("owner@example.com")
 
-        self.assertEqual(assigned_after_clear, [])
+        self.assertEqual(
+            [feature["featureId"] for feature in available_features],
+            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
+        )
+        for feature_id in (DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID):
+            self.assertIsNotNone(self.database.get_available_feature("owner@example.com", feature_id))
 
-        self.database.set_user_feature_assignments("owner@example.com", [FOLLOW_UP_FEATURE_ID])
-        assigned_features = self.database.list_assigned_features("owner@example.com")
-        assignments = {
-            assignment["featureId"]: assignment
-            for assignment in self.database.list_feature_assignments("owner@example.com")
-        }
-
-        self.assertEqual([feature["featureId"] for feature in assigned_features], [FOLLOW_UP_FEATURE_ID])
-        self.assertFalse(assignments[DEFAULT_FEATURE_ID]["isAssigned"])
-        self.assertTrue(assignments[FOLLOW_UP_FEATURE_ID]["isAssigned"])
-        self.assertFalse(assignments[MONITOR_FEATURE_ID]["isAssigned"])
-
-    def test_set_user_feature_assignments_preserves_existing_metadata(self) -> None:
+    def test_available_tool_carries_the_settings_this_client_saved(self) -> None:
         self.database.register_user("owner@example.com")
         self.database.save_feature_assignment_metadata(
             "owner@example.com",
@@ -84,21 +76,24 @@ class PortalUserAccessTests(unittest.TestCase):
             },
         )
 
-        self.database.set_user_feature_assignments("owner@example.com", [FOLLOW_UP_FEATURE_ID])
-
-        assignments = {
-            assignment["featureId"]: assignment
-            for assignment in self.database.list_feature_assignments("owner@example.com")
+        features = {
+            feature["featureId"]: feature
+            for feature in self.database.list_available_features("owner@example.com")
         }
 
-        self.assertFalse(assignments[MONITOR_FEATURE_ID]["isAssigned"])
         self.assertEqual(
-            assignments[MONITOR_FEATURE_ID]["metadata"]["settings"]["watchItems"],
+            features[MONITOR_FEATURE_ID]["assignment"]["metadata"]["settings"]["watchItems"],
             ["Court holidays", "Criminal law conferences"],
         )
+        self.assertNotIn("assignment", features[FOLLOW_UP_FEATURE_ID])
 
     def test_delete_user_removes_account_and_related_records(self) -> None:
         self.database.register_user("owner@example.com", is_admin=True)
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            MONITOR_FEATURE_ID,
+            metadata={"settings": {"intervalDays": 7}},
+        )
         self.database.save_whatsapp_connection(
             "owner@example.com",
             business_account_id="12345",
@@ -145,7 +140,7 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertIsNotNone(self.database.get_user("better@example.com"))
         self.assertIsNotNone(self.database.get_whatsapp_connection("better@example.com"))
         self.assertEqual(
-            [feature["featureId"] for feature in self.database.list_assigned_features("better@example.com")],
+            [feature["featureId"] for feature in self.database.list_available_features("better@example.com")],
             [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
         )
 
@@ -178,19 +173,13 @@ class PortalUserAccessTests(unittest.TestCase):
         )
         self.assertEqual(self.database.list_users(include_inactive=False), [])
         self.assertEqual(self.database.list_users(include_inactive=True)[0]["email"], "owner@example.com")
-        self.assertEqual(self.database.list_feature_assignments("owner@example.com", include_inactive=True)[0]["email"], "owner@example.com")
 
-        self.database.set_user_feature_assignments(
-            "owner@example.com",
-            [FOLLOW_UP_FEATURE_ID],
-            include_inactive=True,
-        )
         reactivated_user = self.database.update_user_status("owner@example.com", is_active=True)
 
         self.assertTrue(reactivated_user["isActive"])
         self.assertEqual(
-            [feature["featureId"] for feature in self.database.list_assigned_features("owner@example.com")],
-            [FOLLOW_UP_FEATURE_ID],
+            [feature["featureId"] for feature in self.database.list_available_features("owner@example.com")],
+            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
         )
 
     def test_update_user_status_rejects_disabling_last_active_admin(self) -> None:
@@ -205,8 +194,44 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertFalse(disabled_user["isActive"])
         self.assertEqual(self.database.count_admin_users(), 1)
 
+    def test_reopening_a_database_drops_the_old_per_client_access_columns(self) -> None:
+        self.database.register_user("owner@example.com")
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            MONITOR_FEATURE_ID,
+            metadata={"settings": {"intervalDays": 7}},
+        )
+
+        # An older portal database gated each tool per client. Put those columns back
+        # and reopen, the way a deploy meets a database written by the previous build.
+        with self.database._connection() as conn:
+            conn.execute("ALTER TABLE feature_assignments ADD COLUMN is_assigned INTEGER NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE features ADD COLUMN default_assigned INTEGER NOT NULL DEFAULT 0")
+
+        reopened = PortalDatabase(self.database.path)
+
+        with reopened._connection() as conn:
+            assignment_columns = {row["name"] for row in conn.execute("PRAGMA table_info(feature_assignments)")}
+            feature_columns = {row["name"] for row in conn.execute("PRAGMA table_info(features)")}
+
+        self.assertNotIn("is_assigned", assignment_columns)
+        self.assertNotIn("default_assigned", feature_columns)
+        self.assertEqual(
+            [feature["featureId"] for feature in reopened.list_available_features("owner@example.com")],
+            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
+        )
+        self.assertEqual(
+            reopened.get_feature_assignment("owner@example.com", MONITOR_FEATURE_ID)["metadata"]["settings"],
+            {"intervalDays": 7},
+        )
+
     def test_delete_user_handles_legacy_feature_assignments_without_cascade(self) -> None:
         self.database.register_user("owner@example.com")
+        self.database.save_feature_assignment_metadata(
+            "owner@example.com",
+            MONITOR_FEATURE_ID,
+            metadata={"settings": {"intervalDays": 7}},
+        )
 
         with self.database._connection() as conn:
             conn.execute("ALTER TABLE feature_assignments RENAME TO feature_assignments_old")
@@ -215,7 +240,6 @@ class PortalUserAccessTests(unittest.TestCase):
                 CREATE TABLE feature_assignments (
                     user_id INTEGER NOT NULL,
                     feature_id TEXT NOT NULL,
-                    is_assigned INTEGER NOT NULL DEFAULT 1,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     assigned_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -230,7 +254,6 @@ class PortalUserAccessTests(unittest.TestCase):
                 INSERT INTO feature_assignments (
                     user_id,
                     feature_id,
-                    is_assigned,
                     metadata_json,
                     assigned_at,
                     updated_at
@@ -238,7 +261,6 @@ class PortalUserAccessTests(unittest.TestCase):
                 SELECT
                     user_id,
                     feature_id,
-                    is_assigned,
                     metadata_json,
                     assigned_at,
                     updated_at

@@ -86,7 +86,6 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
             "launchUrl": DEFAULT_LAUNCH_URL,
             "sortOrder": 100,
             "isActive": True,
-            "defaultAssigned": True,
             "prompt": dict(DEFAULT_PROMPT),
             "pricing": dict(DEFAULT_FEATURE_PRICING),
             "requirements": {
@@ -113,7 +112,6 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
             "launchUrl": DEFAULT_LAUNCH_URL,
             "sortOrder": 110,
             "isActive": True,
-            "defaultAssigned": True,
             "prompt": {
                 **DEFAULT_PROMPT,
                 "replyRules": "Use the saved conversation to write a warm, low-pressure re-engagement message. Keep it concise, specific, and easy to copy into WhatsApp.",
@@ -148,7 +146,6 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
             "launchUrl": DEFAULT_LAUNCH_URL,
             "sortOrder": 120,
             "isActive": True,
-            "defaultAssigned": True,
             "prompt": {
                 **DEFAULT_PROMPT,
                 "toneGuidance": "Clear, useful, and concise. Make alerts easy to scan and act on.",

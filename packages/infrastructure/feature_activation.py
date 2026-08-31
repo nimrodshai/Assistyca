@@ -181,11 +181,11 @@ class FeatureActivationService:
         return cls(database, config=resolved_config, lemon_squeezy_client=lemon_squeezy_client)
 
     def list_feature_states(self, email: str) -> dict[str, Any]:
-        assigned_features = self.database.list_assigned_features(email)
+        available_features = self.database.list_available_features(email)
         feature_states: list[dict[str, Any]] = []
         payment_summary: dict[str, Any] | None = None
 
-        for feature in assigned_features:
+        for feature in available_features:
             feature_state = self._build_feature_state(
                 email,
                 feature,
@@ -208,7 +208,7 @@ class FeatureActivationService:
         prompt: dict[str, Any] | None = None,
         settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        feature = self._require_assigned_feature(email, feature_id)
+        feature = self._require_available_feature(email, feature_id)
         if feature is None:
             return {
                 "ok": False,
@@ -255,7 +255,7 @@ class FeatureActivationService:
             normalized_feature_id,
             metadata=metadata_payload,
         )
-        updated_feature = self._require_assigned_feature(email, normalized_feature_id) or feature
+        updated_feature = self._require_available_feature(email, normalized_feature_id) or feature
         feature_state = self._build_feature_state(email, updated_feature, refresh_payment=False)
         return {
             "ok": True,
@@ -275,7 +275,7 @@ class FeatureActivationService:
         public_base_url: str = "",
     ) -> dict[str, Any]:
         del feature_name, channel
-        feature = self._require_assigned_feature(email, feature_id)
+        feature = self._require_available_feature(email, feature_id)
         if feature is None:
             return {
                 "ok": False,
@@ -421,7 +421,7 @@ class FeatureActivationService:
         channel: str = "",
     ) -> dict[str, Any]:
         del feature_name, channel
-        feature = self._require_assigned_feature(email, feature_id)
+        feature = self._require_available_feature(email, feature_id)
         if feature is None:
             return {
                 "ok": False,
@@ -455,11 +455,11 @@ class FeatureActivationService:
             "paymentStatus": feature_state.get("paymentStatus", self._default_payment_status()),
         }
 
-    def _require_assigned_feature(self, email: str, feature_id: str) -> dict[str, Any] | None:
+    def _require_available_feature(self, email: str, feature_id: str) -> dict[str, Any] | None:
         normalized_feature_id = normalize_text(feature_id)
         if not normalized_feature_id:
             return None
-        return self.database.get_assigned_feature(email, normalized_feature_id)
+        return self.database.get_available_feature(email, normalized_feature_id)
 
     def _build_feature_state(
         self,

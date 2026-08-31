@@ -9,11 +9,11 @@ It is intentionally separate from the reusable spec and client config layers.
 - `index.html` for the tabbed app shell
 - `styles.css` for the interface
 - `app.js` for the OTP sign-in flow, tab state, account menu, and preview behavior
-- The backend now owns the feature catalog, per-user feature assignment, activation state, and billing entitlements. The browser keeps only local editor and draft setup state.
+- The backend now owns the feature catalog, activation state, and billing entitlements. Every client can use every active tool, so there is nothing to assign per client. The browser keeps only local editor and draft setup state.
 
 ## Portal layout
 
-- `Features` for the client account and its assigned capabilities. Click one to open the tool preview or editor.
+- `Features` for the client account and the tools it can use. Click one to open the tool preview or editor.
 - `About your business` in the account menu for shared business or personal context that should follow the user across tools.
 - `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
 - The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself

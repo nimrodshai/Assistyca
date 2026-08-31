@@ -1228,7 +1228,7 @@ class ScheduledMonitorScheduler:
         if not normalized_email:
             return None
 
-        feature = self.database.get_assigned_feature(normalized_email, MONITOR_FEATURE_ID)
+        feature = self.database.get_available_feature(normalized_email, MONITOR_FEATURE_ID)
         if feature is None:
             return None
 
@@ -1855,7 +1855,7 @@ class ScheduledMonitorScheduler:
                 "message": "A valid email is required.",
             }
 
-        feature = self.database.get_assigned_feature(normalized_email, MONITOR_FEATURE_ID)
+        feature = self.database.get_available_feature(normalized_email, MONITOR_FEATURE_ID)
         if feature is None:
             return {
                 "ok": False,

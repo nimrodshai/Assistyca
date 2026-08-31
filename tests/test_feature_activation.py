@@ -52,8 +52,8 @@ class FeatureActivationTests(unittest.TestCase):
             connection_status="connected",
         )
 
-    def test_default_feature_catalog_is_seeded_and_assigned(self) -> None:
-        features = self.database.list_assigned_features("owner@example.com")
+    def test_default_feature_catalog_is_seeded_for_every_client(self) -> None:
+        features = self.database.list_available_features("owner@example.com")
 
         feature_ids = [feature["featureId"] for feature in features]
 
@@ -425,15 +425,14 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertTrue(result["paymentStatus"]["isEntitled"])
         self.assertEqual(result["paymentStatus"]["subscriptionStatus"], "active")
 
-    def test_activation_rejects_unassigned_feature(self) -> None:
+    def test_activation_rejects_a_tool_that_is_not_in_the_active_catalog(self) -> None:
         self.database.upsert_feature(
             "hidden-tool",
             feature_name="Hidden Tool",
             channel="Web",
             mode="Default",
             billing_required=False,
-            default_assigned=False,
-            is_active=True,
+            is_active=False,
         )
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 
@@ -455,11 +454,9 @@ class FeatureActivationTests(unittest.TestCase):
             channel="Web",
             mode="Default",
             billing_required=False,
-            default_assigned=False,
             is_active=True,
             requirements={"requiresWhatsAppConnection": False},
         )
-        self.database.assign_feature_to_user("owner@example.com", "whatsapp-in-name-but-web")
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 
         result = service.activate_feature(
@@ -483,11 +480,9 @@ class FeatureActivationTests(unittest.TestCase):
             billing_required=True,
             billing_provider="lemon_squeezy",
             billing_variant_id="variant_2",
-            default_assigned=False,
             is_active=True,
             requirements={"requiresWhatsAppConnection": True},
         )
-        self.database.assign_feature_to_user("owner@example.com", "premium-whatsapp-tool")
         client = FakeLemonSqueezyClient(
             subscriptions=[
                 {

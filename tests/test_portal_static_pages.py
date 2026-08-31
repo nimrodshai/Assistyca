@@ -1340,6 +1340,25 @@ class PortalStaticPageTests(unittest.TestCase):
         # status is re-anchored to activeChatId so the two cannot drift apart.
         self.assertIn('chat.status = chat.id === activeChat?.id ? "active" : "historical";', script)
 
+    def test_the_panel_opens_on_chats_no_matter_which_tab_was_left_open(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # Defaulting the panel to Chats was not enough on its own: the tab
+        # someone last clicked was saved with the workspace, so an Actions from
+        # a previous visit was restored over the default at every sign in. The
+        # tab is view state for as long as the page is open and nothing more,
+        # so nothing writes it down and nothing reads it back.
+        self.assertIn('  state.agentPanelMode = "chats";\n', script)
+        self.assertNotIn("agent.panelMode", script)
+        self.assertNotIn("panel_mode", script)
+        self.assertIn(
+            "function setAgentPanelMode(mode) {\n"
+            "  state.agentPanelMode = normalizeAgentPanelMode(mode);\n"
+            "  updateAgentWorkspace();\n"
+            "}",
+            script,
+        )
+
     def test_two_actions_never_share_the_same_name(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
 

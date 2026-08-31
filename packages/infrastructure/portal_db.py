@@ -343,7 +343,6 @@ CREATE TABLE IF NOT EXISTS features (
     billing_store_id TEXT NOT NULL DEFAULT '',
     billing_product_id TEXT NOT NULL DEFAULT '',
     billing_variant_id TEXT NOT NULL DEFAULT '',
-    default_assigned INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 100,
     prompt_json TEXT NOT NULL DEFAULT '{}',
@@ -357,7 +356,6 @@ CREATE TABLE IF NOT EXISTS features (
 CREATE TABLE IF NOT EXISTS feature_assignments (
     user_id INTEGER NOT NULL,
     feature_id TEXT NOT NULL,
-    is_assigned INTEGER NOT NULL DEFAULT 1,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     assigned_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -578,8 +576,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_receipt_duplicate_decisions_pair
 ON receipt_duplicate_decisions(user_id, pair_key);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_facts_key
 ON account_facts(user_id, fact_key);
-CREATE INDEX IF NOT EXISTS idx_feature_assignments_user_assigned
-ON feature_assignments(user_id, is_assigned, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feature_assignments_user
+ON feature_assignments(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_entitlements_user_status
 ON feature_entitlements(user_id, entitlement_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_activations_user_active
@@ -865,6 +863,7 @@ class PortalDatabase:
                 self._migrate_usage_events_table(conn)
                 self._migrate_whatsapp_connections_table(conn)
                 self._migrate_platform_connections_table(conn)
+                self._migrate_feature_tables(conn)
                 self._ensure_usage_events_tool_indexes(conn)
                 self._ensure_contact_opportunities_indexes(conn)
                 self._seed_default_model_prices(conn)
@@ -875,7 +874,25 @@ class PortalDatabase:
                 self._sync_feature_catalog(conn)
                 if self.bootstrap_paid_emails:
                     self._seed_paid_emails(conn, self.bootstrap_paid_emails)
-                self._ensure_default_feature_assignments(conn)
+
+    def _migrate_feature_tables(self, conn: sqlite3.Connection) -> None:
+        """Drop the per-client tool access columns. Every client sees every active tool."""
+
+        conn.execute("DROP INDEX IF EXISTS idx_feature_assignments_user_assigned")
+
+        assignment_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(feature_assignments)").fetchall()
+        }
+        if "is_assigned" in assignment_columns:
+            conn.execute("ALTER TABLE feature_assignments DROP COLUMN is_assigned")
+
+        feature_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(features)").fetchall()
+        }
+        if "default_assigned" in feature_columns:
+            conn.execute("ALTER TABLE features DROP COLUMN default_assigned")
 
     def _sync_feature_catalog(self, conn: sqlite3.Connection) -> None:
         for feature in load_default_feature_catalog():
@@ -892,7 +909,6 @@ class PortalDatabase:
                 billing_store_id=feature.get("billing", {}).get("storeId"),
                 billing_product_id=feature.get("billing", {}).get("productId"),
                 billing_variant_id=feature.get("billing", {}).get("variantId"),
-                default_assigned=bool(feature.get("defaultAssigned", True)),
                 is_active=bool(feature.get("isActive", True)),
                 sort_order=feature.get("sortOrder"),
                 prompt=feature.get("prompt"),
@@ -900,37 +916,6 @@ class PortalDatabase:
                 requirements=feature.get("requirements"),
                 metadata=feature.get("metadata"),
             )
-
-    def _ensure_default_feature_assignments(self, conn: sqlite3.Connection) -> None:
-        rows = conn.execute("SELECT id FROM users WHERE is_active = 1").fetchall()
-        for row in rows:
-            self._ensure_default_feature_assignments_for_user(conn, int(row["id"]))
-
-    def _ensure_default_feature_assignments_for_user(self, conn: sqlite3.Connection, user_id: int) -> None:
-        if user_id <= 0:
-            return
-
-        now = now_iso()
-        conn.execute(
-            """
-            INSERT INTO feature_assignments (
-                user_id,
-                feature_id,
-                is_assigned,
-                metadata_json,
-                assigned_at,
-                updated_at
-            )
-            SELECT ?, f.feature_id, 1, '{}', ?, ?
-            FROM features AS f
-            LEFT JOIN feature_assignments AS a
-                ON a.user_id = ? AND a.feature_id = f.feature_id
-            WHERE f.is_active = 1
-              AND f.default_assigned = 1
-              AND a.feature_id IS NULL
-            """,
-            (user_id, now, now, user_id),
-        )
 
     def _migrate_users_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -2088,7 +2073,6 @@ class PortalDatabase:
         billing_store_id: Any = "",
         billing_product_id: Any = "",
         billing_variant_id: Any = "",
-        default_assigned: bool = True,
         is_active: bool = True,
         sort_order: Any = 100,
         prompt: dict[str, Any] | None = None,
@@ -2125,7 +2109,6 @@ class PortalDatabase:
                 billing_store_id,
                 billing_product_id,
                 billing_variant_id,
-                default_assigned,
                 is_active,
                 sort_order,
                 prompt_json,
@@ -2134,7 +2117,7 @@ class PortalDatabase:
                 metadata_json,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(feature_id) DO UPDATE SET
                 feature_name = excluded.feature_name,
                 description = excluded.description,
@@ -2146,7 +2129,6 @@ class PortalDatabase:
                 billing_store_id = excluded.billing_store_id,
                 billing_product_id = excluded.billing_product_id,
                 billing_variant_id = excluded.billing_variant_id,
-                default_assigned = excluded.default_assigned,
                 is_active = excluded.is_active,
                 sort_order = excluded.sort_order,
                 prompt_json = excluded.prompt_json,
@@ -2167,7 +2149,6 @@ class PortalDatabase:
                 normalize_text(billing_store_id),
                 normalize_text(billing_product_id),
                 normalize_text(billing_variant_id),
-                1 if default_assigned else 0,
                 1 if is_active else 0,
                 int(sort_order or 100),
                 prompt_json,
@@ -2204,7 +2185,6 @@ class PortalDatabase:
                 billing_store_id,
                 billing_product_id,
                 billing_variant_id,
-                default_assigned,
                 is_active,
                 sort_order,
                 prompt_json,
@@ -2235,7 +2215,6 @@ class PortalDatabase:
             "billingStoreId": normalize_text(payload.get("billing_store_id")),
             "billingProductId": normalize_text(payload.get("billing_product_id")),
             "billingVariantId": normalize_text(payload.get("billing_variant_id")),
-            "defaultAssigned": bool(payload.get("default_assigned")),
             "isCatalogActive": bool(payload.get("is_active")),
             "sortOrder": int(payload.get("sort_order") or 100),
             "prompt": _load_json_dict(payload.get("prompt_json")),
@@ -2263,7 +2242,6 @@ class PortalDatabase:
                 fa.user_id,
                 u.email,
                 fa.feature_id,
-                fa.is_assigned,
                 fa.metadata_json,
                 fa.assigned_at,
                 fa.updated_at
@@ -2283,7 +2261,6 @@ class PortalDatabase:
             "userId": int(payload.get("user_id") or 0),
             "email": normalize_email(payload.get("email")),
             "featureId": normalize_text(payload.get("feature_id")),
-            "isAssigned": bool(payload.get("is_assigned")),
             "metadata": _load_json_dict(payload.get("metadata_json")),
             "assignedAt": payload.get("assigned_at"),
             "updatedAt": payload.get("updated_at"),
@@ -2552,7 +2529,6 @@ class PortalDatabase:
                 effective_from=moment,
                 updated_at=moment,
             )
-            self._ensure_default_feature_assignments_for_user(conn, user_id)
             return self._load_user_row(conn, normalized_email) or {}
 
     def create_contact_opportunity(
@@ -4402,7 +4378,6 @@ class PortalDatabase:
         billing_store_id: str = "",
         billing_product_id: str = "",
         billing_variant_id: str = "",
-        default_assigned: bool = True,
         is_active: bool = True,
         sort_order: int = 100,
         prompt: dict[str, Any] | None = None,
@@ -4424,7 +4399,6 @@ class PortalDatabase:
                 billing_store_id=billing_store_id,
                 billing_product_id=billing_product_id,
                 billing_variant_id=billing_variant_id,
-                default_assigned=default_assigned,
                 is_active=is_active,
                 sort_order=sort_order,
                 prompt=prompt,
@@ -4470,93 +4444,6 @@ class PortalDatabase:
             user_id = self._resolve_active_user_id(conn, normalized_email)
             return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id)
 
-    def list_feature_assignments(
-        self,
-        email: str,
-        *,
-        include_inactive: bool = False,
-    ) -> list[dict[str, Any]]:
-        normalized_email = normalize_email(email)
-        if not normalized_email:
-            return []
-
-        with self._connection() as conn:
-            user_id = self._resolve_user_id(conn, normalized_email, include_inactive=include_inactive)
-            rows = conn.execute(
-                """
-                SELECT feature_id
-                FROM feature_assignments
-                WHERE user_id = ?
-                ORDER BY updated_at DESC, feature_id ASC
-                """,
-                (user_id,),
-            ).fetchall()
-
-            assignments: list[dict[str, Any]] = []
-            for row in rows:
-                record = self._load_feature_assignment_row(conn, user_id=user_id, feature_id=row["feature_id"])
-                if record is not None:
-                    assignments.append(record)
-        return assignments
-
-    def assign_feature_to_user(
-        self,
-        email: str,
-        feature_id: str,
-        *,
-        is_assigned: bool = True,
-        metadata: dict[str, Any] | None = None,
-        assigned_at: str | datetime | None = None,
-    ) -> dict[str, Any]:
-        normalized_email = normalize_email(email)
-        normalized_feature_id = normalize_text(feature_id)
-        if not normalized_email:
-            raise ValueError("Email is required.")
-        if not normalized_feature_id:
-            raise ValueError("Feature id is required.")
-
-        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
-        now = now_iso()
-        assigned_at_value = parse_datetime(assigned_at).isoformat() if assigned_at is not None else now
-
-        with self._connection() as conn:
-            user_id = self._resolve_active_user_id(conn, normalized_email)
-            feature = self._load_feature_row(conn, feature_id=normalized_feature_id)
-            if feature is None:
-                raise KeyError(f"Unknown feature: {normalized_feature_id}")
-
-            existing = conn.execute(
-                "SELECT assigned_at FROM feature_assignments WHERE user_id = ? AND feature_id = ?",
-                (user_id, normalized_feature_id),
-            ).fetchone()
-            resolved_assigned_at = existing["assigned_at"] if existing and existing["assigned_at"] else assigned_at_value
-
-            conn.execute(
-                """
-                INSERT INTO feature_assignments (
-                    user_id,
-                    feature_id,
-                    is_assigned,
-                    metadata_json,
-                    assigned_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, feature_id) DO UPDATE SET
-                    is_assigned = excluded.is_assigned,
-                    metadata_json = excluded.metadata_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    user_id,
-                    normalized_feature_id,
-                    1 if is_assigned else 0,
-                    metadata_json,
-                    resolved_assigned_at,
-                    now,
-                ),
-            )
-            return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
-
     def save_feature_assignment_metadata(
         self,
         email: str,
@@ -4577,7 +4464,7 @@ class PortalDatabase:
             user_id = self._resolve_active_user_id(conn, normalized_email)
             existing = conn.execute(
                 """
-                SELECT is_assigned, assigned_at
+                SELECT assigned_at
                 FROM feature_assignments
                 WHERE user_id = ? AND feature_id = ?
                 LIMIT 1
@@ -4589,21 +4476,18 @@ class PortalDatabase:
                 if feature is None:
                     raise KeyError(f"Unknown feature: {normalized_feature_id}")
                 assigned_at = now
-                is_assigned = 1
             else:
                 assigned_at = existing["assigned_at"] or now
-                is_assigned = 1 if bool(existing["is_assigned"]) else 0
 
             conn.execute(
                 """
                 INSERT INTO feature_assignments (
                     user_id,
                     feature_id,
-                    is_assigned,
                     metadata_json,
                     assigned_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, feature_id) DO UPDATE SET
                     metadata_json = excluded.metadata_json,
                     updated_at = excluded.updated_at
@@ -4611,7 +4495,6 @@ class PortalDatabase:
                 (
                     user_id,
                     normalized_feature_id,
-                    is_assigned,
                     metadata_json,
                     assigned_at,
                     now,
@@ -4619,109 +4502,9 @@ class PortalDatabase:
             )
             return self._load_feature_assignment_row(conn, user_id=user_id, feature_id=normalized_feature_id) or {}
 
-    def set_user_feature_assignments(
-        self,
-        email: str,
-        feature_ids: Iterable[str],
-        *,
-        include_inactive: bool = False,
-    ) -> list[dict[str, Any]]:
-        normalized_email = normalize_email(email)
-        if not normalized_email:
-            raise ValueError("Email is required.")
+    def get_available_feature(self, email: str, feature_id: str) -> dict[str, Any] | None:
+        """Return an active tool for an active client, with that client's saved settings."""
 
-        requested_feature_ids = []
-        seen_feature_ids: set[str] = set()
-        for feature_id in feature_ids:
-            normalized_feature_id = normalize_text(feature_id)
-            if not normalized_feature_id or normalized_feature_id in seen_feature_ids:
-                continue
-            seen_feature_ids.add(normalized_feature_id)
-            requested_feature_ids.append(normalized_feature_id)
-
-        now = now_iso()
-        with self._connection() as conn:
-            user_id = self._resolve_user_id(conn, normalized_email, include_inactive=include_inactive)
-            active_features = conn.execute(
-                """
-                SELECT feature_id
-                FROM features
-                WHERE is_active = 1
-                ORDER BY sort_order ASC, feature_name ASC, feature_id ASC
-                """,
-            ).fetchall()
-            active_feature_ids = [normalize_text(row["feature_id"]) for row in active_features if normalize_text(row["feature_id"])]
-            active_feature_id_set = set(active_feature_ids)
-
-            unknown_feature_ids = [feature_id for feature_id in requested_feature_ids if feature_id not in active_feature_id_set]
-            if unknown_feature_ids:
-                raise KeyError(f"Unknown feature ids: {', '.join(sorted(unknown_feature_ids))}")
-
-            existing_rows = conn.execute(
-                """
-                SELECT feature_id, assigned_at, metadata_json
-                FROM feature_assignments
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ).fetchall()
-            existing_assignment_data = {
-                normalize_text(row["feature_id"]): {
-                    "assigned_at": row["assigned_at"],
-                    "metadata_json": normalize_text(row["metadata_json"]) or "{}",
-                }
-                for row in existing_rows
-                if normalize_text(row["feature_id"])
-            }
-
-            requested_feature_id_set = set(requested_feature_ids)
-            for active_feature_id in active_feature_ids:
-                existing_assignment = existing_assignment_data.get(active_feature_id) or {}
-                assigned_at = existing_assignment.get("assigned_at") or now
-                metadata_json = normalize_text(existing_assignment.get("metadata_json")) or "{}"
-                conn.execute(
-                    """
-                    INSERT INTO feature_assignments (
-                        user_id,
-                        feature_id,
-                        is_assigned,
-                        metadata_json,
-                        assigned_at,
-                        updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, feature_id) DO UPDATE SET
-                        is_assigned = excluded.is_assigned,
-                        metadata_json = excluded.metadata_json,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        user_id,
-                        active_feature_id,
-                        1 if active_feature_id in requested_feature_id_set else 0,
-                        metadata_json,
-                        assigned_at,
-                        now,
-                    ),
-                )
-
-            rows = conn.execute(
-                """
-                SELECT feature_id
-                FROM feature_assignments
-                WHERE user_id = ?
-                ORDER BY updated_at DESC, feature_id ASC
-                """,
-                (user_id,),
-            ).fetchall()
-
-            assignments: list[dict[str, Any]] = []
-            for row in rows:
-                assignment = self._load_feature_assignment_row(conn, user_id=user_id, feature_id=row["feature_id"])
-                if assignment is not None:
-                    assignments.append(assignment)
-            return assignments
-
-    def get_assigned_feature(self, email: str, feature_id: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)
         normalized_feature_id = normalize_text(feature_id)
         if not normalized_email or not normalized_feature_id:
@@ -4731,17 +4514,13 @@ class PortalDatabase:
             user_id = self._resolve_active_user_id(conn, normalized_email)
             row = conn.execute(
                 """
-                SELECT f.feature_id
-                FROM features AS f
-                INNER JOIN feature_assignments AS a
-                    ON a.feature_id = f.feature_id
-                WHERE a.user_id = ?
-                  AND a.feature_id = ?
-                  AND a.is_assigned = 1
-                  AND f.is_active = 1
+                SELECT feature_id
+                FROM features
+                WHERE feature_id = ?
+                  AND is_active = 1
                 LIMIT 1
                 """,
-                (user_id, normalized_feature_id),
+                (normalized_feature_id,),
             ).fetchone()
             if row is None:
                 return None
@@ -4751,7 +4530,9 @@ class PortalDatabase:
                 feature["assignment"] = assignment
             return feature
 
-    def list_assigned_features(self, email: str) -> list[dict[str, Any]]:
+    def list_available_features(self, email: str) -> list[dict[str, Any]]:
+        """Every active tool, in catalog order, with this client's saved settings attached."""
+
         normalized_email = normalize_email(email)
         if not normalized_email:
             return []
@@ -4760,16 +4541,11 @@ class PortalDatabase:
             user_id = self._resolve_active_user_id(conn, normalized_email)
             rows = conn.execute(
                 """
-                SELECT f.feature_id
-                FROM features AS f
-                INNER JOIN feature_assignments AS a
-                    ON a.feature_id = f.feature_id
-                WHERE a.user_id = ?
-                  AND a.is_assigned = 1
-                  AND f.is_active = 1
-                ORDER BY f.sort_order ASC, f.feature_name ASC, f.feature_id ASC
+                SELECT feature_id
+                FROM features
+                WHERE is_active = 1
+                ORDER BY sort_order ASC, feature_name ASC, feature_id ASC
                 """,
-                (user_id,),
             ).fetchall()
 
             features: list[dict[str, Any]] = []
@@ -4887,7 +4663,7 @@ class PortalDatabase:
                 FROM feature_activations AS act
                 INNER JOIN users AS u
                     ON u.id = act.user_id
-                INNER JOIN feature_assignments AS fa
+                LEFT JOIN feature_assignments AS fa
                     ON fa.user_id = u.id AND fa.feature_id = act.feature_id
                 INNER JOIN features AS f
                     ON f.feature_id = act.feature_id
@@ -4896,7 +4672,6 @@ class PortalDatabase:
                 WHERE u.is_active = 1
                   AND act.feature_id = ?
                   AND act.is_active = 1
-                  AND fa.is_assigned = 1
                 ORDER BY u.id ASC
                 """,
                 (normalized_feature_id,),
@@ -4973,12 +4748,11 @@ class PortalDatabase:
                     ON u.id = act.user_id
                 INNER JOIN whatsapp_connections AS w
                     ON w.user_id = u.id
-                INNER JOIN feature_assignments AS assign
+                LEFT JOIN feature_assignments AS assign
                     ON assign.user_id = u.id AND assign.feature_id = act.feature_id
                 WHERE u.is_active = 1
                   AND act.feature_id = ?
                   AND act.is_active = 1
-                  AND assign.is_assigned = 1
                   AND w.connection_status = 'connected'
                   AND w.phone_number_id <> ''
                   AND w.owner_wa_id <> ''
@@ -5064,23 +4838,21 @@ class PortalDatabase:
                     act.metadata_json AS activation_metadata_json,
                     assign.metadata_json AS assignment_metadata_json
                 FROM users AS u
-                INNER JOIN feature_assignments AS assign
-                    ON assign.user_id = u.id
                 INNER JOIN features AS f
-                    ON f.feature_id = assign.feature_id
+                    ON f.feature_id = ?
+                LEFT JOIN feature_assignments AS assign
+                    ON assign.user_id = u.id AND assign.feature_id = f.feature_id
                 LEFT JOIN feature_activations AS act
-                    ON act.user_id = u.id AND act.feature_id = assign.feature_id
+                    ON act.user_id = u.id AND act.feature_id = f.feature_id
                 LEFT JOIN whatsapp_connections AS w
                     ON w.user_id = u.id
                 WHERE u.is_active = 1
                   AND u.email = ?
-                  AND assign.feature_id = ?
-                  AND assign.is_assigned = 1
                   AND f.is_active = 1
                   {active_clause}
                 LIMIT 1
                 """,
-                (normalized_email, normalized_feature_id),
+                (normalized_feature_id, normalized_email),
             ).fetchone()
 
         if row is None:
@@ -6976,9 +6748,6 @@ class PortalDatabase:
                     user_id,
                 ),
             )
-            if is_active:
-                self._ensure_default_feature_assignments_for_user(conn, user_id)
-
             return self._load_user_row(conn, normalized_email) or {}
 
     def get_billing_customer(self, email: str, *, include_inactive: bool = False) -> dict[str, Any] | None:
