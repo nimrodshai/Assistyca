@@ -18,6 +18,7 @@ from packages.infrastructure.calendar_summary import CalendarListUnavailableErro
 from packages.infrastructure.calendar_summary import CalendarNotSharedError
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import build_calendar_summary
+from packages.infrastructure.calendar_summary import describe_availability
 from packages.infrastructure.calendar_summary import normalize_calendar_event
 from packages.infrastructure.calendar_summary import parse_calendar_date_range
 from packages.infrastructure.calendar_summary import parse_calendar_ids
@@ -112,9 +113,68 @@ class CalendarSummaryTests(unittest.TestCase):
         )
         self.assertIn("No meetings found", build_calendar_summary([], date_range))
 
-    def test_invalid_date_range_is_rejected(self) -> None:
-        with self.assertRaisesRegex(Exception, "couldn’t understand"):
-            parse_calendar_date_range("sometime later", timezone_name="UTC")
+    def test_a_period_written_in_plain_words_is_read(self) -> None:
+        # The field holds what the person said, not an entry from a list, so
+        # the part of a day, a weekday, a rolling count and a written-out date
+        # all have to land on the right days.
+        monday = datetime(2026, 8, 31, 9, tzinfo=timezone.utc)
+        cases = {
+            "tomorrow morning": ("2026-09-01", "2026-09-01"),
+            "this afternoon": ("2026-08-31", "2026-08-31"),
+            "tonight": ("2026-08-31", "2026-08-31"),
+            "thursday": ("2026-09-03", "2026-09-03"),
+            "next thursday": ("2026-09-10", "2026-09-10"),
+            "last thursday": ("2026-08-27", "2026-08-27"),
+            "this weekend": ("2026-09-05", "2026-09-06"),
+            "the next 3 days": ("2026-08-31", "2026-09-02"),
+            "the next couple of days": ("2026-08-31", "2026-09-01"),
+            "the last 7 days": ("2026-08-25", "2026-08-31"),
+            "september 3": ("2026-09-03", "2026-09-03"),
+            "3 september": ("2026-09-03", "2026-09-03"),
+            "the 15th": ("2026-09-15", "2026-09-15"),
+            "2026-09-04": ("2026-09-04", "2026-09-04"),
+            "in september": ("2026-09-01", "2026-09-30"),
+        }
+        for value, (start, end) in cases.items():
+            with self.subTest(value=value):
+                date_range = parse_calendar_date_range(value, timezone_name="UTC", now=monday)
+                self.assertEqual(date_range.label, f"{start} to {end}")
+                self.assertFalse(date_range.assumed)
+
+    def test_a_period_buried_in_a_sentence_is_still_found(self) -> None:
+        # The field is meant to hold the period on its own, but a sentence
+        # lands in it often enough that the days in it should still be read.
+        date_range = parse_calendar_date_range(
+            "am I available tomorrow morning?",
+            timezone_name="UTC",
+            now=datetime(2026, 8, 31, 9, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(date_range.label, "2026-09-01 to 2026-09-01")
+        self.assertFalse(date_range.assumed)
+
+    def test_a_range_written_back_to_front_is_read_rather_than_refused(self) -> None:
+        date_range = parse_calendar_date_range(
+            "2026-09-05 to 2026-09-01",
+            timezone_name="UTC",
+            now=datetime(2026, 8, 31, 9, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(date_range.label, "2026-09-01 to 2026-09-05")
+
+    def test_words_that_name_no_period_read_the_week_ahead_and_say_so(self) -> None:
+        # A question about the diary is better answered with the days it read
+        # named out loud than refused over its phrasing.
+        date_range = parse_calendar_date_range(
+            "sometime later",
+            timezone_name="UTC",
+            now=datetime(2026, 8, 31, 9, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(date_range.label, "2026-08-31 to 2026-09-06")
+        self.assertTrue(date_range.assumed)
+        availability = describe_availability([], date_range, timezone_name="UTC")
+        self.assertIn("dateRangeAssumed", availability)
 
     def test_unauthorized_calendar_response_is_actionable(self) -> None:
         def opener(_request, *, timeout):  # type: ignore[no-untyped-def]

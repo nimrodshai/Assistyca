@@ -120,6 +120,10 @@ class CalendarDateRange:
     label: str
     start: datetime
     end: datetime
+    # True when the words named no period this could place and the week ahead
+    # was read instead. The answer says which days it read rather than passing
+    # a guess off as the range that was asked for.
+    assumed: bool = False
 
     @property
     def start_date(self) -> date:
@@ -143,26 +147,259 @@ def _start_of_day(value: date, zone: ZoneInfo) -> datetime:
     return datetime.combine(value, dt_time.min, tzinfo=zone)
 
 
-def _parse_explicit_date_range(value: str, zone: ZoneInfo) -> CalendarDateRange | None:
-    match = re.search(
-        r"(?P<start>\d{4}-\d{1,2}-\d{1,2})\s*(?:to|through|until|[-–])\s*(?P<end>\d{4}-\d{1,2}-\d{1,2})",
-        value,
-        re.IGNORECASE,
-    )
+# A calendar read is one provider call per calendar per run, so a period that
+# names half a year is clamped rather than turned into a long chain of reads.
+CALENDAR_MAX_RANGE_DAYS = 92
+# What a run reads when the words name no period it can place. A calendar
+# question is nearly always about the days just ahead.
+CALENDAR_FALLBACK_RANGE_DAYS = 7
+# A period nobody writes out in more words than this, and a phrase this reader
+# will not spend longer than this looking through for one.
+_MAX_SCANNED_WORDS = 16
+_MAX_SCANNED_PHRASE_WORDS = 5
+
+_WEEKDAY_NAMES = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tues": 1, "tue": 1,
+    "wednesday": 2, "weds": 2, "wed": 2,
+    "thursday": 3, "thurs": 3, "thur": 3, "thu": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+_MONTH_NAMES = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+    "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+# People count in words as readily as in digits: "the next couple of days" is
+# the same question as "the next 2 days".
+_COUNT_WORDS = {
+    "a": 1, "an": 1, "one": 1, "couple": 2, "two": 2, "few": 3, "three": 3,
+    "several": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+
+_UNIT_DAYS = {"day": 1, "days": 1, "week": 7, "weeks": 7, "fortnight": 14, "month": 30, "months": 30}
+
+
+def _alternation(names) -> str:
+    # Longest first, so "thursday" is not read as "thu" with letters left over.
+    return "|".join(sorted(names, key=len, reverse=True))
+
+
+_ISO_DATE = r"\d{4}-\d{1,2}-\d{1,2}"
+_EXPLICIT_RANGE_RE = re.compile(
+    rf"(?P<start>{_ISO_DATE})\s*(?:to|through|thru|until|till|and|[-–—])\s*(?P<end>{_ISO_DATE})",
+    re.IGNORECASE,
+)
+_SINGLE_ISO_RE = re.compile(rf"^(?:{_ISO_DATE})$")
+# Words that name a part of a day rather than a day of its own. "Tomorrow
+# morning" is a question about tomorrow: which hours of it are free is worked
+# out from the gaps between the meetings, so the range only needs the day.
+_DAY_PART_RE = re.compile(
+    r"\b(?:first thing|early|earliest|latest|late|later|mid)?[ -]?"
+    r"(?:mornings?|afternoons?|evenings?|nights?|midday|noon|lunchtimes?|a\.?m\.?|p\.?m\.?)\b"
+)
+# Words a person puts in front of a period that say nothing about which days it
+# covers.
+_FILLER_RE = re.compile(
+    r"^(?:for|on|in|at|during|over|about|around|of|the|my|our|any|some|sometime|some time|just|please)\b\s*"
+)
+_WEEKDAY_RE = re.compile(rf"^(?:(this|next|coming|last|past|previous)\s+)?({_alternation(_WEEKDAY_NAMES)})s?$")
+_MONTH_ONLY_RE = re.compile(rf"^(?:month of\s+)?({_alternation(_MONTH_NAMES)})\.?(?:\s+(\d{{4}}))?$")
+_MONTH_DAY_RE = re.compile(
+    rf"^({_alternation(_MONTH_NAMES)})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?$"
+)
+_DAY_MONTH_RE = re.compile(
+    rf"^(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({_alternation(_MONTH_NAMES)})\.?(?:,?\s+(\d{{4}}))?$"
+)
+_DAY_ORDINAL_RE = re.compile(r"^(\d{1,2})(?:st|nd|rd|th)$")
+_COUNT_UNIT_RE = re.compile(
+    rf"^(?:(next|coming|following|upcoming|last|past|previous)\s+)?"
+    rf"(?:(\d{{1,3}}|{_alternation(_COUNT_WORDS)})\s+)?(?:of\s+)?"
+    rf"({_alternation(_UNIT_DAYS)})$"
+)
+
+
+def _end_of_month(value: date) -> date:
+    first_of_next = (value.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return first_of_next - timedelta(days=1)
+
+
+def _first_of_next_month(value: date) -> date:
+    return (value.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+
+def _clamp_day_of_month(year: int, month: int, day: int) -> date:
+    last = _end_of_month(date(year, month, 1)).day
+    return date(year, month, min(day, last))
+
+
+def _normalize_range_text(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").replace("’", "'")).strip().lower()
+    return text.strip(" ?!.,;:")
+
+
+def _strip_filler(text: str) -> str:
+    previous = None
+    while previous != text:
+        previous = text
+        text = _FILLER_RE.sub("", text).strip()
+    return text
+
+
+def _read_explicit_range(text: str) -> tuple[date, date] | None:
+    match = _EXPLICIT_RANGE_RE.search(text)
     if not match:
         return None
     try:
-        start_date = date.fromisoformat(match.group("start"))
-        end_date = date.fromisoformat(match.group("end"))
-    except ValueError as exc:
-        raise CalendarSummaryError("The meeting date range is not valid. Choose a range such as next week.", code="invalid_date_range") from exc
-    if end_date < start_date:
-        raise CalendarSummaryError("The meeting date range ends before it starts. Choose a valid range.", code="invalid_date_range")
-    return CalendarDateRange(
-        label=f"{start_date.isoformat()} to {end_date.isoformat()}",
-        start=_start_of_day(start_date, zone),
-        end=_start_of_day(end_date + timedelta(days=1), zone),
-    )
+        return date.fromisoformat(match.group("start")), date.fromisoformat(match.group("end"))
+    except ValueError:
+        # A date that reads like one but names no real day is not a range; the
+        # rest of the reader gets its turn instead of the run stopping here.
+        return None
+
+
+def _read_named_date(text: str, today: date) -> tuple[date, date] | None:
+    """A day named as a date rather than as a distance from today."""
+
+    if _SINGLE_ISO_RE.match(text):
+        try:
+            day = date.fromisoformat(text)
+        except ValueError:
+            return None
+        return day, day
+
+    match = _MONTH_DAY_RE.match(text) or _DAY_MONTH_RE.match(text)
+    if match:
+        groups = match.groups()
+        month_name, day_text = (groups[0], groups[1]) if groups[0] in _MONTH_NAMES else (groups[1], groups[0])
+        month = _MONTH_NAMES[month_name]
+        day_number = int(day_text)
+        year = int(groups[2]) if groups[2] else today.year
+        day = _clamp_day_of_month(year, month, day_number)
+        if not groups[2] and day < today:
+            # A date already gone by, named without a year, is the one coming.
+            day = _clamp_day_of_month(year + 1, month, day_number)
+        return day, day
+
+    match = _MONTH_ONLY_RE.match(text)
+    if match:
+        month = _MONTH_NAMES[match.group(1)]
+        year = int(match.group(2)) if match.group(2) else today.year
+        if not match.group(2) and month < today.month:
+            year += 1
+        start = date(year, month, 1)
+        return start, _end_of_month(start)
+
+    match = _DAY_ORDINAL_RE.match(text)
+    if match:
+        day_number = int(match.group(1))
+        if not 1 <= day_number <= 31:
+            return None
+        day = _clamp_day_of_month(today.year, today.month, day_number)
+        if day < today:
+            following = _first_of_next_month(today)
+            day = _clamp_day_of_month(following.year, following.month, day_number)
+        return day, day
+    return None
+
+
+def _read_calendar_days(text: str, today: date) -> tuple[date, date] | None:
+    """Read a period written the way a person says it as the days it covers.
+
+    Returns None when the words name no period this can place, so the caller
+    decides what to read instead of this inventing a range nobody asked for.
+    """
+
+    monday = today - timedelta(days=today.weekday())
+    tomorrow = today + timedelta(days=1)
+
+    if text in {"", "this", "now", "right now", "today", "tonight", "this day", "current day", "rest of today", "rest of the day"}:
+        return today, today
+    if text in {"tomorrow", "tomorrow's", "next day", "day after today"}:
+        return tomorrow, tomorrow
+    if text in {"day after tomorrow", "overmorrow"}:
+        return today + timedelta(days=2), today + timedelta(days=2)
+    if text in {"yesterday", "day before", "day before today", "previous day"}:
+        return today - timedelta(days=1), today - timedelta(days=1)
+    if text in {"this week", "this calendar week", "current week", "week"}:
+        return monday, monday + timedelta(days=6)
+    if text in {"rest of the week", "rest of this week", "remainder of the week", "week ahead"}:
+        return today, monday + timedelta(days=6)
+    if text in {"next week", "next calendar week", "following week"}:
+        return monday + timedelta(days=7), monday + timedelta(days=13)
+    if text in {"week after next", "week after the next one"}:
+        return monday + timedelta(days=14), monday + timedelta(days=20)
+    if text in {"last week", "previous week", "week before", "past week"}:
+        return monday - timedelta(days=7), monday - timedelta(days=1)
+    if text in {"weekend", "this weekend", "coming weekend"}:
+        saturday = monday + timedelta(days=5)
+        if today > saturday + timedelta(days=1):
+            saturday += timedelta(days=7)
+        return saturday, saturday + timedelta(days=1)
+    if text in {"next weekend"}:
+        return monday + timedelta(days=12), monday + timedelta(days=13)
+    if text in {"this month", "current month", "month"}:
+        return today.replace(day=1), _end_of_month(today)
+    if text in {"rest of the month", "rest of this month", "remainder of the month"}:
+        return today, _end_of_month(today)
+    if text in {"next month", "following month"}:
+        start = _first_of_next_month(today)
+        return start, _end_of_month(start)
+    if text in {"last month", "previous month", "month before"}:
+        end = today.replace(day=1) - timedelta(days=1)
+        return end.replace(day=1), end
+
+    match = _WEEKDAY_RE.match(text)
+    if match:
+        qualifier, name = match.group(1), match.group(2)
+        target = _WEEKDAY_NAMES[name]
+        if qualifier in {"last", "past", "previous"}:
+            day = today - timedelta(days=(today.weekday() - target) % 7 or 7)
+        elif qualifier == "next":
+            # The one in next week, which is what "next Thursday" means to
+            # someone looking at a diary, even on a Wednesday.
+            day = monday + timedelta(days=7 + target)
+        else:
+            day = today + timedelta(days=(target - today.weekday()) % 7)
+        return day, day
+
+    named = _read_named_date(text, today)
+    if named:
+        return named
+
+    match = _COUNT_UNIT_RE.match(text)
+    if match:
+        direction, count_text, unit = match.group(1), match.group(2) or "1", match.group(3)
+        count = int(count_text) if count_text.isdigit() else _COUNT_WORDS.get(count_text, 1)
+        span = max(1, count) * _UNIT_DAYS[unit]
+        if direction in {"last", "past", "previous"}:
+            return today - timedelta(days=span - 1), today
+        return today, today + timedelta(days=span - 1)
+    return None
+
+
+def _scan_for_days(text: str, today: date) -> tuple[date, date] | None:
+    """Find a period inside a longer phrase.
+
+    A field meant to hold "tomorrow" sometimes arrives holding the sentence it
+    came from. The days are in there either way, so the longest run of words
+    that reads as a period is used rather than the whole string being called
+    unreadable.
+    """
+
+    tokens = text.split(" ")[:_MAX_SCANNED_WORDS]
+    for width in range(min(len(tokens), _MAX_SCANNED_PHRASE_WORDS), 0, -1):
+        for start in range(0, len(tokens) - width + 1):
+            days = _read_calendar_days(" ".join(tokens[start:start + width]), today)
+            if days is not None:
+                return days
+    return None
 
 
 def parse_calendar_date_range(
@@ -171,44 +408,47 @@ def parse_calendar_date_range(
     timezone_name: str | None = "UTC",
     now: datetime | None = None,
 ) -> CalendarDateRange:
-    """Resolve the portal's friendly date ranges into an API interval."""
+    """Resolve a period written in someone's own words into an API interval.
+
+    The words arrive as they were typed - "tomorrow morning", "Thursday", "the
+    next few days" - so this reads them rather than matching them against a
+    list.  When it still cannot place them it reads the week ahead and says so
+    through ``assumed``: a question about the diary is better answered with the
+    days it read named out loud than refused for its phrasing.
+    """
 
     zone = _safe_zone(timezone_name)
     current = (now or datetime.now(zone)).astimezone(zone)
     today = current.date()
-    normalized = re.sub(r"\s+", " ", str(value or "next week").strip().lower())
-    explicit = _parse_explicit_date_range(normalized, zone)
-    if explicit:
-        return explicit
+    raw = _normalize_range_text(value) or "next week"
 
-    if normalized in {"today", "this day"}:
-        start_date, end_date = today, today
-    elif normalized in {"tomorrow", "next day"}:
-        start_date = end_date = today + timedelta(days=1)
-    elif normalized in {"this week", "this calendar week"}:
-        start_date = today - timedelta(days=today.weekday())
-        end_date = start_date + timedelta(days=6)
-    elif normalized in {"next week", "next calendar week"}:
-        start_date = today - timedelta(days=today.weekday()) + timedelta(days=7)
-        end_date = start_date + timedelta(days=6)
-    elif normalized in {"this month", "current month"}:
-        start_date = today.replace(day=1)
-        next_month = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1)
-        end_date = next_month - timedelta(days=1)
-    elif normalized in {"next month"}:
-        start_date = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
-        next_month = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1)
-        end_date = next_month - timedelta(days=1)
-    else:
-        raise CalendarSummaryError(
-            "I couldn’t understand that meeting date range. Choose today, this week, next week, or a specific range.",
-            code="invalid_date_range",
-        )
+    assumed = False
+    days = _read_explicit_range(raw)
+    if days is None:
+        text = _strip_filler(raw)
+        without_day_part = _strip_filler(re.sub(r"\s+", " ", _DAY_PART_RE.sub(" ", text)).strip(" -,"))
+        days = _read_calendar_days(text, today)
+        if days is None and without_day_part != text:
+            days = _read_calendar_days(without_day_part, today)
+        if days is None:
+            days = _scan_for_days(without_day_part, today) or _scan_for_days(text, today)
+    if days is None:
+        days = (today, today + timedelta(days=CALENDAR_FALLBACK_RANGE_DAYS - 1))
+        assumed = True
+
+    start_date, end_date = days
+    if end_date < start_date:
+        # A range written back to front is a range, not a mistake worth
+        # stopping for.
+        start_date, end_date = end_date, start_date
+    if (end_date - start_date).days + 1 > CALENDAR_MAX_RANGE_DAYS:
+        end_date = start_date + timedelta(days=CALENDAR_MAX_RANGE_DAYS - 1)
 
     return CalendarDateRange(
         label=f"{start_date.isoformat()} to {end_date.isoformat()}",
         start=_start_of_day(start_date, zone),
         end=_start_of_day(end_date + timedelta(days=1), zone),
+        assumed=assumed,
     )
 
 
@@ -290,6 +530,9 @@ def _format_event_time(event: dict[str, Any]) -> str:
 def _display_range(date_range: CalendarDateRange) -> str:
     start = date_range.start
     end = date_range.end - timedelta(days=1)
+    if start.date() == end.date():
+        # One day is a day, not a range from itself to itself.
+        return start.strftime("%b %-d, %Y")
     if start.year == end.year:
         if start.month == end.month:
             return f"{start.strftime('%b %-d')}–{end.strftime('%-d, %Y')}"
@@ -444,6 +687,11 @@ def describe_availability(
         "timezone": str(zone),
         "freeByDay": days,
     }
+    if date_range.assumed:
+        # The words naming the period could not be placed, so these are the
+        # days the run picked. Naming them lets the answer show its working
+        # instead of quietly answering about a week nobody asked for.
+        availability["dateRangeAssumed"] = _display_range(date_range)
     unread = max(0, days_asked - len(days))
     if unread:
         # "When am I free next month" answered with the first fortnight, and
@@ -729,6 +977,9 @@ class CalendarSummaryRunner:
             "dateRange": {
                 "label": date_range.label,
                 "display": _display_range(date_range),
+                # True when the period could not be placed and the week ahead
+                # was read instead, so the answer can say which days it read.
+                "assumed": date_range.assumed,
                 "start": date_range.start.isoformat(),
                 "end": date_range.end.isoformat(),
             },

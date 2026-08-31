@@ -721,6 +721,10 @@ _TURN_CALENDAR_AVAILABILITY = (
     "calendar-summary lookup, because the application works the gaps out from the meetings it reads. Put the "
     "days being asked about in changes.fields.timeWindow and let it run; never answer from the meetings you "
     "can see and never say you cannot check availability.\n"
+    "Write those days out as dates resolved against today: one YYYY-MM-DD, or YYYY-MM-DD to YYYY-MM-DD when "
+    "the question covers more than a day. Leave the part of the day out of it - tomorrow morning is the "
+    "whole of tomorrow, because the application works out which hours of it are free and hands them back "
+    "for you to answer from.\n"
 )
 
 _TURN_LOOKUPS = (
