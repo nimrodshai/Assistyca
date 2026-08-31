@@ -814,6 +814,75 @@ class GmailSearchReachTests(unittest.TestCase):
         self.assertEqual(len(pages), 1)
 
 
+class GmailDraftTests(unittest.TestCase):
+    """A reply someone started writing is not a second receipt."""
+
+    def _opener(self, *, draft_labels: list[str]):
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            url = getattr(request, "full_url", str(request))
+            if "/messages?" in url:
+                return _FakeGmailResponse({"messages": [{"id": "receipt-1"}, {"id": "draft-1"}]})
+            message_id = url.rsplit("/", 1)[-1].split("?")[0]
+            if message_id == "draft-1":
+                return _FakeGmailResponse({
+                    "id": "draft-1",
+                    "threadId": "thread-1",
+                    "labelIds": draft_labels,
+                    "payload": {"headers": [
+                        {"name": "Subject", "value": "Re: Your payment to Netflix.com"},
+                        {"name": "From", "value": "Owner <owner@example.com>"},
+                        {"name": "Date", "value": "Fri, 28 Aug 2026 09:00:00 +0300"},
+                    ]},
+                    # A reply quotes what it answers, so the draft carries the
+                    # receipt's own words and its amount.
+                    "snippet": "You sent a payment of 71.80 ILS to Netflix.com",
+                })
+            return _FakeGmailResponse({
+                "id": "receipt-1",
+                "threadId": "thread-1",
+                "labelIds": ["INBOX"],
+                "payload": {"headers": [
+                    {"name": "Subject", "value": "Your payment to Netflix.com"},
+                    {"name": "From", "value": "PayPal <service@paypal.com>"},
+                    {"name": "Date", "value": "Thu, 20 Aug 2026 09:00:00 +0300"},
+                ]},
+                "snippet": "You sent a payment of 71.80 ILS to Netflix.com",
+            })
+
+        return opener
+
+    def test_a_draft_reply_to_a_receipt_is_not_read_as_mail(self) -> None:
+        # One payment, one receipt, and a reply the owner began and left in
+        # drafts. Counted, the reply turns 71.80 into 143.60.
+        items = GmailDigestRunner(opener=self._opener(draft_labels=["DRAFT"])).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("payment",), required_terms=("Netflix",)),
+            max_results=10,
+        )
+
+        self.assertEqual([item["id"] for item in items], ["receipt-1"])
+
+    def test_the_receipt_the_draft_answers_is_still_counted(self) -> None:
+        items = GmailDigestRunner(opener=self._opener(draft_labels=["DRAFT"])).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("payment",), required_terms=("Netflix",)),
+            max_results=10,
+        )
+        answer = answer_receipt_question(items, vendor="Netflix", month_label="Aug 2026")
+
+        self.assertEqual(answer["totals"], {"ILS": 71.80})
+
+    def test_a_message_carrying_other_labels_is_left_alone(self) -> None:
+        # Only the draft label decides this. A receipt is labelled too.
+        items = GmailDigestRunner(opener=self._opener(draft_labels=["INBOX", "IMPORTANT"])).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("payment",), required_terms=("Netflix",)),
+            max_results=10,
+        )
+
+        self.assertEqual([item["id"] for item in items], ["receipt-1", "draft-1"])
+
+
 class GmailAnswerBodyTests(unittest.TestCase):
     """A question asked in chat has to read the email, not just its headers."""
 

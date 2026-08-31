@@ -252,6 +252,65 @@ def _selected_fields(url: str) -> list[str]:
     return query["$select"][0].split(",")
 
 
+class OutlookDraftTests(unittest.TestCase):
+    """A reply someone started writing is not a second receipt."""
+
+    def _payload(self, *, is_draft: bool) -> dict[str, object]:
+        receipt = _message(
+            "receipt-1",
+            subject="Your payment to Netflix.com",
+            received="2026-08-20T06:00:00Z",
+            preview="You sent a payment of 71.80 ILS to Netflix.com",
+            name="PayPal",
+            address="service@paypal.com",
+        )
+        # A reply quotes what it answers, so the draft carries the receipt's
+        # own words and its amount.
+        draft = _message(
+            "draft-1",
+            subject="Re: Your payment to Netflix.com",
+            received="2026-08-28T06:00:00Z",
+            preview="You sent a payment of 71.80 ILS to Netflix.com",
+            name="Owner",
+            address="owner@example.com",
+        )
+        draft["isDraft"] = is_draft
+        return {"value": [receipt, draft]}
+
+    def _items(self, *, is_draft: bool) -> list[dict[str, object]]:
+        payload = self._payload(is_draft=is_draft)
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            return _FakeResponse(payload)
+
+        return OutlookDigestRunner(opener=opener).fetch_message_summaries(
+            "token",
+            query=MailQuery(terms=("payment",), required_terms=("Netflix",)),
+        )
+
+    def test_a_draft_reply_to_a_receipt_is_not_read_as_mail(self) -> None:
+        self.assertEqual([item["id"] for item in self._items(is_draft=True)], ["receipt-1"])
+
+    def test_a_sent_message_is_left_alone(self) -> None:
+        self.assertEqual(
+            [item["id"] for item in self._items(is_draft=False)],
+            ["receipt-1", "draft-1"],
+        )
+
+    def test_the_read_asks_graph_whether_a_message_is_a_draft(self) -> None:
+        # Graph only returns the fields the select names, so an unasked-for
+        # isDraft comes back missing and every draft reads as real mail.
+        urls: list[str] = []
+
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            urls.append(getattr(request, "full_url", str(request)))
+            return _FakeResponse({"value": []})
+
+        OutlookDigestRunner(opener=opener).fetch_message_summaries("token", query=INBOX_QUERY)
+
+        self.assertIn("isDraft", urllib.parse.unquote(urls[0]))
+
+
 class OutlookBodyTests(unittest.TestCase):
     """Reading the total means reading the body, with or without a bundle."""
 

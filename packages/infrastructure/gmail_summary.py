@@ -315,6 +315,13 @@ class GmailDigestRunner:
                 ]
             )
             message = self._get_json(f"{GMAIL_MESSAGES_API_URL}/{encoded_message_id}?{detail_params}", token)
+            # A draft is not mail that happened. Gmail hands them back beside
+            # real messages, and a draft reply quotes the message it answers,
+            # so a receipt someone started replying to comes back a second
+            # time - dated the day the reply was begun, carrying the same
+            # amount, and reading like a second payment.
+            if _is_draft(message):
+                continue
             item: dict[str, Any] = {
                 "id": str(message.get("id") or message_id).strip(),
                 "threadId": str(message.get("threadId") or raw_message.get("threadId") or "").strip(),
@@ -490,6 +497,15 @@ class GmailDigestRunner:
             "messageCount": len(items),
             "items": items,
         }
+
+
+def _is_draft(message: dict[str, Any]) -> bool:
+    """Whether this is something the owner is still writing rather than mail."""
+
+    labels = message.get("labelIds")
+    if not isinstance(labels, list):
+        return False
+    return any(str(label).strip().upper() == "DRAFT" for label in labels)
 
 
 def _extract_body_text(message: dict[str, Any]) -> str:

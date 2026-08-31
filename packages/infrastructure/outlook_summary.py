@@ -40,7 +40,9 @@ GRAPH_MAX_SEARCH_MESSAGES = 100
 # client-side date re-check drops whatever the KQL window let through.
 GRAPH_MAX_PAGES = 5
 GRAPH_PAGE_SIZE = 25
-GRAPH_MESSAGE_FIELDS = "id,conversationId,subject,from,receivedDateTime,bodyPreview,hasAttachments"
+# isDraft rides along on every read: a mailbox search returns the drafts
+# sitting in it too, and a draft is not mail that happened.
+GRAPH_MESSAGE_FIELDS = "id,conversationId,subject,from,receivedDateTime,bodyPreview,hasAttachments,isDraft"
 # A receipt run needs the total, which lives in the body rather than in the
 # preview Graph returns by default. Digest runs stay on the lighter select.
 GRAPH_RECEIPT_MESSAGE_FIELDS = f"{GRAPH_MESSAGE_FIELDS},body"
@@ -348,6 +350,12 @@ class OutlookDigestRunner:
                     continue
                 message_id = str(raw_message.get("id") or "").strip()
                 if not message_id:
+                    continue
+                # A draft reply quotes the message it answers, so a receipt
+                # someone started replying to would come back a second time,
+                # dated the day the reply was begun and carrying the same
+                # amount.
+                if bool(raw_message.get("isDraft")):
                     continue
                 received = _parse_received(raw_message.get("receivedDateTime"))
                 subject = str(raw_message.get("subject") or "").strip()
