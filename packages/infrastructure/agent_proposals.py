@@ -785,10 +785,26 @@ _TURN_FACTS = (
     "knownFacts. Say in one line what you will stop assuming.\n"
 )
 
-_TURN_RETURN_KEYS = (
-    "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode, actionCommand, "
-    "actionNames, needsFolderChoice, folderChoiceMode, folderCommand, folderNames, needsFileChoice, "
-    "fileChoiceMode, fileCommand, fileNames, fileDestination, rememberFact, forgetFact. reply is required for "
+# The keys follow the sections. Naming a key whose rules were left out tells
+# the model a command exists and nothing about when to use it, and a command
+# nobody explained is one the application cannot carry out: the name it
+# invents matches nothing, and the turn dies on the one-line reply that was
+# written to be replaced by a confirmation.
+_TURN_RETURN_KEYS_HEAD = (
+    "Return keys: outcome, reply, proposalType, changes, rememberFact, forgetFact"
+)
+
+_TURN_RETURN_KEYS_ACTIONS = (
+    ", needsActionChoice, actionChoiceMode, actionCommand, actionNames"
+)
+
+_TURN_RETURN_KEYS_FOLDERS = (
+    ", needsFolderChoice, folderChoiceMode, folderCommand, folderNames, needsFileChoice, fileChoiceMode, "
+    "fileCommand, fileNames, fileDestination"
+)
+
+_TURN_RETURN_KEYS_TAIL = (
+    ". reply is required for "
     "every outcome and must be a non-empty natural assistant response, not a form or system status. "
     "proposalType must be one of scheduled-message, email-digest, calendar-summary, web-monitor, "
     "source-action, whatsapp-replies, reengagement, or custom when outcome is proposal or when outcome is "
@@ -1077,7 +1093,14 @@ def build_agent_turn_prompt(
         _TURN_CALENDAR_AVAILABILITY,
         _TURN_LOOKUPS,
         _TURN_FACTS,
-        _TURN_RETURN_KEYS,
+        _TURN_RETURN_KEYS_HEAD,
+    ])
+    if context["existingActions"]:
+        sections.append(_TURN_RETURN_KEYS_ACTIONS)
+    if context["existingFolders"]:
+        sections.append(_TURN_RETURN_KEYS_FOLDERS)
+    sections.extend([
+        _TURN_RETURN_KEYS_TAIL,
         _TURN_SCHEDULED_MESSAGE,
         _TURN_VOICE,
     ])

@@ -157,6 +157,35 @@ class FreeSlotTests(unittest.TestCase):
         self.assertEqual(len(availability["freeByDay"][1]["free"]), 1)
 
 
+class TruncationTests(unittest.TestCase):
+    """A fortnight of an answer must not pass for a month of one."""
+
+    def test_a_range_longer_than_one_answer_says_what_it_left(self) -> None:
+        date_range = CalendarDateRange(
+            label="next month",
+            start=datetime(2026, 8, 1, 0, 0, tzinfo=ZONE),
+            end=datetime(2026, 9, 1, 0, 0, tzinfo=ZONE),
+        )
+
+        availability = describe_availability([], date_range, timezone_name="Asia/Jerusalem")
+
+        self.assertEqual(len(availability["freeByDay"]), 14)
+        self.assertEqual(availability["daysNotChecked"], 17)
+        self.assertEqual(availability["checkedThrough"], "2026-08-14")
+
+    def test_a_range_that_fits_says_nothing_about_leaving_anything(self) -> None:
+        date_range = CalendarDateRange(
+            label="this week",
+            start=datetime(2026, 8, 3, 0, 0, tzinfo=ZONE),
+            end=datetime(2026, 8, 10, 0, 0, tzinfo=ZONE),
+        )
+
+        availability = describe_availability([], date_range, timezone_name="Asia/Jerusalem")
+
+        self.assertNotIn("daysNotChecked", availability)
+        self.assertNotIn("checkedThrough", availability)
+
+
 class ConflictTests(unittest.TestCase):
     def test_two_meetings_at_once_are_named_as_a_clash(self) -> None:
         conflicts = find_calendar_conflicts([

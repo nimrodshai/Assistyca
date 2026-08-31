@@ -659,6 +659,13 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertNotIn("action_command", prompt)
         self.assertNotIn("needsFileChoice=true", prompt)
         self.assertNotIn("existingFolders lists", prompt)
+        # And the keys go with the rules. Naming a command in the return keys
+        # while leaving out what it is for tells the model it exists and
+        # nothing about when to use it - the name it then invents matches no
+        # folder, and the turn dies on a reply written to be replaced.
+        for key in ("actionCommand", "actionNames", "folderCommand", "folderNames",
+                    "needsFileChoice", "fileCommand", "fileDestination"):
+            self.assertNotIn(key, prompt, key)
         # What it can still do is all there.
         self.assertIn("- proposal:", prompt)
         self.assertIn("answer_now", prompt)
@@ -674,9 +681,11 @@ class AgentProposalRevisionTests(unittest.TestCase):
 
         self.assertIn("action_command", prompt)
         self.assertIn("actionChoiceMode", prompt)
+        self.assertIn("actionCommand", prompt)
         self.assertIn("Never set up a second copy", prompt)
-        # It still has no folders.
+        # It still has no folders, and is not told about folder keys either.
         self.assertNotIn("folder_command", prompt)
+        self.assertNotIn("folderCommand", prompt)
 
     def test_an_account_with_folders_is_told_about_folders_and_the_files_in_them(self) -> None:
         # The file rules ride with the folder rules: a folder the chat has not
@@ -691,7 +700,26 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("folder_command", prompt)
         self.assertIn("existingFolderFiles lists", prompt)
         self.assertIn("fileCommand=move", prompt)
+        self.assertIn("fileDestination", prompt)
         self.assertIn("saved-files whenever the user asks", prompt)
+
+    def test_the_return_keys_still_read_as_one_sentence(self) -> None:
+        # The list is assembled from pieces now, so the punctuation between
+        # them is worth pinning: a run-on or a double comma here is the model
+        # reading a broken instruction.
+        prompt = build_agent_turn_prompt(
+            user_message="hi",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            action_context=[{"name": "Daily digest", "kind": "email-digest", "status": "active"}],
+            folder_context=[{"name": "Receipts/Aug2026", "kind": "Receipts", "itemCount": "3 items"}],
+        )
+
+        line = next(line for line in prompt.split("\n") if line.startswith("Return keys:"))
+        self.assertNotIn(",,", line)
+        self.assertNotIn(" ,", line)
+        self.assertIn("forgetFact, needsActionChoice", line)
+        self.assertIn("fileDestination. reply is required", line)
 
     def test_the_rules_for_a_pending_proposal_arrive_with_one(self) -> None:
         prompt = build_agent_turn_prompt(

@@ -5825,9 +5825,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             [row for entry in folders for row in entry["receipts"]],
             kind=kind,
         )
+        # Every folder that was read, not the first one that had a month on
+        # it: two folders read together cover two months, and putting one of
+        # their names on the total states a period half the money is not in.
         month_label = normalize_text(
-            fields.get("monthLabel")
-            or next((entry["monthLabel"] for entry in folders if entry["monthLabel"]), "")
+            fields.get("monthLabel") or saved_files.describe_months_read(folders)
         )
         folder_label = describe_saved_receipt_folders([entry["folder"] for entry in folders])
         file_count = saved_files.count_saved_files(folders)
@@ -7736,7 +7738,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # are normalized on the way into the prompt, the same as any record.
         figures = payload.get("figures")
         if isinstance(figures, dict) and figures:
-            groups = {**groups, **figures}
+            # What the request carries goes underneath what this server worked
+            # out, never over it. The prompt tells the model these figures are
+            # correct, so a client key landing on top of a server-computed one
+            # would be a wrong number stated as a fact.
+            groups = {**figures, **groups}
         prompt = build_answer_prompt(
             question=question,
             records=records,

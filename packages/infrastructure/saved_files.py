@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.infrastructure.file_tags import FILE_TAGS_FILENAME
+from packages.infrastructure.file_tags import describe_document_kind
 from packages.infrastructure.file_tags import read_file_tags
 # The name the bundle writer uses. Reading it back from a second definition
 # would let the two drift, and a folder whose manifest has been renamed reads
@@ -120,36 +121,60 @@ def describe_saved_folder(folder_path: Path, *, folder: str = "") -> dict[str, A
     }
 
 
-def _row_haystack(row: dict[str, Any]) -> str:
-    return " ".join(
-        _clean(row.get(key))
-        for key in ("vendor", "subject", "source", "notes", "detail")
-    ).casefold()
-
-
-def select_saved_rows(
-    rows: list[dict[str, Any]],
-    *,
-    vendor: Any = "",
-    kind: Any = "",
-) -> list[dict[str, Any]]:
+def select_saved_rows(rows: list[dict[str, Any]], *, kind: Any = "") -> list[dict[str, Any]]:
     """The saved rows a question is about.
 
     Vendor matching is left to the receipt code that already does it for a
-    mailbox answer, so this narrows only on what that one does not know: which
-    document someone asked for when they said invoices rather than receipts.
+    mailbox answer, so this narrows only on what that one does not know: that
+    somebody asked for the invoices in particular.
+
+    Asking for "the receipts" narrows nothing. It is the word people use for
+    everything in a folder of them, and reading it as "the ones that are not
+    invoices" is how a total quietly comes back smaller than the truth - a
+    single mail titled "Invoice 8891" is often the largest charge of the
+    month. Under-reporting money is the one failure this must not have, so
+    only an explicit ask for invoices narrows anything at all.
+
+    What counts as an invoice is decided the way the tags on the filed files
+    decide it: by what the document calls itself in its subject, not by the
+    word turning up somewhere in a body or a note.
     """
 
-    kind_text = _clean(kind).casefold()
     selected = list(rows)
-    if kind_text in {"invoice", "invoices"}:
-        selected = [row for row in selected if "invoic" in _row_haystack(row)]
-    elif kind_text in {"receipt", "receipts"}:
-        selected = [row for row in selected if "invoic" not in _row_haystack(row)]
-    vendor_text = _clean(vendor).casefold()
-    if vendor_text:
-        selected = [row for row in selected if vendor_text in _row_haystack(row)]
+    if _clean(kind).casefold() in {"invoice", "invoices"}:
+        selected = [
+            row for row in selected
+            if describe_document_kind(_clean(row.get("subject"))) == "Invoice"
+        ]
     return selected
+
+
+def describe_months_read(folders: list[dict[str, Any]]) -> str:
+    """The period an answer covers, or nothing when it cannot be named.
+
+    Reading two folders and putting the first one's month on the answer says
+    "you paid 40.00 in July" over a total that is half August. A period that
+    cannot be stated for all of what was read is better left unstated: the
+    folders are named beside the figure either way, and no period at all is
+    honest where a wrong one is not.
+    """
+
+    labels: list[str] = []
+    for entry in folders:
+        label = _clean(entry.get("monthLabel"))
+        if not label:
+            # One folder with nothing to say about its period leaves the whole
+            # answer without one, rather than borrowing its neighbour's.
+            return ""
+        if label not in labels:
+            labels.append(label)
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return " and ".join(labels)
+    return ", ".join(labels[:-1]) + f" and {labels[-1]}"
 
 
 def describe_saved_file_records(folders: list[dict[str, Any]]) -> list[dict[str, str]]:

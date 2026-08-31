@@ -312,6 +312,32 @@ class AnswerComposeEndpointTests(unittest.TestCase):
         self.assertTrue(payload["composed"])
         self.assertIn("Final Cut Pro", call.call_args.kwargs["prompt"])
 
+    def test_the_request_cannot_overwrite_a_figure_this_server_worked_out(self) -> None:
+        # The prompt tells the model these figures are correct, so a value the
+        # request supplies landing on top of a computed one would be a wrong
+        # number stated as fact. What the request carries goes underneath.
+        with mock.patch(
+            f"{SERVER_MODULE}.call_openai_response",
+            return_value=mock.Mock(output_text="Apple was the biggest."),
+        ) as call:
+            self._compose({
+                "question": "Which vendor cost me the most?",
+                "answer": "You paid 340.50 ILS to Apple in Jun 2026, across 6 receipts.",
+                "records": answer_receipt_question(_apple_month(), vendor="Apple", month_label="Jun 2026")["records"],
+                "figures": {
+                    "byVendor": [{"vendor": "Nobody", "currency": "ILS", "total": 1.0, "count": 1}],
+                    "freeByDay": [{"day": "2026-06-01", "free": []}],
+                },
+                "timezone": "Asia/Jerusalem",
+            })
+
+        prompt = call.call_args.kwargs["prompt"]
+        # The server's own grouping survived, and the request's did not.
+        self.assertIn('"vendor":"Apple"', prompt)
+        self.assertNotIn("Nobody", prompt)
+        # A figure the server does not compute still comes through.
+        self.assertIn('"freeByDay"', prompt)
+
     def test_a_model_that_cannot_run_still_leaves_the_question_answered(self) -> None:
         # The lookup succeeded and its figures are already in hand. Failing the
         # request here would throw away a real answer over the phrasing of it.
@@ -500,6 +526,19 @@ class AvailabilityFigureTests(unittest.TestCase):
         )
 
         self.assertNotIn("x" * 1000, prompt)
+
+
+class PartialAnswerTests(unittest.TestCase):
+    def test_the_prompt_tells_the_reply_to_own_up_to_a_short_read(self) -> None:
+        prompt = build_answer_prompt(
+            question="When am I free next month?",
+            records=[],
+            computed_answer="Nothing on.",
+            groups={"freeByDay": [{"day": "2026-08-01", "free": []}], "daysNotChecked": 17},
+        )
+
+        self.assertIn("daysNotChecked", prompt)
+        self.assertIn("not for all of it", prompt)
 
 
 if __name__ == "__main__":

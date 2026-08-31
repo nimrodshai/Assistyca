@@ -23,6 +23,7 @@ from packages.infrastructure.file_tags import write_file_tags
 from packages.infrastructure.receipt_collector import answer_receipt_rows
 from packages.infrastructure.saved_files import count_saved_files
 from packages.infrastructure.saved_files import describe_saved_file_records
+from packages.infrastructure.saved_files import describe_months_read
 from packages.infrastructure.saved_files import describe_saved_folder
 from packages.infrastructure.saved_files import list_folder_files
 from packages.infrastructure.saved_files import read_bundle_rows
@@ -143,19 +144,73 @@ class SavedRowSelectionTests(unittest.TestCase):
 
         self.assertEqual([row["subject"] for row in rows], ["Invoice 8891"])
 
-    def test_asking_for_receipts_leaves_the_invoices_out(self) -> None:
+    def test_asking_for_receipts_keeps_everything_in_the_folder(self) -> None:
+        # "Receipts" is what people call everything in a folder of them.
+        # Reading it as "the ones that are not invoices" dropped the largest
+        # charge of the month out of the total, and said nothing about it.
         rows = select_saved_rows(self.ROWS, kind="receipts")
 
-        self.assertEqual(len(rows), 2)
-        self.assertNotIn("Invoice 8891", [row["subject"] for row in rows])
+        self.assertEqual(len(rows), 3)
+        self.assertIn("Invoice 8891", [row["subject"] for row in rows])
 
-    def test_a_vendor_narrows_what_a_question_is_about(self) -> None:
-        rows = select_saved_rows(self.ROWS, vendor="fastly")
+    def test_an_invoice_is_decided_by_what_the_subject_calls_it(self) -> None:
+        # The word turning up in a body or a note is not the document calling
+        # itself an invoice, and the tags on the filed files agree.
+        rows = select_saved_rows(
+            [
+                {"vendor": "Render", "subject": "Your receipt", "detail": "see invoice attached"},
+                {"vendor": "Apple", "subject": "Invoice 8891", "detail": ""},
+            ],
+            kind="invoices",
+        )
 
-        self.assertEqual([row["vendor"] for row in rows], ["Fastly"])
+        self.assertEqual([row["vendor"] for row in rows], ["Apple"])
 
     def test_no_narrowing_keeps_everything(self) -> None:
         self.assertEqual(len(select_saved_rows(self.ROWS)), 3)
+
+
+class MonthsReadTests(unittest.TestCase):
+    """The period an answer covers, when it covers more than one folder."""
+
+    def test_one_folder_keeps_its_own_month(self) -> None:
+        self.assertEqual(
+            describe_months_read([{"monthLabel": "August 2026"}]),
+            "August 2026",
+        )
+
+    def test_two_folders_name_both_months(self) -> None:
+        # Putting the first folder's month on the whole answer said "you paid
+        # 40.00 in July" over a total that was half August.
+        self.assertEqual(
+            describe_months_read([{"monthLabel": "July 2026"}, {"monthLabel": "August 2026"}]),
+            "July 2026 and August 2026",
+        )
+
+    def test_three_folders_read_as_a_list(self) -> None:
+        self.assertEqual(
+            describe_months_read([
+                {"monthLabel": "June 2026"},
+                {"monthLabel": "July 2026"},
+                {"monthLabel": "August 2026"},
+            ]),
+            "June 2026, July 2026 and August 2026",
+        )
+
+    def test_the_same_month_twice_is_said_once(self) -> None:
+        self.assertEqual(
+            describe_months_read([{"monthLabel": "August 2026"}, {"monthLabel": "August 2026"}]),
+            "August 2026",
+        )
+
+    def test_a_folder_with_no_month_leaves_the_answer_without_one(self) -> None:
+        # Borrowing its neighbour's month would name a period that half the
+        # money is not in. No period at all is the honest answer.
+        self.assertEqual(
+            describe_months_read([{"monthLabel": "July 2026"}, {"monthLabel": ""}]),
+            "",
+        )
+        self.assertEqual(describe_months_read([]), "")
 
 
 class SavedAnswerTests(unittest.TestCase):
@@ -349,6 +404,52 @@ class SavedFilesRunnerTests(unittest.TestCase):
 
         self.assertEqual(payload["receiptCount"], 2)
         self.assertEqual(payload["totals"], {"USD": 40.0})
+
+    def test_two_folders_are_answered_for_both_their_months(self) -> None:
+        for name, month, amount in (
+            ("Receipts/Jul2026", "July 2026", "15.00"),
+            ("Receipts/Aug2026", "August 2026", "25.00"),
+        ):
+            write_bundle(
+                self._folder(name),
+                [{"vendor": "Render", "subject": "receipt", "amount": amount,
+                  "currency": "USD", "status": "Ready"}],
+                {"monthLabel": month},
+            )
+
+        payload = self._ask({"savedFolder": "Receipts/Jul2026, Receipts/Aug2026"})
+
+        self.assertEqual(payload["totals"], {"USD": 40.0})
+        self.assertIn("July 2026 and August 2026", payload["answer"])
+
+    def test_a_question_about_receipts_counts_the_invoices_in_the_folder(self) -> None:
+        # "Receipts" is what the folder is called and what everything in it
+        # gets called. Reading it as "not the invoices" dropped the largest
+        # charge of the month and said nothing.
+        write_bundle(self._folder("Receipts/Aug2026"), [
+            {"vendor": "Render", "subject": "Your receipt from Render", "amount": "20.00",
+             "currency": "USD", "status": "Ready"},
+            {"vendor": "Apple", "subject": "Invoice 8891", "amount": "199.90",
+             "currency": "USD", "status": "Ready"},
+        ])
+
+        payload = self._ask({"savedFolder": "Receipts/Aug2026", "documentKind": "receipts"})
+
+        self.assertEqual(payload["receiptCount"], 2)
+        self.assertEqual(payload["totals"], {"USD": 219.9})
+
+    def test_a_question_about_invoices_still_narrows_to_them(self) -> None:
+        write_bundle(self._folder("Receipts/Aug2026"), [
+            {"vendor": "Render", "subject": "Your receipt from Render", "amount": "20.00",
+             "currency": "USD", "status": "Ready"},
+            {"vendor": "Apple", "subject": "Invoice 8891", "amount": "199.90",
+             "currency": "USD", "status": "Ready"},
+        ])
+
+        payload = self._ask({"savedFolder": "Receipts/Aug2026", "documentKind": "invoices"})
+
+        self.assertEqual(payload["receiptCount"], 1)
+        self.assertEqual(payload["totals"], {"USD": 199.9})
 
     def test_a_handmade_folder_names_its_files_instead_of_a_total(self) -> None:
         # No manifest, so there is nothing to add up. Saying what is in there

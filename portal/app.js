@@ -25765,6 +25765,11 @@ async function runAgentAnswerTask(task, setProgress, pending = null) {
         skippedMailboxes: response.skippedMailboxes,
         cappedMailboxes: response.cappedMailboxes,
         undatedCount: response.undatedCount,
+        // Which search actually answered. A run of months replaces the
+        // response with its months, and this rode on the response, so a
+        // widened search across July and August used to widen in silence -
+        // the one thing the note exists to prevent.
+        widenedSearch: response.widenedSearch,
         // What a ceiling was hit across. Naming the first month of a group
         // would blame one month for a limit the whole group ran into.
         readSpanLabel: describeAgentAnswerMonthSpan(chunk),

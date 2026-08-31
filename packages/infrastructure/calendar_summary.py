@@ -410,6 +410,9 @@ def describe_availability(
     busy = _busy_periods(events)
     days: list[dict[str, Any]] = []
     day = date_range.start_date
+    # How many days the question covered, so a range longer than one answer
+    # can carry knows what it left behind rather than stopping quietly.
+    days_asked = (date_range.end_date - date_range.start_date).days + 1
     while day <= date_range.end_date and len(days) < CALENDAR_MAX_FREE_DAYS:
         opens = datetime.combine(day, dt_time(hour=day_start_hour), tzinfo=zone)
         closes = datetime.combine(day, dt_time(hour=day_end_hour), tzinfo=zone)
@@ -441,6 +444,12 @@ def describe_availability(
         "timezone": str(zone),
         "freeByDay": days,
     }
+    unread = max(0, days_asked - len(days))
+    if unread:
+        # "When am I free next month" answered with the first fortnight, and
+        # nothing saying so, is a partial answer wearing a whole one's clothes.
+        availability["daysNotChecked"] = unread
+        availability["checkedThrough"] = days[-1]["day"] if days else ""
     conflicts = find_calendar_conflicts(events)
     if conflicts:
         availability["overlappingMeetings"] = conflicts
