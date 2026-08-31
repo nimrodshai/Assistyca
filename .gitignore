@@ -11,3 +11,5 @@ portal/*.sqlite
 portal/*.sqlite3
 portal/portal-whatsapp/
 scripts/run_portal_server.local.sh
+scripts/*.local.py
+portal/*.db.backup-*
