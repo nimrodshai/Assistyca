@@ -18993,11 +18993,19 @@ function updateAgentDrag(x, y) {
   const element = document.elementFromPoint(x, y);
   const zone = element?.closest?.("[data-agent-drop-root]") || null;
   const card = zone ? null : (element?.closest?.("[data-agent-folder-path]") || null);
-  // The top-level strip stands for "no folder at all", which is a real
-  // destination for a folder and a path of its own for everything else.
-  const path = zone ? "" : (card ? normalizeAgentTextItem(card.dataset.agentFolderPath, "") : null);
+  // Anywhere in the panel that is not a card is the top level. Carrying a
+  // folder out of the one holding it and letting go in the open is the
+  // gesture people reach for first; the strip at the foot is there to say so
+  // in words, not to be the only way to do it.
+  const open = !zone && !card
+    && Boolean(element?.closest?.("#agentActionsPanelBody, .agent-folders-list-view"));
+  // "No folder at all" is a real destination for a folder, and no destination
+  // whatever for a file - a file has to live in one.
+  const path = zone || open ? "" : (card ? normalizeAgentTextItem(card.dataset.agentFolderPath, "") : null);
   const allowed = path !== null && isAgentDropAllowed(press, path);
-  const target = allowed ? (zone || card) : null;
+  // Hovering the open panel lights up the strip, so what letting go would do
+  // is named rather than guessed at.
+  const target = allowed ? (zone || card || drag.rootZone) : null;
 
   if (drag.target !== target) {
     drag.target?.classList.remove("is-drop-target");
@@ -19090,13 +19098,17 @@ function showAgentDragRootZone(press) {
   press.drag.rootZone = zone;
 }
 
-// The list the panel scrolls in, which is not always the window: on a phone
-// the rail scrolls inside itself.
+// The box the list scrolls inside, which is not the window: on a phone the
+// panel is a drawer that scrolls within itself.
+//
+// What matters is that the box is the one that *would* scroll, not that it
+// happens to be overflowing right now. Asking for the second is what put the
+// top-level strip at the bottom of the phone, under the composer, when the
+// panel it belongs to ended two hundred pixels higher up.
 function getAgentDragScroller() {
   let element = elements.agentFolderList?.parentElement || null;
   while (element && element !== document.body) {
-    const overflow = window.getComputedStyle(element).overflowY;
-    if (/(auto|scroll|overlay)/.test(overflow) && element.scrollHeight > element.clientHeight + 1) {
+    if (/(auto|scroll|overlay)/.test(window.getComputedStyle(element).overflowY)) {
       return element;
     }
     element = element.parentElement;

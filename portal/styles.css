@@ -5086,8 +5086,9 @@ body[data-modal="billing"] .app-shell {
    left of them was one more thing to read in a panel this narrow. */
 .agent-folder-list.is-nested {
   gap: 0.4rem;
-  margin-left: 1.16rem;
-  padding: 0 0.6rem 0.66rem 0.52rem;
+  /* The same inset as the files above them, so a folder inside this one and a
+     file inside it start at the same edge rather than stepping in twice. */
+  padding: 0 0.82rem 0.78rem;
 }
 
 .agent-folder-list.is-nested[hidden],
