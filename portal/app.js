@@ -6378,9 +6378,14 @@ function createPlatformConnectionDisconnectButton(option, connection) {
   return button;
 }
 
-// One row per connected mailbox, each with its own disconnect. A single
-// "Disconnect Email" button cannot say which mailbox it would remove.
-function createConnectedMailboxList(option, connections = []) {
+// One row per connected mailbox. Each carries its own disconnect where the
+// list is how mailboxes are managed - a single "Disconnect Email" button cannot
+// say which mailbox it would remove. The Google card passes allowDisconnect
+// false: there the list only states which mailboxes are read, and giving the
+// permission back is the cross on its chip.
+function createConnectedMailboxList(option, connections = [], listOptions = {}) {
+  const allowDisconnect = listOptions.allowDisconnect !== false;
+  const goBack = typeof listOptions.onBack === "function" ? listOptions.onBack : null;
   if (!connections.length) {
     return null;
   }
@@ -6408,21 +6413,24 @@ function createConnectedMailboxList(option, connections = []) {
       row.append(warning);
     }
 
-    const disconnect = document.createElement("button");
-    disconnect.type = "button";
-    disconnect.className = "text-button connection-danger-link connected-mailbox-disconnect";
-    // The provider is part of the name here: two mailboxes can share an
-    // address, and a confirmation has to say which one it would remove.
-    const mailboxName = `${getEmailConnectionName(connection)} (${provider.textContent})`;
-    disconnect.textContent = "Disconnect";
-    disconnect.setAttribute("aria-label", `Disconnect ${mailboxName}`);
-    disconnect.addEventListener("click", () => {
-      openPlatformConnectionDisconnectConfirmation(
-        { ...option, label: mailboxName },
-        connection,
-      );
-    });
-    row.append(disconnect);
+    if (allowDisconnect) {
+      const disconnect = document.createElement("button");
+      disconnect.type = "button";
+      disconnect.className = "text-button connection-danger-link connected-mailbox-disconnect";
+      // The provider is part of the name here: two mailboxes can share an
+      // address, and a confirmation has to say which one it would remove.
+      const mailboxName = `${getEmailConnectionName(connection)} (${provider.textContent})`;
+      disconnect.textContent = "Disconnect";
+      disconnect.setAttribute("aria-label", `Disconnect ${mailboxName}`);
+      disconnect.addEventListener("click", () => {
+        openPlatformConnectionDisconnectConfirmation(
+          { ...option, label: mailboxName },
+          connection,
+          { onBack: goBack, onDone: goBack },
+        );
+      });
+      row.append(disconnect);
+    }
     list.append(row);
   }
   return list;
@@ -6446,10 +6454,15 @@ function getUniqueConnectedGoogleOAuthConnections(connections = []) {
   return Array.from(uniqueConnections.values());
 }
 
-function openPlatformConnectionDisconnectConfirmation(option, connection) {
+// A confirmation is a detour from the card that asked the question, so both
+// ways out of it lead back there: keeping the connection returns to the card
+// unchanged, and removing one returns to it with that connection gone. Landing
+// in the chat behind the card is losing your place, not finishing.
+function openPlatformConnectionDisconnectConfirmation(option, connection, flowOptions = {}) {
   if (!option || !connection?.id) {
     return;
   }
+  const goBack = typeof flowOptions.onBack === "function" ? flowOptions.onBack : null;
 
   openAuthAlert(
     `Disconnect ${option.label}?`,
@@ -6461,15 +6474,20 @@ function openPlatformConnectionDisconnectConfirmation(option, connection) {
       buttonLabel: "Disconnect",
       primaryTone: "danger",
       secondaryButtonLabel: "Keep connected",
+      // The card it came from reopens in place, so this dialog hands its
+      // contents over rather than closing and letting another fade in.
+      closeOnSecondary: !goBack,
+      onSecondary: goBack,
       returnFocus: elements.agentAddToolButton,
       onPrimary: () => {
-        void disconnectPlatformConnection(option, connection);
+        void disconnectPlatformConnection(option, connection, flowOptions);
       },
     },
   );
 }
 
-async function disconnectPlatformConnection(option, connection) {
+async function disconnectPlatformConnection(option, connection, flowOptions = {}) {
+  const goOn = typeof flowOptions.onDone === "function" ? flowOptions.onDone : null;
   try {
     const response = await apiRequest(
       `/api/platform-connections/${encodeURIComponent(connection.id)}`,
@@ -6494,6 +6512,8 @@ async function disconnectPlatformConnection(option, connection) {
         icon: "✓",
         tone: "success",
         buttonLabel: "Done",
+        closeOnPrimary: !goOn,
+        onPrimary: goOn,
         returnFocus: elements.agentAddToolButton,
       },
     );
@@ -6506,17 +6526,20 @@ async function disconnectPlatformConnection(option, connection) {
         icon: "!",
         tone: "warning",
         buttonLabel: "Close",
+        closeOnPrimary: !goOn,
+        onPrimary: goOn,
         returnFocus: elements.agentAddToolButton,
       },
     );
   }
 }
 
-function openGoogleConnectionDisconnectConfirmation(option, connections = []) {
+function openGoogleConnectionDisconnectConfirmation(option, connections = [], flowOptions = {}) {
   const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
   if (!option || !connectedConnections.length) {
     return;
   }
+  const goBack = typeof flowOptions.onBack === "function" ? flowOptions.onBack : null;
   const label = option.label || "Google";
   const removedNames = describeConnectionsToDisconnect(connectedConnections);
   const removedSentence = removedNames
@@ -6536,19 +6559,22 @@ function openGoogleConnectionDisconnectConfirmation(option, connections = []) {
       buttonLabel: "Disconnect",
       primaryTone: "danger",
       secondaryButtonLabel: "Keep connected",
+      closeOnSecondary: !goBack,
+      onSecondary: goBack,
       returnFocus: elements.agentAddToolButton,
       onPrimary: () => {
-        void disconnectGoogleConnections(option, connectedConnections);
+        void disconnectGoogleConnections(option, connectedConnections, flowOptions);
       },
     },
   );
 }
 
-async function disconnectGoogleConnections(option, connections = []) {
+async function disconnectGoogleConnections(option, connections = [], flowOptions = {}) {
   const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
   if (!connectedConnections.length) {
     return;
   }
+  const goOn = typeof flowOptions.onDone === "function" ? flowOptions.onDone : null;
   const label = option?.label || "Google";
   try {
     const responses = await Promise.all(connectedConnections.map((connection) => (
@@ -6578,6 +6604,8 @@ async function disconnectGoogleConnections(option, connections = []) {
         icon: "✓",
         tone: "success",
         buttonLabel: "Done",
+        closeOnPrimary: !goOn,
+        onPrimary: goOn,
         returnFocus: elements.agentAddToolButton,
       },
     );
@@ -6590,6 +6618,8 @@ async function disconnectGoogleConnections(option, connections = []) {
         icon: "!",
         tone: "warning",
         buttonLabel: "Close",
+        closeOnPrimary: !goOn,
+        onPrimary: goOn,
         returnFocus: elements.agentAddToolButton,
       },
     );
@@ -7134,7 +7164,7 @@ function createGoogleOAuthPermissionList(option, options = {}) {
 // card states them in one line of chips instead of repeating a tick, a badge
 // and a sentence of explanation for each one. The full list with its wording
 // belongs to the step where the access is actually being chosen.
-function createGoogleOAuthPermissionSummary() {
+function createGoogleOAuthPermissionSummary(googleCardFlow = {}) {
   const wrapper = document.createElement("div");
   wrapper.className = "connection-section google-access";
 
@@ -7181,6 +7211,7 @@ function createGoogleOAuthPermissionSummary() {
             label: scopeOption.label,
           },
           scopeConnections,
+          googleCardFlow,
         );
       });
       chip.append(remove);
@@ -7651,8 +7682,23 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
   // checkboxes for a line of chips. The connect step keeps both, because there
   // the wording is what the choice is made on.
   const showsAccessSummary = usesAggregateGoogleConnection && isConnected;
+  // Every question this card asks elsewhere - a confirmation, the calendar
+  // picker - is a detour, and each one comes back here rather than dropping
+  // into the chat behind it. Coming back is skipped once nothing is connected:
+  // there is no connected card left to return to.
+  const reopenCard = () => openCalendarOAuthConnection(option, flowOptions);
+  const googleCardFlow = {
+    onBack: reopenCard,
+    onDone: () => {
+      if (getConnectedGoogleOAuthConnections().length) {
+        reopenCard();
+        return;
+      }
+      closeAuthAlert();
+    },
+  };
   const permissionList = showsAccessSummary
-    ? createGoogleOAuthPermissionSummary()
+    ? createGoogleOAuthPermissionSummary(googleCardFlow)
     : createGoogleOAuthPermissionList(option, { readOnly: isConnected });
   if (showsAccessSummary) {
     body.append(permissionList, status);
@@ -7668,7 +7714,11 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
   // The connected mailboxes are listed on the Google tool, which is where
   // removing one belongs. The add flow only adds.
   const gmailList = usesAggregateGoogleConnection
-    ? createConnectedMailboxList(getPlatformConnectionOption("email") || option, connectedGmailMailboxes)
+    ? createConnectedMailboxList(
+      getPlatformConnectionOption("email") || option,
+      connectedGmailMailboxes,
+      { allowDisconnect: false },
+    )
     : null;
   if (gmailList) {
     const gmailSection = document.createElement("div");
@@ -7686,7 +7736,13 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
     ? getUniqueConnectedGoogleOAuthConnections(connectedGoogleConnections)
     : [];
   const disconnectGoogle = googleDisconnectConnections.length
-    ? () => openGoogleConnectionDisconnectConfirmation(option, googleDisconnectConnections)
+    ? () => openGoogleConnectionDisconnectConfirmation(
+      option,
+      googleDisconnectConnections,
+      // Keeping the connection comes back to the card. Removing it does not:
+      // there is nothing connected left for the card to show.
+      { onBack: reopenCard },
+    )
     : null;
   // A card-level email disconnect would be ambiguous once there is more than
   // one mailbox, so each mailbox row carries its own.
@@ -7993,7 +8049,11 @@ function openMicrosoftOAuthConnection(option, flowOptions = {}) {
   // whole job is to connect one more.
   const mailboxList = isAddingMailbox
     ? null
-    : createConnectedMailboxList(option, connectedMailboxes);
+    : createConnectedMailboxList(option, connectedMailboxes, {
+      // Both ways out of a mailbox's confirmation lead back to this card, the
+      // same as they do on the Google one.
+      onBack: () => openMicrosoftOAuthConnection(option, flowOptions),
+    });
   if (mailboxList) {
     body.append(mailboxList);
   }
