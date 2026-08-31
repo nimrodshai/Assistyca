@@ -27430,6 +27430,29 @@ function scheduleAgentComposerInputResize() {
   });
 }
 
+function capitalizeAgentComposerInput(input) {
+  if (!input) {
+    return;
+  }
+  const value = String(input.value || "");
+  const index = value.search(/\S/);
+  if (index < 0) {
+    return;
+  }
+  const firstCharacter = value[index];
+  const capitalized = firstCharacter.toUpperCase();
+  if (capitalized === firstCharacter || capitalized.length !== firstCharacter.length) {
+    return;
+  }
+
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  input.value = `${value.slice(0, index)}${capitalized}${value.slice(index + 1)}`;
+  if (typeof start === "number" && typeof end === "number") {
+    input.setSelectionRange?.(start, end);
+  }
+}
+
 function handleAgentComposerSubmit(event = null) {
   event?.preventDefault();
   if (agentTurnBusy) {
@@ -34856,6 +34879,9 @@ function bindEvents() {
       }
     });
     elements.agentComposerInput.addEventListener("input", (event) => {
+      if (!event.isComposing) {
+        capitalizeAgentComposerInput(event.currentTarget);
+      }
       resizeAgentComposerInput({
         scrollToBottom: isAgentComposerCaretAtEnd(event.currentTarget),
       });
