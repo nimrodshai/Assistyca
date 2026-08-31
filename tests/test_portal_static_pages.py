@@ -316,8 +316,17 @@ class PortalStaticPageTests(unittest.TestCase):
             script.index("function createCalendarColorDot"):
             script.index("function createGoogleConnectedCalendarsSection")
         ]
-        self.assertIn("if (!CALENDAR_COLOR_PATTERN.test(value)) {", color_dot)
+        self.assertIn("if (!value) {", color_dot)
         self.assertIn("return null;", color_dot)
+
+        # The source normalizer rebuilds each calendar field by field, so a
+        # colour it does not name is a colour that never reaches the row - the
+        # way the dots first shipped invisible.
+        source_normalizer = script[
+            script.index("function normalizeAgentCalendarSource"):
+            script.index("function getGoogleCalendarSource")
+        ]
+        self.assertIn("color: normalizeCalendarColor(calendar?.color),", source_normalizer)
 
     def test_calendar_picker_saves_with_the_portals_own_button(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

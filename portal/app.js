@@ -7157,9 +7157,14 @@ function getSelectedGoogleOAuthScopeIds(container) {
 // without a dot rather than putting an unchecked string into the page.
 const CALENDAR_COLOR_PATTERN = /^#[0-9a-f]{6}$/;
 
+function normalizeCalendarColor(value) {
+  const color = String(value || "").trim().toLowerCase();
+  return CALENDAR_COLOR_PATTERN.test(color) ? color : "";
+}
+
 function createCalendarColorDot(color) {
-  const value = String(color || "").trim().toLowerCase();
-  if (!CALENDAR_COLOR_PATTERN.test(value)) {
+  const value = normalizeCalendarColor(color);
+  if (!value) {
     return null;
   }
   const dot = document.createElement("span");
@@ -16063,6 +16068,10 @@ function normalizeAgentCalendarSource(source) {
         id: normalizeText(calendar?.id),
         label: normalizeText(calendar?.label) || normalizeText(calendar?.id),
         primary: Boolean(calendar?.primary),
+        // Every field a row draws has to be named here: this rebuilds each
+        // calendar rather than passing the server's object through, so a
+        // colour left out is a colour the picker never sees.
+        color: normalizeCalendarColor(calendar?.color),
       }))
       .filter((calendar) => calendar.id),
     // Which of the account's calendars a question about "my calendar" reads.
