@@ -5,6 +5,7 @@ import hashlib
 import secrets
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -537,7 +538,20 @@ CREATE TABLE IF NOT EXISTS account_facts (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Signing out has to outlive the process. Session tokens are signed rather
+-- than stored, so the only way to retire one before it expires is to remember
+-- that it was revoked; keeping that in memory handed a signed-out token back
+-- its access at the next restart. Only the hash is kept, so the table is
+-- useless to anyone who reads it, and rows are dropped once the token they
+-- name would have expired anyway.
+CREATE TABLE IF NOT EXISTS revoked_sessions (
+    token_hash TEXT PRIMARY KEY,
+    expires_at REAL NOT NULL,
+    revoked_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+CREATE INDEX IF NOT EXISTS idx_revoked_sessions_expires_at ON revoked_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_model_prices_is_active ON model_prices(is_active);
@@ -2935,6 +2949,41 @@ class PortalDatabase:
                 """,
                 (now, now, now, normalized_email),
             )
+
+    def revoke_session_token(self, token_hash: str, expires_at: float) -> None:
+        """Remember that a signed session token must no longer be accepted."""
+
+        normalized_hash = str(token_hash or "").strip()
+        if not normalized_hash:
+            return
+
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO revoked_sessions (token_hash, expires_at, revoked_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(token_hash) DO UPDATE SET
+                    expires_at = excluded.expires_at,
+                    revoked_at = excluded.revoked_at
+                """,
+                (normalized_hash, float(expires_at), now_iso()),
+            )
+            # Signing out is rare enough to carry the tidying for everyone: a
+            # revocation is pointless once the token it names has expired.
+            conn.execute("DELETE FROM revoked_sessions WHERE expires_at <= ?", (time.time(),))
+
+    def is_session_token_revoked(self, token_hash: str) -> bool:
+        normalized_hash = str(token_hash or "").strip()
+        if not normalized_hash:
+            return False
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM revoked_sessions WHERE token_hash = ? AND expires_at > ? LIMIT 1",
+                (normalized_hash, time.time()),
+            ).fetchone()
+
+        return row is not None
 
     def get_whatsapp_connection(self, email: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)

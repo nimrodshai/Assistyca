@@ -15841,6 +15841,20 @@ function pushAgentProposalNextStep(proposal, reply = "") {
     return;
   }
   const missingIndex = getAgentNextMissingQuestionIndex(proposal);
+  // Nothing after the cadence is worth asking about a one-off: the result
+  // arrives in the conversation, so there is no delivery to choose and no
+  // action to name. What comes before it still has to be answered, or the run
+  // would go off without knowing what it is looking for.
+  const frequencyIndex = getAgentQuestionFieldIndexByKey(proposal, "frequency");
+  if (
+    frequencyIndex >= 0
+    && (missingIndex < 0 || missingIndex > frequencyIndex)
+    && canRunAgentProposalOnceNow(proposal)
+    && agentTextSuggestsRunNow(getAgentProposalFieldValue(proposal, "frequency"))
+  ) {
+    void runAgentProposalOnceNow(proposal.id);
+    return;
+  }
   if (missingIndex >= 0) {
     pushAgentQuestion(proposal, missingIndex, reply || getAgentDefaultProposalQuestionText(proposal, missingIndex));
     return;
@@ -16500,6 +16514,16 @@ function getAgentMonthlyBatchScheduleActions(includeOneTime = false, options = {
   return actions;
 }
 
+function createAgentFieldChoiceActions(field) {
+  return Array.isArray(field?.actions)
+    ? field.actions.map((action) => (
+      typeof action === "string"
+        ? createAgentAction("choose", action)
+        : createAgentAction("choose", action.label, action.value || action.label, action.tone || "secondary")
+    ))
+    : [];
+}
+
 function filterAgentQuestionActions(actions) {
   const normalizedActions = Array.isArray(actions) ? actions.filter(Boolean) : [];
   return normalizedActions.length > 1 ? normalizedActions : [];
@@ -16527,6 +16551,18 @@ function getAgentContextualQuestionActions(proposal, questionIndex = 0, question
       return getAgentMonthlyBatchScheduleActions(false, { confirmCadence: true });
     }
     return [];
+  }
+
+  // "How often?" can be answered by not wanting a cadence at all. The one-off
+  // comes first because it is the least committal answer, and it is offered
+  // only where it can be honoured - a task this portal runs start to finish on
+  // its own. Asking someone to pick a schedule for work they wanted looked at
+  // once is asking the wrong question.
+  if (field?.key === "frequency" && canRunAgentProposalOnceNow(proposal)) {
+    return [
+      createAgentAction("run-proposal-once", "Just now", proposal?.id || ""),
+      ...createAgentFieldChoiceActions(field),
+    ];
   }
 
   return [];
@@ -16642,14 +16678,7 @@ function getAgentQuestionActions(proposal, questionIndex = 0, questionText = "",
   if (contextualActions.length) {
     return filterAgentQuestionActions(contextualActions);
   }
-  const fieldActions = Array.isArray(field?.actions)
-    ? field.actions.map((action) => (
-      typeof action === "string"
-        ? createAgentAction("choose", action)
-        : createAgentAction("choose", action.label, action.value || action.label, action.tone || "secondary")
-    ))
-    : [];
-  return filterAgentQuestionActions(fieldActions);
+  return filterAgentQuestionActions(createAgentFieldChoiceActions(field));
 }
 
 function getAgentApprovalActions(proposal) {
@@ -20833,6 +20862,18 @@ function setAgentProposalLifecycleStatus(proposal, lifecycleStatus) {
 function agentWebMonitorTextSuggestsManualOnly(value) {
   return /\b(?:manual(?:ly)?|manual[ _-]?only|on[ -]?demand|when i (?:ask|choose|want)|when (?:the )?user clicks?|run only when|run now)\b/i
     .test(String(value || ""));
+}
+
+// "Just now" answers "how often?" by asking for the work instead of a schedule
+// to do it on. It has to be told apart from "just once", which keeps the action
+// and leaves it to be run by hand: this one keeps nothing. What the run
+// produces still carries its own "Save as an action" button, so a one-off that
+// turns out to be worth keeping is one button away rather than gone.
+function agentTextSuggestsRunNow(value) {
+  const text = String(value || "").trim();
+  return /\b(?:just|right)\s+now\b/i.test(text)
+    || /\b(?:do|run|show|check) (?:it|this|them) now\b/i.test(text)
+    || /^\s*now\s*[.!]?\s*$/i.test(text);
 }
 
 function agentTextSuggestsOneTimeRun(value) {
@@ -25530,6 +25571,9 @@ function getAgentActionIntentText(action, value = "") {
   if (normalizedAction === "request-change") {
     return "Change something";
   }
+  if (normalizedAction === "run-proposal-once") {
+    return "Just now";
+  }
   if (normalizedAction === "open-setup") {
     return "Open setup";
   }
@@ -25682,6 +25726,14 @@ function handleAgentMessageAction(event) {
     persistClientState();
     renderAgentMessages();
     requestAgentProposalChanges(proposalId, proposalRevision);
+    return true;
+  }
+
+  if (action === "run-proposal-once") {
+    pushAgentActionIntentMessage(action, value, proposalId);
+    persistClientState();
+    renderAgentMessages();
+    void runAgentProposalOnceNow(proposalId);
     return true;
   }
 
@@ -27058,6 +27110,40 @@ function removeAgentMessageAction(messageId, actionId) {
 // A question gets an answer, not an action. The lookups run on the spot and
 // the result lands in this conversation; nothing is saved and nothing waits
 // for approval.
+// Which plans a one-off can carry out in full. A monitor or a reply assistant
+// is only ever itself once it is saved, so "just now" is not offered for them.
+function canRunAgentProposalOnceNow(proposal) {
+  return AGENT_ANSWER_RUN_TYPES.has(String(proposal?.type || "").trim());
+}
+
+// Run the plan once and keep none of it. The cadence field is dropped rather
+// than carried: it holds the words that asked for this run, and a run reading
+// "just now" as a month or a schedule would search for the wrong thing.
+async function runAgentProposalOnceNow(proposalId) {
+  const agent = getAgentWorkspace();
+  const proposal = agent.proposals.find((candidate) => candidate.id === proposalId);
+  if (!proposal || proposal.approved || proposal.status === "rejected") {
+    return false;
+  }
+  if (!canRunAgentProposalOnceNow(proposal)) {
+    return false;
+  }
+
+  const fields = { ...getAgentProposalFieldMap(proposal) };
+  delete fields.frequency;
+  // Rejected is what "no action came of this" already looks like here, and it
+  // is the status every sweep and every live question button reads. Clearing
+  // the active id would say nothing on top of it: the lookup behind it falls
+  // back to the last plan in the list, which is this one.
+  proposal.status = "rejected";
+  proposal.updatedAt = new Date().toISOString();
+
+  return runAgentAnswerNow(
+    { tasks: [{ proposalType: proposal.type, changes: { fields }, mode: "run" }] },
+    String(proposal.requestText || ""),
+  );
+}
+
 async function runAgentAnswerNow(turn, userText = "") {
   const tasks = getAgentAnswerRunTasks(turn);
   if (!tasks.length) {
@@ -30257,12 +30343,7 @@ function createAgentToolItem(feature) {
     : (needsWhatsAppDetails ? "Needs details" : "Available");
   copy.append(title, detail);
 
-  const arrow = document.createElement("span");
-  arrow.className = "agent-tool-arrow";
-  arrow.setAttribute("aria-hidden", "true");
-  arrow.textContent = "→";
-
-  item.append(icon, copy, arrow);
+  item.append(icon, copy);
   return item;
 }
 
@@ -30356,11 +30437,7 @@ function createAgentPlatformConnectionItem(connection) {
   detail.textContent = getPlatformConnectionStatus(connection).label;
   copy.append(title, detail);
 
-  const arrow = document.createElement("span");
-  arrow.className = "agent-tool-arrow";
-  arrow.setAttribute("aria-hidden", "true");
-  arrow.textContent = "→";
-  item.append(icon, copy, arrow);
+  item.append(icon, copy);
   return item;
 }
 

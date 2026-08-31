@@ -37,6 +37,25 @@ class PortalAuthSessionTests(unittest.TestCase):
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
 
+    def _restart_server(self) -> None:
+        """Rebuild the server over the same database, as a redeploy would."""
+
+        port = self.server.server_address[1]
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.server = create_server(
+            "127.0.0.1",
+            port,
+            self.root,
+            PortalConfig(
+                db_path=Path(self.temp_dir.name) / "portal.db",
+                session_secret="test-session-secret",
+            ),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
     def _verify_otp_and_get_cookie(self, email: str = "owner@example.com") -> str:
         code, _ = self.server.store.issue_challenge(email)
         request = urllib_request.Request(
@@ -66,7 +85,7 @@ class PortalAuthSessionTests(unittest.TestCase):
 
         self.assertTrue(payload["signedIn"])
         self.assertEqual(payload["email"], "owner@example.com")
-        self.assertTrue(str(payload.get("token", "")).strip())
+        self.assertNotIn("token", payload)
 
     def test_valid_cookie_wins_when_bearer_token_is_stale(self) -> None:
         cookie_value = self._verify_otp_and_get_cookie()
@@ -134,6 +153,55 @@ class PortalAuthSessionTests(unittest.TestCase):
         with urllib_request.urlopen(request) as response:
             self.assertEqual(response.status, 200)
             self.assertIn("Max-Age=0", response.headers.get("Set-Cookie", ""))
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/session",
+            headers={"Cookie": cookie_value},
+        )
+        try:
+            with urllib_request.urlopen(request) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            self.assertIn(exc.code, (401, 403))
+            payload = json.loads(exc.read().decode("utf-8"))
+
+        self.assertFalse(payload.get("signedIn"))
+
+    def test_verify_reply_carries_no_copy_of_the_session_token(self) -> None:
+        code, _ = self.server.store.issue_challenge("owner@example.com")
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/otp/verify",
+            data=json.dumps({"email": "owner@example.com", "code": code}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib_request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            cookie_header = response.headers.get("Set-Cookie", "")
+
+        # The cookie is the only place the token is allowed to live. A copy in
+        # the body would be readable by any script on the page, which is what
+        # the httpOnly cookie exists to prevent.
+        self.assertIn(f"{SESSION_COOKIE_NAME}=", cookie_header)
+        self.assertNotIn("sessionToken", payload)
+        self.assertNotIn("token", payload)
+
+    def test_signing_out_still_holds_after_the_server_restarts(self) -> None:
+        cookie_value = self._verify_otp_and_get_cookie()
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/logout",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Cookie": cookie_value},
+            method="POST",
+        )
+        with urllib_request.urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+
+        # A restart empties everything the process was holding. The revocation
+        # has to come back from the database, or the signed-out token works
+        # again for the rest of its six months.
+        self._restart_server()
 
         request = urllib_request.Request(
             f"{self.base_url}/api/auth/session",

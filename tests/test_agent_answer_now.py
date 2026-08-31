@@ -1309,6 +1309,72 @@ class AgentAnswerChatTests(unittest.TestCase):
         self.assertIn("if (tasks.length === 1) {", runner)
         self.assertIn("keepActions: messageActions.length > 0", runner)
 
+    def test_a_cadence_question_offers_running_it_once_instead(self) -> None:
+        """"How often?" is answerable by not wanting a schedule at all."""
+
+        chips = self.script[
+            self.script.index("function getAgentContextualQuestionActions"):
+            self.script.index("function getAgentQuestionFieldIndexFromText")
+        ]
+
+        # The one-off comes first, because it is the least committal answer.
+        self.assertIn('createAgentAction("run-proposal-once", "Just now"', chips)
+        self.assertLess(
+            chips.index('"run-proposal-once"'),
+            chips.index("createAgentFieldChoiceActions(field)"),
+        )
+        # Offered only where it can be honoured. A monitor is only itself once
+        # it is saved, so a one-off is never offered in its place.
+        self.assertIn("canRunAgentProposalOnceNow(proposal)", chips)
+        self.assertIn(
+            "return AGENT_ANSWER_RUN_TYPES.has(String(proposal?.type || \"\").trim());",
+            self.script,
+        )
+        # The button says back what was chosen rather than a proposal id.
+        self.assertIn('if (action === "run-proposal-once") {', self.script)
+        self.assertIn('if (normalizedAction === "run-proposal-once") {', self.script)
+
+    def test_running_it_once_keeps_none_of_the_plan(self) -> None:
+        runner = self.script[
+            self.script.index("async function runAgentProposalOnceNow"):
+            self.script.index("async function runAgentAnswerNow")
+        ]
+
+        # A one-off saves nothing, so the plan ends here rather than being
+        # created on no schedule and left behind in the actions list.
+        self.assertIn('proposal.status = "rejected";', runner)
+        self.assertNotIn("approveAgentProposal", runner)
+        # The cadence field holds the words that asked for this run, and a run
+        # reading "just now" as a month would search for the wrong thing.
+        self.assertIn("delete fields.frequency;", runner)
+        self.assertIn('mode: "run"', runner)
+
+    def test_a_cadence_answered_with_just_now_runs_rather_than_asks(self) -> None:
+        next_step = self.script[
+            self.script.index("function pushAgentProposalNextStep"):
+            self.script.index("function getAgentQuestionFieldIndexByKey")
+        ]
+
+        self.assertIn(
+            'agentTextSuggestsRunNow(getAgentProposalFieldValue(proposal, "frequency"))',
+            next_step,
+        )
+        self.assertIn("void runAgentProposalOnceNow(proposal.id);", next_step)
+        # It has to beat both the questions after the cadence and the offer to
+        # set the plan up, or a one-off is asked about a delivery channel it
+        # does not have and then offered as an action anyway.
+        self.assertLess(
+            next_step.index("runAgentProposalOnceNow"),
+            next_step.index("pushAgentQuestion(proposal, missingIndex"),
+        )
+        self.assertLess(
+            next_step.index("runAgentProposalOnceNow"),
+            next_step.index("pushAgentApprovalPrompt"),
+        )
+        # What comes before the cadence still has to be answered, or the run
+        # goes off without knowing what it is looking for.
+        self.assertIn("(missingIndex < 0 || missingIndex > frequencyIndex)", next_step)
+
     def test_a_result_button_outlives_the_messages_after_it(self) -> None:
         # "Read PDF" has to still work once the conversation has moved on.
         resolver = self.script[
