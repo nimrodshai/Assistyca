@@ -5177,6 +5177,10 @@ body[data-modal="billing"] .app-shell {
 /* The card is the row, not the link inside it, so the menu button sits within
    the same frame as the name it belongs to. */
 .agent-folder-file-row {
+  /* A file row is held to pick it up, so a held finger must not also start
+     selecting its name or raise the phone's own menu over it. */
+  -webkit-touch-callout: none;
+  user-select: none;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -5257,6 +5261,123 @@ body[data-modal="billing"] .app-shell {
 
 .agent-folder-file-menu-button svg {
   pointer-events: none;
+}
+
+/* Carrying a row somewhere else.
+
+   The row that is being carried stays where it was, faded, so the panel does
+   not reshuffle itself under the thing being moved; what follows the pointer
+   is a small copy of it. */
+.agent-folder-item.is-lifted,
+.agent-folder-file-row.is-lifted {
+  transform: scale(1.02);
+  border-color: rgba(15, 118, 110, 0.34);
+  box-shadow: 0 14px 30px rgba(25, 38, 54, 0.16);
+}
+
+.agent-folder-item.is-dragging,
+.agent-folder-file-row.is-dragging {
+  opacity: 0.42;
+  transform: none;
+  box-shadow: none;
+}
+
+/* The folder it would land in, if it were let go here. A ring drawn outside
+   the card rather than a shadow, so it reads at a glance against the row it
+   is sitting on. */
+.agent-folder-item.is-drop-target {
+  border-color: rgba(15, 118, 110, 0.55);
+  background: rgba(15, 118, 110, 0.09);
+  outline: 2px solid rgba(15, 118, 110, 0.34);
+  outline-offset: -1px;
+}
+
+.agent-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1200;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  max-width: min(17rem, 68vw);
+  padding: 0.46rem 0.62rem;
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 600;
+  background: #ffffff;
+  border: 1px solid rgba(15, 118, 110, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 16px 34px rgba(18, 28, 42, 0.22);
+  /* Held just off the pointer, and never in the way of what is under it. */
+  transform: translate3d(-999px, -999px, 0);
+  transform-origin: top left;
+  margin: 0.6rem 0 0 0.6rem;
+  pointer-events: none;
+  transition: opacity 140ms ease, border-color 140ms ease;
+}
+
+/* Nowhere to land here: it says so rather than waiting for the drop to do
+   nothing. */
+.agent-drag-ghost.is-blocked {
+  opacity: 0.55;
+  border-color: rgba(20, 28, 38, 0.16);
+}
+
+.agent-drag-ghost .agent-folder-icon {
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 9px;
+}
+
+.agent-drag-ghost .agent-folder-icon svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-drag-ghost-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A folder inside another one has somewhere to come out to, and nothing in the
+   panel stands for "not in any folder". So while one is being carried, this
+   does. */
+.agent-drop-root {
+  position: fixed;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 0.62rem 0.7rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: center;
+  /* Opaque: it floats over the last rows of the list, and a bar you can read
+     folder names through is a bar you cannot read. */
+  background: #f2f7f6;
+  border: 1px dashed rgba(15, 118, 110, 0.4);
+  border-radius: 12px;
+  box-shadow: 0 12px 26px rgba(18, 28, 42, 0.16);
+}
+
+.agent-drop-root.is-drop-target {
+  color: var(--accent);
+  background: #dff0ed;
+  border-style: solid;
+  border-color: rgba(15, 118, 110, 0.55);
+}
+
+/* Nothing on the page gets selected or dragged away while a row is in hand. */
+body.is-agent-dragging {
+  cursor: grabbing;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* The menu floats over the panel: an open folder clips what spills out of it,
@@ -5631,8 +5752,15 @@ body[data-modal="billing"] .app-shell {
   .agent-folder-file-row,
   .agent-folder-file-menu-button,
   .agent-file-menu,
+  .agent-drag-ghost,
   .agent-file-move-option {
     transition: none;
+  }
+
+  /* A lifted row still says it is lifted; it just does not grow to say it. */
+  .agent-folder-item.is-lifted,
+  .agent-folder-file-row.is-lifted {
+    transform: none;
   }
 
   /* A folder still opens and closes; it just does it at once. */
@@ -11785,6 +11913,39 @@ body.is-chat-view {
 :root[data-theme="dark"] .agent-folder-file-menu-button:focus-visible,
 :root[data-theme="dark"] .agent-folder-file-menu-button[aria-expanded="true"] {
   background: rgba(55, 184, 171, 0.14);
+}
+
+:root[data-theme="dark"] .agent-drag-ghost {
+  background: #141d26;
+  border-color: rgba(55, 184, 171, 0.42);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.55);
+}
+
+:root[data-theme="dark"] .agent-drag-ghost.is-blocked {
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .agent-folder-item.is-lifted,
+:root[data-theme="dark"] .agent-folder-file-row.is-lifted {
+  border-color: rgba(55, 184, 171, 0.45);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme="dark"] .agent-folder-item.is-drop-target {
+  border-color: rgba(55, 184, 171, 0.6);
+  background: rgba(55, 184, 171, 0.13);
+  outline-color: rgba(55, 184, 171, 0.42);
+}
+
+:root[data-theme="dark"] .agent-drop-root {
+  background: #16222b;
+  border-color: rgba(55, 184, 171, 0.4);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme="dark"] .agent-drop-root.is-drop-target {
+  background: #1c3b3c;
+  border-color: rgba(55, 184, 171, 0.7);
 }
 
 :root[data-theme="dark"] .agent-file-menu {

@@ -18113,12 +18113,20 @@ function createAgentFolderFileRow(folder, file) {
 
   const row = document.createElement("li");
   row.className = "agent-folder-file-row";
+  // The row says which file it stands for, so a press anywhere on it - a
+  // right-click, a long press, the start of a drag - knows what it has hold
+  // of without having to reach into the button at the end of it.
+  row.dataset.agentFileName = name;
+  row.dataset.agentFileFolder = normalizeAgentTextItem(folder?.name, "");
 
   const link = document.createElement("a");
   link.className = "agent-folder-file";
   link.href = href;
   link.target = "_blank";
   link.rel = "noopener noreferrer";
+  // Dragging a file here moves it between folders. Left alone, the browser
+  // would offer to drag its URL somewhere instead.
+  link.draggable = false;
 
   const label = document.createElement("span");
   label.className = "agent-folder-file-name";
@@ -18230,7 +18238,12 @@ function createAgentFolderItem(node) {
 
 function updateAgentFolderItem(item, node) {
   const isOpen = isAgentFolderNodeOpen(node);
+  // This card is being carried right now, or something is being carried onto
+  // it. A render that reset the class list would drop that mid-drag - and a
+  // render is exactly what opening a folder under the pointer causes.
+  const dragging = AGENT_DRAG_CLASSES.filter((name) => item.classList.contains(name));
   item.className = `agent-folder-item is-${node.type}`;
+  item.classList.add(...dragging);
   item.classList.toggle("is-open", isOpen);
   item.classList.toggle("is-group", node.children.length > 0);
   item.dataset.agentFolderPath = node.path;
@@ -18650,21 +18663,528 @@ function getAgentFolderArchiveName(response, path) {
 // out of it - which is exactly what a menu on its last row does.
 let agentMenu = null;
 
-// Long enough that a scroll does not become a menu, short enough that holding
+// ---------------------------------------------------------------------------
+// One press, three answers
+//
+// A file lands in the folder the run that made it was pointed at, and a folder
+// is filed under whatever heading made sense when it was made. Correcting
+// either meant opening a menu and picking a destination off a list. Dragging
+// one row onto another says the same thing in one movement, in the place where
+// the mistake is actually visible.
+//
+// So a press on a row waits to find out what it is. Let go where it started,
+// it opens the row. Held still, it lifts it, and moving after that carries it.
+// Let go without moving, it asks for the row's own actions - which is why the
+// menu now opens when the finger comes up rather than the moment the hold is
+// long enough: a menu that appeared under the finger could never have become
+// a drag. A mouse has nothing to wait for, and keeps the right-click it has
+// everywhere else.
+// ---------------------------------------------------------------------------
+
+// Long enough that a scroll does not become a hold, short enough that holding
 // a row feels like it did something.
 const AGENT_LONG_PRESS_MS = 480;
 const AGENT_LONG_PRESS_SLOP = 10;
+// A held finger is already still, so very little movement means "carry this".
+// A mouse has to clear the wobble of pressing the button down.
+const AGENT_DRAG_SLOP_TOUCH = 4;
+const AGENT_DRAG_SLOP_MOUSE = 7;
+// Resting over a closed folder opens it, so something can be carried into a
+// folder that is itself inside one.
+const AGENT_DRAG_SPRING_MS = 620;
+// The panel scrolls under whatever is being carried this close to its edge,
+// which is the only way to reach a folder that is off screen.
+const AGENT_DRAG_EDGE = 64;
+const AGENT_DRAG_EDGE_SPEED = 18;
 
-let agentFolderPressTimer = 0;
-let agentFolderPressOrigin = null;
-let agentFolderPressFired = false;
+// What a card says about itself while a drag is going on. These survive a
+// render, because the render does not know a drag is happening.
+const AGENT_DRAG_CLASSES = ["is-lifted", "is-dragging", "is-drop-target"];
 
-function cancelAgentFolderPress() {
-  if (agentFolderPressTimer) {
-    window.clearTimeout(agentFolderPressTimer);
+// The press in progress, if there is one: what it has hold of, and what it has
+// turned into so far.
+let agentPress = null;
+// When a press last spent the click that ends it. A press that lifted,
+// carried, or opened a menu has already used that click, and letting it
+// through would open the folder underneath it or follow the file's link. It
+// is a moment rather than a flag because the click it is waiting for does not
+// always arrive - a drop that ends outside the list never produces one, and
+// the next honest click must not pay for that.
+let agentPressUsedClickAt = 0;
+const AGENT_PRESS_CLICK_WINDOW_MS = 700;
+
+// What a press at this point has hold of. The ⋮ button and the tag chips are
+// controls of their own, so a press that lands on one belongs to them.
+function readAgentPressTarget(target) {
+  const node = target?.closest ? target : null;
+  if (!node || !elements.agentFolderList?.contains(node)) {
+    return null;
   }
-  agentFolderPressTimer = 0;
-  agentFolderPressOrigin = null;
+  if (node.closest("[data-agent-file-menu]") || node.closest("[data-agent-folder-tag]")) {
+    return null;
+  }
+
+  const fileRow = node.closest("[data-agent-file-name]");
+  if (fileRow) {
+    const folder = normalizeAgentTextItem(fileRow.dataset.agentFileFolder, "");
+    const name = normalizeAgentTextItem(fileRow.dataset.agentFileName, "");
+    if (!folder || !name) {
+      return null;
+    }
+    return { kind: "file", card: fileRow, row: fileRow, folder, name, path: "" };
+  }
+
+  const openButton = node.closest("[data-agent-folder-open]");
+  if (openButton) {
+    const path = normalizeAgentTextItem(openButton.dataset.agentFolderOpen, "");
+    if (!path) {
+      return null;
+    }
+    return {
+      kind: "folder",
+      card: openButton.closest(".agent-folder-item") || openButton,
+      row: openButton,
+      folder: "",
+      name: "",
+      path,
+    };
+  }
+  return null;
+}
+
+function agentPressLabel(press) {
+  return press.kind === "file"
+    ? press.name
+    : (getAgentFolderPathSegments(press.path).pop() || press.path);
+}
+
+function startAgentPress(event) {
+  endAgentPress();
+  agentPressUsedClickAt = 0;
+  // A right-click is the menu, not a press, and a middle click is nothing.
+  if (event.button) {
+    return;
+  }
+  const press = readAgentPressTarget(event.target);
+  if (!press) {
+    return;
+  }
+
+  agentPress = {
+    ...press,
+    pointerId: event.pointerId,
+    pointerType: event.pointerType || "mouse",
+    origin: { x: event.clientX, y: event.clientY },
+    timer: 0,
+    lifted: false,
+    drag: null,
+  };
+  if (agentPress.pointerType !== "mouse") {
+    agentPress.timer = window.setTimeout(liftAgentPress, AGENT_LONG_PRESS_MS);
+  }
+}
+
+// The row comes up off the panel and stays under the finger. Nothing has
+// happened to it yet - this is the moment it becomes something that can be
+// carried, or asked what it can do.
+function liftAgentPress() {
+  if (!agentPress) {
+    return;
+  }
+  agentPress.timer = 0;
+  agentPress.lifted = true;
+  agentPress.card?.classList.add("is-lifted");
+  try {
+    navigator.vibrate?.(8);
+  } catch {
+    // A phone that will not buzz is not a reason to drop the gesture.
+  }
+}
+
+function handleAgentPressMove(event) {
+  if (!agentPress || event.pointerId !== agentPress.pointerId) {
+    return;
+  }
+  if (agentPress.drag) {
+    updateAgentDrag(event.clientX, event.clientY);
+    return;
+  }
+
+  const moved = Math.hypot(
+    event.clientX - agentPress.origin.x,
+    event.clientY - agentPress.origin.y,
+  );
+  if (agentPress.pointerType === "mouse") {
+    if (moved > AGENT_DRAG_SLOP_MOUSE) {
+      beginAgentDrag(event);
+    }
+    return;
+  }
+  if (agentPress.lifted) {
+    if (moved > AGENT_DRAG_SLOP_TOUCH) {
+      beginAgentDrag(event);
+    }
+    return;
+  }
+  // A press that turns into a scroll was not a press.
+  if (moved > AGENT_LONG_PRESS_SLOP) {
+    endAgentPress();
+  }
+}
+
+function handleAgentPressUp(event) {
+  const press = agentPress;
+  if (!press || event.pointerId !== press.pointerId) {
+    return;
+  }
+
+  if (press.drag) {
+    agentPressUsedClickAt = performance.now();
+    dropAgentDrag();
+    endAgentPress();
+    return;
+  }
+  if (press.lifted) {
+    // Held and let go without going anywhere: the row is being asked what it
+    // can do, and the menu opens where the finger was.
+    agentPressUsedClickAt = performance.now();
+    const anchor = pointerAnchorRect(event);
+    endAgentPress();
+    openAgentRowMenu(press, anchor);
+    return;
+  }
+  endAgentPress();
+}
+
+function handleAgentPressCancel() {
+  if (agentPress?.drag || agentPress?.lifted) {
+    agentPressUsedClickAt = performance.now();
+  }
+  endAgentPress();
+}
+
+function endAgentPress() {
+  const press = agentPress;
+  if (!press) {
+    return;
+  }
+  if (press.timer) {
+    window.clearTimeout(press.timer);
+  }
+  if (press.drag) {
+    teardownAgentDrag(press);
+  }
+  press.card?.classList.remove("is-lifted");
+  agentPress = null;
+}
+
+// A finger that is holding a row is not scrolling with it. Only a listener
+// that asked not to be passive can say so.
+function blockAgentDragScroll(event) {
+  if (agentPress && (agentPress.lifted || agentPress.drag) && event.cancelable) {
+    event.preventDefault();
+  }
+}
+
+function handleAgentDragKeyDown(event) {
+  if (event.key !== "Escape" || !agentPress?.drag) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  agentPressUsedClickAt = performance.now();
+  endAgentPress();
+  setStatus("Left it where it was.");
+}
+
+// The row's own actions, wherever the gesture asking for them happened.
+function openAgentRowMenu(press, anchor) {
+  if (press.kind === "file") {
+    const button = press.row?.querySelector?.("[data-agent-file-menu]");
+    if (button) {
+      openAgentFileMenu(button, anchor);
+    }
+    return;
+  }
+  if (press.row?.isConnected) {
+    openAgentFolderMenu(press.row, anchor);
+  }
+}
+
+// What is being carried, drawn small and kept under the pointer. The row it
+// came from stays where it is, greyed, so the panel does not reshuffle itself
+// underneath the thing being moved.
+function createAgentDragGhost(press) {
+  const ghost = document.createElement("div");
+  ghost.className = `agent-drag-ghost is-${press.kind}`;
+  ghost.setAttribute("aria-hidden", "true");
+
+  const icon = press.kind === "folder"
+    ? createAgentFolderIcon()
+    : createAgentDragFileIcon();
+  const label = document.createElement("span");
+  label.className = "agent-drag-ghost-label";
+  label.textContent = agentPressLabel(press);
+  ghost.append(icon, label);
+  return ghost;
+}
+
+function createAgentDragFileIcon() {
+  const icon = document.createElement("span");
+  icon.className = "agent-folder-icon is-file";
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  svg.append(createSvgElement("path", {
+    d: "M6.5 4.5h7l4.5 4.5v10a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 19V6a1.5 1.5 0 0 1 1.5-1.5Zm7 0V9H18",
+  }));
+  icon.append(svg);
+  return icon;
+}
+
+function beginAgentDrag(event) {
+  const press = agentPress;
+  if (!press || press.drag) {
+    return;
+  }
+
+  const ghost = createAgentDragGhost(press);
+  document.body.append(ghost);
+  press.drag = {
+    ghost,
+    rootZone: null,
+    target: null,
+    dropPath: null,
+    hoverPath: null,
+    hoverSince: 0,
+    scroller: getAgentDragScroller(),
+    point: { x: event.clientX, y: event.clientY },
+    frame: 0,
+  };
+
+  press.card?.classList.add("is-dragging");
+  document.body.classList.add("is-agent-dragging");
+  closeAgentMenu();
+  showAgentDragRootZone(press);
+  // The pointer will leave the row it started on almost immediately, and the
+  // events have to keep coming from somewhere.
+  try {
+    elements.agentFolderList?.setPointerCapture(press.pointerId);
+  } catch {
+    // A browser that will not hand over the pointer still has the document
+    // listeners, which is enough for a mouse.
+  }
+  updateAgentDrag(event.clientX, event.clientY);
+  press.drag.frame = window.requestAnimationFrame(stepAgentDragScroll);
+}
+
+function updateAgentDrag(x, y) {
+  const press = agentPress;
+  const drag = press?.drag;
+  if (!drag) {
+    return;
+  }
+
+  drag.point = { x, y };
+  drag.ghost.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+
+  const element = document.elementFromPoint(x, y);
+  const zone = element?.closest?.("[data-agent-drop-root]") || null;
+  const card = zone ? null : (element?.closest?.("[data-agent-folder-path]") || null);
+  // The top-level strip stands for "no folder at all", which is a real
+  // destination for a folder and a path of its own for everything else.
+  const path = zone ? "" : (card ? normalizeAgentTextItem(card.dataset.agentFolderPath, "") : null);
+  const allowed = path !== null && isAgentDropAllowed(press, path);
+  const target = allowed ? (zone || card) : null;
+
+  if (drag.target !== target) {
+    drag.target?.classList.remove("is-drop-target");
+    target?.classList.add("is-drop-target");
+    drag.target = target;
+  }
+  drag.dropPath = allowed ? path : null;
+  drag.ghost.classList.toggle("is-blocked", !allowed);
+
+  // Resting over a closed folder opens it, the way holding something over one
+  // does in any other file panel.
+  const hovering = allowed ? path : null;
+  if (drag.hoverPath !== hovering) {
+    drag.hoverPath = hovering;
+    drag.hoverSince = hovering ? performance.now() : 0;
+    return;
+  }
+  if (hovering && drag.hoverSince && performance.now() - drag.hoverSince > AGENT_DRAG_SPRING_MS) {
+    drag.hoverSince = 0;
+    springOpenAgentFolder(hovering);
+  }
+}
+
+function springOpenAgentFolder(path) {
+  if (!path || isAgentFolderPathOpen(path)) {
+    return;
+  }
+  const node = findAgentFolderNode(path);
+  if (!node) {
+    return;
+  }
+  setAgentFolderPathOpen(path, true);
+  renderAgentFolders();
+  if (node.folder) {
+    void loadAgentFolderContents(node.folder.name);
+  }
+}
+
+// Where this can land. A file has to end up in a folder, and not the one it is
+// already in. A folder cannot be filed inside itself, inside anything it
+// holds, or back where it already sits.
+function isAgentDropAllowed(press, path) {
+  const target = getAgentFolderPathSegments(path).join("/").toLowerCase();
+  if (press.kind === "file") {
+    return Boolean(target)
+      && target !== getAgentFolderPathSegments(press.folder).join("/").toLowerCase();
+  }
+
+  const segments = getAgentFolderPathSegments(press.path);
+  const current = segments.join("/").toLowerCase();
+  const parent = segments.slice(0, -1).join("/").toLowerCase();
+  if (target === current || target.startsWith(`${current}/`)) {
+    return false;
+  }
+  return target !== parent;
+}
+
+// A folder inside another one has somewhere to come out to, and nothing on
+// screen stands for "not in any folder". So while one is being carried, a
+// strip appears that does.
+//
+// It floats over the foot of the panel rather than sitting in the list: a bar
+// pushed into the flow would shift every row down by its own height, in the
+// middle of a drag, with the pointer already over one of them.
+function showAgentDragRootZone(press) {
+  if (press.kind !== "folder" || getAgentFolderPathSegments(press.path).length < 2) {
+    return;
+  }
+  const list = elements.agentFolderList;
+  if (!list) {
+    return;
+  }
+
+  const zone = document.createElement("div");
+  zone.className = "agent-drop-root";
+  zone.dataset.agentDropRoot = "true";
+  zone.textContent = `Move “${agentPressLabel(press)}” out to the top level`;
+
+  // As wide as the list it belongs to, at the bottom of whatever is showing
+  // that list - which on a phone is the rail rather than the window.
+  const bounds = list.getBoundingClientRect();
+  const scroller = press.drag.scroller;
+  const view = scroller?.getBoundingClientRect ? scroller.getBoundingClientRect() : null;
+  const floor = Math.min(view ? view.bottom : window.innerHeight, window.innerHeight);
+  zone.style.left = `${Math.round(bounds.left)}px`;
+  zone.style.width = `${Math.round(bounds.width)}px`;
+  zone.style.bottom = `${Math.max(10, Math.round(window.innerHeight - floor + 10))}px`;
+
+  document.body.append(zone);
+  press.drag.rootZone = zone;
+}
+
+// The list the panel scrolls in, which is not always the window: on a phone
+// the rail scrolls inside itself.
+function getAgentDragScroller() {
+  let element = elements.agentFolderList?.parentElement || null;
+  while (element && element !== document.body) {
+    const overflow = window.getComputedStyle(element).overflowY;
+    if (/(auto|scroll|overlay)/.test(overflow) && element.scrollHeight > element.clientHeight + 1) {
+      return element;
+    }
+    element = element.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+function stepAgentDragScroll() {
+  const drag = agentPress?.drag;
+  if (!drag) {
+    return;
+  }
+  drag.frame = window.requestAnimationFrame(stepAgentDragScroll);
+
+  const scroller = drag.scroller;
+  if (!scroller) {
+    return;
+  }
+  const bounds = scroller === document.scrollingElement || scroller === document.documentElement
+    ? { top: 0, bottom: window.innerHeight }
+    : scroller.getBoundingClientRect();
+
+  const { y } = drag.point;
+  let step = 0;
+  if (y < bounds.top + AGENT_DRAG_EDGE) {
+    step = -AGENT_DRAG_EDGE_SPEED * ((bounds.top + AGENT_DRAG_EDGE - y) / AGENT_DRAG_EDGE);
+  } else if (y > bounds.bottom - AGENT_DRAG_EDGE) {
+    step = AGENT_DRAG_EDGE_SPEED * ((y - (bounds.bottom - AGENT_DRAG_EDGE)) / AGENT_DRAG_EDGE);
+  }
+  if (!step) {
+    return;
+  }
+
+  const before = scroller.scrollTop;
+  scroller.scrollTop = before + step;
+  // The panel moved under the pointer, so what is under it has changed.
+  if (scroller.scrollTop !== before) {
+    updateAgentDrag(drag.point.x, drag.point.y);
+  }
+}
+
+function teardownAgentDrag(press) {
+  const drag = press?.drag;
+  if (!drag) {
+    return;
+  }
+  press.drag = null;
+  if (drag.frame) {
+    window.cancelAnimationFrame(drag.frame);
+  }
+  drag.ghost.remove();
+  drag.rootZone?.remove();
+  drag.target?.classList.remove("is-drop-target");
+  press.card?.classList.remove("is-dragging");
+  document.body.classList.remove("is-agent-dragging");
+  try {
+    elements.agentFolderList?.releasePointerCapture(press.pointerId);
+  } catch {
+    // The capture may already have gone with the pointer.
+  }
+}
+
+// Let go. Where it landed is a folder path, or the top level as an empty one,
+// and the move itself is the same request the menu makes.
+function dropAgentDrag() {
+  const press = agentPress;
+  const destination = press?.drag?.dropPath ?? null;
+  teardownAgentDrag(press);
+  if (!press || destination === null) {
+    return;
+  }
+
+  if (press.kind === "folder") {
+    const segments = getAgentFolderPathSegments(press.path);
+    const segment = segments[segments.length - 1] || press.path;
+    void moveAgentFolderPath(
+      segments.join("/"),
+      destination ? `${destination}/${segment}` : segment,
+    );
+    return;
+  }
+
+  const source = (Array.isArray(getAgentWorkspace().folders) ? getAgentWorkspace().folders : [])
+    .find((folder) => String(folder?.name || "").trim().toLowerCase() === press.folder.toLowerCase());
+  // The file is about to be in there, so the folder it landed in opens to
+  // show it rather than swallowing it.
+  openAgentFolderPath(destination);
+  void moveAgentFolderFile(press.folder, press.name, destination, source?.type);
 }
 
 // A right-click or a long press has no control to hang a menu off, only the
@@ -18819,7 +19339,7 @@ function openAgentMenu({ key, label, options, owner = null, anchor = null, toggl
   options[0].focus();
 }
 
-function openAgentFileMenu(button) {
+function openAgentFileMenu(button, anchor = null) {
   const fileName = normalizeAgentTextItem(button.dataset.agentFileMenu, "");
   const folderName = normalizeAgentTextItem(button.dataset.agentFileFolder, "");
   const href = normalizeAgentNotificationHref(button.dataset.agentFileUrl);
@@ -18844,7 +19364,11 @@ function openAgentFileMenu(button) {
   openAgentMenu({
     key: `file:${folderName}/${fileName}`,
     label: `Options for ${fileName}`,
-    owner: button,
+    // Raised by a right-click or a long press there is no button to hang it
+    // off, only the point the gesture happened at.
+    owner: anchor ? null : button,
+    anchor,
+    toggle: !anchor,
     options: [
       download,
       createAgentMenuOption("move", "Move to…", () => {
@@ -34483,6 +35007,19 @@ function bindEvents() {
   }
 
   if (elements.agentFolderList) {
+    // A press that lifted a row, carried it somewhere, or opened its menu has
+    // already spent the click that ends it. Swallowing it here, before
+    // anything else sees it, is what stops a dropped file from also opening
+    // in a new tab.
+    elements.agentFolderList.addEventListener("click", (event) => {
+      if (performance.now() - agentPressUsedClickAt > AGENT_PRESS_CLICK_WINDOW_MS) {
+        return;
+      }
+      agentPressUsedClickAt = 0;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+
     elements.agentFolderList.addEventListener("click", (event) => {
       const fileMenuButton = event.target?.closest?.("[data-agent-file-menu]");
       if (fileMenuButton && elements.agentFolderList.contains(fileMenuButton)) {
@@ -34500,71 +35037,51 @@ function bindEvents() {
       if (!openButton || !elements.agentFolderList.contains(openButton)) {
         return;
       }
-      // A long press already did something with this row, and the tap that
-      // ends it must not also open the folder underneath the menu.
-      if (agentFolderPressFired) {
-        agentFolderPressFired = false;
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
       toggleAgentFolderOpen(
         openButton.dataset.agentFolderOpen || "",
         openButton.dataset.agentFolderName || "",
       );
     });
 
-    // A folder's own actions are behind the gestures a folder has anywhere
-    // else: a right-click with a mouse, a long press with a finger.
+    // What a row can do is behind the gestures a file or a folder has
+    // anywhere else: a right-click with a mouse, a long press with a finger.
     elements.agentFolderList.addEventListener("contextmenu", (event) => {
-      const openButton = event.target?.closest?.("[data-agent-folder-open]");
-      if (!openButton || !elements.agentFolderList.contains(openButton)) {
+      const press = readAgentPressTarget(event.target);
+      if (!press) {
         return;
       }
       event.preventDefault();
-      cancelAgentFolderPress();
+      // A phone raises this on its own once a press has been held long enough,
+      // which is the same press that is about to lift the row. Its own menu
+      // stays shut - ours opens when the finger comes up, and only if the row
+      // did not go anywhere in between.
+      if (agentPress && agentPress.pointerType !== "mouse") {
+        return;
+      }
+      endAgentPress();
       // The keyboard raises this too - Shift+F10, or the menu key - and gives
       // no pointer position to hang it off, so the row itself is the anchor.
       const anchor = event.clientX || event.clientY
         ? pointerAnchorRect(event)
-        : openButton.getBoundingClientRect();
-      openAgentFolderMenu(openButton, anchor);
+        : press.row.getBoundingClientRect();
+      openAgentRowMenu(press, anchor);
     });
 
-    elements.agentFolderList.addEventListener("pointerdown", (event) => {
-      if (event.pointerType === "mouse") {
-        return;
-      }
-      const openButton = event.target?.closest?.("[data-agent-folder-open]");
-      if (!openButton || !elements.agentFolderList.contains(openButton)) {
-        return;
-      }
-      cancelAgentFolderPress();
-      agentFolderPressOrigin = { x: event.clientX, y: event.clientY };
-      const anchor = pointerAnchorRect(event);
-      agentFolderPressTimer = window.setTimeout(() => {
-        agentFolderPressTimer = 0;
-        agentFolderPressFired = true;
-        openAgentFolderMenu(openButton, anchor);
-      }, AGENT_LONG_PRESS_MS);
-    });
-
-    // A press that turns into a scroll, or that ends early, was not a press.
-    elements.agentFolderList.addEventListener("pointermove", (event) => {
-      if (!agentFolderPressTimer || !agentFolderPressOrigin) {
-        return;
-      }
-      const moved = Math.hypot(
-        event.clientX - agentFolderPressOrigin.x,
-        event.clientY - agentFolderPressOrigin.y,
-      );
-      if (moved > AGENT_LONG_PRESS_SLOP) {
-        cancelAgentFolderPress();
-      }
-    });
-    for (const name of ["pointerup", "pointercancel", "pointerleave", "scroll"]) {
-      elements.agentFolderList.addEventListener(name, cancelAgentFolderPress, true);
-    }
+    // Everything a press can turn into. The move and release listeners are on
+    // the document because the pointer leaves the row it started on the moment
+    // the row is being carried.
+    elements.agentFolderList.addEventListener("pointerdown", startAgentPress);
+    document.addEventListener("pointermove", handleAgentPressMove);
+    document.addEventListener("pointerup", handleAgentPressUp);
+    document.addEventListener("pointercancel", handleAgentPressCancel);
+    document.addEventListener("keydown", handleAgentDragKeyDown, true);
+    // A finger holding a row is not scrolling the panel with it, and only a
+    // listener that asked not to be passive can say so.
+    document.addEventListener("touchmove", blockAgentDragScroll, { passive: false });
+    // The panel drags rows between folders. Left alone, the browser would
+    // offer to drag the text and the file links out of it instead.
+    elements.agentFolderList.addEventListener("dragstart", (event) => event.preventDefault());
+    window.addEventListener("blur", handleAgentPressCancel);
   }
 
   if (elements.agentFolderCreateToggleButton) {
