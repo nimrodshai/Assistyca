@@ -2844,6 +2844,7 @@ function openAuthAlert(title, message, options = {}) {
   if (elements.authAlertDialog) {
     elements.authAlertDialog.dataset.mode = iconMode === "spinner" ? "loading" : "default";
     elements.authAlertDialog.dataset.variant = normalizeText(options.variant) || "default";
+    elements.authAlertDialog.dataset.actions = normalizeText(options.actionsTone) || "default";
   }
   if (elements.authAlertBody) {
     elements.authAlertBody.innerHTML = "";
@@ -6445,24 +6446,6 @@ function getUniqueConnectedGoogleOAuthConnections(connections = []) {
   return Array.from(uniqueConnections.values());
 }
 
-function createGoogleConnectionDisconnectButton(option, connections = []) {
-  const connectedConnections = getUniqueConnectedGoogleOAuthConnections(connections);
-  if (!option || !connectedConnections.length) {
-    return null;
-  }
-
-  const label = option.label || "Google";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "text-button connection-danger-link platform-connection-disconnect";
-  button.textContent = `Disconnect ${label}`;
-  button.setAttribute("aria-label", `Disconnect ${label}`);
-  button.addEventListener("click", () => {
-    openGoogleConnectionDisconnectConfirmation(option, connectedConnections);
-  });
-  return button;
-}
-
 function openPlatformConnectionDisconnectConfirmation(option, connection) {
   if (!option || !connection?.id) {
     return;
@@ -7658,11 +7641,20 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
     gmailSection.append(gmailHeading, gmailList);
     body.append(gmailSection);
   }
+  // Disconnecting a connected Google account is the way out of this card, so it
+  // belongs in the card's own button row beside Cancel rather than loose at the
+  // bottom of the body, where it read as one more thing in the list above it.
+  const googleDisconnectConnections = usesAggregateGoogleConnection && isConnected
+    ? getUniqueConnectedGoogleOAuthConnections(connectedGoogleConnections)
+    : [];
+  const disconnectGoogle = googleDisconnectConnections.length
+    ? () => openGoogleConnectionDisconnectConfirmation(option, googleDisconnectConnections)
+    : null;
   // A card-level email disconnect would be ambiguous once there is more than
   // one mailbox, so each mailbox row carries its own.
-  const disconnectButton = usesAggregateGoogleConnection
-    ? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)
-    : (isEmailConnection ? null : createPlatformConnectionDisconnectButton(option, connection));
+  const disconnectButton = usesAggregateGoogleConnection || isEmailConnection
+    ? null
+    : createPlatformConnectionDisconnectButton(option, connection);
   if (disconnectButton) {
     body.append(disconnectButton);
   }
@@ -7881,19 +7873,26 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
       iconNode: createAgentAddToolLogo(option),
       tone: isConnected && !isEmailConnection ? "success" : "progress",
       variant: "calendar-oauth",
+      // The row of a connected card holds a destructive button, so it is drawn
+      // as one: a red capsule rather than the branded sign-in shape.
+      actionsTone: disconnectGoogle ? "danger" : "",
       bodyNode: body,
-      buttonLabel: primaryLabel,
+      buttonLabel: disconnectGoogle ? `Disconnect ${option.label || "Google"}` : primaryLabel,
+      primaryTone: disconnectGoogle ? "danger" : "",
+      // Nothing here is destructive by accident: Cancel takes the focus, so
+      // Enter on an opened card never disconnects an account.
+      focusTarget: disconnectGoogle ? "secondary" : "",
       secondaryButtonLabel: goBack ? "Back" : "Cancel",
       closeOnSecondary: !goBack,
       onSecondary: goBack,
       // Email keeps its button when connected, because it now adds a mailbox.
-      hidePrimaryButton: isConnected && !isEmailConnection,
+      hidePrimaryButton: isConnected && !isEmailConnection && !disconnectGoogle,
       primaryDisabled: !storageAvailable,
       closeOnPrimary: false,
       returnFocus: elements.agentAddToolButton,
       // A connected mailbox no longer disables the button: signing in again
       // adds another mailbox rather than replacing the one already there.
-      onPrimary: (isConnected && !isEmailConnection) ? null : startOAuth,
+      onPrimary: disconnectGoogle || ((isConnected && !isEmailConnection) ? null : startOAuth),
     },
   );
   if (!isConnected || isEmailConnection) {

@@ -2845,6 +2845,51 @@ body[data-modal="billing"] .app-shell {
   box-shadow: none;
 }
 
+/* A card whose only button is destructive gets a row of its own shape: two
+   buttons sized to their labels and pushed right, rather than the stretched
+   pair the branded sign-in row needs. */
+.auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .auth-alert-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .auth-alert-actions .ghost-button.small,
+.auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .auth-alert-actions .primary-button.small {
+  width: auto;
+  min-width: 0;
+  min-height: 2.75rem;
+  border-radius: 999px;
+  padding: 0.6rem 1.15rem;
+  font-size: 0.86rem;
+}
+
+/* Disconnecting is destructive, so it is drawn as destructive: a filled red
+   capsule, not the white Google button this row wears while connecting. */
+.auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .primary-button.small.danger {
+  gap: 0;
+  padding: 0.6rem 1.25rem;
+  border: 0;
+  color: #fff;
+  background: linear-gradient(180deg, #c33a29, #97231a);
+  box-shadow: 0 10px 20px rgba(151, 35, 26, 0.22);
+  font-weight: 700;
+}
+
+.auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .primary-button.small.danger:hover {
+  border: 0;
+  background: linear-gradient(180deg, #d04331, #a3281d);
+  box-shadow: 0 12px 24px rgba(151, 35, 26, 0.28);
+}
+
+.auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .primary-button.small.danger:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px rgba(195, 58, 41, 0.28),
+    0 10px 20px rgba(151, 35, 26, 0.22);
+}
+
 .calendar-oauth-flow {
   display: grid;
   gap: 0.78rem;
@@ -3270,16 +3315,6 @@ body[data-modal="billing"] .app-shell {
   background: transparent;
   transform: none;
   text-decoration: underline;
-}
-
-/* The card-level disconnect closes the card, so it sits apart from the
-   sections above it rather than reading as the end of the last one. */
-.auth-alert-dialog[data-variant="calendar-oauth"] .connection-danger-link.platform-connection-disconnect {
-  margin-top: 0.35rem;
-  padding-top: 0.62rem;
-  border-top: 1px solid rgba(20, 28, 38, 0.08);
-  width: 100%;
-  text-align: left;
 }
 
 /* A row-level disconnect keeps its distance from the address beside it. */
@@ -12782,10 +12817,6 @@ body.is-chat-view {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 
-:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .connection-danger-link.platform-connection-disconnect {
-  border-top-color: var(--line-strong);
-}
-
 :root[data-theme="dark"] .connection-danger-link {
   color: #ff9f86;
   background: transparent;
@@ -12858,6 +12889,22 @@ body.is-chat-view {
 :root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small:disabled {
   color: rgba(227, 227, 227, 0.52);
   background: rgba(19, 19, 20, 0.64);
+}
+
+/* The dark rules above dress this row's button as Google's own, which is right
+   while connecting and wrong once the button disconnects an account. Said again
+   here so the destructive button stays red in dark mode. */
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .primary-button.small.danger {
+  border: 0;
+  color: #fff;
+  background: linear-gradient(180deg, #d0432f, #a02a1e);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.34);
+}
+
+:root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"][data-actions="danger"] .primary-button.small.danger:hover {
+  border: 0;
+  background: linear-gradient(180deg, #de4e39, #b02f22);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.4);
 }
 
 :root[data-theme="dark"] .auth-alert-dialog[data-variant="calendar-oauth"] .calendar-oauth-button-spinner::before {
