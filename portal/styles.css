@@ -4960,9 +4960,9 @@ body[data-modal="billing"] .app-shell {
 
 .agent-folder-item {
   display: grid;
-  /* The open button takes the row; the delete button sits beside it, and an
-     opened folder's contents run the full width underneath. */
-  grid-template-columns: minmax(0, 1fr) 2.4rem;
+  /* The open button is the row. An opened folder's contents run the full
+     width underneath it. */
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   width: 100%;
   min-width: 0;
@@ -4996,6 +4996,11 @@ body[data-modal="billing"] .app-shell {
   cursor: pointer;
 }
 
+.agent-folder-item-open {
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
 .agent-folder-item-open:hover,
 .agent-folder-item-open:focus-visible {
   background: rgba(15, 118, 110, 0.05);
@@ -5004,11 +5009,6 @@ body[data-modal="billing"] .app-shell {
 .agent-folder-item-open:focus-visible {
   outline: 0;
   box-shadow: inset 0 0 0 2px rgba(15, 118, 110, 0.3);
-}
-
-.agent-folder-delete {
-  align-self: center;
-  margin: 0 0.3rem 0 0;
 }
 
 /* Opening a folder grows the row its contents sit in, from no height to the
@@ -5086,12 +5086,9 @@ body[data-modal="billing"] .app-shell {
   border-left: 1px solid rgba(20, 28, 38, 0.12);
 }
 
-/* `.agent-chat-delete` sets a display, which outranks the one the browser
-   gives a hidden element - so a row with no folder of its own to delete kept
-   showing the button anyway. */
 .agent-folder-list.is-nested[hidden],
 .agent-folder-own[hidden],
-.agent-folder-delete[hidden] {
+.agent-folder-time[hidden] {
   display: none;
 }
 
@@ -5440,17 +5437,6 @@ body[data-modal="billing"] .app-shell {
   line-height: 1.35;
 }
 
-.agent-folder-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.42rem;
-}
-
-.agent-folder-detail {
-  padding-right: 0.42rem;
-  border-right: 1px solid rgba(20, 28, 38, 0.16);
-}
 
 .agent-folder-time {
   white-space: nowrap;
@@ -5630,7 +5616,6 @@ body[data-modal="billing"] .app-shell {
   .agent-chat-item,
   .agent-chat-item-open,
   .agent-chat-delete,
-  .agent-folder-delete,
   .agent-folder-item,
   .agent-folder-item > .agent-folder-item-open .agent-folder-icon,
   .agent-folder-chevron,
@@ -12078,10 +12063,6 @@ body.is-chat-view {
 
 :root[data-theme="dark"] .agent-folder-item.is-open {
   border-color: rgba(55, 184, 171, 0.3);
-}
-
-:root[data-theme="dark"] .agent-folder-detail {
-  border-right-color: var(--line-strong);
 }
 
 :root[data-theme="dark"] .agent-folder-list.is-nested {

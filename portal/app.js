@@ -18216,9 +18216,33 @@ function getAgentFolderPathSegments(name) {
     .filter(Boolean);
 }
 
+// The tree the panel last drew, by path. A menu acts on a row, and a row is
+// a node: which folder record it stands for, and what is filed under it.
+const agentFolderNodes = new Map();
+
+function findAgentFolderNode(path) {
+  return agentFolderNodes.get(getAgentFolderPathSegments(path).join("/")) || null;
+}
+
+// Every path the account has, whether or not a filter is hiding it right now.
+// Where a folder can be moved to is not a question about what is on screen.
+function getAgentFolderTreePaths() {
+  const paths = new Set();
+  const folders = Array.isArray(getAgentWorkspace().folders) ? getAgentWorkspace().folders : [];
+  for (const folder of folders) {
+    let path = "";
+    for (const segment of getAgentFolderPathSegments(folder?.name)) {
+      path = path ? `${path}/${segment}` : segment;
+      paths.add(path);
+    }
+  }
+  return [...paths].sort((a, b) => a.localeCompare(b));
+}
+
 function buildAgentFolderTree(folders) {
   const roots = [];
-  const byPath = new Map();
+  const byPath = agentFolderNodes;
+  byPath.clear();
 
   for (const folder of folders) {
     const segments = getAgentFolderPathSegments(folder?.name);
@@ -18593,7 +18617,7 @@ function createAgentFolderItem(node) {
   clip.append(own, childList);
   wrap.append(clip);
 
-  item.append(openButton, createAgentFolderDeleteButton(), wrap);
+  item.append(openButton, wrap);
   return updateAgentFolderItem(item, node);
 }
 
@@ -18629,31 +18653,15 @@ function updateAgentFolderItem(item, node) {
       const detail = document.createElement("span");
       detail.textContent = describeAgentFolderNode(node);
       meta.append(detail);
+      // The date goes on a line of its own. Sharing one with what the folder
+      // holds made a line long enough to squeeze the name.
       const timeText = formatAgentFolderTimestamp(node.updatedAt);
-      if (timeText) {
-        // The rule between the two belongs to the left one, so a narrow card
-        // that wraps leaves it at the end of a line rather than starting one.
-        detail.className = "agent-folder-detail";
-        const time = document.createElement("span");
-        time.className = "agent-folder-time";
-        time.textContent = timeText;
-        meta.append(time);
-      }
+      const time = document.createElement("span");
+      time.className = "agent-folder-time";
+      time.textContent = timeText;
+      time.hidden = !timeText;
 
-      copy.replaceChildren(title, meta);
-    }
-  }
-
-  // Only a folder the panel actually keeps can be deleted. A row that exists
-  // because of what is filed underneath it is not one of those.
-  const deleteButton = item.querySelector(":scope > .agent-folder-delete");
-  if (deleteButton) {
-    deleteButton.hidden = !node.folder;
-    if (node.folder) {
-      deleteButton.dataset.agentFolderDelete = node.folder.id;
-      deleteButton.setAttribute("aria-label", `Delete folder: ${node.folder.name}`);
-    } else {
-      delete deleteButton.dataset.agentFolderDelete;
+      copy.replaceChildren(title, meta, time);
     }
   }
 
@@ -18733,48 +18741,346 @@ function getAgentFolderBodySignature(folder) {
   return parts.join("\u0001");
 }
 
-// Adding a folder was the only thing the panel could do to one. Removing it
-// belongs on the folder itself, the same way removing a conversation sits on
-// the conversation. Which folder it removes is set by the update pass, so a
-// row that is only there because of what is filed underneath it can hide it.
-function createAgentFolderDeleteButton() {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "agent-chat-delete agent-folder-delete";
-  button.title = "Delete folder";
-  const icon = createSvgElement("svg", {
-    viewBox: "0 0 24 24",
-    width: "16",
-    height: "16",
-    fill: "none",
-    "aria-hidden": "true",
-    focusable: "false",
-  });
-  icon.append(
-    createSvgElement("path", {
-      d: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
-      stroke: "currentColor",
-      "stroke-width": "1.8",
-      "stroke-linecap": "round",
-      "stroke-linejoin": "round",
-    }),
-  );
-  button.append(icon);
-  return button;
+// Every folder record filed at this path or underneath it. Deleting or moving
+// "Receipts" is deleting or moving the months inside it, so the panel has to
+// know which records that is.
+function getAgentFolderRecordsUnder(path) {
+  const prefix = getAgentFolderPathSegments(path).join("/").toLowerCase();
+  if (!prefix) {
+    return [];
+  }
+  return (Array.isArray(getAgentWorkspace().folders) ? getAgentWorkspace().folders : [])
+    .filter((folder) => {
+      const candidate = getAgentFolderPathSegments(folder?.name).join("/").toLowerCase();
+      return candidate === prefix || candidate.startsWith(`${prefix}/`);
+    });
 }
 
-// The menu floats over the panel rather than sitting inside the folder card,
-// because an open folder clips whatever spills out of it - which is exactly
-// what a menu hanging off the last file in the list does.
-let agentFileMenu = null;
+function deleteAgentFolderPath(path, folderCount = 0) {
+  const segment = getAgentFolderPathSegments(path).pop() || path;
+  const inside = Math.max(0, Number(folderCount) || 0);
+  const warning = inside
+    ? `Delete “${segment}”? The ${inside} folder${inside === 1 ? "" : "s"} inside it ${inside === 1 ? "goes" : "go"} too, and that can’t be undone.`
+    : `Delete “${segment}”? The files inside it go too, and that can’t be undone.`;
 
-const AGENT_FILE_MENU_ICONS = {
+  openAuthAlert("Delete folder?", warning, {
+    eyebrow: "Delete folder",
+    icon: "!",
+    tone: "warning",
+    buttonLabel: "Delete",
+    primaryTone: "danger",
+    secondaryButtonLabel: "Cancel",
+    focusTarget: "secondary",
+    returnFocus: elements.agentFolderCreateToggleButton,
+    onPrimary: () => {
+      void confirmAgentFolderPathDelete(path);
+    },
+  });
+}
+
+async function confirmAgentFolderPathDelete(path) {
+  const segment = getAgentFolderPathSegments(path).pop() || path;
+  // The records that go with it are read before the request, because after it
+  // succeeds there is nothing on disk left to work them out from.
+  const names = getAgentFolderRecordsUnder(path).map((folder) => folder.name);
+  try {
+    const result = await apiRequest("/api/agent/folders/delete", {
+      method: "POST",
+      body: { folders: [path] },
+      timeoutMs: 30000,
+    });
+    const refused = (Array.isArray(result?.failed) ? result.failed : [])
+      .some((entry) => String(entry || "").trim().toLowerCase() === path.toLowerCase());
+    if (refused) {
+      setStatus(`Couldn’t delete “${segment}”. Try again in a moment.`);
+    } else {
+      forgetAgentFolders(names);
+      setStatus(`Deleted “${segment}”.`);
+    }
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, `Couldn’t delete “${segment}”. Try again in a moment.`));
+  }
+  renderApp({ preserveStatus: true });
+}
+
+// Moving a folder is choosing which folder it sits in, so the dialog offers
+// the folders it could sit in - not counting itself, or anything already
+// inside it, since a folder cannot hold itself.
+function openAgentFolderMoveDialog(path) {
+  const segments = getAgentFolderPathSegments(path);
+  const segment = segments[segments.length - 1] || path;
+  const current = segments.join("/");
+  const parent = segments.slice(0, -1).join("/");
+
+  const parents = getAgentFolderTreePaths()
+    .filter((candidate) => candidate !== current && !candidate.startsWith(`${current}/`))
+    .filter((candidate) => candidate !== parent);
+
+  let picked = parent ? null : "";
+  const body = document.createElement("div");
+  body.className = "agent-file-move";
+
+  const newParentInput = document.createElement("input");
+  newParentInput.type = "text";
+  newParentInput.className = "agent-file-move-input";
+  newParentInput.placeholder = "Or a new folder name";
+  newParentInput.setAttribute("aria-label", "New folder to move into");
+  newParentInput.maxLength = 80;
+
+  const chosenParent = () => {
+    const typed = normalizeAgentFolderName(newParentInput.value, "");
+    if (typed) {
+      return getAgentFolderPathSegments(typed).join("/");
+    }
+    return picked;
+  };
+  const destination = () => {
+    const target = chosenParent();
+    if (target === null) {
+      return "";
+    }
+    const next = target ? `${target}/${segment}` : segment;
+    return next === current ? "" : next;
+  };
+  const syncPrimary = () => {
+    if (elements.authAlertDismissButton) {
+      elements.authAlertDismissButton.disabled = !destination();
+    }
+  };
+
+  const optionButtons = [];
+  const addOption = (value, name, meta) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "agent-file-move-option";
+    option.setAttribute("role", "radio");
+    option.setAttribute("aria-checked", "false");
+    const title = document.createElement("strong");
+    title.textContent = name;
+    const detail = document.createElement("span");
+    detail.textContent = meta;
+    option.append(title, detail);
+    option.addEventListener("click", () => {
+      picked = value;
+      newParentInput.value = "";
+      for (const other of optionButtons) {
+        const chosen = other === option;
+        other.classList.toggle("is-selected", chosen);
+        other.setAttribute("aria-checked", String(chosen));
+      }
+      syncPrimary();
+    });
+    optionButtons.push(option);
+    return option;
+  };
+
+  const list = document.createElement("div");
+  list.className = "agent-file-move-options";
+  list.setAttribute("role", "radiogroup");
+  list.setAttribute("aria-label", "Folder to move into");
+  // A folder already at the top has nowhere higher to go.
+  if (parent) {
+    list.append(addOption("", "Top level", "Not inside any folder"));
+  }
+  for (const candidate of parents) {
+    list.append(addOption(candidate, candidate, "Move it in here"));
+  }
+  if (list.children.length) {
+    body.append(list);
+  }
+
+  newParentInput.addEventListener("input", () => {
+    if (newParentInput.value.trim()) {
+      picked = null;
+      for (const option of optionButtons) {
+        option.classList.remove("is-selected");
+        option.setAttribute("aria-checked", "false");
+      }
+    }
+    syncPrimary();
+  });
+  body.append(newParentInput);
+
+  openAuthAlert("Move folder", `Where should “${segment}” go?`, {
+    eyebrow: "Move folder",
+    icon: "→",
+    tone: "progress",
+    bodyNode: body,
+    buttonLabel: "Move",
+    primaryDisabled: true,
+    secondaryButtonLabel: "Cancel",
+    returnFocus: elements.agentFolderCreateToggleButton,
+    onPrimary: () => {
+      const target = destination();
+      if (target) {
+        void moveAgentFolderPath(current, target);
+      }
+    },
+  });
+}
+
+async function moveAgentFolderPath(path, destination) {
+  const segment = getAgentFolderPathSegments(path).pop() || path;
+  let result = null;
+  try {
+    result = await apiRequest("/api/agent/folders/move", {
+      method: "POST",
+      body: { folder: path, destination },
+      timeoutMs: 30000,
+    });
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, `Couldn’t move “${segment}”. Try again in a moment.`));
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  if (!result?.moved) {
+    setStatus(result?.missing
+      ? `There is nothing left at “${path}” to move.`
+      : formatApiErrorMessage(result, `Couldn’t move “${segment}”. Try again in a moment.`));
+    if (result?.missing) {
+      forgetAgentFolders(getAgentFolderRecordsUnder(path).map((folder) => folder.name));
+    }
+    renderApp({ preserveStatus: true });
+    return;
+  }
+
+  renameAgentFolderPrefix(path, destination);
+  openAgentFolderPath(destination);
+  setStatus(`Moved “${segment}” to “${destination}”.`);
+  renderApp({ preserveStatus: true });
+}
+
+// The folder moved, and so did everything filed under it. Rewriting the names
+// is what keeps the panel describing where things actually are.
+function renameAgentFolderPrefix(fromPath, toPath) {
+  const from = getAgentFolderPathSegments(fromPath).join("/");
+  const to = getAgentFolderPathSegments(toPath).join("/");
+  if (!from || !to) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const agent = getAgentWorkspace();
+  for (const folder of (Array.isArray(agent.folders) ? agent.folders : [])) {
+    const path = getAgentFolderPathSegments(folder?.name).join("/");
+    if (path !== from && !path.startsWith(`${from}/`)) {
+      continue;
+    }
+    // Whatever was cached for it was cached under the old name.
+    agentFolderContents.delete(folder.name);
+    folder.name = normalizeAgentFolderName(`${to}${path.slice(from.length)}`, folder.name);
+    folder.updatedAt = now;
+  }
+
+  // Moving onto a folder that already exists merges the two on disk, so the
+  // panel cannot go on listing them as two.
+  const byName = new Map();
+  for (const folder of agent.folders) {
+    const key = String(folder?.name || "").trim().toLowerCase();
+    const kept = byName.get(key);
+    if (!kept) {
+      byName.set(key, folder);
+      continue;
+    }
+    kept.itemCount = Math.max(0, (Number(kept.itemCount) || 0) + (Number(folder.itemCount) || 0));
+    kept.updatedAt = now;
+    agentFolderContents.delete(folder.name);
+  }
+  agent.folders = [...byName.values()];
+  persistClientState();
+}
+
+async function downloadAgentFolderArchive(path, label) {
+  setStatus(`Packaging “${label}”…`);
+  let response = null;
+  try {
+    response = await fetch(
+      buildApiUrl(`/api/agent/folder-archive?folder=${encodeURIComponent(path)}`),
+      { credentials: "same-origin", cache: "no-store" },
+    );
+  } catch (error) {
+    setStatus(formatApiErrorMessage(error, `Couldn’t package “${label}”. Try again in a moment.`));
+    return;
+  }
+
+  if (!response.ok) {
+    let message = `Couldn’t package “${label}”. Try again in a moment.`;
+    try {
+      message = (await response.json())?.message || message;
+    } catch {
+      // A response that is not JSON says nothing useful, so the default stands.
+    }
+    setStatus(message);
+    return;
+  }
+
+  // The zip is built for this request only, so it is handed to the browser
+  // from memory rather than from a URL anyone could come back to.
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = getAgentFolderArchiveName(response, path);
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  setStatus(`Downloaded “${label}”.`);
+}
+
+function getAgentFolderArchiveName(response, path) {
+  const disposition = String(response?.headers?.get?.("Content-Disposition") || "");
+  const match = /filename="([^"]+)"/.exec(disposition);
+  if (match) {
+    return match[1];
+  }
+  return `${getAgentFolderPathSegments(path).join("-") || "folder"}.zip`;
+}
+
+// One floating menu at a time, wherever it was opened from. It sits above the
+// panel rather than inside it, because an open folder clips whatever spills
+// out of it - which is exactly what a menu on its last row does.
+let agentMenu = null;
+
+// Long enough that a scroll does not become a menu, short enough that holding
+// a row feels like it did something.
+const AGENT_LONG_PRESS_MS = 480;
+const AGENT_LONG_PRESS_SLOP = 10;
+
+let agentFolderPressTimer = 0;
+let agentFolderPressOrigin = null;
+let agentFolderPressFired = false;
+
+function cancelAgentFolderPress() {
+  if (agentFolderPressTimer) {
+    window.clearTimeout(agentFolderPressTimer);
+  }
+  agentFolderPressTimer = 0;
+  agentFolderPressOrigin = null;
+}
+
+// A right-click or a long press has no control to hang a menu off, only the
+// point it happened at. That point is enough for the same positioning.
+function pointerAnchorRect(event) {
+  return {
+    left: event.clientX,
+    right: event.clientX,
+    top: event.clientY,
+    bottom: event.clientY,
+    width: 0,
+    height: 0,
+  };
+}
+
+const AGENT_MENU_ICONS = {
   download: "M12 4v10m0 0 3.6-3.6M12 14l-3.6-3.6M5 16.5v1.2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1.2",
+  archive: "M4 7.4a1.4 1.4 0 0 1 1.4-1.4h13.2A1.4 1.4 0 0 1 20 7.4v2.2H4Zm1.4 2.2h13.2v8a1.4 1.4 0 0 1-1.4 1.4H6.8a1.4 1.4 0 0 1-1.4-1.4Zm4.6 3.2h4",
   move: "M4 7.6a2 2 0 0 1 2-2h3l1.6 2H18a2 2 0 0 1 2 2v6.8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Zm6.5 6.4h6m0 0-2.2-2.2m2.2 2.2-2.2 2.2",
   delete: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
 };
 
-function createAgentFileMenuIcon(kind) {
+function createAgentMenuIcon(kind) {
   const icon = createSvgElement("svg", {
     viewBox: "0 0 24 24",
     width: "16",
@@ -18784,7 +19090,7 @@ function createAgentFileMenuIcon(kind) {
     focusable: "false",
   });
   icon.append(createSvgElement("path", {
-    d: AGENT_FILE_MENU_ICONS[kind] || AGENT_FILE_MENU_ICONS.download,
+    d: AGENT_MENU_ICONS[kind] || AGENT_MENU_ICONS.download,
     stroke: "currentColor",
     "stroke-width": "1.7",
     "stroke-linecap": "round",
@@ -18793,15 +19099,26 @@ function createAgentFileMenuIcon(kind) {
   return icon;
 }
 
-function positionAgentFileMenu(node, button) {
-  const anchor = button.getBoundingClientRect();
+function createAgentMenuOption(kind, label, onChoose) {
+  const option = document.createElement("button");
+  option.type = "button";
+  option.className = `agent-file-menu-option is-${kind}`;
+  option.setAttribute("role", "menuitem");
+  const text = document.createElement("span");
+  text.textContent = label;
+  option.append(createAgentMenuIcon(kind), text);
+  option.addEventListener("click", onChoose);
+  return option;
+}
+
+function positionAgentMenu(node, anchor) {
   const menu = node.getBoundingClientRect();
   const margin = 8;
-  // Right-aligned with the button, because the button is at the right edge of
-  // the card and a menu that hangs the other way falls off the panel.
+  // Right-aligned with what opened it, because that is usually at the right
+  // edge of the panel and a menu hanging the other way falls off it.
   let left = anchor.right - menu.width;
   left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - menu.width - margin));
-  // Below the button, unless below is where the panel ends.
+  // Below it, unless below is where the window ends.
   let top = anchor.bottom + 6;
   if (top + menu.height > window.innerHeight - margin) {
     top = anchor.top - menu.height - 6;
@@ -18811,78 +19128,97 @@ function positionAgentFileMenu(node, button) {
   node.style.top = `${Math.round(top)}px`;
 }
 
-function handleAgentFileMenuPointerDown(event) {
-  if (!agentFileMenu) {
+function handleAgentMenuPointerDown(event) {
+  if (!agentMenu) {
     return;
   }
-  if (agentFileMenu.node.contains(event.target) || agentFileMenu.button.contains(event.target)) {
+  if (agentMenu.node.contains(event.target) || agentMenu.owner?.contains(event.target)) {
     return;
   }
-  closeAgentFileMenu();
+  closeAgentMenu();
 }
 
-function handleAgentFileMenuKeyDown(event) {
+function handleAgentMenuKeyDown(event) {
   if (event.key === "Escape") {
     event.stopPropagation();
-    closeAgentFileMenu({ returnFocus: true });
+    closeAgentMenu({ returnFocus: true });
   }
 }
 
-function handleAgentFileMenuReposition() {
-  if (agentFileMenu) {
-    positionAgentFileMenu(agentFileMenu.node, agentFileMenu.button);
+// A menu hanging off a button follows it. One opened at a pointer has nothing
+// to follow, so it goes away rather than floating over unrelated rows.
+function handleAgentMenuReposition() {
+  if (!agentMenu) {
+    return;
   }
+  if (agentMenu.owner?.isConnected) {
+    positionAgentMenu(agentMenu.node, agentMenu.owner.getBoundingClientRect());
+    return;
+  }
+  closeAgentMenu();
 }
 
-function closeAgentFileMenu(options = {}) {
-  const open = agentFileMenu;
-  agentFileMenu = null;
-  document.removeEventListener("pointerdown", handleAgentFileMenuPointerDown, true);
-  document.removeEventListener("keydown", handleAgentFileMenuKeyDown, true);
-  window.removeEventListener("resize", handleAgentFileMenuReposition, true);
-  window.removeEventListener("scroll", handleAgentFileMenuReposition, true);
+function closeAgentMenu(options = {}) {
+  const open = agentMenu;
+  agentMenu = null;
+  document.removeEventListener("pointerdown", handleAgentMenuPointerDown, true);
+  document.removeEventListener("keydown", handleAgentMenuKeyDown, true);
+  window.removeEventListener("resize", handleAgentMenuReposition, true);
+  window.removeEventListener("scroll", handleAgentMenuReposition, true);
   if (!open) {
     return;
   }
   open.node.remove();
-  if (open.button.isConnected) {
-    open.button.setAttribute("aria-expanded", "false");
+  if (open.owner?.isConnected) {
+    open.owner.setAttribute("aria-expanded", "false");
     if (options.returnFocus) {
-      open.button.focus();
+      open.owner.focus();
     }
   }
 }
 
-function createAgentFileMenuOption(kind, label, onChoose) {
-  const option = document.createElement("button");
-  option.type = "button";
-  option.className = `agent-file-menu-option is-${kind}`;
-  option.setAttribute("role", "menuitem");
-  const text = document.createElement("span");
-  text.textContent = label;
-  option.append(createAgentFileMenuIcon(kind), text);
-  option.addEventListener("click", onChoose);
-  return option;
-}
-
-function openAgentFileMenu(button) {
-  if (agentFileMenu?.button === button) {
-    closeAgentFileMenu({ returnFocus: true });
+// `owner` is the control the menu belongs to, when there is one: it carries
+// the expanded state, anchors the menu, and takes focus back on Escape. A menu
+// raised by a right-click or a long press has none, so it is anchored to where
+// the gesture happened.
+function openAgentMenu({ key, label, options, owner = null, anchor = null, toggle = true }) {
+  if (toggle && agentMenu?.key === key) {
+    closeAgentMenu({ returnFocus: true });
     return;
   }
-  closeAgentFileMenu();
-
-  const fileName = normalizeAgentTextItem(button.dataset.agentFileMenu, "");
-  const folderName = normalizeAgentTextItem(button.dataset.agentFileFolder, "");
-  const href = normalizeAgentNotificationHref(button.dataset.agentFileUrl);
-  if (!fileName || !folderName) {
+  closeAgentMenu();
+  if (!options.length) {
     return;
   }
 
   const node = document.createElement("div");
   node.className = "agent-file-menu";
   node.setAttribute("role", "menu");
-  node.setAttribute("aria-label", `Options for ${fileName}`);
+  node.setAttribute("aria-label", label);
+  node.append(...options);
+  document.body.append(node);
+  positionAgentMenu(node, anchor || owner.getBoundingClientRect());
+  agentMenu = { node, key, owner };
+  owner?.setAttribute("aria-expanded", "true");
+
+  document.addEventListener("pointerdown", handleAgentMenuPointerDown, true);
+  document.addEventListener("keydown", handleAgentMenuKeyDown, true);
+  window.addEventListener("resize", handleAgentMenuReposition, true);
+  window.addEventListener("scroll", handleAgentMenuReposition, true);
+  // Reading the layout commits the collapsed starting state, so the class that
+  // follows animates from it rather than snapping past it.
+  void node.offsetHeight;
+  node.classList.add("is-open");
+  options[0].focus();
+}
+
+function openAgentFileMenu(button) {
+  const fileName = normalizeAgentTextItem(button.dataset.agentFileMenu, "");
+  const folderName = normalizeAgentTextItem(button.dataset.agentFileFolder, "");
+  const href = normalizeAgentNotificationHref(button.dataset.agentFileUrl);
+  if (!fileName || !folderName) {
+    return;
+  }
 
   // The file is served from the portal itself, so the browser can be asked to
   // keep it rather than open it in a tab.
@@ -18893,36 +19229,60 @@ function openAgentFileMenu(button) {
   download.download = fileName.split("/").pop() || fileName;
   const downloadLabel = document.createElement("span");
   downloadLabel.textContent = "Download";
-  download.append(createAgentFileMenuIcon("download"), downloadLabel);
+  download.append(createAgentMenuIcon("download"), downloadLabel);
   download.addEventListener("click", () => {
-    closeAgentFileMenu();
+    closeAgentMenu();
   });
 
-  const move = createAgentFileMenuOption("move", "Move to…", () => {
-    closeAgentFileMenu();
-    openAgentFileMoveDialog(folderName, fileName, button);
+  openAgentMenu({
+    key: `file:${folderName}/${fileName}`,
+    label: `Options for ${fileName}`,
+    owner: button,
+    options: [
+      download,
+      createAgentMenuOption("move", "Move to…", () => {
+        closeAgentMenu();
+        openAgentFileMoveDialog(folderName, fileName, button);
+      }),
+      createAgentMenuOption("delete", "Delete", () => {
+        closeAgentMenu();
+        deleteAgentFolderFile(folderName, fileName, button);
+      }),
+    ],
   });
+}
 
-  const remove = createAgentFileMenuOption("delete", "Delete", () => {
-    closeAgentFileMenu();
-    deleteAgentFolderFile(folderName, fileName, button);
+// A folder has no button of its own to hang a menu off - the whole row is the
+// control that opens it. So the actions live behind a right-click or a long
+// press, the way they do on a folder anywhere else.
+function openAgentFolderMenu(openButton, anchor) {
+  const path = normalizeAgentTextItem(openButton.dataset.agentFolderOpen, "");
+  if (!path) {
+    return;
+  }
+  const node = findAgentFolderNode(path);
+  const segment = getAgentFolderPathSegments(path).pop() || path;
+
+  openAgentMenu({
+    key: `folder:${path}`,
+    label: `Options for ${segment}`,
+    anchor,
+    toggle: false,
+    options: [
+      createAgentMenuOption("move", "Move to…", () => {
+        closeAgentMenu();
+        openAgentFolderMoveDialog(path);
+      }),
+      createAgentMenuOption("archive", "Download all", () => {
+        closeAgentMenu();
+        void downloadAgentFolderArchive(path, segment);
+      }),
+      createAgentMenuOption("delete", "Delete", () => {
+        closeAgentMenu();
+        deleteAgentFolderPath(path, node?.folderCount || 0);
+      }),
+    ],
   });
-
-  node.append(download, move, remove);
-  document.body.append(node);
-  positionAgentFileMenu(node, button);
-  agentFileMenu = { node, button, folderName, fileName };
-  button.setAttribute("aria-expanded", "true");
-
-  document.addEventListener("pointerdown", handleAgentFileMenuPointerDown, true);
-  document.addEventListener("keydown", handleAgentFileMenuKeyDown, true);
-  window.addEventListener("resize", handleAgentFileMenuReposition, true);
-  window.addEventListener("scroll", handleAgentFileMenuReposition, true);
-  // Reading the layout commits the collapsed starting state, so the class that
-  // follows animates from it rather than snapping past it.
-  void node.offsetHeight;
-  node.classList.add("is-open");
-  download.focus();
 }
 
 function deleteAgentFolderFile(folderName, fileName, returnFocus) {
@@ -19135,62 +19495,6 @@ function noteAgentFolderGainedFiles(folderName, remaining, sourceType) {
   persistClientState();
 }
 
-function deleteAgentFolder(folderId, options = {}) {
-  const agent = getAgentWorkspace();
-  const folder = (Array.isArray(agent.folders) ? agent.folders : [])
-    .find((candidate) => candidate.id === folderId);
-  if (!folder) {
-    return;
-  }
-
-  openAuthAlert(
-    "Delete folder?",
-    `Delete “${folder.name}”? The files inside it go too, and that can’t be undone.`,
-    {
-      eyebrow: "Delete folder",
-      icon: "!",
-      tone: "warning",
-      buttonLabel: "Delete",
-      primaryTone: "danger",
-      secondaryButtonLabel: "Cancel",
-      focusTarget: "secondary",
-      returnFocus: options.returnFocus || elements.agentFolderCreateToggleButton,
-      onPrimary: () => {
-        void confirmAgentFolderDelete(folder.id);
-      },
-    },
-  );
-}
-
-async function confirmAgentFolderDelete(folderId) {
-  const agent = getAgentWorkspace();
-  const folder = (Array.isArray(agent.folders) ? agent.folders : [])
-    .find((candidate) => candidate.id === folderId);
-  if (!folder) {
-    return;
-  }
-
-  const name = folder.name;
-  try {
-    const result = await apiRequest("/api/agent/folders/delete", {
-      method: "POST",
-      body: { folders: [name] },
-      timeoutMs: 30000,
-    });
-    const refused = (Array.isArray(result?.failed) ? result.failed : [])
-      .some((entry) => String(entry || "").trim().toLowerCase() === name.toLowerCase());
-    if (refused) {
-      setStatus(`Couldn’t delete “${name}”. Try again in a moment.`);
-      return;
-    }
-    forgetAgentFolders([name]);
-    setStatus(`Deleted “${name}”.`);
-  } catch (error) {
-    setStatus(formatApiErrorMessage(error, `Couldn’t delete “${name}”. Try again in a moment.`));
-  }
-  renderApp({ preserveStatus: true });
-}
-
 // The filter box completes tags that are actually in use, so "Re" offers
 // Receipt and Render rather than nothing.
 function renderAgentFolderTagOptions(agent = getAgentWorkspace()) {
@@ -19237,19 +19541,19 @@ function renderAgentFolders() {
     empty.className = "agent-action-empty";
     empty.textContent = state.agentFolderSearch ? "No matching folders." : "No folders yet.";
     elements.agentFolderList.replaceChildren(empty);
-    closeStaleAgentFileMenu();
+    closeStaleAgentMenu();
     return;
   }
 
   syncAgentFolderNodes(elements.agentFolderList, tree);
-  closeStaleAgentFileMenu();
+  closeStaleAgentMenu();
 }
 
-// The menu is anchored to a button inside the list, and a render can take
-// that button away. A menu pointing at nothing is worse than no menu.
-function closeStaleAgentFileMenu() {
-  if (agentFileMenu && !agentFileMenu.button.isConnected) {
-    closeAgentFileMenu();
+// The menu is anchored to a control inside the list, and a render can take
+// that control away. A menu pointing at nothing is worse than no menu.
+function closeStaleAgentMenu() {
+  if (agentMenu?.owner && !agentMenu.owner.isConnected) {
+    closeAgentMenu();
   }
 }
 
@@ -34373,15 +34677,16 @@ function bindEvents() {
         setAgentFolderSearch(tagButton.dataset.agentFolderTag || "");
         return;
       }
-      const deleteButton = event.target?.closest?.("[data-agent-folder-delete]");
-      if (deleteButton && elements.agentFolderList.contains(deleteButton)) {
-        event.preventDefault();
-        event.stopPropagation();
-        deleteAgentFolder(deleteButton.dataset.agentFolderDelete || "", { returnFocus: deleteButton });
-        return;
-      }
       const openButton = event.target?.closest?.("[data-agent-folder-open]");
       if (!openButton || !elements.agentFolderList.contains(openButton)) {
+        return;
+      }
+      // A long press already did something with this row, and the tap that
+      // ends it must not also open the folder underneath the menu.
+      if (agentFolderPressFired) {
+        agentFolderPressFired = false;
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
       toggleAgentFolderOpen(
@@ -34389,6 +34694,58 @@ function bindEvents() {
         openButton.dataset.agentFolderName || "",
       );
     });
+
+    // A folder's own actions are behind the gestures a folder has anywhere
+    // else: a right-click with a mouse, a long press with a finger.
+    elements.agentFolderList.addEventListener("contextmenu", (event) => {
+      const openButton = event.target?.closest?.("[data-agent-folder-open]");
+      if (!openButton || !elements.agentFolderList.contains(openButton)) {
+        return;
+      }
+      event.preventDefault();
+      cancelAgentFolderPress();
+      // The keyboard raises this too - Shift+F10, or the menu key - and gives
+      // no pointer position to hang it off, so the row itself is the anchor.
+      const anchor = event.clientX || event.clientY
+        ? pointerAnchorRect(event)
+        : openButton.getBoundingClientRect();
+      openAgentFolderMenu(openButton, anchor);
+    });
+
+    elements.agentFolderList.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse") {
+        return;
+      }
+      const openButton = event.target?.closest?.("[data-agent-folder-open]");
+      if (!openButton || !elements.agentFolderList.contains(openButton)) {
+        return;
+      }
+      cancelAgentFolderPress();
+      agentFolderPressOrigin = { x: event.clientX, y: event.clientY };
+      const anchor = pointerAnchorRect(event);
+      agentFolderPressTimer = window.setTimeout(() => {
+        agentFolderPressTimer = 0;
+        agentFolderPressFired = true;
+        openAgentFolderMenu(openButton, anchor);
+      }, AGENT_LONG_PRESS_MS);
+    });
+
+    // A press that turns into a scroll, or that ends early, was not a press.
+    elements.agentFolderList.addEventListener("pointermove", (event) => {
+      if (!agentFolderPressTimer || !agentFolderPressOrigin) {
+        return;
+      }
+      const moved = Math.hypot(
+        event.clientX - agentFolderPressOrigin.x,
+        event.clientY - agentFolderPressOrigin.y,
+      );
+      if (moved > AGENT_LONG_PRESS_SLOP) {
+        cancelAgentFolderPress();
+      }
+    });
+    for (const name of ["pointerup", "pointercancel", "pointerleave", "scroll"]) {
+      elements.agentFolderList.addEventListener(name, cancelAgentFolderPress, true);
+    }
   }
 
   if (elements.agentFolderCreateToggleButton) {

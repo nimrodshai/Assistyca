@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import io
 import shutil
 import smtplib
 import sqlite3
@@ -22,6 +23,7 @@ import threading
 import time
 import hmac
 import hashlib
+import zipfile
 from datetime import datetime
 from datetime import timezone
 from dataclasses import dataclass
@@ -237,6 +239,10 @@ AGENT_FILE_DELETE_LIMIT = 40
 # Moving files is the same pick from the same listing, so it carries the same
 # ceiling as removing them does.
 AGENT_FILE_MOVE_LIMIT = 40
+# A folder downloaded in one go is built in memory, so it is bounded by what
+# is reasonable to hold and to hand over in one response.
+AGENT_FOLDER_ARCHIVE_FILE_LIMIT = 400
+AGENT_FOLDER_ARCHIVE_MAX_BYTES = 200 * 1024 * 1024
 # A kept receipt is filed under the vendor that sent it, because that is how
 # anyone looks for one later. A receipt whose sender could not be read still
 # needs somewhere to go, and this is it.
@@ -2456,6 +2462,68 @@ def _free_file_path(target: Path) -> Path:
     return target.with_name(f"{stem} (copy){suffix}")
 
 
+def _merge_folder_into(source_root: Path, destination_root: Path) -> None:
+    """Move everything in one folder into another that already exists.
+
+    Renaming the directory is the cheap way to move a folder, and it only
+    works when nothing is standing where it is going. When something is, the
+    two have to be merged file by file - keeping both copies where the names
+    collide, and carrying the tags that describe them.
+    """
+
+    source_tags = read_file_tags(source_root)
+    carried: dict[str, list[str]] = {}
+    for candidate in sorted(source_root.rglob("*"), key=lambda path: path.as_posix().lower()):
+        if not candidate.is_file() or candidate.name == FILE_TAGS_FILENAME:
+            continue
+        relative = candidate.relative_to(source_root)
+        target = _free_file_path(destination_root / relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(candidate), str(target))
+        tags = source_tags.get(relative.as_posix())
+        if tags:
+            carried[target.relative_to(destination_root).as_posix()] = tags
+
+    if carried:
+        write_file_tags(destination_root, carried)
+    # What is left is the shape of the folder and its own tag file, neither of
+    # which describes anything any more.
+    shutil.rmtree(source_root, ignore_errors=True)
+
+
+def _prune_empty_folders_up_to(folder: Path, stop_at: Path) -> None:
+    """Clear the headings a move emptied, and stop at the owner's own root.
+
+    Moving the only month out of "Receipts" leaves a Receipts holding nothing.
+    Nothing lists it, so it is invisible rather than harmful - but it is also
+    the kind of leftover that makes a folder look occupied when it is not.
+    """
+
+    current = folder
+    while current != stop_at and stop_at in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            # Not empty, or not ours to remove. Either way it stays, and so
+            # does everything above it.
+            return
+        current = current.parent
+
+
+def build_agent_folder_archive_filename(logical_folder: str) -> str:
+    """A download name that says which folder this was, and nothing else.
+
+    The logical folder is a path, and a path is not a filename - so the
+    segments are joined with a dash and anything a filesystem would argue
+    about is dropped.
+    """
+
+    segments = [segment for segment in str(logical_folder or "").split("/") if segment.strip()]
+    name = "-".join(segments) or "folder"
+    safe = "".join(character if character.isalnum() or character in " -_" else "-" for character in name)
+    return f"{safe.strip() or 'folder'}.zip"
+
+
 def describe_saved_receipt_folders(folders: list[str]) -> str:
     """Name the folders the receipts went into, however many that is."""
 
@@ -3445,6 +3513,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
             or path == "/api/agent/files/move"
+            or path == "/api/agent/folders/move"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -3483,6 +3552,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/features"
             or path.startswith("/api/features/")
             or path == "/api/agent/folder-contents"
+            or path == "/api/agent/folder-archive"
             or path == "/api/scheduled-actions"
             or path == "/api/source-actions"
             or path == "/api/notifications"
@@ -3517,6 +3587,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
             or path == "/api/agent/files/move"
+            or path == "/api/agent/folders/move"
             or path == "/api/platform-connections"
             or path.startswith("/api/admin/")
             or path == "/api/features"
@@ -3604,6 +3675,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/folder-contents":
             self._handle_agent_folder_contents_get(parsed)
+            return
+
+        if path == "/api/agent/folder-archive":
+            self._handle_agent_folder_archive_get(parsed)
             return
 
         if path == "/api/scheduled-actions":
@@ -3816,6 +3891,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/files/move":
             self._handle_agent_file_move_post()
+            return
+
+        if path == "/api/agent/folders/move":
+            self._handle_agent_folder_move_post()
             return
 
         if path == "/api/agent/proposals/run":
@@ -6687,6 +6766,233 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "destinationRemaining": count_folder_files(destination_root),
         })
 
+    def _handle_agent_folder_move_post(self) -> None:
+        """Carry a whole folder somewhere else, with everything inside it.
+
+        A file could already be filed somewhere better than where the run that
+        made it put it. A folder could not, so a month filed under the wrong
+        heading stayed there, or had to be emptied one file at a time.
+
+        Both names go through the same normalizer the writes use, and the
+        destination is resolved back against the owner's own tree, so a caller
+        can only ever move inside their own output folder.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        requested_folder = normalize_text(payload.get("folder"))
+        requested_destination = normalize_text(payload.get("destination") or payload.get("toFolder"))
+        if not requested_folder or not requested_destination:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "folder_required",
+                "message": "Name the folder to move and where it should go.",
+            })
+            return
+
+        logical_folder = normalize_receipt_output_folder(requested_folder)
+        logical_destination = normalize_receipt_output_folder(requested_destination)
+        if logical_folder == logical_destination:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "same_folder",
+                "message": "That folder is already there.",
+            })
+            return
+        # A folder cannot be filed inside itself, and a request that asks for
+        # it is asking to lose everything underneath it.
+        if logical_destination.startswith(logical_folder):
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "nested_destination",
+                "message": "A folder can’t be moved inside itself.",
+            })
+            return
+
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        owner_root = (output_root / owner_key).resolve()
+        source_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_folder,
+        )
+        destination_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_destination,
+        )
+        try:
+            source_root = source_path.resolve()
+            destination_root = destination_path.resolve()
+        except OSError:
+            source_root = source_path
+            destination_root = destination_path
+
+        # Normalization already strips traversal, so this is the belt to its
+        # braces: neither end of the move leaves the owner's own tree, and the
+        # tree itself is not something to move.
+        for candidate in (source_root, destination_root):
+            if candidate == owner_root or owner_root not in candidate.parents:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "folder_required",
+                    "message": "That isn’t a folder I can move.",
+                })
+                return
+
+        if not source_root.is_dir():
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "folder": logical_folder,
+                "destination": logical_destination,
+                "moved": False,
+                "missing": True,
+                "remaining": 0,
+            })
+            return
+
+        try:
+            if destination_root.exists():
+                _merge_folder_into(source_root, destination_root)
+            else:
+                destination_root.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source_root), str(destination_root))
+        except OSError as exc:
+            print(f"Portal agent folder move failed for {logical_folder}: {exc}", flush=True)
+            json_response(self, HTTPStatus.OK, {
+                "ok": False,
+                "error": "move_failed",
+                "message": "I couldn’t move that folder.",
+                "folder": logical_folder,
+                "destination": logical_destination,
+                "moved": False,
+            })
+            return
+
+        # The folders above the one that left can be left holding nothing, and
+        # a heading with nothing under it is a leftover rather than a folder.
+        _prune_empty_folders_up_to(source_root.parent, owner_root)
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "folder": logical_folder,
+            "destination": logical_destination,
+            "moved": True,
+            "missing": False,
+            "remaining": count_folder_files(destination_root),
+        })
+
+    def _handle_agent_folder_archive_get(self, parsed: urllib_parse.ParseResult) -> None:
+        """Everything in a folder, as one zip.
+
+        The panel could hand over one file at a time, which is fine for one
+        receipt and useless for a month of them. This is the same listing the
+        panel shows - the manifest and the tag file describe the folder rather
+        than sitting in it, so they stay behind.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        session, _ = authenticated
+        query = urllib_parse.parse_qs(parsed.query)
+        requested_folder = normalize_text(query.get("folder", [""])[0])
+        if not requested_folder:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "folder_required",
+                "message": "Name the folder to download.",
+            })
+            return
+
+        logical_folder = normalize_receipt_output_folder(requested_folder)
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        folder_path = resolve_receipt_bundle_folder(
+            output_root,
+            owner_key=owner_key,
+            output_folder=logical_folder,
+        )
+        if not folder_path.is_dir():
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "folder_missing",
+                "message": "There is no such folder.",
+            })
+            return
+
+        paths = sorted(
+            (
+                candidate for candidate in folder_path.rglob("*")
+                if candidate.is_file()
+                and candidate.name not in (RECEIPT_MANIFEST_FILENAME, FILE_TAGS_FILENAME)
+            ),
+            key=lambda candidate: candidate.as_posix().lower(),
+        )[:AGENT_FOLDER_ARCHIVE_FILE_LIMIT]
+        if not paths:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "folder_empty",
+                "message": "That folder has nothing in it to download.",
+            })
+            return
+
+        total = 0
+        for candidate in paths:
+            try:
+                total += candidate.stat().st_size
+            except OSError:
+                continue
+        if total > AGENT_FOLDER_ARCHIVE_MAX_BYTES:
+            json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {
+                "ok": False,
+                "error": "folder_too_large",
+                "message": "That folder is too big to download in one go.",
+            })
+            return
+
+        buffer = io.BytesIO()
+        try:
+            with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for candidate in paths:
+                    archive.write(candidate, candidate.relative_to(folder_path).as_posix())
+        except OSError as exc:
+            print(f"Portal agent folder archive failed for {logical_folder}: {exc}", flush=True)
+            json_response(self, HTTPStatus.OK, {
+                "ok": False,
+                "error": "archive_failed",
+                "message": "I couldn’t package that folder.",
+            })
+            return
+
+        body = buffer.getvalue()
+        filename = build_agent_folder_archive_filename(logical_folder)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_agent_folder_save_post(self) -> None:
         """File the receipts an answer was read from, under the vendor.
 
@@ -8689,20 +8995,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        try:
-            delete_portal_whatsapp_store_for_connection(
-                root=self.root,
-                connection=store_connection,
-                store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
-                store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
+        # An erasure request has to be answerable, so what refused to go is
+        # said out loud rather than swallowed.
+        for failed_path in erasure.failed_paths:
+            print(f"Portal account erase left {failed_path} in place for {email}", flush=True)
+
+        message = "User deleted."
+        if erasure.revocation_warnings:
+            message = (
+                "User deleted. Google did not confirm every connection was revoked, so the "
+                "account owner may still see Assistyca listed in their Google Account permissions."
             )
-        except OSError:
-            pass
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "message": "User deleted.",
+            "message": message,
             "user": deleted_user_payload,
+            "grantsRevoked": erasure.revoked_grants,
+            "contactSubmissionsRemoved": erasure.contact_submissions_removed,
             "currentUser": {
                 "email": normalize_email(current_user.get("email")),
                 "displayName": normalize_text(current_user.get("displayName")),

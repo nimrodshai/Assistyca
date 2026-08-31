@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import tempfile
 import threading
 import unittest
+import zipfile
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -384,6 +386,170 @@ class AgentFolderContentsTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, 401)
         self.assertTrue((folder / "receipts.xlsx").exists())
+
+    def _move_folder(self, body: dict[str, object], *, token: str | None = "") -> dict[str, object]:
+        headers = {"Content-Type": "application/json"}
+        auth_token = self.session_token if token == "" else token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/folders/move",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _archive_folder(self, folder: str, *, token: str | None = "") -> tuple[bytes, str]:
+        query = urllib_parse.urlencode({"folder": folder})
+        headers = {}
+        auth_token = self.session_token if token == "" else token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/folder-archive?{query}",
+            method="GET",
+            headers=headers,
+        )
+        with urllib_request.urlopen(request, timeout=5) as response:
+            return response.read(), response.headers.get("Content-Disposition", "")
+
+    def test_moves_a_folder_with_everything_inside_it(self) -> None:
+        folder = self._write_bundle()
+        write_file_tags(folder, {"receipt-report.pdf": ["Jul", "Report"]})
+
+        payload = self._move_folder({
+            "folder": "Receipts/Jul2026",
+            "destination": "Archive/Jul2026",
+        })
+
+        landed = self.output_dir / self.owner_key / "Archive" / "Jul2026"
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["moved"])
+        self.assertFalse(folder.exists())
+        self.assertEqual((landed / "receipt-report.pdf").read_bytes(), b"pdf-bytes")
+        self.assertEqual(
+            (landed / "attachments" / "msg-1-01-receipt.png").read_bytes(),
+            b"png-bytes",
+        )
+        self.assertEqual(read_file_tags(landed), {"receipt-report.pdf": ["Jul", "Report"]})
+        # bundle.json describes the folder rather than sitting in it, so the
+        # count is of the answers.
+        self.assertEqual(payload["remaining"], 3)
+        # A heading left holding nothing is a leftover, not a folder.
+        self.assertFalse((self.output_dir / self.owner_key / "Receipts").exists())
+
+    def test_moving_onto_a_folder_that_exists_keeps_both_sides(self) -> None:
+        folder = self._write_bundle()
+        write_file_tags(folder, {"receipts.xlsx": ["Jul"]})
+        destination = self.output_dir / self.owner_key / "Receipts" / "Aug2026"
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "receipts.xlsx").write_bytes(b"august-xlsx")
+        write_file_tags(destination, {"receipts.xlsx": ["Aug"]})
+
+        payload = self._move_folder({
+            "folder": "Receipts/Jul2026",
+            "destination": "Receipts/Aug2026",
+        })
+
+        self.assertTrue(payload["moved"])
+        self.assertFalse(folder.exists())
+        self.assertEqual((destination / "receipts.xlsx").read_bytes(), b"august-xlsx")
+        self.assertEqual((destination / "receipts (2).xlsx").read_bytes(), b"xlsx-bytes")
+        # The tags travel with the file, under the name it landed as.
+        self.assertEqual(
+            read_file_tags(destination),
+            {"receipts.xlsx": ["Aug"], "receipts (2).xlsx": ["Jul"]},
+        )
+
+    def test_a_folder_cannot_be_moved_inside_itself(self) -> None:
+        folder = self._write_bundle()
+
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._move_folder({
+                "folder": "Receipts/Jul2026",
+                "destination": "Receipts/Jul2026/Older",
+            })
+
+        self.assertEqual(caught.exception.code, 400)
+        self.assertTrue((folder / "receipt-report.pdf").exists())
+
+    def test_a_folder_move_cannot_climb_out_of_the_owner_directory(self) -> None:
+        self._write_bundle()
+        escaped = self.output_dir.parent / "escaped"
+
+        payload = self._move_folder({
+            "folder": "Receipts/Jul2026",
+            "destination": "../../escaped",
+        })
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(escaped.exists())
+        self.assertTrue((self.output_dir / self.owner_key / "escaped" / "receipt-report.pdf").exists())
+
+    def test_moving_a_folder_disk_never_held_is_not_a_failure(self) -> None:
+        payload = self._move_folder({"folder": "Receipts/Gone", "destination": "Archive/Gone"})
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["moved"])
+        self.assertTrue(payload["missing"])
+
+    def test_rejects_a_folder_move_that_is_missing_a_name(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._move_folder({"folder": "Receipts/Jul2026"})
+        self.assertEqual(caught.exception.code, 400)
+
+        with self.assertRaises(urllib_error.HTTPError) as same:
+            self._move_folder({
+                "folder": "Receipts/Jul2026",
+                "destination": "Receipts/Jul2026",
+            })
+        self.assertEqual(same.exception.code, 400)
+
+    def test_moving_a_folder_needs_a_signed_in_owner(self) -> None:
+        folder = self._write_bundle()
+
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._move_folder(
+                {"folder": "Receipts/Jul2026", "destination": "Archive/Jul2026"},
+                token=None,
+            )
+
+        self.assertEqual(caught.exception.code, 401)
+        self.assertTrue(folder.is_dir())
+
+    def test_downloads_a_folder_as_one_zip(self) -> None:
+        folder = self._write_bundle()
+        write_file_tags(folder, {"receipt-report.pdf": ["Jul"]})
+
+        body, disposition = self._archive_folder("Receipts/Jul2026")
+
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            names = sorted(archive.namelist())
+            self.assertEqual(archive.read("receipt-report.pdf"), b"pdf-bytes")
+        # The listing the panel shows, and nothing that only describes it.
+        self.assertEqual(names, [
+            "attachments/msg-1-01-receipt.png",
+            "receipt-report.pdf",
+            "receipts.xlsx",
+        ])
+        self.assertIn("Receipts-Jul2026.zip", disposition)
+        self.assertTrue(folder.is_dir())
+
+    def test_a_folder_with_nothing_in_it_has_nothing_to_download(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._archive_folder("Receipts/Jul2026")
+
+        self.assertEqual(caught.exception.code, 404)
+
+    def test_downloading_a_folder_needs_a_signed_in_owner(self) -> None:
+        self._write_bundle()
+
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            self._archive_folder("Receipts/Jul2026", token=None)
+
+        self.assertEqual(caught.exception.code, 401)
 
     def test_deletes_a_folder_with_the_files_inside_it(self) -> None:
         folder = self._write_bundle()

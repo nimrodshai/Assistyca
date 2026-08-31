@@ -1984,10 +1984,19 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function forgetAgentFolders", script)
 
         # Removing a folder belongs on the folder itself, not only in chat.
-        self.assertIn("function createAgentFolderDeleteButton", script)
-        self.assertIn("function deleteAgentFolder", script)
-        self.assertIn("[data-agent-folder-delete]", script)
-        self.assertIn(".agent-folder-delete {", styles)
+        # It sits in the menu the row raises - the way a folder's actions do
+        # anywhere else - alongside moving it and taking what is inside.
+        self.assertIn("function openAgentFolderMenu", script)
+        self.assertIn("function deleteAgentFolderPath", script)
+        self.assertIn('createAgentMenuOption("delete", "Delete"', script)
+        self.assertIn('createAgentMenuOption("move", "Move to\u2026"', script)
+        self.assertIn('createAgentMenuOption("archive", "Download all"', script)
+        self.assertIn('apiRequest("/api/agent/folders/move"', script)
+        self.assertIn("/api/agent/folder-archive?folder=", script)
+        # Raised by a right-click, and by holding a row on a phone.
+        self.assertIn('addEventListener("contextmenu"', script)
+        self.assertIn("AGENT_LONG_PRESS_MS", script)
+        self.assertIn(".agent-file-menu {", styles)
 
     def test_deleting_some_of_what_a_folder_holds_uses_the_same_picker(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
