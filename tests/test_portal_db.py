@@ -310,5 +310,59 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertIsNone(database.get_whatsapp_connection_by_owner_wa_id("972507322341"))
 
 
+class ReceiptDuplicateDecisionTests(unittest.TestCase):
+    """What the owner said about two receipts that look alike, kept."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("owner@example.com")
+        self.user_id = int((self.database.get_user("owner@example.com") or {})["id"])
+
+    def _save(self, decision: str = "same", **overrides) -> dict:
+        fields = {
+            "pair_key": "pair-1",
+            "decision": decision,
+            "keep_ref": "owner@gmail.com::msg-20",
+            "question": "One payment reported twice, or two separate charges?",
+            "amount": "71.80",
+            "currency": "ILS",
+            "receipts": [{"sourceRef": "msg-20"}, {"sourceRef": "msg-28"}],
+        }
+        fields.update(overrides)
+        return self.database.save_receipt_duplicate_decision(user_id=self.user_id, **fields)
+
+    def test_an_answer_comes_back_the_way_it_went_in(self) -> None:
+        self._save()
+        [stored] = self.database.list_receipt_duplicate_decisions(user_id=self.user_id)
+
+        self.assertEqual(stored["key"], "pair-1")
+        self.assertEqual(stored["decision"], "same")
+        self.assertEqual(stored["keepRef"], "owner@gmail.com::msg-20")
+        self.assertEqual([entry["sourceRef"] for entry in stored["receipts"]], ["msg-20", "msg-28"])
+
+    def test_changing_your_mind_replaces_the_answer_rather_than_adding_one(self) -> None:
+        self._save("same")
+        self._save("separate")
+
+        stored = self.database.list_receipt_duplicate_decisions(user_id=self.user_id)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["decision"], "separate")
+
+    def test_an_answer_that_says_nothing_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self._save("maybe")
+        with self.assertRaises(ValueError):
+            self._save(pair_key="  ")
+
+    def test_one_owner_never_reads_another_owners_answers(self) -> None:
+        self.database.register_user("someone@example.com")
+        other_id = int((self.database.get_user("someone@example.com") or {})["id"])
+        self._save()
+
+        self.assertEqual(self.database.list_receipt_duplicate_decisions(user_id=other_id), [])
+
+
 if __name__ == "__main__":
     unittest.main()

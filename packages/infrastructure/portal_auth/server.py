@@ -150,7 +150,9 @@ from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_judge import judge_receipt_items
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_INSTRUCTIONS
+from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
+from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
@@ -444,6 +446,17 @@ AGENT_RECEIPT_ANSWER_MAX_MESSAGES = 100
 # The most one request will read, however many months it spans. Past this the
 # answer says it stopped rather than reading on.
 AGENT_RECEIPT_ANSWER_MAX_SPAN_MESSAGES = 400
+# How long a read waits to be picked up again after a question was put to the
+# owner. Long enough that a person can think about it and answer; short enough
+# that a mailbox read is never reported as fresh when it is an hour old.
+AGENT_RECEIPT_RUN_CACHE_TTL_SECONDS = 900
+# How many reads are held at once, across every signed-in owner. A question
+# waiting on an answer is rare; this is a ceiling on memory, not a quota.
+AGENT_RECEIPT_RUN_CACHE_MAX_ENTRIES = 24
+# How many questions one answer may put to the owner. A month with more
+# unsettled pairs than this is a conversation, not a question, and the rest
+# are counted as separate payments and said out loud.
+AGENT_RECEIPT_MAX_QUESTIONS = 3
 AGENT_RECEIPT_BUNDLE_MAX_MESSAGES = 50
 # The words a receipt-ish email actually uses. A vendor that never writes
 # "receipt" - and plenty say "Payment confirmation" or "You were charged"
@@ -2172,6 +2185,7 @@ def answer_receipt_months(
     vendor: Any,
     months: list[tuple[int, int]],
     ask: Callable[[str], str] | None = None,
+    decisions: Any = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """One answer per month, all of them from a single read of the mailbox.
 
@@ -2192,10 +2206,82 @@ def answer_receipt_months(
             vendor=vendor,
             month_label=format_receipt_month_label(month),
             ask=ask,
+            decisions=decisions,
         )
         for month in months
     ]
     return answers, unplaced
+
+
+def collect_receipt_answer_questions(answers: Any) -> list[dict[str, Any]]:
+    """The pairs the reading could not settle, across every month of a run.
+
+    A question repeated in two months is the same question, so it is asked
+    once. What comes back is what the owner is asked before any total is
+    reported: until they answer, the figures behind it are a coin toss.
+    """
+
+    questions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for answer in answers if isinstance(answers, list) else []:
+        entry = answer if isinstance(answer, dict) else {}
+        for raw in entry.get("questions") if isinstance(entry.get("questions"), list) else []:
+            question = raw if isinstance(raw, dict) else {}
+            key = normalize_text(question.get("key"))
+            if not key or key in seen or not normalize_text(question.get("question")):
+                continue
+            seen.add(key)
+            questions.append(question)
+    return questions
+
+
+def normalize_receipt_decisions_payload(value: Any) -> list[dict[str, Any]]:
+    """The answers a message carries about pairs of receipts.
+
+    This is a chat payload, so it says only what it is allowed to say: which
+    pair, which way, and which of them to count. Everything else about those
+    receipts is read from the mailbox, never from the client.
+    """
+
+    decisions: list[dict[str, Any]] = []
+    for raw in value if isinstance(value, list) else []:
+        entry = raw if isinstance(raw, dict) else {}
+        key = normalize_text(entry.get("key") or entry.get("pairKey"))[:64]
+        decision = normalize_text(entry.get("decision")).lower()
+        if not key or decision not in {"same", "separate"}:
+            continue
+        decisions.append({
+            "pair_key": key,
+            "decision": decision,
+            "keep_ref": normalize_text(entry.get("keepRef"))[:200],
+            "question": normalize_text(entry.get("question"))[:RECEIPT_PAIRING_QUESTION_CHARS],
+            "amount": normalize_text(entry.get("amount"))[:32],
+            "currency": normalize_text(entry.get("currency"))[:8],
+            "receipts": [
+                {
+                    "vendor": normalize_text(receipt.get("vendor"))[:120],
+                    "subject": normalize_text(receipt.get("subject"))[:200],
+                    "date": normalize_text(receipt.get("date"))[:60],
+                    "sourceRef": normalize_text(receipt.get("sourceRef"))[:200],
+                    "mailbox": normalize_text(receipt.get("mailbox"))[:200],
+                }
+                for receipt in (entry.get("receipts") if isinstance(entry.get("receipts"), list) else [])[:RECEIPT_PAIRING_MAX_CLUSTER]
+                if isinstance(receipt, dict)
+            ],
+        })
+    return decisions
+
+
+def build_receipt_run_signature(query: Any, vendor: Any, months: list[tuple[int, int]]) -> str:
+    """What a held read was of, so an answer is applied to the same question.
+
+    A token on its own would let an answer about last month's receipts land on
+    a read of this month's. This is what the two have to agree on.
+    """
+
+    described = query.describe() if hasattr(query, "describe") else normalize_text(query)
+    month_text = ",".join(f"{year:04d}-{month:02d}" for year, month in months)
+    return f"{described}|{normalize_text(vendor).lower()}|{month_text}"
 
 
 def merge_receipt_month_totals(answers: list[dict[str, Any]]) -> dict[str, float]:
@@ -5643,6 +5729,27 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     )
                     + "/attachments"
                 )
+            # What the owner has already settled about receipts that look
+            # alike. The answers this message carries are written down here,
+            # so they hold for this run and for every run after it.
+            receipt_decisions = self._receipt_decisions(session.email, payload)
+            # A run picked up after a question was answered. The mail behind it
+            # was read and judged when the question was asked, so it is counted
+            # again with the answer applied rather than read again.
+            receipt_run_signature = build_receipt_run_signature(
+                mail_query,
+                fields.get("vendor") or payload.get("vendor"),
+                answer_months,
+            )
+            held_run = (
+                self._resume_receipt_run(
+                    payload.get("runToken"),
+                    email=session.email,
+                    signature=receipt_run_signature,
+                )
+                if answer_mode and is_custom_google_batch
+                else None
+            )
             # Each mailbox is read on its own so one broken connection cannot
             # sink a run across the others. A failure is remembered and the
             # loop continues; the run only fails if every mailbox failed.
@@ -5655,7 +5762,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             capped_mailboxes: list[dict[str, Any]] = []
             email_provider = GOOGLE_GMAIL_OAUTH_PROVIDER
             mailbox_names = mailbox_display_names(mailbox_records)
-            for record in mailbox_records:
+            for record in (mailbox_records if held_run is None else []):
                 mailbox_name = mailbox_names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
                 record_provider = connection_provider(record) or GOOGLE_GMAIL_OAUTH_PROVIDER
                 try:
@@ -5752,6 +5859,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     }
                 mailbox_results.append({"mailbox": mailbox_name, "result": result})
 
+            if held_run is not None:
+                mailbox_results = held_run["mailboxResults"]
+                capped_mailboxes = list(held_run.get("cappedMailboxes") or [])
+
             if not mailbox_results:
                 failure = mailbox_failures[0] if mailbox_failures else {
                     "status": HTTPStatus.CONFLICT,
@@ -5778,11 +5889,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             undated_count = 0
             if is_custom_google_batch:
                 result = relabel_mail_digest_result(result, result_header)
-                if result_header == "Receipt search":
+                if result_header == "Receipt search" and held_run is None:
                     # Before anything is counted, read what actually came back.
                     # The mailbox was searched for a few broad words, and a
                     # month of a busy vendor holds far more mail matching them
-                    # than it holds receipts.
+                    # than it holds receipts. A held read was judged when it
+                    # was read, so it is not judged twice.
                     result = {
                         **result,
                         "items": self._judge_receipt_items(
@@ -5804,6 +5916,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             vendor=answer_vendor,
                             months=answer_months,
                             ask=pairing_ask,
+                            decisions=receipt_decisions,
                         )
                     else:
                         receipt_answer = answer_receipt_question(
@@ -5811,9 +5924,31 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             vendor=answer_vendor,
                             month_label=format_receipt_month_label(answer_month) if answer_month else "",
                             ask=pairing_ask,
+                            decisions=receipt_decisions,
                         )
                         result["summary"] = receipt_answer["answer"]
                         result["message"] = receipt_answer["answer"]
+                    # Two receipts nobody can tell apart leave the total a coin
+                    # toss, and a coin toss reported as a number is the one
+                    # thing this must not do. The owner knows what they bought,
+                    # so they are asked, and the read waits for them.
+                    pending_questions = collect_receipt_answer_questions(
+                        receipt_month_answers or ([receipt_answer] if receipt_answer else [])
+                    )
+                    if pending_questions:
+                        json_response(self, HTTPStatus.OK, {
+                            "ok": True,
+                            "needsReceiptDecision": True,
+                            "runToken": self._hold_receipt_run(
+                                email=session.email,
+                                signature=receipt_run_signature,
+                                mailbox_results=mailbox_results,
+                                capped_mailboxes=capped_mailboxes,
+                            ),
+                            "receiptQuestions": pending_questions[:AGENT_RECEIPT_MAX_QUESTIONS],
+                            "message": pending_questions[0]["question"],
+                        })
+                        return
                 elif result_header == "Receipt search":
                     receipt_items = result.get("items") if isinstance(result.get("items"), list) else []
                     try:
@@ -5825,6 +5960,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             month_value=receipt_month,
                             query=mail_query.describe(),
                             ask=self._receipt_pairing_ask(billing_email=session.email),
+                            decisions=receipt_decisions,
                         )
                     except Exception as exc:
                         print(f"Receipt export failed: {exc}", flush=True)
@@ -6809,6 +6945,82 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             max_output_tokens=RECEIPT_JUDGE_MAX_OUTPUT_TOKENS,
             failure_label="Receipt judgement",
         ))
+
+    def _receipt_decisions(self, email: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Every receipt pair this owner has ruled on, answers included.
+
+        The answers a message carries are written down first, so the run that
+        follows is the run that applies them, and every later run applies them
+        too. A pair is asked about once and only once.
+        """
+
+        user = self.database.get_user(email) or {}
+        user_id = int(user.get("id") or 0)
+        if user_id <= 0:
+            return []
+        for entry in normalize_receipt_decisions_payload(payload.get("receiptDecisions")):
+            try:
+                self.database.save_receipt_duplicate_decision(user_id=user_id, **entry)
+            except (ValueError, sqlite3.Error) as exc:
+                # An answer that cannot be written down is still applied to the
+                # run in front of the owner; it is being asked again that they
+                # would notice, and that is what the log is for.
+                print(f"Receipt decision could not be saved: {exc}", flush=True)
+        return self.database.list_receipt_duplicate_decisions(user_id=user_id)
+
+    def _hold_receipt_run(
+        self,
+        *,
+        email: str,
+        signature: str,
+        mailbox_results: list[dict[str, Any]],
+        capped_mailboxes: list[dict[str, Any]],
+    ) -> str:
+        """Keep a read alive while its owner answers a question about it.
+
+        The mail has been read and judged already; the answer decides what is
+        counted, not what is in the mailbox. Holding it here is the difference
+        between a click and another minute of reading.
+        """
+
+        token = secrets.token_urlsafe(18)
+        now = time.time()
+        with self.server.receipt_runs_lock:  # type: ignore[attr-defined]
+            runs: dict[str, dict[str, Any]] = self.server.receipt_runs  # type: ignore[attr-defined]
+            for held_token, held in list(runs.items()):
+                if now - float(held.get("heldAt") or 0) > AGENT_RECEIPT_RUN_CACHE_TTL_SECONDS:
+                    runs.pop(held_token, None)
+            while len(runs) >= AGENT_RECEIPT_RUN_CACHE_MAX_ENTRIES:
+                runs.pop(next(iter(runs)), None)
+            runs[token] = {
+                "email": normalize_text(email).lower(),
+                "signature": signature,
+                "mailboxResults": mailbox_results,
+                "cappedMailboxes": list(capped_mailboxes),
+                "heldAt": now,
+            }
+        return token
+
+    def _resume_receipt_run(self, token: Any, *, email: str, signature: str) -> Optional[dict[str, Any]]:
+        """The read an answer belongs to, or nothing if it is gone or foreign.
+
+        A read that has expired, or that was of a different question, is not
+        resumed - the mailbox is read again instead. The answer is already
+        written down by then, so the second read reaches the same place.
+        """
+
+        key = normalize_text(token)
+        if not key:
+            return None
+        with self.server.receipt_runs_lock:  # type: ignore[attr-defined]
+            held = self.server.receipt_runs.pop(key, None)  # type: ignore[attr-defined]
+        if not isinstance(held, dict):
+            return None
+        if held.get("email") != normalize_text(email).lower() or held.get("signature") != signature:
+            return None
+        if time.time() - float(held.get("heldAt") or 0) > AGENT_RECEIPT_RUN_CACHE_TTL_SECONDS:
+            return None
+        return held
 
     def _receipt_pairing_ask(self, *, billing_email: str) -> Callable[[str], str]:
         """A way to ask which receipts are one payment reported more than once.
@@ -11158,6 +11370,12 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
     server.manual_feature_run_lock = threading.RLock()  # type: ignore[attr-defined]
     server.manual_monitor_run_events = server.manual_feature_run_events  # type: ignore[attr-defined]
     server.manual_monitor_run_lock = server.manual_feature_run_lock  # type: ignore[attr-defined]
+    # Reads waiting on an answer from their owner. A receipt question stops a
+    # total mid-air, and the mail behind it is held here so the answer costs a
+    # click rather than another read of the mailbox. Losing it costs a re-read
+    # and nothing else, so it lives in memory and dies with the process.
+    server.receipt_runs = {}  # type: ignore[attr-defined]
+    server.receipt_runs_lock = threading.RLock()  # type: ignore[attr-defined]
     server.credential_vault = None  # type: ignore[attr-defined]
     if config.credential_encryption_key:
         try:

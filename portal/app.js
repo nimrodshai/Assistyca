@@ -1315,7 +1315,7 @@ const state = {
   agentFolderCreateOpen: false,
   agentFolderFilterOpen: false,
   agentFolderSortOpen: false,
-  agentFolderOpenId: "",
+  agentFolderOpenPaths: [],
   agentAddToolMenuOpen: false,
   agentAddToolMenuClosing: false,
   platformConnections: [],
@@ -18020,7 +18020,12 @@ function formatAgentFolderItemCount(count) {
 }
 
 function formatAgentFolderTime(folder) {
-  const timestamp = parseAgentTimestamp(folder?.updatedAt || folder?.createdAt);
+  return formatAgentFolderTimestamp(parseAgentTimestamp(folder?.updatedAt || folder?.createdAt));
+}
+
+// A row in the tree is often a folder holding folders, which has no timestamp
+// of its own - it reports the most recent one underneath it.
+function formatAgentFolderTimestamp(timestamp) {
   if (!timestamp) {
     return "";
   }
@@ -18200,6 +18205,142 @@ function formatAgentFolderFileSize(size) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// A saved folder is a path - "Receipts/Jul2026" lives inside "Receipts", the
+// same way it does on disk. The panel used to list those paths flat, so two
+// months of receipts read as two unrelated folders and the "Receipts" they
+// share was nowhere on screen. These build the tree the names already describe.
+function getAgentFolderPathSegments(name) {
+  return String(name || "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function buildAgentFolderTree(folders) {
+  const roots = [];
+  const byPath = new Map();
+
+  for (const folder of folders) {
+    const segments = getAgentFolderPathSegments(folder?.name);
+    if (!segments.length) {
+      continue;
+    }
+    let parent = null;
+    let path = "";
+    for (const segment of segments) {
+      path = path ? `${path}/${segment}` : segment;
+      let node = byPath.get(path);
+      if (!node) {
+        node = { path, segment, folder: null, children: [] };
+        byPath.set(path, node);
+        (parent ? parent.children : roots).push(node);
+      }
+      parent = node;
+    }
+    // Only the last segment names a folder the panel actually keeps. The ones
+    // above it are there because of what is filed underneath them.
+    parent.folder = folder;
+  }
+
+  roots.forEach(summarizeAgentFolderNode);
+  return roots;
+}
+
+// What a row has to say about itself: what is inside it, how many folders that
+// is spread over, and when any of it last changed.
+function summarizeAgentFolderNode(node) {
+  const types = new Set(node.folder ? [normalizeAgentFolderType(node.folder.type)] : []);
+  let itemCount = Math.max(0, Number.parseInt(node.folder?.itemCount, 10) || 0);
+  let folderCount = 0;
+  let updatedAt = parseAgentTimestamp(node.folder?.updatedAt || node.folder?.createdAt) || 0;
+
+  for (const child of node.children) {
+    summarizeAgentFolderNode(child);
+    itemCount += child.itemCount;
+    folderCount += child.folderCount + (child.folder ? 1 : 0);
+    updatedAt = Math.max(updatedAt, child.updatedAt);
+    for (const type of child.types) {
+      types.add(type);
+    }
+  }
+
+  node.itemCount = itemCount;
+  node.folderCount = folderCount;
+  node.updatedAt = updatedAt;
+  node.types = types;
+  // A folder that only exists because of what is inside it takes its colour
+  // from that, when what is inside agrees.
+  node.type = node.folder
+    ? normalizeAgentFolderType(node.folder.type)
+    : (types.size === 1 ? [...types][0] : "general");
+  return node;
+}
+
+function describeAgentFolderNode(node) {
+  const parts = [];
+  if (node.folder) {
+    parts.push(getAgentFolderTypeOption(node.folder.type).label);
+    parts.push(formatAgentFolderItemCount(node.folder.itemCount));
+  }
+  if (node.folderCount) {
+    parts.push(`${node.folderCount} folder${node.folderCount === 1 ? "" : "s"}`);
+    // A row that keeps nothing of its own reports what its folders hold
+    // between them, so it is not silent about how much is in there.
+    if (!node.folder) {
+      parts.push(formatAgentFolderItemCount(node.itemCount));
+    }
+  }
+  return parts.join(" · ") || getAgentFolderTypeOption(node.type).label;
+}
+
+function isAgentFolderPathOpen(path) {
+  return Array.isArray(state.agentFolderOpenPaths) && state.agentFolderOpenPaths.includes(path);
+}
+
+function setAgentFolderPathOpen(path, open) {
+  const paths = (Array.isArray(state.agentFolderOpenPaths) ? state.agentFolderOpenPaths : [])
+    .filter((entry) => entry !== path);
+  if (open) {
+    paths.push(path);
+  }
+  state.agentFolderOpenPaths = paths;
+}
+
+// Opening a folder deep in the tree means opening everything above it, or the
+// row you asked for is behind a closed one.
+function openAgentFolderPath(name) {
+  let path = "";
+  for (const segment of getAgentFolderPathSegments(name)) {
+    path = path ? `${path}/${segment}` : segment;
+    setAgentFolderPathOpen(path, true);
+  }
+  return path;
+}
+
+function isAgentFolderNodeOpen(node) {
+  // A filter that matched something inside a folder has to show it, so the
+  // rows above a match open on their own while the filter is on.
+  if (state.agentFolderSearch && node.children.length) {
+    return true;
+  }
+  return isAgentFolderPathOpen(node.path);
+}
+
+// A folder the panel no longer lists cannot stay open, and a path that is only
+// there because of a folder that went with it is gone too.
+function pruneAgentFolderOpenPaths(nodes) {
+  const paths = new Set();
+  const walk = (list) => {
+    for (const node of list) {
+      paths.add(node.path);
+      walk(node.children);
+    }
+  };
+  walk(nodes);
+  state.agentFolderOpenPaths = (Array.isArray(state.agentFolderOpenPaths) ? state.agentFolderOpenPaths : [])
+    .filter((path) => paths.has(path));
+}
+
 // Folder contents live on the server as the bundle a run wrote to disk, so the
 // panel reads them the first time a folder is opened and keeps the answer for
 // the rest of the session.
@@ -18237,18 +18378,20 @@ async function loadAgentFolderContents(folderName) {
   renderAgentFolders();
 }
 
-function toggleAgentFolderOpen(folderId) {
-  const id = normalizeAgentTextItem(folderId, "");
-  state.agentFolderOpenId = state.agentFolderOpenId === id ? "" : id;
-  renderAgentFolders();
-
-  if (!state.agentFolderOpenId) {
+function toggleAgentFolderOpen(path, folderName = "") {
+  const key = normalizeAgentTextItem(path, "");
+  if (!key) {
     return;
   }
 
-  const folder = getAgentWorkspace().folders.find((entry) => entry.id === state.agentFolderOpenId);
-  if (folder) {
-    void loadAgentFolderContents(folder.name);
+  const open = !isAgentFolderPathOpen(key);
+  setAgentFolderPathOpen(key, open);
+  renderAgentFolders();
+
+  // Only a row that keeps files of its own has anything to fetch. A row that
+  // is there because of the folders underneath it already shows them.
+  if (open && folderName) {
+    void loadAgentFolderContents(folderName);
   }
 }
 
@@ -18420,8 +18563,9 @@ function createAgentFolderFileMenuButton(folder, file, href) {
 // The card is built once and updated in place afterwards, so opening and
 // closing a folder is a class change on a node that is already on screen -
 // which is what gives CSS something to animate. Rebuilding the card would
-// drop the collapsed height it has to grow from.
-function createAgentFolderItem(folder) {
+// drop the collapsed height it has to grow from, and would take any nested
+// folder's open state with it.
+function createAgentFolderItem(node) {
   const item = document.createElement("article");
   item.setAttribute("role", "listitem");
 
@@ -18431,57 +18575,83 @@ function createAgentFolderItem(folder) {
   openButton.append(
     createAgentFolderIcon(),
     Object.assign(document.createElement("span"), { className: "agent-folder-copy" }),
+    createAgentFolderChevron(),
   );
 
   // The contents sit in a wrapper that grows and shrinks, and a clip that
-  // hides what is spilling out of it while it does.
+  // hides what is spilling out of it while it does. Inside: what this folder
+  // keeps itself, then the folders filed underneath it.
   const wrap = document.createElement("div");
   wrap.className = "agent-folder-body-wrap";
   const clip = document.createElement("div");
   clip.className = "agent-folder-body-clip";
+  const own = document.createElement("div");
+  own.className = "agent-folder-own";
+  const childList = document.createElement("div");
+  childList.className = "agent-folder-list is-nested";
+  childList.setAttribute("role", "list");
+  clip.append(own, childList);
   wrap.append(clip);
 
-  item.append(openButton, createAgentFolderDeleteButton(folder), wrap);
-  return updateAgentFolderItem(item, folder);
+  item.append(openButton, createAgentFolderDeleteButton(), wrap);
+  return updateAgentFolderItem(item, node);
 }
 
-function updateAgentFolderItem(item, folder) {
-  const type = getAgentFolderTypeOption(folder?.type);
-  const isOpen = state.agentFolderOpenId === folder.id;
-  item.className = `agent-folder-item is-${type.value}`;
+function updateAgentFolderItem(item, node) {
+  const isOpen = isAgentFolderNodeOpen(node);
+  item.className = `agent-folder-item is-${node.type}`;
   item.classList.toggle("is-open", isOpen);
-  item.dataset.agentFolderId = folder.id;
+  item.classList.toggle("is-group", node.children.length > 0);
+  item.dataset.agentFolderPath = node.path;
 
-  const openButton = item.querySelector(".agent-folder-item-open");
+  const openButton = item.querySelector(":scope > .agent-folder-item-open");
   if (openButton) {
-    openButton.dataset.agentFolderOpen = folder.id;
+    openButton.dataset.agentFolderOpen = node.path;
+    if (node.folder) {
+      openButton.dataset.agentFolderName = node.folder.name;
+    } else {
+      delete openButton.dataset.agentFolderName;
+    }
     openButton.setAttribute("aria-expanded", String(isOpen));
-    openButton.setAttribute("aria-label", `${isOpen ? "Close" : "Open"} folder: ${folder.name}`);
+    openButton.setAttribute("aria-label", `${isOpen ? "Close" : "Open"} folder: ${node.path}`);
 
     const copy = openButton.querySelector(".agent-folder-copy");
     if (copy) {
+      // Only this folder's own segment: the path above it is the row it is
+      // already sitting inside.
       const title = document.createElement("strong");
-      title.textContent = folder.name;
+      title.textContent = node.segment;
 
       // What it holds and when it last changed sit together under the name,
       // so the name itself has the full width of the card to be read in.
       const meta = document.createElement("span");
       meta.className = "agent-folder-meta";
       const detail = document.createElement("span");
-      detail.textContent = `${type.label} · ${formatAgentFolderItemCount(folder.itemCount)}`;
-      const time = document.createElement("span");
-      time.className = "agent-folder-time";
-      time.textContent = formatAgentFolderTime(folder);
-      meta.append(detail, time);
+      detail.textContent = describeAgentFolderNode(node);
+      meta.append(detail);
+      const timeText = formatAgentFolderTimestamp(node.updatedAt);
+      if (timeText) {
+        const time = document.createElement("span");
+        time.className = "agent-folder-time";
+        time.textContent = timeText;
+        meta.append(time);
+      }
 
       copy.replaceChildren(title, meta);
     }
   }
 
-  const deleteButton = item.querySelector(".agent-folder-delete");
+  // Only a folder the panel actually keeps can be deleted. A row that exists
+  // because of what is filed underneath it is not one of those.
+  const deleteButton = item.querySelector(":scope > .agent-folder-delete");
   if (deleteButton) {
-    deleteButton.dataset.agentFolderDelete = folder.id;
-    deleteButton.setAttribute("aria-label", `Delete folder: ${folder.name}`);
+    deleteButton.hidden = !node.folder;
+    if (node.folder) {
+      deleteButton.dataset.agentFolderDelete = node.folder.id;
+      deleteButton.setAttribute("aria-label", `Delete folder: ${node.folder.name}`);
+    } else {
+      delete deleteButton.dataset.agentFolderDelete;
+    }
   }
 
   // A folder that is closing keeps what it last showed, because a panel that
@@ -18489,15 +18659,48 @@ function updateAgentFolderItem(item, folder) {
   // an open one is only rebuilt when its listing actually changed: a poll
   // that redraws the panel every few seconds must not throw away the menu the
   // user has open on one of these files.
-  const clip = item.querySelector(".agent-folder-body-clip");
-  if (clip && isOpen) {
-    const signature = getAgentFolderBodySignature(folder);
-    if (clip.dataset.agentFolderBody !== signature) {
-      clip.dataset.agentFolderBody = signature;
-      clip.replaceChildren(createAgentFolderBody(folder));
+  const own = item.querySelector(":scope > .agent-folder-body-wrap > .agent-folder-body-clip > .agent-folder-own");
+  if (own) {
+    own.hidden = !node.folder;
+    if (node.folder && isOpen) {
+      const signature = getAgentFolderBodySignature(node.folder);
+      if (own.dataset.agentFolderBody !== signature) {
+        own.dataset.agentFolderBody = signature;
+        own.replaceChildren(createAgentFolderBody(node.folder));
+      }
+    }
+  }
+
+  const childList = item.querySelector(":scope > .agent-folder-body-wrap > .agent-folder-body-clip > .agent-folder-list");
+  if (childList) {
+    childList.hidden = !node.children.length;
+    if (node.children.length) {
+      syncAgentFolderNodes(childList, node.children);
     }
   }
   return item;
+}
+
+function createAgentFolderChevron() {
+  const chevron = document.createElement("span");
+  chevron.className = "agent-folder-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  const icon = createSvgElement("svg", {
+    viewBox: "0 0 24 24",
+    width: "14",
+    height: "14",
+    fill: "none",
+    focusable: "false",
+  });
+  icon.append(createSvgElement("path", {
+    d: "M9.5 5.5 16 12l-6.5 6.5",
+    stroke: "currentColor",
+    "stroke-width": "1.9",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+  }));
+  chevron.append(icon);
+  return chevron;
 }
 
 // Everything the listing of one folder is drawn from. Same string, same
@@ -18522,13 +18725,12 @@ function getAgentFolderBodySignature(folder) {
 
 // Adding a folder was the only thing the panel could do to one. Removing it
 // belongs on the folder itself, the same way removing a conversation sits on
-// the conversation.
-function createAgentFolderDeleteButton(folder) {
+// the conversation. Which folder it removes is set by the update pass, so a
+// row that is only there because of what is filed underneath it can hide it.
+function createAgentFolderDeleteButton() {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "agent-chat-delete agent-folder-delete";
-  button.dataset.agentFolderDelete = folder.id;
-  button.setAttribute("aria-label", `Delete folder: ${folder.name}`);
   button.title = "Delete folder";
   const icon = createSvgElement("svg", {
     viewBox: "0 0 24 24",
@@ -19000,12 +19202,10 @@ function renderAgentFolders() {
   state.agentFolderSort = normalizeAgentFolderSort(state.agentFolderSort || agent.folderSort);
   const folders = getFilteredAgentFolders(agent);
   const totalFolders = Array.isArray(agent.folders) ? agent.folders.length : 0;
-  if (
-    state.agentFolderOpenId
-    && !folders.some((folder) => folder.id === state.agentFolderOpenId)
-  ) {
-    state.agentFolderOpenId = "";
-  }
+  // "Receipts/Jul2026" is a folder inside a folder, so the panel lists it as
+  // one rather than as a path nobody can read.
+  const tree = buildAgentFolderTree(folders);
+  pruneAgentFolderOpenPaths(tree);
 
   if (elements.agentFolderCount) {
     elements.agentFolderCount.textContent = String(totalFolders);
@@ -19028,7 +19228,7 @@ function renderAgentFolders() {
     return;
   }
 
-  syncAgentFolderListItems(folders);
+  syncAgentFolderNodes(elements.agentFolderList, tree);
   closeStaleAgentFileMenu();
 }
 
@@ -19042,17 +19242,17 @@ function closeStaleAgentFileMenu() {
 
 // Keep the cards that are already on screen when the list itself has not
 // changed, and only swap the whole list when it has. A card that survives a
-// render is a card whose open/close animation survives one too.
-function syncAgentFolderListItems(folders) {
-  const list = elements.agentFolderList;
+// render is a card whose open/close animation survives one too - and whose
+// nested folders keep the state they were left in.
+function syncAgentFolderNodes(list, nodes) {
   const current = [...list.children];
-  const sameList = current.length === folders.length
-    && folders.every((folder, index) => current[index]?.dataset?.agentFolderId === folder.id);
+  const sameList = current.length === nodes.length
+    && nodes.every((node, index) => current[index]?.dataset?.agentFolderPath === node.path);
   if (sameList) {
-    folders.forEach((folder, index) => updateAgentFolderItem(current[index], folder));
+    nodes.forEach((node, index) => updateAgentFolderItem(current[index], node));
     return;
   }
-  list.replaceChildren(...folders.map(createAgentFolderItem));
+  list.replaceChildren(...nodes.map(createAgentFolderItem));
 }
 
 function syncAgentPanelModeControls() {
@@ -24386,6 +24586,11 @@ function handleAgentMessageAction(event) {
     return true;
   }
 
+  if (action === "receipt-one-payment" || action === "receipt-two-payments") {
+    void answerAgentReceiptQuestion(messageId, action === "receipt-one-payment" ? "same" : "separate");
+    return true;
+  }
+
   if (action === "run-folder-command") {
     void runAgentFolderCommand(messageId);
     return true;
@@ -25038,7 +25243,7 @@ function getAgentAnswerRunTasks(turn) {
 // One lookup, start to finish. It returns what to say rather than writing to
 // the conversation itself, because the lookups beside it still have to run and
 // the whole set is reported in one message.
-async function runAgentAnswerTask(task, setProgress) {
+async function runAgentAnswerTask(task, setProgress, pending = null) {
   const { proposalType } = task;
   // A job that produces something runs in full, the same way the saved
   // version of it would. An answer run reads the same sources but writes
@@ -25046,6 +25251,11 @@ async function runAgentAnswerTask(task, setProgress) {
   const runMode = task?.mode === "run" ? "run" : "answer";
   const fields = getAgentAnswerRunFields(task);
   const { months, trimmed } = getAgentAnswerRunMonths(fields);
+  // What the owner has already told us about receipts that look alike, and
+  // the reads waiting on those answers. A run picked up after a question is
+  // answered carries both, so it finishes the count instead of starting over.
+  const decisions = Array.isArray(pending?.decisions) ? pending.decisions : [];
+  const tokens = pending?.tokens && typeof pending.tokens === "object" ? pending.tokens : {};
   const results = [];
   const lines = [];
   const missedMonths = [];
@@ -25059,17 +25269,35 @@ async function runAgentAnswerTask(task, setProgress) {
     // months in hand rather than leaving one long unexplained wait.
     setProgress(months.length > 1 ? describeAgentAnswerMonthSpan(chunk) : "");
     try {
+      const chunkKey = chunk.join(",");
       const response = await apiRequest("/api/agent/proposals/run", {
         method: "POST",
         body: {
           proposalType,
           mode: runMode,
-          fields: chunk[0] ? { ...fields, manualRunMonth: chunk.join(",") } : fields,
+          fields: chunk[0] ? { ...fields, manualRunMonth: chunkKey } : fields,
           deliveryChannel: "portal",
           timezone: getWorkspaceTimeZone(),
+          receiptDecisions: decisions,
+          runToken: String(tokens[chunkKey] || ""),
         },
         timeoutMs: getAgentAnswerRunTimeout(chunk.length),
       });
+      // Two receipts nobody can tell apart leave the total a coin toss. The
+      // run stops here rather than reporting one: the owner is asked, and the
+      // read is held open until they answer.
+      if (response?.needsReceiptDecision) {
+        const question = (Array.isArray(response.receiptQuestions) ? response.receiptQuestions : [])[0];
+        if (question) {
+          return {
+            ok: true,
+            results,
+            needsDecision: true,
+            question,
+            tokens: { ...tokens, [chunkKey]: String(response.runToken || "") },
+          };
+        }
+      }
       // A group comes back as its months. A run that answered about one month
       // is that one month, which is the shape this has always had.
       const monthResults = Array.isArray(response.months) && response.months.length
@@ -25309,7 +25537,7 @@ function openAgentResultFolder(folderName) {
   agent.panelMode = "folders";
   state.agentPanelMode = "folders";
   const folder = agent.folders.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
-  state.agentFolderOpenId = folder?.id || "";
+  openAgentFolderPath(folder?.name || name);
   persistClientState();
   renderApp({ preserveStatus: true });
   if (folder) {
@@ -25495,6 +25723,23 @@ async function runAgentAnswerNow(turn, userText = "") {
   agentTurnProgressText = "Running task";
   persistAgentWorkspace("Running task...");
   renderApp({ preserveStatus: true });
+  await completeAgentAnswerRun({ tasks, userText, decisions: [], tokens: {} });
+  return true;
+}
+
+// Every lookup a message asked for, run to the end and reported as one answer.
+// It is a separate function because a run does not always reach the end in one
+// go: a pair of receipts nobody can tell apart stops it, the owner is asked,
+// and their answer starts it again from here with the answer in hand.
+async function completeAgentAnswerRun(run) {
+  const tasks = Array.isArray(run?.tasks) ? run.tasks : [];
+  const userText = String(run?.userText || "");
+  const decisions = Array.isArray(run?.decisions) ? run.decisions : [];
+  let tokens = run?.tokens && typeof run.tokens === "object" ? run.tokens : {};
+  if (!tasks.length) {
+    return false;
+  }
+  const blockers = tasks.map((task) => getAgentAnswerRunBlocker(task.proposalType));
 
   const sections = [];
   const runResults = [];
@@ -25514,7 +25759,17 @@ async function runAgentAnswerNow(turn, userText = "") {
         sections.push({ task, text: blockers[index] });
         continue;
       }
-      const section = await runAgentAnswerTask(task, setProgress);
+      const section = await runAgentAnswerTask(task, setProgress, { decisions, tokens });
+      // The count cannot finish without the owner. Nothing is reported yet:
+      // the total either way is a guess, and a guess with a number on it reads
+      // exactly like an answer.
+      if (section.needsDecision) {
+        tokens = section.tokens || tokens;
+        pushAgentReceiptQuestion({ tasks, userText, decisions, tokens }, section.question);
+        persistAgentWorkspace(section.question.question);
+        renderApp({ preserveStatus: true });
+        return true;
+      }
       if (!section.ok) {
         failureCount += 1;
         lastError = section.error;
@@ -25573,6 +25828,73 @@ async function runAgentAnswerNow(turn, userText = "") {
     });
     persistAgentWorkspace(message);
   } finally {
+    agentTurnProgressText = "Thinking";
+    renderApp({ preserveStatus: true });
+  }
+  return true;
+}
+
+// The question itself, in the words the reading wrote it in, with the two
+// answers as buttons. The run it belongs to rides along on the message, so a
+// click has everything it needs to carry on counting.
+function pushAgentReceiptQuestion(run, question) {
+  return pushAgentMessage("assistant", String(question?.question || "").trim(), {
+    kind: "result",
+    receiptQuestion: { run, question },
+    // The buttons outlive the next thing the owner types. A question they
+    // walked away from and came back to is still answerable, and answering it
+    // is what finishes the count that is waiting on it.
+    keepActions: true,
+    actions: [
+      createAgentAction("receipt-one-payment", "One payment", "One payment", "primary"),
+      createAgentAction("receipt-two-payments", "Two payments", "Two separate payments"),
+    ],
+  });
+}
+
+// What the owner said, applied and remembered. The answer goes back with the
+// run that was waiting on it; the server writes it down against those two
+// emails, so this pair is never asked about again.
+async function answerAgentReceiptQuestion(messageId, decision) {
+  const message = getAgentWorkspace().messages.find((candidate) => candidate.id === messageId);
+  const pending = message?.metadata?.receiptQuestion;
+  const question = pending?.question;
+  if (!question) {
+    return false;
+  }
+  const same = decision === "same";
+  pushAgentActionIntentMessage(
+    same ? "receipt-one-payment" : "receipt-two-payments",
+    same ? "One payment" : "Two separate payments",
+  );
+  removeAgentMessageAction(messageId, "receipt-one-payment");
+  removeAgentMessageAction(messageId, "receipt-two-payments");
+
+  const run = pending.run || {};
+  const answered = {
+    key: String(question.key || ""),
+    decision: same ? "same" : "separate",
+    // Which of the two to count, when they are one payment. It is the first
+    // of them, which is the receipt nearest the money.
+    keepRef: same ? String(question.receipts?.[0]?.keepRef || "") : "",
+    question: String(question.question || ""),
+    amount: String(question.amount || ""),
+    currency: String(question.currency || ""),
+    receipts: Array.isArray(question.receipts) ? question.receipts : [],
+  };
+
+  agentTurnBusy = true;
+  agentTurnProgressText = "Working out the answer";
+  renderApp({ preserveStatus: true });
+  try {
+    await completeAgentAnswerRun({
+      tasks: run.tasks || [],
+      userText: run.userText || "",
+      decisions: [...(run.decisions || []), answered],
+      tokens: run.tokens || {},
+    });
+  } finally {
+    agentTurnBusy = false;
     agentTurnProgressText = "Thinking";
     renderApp({ preserveStatus: true });
   }
@@ -25993,9 +26315,6 @@ function forgetAgentFolders(names) {
     if (gone.has(String(folder?.name || "").trim().toLowerCase())) {
       agentFolderContents.delete(String(folder?.name || ""));
     }
-  }
-  if (removedIds.includes(String(state.agentFolderOpenId || ""))) {
-    state.agentFolderOpenId = "";
   }
   persistClientState();
 }
@@ -34002,7 +34321,10 @@ function bindEvents() {
       if (!openButton || !elements.agentFolderList.contains(openButton)) {
         return;
       }
-      toggleAgentFolderOpen(openButton.dataset.agentFolderOpen || "");
+      toggleAgentFolderOpen(
+        openButton.dataset.agentFolderOpen || "",
+        openButton.dataset.agentFolderName || "",
+      );
     });
   }
 

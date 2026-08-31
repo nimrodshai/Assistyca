@@ -13,6 +13,8 @@ from packages.infrastructure.receipt_pairing import describe_pairing_candidates
 from packages.infrastructure.receipt_pairing import group_receipt_duplicate_candidates
 from packages.infrastructure.receipt_pairing import pair_receipt_rows
 from packages.infrastructure.receipt_pairing import read_receipt_pairings
+from packages.infrastructure.receipt_pairing import duplicate_pair_key
+from packages.infrastructure.receipt_pairing import read_receipt_pairing_questions
 
 DUPLICATE = "Same payment"
 
@@ -133,9 +135,125 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(read_receipt_pairings("They look the same to me.", self.candidates), [])
 
 
+def unsure_reply(*questions: dict) -> str:
+    return json.dumps({"groups": [], "unsure": list(questions)})
+
+
+ASK_QUESTION = "Is that one payment reported twice, or two separate charges of 43.24 ILS?"
+
+
+class QuestionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.candidates = describe_pairing_candidates([row(), PAYPAL])
+
+    def test_a_pair_the_messages_do_not_settle_becomes_a_question(self) -> None:
+        questions = read_receipt_pairing_questions(
+            unsure_reply({"refs": ["1", "2"], "question": ASK_QUESTION}),
+            self.candidates,
+        )
+        self.assertEqual(questions[0]["refs"], ["1", "2"])
+        self.assertEqual(questions[0]["question"], ASK_QUESTION)
+
+    def test_a_question_with_nothing_to_ask_is_not_asked(self) -> None:
+        self.assertEqual(
+            read_receipt_pairing_questions(unsure_reply({"refs": ["1"], "question": ASK_QUESTION}), self.candidates),
+            [],
+        )
+        self.assertEqual(
+            read_receipt_pairing_questions(unsure_reply({"refs": ["1", "2"], "question": ""}), self.candidates),
+            [],
+        )
+
+    def test_a_pair_already_merged_is_not_also_asked_about(self) -> None:
+        # The model settled it. Asking anyway would be asking the owner to
+        # confirm a decision that was never theirs to make.
+        questions = read_receipt_pairing_questions(
+            json.dumps({
+                "groups": [{"refs": ["1", "2"], "keep": "1"}],
+                "unsure": [{"refs": ["1", "2"], "question": ASK_QUESTION}],
+            }),
+            self.candidates,
+            merged=[{"refs": ["1", "2"], "keep": "1"}],
+        )
+        self.assertEqual(questions, [])
+
+    def test_the_question_carries_the_receipts_it_is_about(self) -> None:
+        pairing = pair_receipt_rows(
+            [row(), PAYPAL],
+            ask=lambda prompt: unsure_reply({"refs": ["1", "2"], "question": ASK_QUESTION}),
+            duplicate_status=DUPLICATE,
+        )
+        question = pairing.questions[0]
+
+        self.assertEqual(question["question"], ASK_QUESTION)
+        self.assertEqual([entry["sourceRef"] for entry in question["receipts"]], ["msg-ali", "msg-pp"])
+        self.assertEqual(question["amount"], "43.24")
+        # Nothing is merged while the question is open: the higher total is
+        # the one that can be argued with.
+        self.assertEqual([entry["status"] for entry in pairing.rows], ["Ready", "Ready"])
+
+    def test_the_key_is_the_messages_rather_than_the_amount(self) -> None:
+        # Two receipts of the same amount from a different pair of emails are
+        # a different question, and an answer to one is not an answer to both.
+        self.assertNotEqual(
+            duplicate_pair_key([row(), PAYPAL]),
+            duplicate_pair_key([row(sourceRef="msg-x"), PAYPAL]),
+        )
+        # The order they were read in is not part of it.
+        self.assertEqual(duplicate_pair_key([row(), PAYPAL]), duplicate_pair_key([PAYPAL, row()]))
+        self.assertEqual(duplicate_pair_key([row()]), "")
+
+
+class AnsweredPairTests(unittest.TestCase):
+    def _decision(self, decision: str, keep_ref: str = "") -> list[dict]:
+        return [{
+            "key": duplicate_pair_key([row(), PAYPAL]),
+            "decision": decision,
+            "keepRef": keep_ref,
+        }]
+
+    def _paired(self, decisions: list[dict], asked: list[str] | None = None):
+        def ask(prompt: str) -> str:
+            (asked if asked is not None else []).append(prompt)
+            return unsure_reply({"refs": ["1", "2"], "question": ASK_QUESTION})
+
+        return pair_receipt_rows(
+            [row(), PAYPAL],
+            ask=ask,
+            duplicate_status=DUPLICATE,
+            decisions=decisions,
+        )
+
+    def test_one_payment_counts_the_receipt_the_owner_named(self) -> None:
+        pairing = self._paired(self._decision("same", "nimrod@example.com::msg-pp"))
+
+        self.assertEqual([entry["status"] for entry in pairing.rows], [DUPLICATE, "Ready"])
+        self.assertEqual(pairing.questions, [])
+
+    def test_two_payments_leaves_both_counted(self) -> None:
+        pairing = self._paired(self._decision("separate"))
+
+        self.assertEqual([entry["status"] for entry in pairing.rows], ["Ready", "Ready"])
+        self.assertEqual(pairing.questions, [])
+
+    def test_a_settled_pair_is_never_asked_about_again(self) -> None:
+        asked: list[str] = []
+        self._paired(self._decision("separate"), asked)
+
+        # Not the owner, and not the model either: the answer is already in.
+        self.assertEqual(asked, [])
+
+    def test_an_answer_about_other_receipts_settles_nothing_here(self) -> None:
+        asked: list[str] = []
+        pairing = self._paired([{"key": "some-other-pair", "decision": "same"}], asked)
+
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(len(pairing.questions), 1)
+
+
 class PairingTests(unittest.TestCase):
     def _paired(self, reply: str) -> list[dict]:
-        return pair_receipt_rows([row(), PAYPAL], ask=lambda prompt: reply, duplicate_status=DUPLICATE)
+        return pair_receipt_rows([row(), PAYPAL], ask=lambda prompt: reply, duplicate_status=DUPLICATE).rows
 
     def test_one_payment_told_twice_is_counted_once(self) -> None:
         paired = self._paired(pairing_reply({
@@ -166,7 +284,7 @@ class PairingTests(unittest.TestCase):
 
     def test_an_unreachable_model_counts_the_month_as_it_stands(self) -> None:
         rows = [row(), PAYPAL]
-        self.assertEqual(pair_receipt_rows(rows, ask=lambda prompt: "", duplicate_status=DUPLICATE), rows)
+        self.assertEqual(pair_receipt_rows(rows, ask=lambda prompt: "", duplicate_status=DUPLICATE).rows, rows)
 
     def test_a_month_with_nothing_to_pair_asks_nothing(self) -> None:
         asked: list[str] = []
@@ -191,7 +309,7 @@ class PairingTests(unittest.TestCase):
             prompts.append(prompt)
             return pairing_reply({"refs": ["1", "2"], "keep": "1"})
 
-        paired = pair_receipt_rows(rows, ask=ask, duplicate_status=DUPLICATE)
+        paired = pair_receipt_rows(rows, ask=ask, duplicate_status=DUPLICATE).rows
         self.assertEqual(len(prompts), 2)
         self.assertEqual([entry["status"] for entry in paired], ["Ready", DUPLICATE, "Ready", DUPLICATE])
 

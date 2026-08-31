@@ -373,6 +373,7 @@ class AgentAnswerRunTests(unittest.TestCase):
         self,
         fields: dict[str, object],
         digest: dict[str, object] | None = None,
+        **extra: object,
     ) -> dict[str, object]:
         digest = digest or {
             "summary": "Gmail digest - 1 message",
@@ -394,6 +395,7 @@ class AgentAnswerRunTests(unittest.TestCase):
                 "fields": fields,
                 "deliveryChannel": "portal",
                 "timezone": "Asia/Jerusalem",
+                **extra,
             }).encode("utf-8"),
             method="POST",
             headers={
@@ -407,6 +409,7 @@ class AgentAnswerRunTests(unittest.TestCase):
                 with urllib_request.urlopen(request, timeout=10) as response:
                     payload = json.loads(response.read().decode("utf-8"))
         self.run_call = runner.call_args
+        self.mailbox_reads = runner.call_count
         return payload
 
     def test_a_question_comes_back_with_the_amount(self) -> None:
@@ -513,6 +516,138 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertIn("19.00 USD", payload["answer"])
         self.assertIn("1 receipt", payload["answer"])
         self.assertNotIn("45.49", payload["answer"])
+
+    # Two receipts of the same amount, days apart, that nothing in the mail
+    # settles. A total is the one place a coin toss must not be reported as a
+    # number, so the owner is asked.
+    TWIN_DIGEST = {
+        "summary": "Gmail digest - 2 messages",
+        "messageCount": 2,
+        "items": [
+            {
+                "id": "msg-20",
+                "mailbox": "owner@gmail.com",
+                "subject": "Your payment to Netflix.com",
+                "from": "PayPal <service@paypal.com>",
+                "date": "Thu, 20 Aug 2026 09:00:00 +0300",
+                "bodyText": "You sent a payment of 71.80 ILS to Netflix.com",
+            },
+            {
+                "id": "msg-28",
+                "mailbox": "owner@gmail.com",
+                "subject": "Your payment to Netflix.com",
+                "from": "PayPal <service@paypal.com>",
+                "date": "Fri, 28 Aug 2026 09:00:00 +0300",
+                "bodyText": "You sent a payment of 71.80 ILS to Netflix.com",
+            },
+        ],
+    }
+    TWIN_FIELDS = {
+        "result": "Find receipts from Netflix for August 2026",
+        "vendor": "Netflix",
+        "manualRunMonth": "2026-08",
+    }
+
+    def _twin_model(self, tools: list[str], *, unsure: bool = True) -> Any:
+        def respond(**kwargs: Any) -> Any:
+            tools.append(kwargs["tool_name"])
+            if kwargs["tool_name"] == "portal_receipt_pairing":
+                return mock.Mock(output_text=json.dumps({
+                    "groups": [],
+                    "unsure": [{
+                        "refs": ["1", "2"],
+                        "question": (
+                            "Two payments of 71.80 ILS to Netflix.com, on 20 and 28 August. "
+                            "Is that one payment reported twice, or two separate charges?"
+                        ),
+                    }] if unsure else [],
+                }))
+            return mock.Mock(output_text=json.dumps({"verdicts": [
+                {"ref": "1", "isReceipt": True, "paidTo": "Netflix.com"},
+                {"ref": "2", "isReceipt": True, "paidTo": "Netflix.com"},
+            ]}))
+
+        return respond
+
+    def test_a_pair_nobody_can_settle_is_asked_about_rather_than_counted(self) -> None:
+        tools: list[str] = []
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
+            payload = self._run_answer(self.TWIN_FIELDS, digest=self.TWIN_DIGEST)
+
+        self.assertTrue(payload["needsReceiptDecision"])
+        self.assertNotIn("answer", payload)
+        self.assertIn("71.80", payload["receiptQuestions"][0]["question"])
+        self.assertEqual(len(payload["receiptQuestions"][0]["receipts"]), 2)
+        self.assertTrue(payload["runToken"])
+        self.assertIn("portal_receipt_pairing", tools)
+
+    def test_the_answer_finishes_the_count_without_reading_the_mailbox_again(self) -> None:
+        tools: list[str] = []
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
+            asked = self._run_answer(self.TWIN_FIELDS, digest=self.TWIN_DIGEST)
+
+        question = asked["receiptQuestions"][0]
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
+            payload = self._run_answer(
+                self.TWIN_FIELDS,
+                digest=self.TWIN_DIGEST,
+                runToken=asked["runToken"],
+                receiptDecisions=[{
+                    "key": question["key"],
+                    "decision": "same",
+                    "keepRef": question["receipts"][0]["keepRef"],
+                    "question": question["question"],
+                }],
+            )
+
+        # The mail was read when the question was asked. Answering counts it
+        # again; it does not go back to the mailbox.
+        self.assertEqual(self.mailbox_reads, 0)
+        self.assertIn("71.80 ILS", payload["answer"])
+        self.assertEqual(payload["receiptCount"], 1)
+
+    def test_two_payments_is_an_answer_too(self) -> None:
+        tools: list[str] = []
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
+            asked = self._run_answer(self.TWIN_FIELDS, digest=self.TWIN_DIGEST)
+            payload = self._run_answer(
+                self.TWIN_FIELDS,
+                digest=self.TWIN_DIGEST,
+                runToken=asked["runToken"],
+                receiptDecisions=[{
+                    "key": asked["receiptQuestions"][0]["key"],
+                    "decision": "separate",
+                }],
+            )
+
+        self.assertIn("143.60 ILS", payload["answer"])
+        self.assertEqual(payload["receiptCount"], 2)
+
+    def test_the_same_pair_is_never_asked_about_twice(self) -> None:
+        tools: list[str] = []
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(tools)):
+            asked = self._run_answer(self.TWIN_FIELDS, digest=self.TWIN_DIGEST)
+            self._run_answer(
+                self.TWIN_FIELDS,
+                digest=self.TWIN_DIGEST,
+                runToken=asked["runToken"],
+                receiptDecisions=[{
+                    "key": asked["receiptQuestions"][0]["key"],
+                    "decision": "same",
+                    "keepRef": asked["receiptQuestions"][0]["receipts"][0]["keepRef"],
+                }],
+            )
+
+        # A fresh run, months later, with nothing in the message about it.
+        later: list[str] = []
+        with mock.patch(f"{SERVER_MODULE}.call_openai_response", side_effect=self._twin_model(later)):
+            payload = self._run_answer(self.TWIN_FIELDS, digest=self.TWIN_DIGEST)
+
+        self.assertNotIn("needsReceiptDecision", payload)
+        self.assertIn("71.80 ILS", payload["answer"])
+        # The pair is settled, so nothing is asked about it - not the owner,
+        # and not the model either.
+        self.assertNotIn("portal_receipt_pairing", later)
 
     def test_a_receipt_search_that_could_not_be_read_still_answers(self) -> None:
         # The model was unreachable. The lookup found receipts either way, and
@@ -1051,6 +1186,42 @@ class AgentAnswerChatTests(unittest.TestCase):
 
         self.assertIn("if (message.metadata?.keepActions) {\n    return false;\n  }", resolver)
 
+    def test_a_pair_the_chat_cannot_settle_stops_the_answer_and_asks(self) -> None:
+        # The total either way is a coin toss, so nothing is reported until
+        # the owner has said which it is.
+        run = self.script[
+            self.script.index("async function completeAgentAnswerRun"):
+            self.script.index("function pushAgentReceiptQuestion")
+        ]
+
+        self.assertIn("if (section.needsDecision) {", run)
+        self.assertIn("pushAgentReceiptQuestion({ tasks, userText, decisions, tokens }, section.question)", run)
+        # The composed answer is below this, and the run returns before it.
+        self.assertLess(run.index("section.needsDecision"), run.index("composeAgentAnswer"))
+
+    def test_the_question_offers_both_answers_as_buttons(self) -> None:
+        question = self.script[
+            self.script.index("function pushAgentReceiptQuestion"):
+            self.script.index("async function answerAgentReceiptQuestion")
+        ]
+
+        self.assertIn('createAgentAction("receipt-one-payment", "One payment"', question)
+        self.assertIn('createAgentAction("receipt-two-payments", "Two payments"', question)
+        # The owner can type something else first and still answer afterwards.
+        self.assertIn("keepActions: true,", question)
+
+    def test_answering_carries_the_decision_back_into_the_same_run(self) -> None:
+        answering = self.script[
+            self.script.index("async function answerAgentReceiptQuestion"):
+            self.script.index("async function applyAgentTurnResponse")
+        ]
+
+        self.assertIn('decision: same ? "same" : "separate",', answering)
+        self.assertIn("decisions: [...(run.decisions || []), answered],", answering)
+        # The read is still held open, so the answer costs a click rather than
+        # another minute of reading the mailbox.
+        self.assertIn("tokens: run.tokens || {},", answering)
+
     def test_a_job_asked_for_once_runs_in_full_rather_than_answering(self) -> None:
         runner = self.script[
             self.script.index("async function runAgentAnswerTask"):
@@ -1077,7 +1248,8 @@ class AgentAnswerChatTests(unittest.TestCase):
         self.assertIn("for (const chunk of chunkAgentAnswerRunMonths(months))", runner)
         # The months of a group travel together in one request and come back
         # counted apart, which is what makes a year two reads instead of twelve.
-        self.assertIn('manualRunMonth: chunk.join(",")', runner)
+        self.assertIn('const chunkKey = chunk.join(",")', runner)
+        self.assertIn("manualRunMonth: chunkKey", runner)
         self.assertIn("Array.isArray(response.months) && response.months.length", runner)
         # Every month's result is kept, so an empty month still reports.
         self.assertIn("composeAgentMonthlyAnswer(results)", runner)

@@ -21,6 +21,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from packages.infrastructure import fx_rates
 from packages.infrastructure import receipt_pdf_sources
+from packages.infrastructure.receipt_pairing import ReceiptPairing
 from packages.infrastructure.receipt_pairing import pair_receipt_rows
 
 RECEIPT_EXPORT_VERSION = 1
@@ -192,11 +193,16 @@ def create_receipt_bundle(
     created_at: datetime | None = None,
     url_prefix: str = "/output/agent_receipts",
     ask: Callable[[str], str] | None = None,
+    decisions: Any = None,
 ) -> dict[str, Any]:
     """Write Excel and PDF receipt exports, returning artifact metadata.
 
     ``ask`` runs one prompt. It is what lets a purchase that arrived twice -
     once from the shop, once from whoever took the money - be counted once.
+
+    ``decisions`` are the answers the owner has already given about pairs of
+    receipts. Nothing new is asked here - a bundle runs with nobody watching -
+    but what they have already settled is applied.
     """
 
     created = created_at or datetime.now(timezone.utc)
@@ -210,7 +216,10 @@ def create_receipt_bundle(
     )
     folder_path.mkdir(parents=True, exist_ok=True)
 
-    rows, skipped_rows = collect_receipt_rows(items, ask=ask)
+    # A bundle is written without anyone at the keyboard, so it takes the
+    # answers already given and leaves anything still open counted as it is.
+    collected = collect_receipt_rows(items, ask=ask, decisions=decisions)
+    rows, skipped_rows = collected.receipts, collected.skipped
     metadata = {
         "createdAt": created.isoformat(),
         "outputFolder": logical_folder,
@@ -405,6 +414,7 @@ def answer_receipt_question(
     vendor: Any = "",
     month_label: str = "",
     ask: Callable[[str], str] | None = None,
+    decisions: Any = None,
 ) -> dict[str, Any]:
     """Answer a one-off spending question, writing no files.
 
@@ -413,9 +423,15 @@ def answer_receipt_question(
 
     ``ask`` runs one prompt, and is what keeps one purchase that the mailbox
     was told about twice from being answered as two.
+
+    ``decisions`` are the pairs the owner has already ruled on. A pair nobody
+    can settle comes back under ``questions``, and the total beside it is only
+    true if the answer turns out to be "two payments" - so a caller in a chat
+    asks the question before it reports the number.
     """
 
-    receipts, _ = collect_receipt_rows(items, ask=ask)
+    collected = collect_receipt_rows(items, ask=ask, decisions=decisions)
+    receipts = collected.receipts
     matched = filter_receipt_rows_by_vendor(receipts, vendor)
     summary = summarize_receipt_rows(matched)
     totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
@@ -471,6 +487,10 @@ def answer_receipt_question(
         # much"; a question about why a month jumped, or what a charge was
         # for, can only be answered from the individual receipts behind it.
         "records": describe_receipt_records(matched, month_label=month_label),
+        # What could not be decided without the owner. The figures above are
+        # computed as though these were separate payments, which is the higher
+        # of the two answers and the one that can be argued with.
+        "questions": collected.questions,
     }
 
 
@@ -893,17 +913,34 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+@dataclass(frozen=True)
+class ReceiptRows:
+    """The rows a total is built from, and what is still open about them."""
+
+    receipts: list[dict[str, Any]]
+    skipped: list[dict[str, Any]]
+    # Pairs of receipts neither the reading nor the pairing could settle. Each
+    # one is a question for the owner; until it is answered the total is a
+    # guess, so a caller that has somebody to ask asks them.
+    questions: list[dict[str, Any]]
+
+
 def collect_receipt_rows(
     items: list[dict[str, Any]],
     *,
     ask: Callable[[str], str] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    decisions: Any = None,
+) -> ReceiptRows:
     """Read the search results into the rows a total is built from.
 
     ``ask`` runs one prompt and returns the reply. Given one, a purchase that
     reached the mailbox more than once is counted once; without one, every
     receipt is counted on its own, which is what a run that cannot reach the
     model has always done.
+
+    ``decisions`` are pairs the owner has already ruled on, and they are
+    applied before anything is asked of anyone. What is left over comes back
+    in ``questions``.
 
     Only the receipts are paired. What the search dragged in has been ruled
     out already, and an advert quoting the same price as a real receipt is
@@ -913,14 +950,18 @@ def collect_receipt_rows(
 
     receipts, skipped = split_receipt_rows(extract_receipt_rows(items))
     if ask is None or len(receipts) < 2:
-        return receipts, skipped
-    receipts, merged = split_receipt_rows(
-        pair_receipt_rows(receipts, ask=ask, duplicate_status=RECEIPT_STATUS_DUPLICATE)
+        return ReceiptRows(receipts, skipped, [])
+    pairing = pair_receipt_rows(
+        receipts,
+        ask=ask,
+        duplicate_status=RECEIPT_STATUS_DUPLICATE,
+        decisions=decisions,
     )
+    receipts, merged = split_receipt_rows(pairing.rows)
     skipped.extend(merged)
     for position, row in enumerate(skipped, start=1):
         row["index"] = str(position)
-    return receipts, skipped
+    return ReceiptRows(receipts, skipped, pairing.questions)
 
 
 def split_receipt_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

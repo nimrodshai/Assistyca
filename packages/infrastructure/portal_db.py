@@ -508,6 +508,21 @@ CREATE TABLE IF NOT EXISTS source_actions (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS receipt_duplicate_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    pair_key TEXT NOT NULL,
+    decision TEXT NOT NULL DEFAULT 'separate',
+    keep_ref TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '',
+    amount TEXT NOT NULL DEFAULT '',
+    currency TEXT NOT NULL DEFAULT '',
+    receipts_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
@@ -543,6 +558,8 @@ CREATE INDEX IF NOT EXISTS idx_source_actions_due
 ON source_actions(status, next_run_at ASC);
 CREATE INDEX IF NOT EXISTS idx_source_actions_user
 ON source_actions(user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_receipt_duplicate_decisions_pair
+ON receipt_duplicate_decisions(user_id, pair_key);
 CREATE INDEX IF NOT EXISTS idx_feature_assignments_user_assigned
 ON feature_assignments(user_id, is_assigned, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_entitlements_user_status
@@ -5713,6 +5730,117 @@ class PortalDatabase:
                 (int(cursor.lastrowid or 0),),
             ).fetchone()
             return self._load_notification_row(row) or {}
+
+    def save_receipt_duplicate_decision(
+        self,
+        *,
+        user_id: int,
+        pair_key: str,
+        decision: str,
+        keep_ref: str = "",
+        question: str = "",
+        amount: str = "",
+        currency: str = "",
+        receipts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Remember what the owner said about one pair of receipts.
+
+        The key names the messages themselves, so answering again about the
+        same pair corrects the earlier answer rather than stacking beside it.
+        A pair is only ever asked about once; this is what makes that true
+        across runs, months and restarts.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        key = normalize_text(pair_key)
+        if not key:
+            raise ValueError("A receipt pair key is required.")
+        verdict = normalize_text(decision).lower()
+        if verdict not in {"same", "separate"}:
+            raise ValueError("A receipt duplicate decision must be same or separate.")
+
+        now = now_iso()
+        receipts_json = json.dumps(receipts or [], ensure_ascii=True, sort_keys=True)
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO receipt_duplicate_decisions (
+                    user_id, pair_key, decision, keep_ref, question,
+                    amount, currency, receipts_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, pair_key) DO UPDATE SET
+                    decision = excluded.decision,
+                    keep_ref = excluded.keep_ref,
+                    question = excluded.question,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    receipts_json = excluded.receipts_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(user_id),
+                    key,
+                    verdict,
+                    normalize_text(keep_ref),
+                    normalize_text(question),
+                    normalize_text(amount),
+                    normalize_text(currency),
+                    receipts_json,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM receipt_duplicate_decisions WHERE user_id = ? AND pair_key = ? LIMIT 1",
+                (int(user_id), key),
+            ).fetchone()
+        return self._load_receipt_duplicate_decision_row(row) or {}
+
+    def list_receipt_duplicate_decisions(
+        self,
+        *,
+        user_id: int,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Every pair this owner has already ruled on, newest first."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM receipt_duplicate_decisions
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (int(user_id), max(1, min(2000, int(limit or 500)))),
+            ).fetchall()
+        return [
+            decision
+            for decision in (self._load_receipt_duplicate_decision_row(row) for row in rows)
+            if decision
+        ]
+
+    def _load_receipt_duplicate_decision_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            receipts = json.loads(row["receipts_json"] or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            receipts = []
+        return {
+            "key": str(row["pair_key"] or ""),
+            "decision": str(row["decision"] or ""),
+            "keepRef": str(row["keep_ref"] or ""),
+            "question": str(row["question"] or ""),
+            "amount": str(row["amount"] or ""),
+            "currency": str(row["currency"] or ""),
+            "receipts": receipts if isinstance(receipts, list) else [],
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
 
     def list_notifications(
         self,
