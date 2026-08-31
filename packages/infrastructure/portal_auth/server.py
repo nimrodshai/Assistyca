@@ -141,8 +141,10 @@ from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.receipt_collector import RECEIPT_MANIFEST_FILENAME
 from packages.infrastructure.receipt_collector import answer_receipt_question
+from packages.infrastructure.receipt_collector import answer_receipt_rows
 from packages.infrastructure.receipt_collector import build_receipt_bundle_base_url
 from packages.infrastructure import fx_rates
+from packages.infrastructure import saved_files
 from packages.infrastructure.receipt_collector import convert_receipt_amounts
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import format_receipt_month_label
@@ -2522,6 +2524,35 @@ def build_agent_folder_archive_filename(logical_folder: str) -> str:
     name = "-".join(segments) or "folder"
     safe = "".join(character if character.isalnum() or character in " -_" else "-" for character in name)
     return f"{safe.strip() or 'folder'}.zip"
+
+
+def normalize_saved_folder_names(value: Any) -> list[str]:
+    """The folders one question is asked about.
+
+    A question can name one folder or several - "the August and September
+    receipts" is two - and it can arrive as a single name or as a list. The
+    cap is what keeps "read all of them" from turning into a year of folders
+    opened to answer one sentence.
+    """
+
+    # Several folders arrive the way several months do, comma separated in one
+    # field, because that is the shape the rest of the lookups already use.
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, (list, tuple)):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw_name in value:
+        name = normalize_text(raw_name)
+        key = name.casefold().rstrip("/")
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+        if len(names) >= saved_files.SAVED_FOLDER_LIMIT:
+            break
+    return names
 
 
 def describe_saved_receipt_folders(folders: list[str]) -> str:
@@ -5664,6 +5695,101 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "answerRecords": [fx_rates.describe_rate_record(rate)],
         })
 
+    def _answer_from_saved_files(self, session: Any, fields: dict[str, Any], payload: dict[str, Any]) -> None:
+        """Answer from the folders the account already keeps.
+
+        The receipts in a folder were read from the mailbox once, counted, and
+        written down beside them. Going back to Gmail for a question they
+        already answer is slower, costs a search, and can come back with less
+        than the folder holds - mail gets deleted, and a filed receipt does
+        not.
+
+        A folder that was made by hand has no figures in it. Its files are
+        still listed, because "here is what is in it" is a true answer and
+        pretending to know what they cost would not be.
+        """
+
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.server.config.agent_output_dir, root=self.server.root)  # type: ignore[attr-defined]
+        names = normalize_saved_folder_names(
+            fields.get("savedFolder")
+            or fields.get("folder")
+            or payload.get("folderNames")
+            or payload.get("folders")
+        )
+        if not names:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "folder_required",
+                "message": "Tell me which folder to look in and I will read it.",
+            })
+            return
+
+        folders: list[dict[str, Any]] = []
+        for name in names:
+            logical_folder = normalize_receipt_output_folder(name)
+            folders.append(saved_files.describe_saved_folder(
+                resolve_receipt_bundle_folder(
+                    output_root,
+                    owner_key=owner_key,
+                    output_folder=logical_folder,
+                ),
+                folder=logical_folder,
+            ))
+
+        vendor = normalize_text(fields.get("vendor") or payload.get("vendor"))
+        kind = normalize_text(fields.get("documentKind") or fields.get("kind"))
+        rows = saved_files.select_saved_rows(
+            [row for entry in folders for row in entry["receipts"]],
+            kind=kind,
+        )
+        month_label = normalize_text(
+            fields.get("monthLabel")
+            or next((entry["monthLabel"] for entry in folders if entry["monthLabel"]), "")
+        )
+        folder_label = describe_saved_receipt_folders([entry["folder"] for entry in folders])
+        file_count = saved_files.count_saved_files(folders)
+
+        if not rows:
+            # Nothing was counted here, which is not the same as nothing being
+            # here. The files are named instead, so the reply can say what the
+            # folder actually holds.
+            answer = (
+                f"I couldn't find anything in {folder_label}."
+                if not file_count
+                else f"I read {folder_label} and it holds {file_count} "
+                     f"{'file' if file_count == 1 else 'files'}, but no amounts I could add up."
+            )
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "answer": answer,
+                "message": answer,
+                "summary": f"Read {folder_label}",
+                "folders": [entry["folder"] for entry in folders],
+                "fileCount": file_count,
+                "answerRecords": saved_files.describe_saved_file_records(folders)[:ANSWER_COMPOSER_MAX_RECORDS],
+            })
+            return
+
+        answer = answer_receipt_rows(rows, vendor=vendor, month_label=month_label)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "answer": answer["answer"],
+            "message": answer["answer"],
+            "summary": f"Read {folder_label}",
+            "folders": [entry["folder"] for entry in folders],
+            "fileCount": file_count,
+            "receiptCount": answer["receiptCount"],
+            "totals": answer["totals"],
+            "converted": answer.get("converted") or {},
+            "vendor": answer["vendor"],
+            "monthLabel": answer["monthLabel"],
+            "missingAmountCount": answer["missingAmountCount"],
+            # The receipts themselves, so why-questions are answered from the
+            # rows rather than from the total standing over them.
+            "answerRecords": answer["records"][:ANSWER_COMPOSER_MAX_RECORDS],
+        })
+
     def _handle_agent_proposal_run(self) -> None:
         """Execute a supported local proposal without routing it through chat."""
 
@@ -5688,6 +5814,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # and reports back in the reply, but saves no files and no action.
         answer_mode = normalize_text(payload.get("mode")).lower() == "answer"
         is_custom_google_batch = proposal_type == "custom" and is_custom_google_batch_proposal_fields(fields)
+        if proposal_type == "saved-files":
+            # Reads the account's own folders and nothing else, so it runs
+            # before every mailbox and calendar check below it.
+            self._answer_from_saved_files(session, fields, payload)
+            return
         if proposal_type == "exchange-rate":
             # A rate reads nothing of the account's own, so it runs before
             # any of the mailbox and calendar machinery below it and needs no

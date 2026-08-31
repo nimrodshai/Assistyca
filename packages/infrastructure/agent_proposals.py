@@ -17,6 +17,10 @@ AGENT_FOLDER_CONTEXT_MAX_ITEMS = 20
 # caps a listing rather than the whole account.
 AGENT_FILE_CONTEXT_MAX_FOLDERS = 4
 AGENT_FILE_CONTEXT_MAX_ITEMS = 40
+# The handles a saved file is actually found by: the vendor, the month, the
+# year, and whether it calls itself a receipt or an invoice. Few enough that
+# every file can carry them without the listing turning into a wall.
+AGENT_FILE_CONTEXT_MAX_TAGS = 6
 AGENT_MAILBOX_CONTEXT_MAX_ITEMS = 12
 AGENT_PROPOSAL_REVISION_INSTRUCTIONS = (
     "You revise an existing Assistyca proposal from the user's latest message. "
@@ -64,7 +68,7 @@ _AGENT_PROPOSAL_TYPES = {
 }
 # The lookups that already have a runner, so a question can be answered from
 # connected sources in the same chat turn instead of becoming a saved action.
-_AGENT_ANSWER_NOW_TYPES = {"calendar-summary", "email-digest", "custom", "exchange-rate"}
+_AGENT_ANSWER_NOW_TYPES = {"calendar-summary", "email-digest", "custom", "exchange-rate", "saved-files"}
 # Every type that carries fields, whether or not it can be saved as an action.
 # An exchange rate is only ever answered, never kept, but the fields it is
 # answered from still have to survive normalization.
@@ -84,7 +88,9 @@ _AGENT_FOLDER_COMMANDS = {"delete"}
 # A file inside a folder is one saved answer, one receipt, one export.
 # Removing it is the only change to make to it from the chat, the same way
 # it is for the folder holding it.
-_AGENT_FILE_COMMANDS = {"delete"}
+# Moving is what the Folders panel already does with a file, and a client who
+# can drag one into another folder should be able to ask for the same thing.
+_AGENT_FILE_COMMANDS = {"delete", "move"}
 _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "email-digest": ["mailbox", "schedule", "timeWindow", "deliveryChannel"],
     "calendar-summary": ["calendar", "timeWindow", "deliveryChannel"],
@@ -94,6 +100,10 @@ _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "source-action": ["sourceType", "sourceUrl", "sourceFileName", "sourceMimeType", "frequency", "timezone"],
     "custom": ["result", "vendor", "manualRunMonth", "outputFolder", "frequency", "deliveryChannel", "calendar"],
     "exchange-rate": ["baseCurrency", "quoteCurrency", "rateDate"],
+    # A question answered from the folders the account keeps. savedFolder is
+    # an input rather than a destination, which is why it is not the
+    # outputFolder every other lookup writes into.
+    "saved-files": ["savedFolder", "vendor", "documentKind", "monthLabel", "result"],
 }
 _AGENT_PROPOSAL_FIELD_ALIASES = {
     "channel": "deliveryChannel",
@@ -310,12 +320,43 @@ def normalize_agent_file_context(value: Any) -> list[dict[str, Any]]:
             updated = _single_line(entry_source.get("updated") or entry_source.get("updatedAt"), 60)
             if updated:
                 entry["updated"] = updated
+            tags = _normalize_agent_file_tags(entry_source.get("tags"))
+            if tags:
+                entry["tags"] = tags
             files.append(entry)
         if not files:
             continue
         seen.add(key)
         folders.append({"folder": folder, "files": files})
     return folders
+
+
+def _normalize_agent_file_tags(value: Any) -> list[str]:
+    """The tags a saved file carries, as the folder listing reports them.
+
+    A receipt is filed under whatever name the vendor gave it, so the name is
+    the one thing nobody searches by. The tags are the handles - Render, Aug,
+    2026, Receipt - and the panel already filters on them. Carrying them into
+    the turn lets the chat answer "the Render one from August" from the folder
+    instead of going back to the mailbox for something it already has.
+    """
+
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in value:
+        tag = _single_line(raw_tag, 40)
+        key = tag.casefold()
+        if not tag or key in seen:
+            continue
+        seen.add(key)
+        tags.append(tag)
+        if len(tags) >= AGENT_FILE_CONTEXT_MAX_TAGS:
+            break
+    return tags
 
 
 def normalize_agent_mailbox_context(value: Any) -> list[dict[str, str]]:
@@ -432,6 +473,12 @@ def _normalize_agent_turn_fields(value: Any, proposal_type: str = "") -> dict[st
             key = "frequency"
         elif key not in allowed_keys and alias_key in {"schedule", "time", "send_time", "sendtime"} and "schedule" in allowed_keys:
             key = "schedule"
+        elif key == "outputFolder" and "savedFolder" in allowed_keys:
+            # "folder" means the folder being written into everywhere else, so
+            # that is what the alias table turns it into. A saved-files lookup
+            # is the one place a folder is being read, and a question about
+            # August must not be answered by proposing to write into it.
+            key = "savedFolder"
         field_value = _single_line(raw_value, 400)
         if key in allowed_keys and field_value:
             fields[key] = field_value
@@ -582,7 +629,7 @@ def build_agent_turn_prompt(
         "- action_command: delete, pause, or resume actions the account already has, once it is clear which "
         "ones.\n"
         "- folder_command: delete folders the account already keeps, once it is clear which ones.\n"
-        "- file_command: delete files inside one of those folders, once it is clear which ones.\n"
+        "- file_command: delete or move files inside one of those folders, once it is clear which ones.\n"
         "- message: answer conversationally without creating or executing anything.\n"
         "None of these covers everything a person might ask. When a message asks for something no outcome "
         "here can do, say so plainly in one line with outcome=message and offer the nearest thing you can "
@@ -606,8 +653,8 @@ def build_agent_turn_prompt(
         "Prefer answer_now over proposal whenever the user asks about something that already happened and a "
         "connected source holds the answer: how much they paid a vendor, which receipts or invoices arrived, "
         "what is on the calendar. Do not offer to create an action for these and do not ask for approval. Use "
-        "proposalType calendar-summary, email-digest, custom, or exchange-rate, because only those lookups can "
-        "run right now, "
+        "proposalType calendar-summary, email-digest, custom, exchange-rate, or saved-files, because only those "
+        "lookups can run right now, "
         "and put what to look for in changes.fields. For answer_now the reply is one short line saying you are "
         "checking and it may take a moment; the application replaces it with the real answer when the lookup "
         "finishes, so never guess the answer yourself. Choose proposal instead when the user wants the work to "
@@ -652,7 +699,7 @@ def build_agent_turn_prompt(
         "one in progress. Leave outputFolder out, because an answer run saves nothing.\n"
         "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode, "
         "actionCommand, actionNames, needsFolderChoice, folderChoiceMode, folderCommand, folderNames, "
-        "needsFileChoice, fileChoiceMode, fileCommand, fileNames. reply is "
+        "needsFileChoice, fileChoiceMode, fileCommand, fileNames, fileDestination. reply is "
         "required for every "
         "outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
@@ -740,8 +787,13 @@ def build_agent_turn_prompt(
         "message asks for, and when the wording says some, a few, several, or names a file, it is about "
         "the files.\n"
         "existingFolderFiles lists the files inside the folders the chat has already opened. Each entry "
-        "has folder and files, and each file has name, size, and updated. It holds only the folders that "
-        "were opened, so a folder missing from it is not an empty folder.\n"
+        "has folder and files, and each file has name, size, updated, and tags. It holds only the folders "
+        "that were opened, so a folder missing from it is not an empty folder.\n"
+        "A file's tags are how it is found: the vendor that sent it, the month, the year, and whether it "
+        "is a receipt or an invoice. The name is whatever the vendor called the attachment, so it is the "
+        "one thing the user will not say. Match \"the Render one from August\" and \"my August invoices\" "
+        "against tags, and copy the name out of the listing once you know which file it is. A tag is not "
+        "proof of what is inside the file - it says who sent it and when, not what it cost.\n"
         "When the user wants files deleted, first name the folder they are in. If the message does not "
         "say which folder, return outcome=question with needsFolderChoice=true and ask which folder they "
         "mean; picking one is not a request to delete it. Once the folder is known but the message does "
@@ -754,12 +806,20 @@ def build_agent_turn_prompt(
         "Once it is clear which files the user wants deleted, return outcome=file_command with "
         "fileCommand=delete, folderNames holding the one folder they are in, and fileNames holding those "
         "file names copied exactly from existingFolderFiles, one entry per file. A name there may carry a "
-        "subfolder, such as attachments/receipt.png; copy it whole. Deleting is the only thing this "
-        "command does; nothing renames or moves a file, and a request for one of those is outcome=message "
-        "saying so. Return the command as soon as the files are identified, including on the turn right "
-        "after the user answers the picker. The application shows its own confirmation naming those "
-        "files, deletes them when the user confirms, and reports the result afterwards, so keep reply to "
-        "one short line and never say the files are gone.\n"
+        "subfolder, such as attachments/receipt.png; copy it whole. Return the command as soon as the "
+        "files are identified, including on the turn right after the user answers the picker. The "
+        "application shows its own confirmation naming those files, deletes them when the user confirms, "
+        "and reports the result afterwards, so keep reply to one short line and never say the files are "
+        "gone.\n"
+        "Files can also be moved into another folder, which is the same command with fileCommand=move and "
+        "fileDestination holding the folder they should end up in. Use the destination the user named, "
+        "copied from existingFolders when it is a folder they already have, and their own words for it "
+        "when it is not - a folder that does not exist yet is created by the move, which is how a receipt "
+        "gets filed somewhere new. folderNames still holds the one folder the files are in now, and it is "
+        "never the same as the destination. Ask which files with needsFileChoice=true when the message "
+        "does not say, exactly as a delete does. Deleting and moving are the only two things this command "
+        "does; nothing renames a file or copies it, and a request for one of those is outcome=message "
+        "saying so.\n"
         "Never set up a second copy of an action the account already has. Before returning outcome=proposal or "
         "outcome=question with a proposalType, compare the request with existingActions: if an entry has the same "
         "kind and covers the same job, return outcome=message instead. Say which action they already have, in "
@@ -983,6 +1043,7 @@ def normalize_agent_turn_response(
     turn.setdefault("folderNames", [])
     turn.setdefault("fileCommand", "")
     turn.setdefault("fileNames", [])
+    turn.setdefault("fileDestination", "")
     if wants_files:
         turn["folderNames"] = file_choice_folder
     return turn
@@ -1024,6 +1085,10 @@ def _agent_answer_task_is_runnable(proposal_type: str, changes: dict[str, Any]) 
         # A rate is two currencies. One of them named on its own is a
         # question, not a lookup.
         return bool(fields.get("baseCurrency")) and bool(fields.get("quoteCurrency"))
+    if proposal_type == "saved-files":
+        # There is no default folder to fall back on. Reading whichever one
+        # happens to be first would answer a question nobody asked.
+        return bool(fields.get("savedFolder"))
     # A receipt-style lookup is only runnable when it says what to look for;
     # the calendar and inbox runners have workable defaults.
     return proposal_type != "custom" or bool(fields.get("result"))
@@ -1159,8 +1224,13 @@ def _normalize_agent_turn_outcome(
         # A file is only findable inside the folder holding it, so a command
         # that names files but no folder points at nothing.
         folders = _normalize_agent_command_names(response.get("folderNames"))[:1]
+        # Where the files are going. A move with nowhere to go is not a move,
+        # so it is not returned as one.
+        destination = _single_line(response.get("fileDestination"), 120)
+        if command == "move" and not destination:
+            command = ""
         if command in _AGENT_FILE_COMMANDS and names and folders:
-            return {
+            command_turn = {
                 "outcome": "file_command",
                 "reply": reply,
                 "proposalType": "",
@@ -1169,6 +1239,9 @@ def _normalize_agent_turn_outcome(
                 "fileNames": names,
                 "folderNames": folders,
             }
+            if destination:
+                command_turn["fileDestination"] = destination
+            return command_turn
 
     if outcome == "approve_proposal" and has_active_proposal:
         return {"outcome": "approve_proposal", "reply": reply, "proposalType": "", "changes": {}}

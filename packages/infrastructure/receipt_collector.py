@@ -431,7 +431,29 @@ def answer_receipt_question(
     """
 
     collected = collect_receipt_rows(items, ask=ask, decisions=decisions)
-    receipts = collected.receipts
+    return answer_receipt_rows(
+        collected.receipts,
+        vendor=vendor,
+        month_label=month_label,
+        questions=collected.questions,
+    )
+
+
+def answer_receipt_rows(
+    receipts: list[dict[str, Any]],
+    *,
+    vendor: Any = "",
+    month_label: str = "",
+    questions: Any = None,
+) -> dict[str, Any]:
+    """Answer a spending question from receipt rows that are already collected.
+
+    The rows a mailbox read and the rows a folder was filed with are the same
+    rows - one set has just been through a search and the other through a
+    save. Everything after the reading is identical, so it lives here and both
+    callers get the same figures, the same conversion and the same records.
+    """
+
     matched = filter_receipt_rows_by_vendor(receipts, vendor)
     summary = summarize_receipt_rows(matched)
     totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
@@ -490,7 +512,7 @@ def answer_receipt_question(
         # What could not be decided without the owner. The figures above are
         # computed as though these were separate payments, which is the higher
         # of the two answers and the one that can be argued with.
-        "questions": collected.questions,
+        "questions": list(questions or []),
     }
 
 

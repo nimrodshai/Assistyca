@@ -12,6 +12,7 @@ from urllib import request as urllib_request
 
 from packages.infrastructure.agent_proposals import AGENT_ACTION_CONTEXT_MAX_ITEMS
 from packages.infrastructure.agent_proposals import AGENT_FILE_CONTEXT_MAX_FOLDERS
+from packages.infrastructure.agent_proposals import AGENT_FILE_CONTEXT_MAX_TAGS
 from packages.infrastructure.agent_proposals import AGENT_FOLDER_CONTEXT_MAX_ITEMS
 from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
@@ -530,6 +531,119 @@ class AgentProposalRevisionTests(unittest.TestCase):
             ])),
             AGENT_FILE_CONTEXT_MAX_FOLDERS,
         )
+
+    def test_file_context_carries_the_tags_a_file_is_found_by(self) -> None:
+        # The name is whatever the vendor called the attachment. "The Render
+        # one from August" is a question about the tags, and the panel already
+        # filters on them, so the chat gets them too.
+        folders = normalize_agent_file_context([
+            {
+                "folder": "Render",
+                "files": [
+                    {
+                        "name": "attachments/aug.pdf",
+                        "tags": [" Render ", "Aug", "aug", "2026", "Receipt", ""],
+                    },
+                    {"name": "receipt-report.pdf", "tags": "Receipt"},
+                    {"name": "bare.pdf", "tags": []},
+                ],
+            },
+        ])
+
+        self.assertEqual(folders[0]["files"][0]["tags"], ["Render", "Aug", "2026", "Receipt"])
+        self.assertEqual(folders[0]["files"][1]["tags"], ["Receipt"])
+        self.assertNotIn("tags", folders[0]["files"][2])
+
+    def test_file_context_caps_the_tags_one_file_carries(self) -> None:
+        folders = normalize_agent_file_context([
+            {
+                "folder": "Render",
+                "files": [{"name": "a.pdf", "tags": [f"tag{index}" for index in range(20)]}],
+            },
+        ])
+
+        self.assertEqual(len(folders[0]["files"][0]["tags"]), AGENT_FILE_CONTEXT_MAX_TAGS)
+
+    def test_turn_prompt_says_a_file_is_matched_by_its_tags(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Delete the Render invoice from August",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            folder_context=[{"name": "Render", "kind": "Receipts", "itemCount": "3 items"}],
+            file_context=[
+                {
+                    "folder": "Render",
+                    "files": [{"name": "attachments/aug.pdf", "tags": ["Render", "Aug", "Invoice"]}],
+                },
+            ],
+        )
+
+        self.assertIn('"tags":["Render","Aug","Invoice"]', prompt)
+        self.assertIn("name, size, updated, and tags", prompt)
+        self.assertIn("Match", prompt)
+
+    def test_a_file_can_be_moved_into_another_folder(self) -> None:
+        # The Folders panel has always been able to move a file between
+        # folders. Asking for the same thing used to be answered with "I
+        # can't do that".
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "file_command",
+                "reply": "Moving that one over.",
+                "fileCommand": "move",
+                "fileNames": ["attachments/aug.pdf"],
+                "folderNames": ["Receipts/Aug2026"],
+                "fileDestination": "Render",
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["outcome"], "file_command")
+        self.assertEqual(turn["fileCommand"], "move")
+        self.assertEqual(turn["fileNames"], ["attachments/aug.pdf"])
+        self.assertEqual(turn["folderNames"], ["Receipts/Aug2026"])
+        self.assertEqual(turn["fileDestination"], "Render")
+
+    def test_a_move_with_nowhere_to_go_is_not_a_move(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "file_command",
+                "reply": "Sure.",
+                "fileCommand": "move",
+                "fileNames": ["aug.pdf"],
+                "folderNames": ["Receipts/Aug2026"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertNotEqual(turn.get("fileCommand"), "move")
+
+    def test_a_delete_carries_no_destination(self) -> None:
+        turn = normalize_agent_turn_response(
+            {
+                "outcome": "file_command",
+                "reply": "Removing it.",
+                "fileCommand": "delete",
+                "fileNames": ["aug.pdf"],
+                "folderNames": ["Receipts/Aug2026"],
+            },
+            has_active_proposal=False,
+        )
+
+        self.assertEqual(turn["fileCommand"], "delete")
+        self.assertEqual(turn["fileDestination"], "")
+
+    def test_turn_prompt_explains_moving_a_file(self) -> None:
+        prompt = build_agent_turn_prompt(
+            user_message="Move the August Render receipt into the Render folder",
+            conversation=[],
+            timezone_name="Asia/Jerusalem",
+            folder_context=[{"name": "Receipts/Aug2026", "kind": "Receipts", "itemCount": "3 items"}],
+        )
+
+        self.assertIn("fileCommand=move", prompt)
+        self.assertIn("fileDestination", prompt)
+        self.assertIn("never the same as the destination", prompt)
 
     def test_turn_response_keeps_a_file_picker_on_a_plain_question(self) -> None:
         turn = normalize_agent_turn_response(

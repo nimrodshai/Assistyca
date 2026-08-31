@@ -21302,6 +21302,10 @@ function getAgentFileChoices(folderName) {
       name: String(item?.name || "").trim(),
       status: formatAgentFolderFileSize(item?.size),
       created: formatAgentFolderFileTime(item?.updatedAt),
+      // The vendor, month, year and kind the listing already carries. The
+      // picker shows a name; the chat needs the handles the user will
+      // actually say.
+      tags: Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean) : [],
     }))
     .filter((choice) => Boolean(choice.name));
 }
@@ -21321,6 +21325,7 @@ function buildAgentFileContext() {
         name: choice.name,
         size: choice.status,
         updated: choice.created,
+        tags: choice.tags,
       })),
     });
     if (context.length >= AGENT_FILE_CONTEXT_FOLDER_LIMIT) {
@@ -21353,6 +21358,16 @@ const AGENT_FILE_COMMAND_WORDING = {
     done: "Deleted",
     failed: "Couldn’t delete",
     working: "Deleting files...",
+  },
+  move: {
+    question: "Move",
+    confirm: "Move them",
+    confirmOne: "Move it",
+    keep: "Leave them",
+    keepOne: "Leave it",
+    done: "Moved",
+    failed: "Couldn’t move",
+    working: "Moving files...",
   },
 };
 
@@ -25165,7 +25180,13 @@ function applyAgentTurnProposalRevision(proposal, changes = {}) {
   return true;
 }
 
-const AGENT_ANSWER_RUN_TYPES = new Set(["calendar-summary", "email-digest", "custom", "exchange-rate"]);
+const AGENT_ANSWER_RUN_TYPES = new Set([
+  "calendar-summary",
+  "email-digest",
+  "custom",
+  "exchange-rate",
+  "saved-files",
+]);
 
 function getAgentAnswerRunFields(turn) {
   const changes = turn?.changes && typeof turn.changes === "object" ? turn.changes : {};
@@ -25478,6 +25499,11 @@ function getAgentAnswerRunBlocker(proposalType) {
     // A published rate belongs to nobody, so there is nothing to connect.
     return "";
   }
+  if (proposalType === "saved-files") {
+    // The folder is already on our side. A client who has disconnected their
+    // mailbox can still be asked what they filed last August.
+    return "";
+  }
   if (proposalType === "calendar-summary") {
     return isCalendarConnectionReady()
       ? ""
@@ -25491,6 +25517,9 @@ function getAgentAnswerRunBlocker(proposalType) {
 function getAgentAnswerRunFailureMessage(proposalType) {
   if (proposalType === "exchange-rate") {
     return "I couldn’t read a published rate for that just now. Ask me again in a moment.";
+  }
+  if (proposalType === "saved-files") {
+    return "I couldn’t read that folder just now. Open it in Folders and ask me again.";
   }
   if (proposalType === "calendar-summary") {
     return "I couldn’t read the connected calendar just now. Check Calendar setup and ask me again.";
@@ -25515,6 +25544,9 @@ function getAgentAnswerTaskLabel(proposalType) {
   if (proposalType === "custom") {
     return "Searching your mail";
   }
+  if (proposalType === "saved-files") {
+    return "Reading your folder";
+  }
   return "Checking your email";
 }
 
@@ -25528,6 +25560,9 @@ function getAgentAnswerTaskHeading(proposalType) {
   }
   if (proposalType === "custom") {
     return "Your mail search";
+  }
+  if (proposalType === "saved-files") {
+    return "Your saved files";
   }
   return "Your email";
 }
@@ -26741,8 +26776,21 @@ async function pushAgentFileCommandPrompt(turn) {
   const wanted = (Array.isArray(turn?.fileNames) ? turn.fileNames : [])
     .map((name) => String(name || "").trim())
     .filter(Boolean);
+  // Where a move is going. It can be a folder that does not exist yet, which
+  // is how a receipt gets filed somewhere new, so it is not matched against
+  // the folders the account already has.
+  const destination = String(turn?.fileDestination || "").trim();
   if (!command || !folder || !wanted.length) {
     return false;
+  }
+  if (command === "move" && (!destination || destination.toLowerCase() === folder.name.toLowerCase())) {
+    // Moving a file into the folder it is already in is not a move, and
+    // carrying it out would report a change that never happened.
+    return Boolean(pushAgentMessage(
+      "assistant",
+      `Tell me which folder to move ${formatAgentActionNameList(wanted)} into.`,
+      { kind: "result" },
+    ));
   }
 
   // A file typed rather than picked reaches here with the folder unopened, so
@@ -26759,14 +26807,20 @@ async function pushAgentFileCommandPrompt(turn) {
 
   const wording = AGENT_FILE_COMMAND_WORDING[command];
   const one = names.length === 1;
+  // A move keeps the file and can be moved back; a delete cannot. Saying the
+  // same warning over both would make the reversible one sound final.
+  const question = command === "move"
+    ? `${wording.question} ${formatAgentActionNameList(names)} from “${folder.name}” into “${destination}”?`
+    : `${wording.question} ${formatAgentActionNameList(names)} from “${folder.name}”? The folder stays, and that can’t be undone.`;
   return Boolean(pushAgentMessage(
     "assistant",
-    `${wording.question} ${formatAgentActionNameList(names)} from “${folder.name}”? The folder stays, and that can’t be undone.`,
+    question,
     {
       kind: "result",
       fileCommand: command,
       fileCommandFolder: folder.name,
       fileCommandNames: names,
+      fileCommandDestination: destination,
       actions: [
         createAgentAction("run-file-command", one ? wording.confirmOne : wording.confirm, "", "primary"),
         createAgentAction("cancel-file-command", one ? wording.keepOne : wording.keep, ""),
@@ -26782,7 +26836,11 @@ async function runAgentFileCommand(messageId) {
   const names = (Array.isArray(message?.metadata?.fileCommandNames) ? message.metadata.fileCommandNames : [])
     .map((name) => String(name || "").trim())
     .filter(Boolean);
+  const destination = String(message?.metadata?.fileCommandDestination || "").trim();
   if (!command || !folderName || !names.length) {
+    return;
+  }
+  if (command === "move" && !destination) {
     return;
   }
 
@@ -26792,11 +26850,17 @@ async function runAgentFileCommand(messageId) {
 
   let result = null;
   try {
-    result = await apiRequest("/api/agent/files/delete", {
-      method: "POST",
-      body: { folder: folderName, files: names },
-      timeoutMs: 30000,
-    });
+    result = command === "move"
+      ? await apiRequest("/api/agent/folders/move", {
+        method: "POST",
+        body: { folder: folderName, destination, files: names },
+        timeoutMs: 30000,
+      })
+      : await apiRequest("/api/agent/files/delete", {
+        method: "POST",
+        body: { folder: folderName, files: names },
+        timeoutMs: 30000,
+      });
   } catch (error) {
     const failure = formatApiErrorMessage(error, `${wording.failed} ${formatAgentActionNameList(names)}. Try again in a moment.`);
     pushAgentMessage("assistant", failure, {
@@ -26814,11 +26878,19 @@ async function runAgentFileCommand(messageId) {
   const refused = new Set((Array.isArray(result?.failed) ? result.failed : [])
     .map((name) => String(name || "").trim().toLowerCase()));
   const removed = names.filter((name) => !refused.has(name.toLowerCase()));
+  // Either way the file has left this folder, so the listing it was in has to
+  // forget it. A move also gives the destination a file it did not have, so
+  // that folder's cached listing is dropped rather than patched.
   forgetAgentFiles(folderName, removed, result?.remaining);
+  if (command === "move" && removed.length) {
+    agentFolderContents.delete(normalizeAgentTextItem(destination, ""));
+  }
 
   const lines = [];
   if (removed.length) {
-    lines.push(`${wording.done} ${formatAgentActionNameList(removed)} from “${folderName}”.`);
+    lines.push(command === "move"
+      ? `${wording.done} ${formatAgentActionNameList(removed)} into “${destination}”.`
+      : `${wording.done} ${formatAgentActionNameList(removed)} from “${folderName}”.`);
   }
   if (refused.size) {
     const stuck = names.filter((name) => refused.has(name.toLowerCase()));
