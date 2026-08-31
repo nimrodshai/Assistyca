@@ -6900,6 +6900,10 @@ function createTelegramBrandLogo() {
   return svg;
 }
 
+// The provider tile belongs on a button that hands the account over to
+// Google or Microsoft, where their own branding rules put it. A button that
+// only saves an answer back to us is not a sign-in, so it passes
+// `brand: false` and gets the portal's ordinary primary button instead.
 function setCalendarOAuthPrimaryButton(label, options = {}) {
   if (!elements.authAlertDismissButton) {
     return;
@@ -6907,13 +6911,21 @@ function setCalendarOAuthPrimaryButton(label, options = {}) {
   const labelNode = document.createElement("span");
   labelNode.className = "calendar-oauth-button-label";
   labelNode.textContent = String(label || "Sign in with Google");
-  const icon = document.createElement("span");
-  icon.className = options.loading ? "calendar-oauth-button-spinner" : "calendar-oauth-button-logo";
-  icon.setAttribute("aria-hidden", "true");
-  if (!options.loading) {
-    icon.append(typeof options.logo === "function" ? options.logo() : createGoogleBrandLogo());
+  const nodes = [];
+  if (options.loading) {
+    const spinner = document.createElement("span");
+    spinner.className = "calendar-oauth-button-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    nodes.push(spinner);
+  } else if (options.brand !== false) {
+    const logo = document.createElement("span");
+    logo.className = "calendar-oauth-button-logo";
+    logo.setAttribute("aria-hidden", "true");
+    logo.append(typeof options.logo === "function" ? options.logo() : createGoogleBrandLogo());
+    nodes.push(logo);
   }
-  elements.authAlertDismissButton.replaceChildren(icon, labelNode);
+  nodes.push(labelNode);
+  elements.authAlertDismissButton.replaceChildren(...nodes);
 }
 
 let googleIdentityServicesPromise = null;
@@ -7139,6 +7151,24 @@ function getSelectedGoogleOAuthScopeIds(container) {
     .filter(Boolean);
 }
 
+// A calendar is recognized by its colour before its name, so the colour Google
+// shows it in travels with it. The value goes into a style, so it is only ever
+// used once it looks like a plain hex colour - anything else leaves the row
+// without a dot rather than putting an unchecked string into the page.
+const CALENDAR_COLOR_PATTERN = /^#[0-9a-f]{6}$/;
+
+function createCalendarColorDot(color) {
+  const value = String(color || "").trim().toLowerCase();
+  if (!CALENDAR_COLOR_PATTERN.test(value)) {
+    return null;
+  }
+  const dot = document.createElement("span");
+  dot.className = "calendar-color-dot";
+  dot.style.setProperty("--calendar-color", value);
+  dot.setAttribute("aria-hidden", "true");
+  return dot;
+}
+
 // The calendars this Google account reads, listed on the Google tool with the
 // way to change them. Drawn from the same endpoint the picker uses, so it says
 // what a question asked in chat would actually read.
@@ -7173,7 +7203,16 @@ function createGoogleConnectedCalendarsSection(option) {
       name.className = "connected-mailbox-name";
       name.textContent = state.agentCalendarSourcesLoading
         ? "Loading the calendars in this account…"
-        : (source?.message || state.agentCalendarSourcesError || "The calendar of this Google account.");
+        : (
+          source?.message
+          || state.agentCalendarSourcesError
+          // Connected but never asked. Saying "not chosen yet" is the honest
+          // reading: nothing is being read, and the button beside it is what
+          // changes that.
+          || (source
+            ? "Not chosen yet, so none are read. Choose calendars to let Assistyca answer calendar questions."
+            : "The calendar of this Google account.")
+        );
       row.append(name);
       list.append(row);
       heading.textContent = "Calendar";
@@ -7183,6 +7222,10 @@ function createGoogleConnectedCalendarsSection(option) {
     for (const calendar of chosen) {
       const row = document.createElement("li");
       row.className = "connected-mailbox-row";
+      const dot = createCalendarColorDot(calendar.color);
+      if (dot) {
+        row.append(dot);
+      }
       const name = document.createElement("span");
       name.className = "connected-mailbox-name";
       name.textContent = calendar.label;
@@ -7203,6 +7246,31 @@ function createGoogleConnectedCalendarsSection(option) {
   // answers rather than holding the card closed until it does.
   void refreshAgentCalendarSources().then(render).catch(render);
   return section;
+}
+
+// Whether the account has answered which calendars Assistyca may read.
+// Connecting Google is not that answer: the grant covers every calendar in the
+// account, so an unanswered account is asked before anything is read.
+function isGoogleCalendarChoiceMade() {
+  const source = getGoogleCalendarSource();
+  // Not loaded yet, or the account cannot be asked what it holds: the run goes
+  // ahead and the server has the final say. Blocking on a question the portal
+  // never managed to ask would stop a lookup for someone who did answer it.
+  if (!source) {
+    return true;
+  }
+  return Boolean(source.choiceMade);
+}
+
+// What the picker opens with. A saved choice is what it is; an account that has
+// never answered gets everything ticked as a suggestion, so saying yes to all
+// of them stays one click without anyone having decided that on their behalf.
+function getGoogleCalendarPickerSelection(source) {
+  const chosen = Array.isArray(source?.selectedCalendarIds) ? source.selectedCalendarIds : [];
+  if (chosen.length) {
+    return chosen;
+  }
+  return Array.isArray(source?.suggestedCalendarIds) ? source.suggestedCalendarIds : [];
 }
 
 // The calendars an account has chosen, named. Falls back to the names saved
@@ -7226,6 +7294,9 @@ function getChosenGoogleCalendars() {
         || saved?.label
         || (calendarId === AGENT_CALENDAR_PRIMARY_ID ? "My calendar" : calendarId),
       primary: Boolean(listed?.primary) || calendarId === AGENT_CALENDAR_PRIMARY_ID,
+      // Only the live list knows the colour. A connection that can no longer
+      // be asked keeps its saved names and simply shows no dot.
+      color: listed?.color || "",
     };
   });
 }
@@ -7252,6 +7323,10 @@ function createGoogleCalendarChoiceList(source, selectedIds) {
     copy.className = "calendar-oauth-permission-copy";
     const row = document.createElement("span");
     row.className = "calendar-oauth-permission-row";
+    const dot = createCalendarColorDot(calendar.color);
+    if (dot) {
+      row.append(dot);
+    }
     const label = document.createElement("strong");
     label.textContent = calendar.label;
     row.append(label);
@@ -7289,7 +7364,7 @@ function openGoogleCalendarChoice(option, flowOptions = {}) {
 
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
-  intro.textContent = "Choose the calendars Assistyca should read. When you ask what is on your calendar, it checks every calendar you tick here.";
+  intro.textContent = "Choose the calendars Assistyca should read. When you ask what is on your calendar, it checks every calendar you tick here. Until you choose, it reads none of them and asks this again the first time you need your calendar.";
 
   const listWrapper = document.createElement("div");
   listWrapper.className = "calendar-oauth-permissions";
@@ -7330,18 +7405,18 @@ function openGoogleCalendarChoice(option, flowOptions = {}) {
     if (!source) {
       canSave = false;
       showUnavailable(state.agentCalendarSourcesError);
-      setCalendarOAuthPrimaryButton("Done");
+      setCalendarOAuthPrimaryButton("Done", { brand: false });
       return;
     }
     if (!source.calendars.length) {
       canSave = false;
       showUnavailable(source.message);
-      setCalendarOAuthPrimaryButton("Done");
+      setCalendarOAuthPrimaryButton("Done", { brand: false });
       return;
     }
     canSave = true;
-    listSlot.replaceChildren(createGoogleCalendarChoiceList(source, source.selectedCalendarIds));
-    setCalendarOAuthPrimaryButton("Save calendars", { logo: () => createAgentAddToolLogo(option) });
+    listSlot.replaceChildren(createGoogleCalendarChoiceList(source, getGoogleCalendarPickerSelection(source)));
+    setCalendarOAuthPrimaryButton("Save calendars", { brand: false });
   };
 
   const save = async () => {
@@ -7403,7 +7478,7 @@ function openGoogleCalendarChoice(option, flowOptions = {}) {
         "Couldn’t save",
         formatApiErrorMessage(error, "I couldn’t save those calendars right now. Please try again."),
       );
-      setCalendarOAuthPrimaryButton("Save calendars", { logo: () => createAgentAddToolLogo(option) });
+      setCalendarOAuthPrimaryButton("Save calendars", { brand: false });
       saving = false;
     }
   };
@@ -7415,7 +7490,9 @@ function openGoogleCalendarChoice(option, flowOptions = {}) {
       eyebrow: "Google Calendar",
       iconNode: createAgentAddToolLogo(option),
       tone: "progress",
-      variant: "calendar-oauth",
+      // Same card shape as the sign-in step, without its branded button: this
+      // step is a choice saved back to us, not a hand-off to Google.
+      variant: "calendar-picker",
       bodyNode: body,
       buttonLabel: "Save calendars",
       secondaryButtonLabel: "Not now",
@@ -7430,7 +7507,7 @@ function openGoogleCalendarChoice(option, flowOptions = {}) {
   );
 
   showLoading();
-  setCalendarOAuthPrimaryButton("Save calendars", { logo: () => createAgentAddToolLogo(option) });
+  setCalendarOAuthPrimaryButton("Save calendars", { brand: false });
   // Reading the list is a live question about the account, so a reconnect or a
   // calendar added in Google since the last look is picked up here.
   void refreshAgentCalendarSources({ force: true }).then(render).catch(render);
@@ -26050,9 +26127,16 @@ function getAgentAnswerRunBlocker(proposalType) {
     return "";
   }
   if (proposalType === "calendar-summary") {
-    return isCalendarConnectionReady()
+    if (!isCalendarConnectionReady()) {
+      return "I need your calendar connected before I can look that up. Connect it with read-only access.";
+    }
+    // Connected, but nobody has said which calendars may be read. A Google
+    // grant covers every calendar in the account, shared-in ones included, so
+    // reading them all because the picker was dismissed is exactly the thing
+    // this stops. The question is asked here instead.
+    return isGoogleCalendarChoiceMade()
       ? ""
-      : "I need your calendar connected before I can look that up. Connect it with read-only access.";
+      : "Your calendar is connected, but I don’t know which of its calendars you want me to read. Choose them and I’ll answer this straight away.";
   }
   return isEmailConnectionReady()
     ? ""
@@ -26079,9 +26163,14 @@ function getAgentAnswerRunConnection(proposalType) {
   if (!getAgentAnswerRunBlocker(proposalType)) {
     return null;
   }
-  return proposalType === "calendar-summary"
-    ? { platformId: "calendar", label: "Connect your calendar" }
-    : { platformId: "email", label: "Connect a mailbox" };
+  if (proposalType !== "calendar-summary") {
+    return { platformId: "email", label: "Connect a mailbox" };
+  }
+  // Two different blocks wear the same colour button. A calendar that is
+  // connected but unanswered needs the picker, not the sign-in it already did.
+  return isCalendarConnectionReady()
+    ? { platformId: "calendar", label: "Choose calendars", action: "choose-calendars" }
+    : { platformId: "calendar", label: "Connect your calendar", action: "open-connection" };
 }
 
 // Two lookups waiting on the same mailbox are one button. Which mailbox it is
@@ -26096,7 +26185,7 @@ function getAgentAnswerRunConnectionActions(tasks = []) {
     }
   }
   return Array.from(connections.values()).map((connection, index) => createAgentAction(
-    "open-connection",
+    connection.action || "open-connection",
     connection.label,
     connection.platformId,
     index === 0 ? "primary" : "secondary",

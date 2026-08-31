@@ -329,11 +329,15 @@ class CalendarSummaryTests(unittest.TestCase):
                         "summaryOverride": "Alex Rivera",
                         "primary": True,
                         "accessRole": "owner",
+                        "backgroundColor": "#9FE1E7",
                     },
                     {
                         "id": "c_family@group.calendar.google.com",
                         "summary": "Family",
                         "accessRole": "reader",
+                        # Not a colour the portal can put in a style, so this
+                        # calendar comes back without one rather than with it.
+                        "backgroundColor": "tomato",
                     },
                     # Busy blocks with no titles are nothing an action could
                     # summarize, so this one is never offered.
@@ -350,12 +354,19 @@ class CalendarSummaryTests(unittest.TestCase):
         self.assertEqual(
             calendars,
             [
-                {"id": "primary", "label": "Alex Rivera", "primary": True, "accessRole": "owner"},
+                {
+                    "id": "primary",
+                    "label": "Alex Rivera",
+                    "primary": True,
+                    "accessRole": "owner",
+                    "color": "#9fe1e7",
+                },
                 {
                     "id": "c_family@group.calendar.google.com",
                     "label": "Family",
                     "primary": False,
                     "accessRole": "reader",
+                    "color": "",
                 },
             ],
         )

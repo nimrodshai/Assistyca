@@ -301,6 +301,47 @@ class PortalStaticPageTests(unittest.TestCase):
         # so the Gmail permission is read from the connected mailboxes.
         self.assertIn("? getConnectedGmailConnections().length > 0", script)
 
+        # A calendar is recognized by the colour Google shows it in, so both
+        # the picker and the tool's list carry that colour.
+        self.assertIn("function createCalendarColorDot", script)
+        self.assertIn("const CALENDAR_COLOR_PATTERN = /^#[0-9a-f]{6}$/;", script)
+        self.assertIn('dot.style.setProperty("--calendar-color", value);', script)
+        self.assertIn(".calendar-color-dot {", styles)
+        self.assertIn("background: var(--calendar-color, var(--accent));", styles)
+
+        # The colour is written into a style attribute, so a value that is not
+        # a plain hex colour leaves the row without a dot rather than reaching
+        # the page unchecked.
+        color_dot = script[
+            script.index("function createCalendarColorDot"):
+            script.index("function createGoogleConnectedCalendarsSection")
+        ]
+        self.assertIn("if (!CALENDAR_COLOR_PATTERN.test(value)) {", color_dot)
+        self.assertIn("return null;", color_dot)
+
+    def test_calendar_picker_saves_with_the_portals_own_button(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # Google's branded button belongs on the step that hands the account
+        # over to Google. Saving a calendar choice is our own form submit, so
+        # it wears the portal's ordinary primary button instead.
+        self.assertIn('variant: "calendar-picker",', script)
+        self.assertIn('setCalendarOAuthPrimaryButton("Save calendars", { brand: false });', script)
+        self.assertNotIn(
+            'setCalendarOAuthPrimaryButton("Save calendars", { logo: () => createAgentAddToolLogo(option) });',
+            script,
+        )
+        self.assertIn('.auth-alert-dialog[data-variant="calendar-picker"] .auth-alert-body,', styles)
+        self.assertNotIn(
+            '.auth-alert-dialog[data-variant="calendar-picker"] .primary-button.small {\n  display: inline-flex;\n  gap: 0.72rem;',
+            styles,
+        )
+
+        # The sign-in step keeps Google's own button, tile and all.
+        self.assertIn('.auth-alert-dialog[data-variant="calendar-oauth"] .primary-button.small {', styles)
+        self.assertIn("createGoogleBrandLogo()", script)
+
     def test_calendar_action_lists_calendars_as_tags(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")

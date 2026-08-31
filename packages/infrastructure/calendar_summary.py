@@ -46,6 +46,11 @@ CALENDAR_MAX_CALENDARS = 8
 # A calendar ID is either the connected account's own calendar or the address
 # of a calendar shared with it. Nothing else is ever put in the request path.
 CALENDAR_ID_PATTERN = re.compile(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$")
+# The colour Google shows a calendar in, so the picker can look like the
+# calendar someone already recognizes. It is written into a style attribute,
+# so only a plain hex colour is ever passed on - anything else is dropped and
+# the row falls back to its own tint.
+CALENDAR_COLOR_PATTERN = re.compile(r"^#[0-9a-f]{6}$")
 
 
 class CalendarSummaryError(RuntimeError):
@@ -565,7 +570,24 @@ def normalize_calendar_list_entry(entry: dict[str, Any]) -> dict[str, Any] | Non
         "label": label or ("My calendar" if is_primary else calendar_id),
         "primary": is_primary,
         "accessRole": access_role,
+        "color": normalize_calendar_color(entry.get("backgroundColor")),
     }
+
+
+def normalize_calendar_color(value: Any) -> str:
+    """Google's colour for a calendar, or "" when it did not send a usable one.
+
+    Google sends "#9fe1e7"; anything that is not a plain six-digit hex colour
+    is dropped rather than passed on, because the portal puts this straight
+    into a style attribute.
+    """
+
+    color = str(value or "").strip().lower()
+    if len(color) == 4 and color.startswith("#"):
+        # The short form Google sometimes sends, written out so one shape
+        # reaches the portal.
+        color = "#" + "".join(character * 2 for character in color[1:])
+    return color if CALENDAR_COLOR_PATTERN.match(color) else ""
 
 
 def _format_event_time(event: dict[str, Any]) -> str:
