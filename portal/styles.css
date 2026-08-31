@@ -5146,10 +5146,13 @@ body[data-modal="billing"] .app-shell {
   background: rgba(89, 103, 120, 0.1);
 }
 
+/* The row above ends where its own padding ends, so without a gap of its own
+   the first file card sits flush against the bottom of the folder row it was
+   opened from. */
 .agent-folder-body {
   display: grid;
   gap: 0.34rem;
-  padding: 0 0.82rem 0.78rem;
+  padding: 0.4rem 0.82rem 0.78rem;
 }
 
 .agent-folder-body-note {
