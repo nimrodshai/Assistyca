@@ -7024,6 +7024,50 @@ function createSlackBrandLogo() {
   return svg;
 }
 
+// The circle is a gradient, so each drawing needs its own gradient id: two
+// Telegram logos on one page would otherwise share, and fight over, one id.
+let telegramBrandLogoCount = 0;
+
+function createTelegramBrandLogo() {
+  telegramBrandLogoCount += 1;
+  const gradientId = `telegram-brand-gradient-${telegramBrandLogoCount}`;
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 240 240",
+    width: "18",
+    height: "18",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  const gradient = createSvgElement("linearGradient", {
+    id: gradientId,
+    x1: "120",
+    y1: "0",
+    x2: "120",
+    y2: "240",
+    gradientUnits: "userSpaceOnUse",
+  });
+  gradient.append(
+    createSvgElement("stop", { "stop-color": "#2AABEE" }),
+    createSvgElement("stop", { offset: "1", "stop-color": "#229ED9" }),
+  );
+  const defs = createSvgElement("defs");
+  defs.append(gradient);
+  svg.append(
+    defs,
+    createSvgElement("circle", {
+      cx: "120",
+      cy: "120",
+      r: "120",
+      fill: `url(#${gradientId})`,
+    }),
+    createSvgElement("path", {
+      d: "M54.3 118.8c35-15.2 58.3-25.3 70-30.2 33.3-13.9 40.3-16.3 44.8-16.4 1 0 3.2.2 4.7 1.4 1.2 1 1.5 2.4 1.7 3.4.2 1 .4 3.2.2 5-1.8 19.1-9.7 65.4-13.7 86.8-1.7 9-5 12.1-8.3 12.4-7 .6-12.4-4.7-19.2-9.2-10.7-7-16.7-11.4-27.1-18.2-12-7.9-4.2-12.3 2.6-19.4 1.8-1.9 32.6-29.9 33.2-32.4.1-.3.1-1.5-.6-2.1-.7-.6-1.7-.4-2.5-.2-1.1.2-18 11.4-50.8 33.6-4.8 3.3-9.2 4.9-13.1 4.8-4.3-.1-12.6-2.4-18.8-4.4-7.6-2.5-13.6-3.8-13.1-8 .3-2.2 3.3-4.5 9-6.9Z",
+      fill: "#ffffff",
+    }),
+  );
+  return svg;
+}
+
 function setCalendarOAuthPrimaryButton(label, options = {}) {
   if (!elements.authAlertDismissButton) {
     return;
@@ -29016,6 +29060,9 @@ function createAgentAddToolLogo(option) {
   if (iconType === "slack") {
     return createSlackBrandLogo();
   }
+  if (iconType === "telegram") {
+    return createTelegramBrandLogo();
+  }
 
   const svg = createSvgElement("svg", {
     viewBox: "0 0 24 24",
@@ -29099,24 +29146,6 @@ function createAgentAddToolLogo(option) {
         d: "M4.9 10.5h11.2M10.5 4.7c1.5 1.6 2.2 3.5 2.2 5.8s-.7 4.2-2.2 5.8M10.5 4.7c-1.5 1.6-2.2 3.5-2.2 5.8s.7 4.2 2.2 5.8M15.1 15.1 20 20",
         stroke: "currentColor",
         "stroke-width": "2",
-        "stroke-linecap": "round",
-        "stroke-linejoin": "round",
-      }),
-    );
-    return svg;
-  }
-
-  if (iconType === "telegram") {
-    svg.append(
-      createSvgElement("path", {
-        d: "M20.3 4.8 3.9 11.1c-1.1.4-1.1 1.1-.2 1.4l4.2 1.3 1.6 5c.2.6.5.8 1 .8.5 0 .8-.2 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.3 1.7-.8l3-14c.3-1.2-.5-1.8-1.2-1.5Z",
-        fill: "currentColor",
-        transform: "translate(-1.6 -.4) scale(1.08)",
-      }),
-      createSvgElement("path", {
-        d: "m8.3 13.5 8.5-5.3-6.6 6.8-.2 3",
-        stroke: "rgba(255,255,255,0.72)",
-        "stroke-width": "1.35",
         "stroke-linecap": "round",
         "stroke-linejoin": "round",
       }),
