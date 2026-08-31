@@ -1364,6 +1364,9 @@ let billingLastRefreshCompletedAt = 0;
 let pricingRefreshPromise = null;
 let pricingLastRefreshCompletedAt = 0;
 let agentTurnBusy = false;
+// Guards the account delete button against a second click while the first is
+// still in flight.
+let accountDeleteBusy = false;
 let agentTurnProgressText = "Thinking";
 let agentSourceAttachment = null;
 let agentAttachSourceMenuOpen = false;
@@ -1725,6 +1728,7 @@ const elements = {
   adminUsersContent: document.querySelector("#adminUsersContent"),
   signedInEmail: document.querySelector("#signedInEmail"),
   signOutButton: document.querySelector("#signOutButton"),
+  deleteAccountButton: document.querySelector("#deleteAccountButton"),
   displayNameInput: document.querySelector("#displayNameInput"),
   workspaceNameInput: document.querySelector("#workspaceNameInput"),
   timezoneSelect: document.querySelector("#timezoneSelect"),
@@ -33282,6 +33286,71 @@ async function verifyOtpFlow() {
   }
 }
 
+function setAccountDeleteBusy(isBusy) {
+  accountDeleteBusy = isBusy;
+  const button = elements.deleteAccountButton;
+  if (!button) {
+    return;
+  }
+
+  button.disabled = isBusy;
+  button.textContent = isBusy ? "Deleting..." : "Delete my account";
+}
+
+function deleteMyAccount() {
+  const email = normalizeEmail(authSession?.email || activeEmail || "");
+  if (!email || accountDeleteBusy) {
+    return;
+  }
+
+  openAuthAlert(
+    "Delete your account?",
+    `This removes ${email} from Assistyca: connected tools, saved actions, receipt folders, chat history and billing records. It cannot be undone.`,
+    {
+      eyebrow: "Delete account",
+      buttonLabel: "Delete account",
+      secondaryButtonLabel: "Cancel",
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+      focusTarget: "secondary",
+      onPrimary: () => {
+        void confirmAccountDelete(email);
+      },
+    },
+  );
+}
+
+async function confirmAccountDelete(email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || accountDeleteBusy) {
+    return;
+  }
+
+  setAccountDeleteBusy(true);
+  try {
+    await apiRequest("/api/account", { method: "DELETE" });
+  } catch (error) {
+    openAuthAlert(
+      "Couldn’t delete your account",
+      formatApiErrorMessage(error, "We couldn’t delete your account right now."),
+      { eyebrow: "Delete account" },
+    );
+    return;
+  } finally {
+    setAccountDeleteBusy(false);
+  }
+
+  // Signing out writes this workspace back to browser storage on its way out,
+  // so the copy this browser kept is dropped after it rather than before, or
+  // the next load would repaint an account the server no longer has.
+  await signOut();
+  persistJson(getClientKey(normalizedEmail), null);
+  openAuthAlert(
+    "Account deleted",
+    "Everything saved with your account is gone. Signing in again starts you from an empty workspace.",
+    { eyebrow: "Delete account", tone: "success", icon: "✓" },
+  );
+}
+
 async function signOut() {
   persistClientState();
   const previousEmail = normalizeEmail(authSession?.email || activeEmail || "");
@@ -34108,6 +34177,9 @@ function bindEvents() {
   });
   elements.signOutButton.addEventListener("click", () => {
     void signOut();
+  });
+  elements.deleteAccountButton?.addEventListener("click", () => {
+    deleteMyAccount();
   });
   elements.closeSettingsButton.addEventListener("click", closeSettings);
   elements.backToFeaturesButton.addEventListener("click", () => {
