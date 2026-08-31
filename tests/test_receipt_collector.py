@@ -374,6 +374,19 @@ class ReceiptClassificationTests(unittest.TestCase):
         )
         self.assertEqual([row["status"] for row in rows], ["Not a receipt", "Ready"])
 
+    def test_a_receipt_in_another_language_is_not_thrown_away_unread(self) -> None:
+        # No amount the parser can read and no model verdict, so all this has
+        # to go on is the words. A supplier that bills in Hebrew, Spanish,
+        # French or Chinese says "receipt" as plainly as an English one does.
+        rows = self.rows_for(
+            {"id": "he", "from": "billing@vendor.co.il", "subject": "חשבונית מס", "bodyText": "מצורפת החשבונית שלך."},
+            {"id": "es", "from": "facturacion@tienda.es", "subject": "Recibo de pago", "bodyText": "Adjuntamos el recibo."},
+            {"id": "fr", "from": "facture@boutique.fr", "subject": "Votre reçu", "bodyText": "Votre paiement a été reçu."},
+            {"id": "zh", "from": "billing@vendor.cn", "subject": "您的发票", "bodyText": "付款收据已开具。"},
+        )
+
+        self.assertEqual([row["status"] for row in rows], ["Needs review"] * 4)
+
     def test_a_receipt_is_found_by_the_shop_that_was_paid_not_the_sender(self) -> None:
         # The payment service sent the email; the shop is named inside it.
         rows = self.rows_for({

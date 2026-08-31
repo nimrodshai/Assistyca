@@ -50,6 +50,30 @@ class ReceiptTagTests(unittest.TestCase):
         self.assertIn("Invoice", tags)
         self.assertNotIn("Receipt", tags)
 
+    def test_a_vendor_that_bills_in_its_own_language_still_gets_the_tag(self) -> None:
+        # The tag is what a bookkeeper filters on, and a supplier in Tel Aviv,
+        # Madrid, Lyon or Shenzhen files the same two documents as one in
+        # London. Reading only the English word left those folders untagged.
+        for subject, kind in (
+            ("חשבונית מס 4821", "Invoice"),
+            ("הקבלה שלך מאוגוסט", "Receipt"),
+            ("Factura 2026-08", "Invoice"),
+            ("Recibo de pago", "Receipt"),
+            ("Votre facture Orange", "Invoice"),
+            ("Reçu de paiement", "Receipt"),
+            ("您的发票已开具", "Invoice"),
+            ("付款收據", "Receipt"),
+        ):
+            with self.subTest(subject=subject):
+                self.assertEqual(describe_document_kind(subject), kind)
+
+    def test_a_hebrew_word_that_merely_contains_the_letters_is_not_a_receipt(self) -> None:
+        # Hebrew glues prefixes onto a word, so the match cannot ask for a
+        # space: "התקבלה" (it was received) and "חשבון" (account) are not
+        # documents, and tagging them would put an invoice in the wrong pile.
+        self.assertEqual(describe_document_kind("הודעתך התקבלה במערכת"), "")
+        self.assertEqual(describe_document_kind("חשבון הבנק שלך"), "")
+
     def test_a_file_that_says_neither_is_not_labelled_either(self) -> None:
         # A wrong tag is worse than a missing one, so nothing is guessed.
         self.assertEqual(describe_document_kind("statement-8891.pdf", "August summary"), "")

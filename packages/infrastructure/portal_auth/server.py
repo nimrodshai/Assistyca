@@ -474,7 +474,14 @@ AGENT_RECEIPT_BUNDLE_MAX_MESSAGES = 50
 # instead - was invisible to this search while its receipts sat in the mailbox.
 # Widening it costs a few more messages read per month and finds the ones that
 # were being walked past.
+#
+# The same goes for the language it was written in. An Israeli supplier sends
+# "חשבונית מס", a Chinese one sends 发票, and neither carries an English word
+# anywhere - so an English-only search came back empty and read, to the person
+# who asked, as "you were never charged". A word from a language the mailbox
+# does not use costs nothing: it simply matches nothing.
 AGENT_GMAIL_BATCH_SEARCH_TERMS = (
+    # English
     "receipt",
     "invoice",
     "statement",
@@ -485,6 +492,29 @@ AGENT_GMAIL_BATCH_SEARCH_TERMS = (
     "purchase",
     "charged",
     "paid",
+    # Hebrew: invoice, receipt, payment, charge
+    "חשבונית",
+    "קבלה",
+    "תשלום",
+    "חיוב",
+    # Spanish: invoice, receipt, payment, purchase
+    "factura",
+    "recibo",
+    "pago",
+    "compra",
+    # French: invoice, receipt, payment, purchase
+    "facture",
+    "reçu",
+    "paiement",
+    "achat",
+    # Chinese, simplified then traditional: invoice, receipt, bill, payment
+    "发票",
+    "收据",
+    "账单",
+    "付款",
+    "發票",
+    "收據",
+    "帳單",
 )
 AGENT_SECRET_PATTERNS = (
     re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),

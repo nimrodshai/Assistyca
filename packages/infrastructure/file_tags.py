@@ -30,8 +30,24 @@ MONTH_TAGS = (
     "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 )
-_INVOICE_RE = re.compile(r"\binvoices?\b", re.IGNORECASE)
-_RECEIPT_RE = re.compile(r"\breceipts?\b", re.IGNORECASE)
+# The same two words in the languages the mailboxes here actually see. A
+# Latin-script word is bounded by spaces, so it takes \b; Hebrew and Chinese
+# have no boundary to take - Hebrew glues its prefixes straight onto the word
+# ("החשבונית"), Chinese writes no spaces at all - so those are matched as the
+# run of letters they are. "חשבוני" is only ever the start of חשבונית, never
+# of חשבון, so the account statement does not come back tagged as an invoice.
+_INVOICE_RE = re.compile(
+    r"\b(?:invoices?|facturas?|factures?)\b|חשבוני|发票|發票",
+    re.IGNORECASE,
+)
+# The Hebrew guard on קבלה keeps "התקבלה" (it was received) out: the word may
+# carry a prefix letter of its own, but nothing else may run into it.
+_RECEIPT_RE = re.compile(
+    r"\b(?:receipts?|recibos?|comprobantes?|re[çc]us?)\b"
+    r"|(?<![א-ת])[הולבכמש]?קבל(?:ה|ות)(?![א-ת])"
+    r"|收据|收據",
+    re.IGNORECASE,
+)
 
 
 def _clean(value: Any) -> str:

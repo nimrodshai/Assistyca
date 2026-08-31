@@ -14,12 +14,14 @@ from packages.infrastructure.mail_search import MAIL_QUERY_MAX_LENGTH
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import describe_widening
 from packages.infrastructure.mail_search import matches
+from packages.infrastructure.mail_search import normalize_terms
 from packages.infrastructure.mail_search import widen_query
 from packages.infrastructure.mail_search import month_window
 from packages.infrastructure.mail_search import parse_gmail_query
 from packages.infrastructure.mail_search import parse_time_window_days
 from packages.infrastructure.mail_search import to_gmail_query
 from packages.infrastructure.mail_search import to_graph_search
+from packages.infrastructure.portal_auth.server import AGENT_GMAIL_BATCH_SEARCH_TERMS
 
 RECEIPT_TERMS = ("receipt", "invoice", "statement", "bill", "transaction", "expense")
 
@@ -78,12 +80,22 @@ class QueryLengthTests(unittest.TestCase):
 
     def _long_query(self) -> MailQuery:
         window = month_window(2026, 7)
+        # Long enough to overflow on purpose. The real receipt search asks for
+        # its words in five languages, so the room for terms is wide - and a
+        # test of shortening that never overflows tests nothing.
+        filler = tuple(f"searchword{index:02d}" for index in range(30))
         return MailQuery(
-            terms=RECEIPT_TERMS + ("payment", "purchase", "charged", "paid"),
+            terms=RECEIPT_TERMS + ("payment", "purchase", "charged", "paid") + filler,
             required_terms=("A Very Long Supplier Name That Goes On And On Limited",),
             after=window.after,
             before=window.before,
         )
+
+    def test_the_query_these_tests_use_really_is_too_long_to_send(self) -> None:
+        query = self._long_query()
+
+        self.assertNotIn(query.terms[-1], to_gmail_query(query))
+        self.assertNotIn(query.terms[-1], to_graph_search(query))
 
     def test_gmail_never_receives_an_unclosed_bracket(self) -> None:
         rendered = to_gmail_query(self._long_query())
@@ -110,6 +122,39 @@ class QueryLengthTests(unittest.TestCase):
         self.assertIn("received>=2026-07-01", rendered)
         self.assertIn("received<2026-08-01", rendered)
         self.assertIn("receipt", rendered)
+
+
+class ReceiptTermsTests(unittest.TestCase):
+    """The words a receipt is written in, whichever language it is billed in."""
+
+    def _receipt_query(self) -> MailQuery:
+        window = month_window(2026, 8)
+        return MailQuery(
+            terms=normalize_terms(AGENT_GMAIL_BATCH_SEARCH_TERMS),
+            required_terms=("A Very Long Supplier Name That Goes On And On Limited",),
+            after=window.after,
+            before=window.before,
+        )
+
+    def test_no_receipt_word_is_lost_between_the_list_and_the_provider(self) -> None:
+        # Both caps - how many terms a query may hold and how long it may be -
+        # drop what does not fit silently, and what they drop is the end of the
+        # list. That is the languages, so a list that outgrows either of them
+        # reads as "no receipts that month" for whoever bills in Chinese.
+        gmail = to_gmail_query(self._receipt_query())
+        graph = to_graph_search(self._receipt_query())
+
+        for term in AGENT_GMAIL_BATCH_SEARCH_TERMS:
+            with self.subTest(term=term):
+                self.assertIn(term, gmail)
+                self.assertIn(term, graph)
+
+    def test_the_search_asks_in_every_language_the_vendors_bill_in(self) -> None:
+        gmail = to_gmail_query(self._receipt_query())
+
+        for word in ("receipt", "חשבונית", "factura", "facture", "发票"):
+            with self.subTest(word=word):
+                self.assertIn(word, gmail)
 
 
 class GmailParsingTests(unittest.TestCase):

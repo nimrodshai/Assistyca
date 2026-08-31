@@ -115,11 +115,12 @@ _TOTAL_LABEL_PATTERNS = (
     re.compile(r"\btotals?\b", re.IGNORECASE),
 )
 _TOTAL_LABEL_WINDOW = 80
-# The mailbox search is six broad words matched over the whole message, and
-# Gmail's word search reaches inside attachments: a signed agreement whose PDF
-# says "statement" or "expenses" comes back from a receipt search. Deciding
-# what is actually a receipt therefore uses the email's own words only - the
-# attachment text is never read here.
+# The mailbox search is a handful of broad words - in several languages, since
+# a receipt is written in whatever language the vendor bills in - matched over
+# the whole message, and Gmail's word search reaches inside attachments: a
+# signed agreement whose PDF says "statement" or "expenses" comes back from a
+# receipt search. Deciding what is actually a receipt therefore uses the
+# email's own words only - the attachment text is never read here.
 _RECEIPT_EVIDENCE_RE = re.compile(
     "|".join((
         r"\breceipts?\b",
@@ -138,9 +139,34 @@ _RECEIPT_EVIDENCE_RE = re.compile(
         r"\border (?:total|confirmation|number|summary)\b",
         r"\btransaction (?:id|details|receipt)\b",
         r"\bsubscription (?:payment|renewal|renewed)\b",
-        "\u05e7\u05d1\u05dc\u05d4",
-        "\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea",
-        "\u05ea\u05e9\u05dc\u05d5\u05dd",
+        # Hebrew: receipt, invoice, payment, charged, paid.
+        "קבלה",
+        "חשבונית",
+        "תשלום",
+        "חויב",
+        "שולם",
+        # Spanish: receipt, invoice, payment, paid, purchase, proof of payment.
+        r"\brecibos?\b",
+        r"\bfacturas?\b",
+        r"\bpagos?\b",
+        r"\bpagad[oa]s?\b",
+        r"\bcompras?\b",
+        r"\bcomprobantes?\b",
+        # French: receipt, invoice, payment, paid, purchase.
+        r"\bre[çc]us?\b",
+        r"\bfactures?\b",
+        r"\bpaiements?\b",
+        r"\bpay[ée]e?s?\b",
+        r"\bachats?\b",
+        # Chinese, simplified then traditional: invoice, receipt, bill, payment.
+        "发票",
+        "收据",
+        "账单",
+        "付款",
+        "已支付",
+        "發票",
+        "收據",
+        "帳單",
     )),
     re.IGNORECASE,
 )

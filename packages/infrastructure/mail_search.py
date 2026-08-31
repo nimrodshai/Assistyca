@@ -17,8 +17,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-MAIL_QUERY_MAX_LENGTH = 200
-MAIL_QUERY_MAX_TERMS = 12
+# Room for a search that asks for the same thing in several languages. A
+# receipt list that says receipt, חשבונית, factura, facture and 发票 is five
+# times the words of an English-only one, and both providers take a query far
+# longer than this - the cap is here so a runaway query is caught, not to
+# ration the words the search is allowed to ask for.
+MAIL_QUERY_MAX_LENGTH = 600
+MAIL_QUERY_MAX_TERMS = 40
 
 _GMAIL_DATE_RE = re.compile(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$")
 _GMAIL_NEWER_THAN_RE = re.compile(r"^(\d{1,4})d$", re.IGNORECASE)
