@@ -464,5 +464,43 @@ class GroupedFigureTests(unittest.TestCase):
         self.assertNotIn('"groupedFigures"', prompt)
 
 
+class AvailabilityFigureTests(unittest.TestCase):
+    def test_the_free_slots_reach_the_prompt_as_figures(self) -> None:
+        prompt = build_answer_prompt(
+            question="Am I free Thursday afternoon?",
+            records=[{"kind": "meeting", "when": "Thu 11:00", "title": "Standup"}],
+            computed_answer="You have 1 meeting.",
+            groups={
+                "workingHours": "09:00-18:00",
+                "freeByDay": [{"day": "2026-08-06", "free": [{"from": "12:00", "to": "18:00"}]}],
+            },
+        )
+
+        self.assertIn('"freeByDay"', prompt)
+        self.assertIn("answered from freeByDay and never by reading the meetings back out", prompt)
+
+    def test_a_figure_that_is_all_nesting_does_not_become_the_prompt(self) -> None:
+        deep = {"a": {"b": {"c": {"d": {"e": {"f": "too far down"}}}}}}
+
+        prompt = build_answer_prompt(
+            question="Am I free?",
+            records=[],
+            computed_answer="Nothing on.",
+            groups=deep,
+        )
+
+        self.assertNotIn("too far down", prompt)
+
+    def test_figures_are_clipped_the_way_records_are(self) -> None:
+        prompt = build_answer_prompt(
+            question="Am I free?",
+            records=[],
+            computed_answer="Nothing on.",
+            groups={"note": "x" * 5000},
+        )
+
+        self.assertNotIn("x" * 1000, prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

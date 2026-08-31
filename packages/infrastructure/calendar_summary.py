@@ -320,6 +320,138 @@ def describe_calendar_records(events: list[dict[str, Any]]) -> list[dict[str, st
     return records
 
 
+# The hours a working day is assumed to run between when nobody has said
+# otherwise. A free slot outside them is technically free and practically not,
+# and offering someone 6am is worse than offering nothing.
+CALENDAR_DAY_START_HOUR = 9
+CALENDAR_DAY_END_HOUR = 18
+# A gap shorter than this is not a slot anybody can put a meeting in.
+CALENDAR_MIN_SLOT_MINUTES = 30
+# Enough days to cover the week or two a question about availability is
+# usually about.
+CALENDAR_MAX_FREE_DAYS = 14
+
+
+def _busy_periods(events: list[dict[str, Any]]) -> list[tuple[datetime, datetime]]:
+    """The meetings that actually take up time, merged where they overlap.
+
+    An all-day entry is left out. A birthday and a public holiday are all-day
+    entries, and treating them as busy would report a whole day gone over
+    something nobody has to attend. They still travel back as meetings, so an
+    answer can mention them.
+    """
+
+    periods: list[tuple[datetime, datetime]] = []
+    for event in events:
+        if event.get("allDay"):
+            continue
+        start = event.get("start")
+        end = event.get("end") or start
+        if not isinstance(start, datetime) or not isinstance(end, datetime):
+            continue
+        if end <= start:
+            # A zero-length entry still marks the moment as taken.
+            end = start + timedelta(minutes=CALENDAR_MIN_SLOT_MINUTES)
+        periods.append((start, end))
+    periods.sort()
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in periods:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def find_calendar_conflicts(events: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Meetings that overlap each other, which is nearly always a mistake."""
+
+    timed = [
+        event for event in events
+        if not event.get("allDay")
+        and isinstance(event.get("start"), datetime)
+        and isinstance(event.get("end"), datetime)
+        and event["end"] > event["start"]
+    ]
+    timed.sort(key=lambda event: event["start"])
+    conflicts: list[dict[str, str]] = []
+    for index, event in enumerate(timed):
+        for other in timed[index + 1:]:
+            if other["start"] >= event["end"]:
+                break
+            conflicts.append({
+                "day": event["start"].date().isoformat(),
+                "first": str(event.get("title") or ""),
+                "second": str(other.get("title") or ""),
+                "overlapFrom": other["start"].strftime("%H:%M"),
+                "overlapTo": min(event["end"], other["end"]).strftime("%H:%M"),
+            })
+    return conflicts
+
+
+def describe_availability(
+    events: list[dict[str, Any]],
+    date_range: CalendarDateRange,
+    *,
+    timezone_name: str | None = "UTC",
+    day_start_hour: int = CALENDAR_DAY_START_HOUR,
+    day_end_hour: int = CALENDAR_DAY_END_HOUR,
+) -> dict[str, Any]:
+    """When this calendar is free, worked out rather than read off.
+
+    The summary reads the diary out in order, which answers "what is on next
+    week". "Am I free Thursday afternoon" is the question people actually ask
+    a calendar, and it cannot be answered by listing what is on: it is about
+    the gaps between the meetings, which is arithmetic, and arithmetic belongs
+    here rather than in a sentence the model works out while writing.
+    """
+
+    zone = _safe_zone(timezone_name)
+    busy = _busy_periods(events)
+    days: list[dict[str, Any]] = []
+    day = date_range.start_date
+    while day <= date_range.end_date and len(days) < CALENDAR_MAX_FREE_DAYS:
+        opens = datetime.combine(day, dt_time(hour=day_start_hour), tzinfo=zone)
+        closes = datetime.combine(day, dt_time(hour=day_end_hour), tzinfo=zone)
+        free: list[dict[str, str]] = []
+        cursor = opens
+        for start, end in busy:
+            if end <= opens or start >= closes:
+                continue
+            window_start = max(start, opens)
+            if window_start - cursor >= timedelta(minutes=CALENDAR_MIN_SLOT_MINUTES):
+                free.append({"from": cursor.strftime("%H:%M"), "to": window_start.strftime("%H:%M")})
+            cursor = max(cursor, min(end, closes))
+        if closes - cursor >= timedelta(minutes=CALENDAR_MIN_SLOT_MINUTES):
+            free.append({"from": cursor.strftime("%H:%M"), "to": closes.strftime("%H:%M")})
+        booked = sum(
+            (min(end, closes) - max(start, opens)).total_seconds() / 60
+            for start, end in busy
+            if end > opens and start < closes
+        )
+        days.append({
+            "day": day.isoformat(),
+            "free": free,
+            "bookedMinutes": int(max(0, booked)),
+        })
+        day += timedelta(days=1)
+
+    availability: dict[str, Any] = {
+        "workingHours": f"{day_start_hour:02d}:00-{day_end_hour:02d}:00",
+        "timezone": str(zone),
+        "freeByDay": days,
+    }
+    conflicts = find_calendar_conflicts(events)
+    if conflicts:
+        availability["overlappingMeetings"] = conflicts
+    all_day = [str(event.get("title") or "") for event in events if event.get("allDay")]
+    if all_day:
+        # Not counted as busy, because a birthday is not a meeting. Named, so
+        # an answer offering that day can mention what is on it.
+        availability["allDayEntries"] = all_day
+    return availability
+
+
 def build_calendar_summary(
     events: list[dict[str, Any]],
     date_range: CalendarDateRange,
@@ -576,6 +708,12 @@ class CalendarSummaryRunner:
             # The meetings themselves, so a question about them can be answered
             # from what is in the diary rather than from the summary of it.
             "items": describe_calendar_records(events),
+            # When the diary is free, worked out from the gaps between the
+            # meetings. "What is on next week" is answered by the summary
+            # above; "am I free Thursday afternoon" can only be answered from
+            # this, and it is arithmetic rather than something to write out
+            # while composing a sentence.
+            "availability": describe_availability(events, date_range, timezone_name=timezone_name),
             "eventCount": len(events),
             "calendars": wanted,
             "skippedCalendars": skipped,

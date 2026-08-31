@@ -6556,6 +6556,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "answerRecords": (
                 normalize_answer_records(result.get("items")) if answer_mode else []
             ),
+            # When the diary is free, and what overlaps what. "Am I free
+            # Thursday afternoon" is a question about the gaps rather than
+            # about the meetings, and it is answered from these.
+            "availability": (
+                result.get("availability")
+                if answer_mode and isinstance(result.get("availability"), dict)
+                else {}
+            ),
             # A calendar that could not be read is reported rather than quietly
             # leaving its meetings out of the summary.
             "skippedCalendars": [
@@ -7723,6 +7731,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # a calendar, a plain mailbox read - group to nothing and pass none of
         # this along.
         groups = group_receipt_records(raw_records)
+        # A calendar run works out its own figures - when the diary is free,
+        # what overlaps - and sends them back through with the question. They
+        # are normalized on the way into the prompt, the same as any record.
+        figures = payload.get("figures")
+        if isinstance(figures, dict) and figures:
+            groups = {**groups, **figures}
         prompt = build_answer_prompt(
             question=question,
             records=records,

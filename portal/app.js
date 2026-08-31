@@ -25919,8 +25919,23 @@ function buildAgentAnswerConversation() {
 // that found nothing goes through here too: "I couldn't find any receipts" is
 // as much a canned sentence as the total is, and a client hearing it deserves
 // a reply that reads like someone who went and looked.
+// The figures a run worked out that are not the total: when the diary is free,
+// what overlaps what. They are computed, so they travel to the composer as
+// settled rather than being worked out again while a sentence is written.
+function collectAgentAnswerFigures(results) {
+  const figures = {};
+  results.forEach((entry) => {
+    const availability = entry?.availability;
+    if (availability && typeof availability === "object" && !Array.isArray(availability)) {
+      Object.assign(figures, availability);
+    }
+  });
+  return figures;
+}
+
 async function composeAgentAnswer(question, answer, results) {
   const records = collectAgentAnswerRecords(results);
+  const figures = collectAgentAnswerFigures(results);
   const cleanQuestion = String(question || "").trim();
   const cleanAnswer = String(answer || "").trim();
   if (!cleanQuestion || !cleanAnswer) {
@@ -25934,6 +25949,7 @@ async function composeAgentAnswer(question, answer, results) {
         question: cleanQuestion,
         answer: cleanAnswer,
         records,
+        figures,
         conversation: buildAgentAnswerConversation(),
         timezone: getWorkspaceTimeZone(),
       },

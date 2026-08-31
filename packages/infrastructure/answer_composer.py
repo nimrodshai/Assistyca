@@ -33,6 +33,11 @@ ANSWER_COMPOSER_MAX_FIELD_LENGTH = 300
 ANSWER_COMPOSER_MAX_QUESTION_LENGTH = 900
 ANSWER_COMPOSER_MAX_ANSWER_LENGTH = 4000
 ANSWER_COMPOSER_MAX_CONVERSATION_MESSAGES = 8
+# Computed figures are small by nature - a ranking, a set of free slots - and
+# these stop a malformed or hostile one from becoming the whole prompt.
+ANSWER_COMPOSER_MAX_FIGURE_KEYS = 20
+ANSWER_COMPOSER_MAX_FIGURE_ITEMS = 40
+ANSWER_COMPOSER_MAX_FIGURE_DEPTH = 4
 ANSWER_COMPOSER_MAX_OUTPUT_TOKENS = 600
 # The reply lands in a chat bubble. Past a few short paragraphs it stops being
 # an answer and starts being a report nobody asked for.
@@ -95,6 +100,34 @@ def normalize_answer_conversation(value: Any) -> list[dict[str, str]]:
     return messages
 
 
+def normalize_answer_figures(value: Any, *, depth: int = 0) -> Any:
+    """Figures a lookup computed, trimmed to what an answer can carry.
+
+    These are settled numbers rather than text a person wrote, but some of
+    them - a vendor name, a meeting title - came out of the same untrusted
+    mail as everything else, so every string is flattened and clipped exactly
+    the way a record's is.
+    """
+
+    if depth > ANSWER_COMPOSER_MAX_FIGURE_DEPTH:
+        return ""
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    if isinstance(value, dict):
+        trimmed: dict[str, Any] = {}
+        for key, entry in list(value.items())[:ANSWER_COMPOSER_MAX_FIGURE_KEYS]:
+            name = _clip(_flatten(key), 40)
+            if name:
+                trimmed[name] = normalize_answer_figures(entry, depth=depth + 1)
+        return trimmed
+    if isinstance(value, (list, tuple)):
+        return [
+            normalize_answer_figures(entry, depth=depth + 1)
+            for entry in list(value)[:ANSWER_COMPOSER_MAX_FIGURE_ITEMS]
+        ]
+    return _clip(_flatten(value), ANSWER_COMPOSER_MAX_FIELD_LENGTH)
+
+
 def build_answer_prompt(
     *,
     question: str,
@@ -118,7 +151,7 @@ def build_answer_prompt(
         "records": normalize_answer_records(records),
     }
     if isinstance(groups, dict) and groups:
-        context["groupedFigures"] = groups
+        context["groupedFigures"] = normalize_answer_figures(groups)
     return (
         "Answer the question in CONTEXT.question using the records the lookup read, in CONTEXT.records.\n"
         "computedAnswer is what the application worked out from those same records. Its figures are "
@@ -139,6 +172,13 @@ def build_answer_prompt(
         "answered from it directly. Totals are grouped inside one currency and never across two, so an "
         "account paying in both has a ranking per currency and the answer says which one it is talking "
         "about. It is offered, not required: use the part that answers the question and ignore the rest.\n"
+        "A calendar lookup puts its own figures there instead: freeByDay is when the diary is actually "
+        "free, worked out from the gaps between meetings inside workingHours, and overlappingMeetings is "
+        "what clashes with what. \"Am I free Thursday afternoon\" is answered from freeByDay and never by "
+        "reading the meetings back out. Say the working hours the free time is inside when you offer it, "
+        "because time outside them is free and not usable. An all-day entry does not make a day busy - a "
+        "birthday is not a meeting - so a day offered with one on it is offered along with what is on "
+        "it.\n"
         "Do the work the question needs before you write. Group the records by whatever the question is "
         "really about - vendor, month, sender, day, size - and compare the groups. Separate what repeats "
         "from what happened once, because a total that moved is almost always one unusual item rather than "
