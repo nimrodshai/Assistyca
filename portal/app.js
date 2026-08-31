@@ -17571,7 +17571,9 @@ function renderAgentChats() {
 
   const agent = getAgentWorkspace();
   syncActiveAgentChatFromWorkspace(agent);
-  const chats = sortAgentChats(agent.chats);
+  // A chat only earns a card once something has been said in it, so the fresh
+  // one you are typing into stays out of the list until you send.
+  const chats = sortAgentChats(agent.chats).filter((chat) => chat?.messages?.length);
   if (!chats.length) {
     const empty = document.createElement("p");
     empty.className = "agent-action-empty";
