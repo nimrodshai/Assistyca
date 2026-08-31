@@ -7831,6 +7831,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         action_context = normalize_agent_action_context(payload.get("actionContext"))
         folder_context = normalize_agent_folder_context(payload.get("folderContext"))
         file_context = normalize_agent_file_context(payload.get("fileContext"))
+        # What this account has already told us about how it works. It comes
+        # from our own store rather than from the request, because a fact the
+        # client could write would be a fact anyone could write.
+        user_id = int((self.database.get_user(session.email) or {}).get("id") or 0)
+        fact_context = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
         prompt = build_agent_turn_prompt(
             user_message=user_message,
             conversation=conversation,
@@ -7842,6 +7847,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             action_context=action_context,
             folder_context=folder_context,
             file_context=file_context,
+            fact_context=fact_context,
         )
         model = resolve_task_model(
             AGENT_TURN_COMPLEXITY,
@@ -7899,10 +7905,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        self._apply_agent_facts(user_id, turn)
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             **turn,
         })
+
+    def _apply_agent_facts(self, user_id: int, turn: dict[str, Any]) -> None:
+        """Write down, or drop, what this turn decided is worth remembering.
+
+        A fact that cannot be saved is not worth failing a reply over: the
+        answer in front of the owner is still right, and the cost of losing
+        this is being asked the same thing again one day.
+        """
+
+        if user_id <= 0:
+            return
+        remembered = turn.get("rememberFact") if isinstance(turn.get("rememberFact"), dict) else {}
+        if remembered:
+            try:
+                self.database.save_account_fact(
+                    user_id=user_id,
+                    key=str(remembered.get("key") or ""),
+                    fact=str(remembered.get("fact") or ""),
+                )
+            except (ValueError, sqlite3.Error) as exc:
+                print(f"Account fact could not be saved: {exc}", flush=True)
+                turn.pop("rememberFact", None)
+        forgotten = normalize_text(turn.get("forgetFact"))
+        if forgotten:
+            try:
+                self.database.forget_account_fact(user_id=user_id, key=forgotten)
+            except sqlite3.Error as exc:
+                print(f"Account fact could not be forgotten: {exc}", flush=True)
 
     def _handle_contact_submit(self) -> None:
         if not self._enforce_rate_limit(

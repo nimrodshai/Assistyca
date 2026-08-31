@@ -21,6 +21,12 @@ from packages.infrastructure.feature_catalog import load_default_feature_catalog
 
 
 DEFAULT_DB_PATH = Path("portal/portal.db")
+# What an account can have us remember about how it works. Every one of these
+# travels with every turn, so the ceiling is what keeps a store of facts from
+# becoming a store of noise.
+ACCOUNT_FACT_LIMIT = 40
+ACCOUNT_FACT_MAX_KEY_LENGTH = 80
+ACCOUNT_FACT_MAX_LENGTH = 240
 DEFAULT_CURRENCY = "USD"
 DEFAULT_MONTHLY_MINIMUM_CENTS = 5000
 DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER = 1.5
@@ -523,6 +529,16 @@ CREATE TABLE IF NOT EXISTS receipt_duplicate_decisions (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS account_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    fact_key TEXT NOT NULL,
+    fact TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
@@ -560,6 +576,8 @@ CREATE INDEX IF NOT EXISTS idx_source_actions_user
 ON source_actions(user_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_receipt_duplicate_decisions_pair
 ON receipt_duplicate_decisions(user_id, pair_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_facts_key
+ON account_facts(user_id, fact_key);
 CREATE INDEX IF NOT EXISTS idx_feature_assignments_user_assigned
 ON feature_assignments(user_id, is_assigned, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feature_entitlements_user_status
@@ -5872,6 +5890,97 @@ class PortalDatabase:
             "amount": str(row["amount"] or ""),
             "currency": str(row["currency"] or ""),
             "receipts": receipts if isinstance(receipts, list) else [],
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def save_account_fact(self, *, user_id: int, key: str, fact: str) -> dict[str, Any]:
+        """Remember one thing the owner told us about how their business works.
+
+        Which vendor bills in which currency, that two names are the same
+        company, when their year starts: things that were true last month and
+        will be true next month. The key is what the fact is about, so telling
+        us again corrects what we had rather than stacking a second copy of it
+        beside the first.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        fact_key = normalize_text(key).casefold()[:ACCOUNT_FACT_MAX_KEY_LENGTH]
+        text = normalize_text(fact)[:ACCOUNT_FACT_MAX_LENGTH]
+        if not fact_key or not text:
+            raise ValueError("A fact needs something to be about and something to say.")
+
+        now = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO account_facts (user_id, fact_key, fact, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, fact_key) DO UPDATE SET
+                    fact = excluded.fact,
+                    updated_at = excluded.updated_at
+                """,
+                (int(user_id), fact_key, text, now, now),
+            )
+            # An account that remembers everything remembers nothing useful,
+            # and every one of these travels with every turn. The oldest go
+            # first, because a fact nobody has restated in months is the one
+            # most likely to have quietly stopped being true.
+            conn.execute(
+                """
+                DELETE FROM account_facts
+                WHERE user_id = ? AND id NOT IN (
+                    SELECT id FROM account_facts
+                    WHERE user_id = ?
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                )
+                """,
+                (int(user_id), int(user_id), ACCOUNT_FACT_LIMIT),
+            )
+            row = conn.execute(
+                "SELECT * FROM account_facts WHERE user_id = ? AND fact_key = ? LIMIT 1",
+                (int(user_id), fact_key),
+            ).fetchone()
+        return self._load_account_fact_row(row) or {}
+
+    def list_account_facts(self, *, user_id: int) -> list[dict[str, Any]]:
+        """Everything this account has told us, most recently said first."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM account_facts
+                WHERE user_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (int(user_id), ACCOUNT_FACT_LIMIT),
+            ).fetchall()
+        return [fact for fact in (self._load_account_fact_row(row) for row in rows) if fact]
+
+    def forget_account_fact(self, *, user_id: int, key: str) -> bool:
+        """Drop one remembered fact, because a fact can stop being true."""
+
+        fact_key = normalize_text(key).casefold()[:ACCOUNT_FACT_MAX_KEY_LENGTH]
+        if int(user_id or 0) <= 0 or not fact_key:
+            return False
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM account_facts WHERE user_id = ? AND fact_key = ?",
+                (int(user_id), fact_key),
+            )
+        return cursor.rowcount > 0
+
+    def _load_account_fact_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "key": str(row["fact_key"] or ""),
+            "fact": str(row["fact"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }

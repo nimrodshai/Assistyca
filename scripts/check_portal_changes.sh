@@ -11,6 +11,7 @@ python3 -m unittest \
   tests.test_receipt_pairing \
   tests.test_receipt_grouping \
   tests.test_agent_proposals \
+  tests.test_account_facts \
   tests.test_agent_folder_contents \
   tests.test_saved_answer_receipts \
   tests.test_saved_files \

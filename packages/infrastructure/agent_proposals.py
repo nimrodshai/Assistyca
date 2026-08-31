@@ -22,6 +22,9 @@ AGENT_FILE_CONTEXT_MAX_ITEMS = 40
 # every file can carry them without the listing turning into a wall.
 AGENT_FILE_CONTEXT_MAX_TAGS = 6
 AGENT_MAILBOX_CONTEXT_MAX_ITEMS = 12
+# What this account has told us about how it works. These travel with every
+# turn, so the ceiling is what keeps them from crowding out the conversation.
+AGENT_FACT_CONTEXT_MAX_ITEMS = 40
 AGENT_PROPOSAL_REVISION_INSTRUCTIONS = (
     "You revise an existing Assistyca proposal from the user's latest message. "
     "Use the proposal and conversation as context to resolve references such as 'it' or 'later'. "
@@ -331,6 +334,30 @@ def normalize_agent_file_context(value: Any) -> list[dict[str, Any]]:
     return folders
 
 
+def normalize_agent_fact_context(value: Any) -> list[dict[str, str]]:
+    """The things this account has told us, as the turn should read them.
+
+    A business tells you the same handful of things once: that two vendor
+    names are one company, which currency somebody bills in, when their year
+    starts. Asking again next month is the thing that makes an assistant feel
+    like it was not listening.
+    """
+
+    raw_items = value if isinstance(value, list) else []
+    facts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_item in raw_items[:AGENT_FACT_CONTEXT_MAX_ITEMS]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        key = _single_line(item.get("key"), 80)
+        fact = _single_line(item.get("fact"), 240)
+        lookup = key.casefold()
+        if not key or not fact or lookup in seen:
+            continue
+        seen.add(lookup)
+        facts.append({"key": key, "fact": fact})
+    return facts
+
+
 def _normalize_agent_file_tags(value: Any) -> list[str]:
     """The tags a saved file carries, as the folder listing reports them.
 
@@ -602,6 +629,7 @@ def build_agent_turn_prompt(
     action_context: Any = None,
     folder_context: Any = None,
     file_context: Any = None,
+    fact_context: Any = None,
 ) -> str:
     context = {
         "timezone": _single_line(timezone_name, 120) or "UTC",
@@ -613,6 +641,7 @@ def build_agent_turn_prompt(
         "existingActions": normalize_agent_action_context(action_context),
         "existingFolders": normalize_agent_folder_context(folder_context),
         "existingFolderFiles": normalize_agent_file_context(file_context),
+        "knownFacts": normalize_agent_fact_context(fact_context),
         "recentConversation": conversation,
         "latestUserMessage": _single_line(user_message, AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
     }
@@ -697,9 +726,28 @@ def build_agent_turn_prompt(
         "in them, so never drop one. A question about a whole year, such as comparing a year month by month, "
         "names every month of that year in manualRunMonth, ending with the current month when the year is the "
         "one in progress. Leave outputFolder out, because an answer run saves nothing.\n"
+        "knownFacts is what this account has already told you about how their business works, each with "
+        "the thing it is about and what they said. Read it before you ask anything: a detail that is "
+        "there has been answered once already, and asking again is the thing that makes an assistant feel "
+        "like it was not listening. Use it to resolve what a message leaves out - the shorthand they use "
+        "for a vendor, the currency somebody bills in, when their year starts.\n"
+        "When the owner tells you something about their business that will still be true next month, keep "
+        "it: return rememberFact with key naming what it is about, in a few lowercase words such as "
+        "\"render currency\" or \"fiscal year start\", and fact holding what they said in one short "
+        "sentence. Telling you again about the same thing uses the same key, which corrects what you had "
+        "rather than leaving two versions of it. This rides along with whatever else the turn is doing, so "
+        "a message that both answers a question and states a lasting fact does both.\n"
+        "Keep only what is durable and about the business: how a vendor bills, what a name is short for, "
+        "how they want figures reported, when their year starts. Not what they asked for today, not a "
+        "one-off instruction, not a figure a lookup can read for itself, and nothing personal they did not "
+        "offer as a working fact. When in doubt, leave it - a wrong fact is quietly applied to every "
+        "answer after it, and the owner cannot see the list to correct it.\n"
+        "When they say something is no longer true, or ask you to forget it, return forgetFact with the "
+        "key from knownFacts. Say in one line what you will stop assuming.\n"
         "Return keys: outcome, reply, proposalType, changes, needsActionChoice, actionChoiceMode, "
         "actionCommand, actionNames, needsFolderChoice, folderChoiceMode, folderCommand, folderNames, "
-        "needsFileChoice, fileChoiceMode, fileCommand, fileNames, fileDestination. reply is "
+        "needsFileChoice, fileChoiceMode, fileCommand, fileNames, fileDestination, rememberFact, "
+        "forgetFact. reply is "
         "required for every "
         "outcome and must "
         "be a non-empty natural assistant response, not a form or system status. proposalType must be one "
@@ -1044,9 +1092,32 @@ def normalize_agent_turn_response(
     turn.setdefault("fileCommand", "")
     turn.setdefault("fileNames", [])
     turn.setdefault("fileDestination", "")
+    # A fact rides along with whatever the turn was already doing, so a message
+    # that answers a question and states a lasting fact does both.
+    remembered = _normalize_agent_fact(response.get("rememberFact"))
+    if remembered:
+        turn["rememberFact"] = remembered
+    forgotten = _single_line(response.get("forgetFact"), 80)
+    if forgotten:
+        turn["forgetFact"] = forgotten
     if wants_files:
         turn["folderNames"] = file_choice_folder
     return turn
+
+
+def _normalize_agent_fact(value: Any) -> dict[str, str]:
+    """One thing worth remembering about the account, or nothing.
+
+    A fact with no key cannot be corrected later and a fact with no words says
+    nothing, so neither half is kept without the other.
+    """
+
+    item = value if isinstance(value, dict) else {}
+    key = _single_line(item.get("key"), 80)
+    fact = _single_line(item.get("fact") or item.get("value"), 240)
+    if not key or not fact:
+        return {}
+    return {"key": key, "fact": fact}
 
 
 def _normalize_choice_mode(value: Any) -> str:
