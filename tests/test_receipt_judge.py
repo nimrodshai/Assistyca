@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_BATCH_SIZE
 from packages.infrastructure.receipt_judge import build_receipt_judgement_prompt
+from packages.infrastructure.gmail_summary import list_attachment_filenames
 from packages.infrastructure.receipt_judge import describe_attached_files
 from packages.infrastructure.receipt_judge import describe_receipt_candidates
 from packages.infrastructure.receipt_judge import judge_receipt_items
@@ -19,6 +20,15 @@ def verdicts_reply(*verdicts: dict) -> str:
     return json.dumps({"verdicts": list(verdicts)})
 
 
+SECOND_ORDER_CONFIRMATION = {
+    "id": "msg-4",
+    "from": "AliExpress <transaction@notice.aliexpress.com>",
+    "subject": "Your order is confirmed",
+    "bodyText": (
+        "Hi Nimrod Shai, Your order 1122506091897734 is confirmed. Click below to track its "
+        "progress. Anti Infection Nail Patch, 3PCS, x1. Order total ILS 24.20."
+    ),
+}
 ORDER_CONFIRMATION = {
     "id": "msg-3",
     "from": "AliExpress <transaction@notice.aliexpress.com>",
@@ -61,6 +71,22 @@ class AttachedFilesTests(unittest.TestCase):
     def test_a_message_that_carried_nothing_travels_with_that_fact(self) -> None:
         candidate = describe_receipt_candidates([ORDER_CONFIRMATION])[0]
         self.assertEqual(candidate["attached"], "none")
+
+    def test_the_shot_of_the_thing_that_was_bought_is_not_paperwork(self) -> None:
+        # A shop's order confirmation draws the product, the logo and its
+        # mascot into its own HTML. Reading those as files the sender enclosed
+        # would tell the judgement the note came with paperwork - the opposite
+        # of what is true, and on the one message where it matters most.
+        message = {"payload": {"parts": [
+            {"mimeType": "text/html", "filename": ""},
+            {
+                "mimeType": "image/png",
+                "filename": "nail-patch.png",
+                "headers": [{"name": "Content-ID", "value": "<sku@aliexpress>"}],
+            },
+        ]}}
+        item = dict(SECOND_ORDER_CONFIRMATION, attachmentNames=list_attachment_filenames(message))
+        self.assertEqual(describe_receipt_candidates([item])[0]["attached"], "none")
 
 
 class OrderConfirmationTests(unittest.TestCase):
