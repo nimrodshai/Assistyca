@@ -41,6 +41,13 @@ the same loop on the server:
    Replies always answer an inbound message, so they sit inside Meta's
    24-hour service window and need no template.
 
+A scheduled message created this way is also **delivered** over WhatsApp: the
+scheduled-actions worker sends `whatsapp`-channel messages through the
+Assistyca sender using the approved scheduled-notification template (so the
+send works outside the 24-hour window), and falls back to the in-app feed —
+recording `deliveredVia` in the action payload — when WhatsApp delivery is not
+configured or the send fails.
+
 Proposal types other than `scheduled-message` are held in the conversation but
 still finish their setup in the portal; the agent says so rather than
 pretending otherwise. Account facts (remember/forget) work exactly as on the

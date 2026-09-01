@@ -73,7 +73,7 @@ Required environment variables on Render:
 - `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number. Owner alerts can also use the portal-saved client WhatsApp connection token when no Assistyca sender token is configured.
 - `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional override for the Assistyca-owned sender number. If unset, the backend uses `1186653017865246`.
 - `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME` approved Meta template for scheduled WhatsApp notifications. Defaults to `notification_message`; its body must contain one text variable (`{{1}}`) for the requested message.
-- `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE` exact language code approved with that template. Defaults to `en`.
+- `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE` exact language code approved with that template. Defaults to `en_US`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME` approved Meta template used to ask the owner whether to receive generated re-engagement report details outside the 24-hour window. Defaults to `whatsapp_reengagement_report_prompt`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE` language code for that template. Defaults to `en`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX` quick-reply button index for the "Send details" button. Defaults to `0`.

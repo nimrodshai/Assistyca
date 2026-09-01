@@ -80,6 +80,79 @@ class ScheduledActionTests(unittest.TestCase):
         self.assertEqual(notifications[0]["kind"], "scheduled_action")
         self.assertFalse(notifications[0]["read"])
 
+    def test_scheduler_sends_a_whatsapp_channel_action_over_whatsapp(self) -> None:
+        self.database.save_whatsapp_connection(
+            "owner@example.com",
+            owner_wa_id="972507322341",
+            connection_status="connected",
+        )
+        action = self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "It's 12:40."},
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            return_value="wamid.scheduled-agent-1",
+        ) as send:
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(saved["status"], "sent")
+        self.assertEqual(saved["providerMessageId"], "wamid.scheduled-agent-1")
+        self.assertEqual(saved["payload"]["deliveredVia"], "whatsapp")
+        self.assertEqual(send.call_args.kwargs["recipient_wa_id"], "972507322341")
+        self.assertEqual(send.call_args.kwargs["message_text"], "It's 12:40.")
+        self.assertEqual(send.call_args.kwargs["template_name"], "notification_message")
+        # The phone carried the message, so the feed stays quiet.
+        self.assertEqual(self.database.list_notifications(user_id=int(self.user["id"])), [])
+
+    def test_a_failed_whatsapp_send_falls_back_to_the_in_app_feed(self) -> None:
+        self.database.save_whatsapp_connection(
+            "owner@example.com",
+            owner_wa_id="972507322341",
+            connection_status="connected",
+        )
+        action = self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "It's 12:40.", "title": "Time check"},
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            side_effect=RuntimeError("WhatsApp delivery is not configured."),
+        ):
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(saved["status"], "sent")
+        self.assertTrue(saved["providerMessageId"].startswith("portal-notification-"))
+        self.assertEqual(saved["payload"]["deliveredVia"], "portal_fallback")
+        self.assertIn("not configured", saved["payload"]["whatsappDeliveryError"])
+        notifications = self.database.list_notifications(user_id=int(self.user["id"]))
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0]["body"], "It's 12:40.")
+
     def test_action_without_a_user_is_recorded_as_failed(self) -> None:
         action = self.database.create_scheduled_action(
             user_id=int(self.user["id"]),

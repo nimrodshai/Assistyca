@@ -1,22 +1,26 @@
 """Notification delivery for portal-owned automations.
 
-Everything an action produces is delivered to the owner's in-app notification
-feed. There is exactly one channel, and it is durable: rows live in the
-`notifications` table, so a notification survives a tab close, a redeploy, and
-shows up on every device the owner signs in on.
+What an action produces is delivered to the owner's in-app notification feed.
+It is durable: rows live in the `notifications` table, so a notification
+survives a tab close, a redeploy, and shows up on every device the owner signs
+in on.
 
 This module used to fan out over email (SMTP/Resend), Telegram, and WhatsApp.
-Those channels are gone. Two things they are sometimes confused with are *not*
-affected:
+The email and Telegram channels are gone. WhatsApp came back for exactly one
+path: a scheduled message the owner asked to receive on WhatsApp -- the
+conversational agent flow (docs/whatsapp-agent-chat.md) made "text me at
+12:40" a promise this module has to keep on WhatsApp, with the in-app feed as
+the fallback when sending is not configured. Two things sometimes confused
+with this fan-out are *not* affected:
 
 * Sign-in codes still go out by email -- that lives in `portal_auth.server`
   (`send_otp_email`) and has its own mail configuration.
 * Customer-facing WhatsApp replies still go out over WhatsApp -- that is
   `packages.tools.whatsapp_reply_approval.server.send_whatsapp_message`, called
-  from `whatsapp_portal_service`. Only *owner notifications* moved in-app.
+  from `whatsapp_portal_service`.
 
-The two `resolve_whatsapp_sender_*` helpers remain here because the customer-send
-path resolves the Assistyca-owned sender number through them.
+The two `resolve_whatsapp_sender_*` helpers remain here because both WhatsApp
+send paths resolve the Assistyca-owned sender number through them.
 """
 
 from __future__ import annotations
@@ -142,6 +146,79 @@ def deliver_portal_notification(
     return notification
 
 
+def send_whatsapp_notification(
+    *,
+    phone_number_id: str = "",
+    recipient_wa_id: str,
+    message_text: str,
+    access_token: str | None = None,
+    api_version: str | None = None,
+    template_name: str | None = None,
+    template_language: str | None = None,
+) -> str:
+    """Send one owner notification over WhatsApp through the Assistyca sender.
+
+    With a template name this sends the approved template and puts the message
+    into its single body variable, which works outside Meta's 24-hour service
+    window -- the normal case for a message scheduled hours ahead. Without one
+    it sends plain text. Raises rather than pretending, so the caller can fall
+    back to the in-app feed and say which channel actually carried the message.
+    """
+
+    # Imported here rather than at module top: this module is imported by
+    # nearly everything, and the send client lives beside the approval tool.
+    from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
+
+    resolved_phone_number_id = normalize_text(phone_number_id) or resolve_whatsapp_sender_phone_number_id()
+    resolved_recipient = normalize_text(recipient_wa_id)
+    resolved_access_token = normalize_text(access_token) or resolve_whatsapp_sender_access_token()
+    resolved_api_version = (
+        normalize_text(api_version)
+        or normalize_text(os.getenv("WHATSAPP_API_VERSION"))
+        or DEFAULT_WHATSAPP_API_VERSION
+    )
+
+    if not resolved_access_token:
+        raise RuntimeError(
+            "WhatsApp delivery is not configured. Set ASSISTYCA_WHATSAPP_ACCESS_TOKEN or WHATSAPP_ACCESS_TOKEN."
+        )
+    if not resolved_phone_number_id:
+        raise RuntimeError("WhatsApp delivery requires a phone number id.")
+    if not resolved_recipient:
+        raise RuntimeError("WhatsApp delivery requires a recipient WhatsApp id.")
+
+    resolved_template_name = normalize_text(template_name)
+    resolved_template_language = normalize_text(template_language)
+    template = None
+    if resolved_template_name:
+        if not resolved_template_language:
+            raise RuntimeError("WhatsApp template delivery requires a language code.")
+        template = {
+            "name": resolved_template_name,
+            "language": {"code": resolved_template_language},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": message_text,
+                        }
+                    ],
+                }
+            ],
+        }
+
+    return send_whatsapp_message(
+        access_token=resolved_access_token,
+        phone_number_id=resolved_phone_number_id,
+        api_version=resolved_api_version,
+        recipient_wa_id=resolved_recipient,
+        message_text=None if template is not None else message_text,
+        template=template,
+    )
+
+
 def resolve_notification_user_id(database: Any, *, user_id: int = 0, email: str = "") -> int:
     """Resolve a user id from an explicit id or an email address."""
 
@@ -170,6 +247,7 @@ __all__ = [
     "parse_int",
     "portal_delivery_available",
     "resolve_notification_user_id",
+    "send_whatsapp_notification",
     "resolve_whatsapp_sender_access_token",
     "resolve_whatsapp_sender_phone_number_id",
 ]
