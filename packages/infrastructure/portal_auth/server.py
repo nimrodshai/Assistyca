@@ -180,6 +180,9 @@ from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_nu
 from packages.infrastructure.whatsapp_api import register_whatsapp_phone_number
 from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
+from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
+from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
+from packages.infrastructure.whatsapp_agent_chat import whatsapp_agent_chat_enabled
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
 from packages.infrastructure.whatsapp_portal_service import normalize_portal_owner_wa_id
@@ -195,6 +198,8 @@ from packages.tools.scheduled_monitor.monitor import load_scheduled_monitor_conf
 from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
 from packages.tools.whatsapp_reply_approval.server import extract_status_events
 from packages.tools.whatsapp_reply_approval.server import normalize_text
+from packages.tools.whatsapp_reply_approval.server import OWNER_DISABLE_CONTACT_ACTION
+from packages.tools.whatsapp_reply_approval.server import parse_owner_command_text
 from packages.tools.whatsapp_reply_approval.server import parse_form_encoded as parse_whatsapp_form_encoded
 from packages.tools.whatsapp_reply_approval.server import parse_json_body as parse_whatsapp_json_body
 from packages.tools.whatsapp_reply_approval.server import verify_whatsapp_signature
@@ -8197,6 +8202,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # client could write would be a fact anyone could write.
         user_id = int((self.database.get_user(session.email) or {}).get("id") or 0)
         fact_context = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
+        # Which surface the reply lands on. The browser never sends this and
+        # gets the portal voice; the WhatsApp channel asks for text-message
+        # rules because nothing it says can carry a button or a panel.
+        channel = normalize_contact_single_line(payload.get("channel"), 20).lower()
         prompt = build_agent_turn_prompt(
             user_message=user_message,
             conversation=conversation,
@@ -8209,6 +8218,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             folder_context=folder_context,
             file_context=file_context,
             fact_context=fact_context,
+            channel=channel,
         )
         model = resolve_task_model(
             AGENT_TURN_COMPLEXITY,
@@ -10157,6 +10167,100 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         return None, ""
 
+    def _whatsapp_owner_event_targets_approvals(
+        self,
+        service: PortalWhatsAppService,
+        event: dict[str, Any],
+        *,
+        explicit_approval: dict[str, Any] | None,
+        implicit_approval: dict[str, Any] | None,
+    ) -> bool:
+        """Whether an owner message belongs to the reply-approval flow.
+
+        Everything the approval flow can act on stays with it; only a message
+        it would answer with generic help text is a conversation for the
+        agent. docs/whatsapp-backend.md warns that routing ordinary messages
+        into the command parser misreads them as instructions - this is the
+        boundary that keeps that from happening in the other direction too.
+        """
+
+        if explicit_approval is not None or implicit_approval is not None:
+            return True
+
+        interactive_reply = event.get("interactive_reply")
+        if isinstance(interactive_reply, dict) and normalize_text(interactive_reply.get("id")):
+            return True
+
+        if service.resolve_reengagement_report_request(event) is not None:
+            return True
+
+        command, argument = parse_owner_command_text(normalize_text(event.get("message_text")))
+        if command == "send_reference_or_custom" and argument:
+            return service.store.find_approval_by_reference(argument) is not None
+        if command in {
+            "send_suggested",
+            "show_suggestion",
+            "edit_request",
+            "skip",
+            "send_custom",
+            OWNER_DISABLE_CONTACT_ACTION,
+        }:
+            # A bare command such as "send" or "skip" only means anything while
+            # an approval is open; with none open it reads as conversation.
+            return bool(
+                service.store.list_approvals(status="pending")
+                or service.store.list_approvals(status="awaiting_edit")
+            )
+        return False
+
+    def _mint_whatsapp_agent_session_token(self, email: str) -> str:
+        """A short-lived signed session for the webhook-resolved owner.
+
+        The webhook already acts on this owner's behalf; the token only lets
+        that same authority pass through the loopback API, where every handler
+        applies its usual checks. It is signed like any session and expires in
+        minutes rather than months.
+        """
+
+        secret = self.store.session_secret
+        if not secret:
+            raise WhatsAppAgentChatError(
+                "PORTAL_SESSION_SECRET is required for the WhatsApp agent conversation."
+            )
+        now = time.time()
+        session = PortalSession(
+            token="",
+            email=normalize_email(email),
+            issued_at=now,
+            expires_at=now + 900,
+        )
+        return create_session_token(session, secret)
+
+    def _handle_whatsapp_agent_chat_message(
+        self,
+        connection: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        port = int(self.server.server_address[1])  # type: ignore[attr-defined]
+        chat = WhatsAppAgentChat(
+            database=self.database,
+            connection=connection,
+            base_url=f"http://127.0.0.1:{port}",
+            session_token_factory=self._mint_whatsapp_agent_session_token,
+        )
+        try:
+            return chat.handle_message(
+                event.get("message_text"),
+                message_type=normalize_text(event.get("message_type")) or "text",
+            )
+        except WhatsAppAgentChatError as exc:
+            print(f"WhatsApp agent chat failed: {exc}", flush=True)
+            return {
+                "type": "owner",
+                "action": "agent_chat_error",
+                "error": str(exc),
+            }
+
     def _serialize_whatsapp_connection(self, connection: dict[str, Any] | None) -> dict[str, Any] | None:
         if not connection:
             return None
@@ -10326,6 +10430,31 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "lastOwnerCommandMessageId": normalize_text(event.get("source_message_id")),
                 "lastWebhookAt": received_at,
                 "lastWebhookEventType": "owner_command",
+                "lastWebhookPhoneNumberId": normalize_text(phone_number_id),
+            },
+        )
+
+    def _record_whatsapp_agent_chat_activity(
+        self,
+        connection: dict[str, Any],
+        event: dict[str, Any],
+        *,
+        phone_number_id: str,
+    ) -> None:
+        """The webhook diagnostics for an owner message that went to the agent."""
+
+        received_at = (
+            self._parse_whatsapp_message_timestamp(event.get("timestamp"))
+            or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        )
+        self.database.update_whatsapp_connection_metadata(
+            user_id=int(connection.get("userId") or 0),
+            metadata_updates={
+                "lastAgentChatAt": received_at,
+                "lastAgentChatPreview": normalize_text(event.get("message_text"))[:240],
+                "lastAgentChatMessageId": normalize_text(event.get("source_message_id")),
+                "lastWebhookAt": received_at,
+                "lastWebhookEventType": "agent_chat",
                 "lastWebhookPhoneNumberId": normalize_text(phone_number_id),
             },
         )
@@ -12099,6 +12228,33 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     if is_owner_sender and explicit_owner_approval is None
                     else explicit_owner_approval
                 )
+                # A message from the owner's own phone to the Assistyca number
+                # that does not target the approval flow is a conversation with
+                # the agent, not a command. The approval flow keeps everything
+                # that is plainly its own: button taps, reply-to targets,
+                # approval refs, and bare commands while something is pending.
+                if (
+                    is_owner_sender
+                    and route_source == "platform_owner_alert"
+                    and whatsapp_agent_chat_enabled()
+                    and not self._whatsapp_owner_event_targets_approvals(
+                        service,
+                        event,
+                        explicit_approval=explicit_owner_approval,
+                        implicit_approval=implicit_owner_approval,
+                    )
+                ):
+                    self._record_whatsapp_agent_chat_activity(
+                        connection,
+                        event,
+                        phone_number_id=phone_number_id,
+                    )
+                    agent_result = self._handle_whatsapp_agent_chat_message(connection, event)
+                    agent_result["route"] = route_source
+                    agent_result["phone_number_id"] = phone_number_id
+                    results.append(agent_result)
+                    continue
+
                 is_owner_command = is_owner_sender and (
                     route_source == "platform_owner_alert"
                     or explicit_owner_approval is not None

@@ -1014,6 +1014,15 @@ _TURN_WHATSAPP = (
     "access token into chat.\n"
 )
 
+_TURN_CHANNEL_WHATSAPP = (
+    "This conversation is happening over WhatsApp, not in the Assistyca portal. The user is texting from "
+    "their phone, so write like a text message: short paragraphs, no headings, no tables, and never refer "
+    "to buttons, cards, panels, or anything to click, because none of them exist here. Anything you set up "
+    "still appears in their Assistyca portal, and it is fine to say so when they ask where something "
+    "lives. Confirmation happens in words: when a proposal is ready, ask for a plain yes in the same "
+    "message.\n"
+)
+
 _TURN_EXAMPLES_HEAD = (
     "Examples:\n"
     "- With no active proposal, \"send me a WhatsApp message at 12:40\" means outcome=proposal, "
@@ -1058,8 +1067,11 @@ def build_agent_turn_prompt(
     folder_context: Any = None,
     file_context: Any = None,
     fact_context: Any = None,
+    channel: str = "portal",
 ) -> str:
+    normalized_channel = "whatsapp" if _single_line(channel, 20).lower() == "whatsapp" else "portal"
     context = {
+        "channel": normalized_channel,
         "timezone": _single_line(timezone_name, 120) or "UTC",
         "today": _single_line(today, 40),
         "activeProposal": active_proposal,
@@ -1124,6 +1136,8 @@ def build_agent_turn_prompt(
         # up: with no mailbox listed there is no mailbox to tell apart.
         sections.append(_TURN_MAILBOXES)
     sections.append(_TURN_WHATSAPP)
+    if normalized_channel == "whatsapp":
+        sections.append(_TURN_CHANNEL_WHATSAPP)
     sections.append(_TURN_EXAMPLES_HEAD)
     if active_proposal:
         sections.append(_TURN_EXAMPLES_ACTIVE_PROPOSAL)

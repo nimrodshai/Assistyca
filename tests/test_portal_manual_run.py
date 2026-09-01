@@ -10,6 +10,7 @@ import unittest
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -2073,6 +2074,31 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertIn("131047", metadata["lastOwnerNotificationError"])
 
     def test_owner_reply_to_platform_sender_routes_to_workspace_diagnostics(self) -> None:
+        # An owner message to the platform sender that targets no approval is a
+        # conversation with the agent now, so this test speaks to the agent:
+        # the turn model and the WhatsApp send are mocked at their seams, and
+        # what is asserted is the routing and the diagnostics either side of it.
+        agent_env = mock.patch.dict(
+            os.environ,
+            {"WHATSAPP_ALLOW_MOCK_SEND": "1"},
+            clear=False,
+        )
+        agent_env.start()
+        self.addCleanup(agent_env.stop)
+        secret_patch = mock.patch.object(
+            self.server.store, "session_secret", b"manual-run-agent-secret"
+        )
+        secret_patch.start()
+        self.addCleanup(secret_patch.stop)
+        turn_patch = mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=SimpleNamespace(
+                output_text=json.dumps({"outcome": "message", "reply": "Glad it arrived."})
+            ),
+        )
+        turn_patch.start()
+        self.addCleanup(turn_patch.stop)
+
         request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",
             data=json.dumps(
@@ -2129,9 +2155,11 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         self.assertEqual(body["results"][0]["type"], "owner")
         self.assertEqual(body["results"][0]["route"], "platform_owner_alert")
 
+        self.assertEqual(body["results"][0]["action"], "agent_chat_reply")
+
         connection = self.server.database.get_whatsapp_connection("owner@example.com")
         self.assertIsNotNone(connection)
-        self.assertEqual(connection["metadata"]["lastWebhookEventType"], "owner_command")
+        self.assertEqual(connection["metadata"]["lastWebhookEventType"], "agent_chat")
         self.assertEqual(connection["metadata"]["lastWebhookPhoneNumberId"], "1186653017865246")
 
         history_request = urllib_request.Request(

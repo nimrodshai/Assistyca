@@ -82,6 +82,8 @@ USER_OWNED_TABLES = (
     "billing_customers",
     "whatsapp_reengagement_notifications",
     "whatsapp_reengagement_runs",
+    "whatsapp_agent_messages",
+    "whatsapp_agent_state",
     "whatsapp_conversation_messages",
     "whatsapp_conversations",
     "whatsapp_approval_index",
@@ -311,6 +313,22 @@ CREATE TABLE IF NOT EXISTS whatsapp_reengagement_notifications (
     model_name TEXT NOT NULL DEFAULT '',
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS whatsapp_agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    text TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS whatsapp_agent_state (
+    user_id INTEGER PRIMARY KEY,
+    active_proposal_json TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -578,6 +596,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_reengagement_runs_user_schedule
 ON whatsapp_reengagement_runs(user_id, feature_id, scheduled_for);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_reengagement_notifications_user_thread
 ON whatsapp_reengagement_notifications(user_id, conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_agent_messages_user
+ON whatsapp_agent_messages(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_billing_customers_provider_status
 ON billing_customers(provider, subscription_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_features_active_sort
@@ -4645,6 +4665,120 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, user_id=user_id)
+
+    def save_whatsapp_agent_message(self, *, user_id: int, role: str, text: str) -> dict[str, Any]:
+        """One turn of the owner's WhatsApp conversation with the agent.
+
+        This transcript is the WhatsApp counterpart of the browser's local
+        chat history: the webhook has no browser to remember the conversation,
+        so the server keeps it here.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        normalized_role = "assistant" if normalize_text(role).lower() == "assistant" else "user"
+        normalized_text = normalize_text(text)
+        if resolved_user_id <= 0 or not normalized_text:
+            raise ValueError("A WhatsApp agent message needs an owner and text.")
+
+        created_at = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO whatsapp_agent_messages (user_id, role, text, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (resolved_user_id, normalized_role, normalized_text, created_at),
+            )
+            conn.commit()
+            return {
+                "id": int(cursor.lastrowid or 0),
+                "userId": resolved_user_id,
+                "role": normalized_role,
+                "text": normalized_text,
+                "createdAt": created_at,
+            }
+
+    def list_recent_whatsapp_agent_messages(self, *, user_id: int, limit: int = 12) -> list[dict[str, Any]]:
+        """The newest turns of the WhatsApp agent conversation, oldest first."""
+
+        resolved_user_id = int(user_id or 0)
+        resolved_limit = max(1, min(int(limit or 12), 50))
+        if resolved_user_id <= 0:
+            return []
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, role, text, created_at
+                FROM whatsapp_agent_messages
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (resolved_user_id, resolved_limit),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "role": str(row["role"] or "user"),
+                "text": str(row["text"] or ""),
+                "createdAt": str(row["created_at"] or ""),
+            }
+            for row in reversed(rows)
+        ]
+
+    def get_whatsapp_agent_active_proposal(self, *, user_id: int) -> dict[str, Any] | None:
+        """The proposal the WhatsApp conversation is currently discussing, if any."""
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT active_proposal_json FROM whatsapp_agent_state WHERE user_id = ?",
+                (resolved_user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        raw = str(row["active_proposal_json"] or "")
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) and parsed else None
+
+    def save_whatsapp_agent_active_proposal(
+        self,
+        *,
+        user_id: int,
+        proposal: dict[str, Any] | None,
+    ) -> None:
+        """Hold, replace, or clear (with None) the conversation's open proposal."""
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return
+
+        serialized = (
+            json.dumps(proposal, ensure_ascii=False, separators=(",", ":"))
+            if isinstance(proposal, dict) and proposal
+            else ""
+        )
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO whatsapp_agent_state (user_id, active_proposal_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    active_proposal_json = excluded.active_proposal_json,
+                    updated_at = excluded.updated_at
+                """,
+                (resolved_user_id, serialized, now_iso()),
+            )
+            conn.commit()
 
     def update_whatsapp_connection_metadata(
         self,

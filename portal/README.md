@@ -79,6 +79,7 @@ Required environment variables on Render:
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX` quick-reply button index for the "Send details" button. Defaults to `0`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION` quick-reply payload action. Defaults to `send`.
 - `WHATSAPP_ALLOW_MOCK_SEND=0` in production so demos and owner alerts fail loudly unless WhatsApp Cloud API delivery is actually configured.
+- `WHATSAPP_AGENT_CHAT_ENABLED` controls the WhatsApp agent conversation: an owner message to the Assistyca number that targets no approval reaches the same agent as the portal chat and gets answered over WhatsApp (see `docs/whatsapp-agent-chat.md`). The default is `1`; set `0` to restore the old help-text behaviour.
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
 - `OPENAI_API_KEY` for Scheduled Web Monitor searches and any other backend OpenAI-powered tool execution

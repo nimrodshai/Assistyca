@@ -170,6 +170,14 @@ The backend fills `{{1}}` with text such as `we found 2 people who have not been
 - Scheduled assistant notifications always use the Assistyca sender credentials from the backend environment. They send `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME` (default `notification_message`) in `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE` (default `en_US`) and fill the template's `{{1}}` body variable with the requested message.
 - If they are missing and `whatsapp.allow_mock_send` is true, the backend simulates the send so local development still works.
 
+## Owner Conversations
+
+An owner message to the Assistyca sender number that does not target the
+approval flow (no button tap, no approval ref, no bare command while an
+approval is pending) is routed to the agent conversation instead of the help
+text. See `docs/whatsapp-agent-chat.md`. Set `WHATSAPP_AGENT_CHAT_ENABLED=0`
+to restore the help-text behaviour.
+
 ## Webhook Setup
 
 The WhatsApp webhook verification endpoint is:
