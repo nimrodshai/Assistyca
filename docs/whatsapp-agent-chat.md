@@ -69,6 +69,31 @@ local clock.
   that number must be unique across workspaces (ambiguous numbers are not
   routed).
 
+## Testing without Meta
+
+`scripts/whatsapp_simulator.py` runs the whole flow with Meta faked out. The
+signature check, routing, agent turn, runners and database are all real; only
+the Graph API call is replaced, so outbound messages are printed instead of
+sent and inbound ones are built into Meta's own JSON shape and signed the same
+way.
+
+```bash
+python3 scripts/whatsapp_simulator.py                        # chat as the owner
+python3 scripts/whatsapp_simulator.py --from 14155550123     # chat as a stranger
+python3 scripts/whatsapp_simulator.py --message "hi" --canned  # one shot, no model
+```
+
+It prints the routing decision under each reply, which is the part a real
+handset cannot show you and is usually the answer when a message goes
+unanswered. `--canned` skips the model when what you are testing is routing;
+without it the turn uses the real model and needs `OPENAI_API_KEY`. `--db`
+keeps the database between runs so the conversation is remembered.
+
+Note what a stranger sees today: nothing at all. An unknown number resolves to
+no account, the webhook records `No portal workspace is connected to this phone
+number ID`, and no reply is sent. Any invite flow has to add a path for
+unknown senders.
+
 ## Tests
 
 `tests/test_whatsapp_agent_chat.py` drives the whole loop the way Meta does —
