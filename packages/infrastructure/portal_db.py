@@ -2469,6 +2469,8 @@ class PortalDatabase:
                 u.last_otp_verified_at,
                 u.notes,
                 u.profile_json,
+                u.trial_days,
+                u.trial_started_at,
                 u.created_at,
                 u.updated_at,
                 COALESCE(b.currency, ?) AS billing_currency,
@@ -2519,6 +2521,8 @@ class PortalDatabase:
                     "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
                     "lastOtpVerifiedAt": payload.get("last_otp_verified_at"),
                     "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
+                    "trialDays": int(payload.get("trial_days") or 0),
+                    "trialStartedAt": payload.get("trial_started_at"),
                     "usageCount": int(payload.get("usage_count") or 0),
                     "lastUsageAt": payload.get("last_usage_at"),
                     "billing": {

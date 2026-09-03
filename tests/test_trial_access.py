@@ -193,6 +193,38 @@ class TrialEnforcementTests(unittest.TestCase):
         self.assertEqual(updated["trialDays"], 0)
         self.assertTrue(describe_trial(updated)["allowed"])
 
+    def test_the_client_list_reports_the_trial_each_account_is_really_on(self) -> None:
+        # The list is the only place an operator sees every client at once. It
+        # used to drop the trial columns, so every account read as unlimited
+        # however many days it actually had.
+        self.database.set_user_trial("owner@example.com", trial_days=14)
+        listed = next(
+            user for user in self.database.list_users()
+            if user["email"] == "owner@example.com"
+        )
+
+        self.assertEqual(listed["trialDays"], 14)
+        self.assertTrue(listed["trialStartedAt"])
+        self.assertEqual(describe_trial(listed)["daysLeft"], 14)
+
+    def test_an_admin_listing_clients_sees_who_is_running_out(self) -> None:
+        self.database.register_user("boss@example.com", is_admin=True)
+        admin_token = self._sign_in("boss@example.com")
+        self.database.set_user_trial("owner@example.com", trial_days=7)
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/admin/users",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        with urllib_request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        listed = next(user for user in payload["users"] if user["email"] == "owner@example.com")
+        self.assertEqual(listed["trial"]["trialDays"], 7)
+        self.assertTrue(listed["trial"]["onTrial"])
+        self.assertEqual(listed["trial"]["daysLeft"], 7)
+        self.assertTrue(listed["trial"]["endsAt"])
+
 
 if __name__ == "__main__":
     unittest.main()
