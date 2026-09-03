@@ -148,12 +148,20 @@ WhatsApp send mocked at their module seams.
 
 A phone nobody knows can open an account in the conversation. The public link
 is one link, forever — `https://wa.me/<number>?text=Hi%20Assistyca` — and
-anyone who taps it (or simply texts the number) is asked one question:
+anyone who taps it (or simply texts the number) is answered, not handed a form.
 
-> Hi — I'm Assistyca, your assistant. What email should I set your account up
-> with? You'll use it if you ever want to open things on the web.
+The pre-account replies are written by a small model (`whatsapp_signup_concierge`,
+the cheapest tier, unbilled — house cost, exactly as the About-page intake agent
+is) from a fixed summary of what Assistyca does. Someone who asks "how can you
+help me?" gets that answered, and in the same message is told an email is
+needed to set up their account. The steer gets firmer each turn rather than
+being repeated. The fixed sentence stands in whenever the model does not.
 
-Their next message is read as the answer. A new address creates the account
+Two things the model is never allowed to be: the source of the email, and a
+narrator of one. The address is found in code from what the person typed; a
+model reply that contains an address is discarded for the fixed line, so no
+model can cause an account or quote one back. Every message is read as the
+answer. A new address creates the account
 with the default free trial (see `docs/free-trials.md`), links the phone that
 has been texting all along, and welcomes them; from then on that phone is an
 ordinary client talking to the agent. If their opening message already
@@ -166,8 +174,8 @@ address would attach a stranger's phone to their workspace.
 A claim code always wins over signup, because an existing client linking a
 second phone is texting from a number we do not know either.
 
-Three non-answers in a row and the signup is abandoned for a day: more
-messages from us would only cost money. Nothing else is ever sent to a phone
+Five turns without an email and the signup is abandoned for a day: more
+messages — and more model calls — from us would only cost money. Nothing else is ever sent to a phone
 that is not mid-signup.
 
 ### Bounding it

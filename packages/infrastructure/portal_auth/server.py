@@ -197,6 +197,9 @@ from packages.infrastructure.whatsapp_agent_chat import resolve_operator_whatsap
 from packages.infrastructure.whatsapp_agent_chat import send_assistyca_text
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_agent_chat_enabled
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_AGAIN_TEXT
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_CONCIERGE_INSTRUCTIONS
+from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
+from packages.infrastructure.whatsapp_agent_chat import normalize_signup_concierge_reply
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_EMAIL_TAKEN_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_MAX_EMAIL_ATTEMPTS
@@ -265,6 +268,10 @@ CONTACT_AGENT_MAX_MESSAGES = 18
 CONTACT_AGENT_MAX_MESSAGE_LENGTH = 900
 CONTACT_AGENT_MAX_OUTPUT_TOKENS = 950
 CONTACT_AGENT_COMPLEXITY = TaskComplexity.MEDIUM
+# A few short turns with someone who has no account yet; the cheapest model
+# is plenty, and the cost is the house's rather than any client's.
+WHATSAPP_SIGNUP_COMPLEXITY = TaskComplexity.SMALL
+WHATSAPP_SIGNUP_MAX_OUTPUT_TOKENS = 400
 AGENT_FOLDER_CONTENTS_LIMIT = 200
 # One request removes one pick from the Folders panel, and the picker
 # itself never offers more than a panel-sized list.
@@ -10439,9 +10446,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         status = normalize_text((signup or {}).get("status"))
         last_touch = _parse_iso_moment((signup or {}).get("updatedAt")) or now
         stale = (now - last_touch).total_seconds() > SIGNUP_REOPEN_AFTER_SECONDS
+        message_text = normalize_text(event.get("message_text"))
+        sender_name = normalize_text(event.get("sender_name"))
 
         if status == "abandoned" and not stale:
-            # They were asked three times today and did not answer. More
+            # They were asked several times today and did not answer. More
             # messages from us would only cost money.
             return {"type": "signup", "action": "signup_ignored", "reason": "abandoned"}
 
@@ -10463,46 +10472,48 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     flush=True,
                 )
                 return {"type": "signup", "action": "signup_capped", "reason": "daily_cap"}
-            signup = self.database.start_whatsapp_signup(
-                wa_id=sender_wa_id,
-                sender_name=normalize_text(event.get("sender_name")),
-            )
-            # Someone whose opening message already carries their address
-            # should not be asked for it; fall through and use it.
-            if not is_valid_email(find_email_in_text(event.get("message_text"))):
-                return self._finish_whatsapp_signup_step(sender_wa_id, "signup_started", SIGNUP_ASK_EMAIL_TEXT)
+            signup = self.database.start_whatsapp_signup(wa_id=sender_wa_id, sender_name=sender_name)
 
-        # Mid-signup: this message is their answer.
-        email = normalize_email(find_email_in_text(event.get("message_text")))
+        transcript = list((signup or {}).get("transcript") or [])
+        attempt = int((signup or {}).get("attempts") or 0) + 1
+        self.database.append_whatsapp_signup_message(wa_id=sender_wa_id, role="user", text=message_text)
+
+        email = find_email_in_text(message_text)
         if not is_valid_email(email):
-            record = self.database.record_whatsapp_signup_attempt(
-                wa_id=sender_wa_id,
-                give_up=int((signup or {}).get("attempts") or 0) + 1 >= SIGNUP_MAX_EMAIL_ATTEMPTS,
-            )
-            if record.get("status") == "abandoned":
+            give_up = attempt >= SIGNUP_MAX_EMAIL_ATTEMPTS
+            self.database.record_whatsapp_signup_attempt(wa_id=sender_wa_id, give_up=give_up)
+            if give_up:
                 return self._finish_whatsapp_signup_step(
                     sender_wa_id,
                     "signup_abandoned",
                     "No problem — text me again whenever you'd like to set this up.",
                 )
-            return self._finish_whatsapp_signup_step(sender_wa_id, "signup_email_invalid", SIGNUP_ASK_EMAIL_AGAIN_TEXT)
+            # This is the conversation, not a form: answer what they said,
+            # and steer to the email with a firmer hand each turn.
+            reply = self._write_whatsapp_signup_reply(
+                user_message=message_text,
+                transcript=transcript,
+                attempt=attempt,
+                fallback=SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT,
+            )
+            return self._finish_whatsapp_signup_step(
+                sender_wa_id,
+                "signup_started" if attempt <= 1 else "signup_email_invalid",
+                reply,
+            )
 
         if self.database.get_user(email) is not None:
             self.database.record_whatsapp_signup_attempt(wa_id=sender_wa_id)
             return self._finish_whatsapp_signup_step(sender_wa_id, "signup_email_taken", SIGNUP_EMAIL_TAKEN_TEXT)
 
         try:
-            self.database.register_user(
-                email,
-                display_name=normalize_text(event.get("sender_name")),
-                notes="Signed up over WhatsApp.",
-            )
+            self.database.register_user(email, display_name=sender_name, notes="Signed up over WhatsApp.")
             self.database.set_user_trial(email, trial_days=resolve_default_trial_days(), start_now=True)
             user = self.database.get_user(email) or {}
             self.database.link_user_whatsapp_number(
                 user_id=int(user.get("id") or 0),
                 wa_id=sender_wa_id,
-                label=normalize_text(event.get("sender_name")),
+                label=sender_name,
             )
             self.database.complete_whatsapp_signup(wa_id=sender_wa_id, user_id=int(user.get("id") or 0))
         except (ValueError, KeyError, sqlite3.Error) as exc:
@@ -10525,9 +10536,71 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             ),
             flush=True,
         )
-        return self._finish_whatsapp_signup_step(sender_wa_id, "signup_completed", SIGNUP_WELCOME_TEXT)
+        # The welcome picks up whatever they asked before giving the email,
+        # so the conversation continues rather than restarting at "hello".
+        welcome = self._write_whatsapp_signup_reply(
+            user_message=message_text,
+            transcript=transcript,
+            attempt=attempt,
+            fallback=SIGNUP_WELCOME_TEXT,
+            account_created=True,
+        )
+        return self._finish_whatsapp_signup_step(sender_wa_id, "signup_completed", welcome)
+
+    def _write_whatsapp_signup_reply(
+        self,
+        *,
+        user_message: str,
+        transcript: list[dict[str, str]],
+        attempt: int,
+        fallback: str,
+        account_created: bool = False,
+    ) -> str:
+        """One model-written line of the signup conversation, or the fixed one.
+
+        Unbilled on purpose: there is no account to charge and a stranger's
+        address is never a billing identity, so this is house cost, the same
+        way the About-page intake agent is. The daily signup cap is what bounds
+        it. The fixed sentence stands in whenever the model does not.
+        """
+
+        model = resolve_task_model(
+            WHATSAPP_SIGNUP_COMPLEXITY,
+            "PORTAL_WHATSAPP_SIGNUP_MODEL",
+            "OPENAI_MODEL",
+        )
+        prompt = build_signup_concierge_prompt(
+            user_message=user_message,
+            transcript=transcript,
+            attempt=attempt,
+            account_created=account_created,
+        )
+        try:
+            result = call_openai_response(
+                tool_name="whatsapp_signup_concierge",
+                tool_id="whatsapp_signup",
+                prompt=prompt,
+                model=model,
+                instructions=SIGNUP_CONCIERGE_INSTRUCTIONS,
+                max_output_tokens=WHATSAPP_SIGNUP_MAX_OUTPUT_TOKENS,
+                config=load_openai_config(
+                    default_model=model,
+                    strict_tracking=False,
+                    include_prompt_in_metadata=False,
+                ),
+                metadata={"source": "whatsapp_signup", "attempt": attempt, "accountCreated": account_created},
+            )
+            reply = normalize_signup_concierge_reply(
+                parse_contact_agent_json(result.output_text),
+                fallback=fallback,
+            )
+        except (OpenAIError, ValueError, json.JSONDecodeError) as exc:
+            print(f"WhatsApp signup concierge failed: {getattr(exc, 'message', exc)}", flush=True)
+            reply = fallback
+        return reply
 
     def _finish_whatsapp_signup_step(self, sender_wa_id: str, action: str, reply: str) -> dict[str, Any]:
+        self.database.append_whatsapp_signup_message(wa_id=sender_wa_id, role="assistant", text=reply)
         message_id = ""
         error_text = ""
         try:

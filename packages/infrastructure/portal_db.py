@@ -360,6 +360,7 @@ CREATE TABLE IF NOT EXISTS whatsapp_signups (
     sender_name TEXT NOT NULL DEFAULT '',
     attempts INTEGER NOT NULL DEFAULT 0,
     user_id INTEGER,
+    transcript_json TEXT NOT NULL DEFAULT '[]',
     started_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT
@@ -948,6 +949,7 @@ class PortalDatabase:
                 conn.executescript(PLATFORM_CONNECTIONS_TABLE_SQL)
                 conn.executescript(SCHEMA_SQL)
                 self._migrate_users_table(conn)
+                self._migrate_whatsapp_signups_table(conn)
                 self._migrate_user_billing_table(conn)
                 self._migrate_usage_events_table(conn)
                 self._migrate_whatsapp_connections_table(conn)
@@ -1021,6 +1023,14 @@ class PortalDatabase:
             conn.execute("ALTER TABLE users ADD COLUMN trial_days INTEGER NOT NULL DEFAULT 0")
         if "trial_started_at" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
+
+    def _migrate_whatsapp_signups_table(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(whatsapp_signups)").fetchall()
+        }
+        if columns and "transcript_json" not in columns:
+            conn.execute("ALTER TABLE whatsapp_signups ADD COLUMN transcript_json TEXT NOT NULL DEFAULT '[]'")
 
     def _migrate_user_billing_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -4847,6 +4857,10 @@ class PortalDatabase:
             "senderName": str(payload.get("sender_name") or ""),
             "attempts": int(payload.get("attempts") or 0),
             "userId": int(payload.get("user_id") or 0),
+            "transcript": [
+                item for item in (_load_json_list(payload.get("transcript_json")) or [])
+                if isinstance(item, dict) and item.get("role") in {"user", "assistant"} and str(item.get("text") or "").strip()
+            ][-12:],
             "startedAt": payload.get("started_at"),
             "updatedAt": payload.get("updated_at"),
             "completedAt": payload.get("completed_at"),
@@ -4873,6 +4887,7 @@ class PortalDatabase:
                     sender_name = excluded.sender_name,
                     attempts = 0,
                     user_id = NULL,
+                    transcript_json = '[]',
                     started_at = excluded.started_at,
                     updated_at = excluded.updated_at,
                     completed_at = NULL
@@ -4881,6 +4896,30 @@ class PortalDatabase:
             )
             conn.commit()
         return self.get_whatsapp_signup(number) or {}
+
+    def append_whatsapp_signup_message(self, *, wa_id: str, role: str, text: str) -> None:
+        """One line of the signup conversation, kept so the next reply has it.
+
+        There is no account to hang a transcript off yet, so it rides on the
+        signup row and is capped: a few turns is all this conversation is for.
+        """
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        body = normalize_text(text)[:1200]
+        if not number or not body:
+            return
+        entry = {"role": "assistant" if role == "assistant" else "user", "text": body}
+        with self._connection() as conn:
+            row = conn.execute("SELECT transcript_json FROM whatsapp_signups WHERE wa_id = ?", (number,)).fetchone()
+            if row is None:
+                return
+            transcript = [item for item in (_load_json_list(row["transcript_json"]) or []) if isinstance(item, dict)]
+            transcript.append(entry)
+            conn.execute(
+                "UPDATE whatsapp_signups SET transcript_json = ?, updated_at = ? WHERE wa_id = ?",
+                (json.dumps(transcript[-16:], ensure_ascii=False), now_iso(), number),
+            )
+            conn.commit()
 
     def record_whatsapp_signup_attempt(self, *, wa_id: str, give_up: bool = False) -> dict[str, Any]:
         number = normalize_whatsapp_lookup_id(wa_id)

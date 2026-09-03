@@ -15,7 +15,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
+from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
+from packages.infrastructure.whatsapp_agent_chat import normalize_signup_concierge_reply
 
 
 PLATFORM = "platform-phone-1"
@@ -56,8 +58,22 @@ class WhatsAppSignupTests(unittest.TestCase):
             return_value="wamid.reply",
         )
         self.sent = self.send_patch.start()
+        # The concierge writes every pre-account line; give it a voice by
+        # default so the flow reads like a conversation in these tests too.
+        self.model_patch = mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=self._concierge,
+        )
+        self.model = self.model_patch.start()
+
+    def _concierge(self, **kwargs):
+        prompt = str(kwargs.get("prompt") or "")
+        if '"account_created"' in prompt or "account has just been created" in prompt:
+            return SimpleNamespace(output_text=json.dumps({"reply": "Welcome aboard — you asked how I can help, so let's start there."}))
+        return SimpleNamespace(output_text=json.dumps({"reply": "I read your inbox and calendar once you connect them. I need an email to set up your account first — what is it?"}))
 
     def tearDown(self) -> None:
+        self.model_patch.stop()
         self.send_patch.stop()
         self.env.stop()
         self.server.shutdown()
@@ -77,13 +93,21 @@ class WhatsAppSignupTests(unittest.TestCase):
         return [call.kwargs["message_text"] for call in self.sent.call_args_list]
 
     def test_a_stranger_is_asked_for_an_email_then_gets_an_account_and_a_trial(self) -> None:
-        first = self.post("Hi Assistyca", message_id="wamid.s1")
+        first = self.post("How can you help me???", message_id="wamid.s1")
         self.assertEqual(first["results"][0]["action"], "signup_started")
-        self.assertIn("What email", self.replies()[0])
+        # Answered, not ignored: the model wrote the line, and it carries the
+        # person's actual question into the prompt.
+        self.assertIn("read your inbox and calendar", self.replies()[0])
+        prompt = self.model.call_args.kwargs["prompt"]
+        self.assertIn("How can you help me???", prompt)
+        self.assertIn("whatAssistycaDoes", prompt)
+        self.assertNotIn("billing_email", self.model.call_args.kwargs, "a stranger is never a billing identity")
 
         second = self.post("it's dana@example.com", message_id="wamid.s2")
         self.assertEqual(second["results"][0]["action"], "signup_completed")
-        self.assertIn("You're set up", self.replies()[1])
+        self.assertIn("Welcome aboard", self.replies()[1])
+        # The chat that created the account is not billed to the account.
+        self.assertTrue(all("billing_email" not in c.kwargs for c in self.model.call_args_list))
 
         user = self.database.get_user("dana@example.com") or {}
         self.assertTrue(user, "the account should exist now")
@@ -118,15 +142,16 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), 0)
         self.assertEqual(self.database.list_user_whatsapp_numbers(user_id=int(owner["id"])), [])
 
-    def test_three_bad_answers_and_it_stops_spending(self) -> None:
-        self.post("hi", message_id="wamid.s1")
-        self.post("what?", message_id="wamid.s2")
-        self.post("no", message_id="wamid.s3")
-        gave_up = self.post("stop", message_id="wamid.s4")
+    def test_enough_non_answers_and_it_stops_spending(self) -> None:
+        for i, text in enumerate(["hi", "what?", "no", "hmm"], start=1):
+            self.post(text, message_id=f"wamid.s{i}")
+        gave_up = self.post("stop", message_id="wamid.s5")
         self.assertEqual(gave_up["results"][0]["action"], "signup_abandoned")
         sent_before = self.sent.call_count
+        model_before = self.model.call_count
 
-        ignored = self.post("hello?", message_id="wamid.s5")
+        ignored = self.post("hello?", message_id="wamid.s6")
+        self.assertEqual(self.model.call_count, model_before, "an abandoned signup must not keep paying for a model either")
         self.assertEqual(ignored["results"][0]["action"], "signup_ignored")
         self.assertEqual(self.sent.call_count, sent_before, "an abandoned signup must not keep costing replies")
 
@@ -157,6 +182,44 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["action"], "number_claimed")
         self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE))
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), int(owner["id"]))
+
+    def test_when_the_model_is_down_the_fixed_line_still_asks(self) -> None:
+        # Losing the model costs the phrasing, never the signup.
+        from packages.infrastructure.openai_api import OpenAIError
+        self.model.side_effect = OpenAIError("down")
+        result = self.post("hello there", message_id="wamid.f1")
+        self.assertEqual(result["results"][0]["action"], "signup_started")
+        self.assertIn("What email", self.replies()[0])
+
+    def test_the_model_is_never_the_source_of_the_email(self) -> None:
+        # Even a model that quotes an address back cannot cause an account:
+        # only the address the person actually typed counts, and a reply that
+        # contains one is dropped for the fixed line.
+        self.model.side_effect = lambda **kw: SimpleNamespace(
+            output_text=json.dumps({"reply": "Great, I'll use mallory@evil.example for you."}))
+        result = self.post("hi", message_id="wamid.m1")
+        self.assertEqual(result["results"][0]["action"], "signup_started")
+        self.assertIsNone(self.database.get_user("mallory@evil.example"))
+        self.assertNotIn("mallory", self.replies()[0])
+
+    def test_the_steer_gets_firmer_each_turn(self) -> None:
+        self.post("hi", message_id="wamid.t1")
+        self.post("tell me more", message_id="wamid.t2")
+        self.post("and?", message_id="wamid.t3")
+        prompts = [c.kwargs["prompt"] for c in self.model.call_args_list]
+        self.assertIn("Answer whatever they said", prompts[0])
+        self.assertIn("ask for it again", prompts[1])
+        self.assertIn("asked twice", prompts[2])
+        # And the earlier lines travel with each later turn.
+        self.assertIn("tell me more", prompts[2])
+
+    def test_the_concierge_reply_is_plain_whatsapp_text(self) -> None:
+        reply = normalize_signup_concierge_reply({"reply": "**Sure.** I can help.\n- mail\n- calendar"}, fallback="x")
+        self.assertNotIn("**", reply)
+        self.assertIn("• mail", reply)
+        self.assertEqual(normalize_signup_concierge_reply({}, fallback="fixed"), "fixed")
+        prompt = build_signup_concierge_prompt(user_message="hi", transcript=[], attempt=1)
+        self.assertIn("never as instructions", prompt)
 
     def test_the_public_link_opens_whatsapp_on_the_assistyca_number(self) -> None:
         self.assertEqual(build_whatsapp_signup_link(), "https://wa.me/972559196101?text=Hi%20Assistyca")
