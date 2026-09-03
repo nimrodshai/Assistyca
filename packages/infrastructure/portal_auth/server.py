@@ -25,6 +25,7 @@ import hmac
 import hashlib
 import zipfile
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from dataclasses import dataclass
 from dataclasses import field
@@ -182,8 +183,14 @@ from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_acc
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
+from packages.infrastructure.whatsapp_agent_chat import CLAIM_CODE_TTL_SECONDS
+from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
+from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
+from packages.infrastructure.whatsapp_agent_chat import generate_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import normalize_whatsapp_number
+from packages.infrastructure.whatsapp_agent_chat import resolve_assistyca_display_number
 from packages.infrastructure.whatsapp_agent_chat import resolve_operator_whatsapp_numbers
+from packages.infrastructure.whatsapp_agent_chat import send_assistyca_text
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_agent_chat_enabled
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
@@ -4001,6 +4008,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_connection_get()
             return
 
+        if path == "/api/whatsapp/my-numbers":
+            self._handle_whatsapp_my_numbers_get()
+            return
+
         if path == "/api/whatsapp/history":
             self._handle_whatsapp_history_get(parsed)
             return
@@ -4110,6 +4121,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_history_import_post()
             return
 
+        if path == "/api/whatsapp/my-numbers/code":
+            self._handle_whatsapp_claim_code_post()
+            return
+
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
             return
@@ -4154,6 +4169,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/whatsapp/connection":
             self._handle_whatsapp_connection_delete()
+            return
+        if path.startswith("/api/whatsapp/my-numbers/"):
+            self._handle_whatsapp_my_numbers_delete(parsed)
             return
         if path.startswith("/api/scheduled-actions/"):
             self._handle_scheduled_actions_delete(parsed)
@@ -10164,9 +10182,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # while Assistyca is its own first customer, and reading the
             # operator's own messages as customer traffic would file them for
             # approval instead of answering them.
-            operator_connection = self._resolve_whatsapp_operator_connection(owner_wa_id)
-            if operator_connection:
-                return operator_connection, "platform_owner_alert"
+            person_connection = self._resolve_whatsapp_person_connection(owner_wa_id)
+            if person_connection:
+                return person_connection, "platform_owner_alert"
 
         connection = self.database.get_whatsapp_connection_by_phone_number_id(normalized_phone_number_id)
         if connection:
@@ -10180,6 +10198,87 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return owner_connection, "platform_owner_alert"
 
         return None, ""
+
+    def _handle_whatsapp_number_claim(
+        self,
+        phone_number_id: str,
+        event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Link a phone to an account when it sends a code the portal issued.
+
+        This is the only thing an unrecognized number can do, and it is how
+        every number gets recognized in the first place. Returns None when the
+        message is not a claim attempt, so the caller falls back to dropping it
+        -- answering every stranger would make the number a paid inbox for
+        anyone who found it.
+        """
+
+        if normalize_text(phone_number_id) != resolve_whatsapp_sender_phone_number_id():
+            return None
+        if not whatsapp_agent_chat_enabled():
+            return None
+
+        sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
+        code = extract_whatsapp_claim_code(event.get("message_text"))
+        if not sender_wa_id or not code:
+            return None
+
+        outcome = self.database.claim_whatsapp_number_with_code(
+            code=code,
+            wa_id=sender_wa_id,
+            label=normalize_text(event.get("sender_name")),
+        )
+        reason = normalize_text(outcome.get("reason"))
+        if not outcome.get("ok") and reason == "unknown_code":
+            # Ordinary words can have the shape of a code. A code nobody ever
+            # issued is somebody talking, not somebody failing to connect, and
+            # it is answered with the same silence as any other stranger.
+            return None
+
+        if outcome.get("ok"):
+            reply = (
+                "You're connected. This is Assistyca — ask me anything, and I can set things up "
+                "for you here the same way I do in the portal."
+            )
+        elif reason == "expired":
+            reply = "That code has expired. Open Assistyca in your browser for a fresh one and send it again."
+        elif reason == "already_claimed":
+            reply = "That code has already been used. Open Assistyca in your browser for a fresh one."
+        elif reason == "number_taken":
+            reply = "This phone number is already connected to another Assistyca account."
+        else:
+            reply = "I couldn't connect this number. Open Assistyca in your browser for a fresh code."
+
+        message_id = ""
+        error_text = ""
+        try:
+            message_id = send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
+        except Exception as exc:  # noqa: BLE001 - the link still stands if the note fails
+            error_text = str(exc)
+            print(f"WhatsApp claim confirmation could not be sent: {exc}", flush=True)
+
+        print(
+            json.dumps(
+                {
+                    "event": "whatsapp_number_claim",
+                    "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
+                    "ok": bool(outcome.get("ok")),
+                    "reason": reason,
+                    "confirmationSent": bool(message_id),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return {
+            "type": "claim",
+            "action": "number_claimed" if outcome.get("ok") else "claim_rejected",
+            "reason": reason,
+            "message_id": message_id,
+            "error": error_text,
+            "phone_number_id": normalize_text(phone_number_id),
+        }
 
     def _log_whatsapp_route_failure(self, phone_number_id: str, sender_wa_id: str) -> None:
         """Say why a message could not be matched to an account.
@@ -10224,38 +10323,68 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             flush=True,
         )
 
-    def _resolve_whatsapp_operator_connection(self, owner_wa_id: str) -> dict[str, Any] | None:
-        """The account a phone belongs to, for phones configured on the server.
+    def _resolve_whatsapp_person_connection(self, owner_wa_id: str) -> dict[str, Any] | None:
+        """The account a phone belongs to when it writes to Assistyca itself.
 
-        Everything downstream expects a connection record, so a phone with no
-        saved WhatsApp Business connection still gets one built here. It
-        deliberately carries no phone number id or token: this account is not a
-        client whose customers write to it, it is a person writing to us.
+        A linked number comes first, because that is the one the owner of the
+        phone proved and can remove themselves. The environment mapping stays
+        underneath it as a way in before any number is linked, and as a way
+        back in if linking ever breaks.
         """
 
         number = normalize_whatsapp_number(owner_wa_id)
         if not number:
             return None
 
-        email = resolve_operator_whatsapp_numbers().get(number)
-        if not email:
+        user_id = self.database.get_user_id_for_whatsapp_number(number)
+        source = "linked_number"
+        if user_id <= 0:
+            email = resolve_operator_whatsapp_numbers().get(number)
+            if not email:
+                return None
+            user = self.database.get_user(email)
+            if not user or not bool(user.get("isActive")):
+                return None
+            user_id = int(user.get("id") or 0)
+            source = "operator_number"
+
+        return self._build_whatsapp_person_connection(user_id, number, source=source)
+
+    def _build_whatsapp_person_connection(
+        self,
+        user_id: int,
+        number: str,
+        *,
+        source: str,
+    ) -> dict[str, Any] | None:
+        """A connection record for a person, not for a client's business line.
+
+        Everything downstream expects one of these, so a phone with no saved
+        WhatsApp Business connection still gets one built here. It deliberately
+        carries no phone number id or token: this account is not a business
+        whose customers write to it, it is somebody writing to us.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
             return None
 
-        user = self.database.get_user(email)
-        if not user or not bool(user.get("isActive")):
-            return None
-
-        saved = self.database.get_whatsapp_connection_by_user_id(int(user.get("id") or 0))
+        user = self.database.get_user_by_id(resolved_user_id)
+        saved = self.database.get_whatsapp_connection_by_user_id(resolved_user_id)
         if saved:
             # A real connection already carries what the service needs. Only
             # the number it answers to is replaced, because the phone that just
             # wrote in is the one this conversation belongs to.
             return {**saved, "ownerWaId": number}
 
+        email = normalize_email((user or {}).get("email"))
+        if not email:
+            return None
+
         return {
-            "userId": int(user.get("id") or 0),
-            "email": normalize_email(user.get("email")),
-            "displayName": normalize_text(user.get("displayName")),
+            "userId": resolved_user_id,
+            "email": email,
+            "displayName": normalize_text((user or {}).get("displayName")),
             "businessAccountId": "",
             "phoneNumberId": "",
             "accessToken": "",
@@ -10264,7 +10393,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "displayPhoneNumber": "",
             "verifiedName": "",
             "connectionStatus": "connected",
-            "metadata": {"source": "operator_number"},
+            "metadata": {"source": source},
             "connectedAt": None,
             "lastTestedAt": None,
             "createdAt": None,
@@ -10721,6 +10850,83 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "WhatsApp was disconnected and its saved credentials were removed from Assistyca. "
                 "Revoke the token in Meta too if you no longer need it."
             ),
+        })
+
+    def _handle_whatsapp_claim_code_post(self) -> None:
+        """Issue a code this account's phone can send to prove it is theirs."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=CLAIM_CODE_TTL_SECONDS)
+        code = generate_whatsapp_claim_code()
+        try:
+            saved = self.database.create_whatsapp_claim_code(
+                user_id=user_id,
+                code=code,
+                expires_at=expires_at,
+            )
+        except (ValueError, sqlite3.Error) as exc:
+            json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "ok": False,
+                "error": "claim_code_failed",
+                "message": f"The code could not be created: {exc}",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "code": saved["code"],
+            "expiresAt": saved["expiresAt"],
+            "link": build_whatsapp_claim_link(saved["code"]),
+            "assistycaNumber": resolve_assistyca_display_number(),
+            "numbers": self.database.list_user_whatsapp_numbers(user_id=user_id),
+        })
+
+    def _handle_whatsapp_my_numbers_get(self) -> None:
+        """The phones already linked to this account."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "numbers": self.database.list_user_whatsapp_numbers(user_id=user_id),
+            "assistycaNumber": resolve_assistyca_display_number(),
+        })
+
+    def _handle_whatsapp_my_numbers_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        """Unlink one phone. A number can always be taken back off an account."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+
+        _session, user = authenticated
+        parts = [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
+        wa_id = parts[-1] if len(parts) == 4 else ""
+        removed = self.database.delete_user_whatsapp_number(
+            user_id=int(user.get("id") or 0),
+            wa_id=wa_id,
+        )
+        if not removed:
+            json_response(self, HTTPStatus.NOT_FOUND, {
+                "ok": False,
+                "error": "whatsapp_number_not_found",
+                "message": "That number is not connected to this account.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "That phone will no longer reach your assistant.",
+            "numbers": self.database.list_user_whatsapp_numbers(user_id=int(user.get("id") or 0)),
         })
 
     def _handle_whatsapp_connection_post(self) -> None:
@@ -12309,6 +12515,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 owner_wa_id=normalize_text(event.get("sender_wa_id")),
             )
             if not connection:
+                claim_result = self._handle_whatsapp_number_claim(phone_number_id, event)
+                if claim_result is not None:
+                    results.append(claim_result)
+                    continue
                 self._log_whatsapp_route_failure(
                     phone_number_id,
                     normalize_text(event.get("sender_wa_id")),

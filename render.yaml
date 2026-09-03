@@ -96,11 +96,13 @@ services:
         sync: false
       - key: ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID
         value: "1186653017865246"
-      # Phones that reach the agent by texting the Assistyca number, as
-      # "number:email" pairs separated by commas. These are the people whose
-      # own number *is* the Assistyca number, so they have no client WhatsApp
-      # connection to be recognised by. Holds real phone numbers, so it is set
-      # in the dashboard rather than committed here.
+      # The Assistyca WhatsApp number in plain digits, used to build the
+      # tap-to-open wa.me link handed out with a claim code.
+      - key: ASSISTYCA_WHATSAPP_DISPLAY_NUMBER
+        sync: false
+      # A bootstrap only: "number:email" pairs for phones that should reach the
+      # agent without linking themselves first. The normal path is a claim code
+      # sent from the phone, which needs no configuration and no redeploy.
       - key: ASSISTYCA_WHATSAPP_OWNER_NUMBERS
         sync: false
       - key: WHATSAPP_ALLOW_MOCK_SEND

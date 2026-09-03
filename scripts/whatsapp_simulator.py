@@ -175,6 +175,24 @@ class Simulator:
         if isinstance(result, dict) and result.get("httpStatus"):
             print(f"\033[2m   [webhook] HTTP {result['httpStatus']} {result.get('body', '')[:200]}\033[0m")
 
+    def issue_claim_code(self) -> str:
+        """A code the account would show in the portal, for testing linking."""
+
+        from datetime import datetime, timedelta, timezone
+
+        from packages.infrastructure.whatsapp_agent_chat import (
+            CLAIM_CODE_TTL_SECONDS,
+            generate_whatsapp_claim_code,
+        )
+
+        user = self.server.database.get_user(self.args.email) or {}
+        saved = self.server.database.create_whatsapp_claim_code(
+            user_id=int(user.get("id") or 0),
+            code=generate_whatsapp_claim_code(),
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=CLAIM_CODE_TTL_SECONDS),
+        )
+        return str(saved["code"])
+
     def run(self) -> int:
         print("WhatsApp simulator — the real flow with Meta faked out.")
         print(f"  database   {self.db_path}")
@@ -182,6 +200,9 @@ class Simulator:
         print(f"  account    {self.args.email}, owner number {self.args.owner}")
         if self.args.sender != self.args.owner:
             print("  note       this number is NOT the account's owner number, so it is a stranger")
+        if self.args.issue_code:
+            code = self.issue_claim_code()
+            print(f"  claim code {code} — send \"Assistyca code {code}\" to link this phone")
         if not self.args.canned and not os.getenv("OPENAI_API_KEY"):
             print("  warning    OPENAI_API_KEY is unset, so the agent cannot think. Use --canned to test routing.")
         print()
@@ -211,6 +232,7 @@ def main() -> int:
     parser.add_argument("--message", default="", help="send one message and exit instead of chatting")
     parser.add_argument("--db", default="", help="keep the database at this path instead of a temporary one")
     parser.add_argument("--canned", action="store_true", help="skip the model and reply with fixed text")
+    parser.add_argument("--issue-code", action="store_true", help="print a claim code, to test linking a new phone")
     args = parser.parse_args()
     if not args.sender:
         args.sender = args.owner

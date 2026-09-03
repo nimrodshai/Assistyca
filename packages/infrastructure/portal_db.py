@@ -84,6 +84,8 @@ USER_OWNED_TABLES = (
     "whatsapp_reengagement_runs",
     "whatsapp_agent_messages",
     "whatsapp_agent_state",
+    "whatsapp_claim_codes",
+    "user_whatsapp_numbers",
     "whatsapp_conversation_messages",
     "whatsapp_conversations",
     "whatsapp_approval_index",
@@ -313,6 +315,33 @@ CREATE TABLE IF NOT EXISTS whatsapp_reengagement_notifications (
     model_name TEXT NOT NULL DEFAULT '',
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Which phone belongs to which account. The primary key is the number, so a
+-- phone can only ever reach one account: an ambiguous number would otherwise
+-- have to be resolved by guessing, and guessing wrong routes somebody's
+-- conversation into a stranger's workspace.
+CREATE TABLE IF NOT EXISTS user_whatsapp_numbers (
+    wa_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    verified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- A short code the portal shows and the phone sends back. Possession of the
+-- phone is the thing being proved: without it, typing a number into a form
+-- would let anyone point someone else's WhatsApp at their own account.
+CREATE TABLE IF NOT EXISTS whatsapp_claim_codes (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    claimed_at TEXT,
+    claimed_wa_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -598,6 +627,10 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_reengagement_notifications_user_thread
 ON whatsapp_reengagement_notifications(user_id, conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_agent_messages_user
 ON whatsapp_agent_messages(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_user_whatsapp_numbers_user
+ON user_whatsapp_numbers(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_claim_codes_user
+ON whatsapp_claim_codes(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_billing_customers_provider_status
 ON billing_customers(provider, subscription_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_features_active_sort
@@ -3640,6 +3673,26 @@ class PortalDatabase:
         with self._connection() as conn:
             return self._load_user_row(conn, normalized_email)
 
+    def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        """The same record as get_user, for callers holding an id.
+
+        A phone resolves to an id rather than an address, and asking for the
+        address first would mean reading the row twice to get back to it.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return None
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT email FROM users WHERE id = ? LIMIT 1",
+                (resolved_user_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._load_user_row(conn, normalize_email(row["email"]))
+
     def update_user_profile(self, email: str, *, profile: dict[str, Any] | None = None) -> dict[str, Any]:
         normalized_email = normalize_email(email)
         if not normalized_email:
@@ -4665,6 +4718,200 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, user_id=user_id)
+
+    def get_user_id_for_whatsapp_number(self, wa_id: str) -> int:
+        """The account a phone belongs to, or 0."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return 0
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT n.user_id AS user_id
+                FROM user_whatsapp_numbers AS n
+                INNER JOIN users AS u ON u.id = n.user_id
+                WHERE n.wa_id = ?
+                  AND u.is_active = 1
+                LIMIT 1
+                """,
+                (number,),
+            ).fetchone()
+        return int(row["user_id"]) if row else 0
+
+    def list_user_whatsapp_numbers(self, *, user_id: int) -> list[dict[str, Any]]:
+        """Every phone that reaches this account, newest first."""
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return []
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT wa_id, label, verified_at, created_at
+                FROM user_whatsapp_numbers
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                """,
+                (resolved_user_id,),
+            ).fetchall()
+        return [
+            {
+                "waId": str(row["wa_id"] or ""),
+                "label": str(row["label"] or ""),
+                "verifiedAt": row["verified_at"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def delete_user_whatsapp_number(self, *, user_id: int, wa_id: str) -> bool:
+        """Unlink a phone from an account. Only its own owner may do this."""
+
+        resolved_user_id = int(user_id or 0)
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if resolved_user_id <= 0 or not number:
+            return False
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_whatsapp_numbers WHERE wa_id = ? AND user_id = ?",
+                (number, resolved_user_id),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0) > 0
+
+    def create_whatsapp_claim_code(
+        self,
+        *,
+        user_id: int,
+        code: str,
+        expires_at: datetime,
+    ) -> dict[str, Any]:
+        """Store a claim code for this account, replacing any earlier one.
+
+        One live code per account: a second code left standing would be a
+        second way into the same workspace, outliving whatever prompted it.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        normalized_code = normalize_text(code).upper()
+        if resolved_user_id <= 0 or not normalized_code:
+            raise ValueError("A claim code needs an account and a code.")
+
+        created_at = now_iso()
+        expiry = expires_at.astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM whatsapp_claim_codes WHERE user_id = ? AND claimed_at IS NULL",
+                (resolved_user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO whatsapp_claim_codes (code, user_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
+                    claimed_at = NULL,
+                    claimed_wa_id = ''
+                """,
+                (normalized_code, resolved_user_id, created_at, expiry),
+            )
+            conn.commit()
+        return {
+            "code": normalized_code,
+            "userId": resolved_user_id,
+            "createdAt": created_at,
+            "expiresAt": expiry,
+        }
+
+    def claim_whatsapp_number_with_code(
+        self,
+        *,
+        code: str,
+        wa_id: str,
+        label: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Link a phone to the account that issued this code.
+
+        Everything happens in one transaction so a code cannot be spent twice
+        by two messages arriving together. The outcome is named rather than
+        raised, because each reason needs its own sentence back to the sender.
+        """
+
+        normalized_code = normalize_text(code).upper()
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not normalized_code or not number:
+            return {"ok": False, "reason": "invalid_request"}
+
+        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT c.code, c.user_id, c.expires_at, c.claimed_at, u.is_active
+                FROM whatsapp_claim_codes AS c
+                INNER JOIN users AS u ON u.id = c.user_id
+                WHERE c.code = ?
+                """,
+                (normalized_code,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return {"ok": False, "reason": "unknown_code"}
+            if row["claimed_at"]:
+                conn.rollback()
+                return {"ok": False, "reason": "already_claimed"}
+            if not bool(row["is_active"]):
+                conn.rollback()
+                return {"ok": False, "reason": "inactive_account"}
+            try:
+                expires_at = datetime.fromisoformat(str(row["expires_at"]))
+            except ValueError:
+                conn.rollback()
+                return {"ok": False, "reason": "unknown_code"}
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if moment > expires_at:
+                conn.rollback()
+                return {"ok": False, "reason": "expired"}
+
+            user_id = int(row["user_id"])
+            existing = conn.execute(
+                "SELECT user_id FROM user_whatsapp_numbers WHERE wa_id = ?",
+                (number,),
+            ).fetchone()
+            if existing is not None and int(existing["user_id"]) != user_id:
+                # The number already answers for somebody else. Moving it would
+                # take their conversation away from them without their say.
+                conn.rollback()
+                return {"ok": False, "reason": "number_taken"}
+
+            stamp = moment.isoformat()
+            conn.execute(
+                """
+                INSERT INTO user_whatsapp_numbers (wa_id, user_id, label, verified_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(wa_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    label = excluded.label,
+                    verified_at = excluded.verified_at,
+                    updated_at = excluded.updated_at
+                """,
+                (number, user_id, normalize_text(label)[:120], stamp, stamp, stamp),
+            )
+            conn.execute(
+                "UPDATE whatsapp_claim_codes SET claimed_at = ?, claimed_wa_id = ? WHERE code = ?",
+                (stamp, number, normalized_code),
+            )
+            conn.commit()
+
+        return {"ok": True, "userId": user_id, "waId": number, "claimedAt": stamp}
 
     def save_whatsapp_agent_message(self, *, user_id: int, role: str, text: str) -> dict[str, Any]:
         """One turn of the owner's WhatsApp conversation with the agent.

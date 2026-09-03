@@ -8,20 +8,22 @@ the same agent.
 ## How a message is routed
 
 An inbound webhook event to the Assistyca sender number resolves to a portal
-user in one of two ways, both giving the `platform_owner_alert` route:
+user in one of three ways, all giving the `platform_owner_alert` route:
 
+* **A linked number** in `user_whatsapp_numbers` — the normal path, and the
+  only one that scales. Anyone can link their own phone; see below. This runs
+  *before* the client-connection lookup, because the Assistyca number and a
+  client's number can be the same number while Assistyca is its own first
+  customer, and reading those messages as customer traffic would file them for
+  approval instead of answering them.
 * **A number configured on the server** — `ASSISTYCA_WHATSAPP_OWNER_NUMBERS`,
-  as `number:email` pairs. This is how whoever runs Assistyca reaches the
-  agent. Their number *is* the Assistyca number, so they have no client
-  WhatsApp connection to be recognised by, and saving one for themselves would
-  be worse than useless: the webhook would match it as a client number and file
-  their own messages as customer approvals. This lookup therefore runs *before*
-  the client-connection lookup.
+  as `number:email` pairs. A bootstrap for before any number is linked, and a
+  way back in if linking ever breaks. Not the mechanism to build on.
 * **A saved `owner_wa_id`** on a client's WhatsApp connection, as before.
 
-An inbound message from a phone neither of those recognises is dropped with
+An inbound message from a phone none of those recognise is dropped with
 `No portal workspace is connected to this phone number ID` and nothing is sent
-back. From there the split is:
+back — unless it carries a claim code. From there the split is:
 
 1. **Approval flow keeps everything that is plainly its own**: interactive
    button taps, replies that target an approval, approval refs, re-engagement
@@ -33,6 +35,37 @@ back. From there the split is:
 The split lives in `_whatsapp_owner_event_targets_approvals`
 (`packages/infrastructure/portal_auth/server.py`); the conversation itself in
 `packages/infrastructure/whatsapp_agent_chat.py`.
+
+## Linking a phone
+
+A phone proves itself rather than being typed in. `POST
+/api/whatsapp/my-numbers/code` issues a six-character code for the signed-in
+account, good for fifteen minutes, one live code per account. The person sends
+that code to the Assistyca number from the phone they want to use; the webhook
+recognises it, links the number that actually sent it, and replies to say so.
+From then on that phone reaches the agent directly.
+
+This is why possession is proved instead of trusted: `user_whatsapp_numbers`
+is keyed on the number, so whoever holds an entry receives that phone's
+conversations. Letting someone type a number into a form would let them point
+another person's WhatsApp at their own account.
+
+Consequences that follow from the same rule: a code is single-use and dies on
+its expiry; a number already linked to one account is never moved to another
+by a code (it resolves to its own account before the claim step is reached, and
+the store refuses the move underneath that anyway); and `DELETE
+/api/whatsapp/my-numbers/<wa_id>` unlinks a phone, because a permission that
+cannot be taken back is not a permission.
+
+A message from an unknown number that is *not* a valid code is answered with
+silence, not an explanation. Ordinary words can have the shape of a code, and
+replying to every stranger would make the number a paid inbox for anyone who
+found it. A code that was genuinely issued but is expired or spent does get a
+reply, because that is somebody trying to connect rather than somebody talking.
+
+`ASSISTYCA_WHATSAPP_DISPLAY_NUMBER` holds the Assistyca number in plain digits.
+It is only used to build the `wa.me` tap-to-open link returned alongside a
+code; without it the code still works, typed by hand.
 
 ## How a turn runs
 

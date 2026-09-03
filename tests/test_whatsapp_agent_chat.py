@@ -17,7 +17,7 @@ import tempfile
 import threading
 import unittest
 import urllib.request as urllib_request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -386,6 +386,169 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         model.assert_not_called()
         self.sent.assert_not_called()
         self.assertEqual(response["results"][0]["type"], "error")
+
+    def _issue_claim_code(self, email: str = "owner@example.com") -> dict:
+        code, _ = self.server.store.issue_challenge(email)
+        ok, error, result = self.server.store.verify_code(email, code)
+        self.assertTrue(ok, error)
+        token = str((result or {}).get("token") or "")
+        request = urllib_request.Request(
+            f"{self.base_url}/api/whatsapp/my-numbers/code",
+            data=b"{}",
+            method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        with urllib_request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_a_phone_links_itself_by_sending_the_code_then_can_chat(self) -> None:
+        # Nobody edits configuration anywhere in this test: the portal issues a
+        # code, the phone sends it, and from then on that phone is recognised.
+        issued = self._issue_claim_code()
+        self.assertTrue(issued["ok"])
+        self.assertEqual(len(issued["code"]), 6)
+        self.assertEqual(issued["numbers"], [])
+
+        new_phone = "447700900123"
+        claim = self._post_webhook(
+            inbound_text_payload(
+                f"Assistyca code {issued['code']}",
+                sender=new_phone,
+                message_id="wamid.claim-1",
+            )
+        )
+        self.assertEqual(claim["results"][0]["action"], "number_claimed")
+        self.assertEqual(
+            self.database.get_user_id_for_whatsapp_number(new_phone),
+            int(self.user["id"]),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=self._turn_response({"outcome": "message", "reply": "Yes, I'm here."}),
+        ):
+            response = self._post_webhook(
+                inbound_text_payload(
+                    "are you there?",
+                    sender=new_phone,
+                    message_id="wamid.claim-chat-1",
+                )
+            )
+
+        reply = next(
+            entry for entry in response["results"] if entry.get("action") == "agent_chat_reply"
+        )
+        self.assertEqual(reply["reply_text"], "Yes, I'm here.")
+
+    def test_a_claim_code_cannot_be_used_twice(self) -> None:
+        issued = self._issue_claim_code()
+        self._post_webhook(
+            inbound_text_payload(
+                f"Assistyca code {issued['code']}",
+                sender="447700900123",
+                message_id="wamid.claim-2a",
+            )
+        )
+        replay = self._post_webhook(
+            inbound_text_payload(
+                f"Assistyca code {issued['code']}",
+                sender="447700900999",
+                message_id="wamid.claim-2b",
+            )
+        )
+        self.assertEqual(replay["results"][0]["action"], "claim_rejected")
+        self.assertEqual(replay["results"][0]["reason"], "already_claimed")
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number("447700900999"), 0)
+
+    def test_a_phone_already_linked_elsewhere_is_not_taken_over(self) -> None:
+        self.database.register_user("second@example.com")
+        first = self._issue_claim_code()
+        self._post_webhook(
+            inbound_text_payload(
+                f"code {first['code']}",
+                sender="447700900123",
+                message_id="wamid.claim-3a",
+            )
+        )
+        second = self._issue_claim_code("second@example.com")
+        # A phone that already answers for one account never reaches the claim
+        # step again: it resolves to its own account first, so somebody else's
+        # code arriving from it is just that phone talking. Taking a number
+        # over would take the conversation away from whoever proved it.
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=self._turn_response({"outcome": "message", "reply": "Noted."}),
+        ):
+            response = self._post_webhook(
+                inbound_text_payload(
+                    f"code {second['code']}",
+                    sender="447700900123",
+                    message_id="wamid.claim-3b",
+                )
+            )
+
+        actions = [entry.get("action") for entry in response["results"]]
+        self.assertNotIn("number_claimed", actions)
+        self.assertEqual(
+            self.database.get_user_id_for_whatsapp_number("447700900123"),
+            int(self.user["id"]),
+        )
+
+    def test_a_code_cannot_move_a_number_that_answers_for_someone_else(self) -> None:
+        # The guard underneath the routing, in case the order above ever
+        # changes: the store itself refuses to move a claimed number.
+        self.database.register_user("second@example.com")
+        second = self.database.get_user("second@example.com") or {}
+        self.database.create_whatsapp_claim_code(
+            user_id=int(self.user["id"]),
+            code="AAAA22",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+        self.database.claim_whatsapp_number_with_code(code="AAAA22", wa_id="447700900123")
+        self.database.create_whatsapp_claim_code(
+            user_id=int(second["id"]),
+            code="BBBB33",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        )
+
+        outcome = self.database.claim_whatsapp_number_with_code(code="BBBB33", wa_id="447700900123")
+
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["reason"], "number_taken")
+        self.assertEqual(
+            self.database.get_user_id_for_whatsapp_number("447700900123"),
+            int(self.user["id"]),
+        )
+
+    def test_an_ordinary_message_shaped_like_a_code_is_ignored(self) -> None:
+        # "PLEASE" fits the code alphabet exactly. Answering it would turn the
+        # number into a paid inbox for anyone who found it.
+        response = self._post_webhook(
+            inbound_text_payload(
+                "PLEASE",
+                sender="447700900555",
+                message_id="wamid.claim-4",
+            )
+        )
+        self.sent.assert_not_called()
+        self.assertEqual(response["results"][0]["type"], "error")
+
+    def test_a_linked_number_can_be_removed_again(self) -> None:
+        issued = self._issue_claim_code()
+        self._post_webhook(
+            inbound_text_payload(
+                f"code {issued['code']}",
+                sender="447700900123",
+                message_id="wamid.claim-5",
+            )
+        )
+        self.assertTrue(
+            self.database.delete_user_whatsapp_number(
+                user_id=int(self.user["id"]),
+                wa_id="447700900123",
+            )
+        )
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number("447700900123"), 0)
 
     def test_an_unresolved_message_says_why_in_the_log(self) -> None:
         buffer = io.StringIO()

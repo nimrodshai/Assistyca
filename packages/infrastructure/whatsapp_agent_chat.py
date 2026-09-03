@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import urllib.error as urllib_error
+import urllib.parse as urllib_parse
 import urllib.request as urllib_request
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -105,6 +107,68 @@ def whatsapp_agent_chat_enabled() -> bool:
     """Whether owner messages to the Assistyca number reach the agent at all."""
 
     return parse_bool(os.getenv("WHATSAPP_AGENT_CHAT_ENABLED"), True)
+
+
+CLAIM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+CLAIM_CODE_LENGTH = 6
+CLAIM_CODE_TTL_SECONDS = 900
+_CLAIM_CODE_RE = re.compile(rf"\b[{CLAIM_CODE_ALPHABET}]{{{CLAIM_CODE_LENGTH}}}\b", re.IGNORECASE)
+
+
+def generate_whatsapp_claim_code() -> str:
+    """A code short enough to type and free of characters people confuse."""
+
+    return "".join(secrets.choice(CLAIM_CODE_ALPHABET) for _ in range(CLAIM_CODE_LENGTH))
+
+
+def extract_whatsapp_claim_code(text: Any) -> str:
+    """The claim code inside a message, wherever in the sentence it sits.
+
+    A link fills the message with words around the code, and someone typing it
+    by hand may add their own, so the code is looked for rather than expected
+    to stand alone. Ordinary words can match this shape, which is why a code
+    that no account ever issued is answered with silence rather than a reply.
+    """
+
+    match = _CLAIM_CODE_RE.search(str(text or ""))
+    return match.group(0).upper() if match else ""
+
+
+def resolve_assistyca_display_number() -> str:
+    """The Assistyca number in the form a wa.me link needs, if configured."""
+
+    return re.sub(r"\D+", "", normalize_text(os.getenv("ASSISTYCA_WHATSAPP_DISPLAY_NUMBER")))
+
+
+def build_whatsapp_claim_link(code: str) -> str:
+    """A tap-to-open WhatsApp link with the claim code already written out."""
+
+    number = resolve_assistyca_display_number()
+    normalized_code = normalize_text(code).upper()
+    if not number or not normalized_code:
+        return ""
+    message = urllib_parse.quote(f"Assistyca code {normalized_code}")
+    return f"https://wa.me/{number}?text={message}"
+
+
+def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> str:
+    """Send one plain message from the Assistyca number."""
+
+    access_token = resolve_whatsapp_sender_access_token()
+    phone_number_id = resolve_whatsapp_sender_phone_number_id()
+    if access_token and phone_number_id:
+        return send_whatsapp_message(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            api_version=api_version,
+            recipient_wa_id=recipient_wa_id,
+            message_text=text,
+        )
+    if parse_bool(os.getenv("WHATSAPP_ALLOW_MOCK_SEND")):
+        return f"mock-{uuid.uuid4().hex}"
+    raise WhatsAppAgentChatError(
+        "Assistyca WhatsApp sending is not configured, so the agent cannot reply on this channel."
+    )
 
 
 def normalize_whatsapp_number(value: Any) -> str:
@@ -506,20 +570,10 @@ class WhatsAppAgentChat:
     # -- sending -----------------------------------------------------------
 
     def _send_owner_text(self, reply_text: str) -> str:
-        access_token = resolve_whatsapp_sender_access_token()
-        phone_number_id = resolve_whatsapp_sender_phone_number_id()
-        if access_token and phone_number_id:
-            return send_whatsapp_message(
-                access_token=access_token,
-                phone_number_id=phone_number_id,
-                api_version=self.api_version,
-                recipient_wa_id=self.owner_wa_id,
-                message_text=reply_text,
-            )
-        if parse_bool(os.getenv("WHATSAPP_ALLOW_MOCK_SEND")):
-            return f"mock-{uuid.uuid4().hex}"
-        raise WhatsAppAgentChatError(
-            "Assistyca WhatsApp sending is not configured, so the agent cannot reply on this channel."
+        return send_assistyca_text(
+            recipient_wa_id=self.owner_wa_id,
+            text=reply_text,
+            api_version=self.api_version,
         )
 
     # -- the whole loop ----------------------------------------------------
@@ -601,9 +655,15 @@ class WhatsAppAgentChat:
 
 __all__ = [
     "AGENT_CHAT_HISTORY_LIMIT",
+    "CLAIM_CODE_TTL_SECONDS",
     "WhatsAppAgentChat",
     "WhatsAppAgentChatError",
+    "build_whatsapp_claim_link",
+    "extract_whatsapp_claim_code",
     "format_agent_reply_for_whatsapp",
+    "generate_whatsapp_claim_code",
+    "resolve_assistyca_display_number",
+    "send_assistyca_text",
     "infer_timezone_from_wa_id",
     "normalize_whatsapp_number",
     "resolve_operator_whatsapp_numbers",
