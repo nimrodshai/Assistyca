@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import io
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -365,6 +366,12 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.assertEqual([item["text"] for item in transcript], ["are you there?", "Hello from the agent."])
 
     def test_an_unmapped_stranger_is_still_not_answered(self) -> None:
+        # With signup on, a stranger is greeted rather than dropped; these
+        # tests are about the door being closed, so they close it. A plain
+        # assignment, not a second patch: setUp's patch restores the whole
+        # environment in tearDown, and a second patch stopped afterwards by
+        # addCleanup would put its own snapshot back on top of that.
+        os.environ["PORTAL_WHATSAPP_SIGNUP_ENABLED"] = "0"
         with (
             mock.patch.dict(
                 "os.environ",
@@ -521,6 +528,12 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         )
 
     def test_an_ordinary_message_shaped_like_a_code_is_ignored(self) -> None:
+        # With signup on, a stranger is greeted rather than dropped; these
+        # tests are about the door being closed, so they close it. A plain
+        # assignment, not a second patch: setUp's patch restores the whole
+        # environment in tearDown, and a second patch stopped afterwards by
+        # addCleanup would put its own snapshot back on top of that.
+        os.environ["PORTAL_WHATSAPP_SIGNUP_ENABLED"] = "0"
         # "PLEASE" fits the code alphabet exactly. Answering it would turn the
         # number into a paid inbox for anyone who found it.
         response = self._post_webhook(
@@ -551,6 +564,12 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.assertEqual(self.database.get_user_id_for_whatsapp_number("447700900123"), 0)
 
     def test_an_unresolved_message_says_why_in_the_log(self) -> None:
+        # With signup on, a stranger is greeted rather than dropped; these
+        # tests are about the door being closed, so they close it. A plain
+        # assignment, not a second patch: setUp's patch restores the whole
+        # environment in tearDown, and a second patch stopped afterwards by
+        # addCleanup would put its own snapshot back on top of that.
+        os.environ["PORTAL_WHATSAPP_SIGNUP_ENABLED"] = "0"
         buffer = io.StringIO()
         with (
             mock.patch.dict(
@@ -586,6 +605,12 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.assertFalse(entry["ownerConnectionMatched"])
 
     def test_the_log_separates_an_unset_variable_from_a_wrong_number(self) -> None:
+        # With signup on, a stranger is greeted rather than dropped; these
+        # tests are about the door being closed, so they close it. A plain
+        # assignment, not a second patch: setUp's patch restores the whole
+        # environment in tearDown, and a second patch stopped afterwards by
+        # addCleanup would put its own snapshot back on top of that.
+        os.environ["PORTAL_WHATSAPP_SIGNUP_ENABLED"] = "0"
         buffer = io.StringIO()
         with (
             mock.patch.dict("os.environ", {"ASSISTYCA_WHATSAPP_OWNER_NUMBERS": ""}, clear=False),

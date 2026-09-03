@@ -57,11 +57,10 @@ the store refuses the move underneath that anyway); and `DELETE
 /api/whatsapp/my-numbers/<wa_id>` unlinks a phone, because a permission that
 cannot be taken back is not a permission.
 
-A message from an unknown number that is *not* a valid code is answered with
-silence, not an explanation. Ordinary words can have the shape of a code, and
-replying to every stranger would make the number a paid inbox for anyone who
-found it. A code that was genuinely issued but is expired or spent does get a
-reply, because that is somebody trying to connect rather than somebody talking.
+A message from an unknown number that is *not* a valid code is treated as a
+signup (see below) when signup is on, and answered with silence when it is off.
+A code that was genuinely issued but is expired or spent always gets a reply,
+because that is somebody trying to connect rather than somebody talking.
 
 `ASSISTYCA_WHATSAPP_DISPLAY_NUMBER` holds the Assistyca number in plain digits.
 It is only used to build the `wa.me` tap-to-open link returned alongside a
@@ -110,9 +109,9 @@ local clock.
   the Assistyca sender credentials (`ASSISTYCA_WHATSAPP_ACCESS_TOKEN`,
   `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID`) for live replies;
   `WHATSAPP_ALLOW_MOCK_SEND=1` simulates sends in development.
-- The user must have a WhatsApp connection with a saved `owner_wa_id`, and
-  that number must be unique across workspaces (ambiguous numbers are not
-  routed).
+- A phone reaches the agent once it is linked to an account — by signing up
+  over WhatsApp, by sending a claim code, or by a saved `owner_wa_id` on a
+  client connection. A number is only ever linked to one account.
 
 ## Testing without Meta
 
@@ -134,13 +133,54 @@ unanswered. `--canned` skips the model when what you are testing is routing;
 without it the turn uses the real model and needs `OPENAI_API_KEY`. `--db`
 keeps the database between runs so the conversation is remembered.
 
-Note what a stranger sees today: nothing at all. An unknown number resolves to
-no account, the webhook records `No portal workspace is connected to this phone
-number ID`, and no reply is sent. Any invite flow has to add a path for
-unknown senders.
+A stranger texting is the signup flow: run it with `--from` and a number the
+database has never seen. With `PORTAL_WHATSAPP_SIGNUP_ENABLED=0` the same
+message is dropped with `No portal workspace is connected to this phone number
+ID` and nothing is sent back.
 
 ## Tests
 
 `tests/test_whatsapp_agent_chat.py` drives the whole loop the way Meta does —
 signed webhook POSTs against a running portal server — with the model and the
 WhatsApp send mocked at their module seams.
+
+## Signing up by texting
+
+A phone nobody knows can open an account in the conversation. The public link
+is one link, forever — `https://wa.me/<number>?text=Hi%20Assistyca` — and
+anyone who taps it (or simply texts the number) is asked one question:
+
+> Hi — I'm Assistyca, your assistant. What email should I set your account up
+> with? You'll use it if you ever want to open things on the web.
+
+Their next message is read as the answer. A new address creates the account
+with the default free trial (see `docs/free-trials.md`), links the phone that
+has been texting all along, and welcomes them; from then on that phone is an
+ordinary client talking to the agent. If their opening message already
+contains an address, the question is skipped.
+
+An address that **already has an account is refused**, and they are pointed at
+a portal-issued code instead. Without that refusal, typing someone else's
+address would attach a stranger's phone to their workspace.
+
+A claim code always wins over signup, because an existing client linking a
+second phone is texting from a number we do not know either.
+
+Three non-answers in a row and the signup is abandoned for a day: more
+messages from us would only cost money. Nothing else is ever sent to a phone
+that is not mid-signup.
+
+### Bounding it
+
+The free trial bounds what one account can cost. Two more settings bound how
+many accounts a day can open:
+
+* `PORTAL_WHATSAPP_SIGNUP_ENABLED` — the kill switch. Defaults to on; `0`
+  restores the old silence to unknown numbers.
+* `PORTAL_WHATSAPP_SIGNUP_DAILY_CAP` — signups that may *start* in any
+  24 hours. Defaults to `50`; `0` removes the cap. Past it the door closes
+  quietly and `whatsapp_signup_capped` is logged.
+
+`GET /api/admin/whatsapp/signup` shows the link, the switch, the cap, today's
+started and completed counts, and the default trial length — so the state of
+the public door is one request away.

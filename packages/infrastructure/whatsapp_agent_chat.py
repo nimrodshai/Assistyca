@@ -171,6 +171,73 @@ def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = D
     )
 
 
+SIGNUP_DEFAULT_DAILY_CAP = 50
+SIGNUP_MAX_EMAIL_ATTEMPTS = 3
+SIGNUP_REOPEN_AFTER_SECONDS = 86400
+
+
+_EMAIL_IN_TEXT_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def find_email_in_text(text: Any) -> str:
+    """The email address inside a chat message, if there is one.
+
+    People answer "what's your email?" with a sentence, not a header, so this
+    looks for the address wherever it sits rather than expecting the whole
+    message to be one.
+    """
+
+    match = _EMAIL_IN_TEXT_RE.search(str(text or ""))
+    return normalize_email(match.group(0).rstrip(".")) if match else ""
+
+
+def whatsapp_signup_enabled() -> bool:
+    """Whether a phone nobody knows can open an account by texting.
+
+    On by default because bounding what one account can cost (the free trial)
+    is what made an open door safe; this switch and the daily cap are for the
+    day something unexpected points a crowd at the number.
+    """
+
+    return parse_bool(os.getenv("PORTAL_WHATSAPP_SIGNUP_ENABLED"), True)
+
+
+def resolve_whatsapp_signup_daily_cap() -> int:
+    raw = normalize_text(os.getenv("PORTAL_WHATSAPP_SIGNUP_DAILY_CAP"))
+    if not raw:
+        return SIGNUP_DEFAULT_DAILY_CAP
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return SIGNUP_DEFAULT_DAILY_CAP
+
+
+def build_whatsapp_signup_link() -> str:
+    """The one public link: tap it and WhatsApp opens on the Assistyca number."""
+
+    number = resolve_assistyca_display_number()
+    if not number:
+        return ""
+    return f"https://wa.me/{number}?text={urllib_parse.quote('Hi Assistyca')}"
+
+
+SIGNUP_ASK_EMAIL_TEXT = (
+    "Hi — I'm Assistyca, your assistant. What email should I set your account up with? "
+    "You'll use it if you ever want to open things on the web."
+)
+SIGNUP_ASK_EMAIL_AGAIN_TEXT = (
+    "That doesn't look like an email address. What email should I use for your account?"
+)
+SIGNUP_EMAIL_TAKEN_TEXT = (
+    "That address already has an Assistyca account. Sign in at assistyca.com and get a code "
+    "from Settings to link this phone to it."
+)
+SIGNUP_WELCOME_TEXT = (
+    "You're set up. Ask me anything — I can go through your inbox, check your calendar, chase "
+    "receipts, or remind you about things. What's on your plate?"
+)
+
+
 def normalize_whatsapp_number(value: Any) -> str:
     """Digits only, with the Israeli local 05x form written out in full."""
 
@@ -659,14 +726,18 @@ __all__ = [
     "WhatsAppAgentChat",
     "WhatsAppAgentChatError",
     "build_whatsapp_claim_link",
+    "build_whatsapp_signup_link",
     "extract_whatsapp_claim_code",
+    "find_email_in_text",
     "format_agent_reply_for_whatsapp",
     "generate_whatsapp_claim_code",
     "resolve_assistyca_display_number",
+    "resolve_whatsapp_signup_daily_cap",
     "send_assistyca_text",
     "infer_timezone_from_wa_id",
     "normalize_whatsapp_number",
     "resolve_operator_whatsapp_numbers",
     "resolve_scheduled_message_run_at",
     "whatsapp_agent_chat_enabled",
+    "whatsapp_signup_enabled",
 ]

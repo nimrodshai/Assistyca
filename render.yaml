@@ -96,6 +96,13 @@ services:
         sync: false
       - key: ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID
         value: "1186653017865246"
+      # The public door: whether an unknown phone can sign up by texting, and
+      # how many may start in a day. The free trial bounds each account; these
+      # bound how many accounts a day can open.
+      - key: PORTAL_WHATSAPP_SIGNUP_ENABLED
+        value: "1"
+      - key: PORTAL_WHATSAPP_SIGNUP_DAILY_CAP
+        value: "50"
       # How many free days a newly created account starts with.
       - key: PORTAL_DEFAULT_TRIAL_DAYS
         value: "2"

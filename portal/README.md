@@ -79,6 +79,8 @@ Required environment variables on Render:
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX` quick-reply button index for the "Send details" button. Defaults to `0`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION` quick-reply payload action. Defaults to `send`.
 - `WHATSAPP_ALLOW_MOCK_SEND=0` in production so demos and owner alerts fail loudly unless WhatsApp Cloud API delivery is actually configured.
+- `PORTAL_WHATSAPP_SIGNUP_ENABLED` whether a phone nobody knows can open an account by texting the Assistyca number. Defaults to `1`; set `0` to restore silence to unknown numbers.
+- `PORTAL_WHATSAPP_SIGNUP_DAILY_CAP` how many signups may start in any 24 hours. Defaults to `50`; `0` removes the cap. See `docs/whatsapp-agent-chat.md`.
 - `PORTAL_DEFAULT_TRIAL_DAYS` how many free days a newly created account starts with. Defaults to `2`. Set a length per client with `POST /api/admin/users/<email>/trial`; `0` means no limit, which is what every account created before trials existed carries. See `docs/free-trials.md`.
 - `ASSISTYCA_WHATSAPP_DISPLAY_NUMBER` the Assistyca WhatsApp number in plain digits (`972559196101`). Used only to build the `wa.me` tap-to-open link handed out with a claim code; without it the code still works, typed by hand.
 - `ASSISTYCA_WHATSAPP_OWNER_NUMBERS` maps phone numbers to portal accounts, as comma-separated `number:email` pairs (`972507322341:owner@example.com`). Punctuation and the local `05x` form are normalised, so `+972 50-732-2341` and `050-7322341` both work. This is a bootstrap and a way back in, **not** the normal path: people link their own phone by sending a claim code from it (see `docs/whatsapp-agent-chat.md`), which needs no configuration and no redeploy.

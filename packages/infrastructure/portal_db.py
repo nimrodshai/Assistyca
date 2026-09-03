@@ -351,6 +351,20 @@ CREATE TABLE IF NOT EXISTS whatsapp_claim_codes (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- A phone that wrote to the Assistyca number and has no account yet. The row
+-- is keyed on the phone because that is the only thing known about the person
+-- until they answer with an email; there is no user to hang it off.
+CREATE TABLE IF NOT EXISTS whatsapp_signups (
+    wa_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'awaiting_email',
+    sender_name TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    user_id INTEGER,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS whatsapp_agent_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -633,6 +647,8 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_reengagement_notifications_user_thread
 ON whatsapp_reengagement_notifications(user_id, conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_agent_messages_user
 ON whatsapp_agent_messages(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_signups_started
+ON whatsapp_signups(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_whatsapp_numbers_user
 ON user_whatsapp_numbers(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_claim_codes_user
@@ -4777,6 +4793,139 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_whatsapp_connection_row(conn, user_id=user_id)
+
+    def link_user_whatsapp_number(self, *, user_id: int, wa_id: str, label: str = "") -> dict[str, Any]:
+        """Attach a phone to an account whose possession is already proved.
+
+        Signup proves it differently from a claim code: every message in the
+        conversation came from this phone, so by the time there is an account to
+        attach it to, the phone has been talking to us all along.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if resolved_user_id <= 0 or not number:
+            raise ValueError("Linking a phone needs an account and a number.")
+
+        stamp = now_iso()
+        with self._connection() as conn:
+            existing = conn.execute(
+                "SELECT user_id FROM user_whatsapp_numbers WHERE wa_id = ?",
+                (number,),
+            ).fetchone()
+            if existing is not None and int(existing["user_id"]) != resolved_user_id:
+                raise ValueError("This phone number already belongs to another account.")
+            conn.execute(
+                """
+                INSERT INTO user_whatsapp_numbers (wa_id, user_id, label, verified_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(wa_id) DO UPDATE SET
+                    label = excluded.label,
+                    verified_at = excluded.verified_at,
+                    updated_at = excluded.updated_at
+                """,
+                (number, resolved_user_id, normalize_text(label)[:120], stamp, stamp, stamp),
+            )
+            conn.commit()
+        return {"waId": number, "userId": resolved_user_id, "verifiedAt": stamp}
+
+    def get_whatsapp_signup(self, wa_id: str) -> dict[str, Any] | None:
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM whatsapp_signups WHERE wa_id = ?",
+                (number,),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = _row_to_dict(row) or {}
+        return {
+            "waId": str(payload.get("wa_id") or ""),
+            "status": str(payload.get("status") or ""),
+            "senderName": str(payload.get("sender_name") or ""),
+            "attempts": int(payload.get("attempts") or 0),
+            "userId": int(payload.get("user_id") or 0),
+            "startedAt": payload.get("started_at"),
+            "updatedAt": payload.get("updated_at"),
+            "completedAt": payload.get("completed_at"),
+        }
+
+    def start_whatsapp_signup(self, *, wa_id: str, sender_name: str = "") -> dict[str, Any]:
+        """Open, or reopen, the signup for this phone.
+
+        Reopening resets the attempt count: someone who gave up last week and
+        is trying again deserves the same patience as someone brand new.
+        """
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            raise ValueError("A signup needs a phone number.")
+        stamp = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO whatsapp_signups (wa_id, status, sender_name, attempts, started_at, updated_at)
+                VALUES (?, 'awaiting_email', ?, 0, ?, ?)
+                ON CONFLICT(wa_id) DO UPDATE SET
+                    status = 'awaiting_email',
+                    sender_name = excluded.sender_name,
+                    attempts = 0,
+                    user_id = NULL,
+                    started_at = excluded.started_at,
+                    updated_at = excluded.updated_at,
+                    completed_at = NULL
+                """,
+                (number, normalize_text(sender_name)[:120], stamp, stamp),
+            )
+            conn.commit()
+        return self.get_whatsapp_signup(number) or {}
+
+    def record_whatsapp_signup_attempt(self, *, wa_id: str, give_up: bool = False) -> dict[str, Any]:
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return {}
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE whatsapp_signups
+                SET attempts = attempts + 1,
+                    status = CASE WHEN ? THEN 'abandoned' ELSE status END,
+                    updated_at = ?
+                WHERE wa_id = ?
+                """,
+                (1 if give_up else 0, now_iso(), number),
+            )
+            conn.commit()
+        return self.get_whatsapp_signup(number) or {}
+
+    def complete_whatsapp_signup(self, *, wa_id: str, user_id: int) -> dict[str, Any]:
+        number = normalize_whatsapp_lookup_id(wa_id)
+        stamp = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE whatsapp_signups
+                SET status = 'completed', user_id = ?, updated_at = ?, completed_at = ?
+                WHERE wa_id = ?
+                """,
+                (int(user_id or 0), stamp, stamp, number),
+            )
+            conn.commit()
+        return self.get_whatsapp_signup(number) or {}
+
+    def count_whatsapp_signups_since(self, moment: datetime, *, completed_only: bool = False) -> int:
+        """How many phones started (or finished) signing up after this moment."""
+
+        column = "completed_at" if completed_only else "started_at"
+        since = moment.astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM whatsapp_signups WHERE {column} IS NOT NULL AND {column} >= ?",
+                (since,),
+            ).fetchone()
+        return int(row["total"] or 0) if row else 0
 
     def get_user_id_for_whatsapp_number(self, wa_id: str) -> int:
         """The account a phone belongs to, or 0."""

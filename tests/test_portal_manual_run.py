@@ -2078,13 +2078,10 @@ class PortalWhatsAppSampleTests(unittest.TestCase):
         # conversation with the agent now, so this test speaks to the agent:
         # the turn model and the WhatsApp send are mocked at their seams, and
         # what is asserted is the routing and the diagnostics either side of it.
-        agent_env = mock.patch.dict(
-            os.environ,
-            {"WHATSAPP_ALLOW_MOCK_SEND": "1"},
-            clear=False,
-        )
-        agent_env.start()
-        self.addCleanup(agent_env.stop)
+        # A plain assignment rather than a second patch: setUp's patch restores
+        # the whole environment in tearDown, and a second one stopped later by
+        # addCleanup would put its own snapshot back on top of that.
+        os.environ["WHATSAPP_ALLOW_MOCK_SEND"] = "1"
         secret_patch = mock.patch.object(
             self.server.store, "session_secret", b"manual-run-agent-secret"
         )

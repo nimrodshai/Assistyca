@@ -189,12 +189,22 @@ from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
 from packages.infrastructure.whatsapp_agent_chat import CLAIM_CODE_TTL_SECONDS
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
+from packages.infrastructure.whatsapp_agent_chat import find_email_in_text
 from packages.infrastructure.whatsapp_agent_chat import generate_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import normalize_whatsapp_number
 from packages.infrastructure.whatsapp_agent_chat import resolve_assistyca_display_number
 from packages.infrastructure.whatsapp_agent_chat import resolve_operator_whatsapp_numbers
 from packages.infrastructure.whatsapp_agent_chat import send_assistyca_text
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_agent_chat_enabled
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_AGAIN_TEXT
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_TEXT
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_EMAIL_TAKEN_TEXT
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_MAX_EMAIL_ATTEMPTS
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_REOPEN_AFTER_SECONDS
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_WELCOME_TEXT
+from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
+from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
+from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
 from packages.infrastructure.whatsapp_portal_service import normalize_portal_owner_wa_id
@@ -1610,6 +1620,17 @@ def now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_moment(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def is_valid_email(email: str) -> bool:
@@ -4014,6 +4035,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/whatsapp/my-numbers":
             self._handle_whatsapp_my_numbers_get()
+            return
+
+        if path == "/api/admin/whatsapp/signup":
+            self._handle_admin_whatsapp_signup_get()
             return
 
         if path == "/api/whatsapp/history":
@@ -10381,6 +10406,161 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "phone_number_id": normalize_text(phone_number_id),
         }
 
+    def _handle_whatsapp_signup(
+        self,
+        phone_number_id: str,
+        event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Open an account for a phone nobody knows, in the conversation.
+
+        The first message from an unknown phone is answered with one question:
+        which email. The next message is read as the answer. An address that
+        already has an account is refused rather than linked, because typing
+        someone else's address must never attach this phone to their
+        workspace -- the claim code exists for that, and it proves the phone
+        from inside the account.
+
+        Returns None when signup is off or capped so the caller drops the
+        message the way it always has; the cap is the ceiling on what an
+        unexpected crowd can cost before anyone notices.
+        """
+
+        if normalize_text(phone_number_id) != resolve_whatsapp_sender_phone_number_id():
+            return None
+        if not whatsapp_agent_chat_enabled() or not whatsapp_signup_enabled():
+            return None
+
+        sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
+        if not sender_wa_id:
+            return None
+
+        now = datetime.now(timezone.utc)
+        signup = self.database.get_whatsapp_signup(sender_wa_id)
+        status = normalize_text((signup or {}).get("status"))
+        last_touch = _parse_iso_moment((signup or {}).get("updatedAt")) or now
+        stale = (now - last_touch).total_seconds() > SIGNUP_REOPEN_AFTER_SECONDS
+
+        if status == "abandoned" and not stale:
+            # They were asked three times today and did not answer. More
+            # messages from us would only cost money.
+            return {"type": "signup", "action": "signup_ignored", "reason": "abandoned"}
+
+        if status != "awaiting_email" or stale:
+            cap = resolve_whatsapp_signup_daily_cap()
+            started_today = self.database.count_whatsapp_signups_since(now - timedelta(days=1))
+            if cap and started_today >= cap:
+                print(
+                    json.dumps(
+                        {
+                            "event": "whatsapp_signup_capped",
+                            "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
+                            "dailyCap": cap,
+                            "startedToday": started_today,
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                return {"type": "signup", "action": "signup_capped", "reason": "daily_cap"}
+            signup = self.database.start_whatsapp_signup(
+                wa_id=sender_wa_id,
+                sender_name=normalize_text(event.get("sender_name")),
+            )
+            # Someone whose opening message already carries their address
+            # should not be asked for it; fall through and use it.
+            if not is_valid_email(find_email_in_text(event.get("message_text"))):
+                return self._finish_whatsapp_signup_step(sender_wa_id, "signup_started", SIGNUP_ASK_EMAIL_TEXT)
+
+        # Mid-signup: this message is their answer.
+        email = normalize_email(find_email_in_text(event.get("message_text")))
+        if not is_valid_email(email):
+            record = self.database.record_whatsapp_signup_attempt(
+                wa_id=sender_wa_id,
+                give_up=int((signup or {}).get("attempts") or 0) + 1 >= SIGNUP_MAX_EMAIL_ATTEMPTS,
+            )
+            if record.get("status") == "abandoned":
+                return self._finish_whatsapp_signup_step(
+                    sender_wa_id,
+                    "signup_abandoned",
+                    "No problem — text me again whenever you'd like to set this up.",
+                )
+            return self._finish_whatsapp_signup_step(sender_wa_id, "signup_email_invalid", SIGNUP_ASK_EMAIL_AGAIN_TEXT)
+
+        if self.database.get_user(email) is not None:
+            self.database.record_whatsapp_signup_attempt(wa_id=sender_wa_id)
+            return self._finish_whatsapp_signup_step(sender_wa_id, "signup_email_taken", SIGNUP_EMAIL_TAKEN_TEXT)
+
+        try:
+            self.database.register_user(
+                email,
+                display_name=normalize_text(event.get("sender_name")),
+                notes="Signed up over WhatsApp.",
+            )
+            self.database.set_user_trial(email, trial_days=resolve_default_trial_days(), start_now=True)
+            user = self.database.get_user(email) or {}
+            self.database.link_user_whatsapp_number(
+                user_id=int(user.get("id") or 0),
+                wa_id=sender_wa_id,
+                label=normalize_text(event.get("sender_name")),
+            )
+            self.database.complete_whatsapp_signup(wa_id=sender_wa_id, user_id=int(user.get("id") or 0))
+        except (ValueError, KeyError, sqlite3.Error) as exc:
+            print(f"WhatsApp signup could not create the account: {exc}", flush=True)
+            return self._finish_whatsapp_signup_step(
+                sender_wa_id,
+                "signup_failed",
+                "Something went wrong setting that up. Please try again in a moment.",
+            )
+
+        print(
+            json.dumps(
+                {
+                    "event": "whatsapp_signup_completed",
+                    "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
+                    "trialDays": resolve_default_trial_days(),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return self._finish_whatsapp_signup_step(sender_wa_id, "signup_completed", SIGNUP_WELCOME_TEXT)
+
+    def _finish_whatsapp_signup_step(self, sender_wa_id: str, action: str, reply: str) -> dict[str, Any]:
+        message_id = ""
+        error_text = ""
+        try:
+            message_id = send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
+        except Exception as exc:  # noqa: BLE001 - the state is saved even if the note is not
+            error_text = str(exc)
+            print(f"WhatsApp signup reply could not be sent: {exc}", flush=True)
+        return {
+            "type": "signup",
+            "action": action,
+            "reply_text": reply,
+            "message_id": message_id,
+            "error": error_text,
+        }
+
+    def _handle_admin_whatsapp_signup_get(self) -> None:
+        """Where the public door stands: the link, the switch, and today's count."""
+
+        authenticated = self._require_client_manager_user()
+        if authenticated is None:
+            return
+        now = datetime.now(timezone.utc)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "enabled": whatsapp_agent_chat_enabled() and whatsapp_signup_enabled(),
+            "link": build_whatsapp_signup_link(),
+            "assistycaNumber": resolve_assistyca_display_number(),
+            "dailyCap": resolve_whatsapp_signup_daily_cap(),
+            "startedToday": self.database.count_whatsapp_signups_since(now - timedelta(days=1)),
+            "completedToday": self.database.count_whatsapp_signups_since(now - timedelta(days=1), completed_only=True),
+            "defaultTrialDays": resolve_default_trial_days(),
+        })
+
     def _log_whatsapp_route_failure(self, phone_number_id: str, sender_wa_id: str) -> None:
         """Say why a message could not be matched to an account.
 
@@ -12619,6 +12799,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 claim_result = self._handle_whatsapp_number_claim(phone_number_id, event)
                 if claim_result is not None:
                     results.append(claim_result)
+                    continue
+                signup_result = self._handle_whatsapp_signup(phone_number_id, event)
+                if signup_result is not None:
+                    results.append(signup_result)
                     continue
                 self._log_whatsapp_route_failure(
                     phone_number_id,
