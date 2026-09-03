@@ -32,6 +32,9 @@ carries — introducing this cannot switch off a client who is already working.
 
 ## Setting it
 
+* The clients screen in the portal shows where each account stands and takes
+  the length in days beside it. Setting `0` there removes the limit.
+  Restarting the clock is not offered on that screen.
 * `POST /api/admin/users/<email>/trial` with `{"trialDays": 14}` sets the
   length. `{"trialDays": 0}` removes the limit; `{"restart": true}` also
   restarts the clock.
