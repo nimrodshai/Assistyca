@@ -638,6 +638,34 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         model.assert_not_called()
         self.assertEqual(response["results"][0]["type"], "customer")
 
+    def test_an_expired_trial_is_told_so_over_whatsapp(self) -> None:
+        # Cost control has to reach the channel people actually use, and the
+        # person reading it is a client whose trial ran out, not an error.
+        self.database.set_user_trial("owner@example.com", trial_days=2)
+        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute(
+                "UPDATE users SET trial_started_at = ? WHERE id = ?",
+                (
+                    (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+                    int(self.user["id"]),
+                ),
+            )
+            conn.commit()
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+        ) as model:
+            response = self._post_webhook(
+                inbound_text_payload("are you there?", message_id="wamid.trial-1")
+            )
+
+        model.assert_not_called()
+        reply = next(
+            entry for entry in response["results"] if entry.get("action") == "agent_chat_reply"
+        )
+        self.assertIn("trial has ended", reply["reply_text"])
+        self.sent.assert_called_once()
+
     def test_disabling_the_flow_keeps_the_old_help_behaviour(self) -> None:
         with (
             mock.patch.dict("os.environ", {"WHATSAPP_AGENT_CHAT_ENABLED": "0"}, clear=False),

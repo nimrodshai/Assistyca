@@ -79,6 +79,9 @@ from packages.infrastructure.credential_vault import CredentialVaultError
 from packages.infrastructure.credential_vault import credential_hint
 from packages.infrastructure.credential_vault import normalize_platform_connection_metadata
 from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
+from packages.infrastructure.trial_access import build_trial_expired_message
+from packages.infrastructure.trial_access import describe_trial
+from packages.infrastructure.trial_access import resolve_default_trial_days
 from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.file_tags import FILE_TAGS_FILENAME
 from packages.infrastructure.file_tags import build_receipt_file_tags
@@ -6190,7 +6193,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
 
-        session, _ = authenticated
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
         try:
             payload = parse_json_body(self)
         except ValueError as exc:
@@ -8062,7 +8067,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
 
-        session, _ = authenticated
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
         try:
             payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
         except ValueError as exc:
@@ -8171,7 +8178,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
 
-        session, _ = authenticated
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
         try:
             payload = parse_json_body(self)
         except ValueError as exc:
@@ -9131,6 +9140,35 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         return session, user
 
+    def _user_is_paying(self, email: str) -> bool:
+        customer = self.database.get_billing_customer(email, include_inactive=True) or {}
+        return normalize_text(customer.get("subscriptionStatus")) in ACTIVE_SUBSCRIPTION_STATUSES
+
+    def _describe_user_trial(self, user: dict[str, Any]) -> dict[str, Any]:
+        return describe_trial(
+            user,
+            is_paying=self._user_is_paying(normalize_email(user.get("email"))),
+        )
+
+    def _require_active_trial(self, user: dict[str, Any]) -> bool:
+        """Stop a finished trial before it can spend anything on a model.
+
+        Every path that reaches a model goes through one of these guards, so a
+        trial that has run out costs nothing rather than costing slightly less.
+        """
+
+        trial = self._describe_user_trial(user)
+        if trial.get("allowed"):
+            return True
+
+        json_response(self, HTTPStatus.PAYMENT_REQUIRED, {
+            "ok": False,
+            "error": "trial_expired",
+            "message": build_trial_expired_message(self.server.config.product_name),
+            "trial": trial,
+        })
+        return False
+
     def _require_admin_user(self) -> tuple[PortalSession, dict[str, Any]] | None:
         authenticated = self._require_authenticated_user()
         if authenticated is None:
@@ -9200,6 +9238,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "usageCount": int(user.get("usageCount") or 0),
             "lastUsageAt": user.get("lastUsageAt"),
             "billing": user.get("billing") if isinstance(user.get("billing"), dict) else {},
+            "trial": describe_trial(user, is_paying=is_paying),
             "paymentStatus": {
                 "isPaying": is_paying,
                 "label": "Paying" if is_paying else "Not paying",
@@ -9376,6 +9415,67 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "displayName": normalize_text(response_current_user.get("displayName")),
                     "isAdmin": bool(response_current_user.get("isAdmin")),
                 },
+            })
+            return
+
+        if len(parts) == 5 and parts[:3] == ["api", "admin", "users"] and parts[4] == "trial":
+            email = normalize_email(urllib_parse.unquote(parts[3]))
+            if not is_valid_email(email):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_email",
+                    "message": "Enter a valid email address.",
+                })
+                return
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_json",
+                    "message": str(exc),
+                })
+                return
+
+            raw_days = payload.get("trialDays", payload.get("trial_days"))
+            try:
+                trial_days = max(0, int(raw_days))
+            except (TypeError, ValueError):
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_trial_days",
+                    "message": "Trial length must be a whole number of days. Use 0 for no limit.",
+                })
+                return
+
+            try:
+                user = self.database.set_user_trial(
+                    email,
+                    trial_days=trial_days,
+                    # Restarting is asked for explicitly, so extending a
+                    # running trial does not silently hand back the days
+                    # already spent.
+                    start_now=payload.get("restart") is True,
+                )
+            except KeyError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {
+                    "ok": False,
+                    "error": "not_found",
+                    "message": str(exc),
+                })
+                return
+            except (ValueError, sqlite3.Error) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "invalid_request",
+                    "message": str(exc),
+                })
+                return
+
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "Trial updated." if trial_days else "Trial limit removed.",
+                "user": self._serialize_admin_user(user),
             })
             return
 

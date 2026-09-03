@@ -96,6 +96,9 @@ services:
         sync: false
       - key: ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID
         value: "1186653017865246"
+      # How many free days a newly created account starts with.
+      - key: PORTAL_DEFAULT_TRIAL_DAYS
+        value: "2"
       # The Assistyca WhatsApp number in plain digits, used to build the
       # tap-to-open wa.me link handed out with a claim code.
       - key: ASSISTYCA_WHATSAPP_DISPLAY_NUMBER

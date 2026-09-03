@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS users (
     last_otp_verified_at TEXT,
     notes TEXT NOT NULL DEFAULT '',
     profile_json TEXT NOT NULL DEFAULT '{}',
+    -- How many days of free use this account gets, and when its clock started.
+    -- Zero means no limit, which is what every account created before trials
+    -- existed carries: a client already working here must not stop working
+    -- because a trial was introduced around them.
+    trial_days INTEGER NOT NULL DEFAULT 0,
+    trial_started_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -995,6 +1001,10 @@ class PortalDatabase:
             conn.execute("ALTER TABLE users ADD COLUMN client_type TEXT NOT NULL DEFAULT ''")
         if "profile_json" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'")
+        if "trial_days" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_days INTEGER NOT NULL DEFAULT 0")
+        if "trial_started_at" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
 
     def _migrate_user_billing_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -1570,6 +1580,8 @@ class PortalDatabase:
                 u.last_otp_verified_at,
                 u.notes,
                 u.profile_json,
+                u.trial_days,
+                u.trial_started_at,
                 u.created_at,
                 u.updated_at,
                 COALESCE(b.currency, ?) AS billing_currency,
@@ -1614,6 +1626,8 @@ class PortalDatabase:
                 "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
                 "lastOtpVerifiedAt": payload.get("last_otp_verified_at"),
                 "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
+                "trialDays": int(payload.get("trial_days") or 0),
+                "trialStartedAt": payload.get("trial_started_at"),
                 "usageCount": int(usage_stats["usage_count"] or 0) if usage_stats else 0,
                 "lastUsageAt": usage_stats["last_usage_at"] if usage_stats else None,
                 "billing": {
@@ -1640,6 +1654,8 @@ class PortalDatabase:
             "last_otp_requested_at",
             "last_otp_verified_at",
             "profile_json",
+            "trial_days",
+            "trial_started_at",
         ):
             payload.pop(key, None)
         payload.pop("billing_currency", None)
@@ -3672,6 +3688,45 @@ class PortalDatabase:
 
         with self._connection() as conn:
             return self._load_user_row(conn, normalized_email)
+
+    def set_user_trial(
+        self,
+        email: str,
+        *,
+        trial_days: int,
+        start_now: bool = False,
+        clear_start: bool = False,
+    ) -> dict[str, Any]:
+        """Set how many free days this account gets.
+
+        The clock is kept separate from the length so an operator can extend a
+        trial that is already running without restarting it, which is the whole
+        point of being able to change this per client.
+        """
+
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        days = max(0, int(trial_days or 0))
+
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_email)
+            if user is None:
+                raise KeyError(f"Unknown user: {normalized_email}")
+
+            started_at = user.get("trialStartedAt")
+            if clear_start:
+                started_at = None
+            elif start_now or (days > 0 and not started_at):
+                # A trial with no start would never end.
+                started_at = now_iso()
+
+            conn.execute(
+                "UPDATE users SET trial_days = ?, trial_started_at = ?, updated_at = ? WHERE id = ?",
+                (days, started_at, now_iso(), int(user.get("id") or 0)),
+            )
+            conn.commit()
+            return self._load_user_row(conn, normalized_email) or {}
 
     def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         """The same record as get_user, for callers holding an id.
