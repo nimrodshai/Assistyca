@@ -7,9 +7,21 @@ the same agent.
 
 ## How a message is routed
 
-Every inbound webhook event to the Assistyca sender number from a known
-`owner_wa_id` resolves to a portal user (`platform_owner_alert` route). From
-there the split is:
+An inbound webhook event to the Assistyca sender number resolves to a portal
+user in one of two ways, both giving the `platform_owner_alert` route:
+
+* **A number configured on the server** — `ASSISTYCA_WHATSAPP_OWNER_NUMBERS`,
+  as `number:email` pairs. This is how whoever runs Assistyca reaches the
+  agent. Their number *is* the Assistyca number, so they have no client
+  WhatsApp connection to be recognised by, and saving one for themselves would
+  be worse than useless: the webhook would match it as a client number and file
+  their own messages as customer approvals. This lookup therefore runs *before*
+  the client-connection lookup.
+* **A saved `owner_wa_id`** on a client's WhatsApp connection, as before.
+
+An inbound message from a phone neither of those recognises is dropped with
+`No portal workspace is connected to this phone number ID` and nothing is sent
+back. From there the split is:
 
 1. **Approval flow keeps everything that is plainly its own**: interactive
    button taps, replies that target an approval, approval refs, re-engagement

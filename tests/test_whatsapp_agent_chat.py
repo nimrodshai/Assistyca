@@ -146,6 +146,11 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.env = mock.patch.dict(
             "os.environ",
             {
+                # The approval store does not follow the temporary database:
+                # left alone it resolves to portal/portal-whatsapp inside the
+                # repository, where every run of every test would share one
+                # file and inherit the approvals the last run left behind.
+                "PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp"),
                 "WHATSAPP_APP_SECRET": APP_SECRET,
                 "WHATSAPP_ALLOW_MOCK_SEND": "1",
                 "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM_PHONE_NUMBER_ID,
@@ -309,6 +314,105 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         actions = [entry.get("action") for entry in response.get("results", [])]
         self.assertNotIn("agent_chat_reply", actions)
         self.assertIn("send_suggested", actions)
+
+    def test_an_operator_number_is_answered_without_any_saved_connection(self) -> None:
+        # The account whose number *is* the Assistyca number has no client
+        # WhatsApp connection to be recognised by, which is the whole reason
+        # the server-configured mapping exists.
+        self.database.register_user("operator@example.com")
+        operator = self.database.get_user("operator@example.com") or {}
+        self.assertIsNone(
+            self.database.get_whatsapp_connection_by_user_id(int(operator["id"]))
+        )
+
+        # Written the way a person would type their own phone, to prove the
+        # spaces, dashes and country prefix are all normalized away.
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {"ASSISTYCA_WHATSAPP_OWNER_NUMBERS": "+972 52-111-2233 : operator@example.com"},
+                clear=False,
+            ),
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                return_value=self._turn_response({
+                    "outcome": "message",
+                    "reply": "Hello from the agent.",
+                }),
+            ),
+        ):
+            response = self._post_webhook(
+                inbound_text_payload(
+                    "are you there?",
+                    sender="972521112233",
+                    message_id="wamid.agent-operator-1",
+                )
+            )
+
+        reply_entry = next(
+            entry for entry in response["results"] if entry.get("action") == "agent_chat_reply"
+        )
+        self.assertEqual(reply_entry["reply_text"], "Hello from the agent.")
+        self.assertEqual(reply_entry["route"], "platform_owner_alert")
+        self.sent.assert_called_once()
+        self.assertEqual(self.sent.call_args.kwargs["recipient_wa_id"], "972521112233")
+
+        transcript = self.database.list_recent_whatsapp_agent_messages(
+            user_id=int(operator["id"]),
+        )
+        self.assertEqual([item["text"] for item in transcript], ["are you there?", "Hello from the agent."])
+
+    def test_an_unmapped_stranger_is_still_not_answered(self) -> None:
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {"ASSISTYCA_WHATSAPP_OWNER_NUMBERS": "972521112233:operator@example.com"},
+                clear=False,
+            ),
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+            ) as model,
+        ):
+            response = self._post_webhook(
+                inbound_text_payload(
+                    "hello?",
+                    sender="14155550123",
+                    message_id="wamid.agent-stranger-1",
+                )
+            )
+
+        model.assert_not_called()
+        self.sent.assert_not_called()
+        self.assertEqual(response["results"][0]["type"], "error")
+
+    def test_an_operator_number_does_not_hijack_a_clients_customer_traffic(self) -> None:
+        # The operator mapping only applies to the Assistyca number. A customer
+        # writing to a client's own number is still customer traffic.
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {"ASSISTYCA_WHATSAPP_OWNER_NUMBERS": f"{OWNER_WA_ID}:owner@example.com"},
+                clear=False,
+            ),
+            mock.patch(
+                "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
+                return_value="wamid.owner-notice",
+            ),
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+            ) as model,
+        ):
+            response = self._post_webhook(
+                inbound_text_payload(
+                    "do you have openings tomorrow?",
+                    sender="972500000002",
+                    phone_number_id=CLIENT_PHONE_NUMBER_ID,
+                    message_id="wamid.customer-2",
+                )
+            )
+
+        model.assert_not_called()
+        self.assertEqual(response["results"][0]["type"], "customer")
 
     def test_disabling_the_flow_keeps_the_old_help_behaviour(self) -> None:
         with (

@@ -107,6 +107,47 @@ def whatsapp_agent_chat_enabled() -> bool:
     return parse_bool(os.getenv("WHATSAPP_AGENT_CHAT_ENABLED"), True)
 
 
+def normalize_whatsapp_number(value: Any) -> str:
+    """Digits only, with the Israeli local 05x form written out in full."""
+
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if len(digits) == 10 and digits.startswith("05"):
+        return f"972{digits[1:]}"
+    return digits
+
+
+def resolve_operator_whatsapp_numbers() -> dict[str, str]:
+    """Phones that reach the agent directly, each mapped to its account.
+
+    A client is recognized by the WhatsApp Business connection they saved, and
+    whoever runs Assistyca has no such thing: their number *is* the Assistyca
+    number, so there is no client connection to look them up by. Without this
+    the people best placed to use the agent are the only ones who cannot, and
+    inventing a fake client connection for them would route their own messages
+    into the customer approval flow instead.
+
+        ASSISTYCA_WHATSAPP_OWNER_NUMBERS="972507322341:owner@example.com"
+
+    Several are allowed, separated by commas, so a second phone can be added
+    for testing without disturbing the first.
+    """
+
+    raw = normalize_text(os.getenv("ASSISTYCA_WHATSAPP_OWNER_NUMBERS"))
+    mapping: dict[str, str] = {}
+    for entry in re.split(r"[,;\n]+", raw):
+        piece = entry.strip()
+        if not piece:
+            continue
+        parts = re.split(r"[:=]", piece, maxsplit=1)
+        if len(parts) != 2:
+            continue
+        number = normalize_whatsapp_number(parts[0])
+        email = normalize_email(parts[1])
+        if number and email:
+            mapping[number] = email
+    return mapping
+
+
 def infer_timezone_from_wa_id(wa_id: Any) -> str:
     """A default timezone from the phone number's country code, or UTC."""
 
@@ -564,6 +605,8 @@ __all__ = [
     "WhatsAppAgentChatError",
     "format_agent_reply_for_whatsapp",
     "infer_timezone_from_wa_id",
+    "normalize_whatsapp_number",
+    "resolve_operator_whatsapp_numbers",
     "resolve_scheduled_message_run_at",
     "whatsapp_agent_chat_enabled",
 ]

@@ -79,6 +79,7 @@ Required environment variables on Render:
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX` quick-reply button index for the "Send details" button. Defaults to `0`.
 - `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION` quick-reply payload action. Defaults to `send`.
 - `WHATSAPP_ALLOW_MOCK_SEND=0` in production so demos and owner alerts fail loudly unless WhatsApp Cloud API delivery is actually configured.
+- `ASSISTYCA_WHATSAPP_OWNER_NUMBERS` maps phone numbers to portal accounts for people who text the Assistyca number directly, as comma-separated `number:email` pairs (`972507322341:owner@example.com`). Punctuation and the local `05x` form are normalised, so `+972 50-732-2341` and `050-7322341` both work. This is how whoever runs Assistyca reaches the agent: their number *is* the Assistyca number, so there is no client WhatsApp connection to identify them by. Without an entry here, a message to the Assistyca number from an unrecognised phone is dropped and nothing is sent back.
 - `WHATSAPP_AGENT_CHAT_ENABLED` controls the WhatsApp agent conversation: an owner message to the Assistyca number that targets no approval reaches the same agent as the portal chat and gets answered over WhatsApp (see `docs/whatsapp-agent-chat.md`). The default is `1`; set `0` to restore the old help-text behaviour.
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification

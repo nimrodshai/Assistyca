@@ -182,6 +182,8 @@ from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_acc
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
+from packages.infrastructure.whatsapp_agent_chat import normalize_whatsapp_number
+from packages.infrastructure.whatsapp_agent_chat import resolve_operator_whatsapp_numbers
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_agent_chat_enabled
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
@@ -10153,11 +10155,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not normalized_phone_number_id:
             return None, ""
 
+        platform_sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
+        if normalized_phone_number_id == platform_sender_phone_number_id:
+            # A message to the Assistyca number itself is a person writing to
+            # us, so it resolves by who sent it rather than by which client
+            # owns the number. This runs before the client lookup because the
+            # Assistyca number and a client's number can be the same number
+            # while Assistyca is its own first customer, and reading the
+            # operator's own messages as customer traffic would file them for
+            # approval instead of answering them.
+            operator_connection = self._resolve_whatsapp_operator_connection(owner_wa_id)
+            if operator_connection:
+                return operator_connection, "platform_owner_alert"
+
         connection = self.database.get_whatsapp_connection_by_phone_number_id(normalized_phone_number_id)
         if connection:
             return connection, "connected_number"
 
-        platform_sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
         if normalized_phone_number_id != platform_sender_phone_number_id:
             return None, ""
 
@@ -10166,6 +10180,53 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return owner_connection, "platform_owner_alert"
 
         return None, ""
+
+    def _resolve_whatsapp_operator_connection(self, owner_wa_id: str) -> dict[str, Any] | None:
+        """The account a phone belongs to, for phones configured on the server.
+
+        Everything downstream expects a connection record, so a phone with no
+        saved WhatsApp Business connection still gets one built here. It
+        deliberately carries no phone number id or token: this account is not a
+        client whose customers write to it, it is a person writing to us.
+        """
+
+        number = normalize_whatsapp_number(owner_wa_id)
+        if not number:
+            return None
+
+        email = resolve_operator_whatsapp_numbers().get(number)
+        if not email:
+            return None
+
+        user = self.database.get_user(email)
+        if not user or not bool(user.get("isActive")):
+            return None
+
+        saved = self.database.get_whatsapp_connection_by_user_id(int(user.get("id") or 0))
+        if saved:
+            # A real connection already carries what the service needs. Only
+            # the number it answers to is replaced, because the phone that just
+            # wrote in is the one this conversation belongs to.
+            return {**saved, "ownerWaId": number}
+
+        return {
+            "userId": int(user.get("id") or 0),
+            "email": normalize_email(user.get("email")),
+            "displayName": normalize_text(user.get("displayName")),
+            "businessAccountId": "",
+            "phoneNumberId": "",
+            "accessToken": "",
+            "accessTokenConfigured": False,
+            "ownerWaId": number,
+            "displayPhoneNumber": "",
+            "verifiedName": "",
+            "connectionStatus": "connected",
+            "metadata": {"source": "operator_number"},
+            "connectedAt": None,
+            "lastTestedAt": None,
+            "createdAt": None,
+            "updatedAt": None,
+        }
 
     def _whatsapp_owner_event_targets_approvals(
         self,

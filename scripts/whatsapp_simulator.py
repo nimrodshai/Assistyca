@@ -215,7 +215,16 @@ def main() -> int:
     if not args.sender:
         args.sender = args.owner
 
+    # Keep the approval store beside whichever database this run uses. Without
+    # it the store resolves to portal/portal-whatsapp in the repository, so a
+    # throwaway run would leave approvals behind for the next one to find.
+    store_root = (
+        Path(args.db).resolve().parent / "portal-whatsapp"
+        if args.db
+        else Path(tempfile.mkdtemp(prefix="whatsapp-sim-")) / "portal-whatsapp"
+    )
     environment = {
+        "PORTAL_WHATSAPP_STORE_ROOT": str(store_root),
         "WHATSAPP_APP_SECRET": SIMULATED_APP_SECRET,
         "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": SIMULATED_PLATFORM_PHONE_NUMBER_ID,
         "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "simulator-token",

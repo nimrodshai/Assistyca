@@ -96,6 +96,13 @@ services:
         sync: false
       - key: ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID
         value: "1186653017865246"
+      # Phones that reach the agent by texting the Assistyca number, as
+      # "number:email" pairs separated by commas. These are the people whose
+      # own number *is* the Assistyca number, so they have no client WhatsApp
+      # connection to be recognised by. Holds real phone numbers, so it is set
+      # in the dashboard rather than committed here.
+      - key: ASSISTYCA_WHATSAPP_OWNER_NUMBERS
+        sync: false
       - key: WHATSAPP_ALLOW_MOCK_SEND
         value: "0"
       - key: WHATSAPP_SAMPLE_TEMPLATE_NAME
