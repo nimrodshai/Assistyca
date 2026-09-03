@@ -23,6 +23,7 @@ import threading
 import time
 import hmac
 import hashlib
+import html
 import zipfile
 from datetime import datetime
 from datetime import timedelta
@@ -206,6 +207,8 @@ from packages.infrastructure.whatsapp_agent_chat import SIGNUP_MAX_EMAIL_ATTEMPT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_REOPEN_AFTER_SECONDS
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_WELCOME_TEXT
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
+from packages.infrastructure.whatsapp_agent_chat import build_connect_links_line
+from packages.infrastructure.whatsapp_agent_chat import build_link_existing_account_text
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
@@ -415,6 +418,9 @@ MICROSOFT_OAUTH_DEFAULT_TENANT = "common"
 MICROSOFT_OAUTH_AUTH_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
 MICROSOFT_OAUTH_TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
 MICROSOFT_OAUTH_STATE_TTL_SECONDS = 10 * 60
+# A link tapped from WhatsApp means leaving one app for another and coming
+# back; ten minutes is tight for that, so this channel gets longer.
+WHATSAPP_OAUTH_STATE_TTL_SECONDS = 30 * 60
 MICROSOFT_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
 MICROSOFT_OAUTH_SECRET_TYPE = "microsoft_refresh_token"
 # What a mailbox is called on screen. The provider itself lives on the
@@ -1638,6 +1644,17 @@ def _parse_iso_moment(value: Any) -> datetime | None:
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def sign_oauth_state_payload(secret: str, payload: dict[str, Any]) -> str:
+    """The same signed state the handlers build, callable without a request."""
+
+    if not normalize_text(secret):
+        raise ValueError("Session secret is not configured.")
+    body = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(normalize_text(secret).encode("utf-8"), body, hashlib.sha256).digest()
+    encode = lambda raw: base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")  # noqa: E731
+    return f"{encode(body)}.{encode(signature)}"
 
 
 def is_valid_email(email: str) -> bool:
@@ -4595,6 +4612,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             ))
             return
 
+        whatsapp_state = self._read_whatsapp_oauth_state((query.get("state") or [""])[0], provider="google")
+        if whatsapp_state is not None:
+            self._finish_whatsapp_oauth(whatsapp_state, code=normalize_text((query.get("code") or [""])[0]), provider="google")
+            return
+
         session = self._get_authenticated_session()
         if session is None:
             self._redirect(self._google_calendar_oauth_return_url(
@@ -5119,6 +5141,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "error",
                 "Outlook was not connected. Choose the Microsoft account again and grant read-only mail access.",
             ))
+            return
+
+        whatsapp_state = self._read_whatsapp_oauth_state((params.get("state") or [""])[0], provider="microsoft")
+        if whatsapp_state is not None:
+            self._finish_whatsapp_oauth(whatsapp_state, code=normalize_text((params.get("code") or [""])[0]), provider="microsoft")
             return
 
         session = self._get_authenticated_session()
@@ -9863,6 +9890,216 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
         return f"{self._base64url_encode(body)}.{self._base64url_encode(signature)}"
 
+    def _build_whatsapp_oauth_state(
+        self,
+        *,
+        provider: str,
+        email: str,
+        wa_id: str,
+        purpose: str,
+        scope_ids: tuple[str, ...] = (),
+    ) -> str:
+        """A sign-in state for a link tapped from WhatsApp.
+
+        The portal's states bind to a browser session, and a phone opening a
+        link from WhatsApp has none. This one carries its own identity instead:
+        the account, the phone, and what finishing the sign-in should do.
+        """
+
+        payload: dict[str, Any] = {
+            "version": 1,
+            "channel": "whatsapp",
+            "provider": provider,
+            "email": normalize_email(email),
+            "waId": normalize_whatsapp_number(wa_id),
+            "purpose": purpose if purpose in {"connect", "link_account"} else "connect",
+            "issuedAt": int(time.time()),
+            "nonce": secrets.token_urlsafe(16),
+        }
+        if scope_ids:
+            payload["scopeIds"] = list(scope_ids)
+        return sign_oauth_state_payload(self.config.session_secret, payload)
+
+    def _read_whatsapp_oauth_state(self, raw_state: str, *, provider: str) -> dict[str, Any] | None:
+        """The WhatsApp state in a callback, or None so the session path runs.
+
+        None also covers a bad signature: the session path will then reject it
+        with its own message, so a forged state is never mistaken for a
+        browser one.
+        """
+
+        state = normalize_text(raw_state)
+        if "." not in state:
+            return None
+        body_value, signature_value = state.split(".", 1)
+        try:
+            body = self._base64url_decode(body_value)
+            signature = self._base64url_decode(signature_value)
+        except (ValueError, TypeError, binascii.Error):
+            return None
+        expected = hmac.new(normalize_text(self.config.session_secret).encode("utf-8"), body, hashlib.sha256).digest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or normalize_text(payload.get("channel")) != "whatsapp":
+            return None
+        if normalize_text(payload.get("provider")) != provider:
+            return None
+        issued_at = int(payload.get("issuedAt") or 0)
+        if issued_at <= 0 or time.time() - issued_at > WHATSAPP_OAUTH_STATE_TTL_SECONDS:
+            return {"expired": True, "waId": normalize_whatsapp_number(payload.get("waId")), "provider": provider}
+        if not is_valid_email(normalize_email(payload.get("email"))) or not normalize_whatsapp_number(payload.get("waId")):
+            return None
+        return payload
+
+    def _whatsapp_oauth_links(self, *, email: str, wa_id: str, purpose: str = "connect") -> dict[str, str]:
+        """Sign-in links for whichever providers are configured, or fewer.
+
+        Each link is signed for this phone and this account, so one forwarded
+        to somebody else connects nothing of theirs to anything of ours.
+        """
+
+        links: dict[str, str] = {}
+        if not self._google_calendar_oauth_config_error():
+            try:
+                # Mail and calendar in one tap: asking twice would be two
+                # links and two sign-ins for the same account.
+                scope_ids = self._normalize_google_oauth_scope_ids(("gmail", "calendar"), default=("calendar",))
+                state = self._build_whatsapp_oauth_state(
+                    provider="google", email=email, wa_id=wa_id, purpose=purpose, scope_ids=scope_ids,
+                )
+                query = {
+                    "client_id": normalize_text(self.config.google_oauth_client_id),
+                    "redirect_uri": self._google_calendar_oauth_redirect_uri(),
+                    "response_type": "code",
+                    "scope": self._google_oauth_scope_text(scope_ids),
+                    "access_type": "offline",
+                    "include_granted_scopes": "true",
+                    "prompt": "consent",
+                    "login_hint": normalize_email(email),
+                    "state": state,
+                }
+                links["google"] = f"{GOOGLE_OAUTH_AUTH_URL}?{urllib_parse.urlencode(query)}"
+            except ValueError:
+                pass
+        if not self._microsoft_oauth_config_error():
+            try:
+                state = self._build_whatsapp_oauth_state(provider="microsoft", email=email, wa_id=wa_id, purpose=purpose)
+                query = {
+                    "client_id": normalize_text(self.config.microsoft_oauth_client_id),
+                    "redirect_uri": self._microsoft_oauth_redirect_uri(),
+                    "response_type": "code",
+                    "response_mode": "query",
+                    "scope": MICROSOFT_OUTLOOK_OAUTH_SCOPE,
+                    "login_hint": normalize_email(email),
+                    "state": state,
+                    "prompt": "select_account",
+                }
+                links["microsoft"] = f"{self._microsoft_oauth_auth_url()}?{urllib_parse.urlencode(query)}"
+            except ValueError:
+                pass
+        return links
+
+    def _send_whatsapp_oauth_page(self, *, ok: bool, message: str) -> None:
+        """Where the browser lands after a sign-in that started in WhatsApp.
+
+        Not the portal: the person was never there and has no reason to be.
+        One sentence and a way back to the chat.
+        """
+
+        number = resolve_assistyca_display_number()
+        back = f'<p><a href="https://wa.me/{number}">Back to WhatsApp</a></p>' if number else "<p>You can go back to WhatsApp.</p>"
+        title = "Connected" if ok else "Not connected"
+        safe_message = html.escape(normalize_text(message))
+        self._send_html(
+            HTTPStatus.OK,
+            "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>{title} - Assistyca</title>"
+            "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.25rem;line-height:1.5\">"
+            f"<h1 style=\"font-size:1.4rem\">{title}</h1><p>{safe_message}</p>{back}</body>",
+        )
+
+    def _finish_whatsapp_oauth(self, state: dict[str, Any], *, code: str, provider: str) -> None:
+        """Complete a sign-in that began as a link in a WhatsApp message.
+
+        For an ordinary connect, the phone is already linked to the account,
+        so the account is theirs and the connection is saved. For linking a
+        phone to an account that already existed, the provider's account
+        address is the proof of ownership, and nothing is saved until it has
+        been checked against the address they claimed - otherwise a stranger
+        could attach their own mailbox to someone else's workspace by typing
+        that someone's email.
+        """
+
+        label = "Google" if provider == "google" else "Microsoft"
+        wa_id = normalize_whatsapp_number(state.get("waId"))
+
+        def finish(ok: bool, text: str) -> None:
+            if wa_id:
+                try:
+                    send_assistyca_text(recipient_wa_id=wa_id, text=text)
+                except Exception as exc:  # noqa: BLE001 - the page still says what happened
+                    print(f"WhatsApp sign-in note could not be sent: {exc}", flush=True)
+            self._send_whatsapp_oauth_page(ok=ok, message=text)
+
+        if state.get("expired"):
+            finish(False, f"That {label} sign-in link had expired. Ask me again and I'll send a fresh one.")
+            return
+        if not code:
+            finish(False, f"{label} didn't finish signing in. Tap the link again whenever you're ready.")
+            return
+
+        email = normalize_email(state.get("email"))
+        purpose = normalize_text(state.get("purpose")) or "connect"
+        user = self.database.get_user(email)
+        if not user or not bool(user.get("isActive")):
+            finish(False, "That Assistyca account isn't available any more.")
+            return
+        session = PortalSession(token="", email=email, issued_at=time.time(), expires_at=time.time() + 600)
+
+        try:
+            if provider == "google":
+                scope_ids = self._normalize_google_oauth_scope_ids(state.get("scopeIds"), default=("calendar",))
+                token_payload = self._exchange_google_calendar_oauth_code(code)
+                if purpose == "link_account":
+                    validation = GmailAccessValidator().validate(normalize_text(token_payload.get("access_token")))
+                    account_email = normalize_email(validation.get("emailAddress"))
+                    if not account_email or account_email != email:
+                        finish(False, f"The Google account you signed in with isn't {email}, so I haven't linked this phone. Sign in with that address and try again.")
+                        return
+                self._save_google_oauth_connections(session, token_payload, scope_ids=scope_ids)
+                connected = "Gmail and calendar are"
+            else:
+                token_payload = self._exchange_microsoft_oauth_code(code)
+                if purpose == "link_account":
+                    validation = OutlookAccessValidator().validate(normalize_text(token_payload.get("access_token")))
+                    account_email = normalize_email(validation.get("emailAddress"))
+                    if not account_email or account_email != email:
+                        finish(False, f"The Microsoft account you signed in with isn't {email}, so I haven't linked this phone. Sign in with that address and try again.")
+                        return
+                self._save_microsoft_oauth_connection(session, token_payload)
+                connected = "Outlook is"
+        except Exception as exc:  # noqa: BLE001 - said once to the person, in full to the log
+            print(f"WhatsApp {provider} sign-in failed for a linked phone: {exc}", flush=True)
+            finish(False, f"{label} couldn't be connected just now. Tap the link again in a moment.")
+            return
+
+        linked = ""
+        if purpose == "link_account":
+            try:
+                self.database.link_user_whatsapp_number(user_id=int(user.get("id") or 0), wa_id=wa_id, label="")
+                linked = "This phone is now linked to your account, and your "
+            except ValueError as exc:
+                finish(False, str(exc))
+                return
+
+        print(json.dumps({"event": "whatsapp_oauth_connected", "provider": provider, "purpose": purpose,
+                          "senderWaId": self._mask_whatsapp_log_identifier(wa_id)}, ensure_ascii=True, sort_keys=True), flush=True)
+        finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.")
+
     def _build_google_calendar_oauth_state(
         self,
         session: PortalSession,
@@ -10504,7 +10741,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if self.database.get_user(email) is not None:
             self.database.record_whatsapp_signup_attempt(wa_id=sender_wa_id)
-            return self._finish_whatsapp_signup_step(sender_wa_id, "signup_email_taken", SIGNUP_EMAIL_TAKEN_TEXT)
+            # Signing in with the provider that owns the address proves the
+            # account is theirs, so the phone can be linked without a portal.
+            links = self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id, purpose="link_account")
+            return self._finish_whatsapp_signup_step(
+                sender_wa_id, "signup_email_taken", build_link_existing_account_text(email, links),
+            )
 
         try:
             self.database.register_user(email, display_name=sender_name, notes="Signed up over WhatsApp.")
@@ -10545,6 +10787,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             fallback=SIGNUP_WELCOME_TEXT,
             account_created=True,
         )
+        link_line = build_connect_links_line(email, self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id))
+        if link_line:
+            welcome = f"{welcome}\n\n{link_line}"
         return self._finish_whatsapp_signup_step(sender_wa_id, "signup_completed", welcome)
 
     def _write_whatsapp_signup_reply(
@@ -10834,6 +11079,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connection=connection,
             base_url=f"http://127.0.0.1:{port}",
             session_token_factory=self._mint_whatsapp_agent_session_token,
+            connect_links=self._whatsapp_oauth_links(
+                email=normalize_email(connection.get("email")),
+                wa_id=normalize_text(connection.get("ownerWaId")),
+            ),
         )
         try:
             return chat.handle_message(

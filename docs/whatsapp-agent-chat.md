@@ -192,3 +192,64 @@ many accounts a day can open:
 `GET /api/admin/whatsapp/signup` shows the link, the switch, the cap, today's
 started and completed counts, and the default trial length — so the state of
 the public door is one request away.
+
+## Connecting Gmail or Outlook from WhatsApp
+
+Nobody is sent to the portal to connect an account. When a connection is
+needed - right after signup, or whenever the agent is asked something that
+needs the inbox or calendar - the person gets a sign-in link in the chat:
+Google for a Gmail address, Microsoft for an Outlook one, both for a company
+domain that could be either. The link has `login_hint` set so the right account
+is already picked.
+
+The portal's OAuth states are bound to a browser session, and a phone opening a
+link from WhatsApp has none. So these links carry a different state, signed
+with the same secret, holding the account, the phone, and what finishing should
+do (`channel: "whatsapp"`). Both callbacks check for that state **before**
+requiring a session; a state with a bad signature is ignored and falls through
+to the browser path, which rejects it with its own message. WhatsApp states
+live thirty minutes rather than ten, because switching apps and back takes
+longer than a popup.
+
+After the sign-in the browser lands on a one-sentence page with a way back to
+WhatsApp - never on the portal - and the same sentence is sent as a message.
+
+### Proving an account is yours
+
+If someone signs up with an address that already has an account, they are not
+sent to Settings for a code. They are sent the sign-in link for that address's
+provider with `purpose: "link_account"`. Completing it proves they own the
+mailbox behind the address, and therefore the account, so the phone is linked
+on the spot. The provider's own account address is the proof: nothing is saved
+and nothing is linked until it has been read back from Google or Microsoft and
+found equal to the address they claimed. Without that check, a stranger could
+attach their own mailbox to someone else's workspace by typing that someone's
+email.
+
+### What the agent may say
+
+`toolContext.connectLinks` holds the only URLs the agent may ever send, and the
+prompt tells it to repeat the matching one verbatim on its own line and never
+to invent another or mention a portal. The links are minted per turn for the
+linked account and phone, so one forwarded to somebody else connects nothing of
+theirs to anything of ours. `build_connect_links_line` and
+`build_link_existing_account_text` choose which link to show; the model never
+composes a URL.
+
+### Where the portal is still mentioned, and why
+
+The rule is that a WhatsApp user is never sent to a website. Four replies still
+name one, each for a reason worth knowing rather than a gap nobody noticed:
+
+* **No sign-in provider configured.** With neither Google nor Microsoft OAuth
+  set up there is nothing to prove account ownership with, so an address that
+  already has an account falls back to "get a code from Settings". Configuring
+  either provider removes this.
+* **A claim code that expired or was already used.** These codes originate in
+  the portal by design (linking a *second* phone to an account you are already
+  signed into). At the moment the dead code arrives we know a phone and nothing
+  else - not which account it was for - so a sign-in link cannot be minted.
+* **Approving a proposal other than a scheduled message**, and **answering a
+  receipt look-alike question**: two v1 limits of the conversation itself,
+  noted under "How a turn runs". Both are about porting more of the browser's
+  dispatch to the server, not about links.

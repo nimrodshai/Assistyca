@@ -452,6 +452,17 @@ def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
     mailboxes = normalize_agent_mailbox_context(source.get("mailboxes"))
     if mailboxes:
         context["mailboxes"] = mailboxes
+    # Sign-in links the WhatsApp channel hands the agent. Only https, only the
+    # two providers, and only ever repeated verbatim: the prompt forbids the
+    # model from producing any other URL.
+    raw_links = source.get("connectLinks") if isinstance(source.get("connectLinks"), dict) else {}
+    links = {}
+    for key in ("google", "microsoft"):
+        value = _single_line(raw_links.get(key), 2000)
+        if value.startswith("https://"):
+            links[key] = value
+    if links:
+        context["connectLinks"] = links
     return context
 
 
@@ -1021,6 +1032,11 @@ _TURN_CHANNEL_WHATSAPP = (
     "still appears in their Assistyca portal, and it is fine to say so when they ask where something "
     "lives. Confirmation happens in words: when a proposal is ready, ask for a plain yes in the same "
     "message.\n"
+    "Never send the person to a website or portal to connect an account. When they need Gmail, Outlook or a "
+    "calendar connected, toolContext.connectLinks holds the only links you may send: put the matching one "
+    "on its own line exactly as given (google for Gmail or Google Calendar, microsoft for Outlook), and "
+    "say it takes a few seconds. Never write any other URL. If connectLinks is absent, say you will send "
+    "the sign-in link in a moment rather than inventing one.\n"
 )
 
 _TURN_EXAMPLES_HEAD = (

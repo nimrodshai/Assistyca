@@ -191,6 +191,78 @@ def find_email_in_text(text: Any) -> str:
     return normalize_email(match.group(0).rstrip(".")) if match else ""
 
 
+_GOOGLE_MAIL_DOMAINS = {"gmail.com", "googlemail.com"}
+_MICROSOFT_MAIL_PREFIXES = ("outlook.", "hotmail.", "live.", "msn.")
+
+
+def infer_mail_provider(email: Any) -> str:
+    """"google", "microsoft", or "" when the address alone cannot say.
+
+    A consumer domain names its provider. A company domain could be on either
+    Google Workspace or Microsoft 365, and guessing wrong sends someone to a
+    sign-in page for an account they do not have, so those get both links.
+    """
+
+    domain = normalize_email(email).rsplit("@", 1)[-1]
+    if not domain or "@" not in normalize_email(email):
+        return ""
+    if domain in _GOOGLE_MAIL_DOMAINS:
+        return "google"
+    if domain.startswith(_MICROSOFT_MAIL_PREFIXES):
+        return "microsoft"
+    return ""
+
+
+def build_connect_links_line(email: Any, links: dict[str, str] | None) -> str:
+    """The sentence that hands someone the right sign-in, with the link in it.
+
+    Links come from the server, signed for this phone and this account; this
+    only chooses which to show. Written by code rather than the model so a
+    URL can never be paraphrased or invented.
+    """
+
+    available = {k: v for k, v in (links or {}).items() if str(v or "").startswith("https://")}
+    if not available:
+        return ""
+    provider = infer_mail_provider(email)
+    if provider == "google" and available.get("google"):
+        return f"To let me read your Gmail and calendar, tap this and sign in with Google - it takes a few seconds: {available['google']}"
+    if provider == "microsoft" and available.get("microsoft"):
+        return f"To let me read your Outlook mail, tap this and sign in with Microsoft - it takes a few seconds: {available['microsoft']}"
+    lines = ["To let me read your mail and calendar, tap the one you use and sign in:"]
+    if available.get("google"):
+        lines.append(f"Google (Gmail and calendar): {available['google']}")
+    if available.get("microsoft"):
+        lines.append(f"Microsoft (Outlook): {available['microsoft']}")
+    return "\n".join(lines)
+
+
+def build_link_existing_account_text(email: Any, links: dict[str, str] | None) -> str:
+    """What to say when the address already has an account.
+
+    Signing in with the provider that owns that address proves the person
+    owns the account, so the phone can be linked on the spot without a portal
+    or a code. Without a configured provider there is nothing to prove it
+    with, and the portal code is the honest fallback.
+    """
+
+    available = {k: v for k, v in (links or {}).items() if str(v or "").startswith("https://")}
+    if not available:
+        return SIGNUP_EMAIL_TAKEN_TEXT
+    provider = infer_mail_provider(email)
+    head = "That address already has an Assistyca account."
+    if provider == "google" and available.get("google"):
+        return f"{head} Sign in with Google here and I'll link this phone to it: {available['google']}"
+    if provider == "microsoft" and available.get("microsoft"):
+        return f"{head} Sign in with Microsoft here and I'll link this phone to it: {available['microsoft']}"
+    lines = [f"{head} Sign in with the account you use and I'll link this phone to it:"]
+    if available.get("google"):
+        lines.append(f"Google: {available['google']}")
+    if available.get("microsoft"):
+        lines.append(f"Microsoft: {available['microsoft']}")
+    return "\n".join(lines)
+
+
 def whatsapp_signup_enabled() -> bool:
     """Whether a phone nobody knows can open an account by texting.
 
@@ -230,11 +302,18 @@ SIGNUP_CONCIERGE_INSTRUCTIONS = (
 # What the assistant can truthfully say it does. Kept in one place so the
 # signup conversation and the product never drift apart.
 SIGNUP_PRODUCT_SUMMARY = (
-    "Assistyca reads the person's own inbox and calendar once they connect them: it can answer questions "
-    "like what was spent on software last month or what is on tomorrow, chase receipts, summarise mail, "
-    "check availability, watch the web for things they care about, and send reminders at a chosen time - "
-    "all from this chat, with a web portal for connecting accounts and reviewing what it set up. Nothing "
-    "personal is read until they have an account and connect an inbox or calendar themselves."
+    "Assistyca is a personal assistant that lives in this chat and works from the person's own inbox and "
+    "calendar once they connect them. Concretely: every morning it can text what is on today and where "
+    "the gaps are; it can answer 'what did I spend on software last month' or 'did the plumber ever send "
+    "the invoice' by actually reading the mail; it chases missing receipts and gathers a month of them into "
+    "one folder for the accountant; it summarises a long thread into three lines; it finds a free hour that "
+    "works for two calendars; it watches the web on a schedule - a competitor's prices, a venue's "
+    "availability, tickets going on sale, a keyword in the news - and messages when something changes; "
+    "it sets reminders and recurring nudges ('text me every Friday to send the weekly report'); and it "
+    "notices people the person has not replied to in a while. Anything it does once it can do on a "
+    "schedule. It never sends anything or spends anything without asking first. Nothing personal is read "
+    "until they have an account and connect an inbox or calendar themselves - a tap on a link, no "
+    "website needed."
 )
 
 
@@ -467,7 +546,11 @@ class WhatsAppAgentChat:
         base_url: str,
         session_token_factory: Callable[[str], str],
         api_version: str = DEFAULT_WHATSAPP_API_VERSION,
+        connect_links: dict[str, str] | None = None,
     ) -> None:
+        self.connect_links = {
+            key: value for key, value in (connect_links or {}).items() if str(value or "").startswith("https://")
+        }
         self.database = database
         self.connection = connection if isinstance(connection, dict) else {}
         self.base_url = str(base_url or "").rstrip("/")
@@ -563,6 +646,10 @@ class WhatsAppAgentChat:
                 })
         if mailboxes:
             context["mailboxes"] = mailboxes
+        if self.connect_links:
+            # The only URLs the agent may send. Signed for this phone and this
+            # account, so a link forwarded to someone else connects nothing.
+            context["connectLinks"] = dict(self.connect_links)
         return context
 
     # -- outcome dispatch --------------------------------------------------
@@ -820,6 +907,9 @@ __all__ = [
     "WhatsAppAgentChatError",
     "build_whatsapp_claim_link",
     "build_whatsapp_signup_link",
+    "build_connect_links_line",
+    "build_link_existing_account_text",
+    "infer_mail_provider",
     "build_signup_concierge_prompt",
     "normalize_signup_concierge_reply",
     "SIGNUP_CONCIERGE_INSTRUCTIONS",
