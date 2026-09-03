@@ -1254,6 +1254,7 @@ const state = {
   adminEditUserBusy: false,
   adminStatusBusyByEmail: {},
   adminTypeBusyByEmail: {},
+  adminTrialBusyByEmail: {},
   adminDeleteBusyByEmail: {},
   adminView: "list",
   adminSelectedUserEmail: "",
@@ -2132,6 +2133,29 @@ function normalizeAdminClientType(value) {
   return ADMIN_CLIENT_TYPES.some((type) => type.value === normalized) ? normalized : "";
 }
 
+function normalizeAdminTrial(trial = null) {
+  const source = trial && typeof trial === "object" ? trial : {};
+  const trialDays = Number(source.trialDays ?? source.trial_days ?? 0);
+  const daysLeft = Number(source.daysLeft ?? source.days_left ?? 0);
+  return {
+    onTrial: Boolean(source.onTrial ?? source.on_trial),
+    allowed: source.allowed === undefined ? true : Boolean(source.allowed),
+    expired: Boolean(source.expired),
+    trialDays: Number.isFinite(trialDays) ? Math.max(0, Math.round(trialDays)) : 0,
+    endsAt: String(source.endsAt || source.ends_at || "").trim(),
+    daysLeft: Number.isFinite(daysLeft) ? Math.max(0, Math.round(daysLeft)) : 0,
+  };
+}
+
+function normalizeAdminTrialDays(value) {
+  const text = String(value ?? "").trim();
+  if (!text || !/^\d+$/.test(text)) {
+    return null;
+  }
+  const days = Number.parseInt(text, 10);
+  return Number.isFinite(days) ? days : null;
+}
+
 function deriveAdminClientType(paymentStatus = {}) {
   return normalizeAdminPaymentStatus(paymentStatus).isPaying ? "paying" : DEFAULT_ADMIN_CLIENT_TYPE;
 }
@@ -2203,6 +2227,7 @@ function normalizeAdminUserRecord(user = {}) {
     billing: user.billing && typeof user.billing === "object" ? user.billing : {},
     paymentStatus,
     spend: normalizeAdminSpend(user.spend || user.spend_summary || null),
+    trial: normalizeAdminTrial(user.trial || null),
   };
 }
 
@@ -2304,6 +2329,9 @@ function replaceAdminUserState(previousEmail, user) {
   const { [normalizedPreviousEmail]: _typeBusy, ...nextTypeBusy } = state.adminTypeBusyByEmail;
   state.adminTypeBusyByEmail = nextTypeBusy;
 
+  const { [normalizedPreviousEmail]: _trialBusy, ...nextTrialBusy } = state.adminTrialBusyByEmail;
+  state.adminTrialBusyByEmail = nextTrialBusy;
+
   const { [normalizedPreviousEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
 
@@ -2327,6 +2355,9 @@ function removeAdminUserState(email) {
 
   const { [normalizedEmail]: _typeBusy, ...nextTypeBusy } = state.adminTypeBusyByEmail;
   state.adminTypeBusyByEmail = nextTypeBusy;
+
+  const { [normalizedEmail]: _trialBusy, ...nextTrialBusy } = state.adminTrialBusyByEmail;
+  state.adminTrialBusyByEmail = nextTrialBusy;
 
   const { [normalizedEmail]: _deleteBusy, ...nextDeleteBusy } = state.adminDeleteBusyByEmail;
   state.adminDeleteBusyByEmail = nextDeleteBusy;
@@ -2422,6 +2453,111 @@ function createAdminStateBadge(label, className = "") {
   return badge;
 }
 
+function formatAdminTrialDate(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return text;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(parsed);
+}
+
+function describeAdminTrial(user) {
+  const trial = normalizeAdminTrial(user?.trial);
+  const { isPaying } = normalizeAdminPaymentStatus(user?.paymentStatus);
+
+  // A client who pays is not on a clock, so a leftover expiry on their record
+  // must never make them read as cut off.
+  if (isPaying) {
+    return { label: "No limit", note: "Paying client", tone: "is-trial-open", trialDays: trial.trialDays };
+  }
+
+  // Zero is how the limit is removed, not a trial of no length. Reading this
+  // before the expiry flag is what keeps "no limit" from showing as "ended".
+  if (trial.trialDays <= 0) {
+    return { label: "No limit", note: "", tone: "is-trial-open", trialDays: 0 };
+  }
+
+  if (trial.expired) {
+    return {
+      label: "Trial ended",
+      note: trial.endsAt ? `Ended ${formatAdminTrialDate(trial.endsAt)}` : "",
+      tone: "is-trial-ended",
+      trialDays: trial.trialDays,
+    };
+  }
+
+  const daysLeft = Math.max(0, trial.daysLeft);
+  return {
+    label: daysLeft === 1 ? "1 day left" : daysLeft > 1 ? `${daysLeft} days left` : "Last day",
+    note: trial.endsAt ? `Ends ${formatAdminTrialDate(trial.endsAt)}` : "Not started yet",
+    tone: daysLeft <= 1 ? "is-trial-ending" : "is-trial-running",
+    trialDays: trial.trialDays,
+  };
+}
+
+function createAdminTrialControl(user, options = {}) {
+  const normalizedEmail = normalizeEmail(user?.email || "");
+  const isBusy = Boolean(state.adminTrialBusyByEmail[normalizedEmail]);
+  const summary = describeAdminTrial(user);
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "admin-trial-control";
+
+  const stateLabel = document.createElement("strong");
+  stateLabel.className = `admin-trial-state ${summary.tone}`;
+  stateLabel.textContent = summary.label;
+  wrapper.append(stateLabel);
+
+  if (summary.note) {
+    const note = document.createElement("span");
+    note.className = "admin-trial-note";
+    note.textContent = summary.note;
+    wrapper.append(note);
+  }
+
+  const field = document.createElement("label");
+  field.className = "admin-trial-field";
+
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "0";
+  input.step = "1";
+  input.className = "admin-trial-input";
+  input.value = String(summary.trialDays);
+  input.dataset.adminTrialUser = normalizedEmail;
+  input.dataset.adminTrialValue = String(summary.trialDays);
+  input.disabled = Boolean(options.disabled) || isBusy;
+  input.setAttribute(
+    "aria-label",
+    `Free trial length in days for ${user?.displayName || normalizedEmail || "client"}`,
+  );
+
+  const hint = document.createElement("span");
+  hint.className = "admin-trial-hint";
+  hint.textContent = "days (0 = no limit)";
+
+  field.append(input, hint);
+  wrapper.append(field);
+
+  if (options.help) {
+    const help = document.createElement("p");
+    help.className = "admin-trial-help";
+    help.textContent = "Changing the length keeps the days already used. Set 0 to remove the limit.";
+    wrapper.append(help);
+  }
+
+  return wrapper;
+}
+
 function createAdminClientTypeSelect(user, options = {}) {
   const normalizedEmail = normalizeEmail(user?.email || "");
   const isBusy = Boolean(state.adminTypeBusyByEmail[normalizedEmail]);
@@ -2497,6 +2633,7 @@ function resetAdminState() {
   state.adminEditUserBusy = false;
   state.adminStatusBusyByEmail = {};
   state.adminTypeBusyByEmail = {};
+  state.adminTrialBusyByEmail = {};
   state.adminDeleteBusyByEmail = {};
   state.adminView = "list";
   state.adminSelectedUserEmail = "";
@@ -14009,7 +14146,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Client type", "This month", "Active", "Last login", ""]) {
+  for (const heading of ["Client", "Email", "Client type", "Free trial", "This month", "Active", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -14036,6 +14173,12 @@ function createAdminUsersListView() {
       disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
     }));
 
+    const trialCell = document.createElement("td");
+    trialCell.className = "admin-trial-cell";
+    trialCell.append(createAdminTrialControl(user, {
+      disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
+    }));
+
     const spendCell = document.createElement("td");
     spendCell.className = "admin-spend-cell";
     spendCell.append(createAdminSpendSummary(user));
@@ -14059,7 +14202,7 @@ function createAdminUsersListView() {
     actionCell.append(manageButton);
 
     row.classList.toggle("is-inactive-client", !user.isActive);
-    row.append(nameCell, emailCell, clientTypeCell, spendCell, activeCell, lastLoginCell, actionCell);
+    row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell, activeCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 
@@ -14242,6 +14385,7 @@ function createAdminUserDetailView(user) {
   infoRows.className = "detail-stack";
   infoRows.append(
     createAdminDetailRow("Client type", getAdminClientTypeLabel(user.clientType)),
+    createAdminDetailRow("Free trial", describeAdminTrial(user).label),
     createAdminDetailRow("Login", user.isActive ? "Active" : "Inactive"),
     createAdminDetailRow("Registered", formatAdminDateTime(user.registeredAt) || "Unknown"),
     createAdminDetailRow("Last login", user.lastLoginAt ? formatAdminDateTime(user.lastLoginAt) : "No login yet"),
@@ -14257,7 +14401,12 @@ function createAdminUserDetailView(user) {
   const clientTypeControl = createAdminClientTypeSelect(user, {
     disabled: isDeleting || isStatusSaving,
   });
+  const trialControl = createAdminTrialControl(user, {
+    disabled: isDeleting || isStatusSaving,
+    help: true,
+  });
   infoActions.append(clientTypeControl);
+  infoActions.append(trialControl);
   infoActions.append(statusControl);
 
   const editButton = document.createElement("button");
@@ -14675,6 +14824,68 @@ async function saveAdminUserClientType(email, clientType) {
     renderApp();
     if (updatedUser) {
       setStatus(`Client type set to ${getAdminClientTypeLabel(updatedUser.clientType)}`);
+    }
+  }
+}
+
+async function saveAdminUserTrial(email, trialDays) {
+  const normalizedEmail = normalizeEmail(email);
+  const nextTrialDays = normalizeAdminTrialDays(trialDays);
+  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
+  if (!canManageClients() || !user || nextTrialDays === null || state.adminTrialBusyByEmail[normalizedEmail]) {
+    return;
+  }
+
+  const previousTrial = normalizeAdminTrial(user.trial);
+  if (previousTrial.trialDays === nextTrialDays) {
+    return;
+  }
+
+  state.adminTrialBusyByEmail = {
+    ...state.adminTrialBusyByEmail,
+    [normalizedEmail]: true,
+  };
+  state.adminUsers = state.adminUsers.map((entry) => (
+    entry.email === normalizedEmail
+      ? { ...entry, trial: { ...previousTrial, trialDays: nextTrialDays } }
+      : entry
+  ));
+  state.adminUsersError = "";
+  renderApp();
+
+  let updatedUser = null;
+  try {
+    const response = await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/trial`, {
+      method: "POST",
+      body: {
+        trialDays: nextTrialDays,
+      },
+    });
+
+    updatedUser = upsertAdminUserState(response.user || {
+      ...user,
+      trial: { ...previousTrial, trialDays: nextTrialDays },
+    });
+    void refreshAdminUsers({ render: false });
+  } catch (error) {
+    state.adminUsers = state.adminUsers.map((entry) => (
+      entry.email === normalizedEmail
+        ? { ...entry, trial: previousTrial }
+        : entry
+    ));
+    state.adminUsersError = formatApiErrorMessage(error, "We couldn’t update that free trial right now.");
+    openAuthAlert("Couldn’t update free trial", state.adminUsersError, {
+      eyebrow: "Free trial",
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+    });
+  } finally {
+    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminTrialBusyByEmail;
+    state.adminTrialBusyByEmail = nextBusy;
+    renderApp();
+    if (updatedUser) {
+      setStatus(nextTrialDays === 0
+        ? "Free trial limit removed"
+        : `Free trial set to ${nextTrialDays === 1 ? "1 day" : `${nextTrialDays} days`}`);
     }
   }
 }
@@ -35917,6 +36128,12 @@ function bindEvents() {
         state.adminEditUserDisplayName = target.value;
       }
 
+      if (target.dataset.adminTrialUser) {
+        // The trial length is saved on change, not per keystroke, and a
+        // re-render here would swap out the field mid-edit.
+        return;
+      }
+
       if (state.adminUsersError) {
         state.adminUsersError = "";
         if (state.adminView === "add" || state.adminView === "edit") {
@@ -35931,6 +36148,11 @@ function bindEvents() {
       const target = event.target;
       if (target instanceof HTMLSelectElement && target.dataset.adminClientTypeUser) {
         void saveAdminUserClientType(target.dataset.adminClientTypeUser || "", target.value);
+        return;
+      }
+
+      if (target instanceof HTMLInputElement && target.dataset.adminTrialUser) {
+        void saveAdminUserTrial(target.dataset.adminTrialUser || "", target.value);
         return;
       }
 

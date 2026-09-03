@@ -120,7 +120,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=166", html)
+        self.assertIn("styles.css?v=167", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -1688,7 +1688,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=166", html)
+        self.assertIn("styles.css?v=167", html)
         self.assertIn("app.js?v=", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
@@ -2454,6 +2454,153 @@ class AgentReengagementActionCardTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["status"], "paused")
 
+
+
+class AdminFreeTrialControlTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1",
+            0,
+            self.root,
+            PortalConfig(
+                db_path=Path(self.temp_dir.name) / "portal.db",
+                session_secret="trial-control-test-secret",
+            ),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.database = self.server.database
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def _sign_in(self, email: str) -> str:
+        code, _ = self.server.store.issue_challenge(email)
+        ok, error, result = self.server.store.verify_code(email, code)
+        self.assertTrue(ok, error)
+        return str((result or {}).get("token") or "")
+
+    def _post_trial(self, token: str, email: str, payload: dict[str, Any]) -> tuple[int, dict]:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/admin/users/{urllib_parse.quote(email, safe='')}/trial",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=15) as response:
+                return int(response.status), json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            return int(exc.code), json.loads(exc.read().decode("utf-8"))
+
+    def test_the_route_the_control_posts_to_is_actually_wired_up(self) -> None:
+        # A sibling route once shipped dead because the dispatch allowlist never
+        # let it through, so the wiring is asserted here and not just the markup.
+        self.database.register_user("client@example.com")
+        self.database.register_user("boss@example.com", is_admin=True)
+        token = self._sign_in("boss@example.com")
+
+        status, payload = self._post_trial(token, "client@example.com", {"trialDays": 14})
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["user"]["trial"]["trialDays"], 14)
+        self.assertTrue(payload["user"]["trial"]["onTrial"])
+
+    def test_zero_days_removes_the_limit_rather_than_ending_the_trial(self) -> None:
+        self.database.register_user("client@example.com")
+        self.database.register_user("boss@example.com", is_admin=True)
+        token = self._sign_in("boss@example.com")
+
+        self._post_trial(token, "client@example.com", {"trialDays": 14})
+        status, payload = self._post_trial(token, "client@example.com", {"trialDays": 0})
+
+        self.assertEqual(status, 200)
+        trial = payload["user"]["trial"]
+        self.assertEqual(trial["trialDays"], 0)
+        self.assertFalse(trial["expired"])
+        self.assertTrue(trial["allowed"])
+
+    def test_the_client_list_carries_the_trial_through_to_the_screen(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        # Dropped here, the whole control would silently render "No limit".
+        self.assertIn("trial: normalizeAdminTrial(user.trial || null),", script)
+        self.assertIn('for (const heading of ["Client", "Email", "Client type", "Free trial",', script)
+        self.assertIn("trialCell.append(createAdminTrialControl(user, {", script)
+        self.assertIn("row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell,", script)
+
+    def test_the_control_posts_the_day_count_to_the_trial_route(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        start = script.index("async function saveAdminUserTrial")
+        end = script.index("function deleteAdminUser", start)
+        snippet = script[start:end]
+
+        self.assertIn("`/api/admin/users/${encodeURIComponent(normalizedEmail)}/trial`", snippet)
+        self.assertIn('method: "POST"', snippet)
+        self.assertIn("trialDays: nextTrialDays,", snippet)
+        # The optimistic row has to be put back when the save is refused.
+        self.assertIn("? { ...entry, trial: previousTrial }", snippet)
+        self.assertIn("formatApiErrorMessage(error,", snippet)
+        # Restarting the clock is not offered, so nothing may ask for it.
+        self.assertNotIn("restart", snippet)
+
+    def test_the_change_event_reaches_the_save(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if (target instanceof HTMLInputElement && target.dataset.adminTrialUser) {',
+            script,
+        )
+        self.assertIn(
+            'void saveAdminUserTrial(target.dataset.adminTrialUser || "", target.value);',
+            script,
+        )
+
+    def test_zero_days_reads_as_no_limit_and_a_payer_never_reads_as_ended(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        start = script.index("function describeAdminTrial")
+        end = script.index("function createAdminTrialControl", start)
+        snippet = script[start:end]
+
+        # Order is the whole point: paying and zero-days are answered before the
+        # expiry flag, so neither can come out as "Trial ended".
+        paying = snippet.index("if (isPaying) {")
+        no_limit = snippet.index("if (trial.trialDays <= 0) {")
+        expired = snippet.index("if (trial.expired) {")
+        self.assertLess(paying, no_limit)
+        self.assertLess(no_limit, expired)
+
+        self.assertIn('label: "No limit", note: "Paying client"', snippet)
+        self.assertIn('label: "No limit", note: ""', snippet)
+        self.assertIn('label: "Trial ended"', snippet)
+        self.assertIn('daysLeft === 1 ? "1 day left" : daysLeft > 1 ? `${daysLeft} days left`', snippet)
+        self.assertIn("`Ends ${formatAdminTrialDate(trial.endsAt)}`", snippet)
+
+    def test_the_field_says_what_zero_means_in_plain_words(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('hint.textContent = "days (0 = no limit)";', script)
+        self.assertIn(
+            'help.textContent = "Changing the length keeps the days already used. '
+            'Set 0 to remove the limit.";',
+            script,
+        )
+        self.assertIn('input.type = "number";', script)
+        self.assertIn('input.min = "0";', script)
+
+    def test_the_trial_control_is_styled_in_both_themes(self) -> None:
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn(".admin-trial-input {", styles)
+        self.assertIn(".admin-trial-state.is-trial-ended {", styles)
+        self.assertIn(':root[data-theme="dark"] .admin-trial-input {', styles)
 
 
 if __name__ == "__main__":

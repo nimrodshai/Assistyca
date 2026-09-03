@@ -10545,6 +10545,93 @@ body.is-agent-dragging {
   border-color: rgba(140, 150, 163, 0.18);
 }
 
+.admin-trial-cell {
+  white-space: nowrap;
+}
+
+.admin-trial-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.16rem;
+  align-items: flex-start;
+}
+
+.admin-trial-state {
+  font-size: 0.86rem;
+  font-weight: 760;
+}
+
+.admin-trial-state.is-trial-open {
+  color: #0f766e;
+}
+
+.admin-trial-state.is-trial-running {
+  color: var(--text);
+}
+
+.admin-trial-state.is-trial-ending {
+  color: #8c5a10;
+}
+
+.admin-trial-state.is-trial-ended {
+  color: #a3372f;
+}
+
+.admin-trial-note,
+.admin-trial-hint {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.admin-trial-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+}
+
+.admin-trial-input {
+  width: 4.2rem;
+  min-height: 2.28rem;
+  padding: 0.42rem 0.5rem;
+  border: 1px solid rgba(20, 28, 38, 0.1);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 252, 0.94));
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 760;
+  text-align: center;
+  box-shadow:
+    0 8px 18px rgba(25, 38, 54, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.admin-trial-input:hover,
+.admin-trial-input:focus-visible {
+  border-color: rgba(15, 118, 110, 0.24);
+  outline: 0;
+  box-shadow:
+    0 10px 22px rgba(25, 38, 54, 0.07),
+    0 0 0 3px rgba(15, 118, 110, 0.1);
+}
+
+.admin-trial-input:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.admin-trial-help {
+  margin: 0.1rem 0 0;
+  max-width: 22rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: normal;
+}
+
 .admin-switch input {
   position: absolute;
   opacity: 0;
@@ -12387,6 +12474,25 @@ body.is-chat-view {
   background: rgba(10, 16, 22, 0.82);
 }
 
+:root[data-theme="dark"] .admin-trial-input {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(10, 16, 22, 0.82);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .admin-trial-state.is-trial-open {
+  color: #5eead4;
+}
+
+:root[data-theme="dark"] .admin-trial-state.is-trial-ending {
+  color: #fbbf24;
+}
+
+:root[data-theme="dark"] .admin-trial-state.is-trial-ended {
+  color: #fca5a5;
+}
+
 :root[data-theme="dark"] .field input::placeholder,
 :root[data-theme="dark"] .field textarea::placeholder,
 :root[data-theme="dark"] .agent-action-editor-input::placeholder,
@@ -13064,7 +13170,8 @@ body.is-chat-view {
   .agent-action-editor-input,
   .agent-action-editor-select,
   .agent-message-whatsapp-card-textarea,
-  .admin-client-type-select {
+  .admin-client-type-select,
+  .admin-trial-input {
     font-size: 16px;
   }
 
