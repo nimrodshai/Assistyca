@@ -3809,6 +3809,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/features/")
             or path.startswith("/api/platform-connections/")
             or path == "/api/whatsapp/connection"
+            or path.startswith("/api/whatsapp/my-numbers/")
             or path.startswith("/api/scheduled-actions/")
             or path.startswith("/api/source-actions/")
             or path.startswith("/api/notifications/")
