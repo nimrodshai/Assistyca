@@ -1287,6 +1287,14 @@ const state = {
   whatsappHistoryLoadedAt: 0,
   whatsappHistoryEmail: "",
   whatsappConnection: null,
+  whatsappLinkedPhones: [],
+  whatsappLinkedPhonesLoading: false,
+  whatsappLinkedPhonesError: "",
+  whatsappLinkCode: null,
+  whatsappLinkCodeBusy: false,
+  whatsappLinkCodeError: "",
+  whatsappLinkRemovingWaId: "",
+  assistycaWhatsAppNumber: "",
   scheduledActions: [],
   sourceActions: [],
   sourceActionsLoading: false,
@@ -1394,6 +1402,8 @@ let agentAddToolMenuOpenFrame = null;
 let agentAddToolMenuCloseTimer = null;
 let whatsappSampleMessageTargetId = "";
 let whatsappHistoryRefreshPromise = null;
+let whatsappLinkedPhonesRefreshPromise = null;
+let whatsappLinkCodeExpiryTimer = null;
 let featureConfigBusy = false;
 let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
@@ -5547,6 +5557,427 @@ async function disconnectWhatsAppConnection() {
       },
     );
   }
+}
+
+// The tap-to-open link is written into an href, so only the shape the server
+// builds reaches the page. Anything else leaves the card with the code alone,
+// which is the flow that works without a link anyway.
+const WHATSAPP_LINK_CODE_URL_PATTERN = /^https:\/\/wa\.me\/\d+(?:\?|$)/;
+
+function normalizeWhatsAppLinkedPhone(source = {}) {
+  return {
+    waId: normalizeText(source?.waId),
+    label: normalizeText(source?.label),
+    verifiedAt: normalizeText(source?.verifiedAt),
+    createdAt: normalizeText(source?.createdAt),
+  };
+}
+
+function normalizeWhatsAppLinkedPhones(value) {
+  return (Array.isArray(value) ? value : [])
+    .map(normalizeWhatsAppLinkedPhone)
+    .filter((phone) => phone.waId);
+}
+
+// Every answer that carries the phones carries the Assistyca number too, so
+// both are taken from whichever call replied last.
+function applyWhatsAppLinkedPhonesPayload(payload = {}) {
+  state.whatsappLinkedPhones = normalizeWhatsAppLinkedPhones(payload?.numbers);
+  state.assistycaWhatsAppNumber = normalizeText(payload?.assistycaNumber);
+  return state.whatsappLinkedPhones;
+}
+
+function getWhatsAppLinkedPhones() {
+  state.whatsappLinkedPhones = normalizeWhatsAppLinkedPhones(state.whatsappLinkedPhones);
+  return state.whatsappLinkedPhones;
+}
+
+function getAssistycaWhatsAppNumberLabel() {
+  return formatWhatsAppHumanPhoneNumber(state.assistycaWhatsAppNumber);
+}
+
+function formatWhatsAppLinkedPhoneLabel(phone) {
+  return formatWhatsAppHumanPhoneNumber(phone?.waId)
+    || normalizeText(phone?.label)
+    || "This phone";
+}
+
+function formatWhatsAppLinkedPhoneMeta(phone) {
+  const parsed = new Date(normalizeText(phone?.verifiedAt) || normalizeText(phone?.createdAt));
+  if (Number.isNaN(parsed.getTime())) {
+    return "Linked";
+  }
+  try {
+    return `Linked ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(parsed)}`;
+  } catch {
+    return "Linked";
+  }
+}
+
+function clearWhatsAppLinkCodeExpiryTimer() {
+  if (whatsappLinkCodeExpiryTimer !== null) {
+    window.clearTimeout(whatsappLinkCodeExpiryTimer);
+    whatsappLinkCodeExpiryTimer = null;
+  }
+}
+
+// A code that has run out is worse than no code: it is still typeable. The
+// card drops it the moment it expires rather than waiting to be reopened.
+function scheduleWhatsAppLinkCodeExpiry(expiresAt) {
+  clearWhatsAppLinkCodeExpiryTimer();
+  const parsed = new Date(normalizeText(expiresAt));
+  const remainingMs = Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime() - Date.now();
+  if (remainingMs <= 0) {
+    return;
+  }
+  whatsappLinkCodeExpiryTimer = window.setTimeout(() => {
+    whatsappLinkCodeExpiryTimer = null;
+    renderWhatsAppPhoneLinkCard();
+  }, remainingMs);
+}
+
+function getLiveWhatsAppLinkCode() {
+  const saved = state.whatsappLinkCode;
+  if (!saved?.code) {
+    return null;
+  }
+  const parsed = new Date(normalizeText(saved.expiresAt));
+  if (!Number.isNaN(parsed.getTime()) && parsed.getTime() <= Date.now()) {
+    return null;
+  }
+  return saved;
+}
+
+function formatWhatsAppLinkCodeExpiry(expiresAt) {
+  const parsed = new Date(normalizeText(expiresAt));
+  if (Number.isNaN(parsed.getTime())) {
+    return "It only works for a short while, so send it now.";
+  }
+  try {
+    const time = new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(parsed);
+    return `It works until ${time}.`;
+  } catch {
+    return "It only works for a short while, so send it now.";
+  }
+}
+
+async function refreshWhatsAppLinkedPhones(options = {}) {
+  if (!isSignedIn()) {
+    return null;
+  }
+
+  if (whatsappLinkedPhonesRefreshPromise && !options.force) {
+    return whatsappLinkedPhonesRefreshPromise;
+  }
+
+  state.whatsappLinkedPhonesLoading = true;
+  state.whatsappLinkedPhonesError = "";
+  renderWhatsAppPhoneLinkCard();
+
+  whatsappLinkedPhonesRefreshPromise = (async () => {
+    try {
+      const response = await apiRequest("/api/whatsapp/my-numbers", {
+        timeoutMs: 20000,
+      });
+      return applyWhatsAppLinkedPhonesPayload(response);
+    } catch (error) {
+      state.whatsappLinkedPhonesError = formatApiErrorMessage(
+        error,
+        "I couldn’t check which phones are linked right now.",
+      );
+      return null;
+    } finally {
+      state.whatsappLinkedPhonesLoading = false;
+      whatsappLinkedPhonesRefreshPromise = null;
+      renderWhatsAppPhoneLinkCard();
+    }
+  })();
+
+  return whatsappLinkedPhonesRefreshPromise;
+}
+
+async function requestWhatsAppLinkCode() {
+  if (state.whatsappLinkCodeBusy) {
+    return;
+  }
+
+  state.whatsappLinkCodeBusy = true;
+  state.whatsappLinkCodeError = "";
+  renderWhatsAppPhoneLinkCard();
+
+  try {
+    const response = await apiRequest("/api/whatsapp/my-numbers/code", {
+      method: "POST",
+      timeoutMs: 20000,
+      body: {},
+    });
+    applyWhatsAppLinkedPhonesPayload(response);
+    const link = normalizeText(response?.link);
+    state.whatsappLinkCode = {
+      code: normalizeText(response?.code),
+      expiresAt: normalizeText(response?.expiresAt),
+      link: WHATSAPP_LINK_CODE_URL_PATTERN.test(link) ? link : "",
+    };
+    scheduleWhatsAppLinkCodeExpiry(state.whatsappLinkCode.expiresAt);
+    setStatus("Your code is ready.");
+  } catch (error) {
+    state.whatsappLinkCode = null;
+    clearWhatsAppLinkCodeExpiryTimer();
+    state.whatsappLinkCodeError = formatApiErrorMessage(
+      error,
+      "I couldn’t make a code right now. Please try again.",
+    );
+  } finally {
+    state.whatsappLinkCodeBusy = false;
+    renderWhatsAppPhoneLinkCard();
+  }
+}
+
+function openWhatsAppLinkedPhoneRemoveConfirmation(phone) {
+  const waId = normalizeText(phone?.waId);
+  if (!waId || state.whatsappLinkRemovingWaId) {
+    return;
+  }
+  const label = formatWhatsAppLinkedPhoneLabel(phone);
+
+  openAuthAlert(
+    `Unlink ${label}?`,
+    `This phone will stop reaching your assistant on WhatsApp. You can link it again later with a new code.`,
+    {
+      eyebrow: "Unlink phone",
+      icon: "!",
+      tone: "warning",
+      buttonLabel: "Unlink",
+      primaryTone: "danger",
+      secondaryButtonLabel: "Keep it linked",
+      returnFocus: elements.closeSettingsButton,
+      onPrimary: () => {
+        void removeWhatsAppLinkedPhone(phone);
+      },
+    },
+  );
+}
+
+async function removeWhatsAppLinkedPhone(phone) {
+  const waId = normalizeText(phone?.waId);
+  if (!waId || state.whatsappLinkRemovingWaId) {
+    return;
+  }
+  const label = formatWhatsAppLinkedPhoneLabel(phone);
+
+  state.whatsappLinkRemovingWaId = waId;
+  state.whatsappLinkedPhonesError = "";
+  renderWhatsAppPhoneLinkCard();
+
+  try {
+    const response = await apiRequest(`/api/whatsapp/my-numbers/${encodeURIComponent(waId)}`, {
+      method: "DELETE",
+      timeoutMs: 20000,
+    });
+    applyWhatsAppLinkedPhonesPayload(response);
+    openAuthAlert(
+      `${label} unlinked`,
+      normalizeText(response?.message) || "That phone will no longer reach your assistant.",
+      {
+        eyebrow: "Phone removed",
+        icon: "✓",
+        tone: "success",
+        buttonLabel: "Done",
+        returnFocus: elements.closeSettingsButton,
+      },
+    );
+  } catch (error) {
+    openAuthAlert(
+      `Couldn’t unlink ${label}`,
+      formatApiErrorMessage(error, "I couldn’t unlink that phone right now. Please try again."),
+      {
+        eyebrow: "Phone issue",
+        icon: "!",
+        tone: "warning",
+        buttonLabel: "Close",
+        returnFocus: elements.closeSettingsButton,
+      },
+    );
+  } finally {
+    state.whatsappLinkRemovingWaId = "";
+    renderWhatsAppPhoneLinkCard();
+  }
+}
+
+function createWhatsAppLinkedPhoneList(phones = []) {
+  const list = document.createElement("ul");
+  list.className = "connected-mailbox-list";
+
+  for (const phone of phones) {
+    const label = formatWhatsAppLinkedPhoneLabel(phone);
+    const row = document.createElement("li");
+    row.className = "connected-mailbox-row";
+
+    const name = document.createElement("span");
+    name.className = "connected-mailbox-name";
+    name.textContent = label;
+
+    const meta = document.createElement("span");
+    meta.className = "connected-mailbox-provider";
+    meta.textContent = formatWhatsAppLinkedPhoneMeta(phone);
+
+    const unlink = document.createElement("button");
+    unlink.type = "button";
+    unlink.className = "text-button connection-danger-link";
+    unlink.textContent = state.whatsappLinkRemovingWaId === phone.waId ? "Unlinking…" : "Unlink";
+    unlink.disabled = Boolean(state.whatsappLinkRemovingWaId);
+    unlink.setAttribute("aria-label", `Unlink ${label}`);
+    unlink.addEventListener("click", () => {
+      openWhatsAppLinkedPhoneRemoveConfirmation(phone);
+    });
+
+    row.append(name, meta, unlink);
+    list.append(row);
+  }
+
+  return list;
+}
+
+function createWhatsAppLinkedPhonesSection(phones = []) {
+  const section = document.createElement("div");
+  section.className = "connection-section";
+
+  const heading = document.createElement("p");
+  heading.className = "connection-section-label";
+  heading.textContent = phones.length === 1 ? "Linked phone" : "Linked phones";
+  section.append(heading, createWhatsAppLinkedPhoneList(phones));
+  return section;
+}
+
+function createWhatsAppLinkCodeSection(linkCode) {
+  const section = document.createElement("div");
+  section.className = "connection-section whatsapp-link-code-section";
+
+  const heading = document.createElement("p");
+  heading.className = "connection-section-label";
+  heading.textContent = "Your code";
+
+  const code = document.createElement("strong");
+  code.className = "whatsapp-link-code";
+  code.textContent = linkCode.code;
+
+  const assistycaNumber = getAssistycaWhatsAppNumberLabel();
+  const instruction = document.createElement("p");
+  instruction.className = "connection-section-note";
+  instruction.textContent = assistycaNumber
+    ? `Send this code on WhatsApp to ${assistycaNumber}, from the phone you want to link.`
+    : "Send this code on WhatsApp to the Assistyca number, from the phone you want to link.";
+
+  const expiry = document.createElement("p");
+  expiry.className = "connection-section-note";
+  expiry.textContent = formatWhatsAppLinkCodeExpiry(linkCode.expiresAt);
+
+  section.append(heading, code, instruction, expiry);
+
+  if (linkCode.link) {
+    const open = document.createElement("a");
+    open.className = "whatsapp-link-open";
+    open.href = linkCode.link;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.textContent = "Open WhatsApp";
+    section.append(open);
+  }
+
+  return section;
+}
+
+// The card lives with the account details because a linked phone belongs to
+// the person signed in, not to a client's WhatsApp Business connection: it
+// works whether or not one is set up.
+function getWhatsAppPhoneLinkCardElement() {
+  const pane = elements.accountSettingsPane;
+  if (!pane) {
+    return null;
+  }
+
+  let card = pane.querySelector(".whatsapp-phone-link-card");
+  if (!card) {
+    card = document.createElement("article");
+    card.className = "glass-card settings-card whatsapp-phone-link-card";
+    const deleteAccountCard = elements.deleteAccountButton?.closest(".settings-card") || null;
+    if (deleteAccountCard) {
+      pane.insertBefore(card, deleteAccountCard);
+    } else {
+      pane.append(card);
+    }
+  }
+  return card;
+}
+
+function renderWhatsAppPhoneLinkCard() {
+  const card = getWhatsAppPhoneLinkCardElement();
+  if (!card) {
+    return;
+  }
+
+  const phones = getWhatsAppLinkedPhones();
+  const linkCode = getLiveWhatsAppLinkCode();
+  const nodes = [];
+
+  const stack = document.createElement("div");
+  stack.className = "detail-stack";
+  const row = document.createElement("div");
+  row.className = "detail-row";
+  const key = document.createElement("span");
+  key.className = "detail-key";
+  key.textContent = "WhatsApp";
+  const value = document.createElement("strong");
+  value.textContent = "Chat from your own phone";
+  row.append(key, value);
+  stack.append(row);
+  nodes.push(stack);
+
+  const lede = document.createElement("p");
+  lede.className = "lede compact";
+  lede.textContent = "Link your phone once, then message your assistant on WhatsApp the same way you chat here.";
+  nodes.push(lede);
+
+  if (phones.length) {
+    nodes.push(createWhatsAppLinkedPhonesSection(phones));
+  } else if (!state.whatsappLinkedPhonesLoading) {
+    const empty = document.createElement("p");
+    empty.className = "connection-section-note";
+    empty.textContent = "No phone is linked yet.";
+    nodes.push(empty);
+  }
+
+  if (linkCode) {
+    nodes.push(createWhatsAppLinkCodeSection(linkCode));
+  }
+
+  const noticeText = state.whatsappLinkCodeError || state.whatsappLinkedPhonesError;
+  if (noticeText) {
+    const notice = document.createElement("p");
+    notice.className = "connection-section-note is-warning";
+    notice.textContent = noticeText;
+    nodes.push(notice);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  const codeButton = document.createElement("button");
+  codeButton.type = "button";
+  codeButton.className = "ghost-button whatsapp-link-code-button";
+  codeButton.textContent = state.whatsappLinkCodeBusy
+    ? "Getting a code…"
+    : (linkCode ? "Get a new code" : "Get a code");
+  codeButton.disabled = state.whatsappLinkCodeBusy;
+  codeButton.addEventListener("click", () => {
+    void requestWhatsAppLinkCode();
+  });
+  actions.append(codeButton);
+  nodes.push(actions);
+
+  card.replaceChildren(...nodes);
 }
 
 function applyWhatsAppConnectionToFeatures(connection, options = {}) {
@@ -11853,6 +12284,9 @@ function openSettings(mode = state.settingsMode) {
   closeMenu();
   setHashForTab("settings");
   renderApp();
+  if (state.settingsMode === "account") {
+    void refreshWhatsAppLinkedPhones();
+  }
   if (state.settingsMode === "users" && isAdminUser()) {
     void refreshAdminUsers();
   }
@@ -11934,6 +12368,9 @@ function setSettingsMode(mode, options = {}) {
 
   closeMenu();
   renderApp();
+  if (state.settingsMode === "account") {
+    void refreshWhatsAppLinkedPhones();
+  }
   if (state.settingsMode === "users" && isAdminUser()) {
     void refreshAdminUsers();
   }
@@ -33807,6 +34244,7 @@ function updateSettingsFields() {
   elements.workspaceNameInput.value = clientState.settings.workspaceName;
   elements.timezoneSelect.value = clientState.settings.timezone;
   updateThemeControls();
+  renderWhatsAppPhoneLinkCard();
   renderAdminUsersPane();
 }
 
@@ -34442,6 +34880,12 @@ async function signOut() {
   state.pricingError = "";
   state.paymentStatus = null;
   state.whatsappConnection = null;
+  state.whatsappLinkedPhones = [];
+  state.whatsappLinkedPhonesError = "";
+  state.whatsappLinkCode = null;
+  state.whatsappLinkCodeError = "";
+  state.assistycaWhatsAppNumber = "";
+  clearWhatsAppLinkCodeExpiryTimer();
   state.platformConnections = [];
   state.platformConnectionStorageAvailable = true;
   state.platformConnectionStorageMessage = "";

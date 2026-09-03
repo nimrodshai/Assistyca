@@ -3363,6 +3363,41 @@ body[data-modal="billing"] .app-shell {
   font-size: 0.8rem;
 }
 
+.connection-section-note.is-warning {
+  color: var(--warn);
+}
+
+/* The code is read off this screen and typed on a phone one character at a
+   time, so it is set large, spaced out, and in the mono face where a zero and
+   an O cannot be read as each other. */
+.whatsapp-link-code {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  line-height: 1.25;
+  word-break: break-all;
+}
+
+.whatsapp-link-open {
+  justify-self: start;
+  margin-top: 0.15rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.whatsapp-link-open:hover,
+.whatsapp-link-open:focus-visible {
+  border-color: rgba(15, 118, 110, 0.22);
+  background: rgba(15, 118, 110, 0.08);
+}
+
 .auth-alert-actions {
   display: flex;
   gap: 0.65rem;

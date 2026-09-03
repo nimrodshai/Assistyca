@@ -461,6 +461,53 @@ class PortalStaticPageTests(unittest.TestCase):
             script,
         )
 
+    def test_a_phone_is_linked_from_the_account_settings_and_can_be_unlinked(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
+
+        # A linked phone belongs to the person signed in, not to a client's
+        # WhatsApp Business connection, so the card sits with the account
+        # details and works whether or not a business number is connected.
+        self.assertIn("function renderWhatsAppPhoneLinkCard", script)
+        self.assertIn("renderWhatsAppPhoneLinkCard();\n  renderAdminUsersPane();", script)
+        self.assertIn('card.className = "glass-card settings-card whatsapp-phone-link-card";', script)
+
+        # The code is read here and typed on a phone, so it is shown rather
+        # than logged, and it is set large enough to copy without squinting.
+        self.assertIn(".whatsapp-link-code {", styles)
+        self.assertIn("font-family: var(--font-mono);", styles)
+        self.assertNotIn("console.log(linkCode", script)
+
+        # The tap-to-open link is written into an href, so a value that is not
+        # the wa.me link the server builds leaves the card with the code alone.
+        self.assertIn("const WHATSAPP_LINK_CODE_URL_PATTERN = /^https:\\/\\/wa\\.me\\/\\d+(?:\\?|$)/;", script)
+        self.assertIn("WHATSAPP_LINK_CODE_URL_PATTERN.test(link) ? link : \"\"", script)
+
+        # A code that has run out is still typeable, so the card drops it when
+        # it expires rather than waiting to be reopened.
+        self.assertIn("function getLiveWhatsAppLinkCode", script)
+        self.assertIn("function scheduleWhatsAppLinkCodeExpiry", script)
+
+        # Unlinking asks first, the way disconnecting a connection does, and
+        # the wa_id reaches the path encoded.
+        self.assertIn("function openWhatsAppLinkedPhoneRemoveConfirmation", script)
+        self.assertIn("void removeWhatsAppLinkedPhone(phone);", script)
+        self.assertIn(
+            'apiRequest(`/api/whatsapp/my-numbers/${encodeURIComponent(waId)}`',
+            script,
+        )
+
+        # And the route that unlink calls has to be one the server answers:
+        # the handler existed while do_DELETE never reached it.
+        server = (
+            self.root / "packages" / "infrastructure" / "portal_auth" / "server.py"
+        ).read_text(encoding="utf-8")
+        do_delete = server[
+            server.index("def do_DELETE"):
+            server.index("def send_head")
+        ]
+        self.assertIn('path.startswith("/api/whatsapp/my-numbers/")', do_delete)
+
     def test_the_page_loads_the_connection_identity_module_before_the_app(self) -> None:
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
