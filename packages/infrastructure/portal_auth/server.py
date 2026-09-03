@@ -10181,6 +10181,49 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         return None, ""
 
+    def _log_whatsapp_route_failure(self, phone_number_id: str, sender_wa_id: str) -> None:
+        """Say why a message could not be matched to an account.
+
+        A dropped message is otherwise indistinguishable from a dozen causes:
+        an unset variable, a number typed with the wrong digits, an address
+        that matches no account. None of those are visible from the outside,
+        and the sender cannot be told any of it, so it is said here. Numbers
+        are reduced to their last four digits, which is enough to compare
+        against what was configured without writing anyone's phone number into
+        a log.
+        """
+
+        number = normalize_whatsapp_number(sender_wa_id)
+        operator_numbers = resolve_operator_whatsapp_numbers()
+        matched_email = operator_numbers.get(number, "")
+        account_active = False
+        if matched_email:
+            user = self.database.get_user(matched_email)
+            account_active = bool(user and user.get("isActive"))
+
+        print(
+            json.dumps(
+                {
+                    "event": "whatsapp_route_unresolved",
+                    "senderWaId": self._mask_whatsapp_log_identifier(number),
+                    "phoneNumberId": self._mask_whatsapp_log_identifier(phone_number_id),
+                    "isPlatformNumber": normalize_text(phone_number_id) == resolve_whatsapp_sender_phone_number_id(),
+                    "operatorNumbersConfigured": len(operator_numbers),
+                    "operatorNumbers": sorted(
+                        self._mask_whatsapp_log_identifier(item) for item in operator_numbers
+                    ),
+                    "operatorNumberMatched": bool(matched_email),
+                    "operatorAccountActive": account_active,
+                    "ownerConnectionMatched": bool(
+                        self.database.get_whatsapp_connection_by_owner_wa_id(sender_wa_id)
+                    ),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
     def _resolve_whatsapp_operator_connection(self, owner_wa_id: str) -> dict[str, Any] | None:
         """The account a phone belongs to, for phones configured on the server.
 
@@ -12266,6 +12309,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 owner_wa_id=normalize_text(event.get("sender_wa_id")),
             )
             if not connection:
+                self._log_whatsapp_route_failure(
+                    phone_number_id,
+                    normalize_text(event.get("sender_wa_id")),
+                )
                 results.append({
                     "type": "error",
                     "thread_id": event.get("thread_id", ""),

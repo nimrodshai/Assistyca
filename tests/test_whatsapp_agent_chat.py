@@ -8,8 +8,10 @@ at their module seams.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
+import io
 import json
 import tempfile
 import threading
@@ -384,6 +386,65 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         model.assert_not_called()
         self.sent.assert_not_called()
         self.assertEqual(response["results"][0]["type"], "error")
+
+    def test_an_unresolved_message_says_why_in_the_log(self) -> None:
+        buffer = io.StringIO()
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {"ASSISTYCA_WHATSAPP_OWNER_NUMBERS": "972521112233:nobody@example.com"},
+                clear=False,
+            ),
+            contextlib.redirect_stdout(buffer),
+        ):
+            self._post_webhook(
+                inbound_text_payload(
+                    "hello?",
+                    sender="14155550123",
+                    message_id="wamid.agent-unresolved-1",
+                )
+            )
+
+        diagnostics = [
+            json.loads(line)
+            for line in buffer.getvalue().splitlines()
+            if '"whatsapp_route_unresolved"' in line
+        ]
+        self.assertEqual(len(diagnostics), 1)
+        entry = diagnostics[0]
+        # The number that wrote in, so a wrong entry can be spotted, without
+        # writing anyone's phone number out in full.
+        self.assertEqual(entry["senderWaId"], "...0123")
+        self.assertTrue(entry["isPlatformNumber"])
+        self.assertEqual(entry["operatorNumbersConfigured"], 1)
+        self.assertEqual(entry["operatorNumbers"], ["...2233"])
+        self.assertFalse(entry["operatorNumberMatched"])
+        self.assertFalse(entry["operatorAccountActive"])
+        self.assertFalse(entry["ownerConnectionMatched"])
+
+    def test_the_log_separates_an_unset_variable_from_a_wrong_number(self) -> None:
+        buffer = io.StringIO()
+        with (
+            mock.patch.dict("os.environ", {"ASSISTYCA_WHATSAPP_OWNER_NUMBERS": ""}, clear=False),
+            contextlib.redirect_stdout(buffer),
+        ):
+            self._post_webhook(
+                inbound_text_payload(
+                    "hello?",
+                    sender="14155550123",
+                    message_id="wamid.agent-unresolved-2",
+                )
+            )
+
+        entry = next(
+            json.loads(line)
+            for line in buffer.getvalue().splitlines()
+            if '"whatsapp_route_unresolved"' in line
+        )
+        # Nothing configured at all reads differently from a number that does
+        # not match, which is the distinction that matters when nothing works.
+        self.assertEqual(entry["operatorNumbersConfigured"], 0)
+        self.assertEqual(entry["operatorNumbers"], [])
 
     def test_an_operator_number_does_not_hijack_a_clients_customer_traffic(self) -> None:
         # The operator mapping only applies to the Assistyca number. A customer
