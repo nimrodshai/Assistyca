@@ -92,6 +92,34 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertEqual(turn["changes"], {"timeLocal": "13:50"})
         self.assertIn("changed the time", turn["reply"])
 
+    def test_a_reply_to_an_open_calendar_question_is_a_calendar_choice(self) -> None:
+        response = {"outcome": "calendar_choice", "reply": "I'll read Nimrod and Family.", "proposalType": "",
+                    "changes": {}, "calendarIndexes": [1, "3", 1, 12, "x"]}
+        turn = normalize_agent_turn_response(response, has_active_proposal=False, has_pending_choice=True)
+        self.assertEqual(turn["outcome"], "calendar_choice")
+        self.assertEqual(turn["calendarIndexes"], [1, 3])
+        # With no question open there is nothing to choose, so the words stand alone.
+        plain = normalize_agent_turn_response(response, has_active_proposal=False)
+        self.assertEqual(plain["outcome"], "message")
+        self.assertNotIn("calendarIndexes", plain)
+        # A choice that names no calendar is not a choice either.
+        empty = normalize_agent_turn_response({**response, "calendarIndexes": []}, has_active_proposal=False, has_pending_choice=True)
+        self.assertEqual(empty["outcome"], "message")
+
+    def test_the_prompt_carries_the_open_calendar_question_only_when_there_is_one(self) -> None:
+        pending = {"kind": "calendar_choice", "question": "what's on next week?",
+                   "calendars": [{"label": "Nimrod"}, {"label": ""}, "Family"]}
+        prompt = build_agent_turn_prompt(user_message="the first one", conversation=[], timezone_name="UTC", pending_choice=pending)
+        self.assertIn("- calendar_choice:", prompt)
+        self.assertIn("calendarIndexes", prompt)
+        self.assertIn("log out", prompt, "the model is told an unrelated request is not a failed pick")
+        self.assertIn('"pendingChoice":{"kind":"calendar_choice","question":"what\'s on next week?",'
+                      '"calendars":[{"index":1,"label":"Nimrod"},{"index":2,"label":"Calendar 2"},{"index":3,"label":"Family"}]}', prompt)
+        without = build_agent_turn_prompt(user_message="hello", conversation=[], timezone_name="UTC")
+        self.assertNotIn("calendarIndexes", without)
+        self.assertNotIn("- calendar_choice:", without)
+        self.assertIn('"pendingChoice":null', without)
+
     def test_conversational_turn_preserves_manual_run_month_field(self) -> None:
         turn = normalize_agent_turn_response({
             "outcome": "revise_proposal",

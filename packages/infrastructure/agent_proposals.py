@@ -661,6 +661,11 @@ _TURN_OUTCOME_ANSWER = (
     "- question: one missing detail is required before a safe proposal can be shown.\n"
 )
 
+_TURN_OUTCOME_CALENDAR_CHOICE = (
+    "- calendar_choice: the latest message answers the open pendingChoice question by saying which of the "
+    "listed calendars to read.\n"
+)
+
 _TURN_OUTCOME_ACTION_COMMAND = (
     "- action_command: delete, pause, or resume actions the account already has, once it is clear which "
     "ones.\n"
@@ -800,6 +805,19 @@ _TURN_FACTS = (
     "knownFacts. Say in one line what you will stop assuming.\n"
 )
 
+_TURN_PENDING_CHOICE = (
+    "pendingChoice is a question you asked and have not had an answer to yet: which of the calendars in "
+    "pendingChoice.calendars to read, so that pendingChoice.question can be answered. Decide first whether "
+    "the latest message answers it. A number, a calendar's name, \"the first one\", \"mine and the family "
+    "one\", \"all of them\", \"everything but work\" are answers: return outcome=calendar_choice with "
+    "calendarIndexes holding the index of every chosen calendar from pendingChoice.calendars, and a reply of "
+    "one short line saying which you will read. Anything else - a different question, a request to log out "
+    "or disconnect something, a change of mind, a greeting, a complaint that you did not understand - is not "
+    "an answer to it. Handle it exactly as you would with no question open, using the outcomes above, and "
+    "never answer it by repeating the calendar question or by treating it as a failed pick. The calendar "
+    "question stays open on its own; do not mention it unless they ask about it.\n"
+)
+
 # The keys follow the sections. Naming a key whose rules were left out tells
 # the model a command exists and nothing about when to use it, and a command
 # nobody explained is one the application cannot carry out: the name it
@@ -816,6 +834,10 @@ _TURN_RETURN_KEYS_ACTIONS = (
 _TURN_RETURN_KEYS_FOLDERS = (
     ", needsFolderChoice, folderChoiceMode, folderCommand, folderNames, needsFileChoice, fileChoiceMode, "
     "fileCommand, fileNames, fileDestination"
+)
+
+_TURN_RETURN_KEYS_CALENDAR_CHOICE = (
+    ", calendarIndexes"
 )
 
 _TURN_RETURN_KEYS_TAIL = (
@@ -1093,6 +1115,47 @@ _TURN_TAIL = (
 )
 
 
+def normalize_agent_pending_choice(value: Any) -> dict[str, Any] | None:
+    """A question the assistant asked and is still waiting on, for the prompt.
+
+    The only one so far is which calendars to read. It travels as a numbered
+    list of names so the model can tell an answer to it - "the first one",
+    "family", "all of them" - from a new request that arrived while the
+    question was open, and can answer that request without dropping the
+    question. Only a list with at least one name is worth showing.
+    """
+
+    source = value if isinstance(value, dict) else {}
+    if _single_line(source.get("kind"), 40).lower() != "calendar_choice":
+        return None
+    raw = source.get("calendars") if isinstance(source.get("calendars"), list) else []
+    calendars = []
+    for index, entry in enumerate(raw[:10], start=1):
+        label = _single_line(entry.get("label") if isinstance(entry, dict) else entry, 120)
+        calendars.append({"index": index, "label": label or f"Calendar {index}"})
+    if not calendars:
+        return None
+    return {
+        "kind": "calendar_choice",
+        "question": _single_line(source.get("question"), AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
+        "calendars": calendars,
+    }
+
+
+def _normalize_calendar_indexes(value: Any) -> list[int]:
+    """The chosen calendars as 1-based positions in pendingChoice.calendars."""
+
+    indexes: list[int] = []
+    for item in (value if isinstance(value, list) else [])[:20]:
+        try:
+            index = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= index <= 10 and index not in indexes:
+            indexes.append(index)
+    return indexes
+
+
 def build_agent_turn_prompt(
     *,
     user_message: str,
@@ -1107,6 +1170,7 @@ def build_agent_turn_prompt(
     file_context: Any = None,
     fact_context: Any = None,
     channel: str = "portal",
+    pending_choice: Any = None,
 ) -> str:
     normalized_channel = "whatsapp" if _single_line(channel, 20).lower() == "whatsapp" else "portal"
     context = {
@@ -1121,6 +1185,7 @@ def build_agent_turn_prompt(
         "existingFolders": normalize_agent_folder_context(folder_context),
         "existingFolderFiles": normalize_agent_file_context(file_context),
         "knownFacts": normalize_agent_fact_context(fact_context),
+        "pendingChoice": normalize_agent_pending_choice(pending_choice),
         "recentConversation": conversation,
         "latestUserMessage": _single_line(user_message, AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
     }
@@ -1128,6 +1193,8 @@ def build_agent_turn_prompt(
     if active_proposal:
         sections.append(_TURN_OUTCOME_ACTIVE_PROPOSAL)
     sections.append(_TURN_OUTCOME_ANSWER)
+    if context["pendingChoice"]:
+        sections.append(_TURN_OUTCOME_CALENDAR_CHOICE)
     if context["existingActions"]:
         sections.append(_TURN_OUTCOME_ACTION_COMMAND)
     if context["existingFolders"]:
@@ -1148,12 +1215,18 @@ def build_agent_turn_prompt(
         _TURN_CALENDAR_AVAILABILITY,
         _TURN_LOOKUPS,
         _TURN_FACTS,
-        _TURN_RETURN_KEYS_HEAD,
     ])
+    if context["pendingChoice"]:
+        # A question left open on the channel is only worth explaining when
+        # there is one; the browser has a picker on screen instead.
+        sections.append(_TURN_PENDING_CHOICE)
+    sections.append(_TURN_RETURN_KEYS_HEAD)
     if context["existingActions"]:
         sections.append(_TURN_RETURN_KEYS_ACTIONS)
     if context["existingFolders"]:
         sections.append(_TURN_RETURN_KEYS_FOLDERS)
+    if context["pendingChoice"]:
+        sections.append(_TURN_RETURN_KEYS_CALENDAR_CHOICE)
     sections.extend([
         _TURN_RETURN_KEYS_TAIL,
         _TURN_SCHEDULED_MESSAGE,
@@ -1288,12 +1361,14 @@ def normalize_agent_turn_response(
     *,
     has_active_proposal: bool,
     active_proposal_type: str = "",
+    has_pending_choice: bool = False,
 ) -> dict[str, Any]:
     response = value if isinstance(value, dict) else {}
     turn = _normalize_agent_turn_outcome(
         response,
         has_active_proposal=has_active_proposal,
         active_proposal_type=active_proposal_type,
+        has_pending_choice=has_pending_choice,
     )
     # A picker only makes sense for a plain conversational question. A question
     # that belongs to a proposal is already asking for a field.
@@ -1449,6 +1524,7 @@ def _normalize_agent_turn_outcome(
     *,
     has_active_proposal: bool,
     active_proposal_type: str = "",
+    has_pending_choice: bool = False,
 ) -> dict[str, Any]:
     outcome = _single_line(response.get("outcome"), 40).lower()
     reply = _remove_ambiguous_duplicate_preface(_single_line(response.get("reply"), 500))
@@ -1489,6 +1565,17 @@ def _normalize_agent_turn_outcome(
                 "proposalType": tasks[0]["proposalType"],
                 "changes": tasks[0]["changes"],
                 "tasks": tasks,
+            }
+
+    if outcome == "calendar_choice" and has_pending_choice:
+        indexes = _normalize_calendar_indexes(response.get("calendarIndexes"))
+        if indexes:
+            return {
+                "outcome": "calendar_choice",
+                "reply": reply,
+                "proposalType": "",
+                "changes": {},
+                "calendarIndexes": indexes,
             }
 
     if outcome == "revise_proposal" and has_active_proposal and changes:
@@ -1589,6 +1676,7 @@ __all__ = [
     "build_agent_turn_prompt",
     "build_agent_proposal_revision_prompt",
     "normalize_agent_mailbox_context",
+    "normalize_agent_pending_choice",
     "normalize_agent_tool_context",
     "normalize_agent_action_context",
     "normalize_agent_file_context",

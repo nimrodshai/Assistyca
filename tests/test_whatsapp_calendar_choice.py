@@ -56,6 +56,17 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(len(parse_calendar_choice("all", CALENDARS)), 3)
         self.assertEqual(ids(parse_calendar_choice("", CALENDARS, interactive_id="calpick:2")), ["work@group.calendar.google.com"])
         self.assertEqual(parse_calendar_choice("hmm", CALENDARS), [])
+        self.assertEqual(ids(parse_calendar_choice("family please", CALENDARS)), ["family@group.calendar.google.com"])
+        self.assertEqual(ids(parse_calendar_choice("Family and Nimrod", CALENDARS)), ["family@group.calendar.google.com", "primary"], "in the order they were named")
+        self.assertEqual(len(parse_calendar_choice("all of them please", CALENDARS)), 3)
+        self.assertEqual(len(parse_calendar_choice("both", CALENDARS)), 3)
+        self.assertEqual(parse_calendar_choice("Am I free at 3?", CALENDARS), [], "a number inside a question is not a pick")
+        self.assertEqual(parse_calendar_choice("I want to log out from google", CALENDARS), [])
+        self.assertEqual(parse_calendar_choice("Just disconnect me from google", CALENDARS), [])
+        self.assertEqual(parse_calendar_choice("the first one", CALENDARS), [], "words the parser cannot place are for the model")
+        self.assertEqual(parse_calendar_choice("12", CALENDARS), [], "a number that is not on the list is not a pick")
+        addressed = [{"id": "primary", "label": "nimrod.shai@gmail.com"}, {"id": "fam", "label": "Family"}]
+        self.assertEqual(ids(parse_calendar_choice("nimrod.shai and family", addressed)), ["primary", "fam"], "the part before the @ names an address")
 
     def test_a_question_is_recognised_however_the_email_count_stands(self) -> None:
         self.assertTrue(looks_like_a_question("How can you help me?"))
@@ -208,12 +219,71 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
         self.assertFalse(any("Which calendars" in t for t in self._texts()))
 
-    def test_an_unclear_answer_asks_again_without_losing_the_question(self) -> None:
-        self._post("what's on next week?", message_id="wamid.u1")
-        result = self._post("erm", message_id="wamid.u2")
-        self.assertEqual(result["results"][0]["outcome"], "calendar_choice_retry")
-        self.assertIn("didn't catch", self._texts()[-1])
-        self.assertEqual(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))["question"], "what's on next week?")
+    def test_a_message_that_is_not_a_pick_is_understood_while_the_question_stays_open(self) -> None:
+        # 2026-09-04: "I want to log out from google" got "I didn't catch
+        # which ones" and the list again, three times. Words that are not
+        # plainly a pick go to the model with the open question in view.
+        self._post("what's on next week?", message_id="wamid.o1")
+        user_id = int(self.user["id"])
+        prompts: list[str] = []
+
+        def _model(**kwargs):
+            if kwargs.get("tool_name") == "portal_answer_composer":
+                return SimpleNamespace(output_text="You have 4 meetings next week.")
+            prompt = str(kwargs.get("prompt") or "")
+            prompts.append(prompt)
+            # The earlier message stays in recentConversation, so the
+            # branch is chosen by the latest message alone.
+            if '"latestUserMessage":"I want to log out from google"' in prompt:
+                return SimpleNamespace(output_text=json.dumps({
+                    "outcome": "message", "proposalType": "", "changes": {},
+                    "reply": "To disconnect Google, open Connections in the portal and choose Disconnect."}))
+            if '"latestUserMessage":"the first and the last"' in prompt:
+                return SimpleNamespace(output_text=json.dumps({
+                    "outcome": "calendar_choice", "proposalType": "", "changes": {},
+                    "reply": "I'll read Nimrod and Family.", "calendarIndexes": [1, 3]}))
+            return self._model(**kwargs)
+        self.model.side_effect = _model
+
+        result = self._post("I want to log out from google", message_id="wamid.o2")
+        self.assertEqual(result["results"][0]["outcome"], "message")
+        self.assertIn("Disconnect", self._texts()[-1])
+        self.assertNotIn("didn't catch", self._texts()[-1])
+        self.assertIn('"pendingChoice":{"kind":"calendar_choice","question":"what\'s on next week?"', prompts[-1])
+        self.assertIn('{"index":2,"label":"Work"}', prompts[-1])
+        self.assertEqual(self.database.get_whatsapp_agent_pending(user_id=user_id)["question"], "what's on next week?",
+                         "the calendar question is still open")
+
+        # A pick in words the parser cannot read is read by the model, and
+        # saved exactly as if the numbers had been typed.
+        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
+            def _save(handler):
+                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
+                from http import HTTPStatus
+                self._chosen = parse_json_body(handler)["calendars"]
+                json_response(handler, HTTPStatus.OK, {"ok": True})
+            save.side_effect = _save
+            result = self._post("the first and the last", message_id="wamid.o3")
+        self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
+        self.assertEqual([c["id"] for c in self._chosen], ["primary", "family@group.calendar.google.com"])
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=user_id))
+        self.assertIn("4 meetings", self._texts()[-1])
+
+    def test_a_pick_in_plain_words_never_needs_the_model(self) -> None:
+        self._post("what's on next week?", message_id="wamid.p1")
+        calls = self.model.call_count
+        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
+            def _save(handler):
+                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
+                from http import HTTPStatus
+                self._chosen = parse_json_body(handler)["calendars"]
+                json_response(handler, HTTPStatus.OK, {"ok": True})
+            save.side_effect = _save
+            result = self._post("family please", message_id="wamid.p2")
+        self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
+        self.assertEqual([c["id"] for c in self._chosen], ["family@group.calendar.google.com"])
+        # The resumed question reaches the model; the pick itself never does.
+        self.assertLessEqual(self.model.call_count - calls, 2)
 
 
 class SignupWarmthTests(unittest.TestCase):

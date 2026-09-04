@@ -56,6 +56,7 @@ from packages.infrastructure.agent_proposals import build_agent_proposal_revisio
 from packages.infrastructure.agent_proposals import normalize_agent_action_context
 from packages.infrastructure.agent_proposals import normalize_agent_file_context
 from packages.infrastructure.agent_proposals import normalize_agent_folder_context
+from packages.infrastructure.agent_proposals import normalize_agent_pending_choice
 from packages.infrastructure.agent_proposals import normalize_agent_tool_context
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
@@ -8294,6 +8295,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         tool_context = normalize_agent_tool_context(payload.get("toolContext"))
+        # A question the assistant asked on this channel and is still waiting
+        # on, so a message that is not an answer to it is still understood.
+        # The browser never sends one: it has a picker on screen instead.
+        pending_choice = normalize_agent_pending_choice(payload.get("pendingChoice"))
         source_context = normalize_agent_source_context(payload.get("sourceContext"))
         action_context = normalize_agent_action_context(payload.get("actionContext"))
         folder_context = normalize_agent_folder_context(payload.get("folderContext"))
@@ -8320,6 +8325,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             file_context=file_context,
             fact_context=fact_context,
             channel=channel,
+            pending_choice=pending_choice,
         )
         model = resolve_task_model(
             AGENT_TURN_COMPLEXITY,
@@ -8367,6 +8373,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 parse_agent_proposal_revision_json(result.output_text),
                 has_active_proposal=active_proposal is not None,
                 active_proposal_type=str((active_proposal or {}).get("type") or ""),
+                has_pending_choice=pending_choice is not None,
             )
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"Portal conversational agent returned invalid JSON: {exc}", flush=True)

@@ -286,6 +286,21 @@ followed by the answer - instead of being asked for again. A tap on the picker
 is exempt from the approval-flow routing that otherwise claims interactive
 replies.
 
+An open question never swallows the messages that arrive while it is open.
+`parse_calendar_choice` reads words as a pick only when the *whole* message is
+one - numbers, names, "all", and the small words that ride along ("family
+please"). "Am I free at 3?" has a 3 in it and is not a pick, and neither is
+"I want to log out from google". Those go to the model as an ordinary turn
+with the open question carried as `pendingChoice` (the question and the
+numbered calendar names), and the prompt tells it to decide first whether the
+message answers that question. A pick in words the parser cannot place -
+"the first one", "mine and the family one" - comes back as
+`outcome=calendar_choice` with `calendarIndexes`, and is saved exactly as if
+the numbers had been typed. Anything else is answered as it would be with no
+question open, and the calendar question stays held so a tap on the picker
+still works afterwards. Before this (2026-09-04) every non-pick got "I didn't
+catch which ones" and the list again, three times in a row.
+
 ## A fresh morning is a fresh conversation
 
 The signup concierge gets firmer each turn the email is not given. That count

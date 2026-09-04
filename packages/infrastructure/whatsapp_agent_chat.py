@@ -506,21 +506,54 @@ def parse_calendar_choice(
     body = normalize_text(text).lower()
     if not body:
         return []
-    if re.fullmatch(r"(all|all of them|both|everything|every one)\W*", body):
-        return list(options)
 
-    chosen: list[dict[str, Any]] = []
-    for token in re.findall(r"\d+", body):
-        index = int(token)
-        if 1 <= index <= len(options) and options[index - 1] not in chosen:
-            chosen.append(options[index - 1])
-    if chosen:
-        return chosen
+    # Words are a pick only when the whole message is one: numbers, names,
+    # "all", and the small words that ride along with them. "Am I free at
+    # 3?" has a 3 in it and is not a pick. Whatever is left once the picks
+    # are taken out decides, and a message with more in it is for the model,
+    # which reads it with the open question in view.
+    picks: list[tuple[int, dict[str, Any]]] = []
+    leftover = body
+
+    def _take(pattern: str, entry: dict[str, Any]) -> None:
+        nonlocal leftover
+        match = re.search(pattern, leftover)
+        if not match:
+            return
+        if all(entry is not picked for _, picked in picks):
+            picks.append((match.start(), entry))
+        leftover = re.sub(pattern, " ", leftover)
+
     for entry in options:
         label = normalize_text(entry.get("label")).lower()
-        if label and (label in body or body in label) and entry not in chosen:
-            chosen.append(entry)
-    return chosen
+        short = label.split("@", 1)[0] if "@" in label else ""
+        for name in (label, short):
+            if len(name) >= 2:
+                _take(rf"(?<![^\W_]){re.escape(name)}(?![^\W_])", entry)
+    for match in list(re.finditer(r"(?<![^\W_])\d+(?![^\W_])", leftover)):
+        index = int(match.group(0))
+        if 1 <= index <= len(options):
+            _take(rf"(?<![^\W_]){index}(?![^\W_])", options[index - 1])
+
+    words = [word for word in re.findall(r"[^\W_]+", leftover) if word not in _PICK_FILLER]
+    if words and all(word in _PICK_ALL_WORDS for word in words):
+        return list(options)
+    if words:
+        return []
+    return [entry for _, entry in sorted(picks, key=lambda item: item[0])]
+
+
+# Words that ride along with a pick without changing it, and the words that
+# mean every calendar. Anything else in a reply means it is not (only) a pick.
+_PICK_FILLER = frozenset({
+    "and", "the", "of", "them", "one", "ones", "only", "just", "please", "pls", "calendar", "calendars",
+    "ok", "okay", "yes", "sure", "thanks", "thank", "you", "read", "use", "pick", "choose", "take",
+})
+_PICK_ALL_WORDS = frozenset({"all", "everything", "every", "both"})
+
+
+def _pending_calendars(pending: dict[str, Any]) -> list[dict[str, Any]]:
+    return [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]
 
 
 def send_assistyca_interactive(*, recipient_wa_id: str, payload: dict[str, Any] | None, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> str:
@@ -1057,8 +1090,14 @@ class WhatsAppAgentChat:
         # is answered before anything else, by a tap or by words, and then the
         # question that was interrupted is picked straight back up.
         pending = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
-        if pending and pending.get("kind") == "calendar_choice":
-            return self._answer_calendar_choice(pending, text=text, interactive_id=interactive_id)
+        pending_choice = pending if pending and pending.get("kind") == "calendar_choice" else None
+        if pending_choice and (interactive_id or parse_calendar_choice(text, _pending_calendars(pending_choice))):
+            return self._answer_calendar_choice(pending_choice, text=text, interactive_id=interactive_id)
+        # Any other words go to the model with the open question in view. It
+        # tells a pick the parser could not read ("the first one") from a new
+        # request that arrived while the picker was up, and answers the new
+        # request instead of asking the question again. The question stays
+        # open, so a tap on the picker still works afterwards.
 
         if not text or normalize_text(message_type).lower() not in {"", "text", "button", "interactive"}:
             reply = (
@@ -1091,6 +1130,15 @@ class WhatsAppAgentChat:
         }
         if active_proposal:
             turn_payload["activeProposal"] = active_proposal
+        if pending_choice:
+            turn_payload["pendingChoice"] = {
+                "kind": "calendar_choice",
+                "question": normalize_text(pending_choice.get("question")),
+                "calendars": [
+                    {"label": normalize_text(entry.get("label")) or normalize_text(entry.get("id"))}
+                    for entry in _pending_calendars(pending_choice)
+                ],
+            }
 
         turn, status = self._api("POST", "/api/agent/turn", turn_payload)
         outcome = normalize_text(turn.get("outcome")).lower()
@@ -1111,6 +1159,11 @@ class WhatsAppAgentChat:
         elif outcome == "reject_proposal":
             self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
             reply = normalize_text(turn.get("reply")) or "Okay, I dropped that plan."
+        elif outcome == "calendar_choice" and pending_choice:
+            # The model read a pick the words parser could not. It hands back
+            # the numbers, and from here it is the same as typing them.
+            picked = ", ".join(str(index) for index in (turn.get("calendarIndexes") or []) if isinstance(index, int))
+            return self._answer_calendar_choice(pending_choice, text=picked, interactive_id="")
         elif outcome == "answer_now":
             reply = self._answer_now(turn, text, conversation)
         else:
