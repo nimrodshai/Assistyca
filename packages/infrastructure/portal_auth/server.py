@@ -201,6 +201,7 @@ from packages.infrastructure.whatsapp_agent_chat import send_assistyca_interacti
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_agent_chat_enabled
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_AGAIN_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_CONCIERGE_INSTRUCTIONS
+from packages.infrastructure.whatsapp_agent_chat import assistyca_typing
 from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
 from packages.infrastructure.whatsapp_agent_chat import normalize_signup_concierge_reply
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_TEXT
@@ -10814,6 +10815,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 transcript=transcript,
                 attempt=attempt,
                 fallback=SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT,
+                typing_for_message_id=normalize_text(event.get("source_message_id")),
             )
             return self._finish_whatsapp_signup_step(
                 sender_wa_id,
@@ -10868,6 +10870,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             attempt=attempt,
             fallback=SIGNUP_WELCOME_TEXT,
             account_created=True,
+            typing_for_message_id=normalize_text(event.get("source_message_id")),
         )
         link_line = build_connect_links_line(email, self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id))
         if link_line:
@@ -10882,6 +10885,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         attempt: int,
         fallback: str,
         account_created: bool = False,
+        typing_for_message_id: str = "",
     ) -> str:
         """One model-written line of the signup conversation, or the fixed one.
 
@@ -10903,20 +10907,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             account_created=account_created,
         )
         try:
-            result = call_openai_response(
-                tool_name="whatsapp_signup_concierge",
-                tool_id="whatsapp_signup",
-                prompt=prompt,
-                model=model,
-                instructions=SIGNUP_CONCIERGE_INSTRUCTIONS,
-                max_output_tokens=WHATSAPP_SIGNUP_MAX_OUTPUT_TOKENS,
-                config=load_openai_config(
-                    default_model=model,
-                    strict_tracking=False,
-                    include_prompt_in_metadata=False,
-                ),
-                metadata={"source": "whatsapp_signup", "attempt": attempt, "accountCreated": account_created},
-            )
+            # The phone shows "typing..." while the model writes the line.
+            with assistyca_typing(typing_for_message_id):
+                result = call_openai_response(
+                    tool_name="whatsapp_signup_concierge",
+                    tool_id="whatsapp_signup",
+                    prompt=prompt,
+                    model=model,
+                    instructions=SIGNUP_CONCIERGE_INSTRUCTIONS,
+                    max_output_tokens=WHATSAPP_SIGNUP_MAX_OUTPUT_TOKENS,
+                    config=load_openai_config(
+                        default_model=model,
+                        strict_tracking=False,
+                        include_prompt_in_metadata=False,
+                    ),
+                    metadata={"source": "whatsapp_signup", "attempt": attempt, "accountCreated": account_created},
+                )
             reply = normalize_signup_concierge_reply(
                 parse_contact_agent_json(result.output_text),
                 fallback=fallback,
@@ -11173,6 +11179,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 event.get("message_text"),
                 message_type=normalize_text(event.get("message_type")) or "text",
                 interactive_id=normalize_text(interactive_reply.get("id")),
+                source_message_id=normalize_text(event.get("source_message_id")),
             )
         except WhatsAppAgentChatError as exc:
             print(f"WhatsApp agent chat failed: {exc}", flush=True)

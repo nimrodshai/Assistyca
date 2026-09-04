@@ -14,10 +14,12 @@ the webhook handler, not here.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import secrets
+import threading
 import urllib.error as urllib_error
 import urllib.parse as urllib_parse
 import urllib.request as urllib_request
@@ -34,6 +36,7 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
+from packages.tools.whatsapp_reply_approval.server import send_whatsapp_typing_indicator
 
 
 AGENT_CHAT_HISTORY_LIMIT = 12
@@ -170,6 +173,75 @@ def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = D
     raise WhatsAppAgentChatError(
         "Assistyca WhatsApp sending is not configured, so the agent cannot reply on this channel."
     )
+
+
+# Meta keeps "typing..." on screen for 25 seconds, then drops it. A turn that
+# runs a model, and sometimes a tool behind it, can take longer than that, so
+# the indicator is renewed a little before it would lapse for as long as the
+# turn is still running.
+TYPING_INDICATOR_TTL_SECONDS = 25
+TYPING_INDICATOR_REFRESH_SECONDS = 20
+
+
+def show_assistyca_typing(*, message_id: str) -> bool:
+    """Show "typing..." on the phone that sent one message. Never raises.
+
+    The indicator is a courtesy on top of the reply: the person sees that the
+    message arrived and something is happening, which is the difference
+    between waiting and wondering. Losing it costs nothing the reply does not
+    put right, so a failure is logged and the turn goes on. In mock-send mode
+    nothing reaches Meta, the same as the reply itself.
+    """
+
+    message_id = normalize_text(message_id)
+    if not message_id:
+        return False
+    if parse_bool(os.getenv("WHATSAPP_ALLOW_MOCK_SEND")):
+        return True
+    access_token = resolve_whatsapp_sender_access_token()
+    phone_number_id = resolve_whatsapp_sender_phone_number_id()
+    if not access_token or not phone_number_id:
+        return False
+    try:
+        send_whatsapp_typing_indicator(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            api_version=DEFAULT_WHATSAPP_API_VERSION,
+            message_id=message_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - the reply still goes out
+        print(f"WhatsApp typing indicator could not be sent: {exc}", flush=True)
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def assistyca_typing(message_id: str, *, refresh_seconds: float = TYPING_INDICATOR_REFRESH_SECONDS):
+    """Keep "typing..." showing for the sender of `message_id` while the body runs.
+
+    The indicator goes up at once and is renewed every `refresh_seconds` from
+    a background thread until the block ends. Meta clears it by itself the
+    moment the reply is sent, so the block should end where the reply goes
+    out. A first send that fails is not retried: the same failure would only
+    repeat, and the log already has it.
+    """
+
+    stop = threading.Event()
+    worker: threading.Thread | None = None
+    if show_assistyca_typing(message_id=message_id):
+        def renew() -> None:
+            while not stop.wait(refresh_seconds):
+                if not show_assistyca_typing(message_id=message_id):
+                    return
+
+        worker = threading.Thread(target=renew, name="whatsapp-typing", daemon=True)
+        worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker is not None:
+            worker.join(timeout=1)
 
 
 SIGNUP_DEFAULT_DAILY_CAP = 50
@@ -1318,6 +1390,7 @@ class WhatsAppAgentChat:
         message_type: str = "text",
         interactive_id: str = "",
         resumed: bool = False,
+        source_message_id: str = "",
     ) -> dict[str, Any]:
         text = normalize_text(message_text)
         if self.user_id <= 0 or not self.email or not self.owner_wa_id:
@@ -1393,46 +1466,51 @@ class WhatsAppAgentChat:
                 ],
             }
 
-        turn, status = self._api("POST", "/api/agent/turn", turn_payload)
-        outcome = normalize_text(turn.get("outcome")).lower()
-        if status != 200 or not turn.get("ok"):
-            outcome = "error"
-            reply = (
-                normalize_text(turn.get("message"))
-                or "I'm having trouble thinking that through right now. Please try again in a moment."
-            )
-        elif outcome == "proposal":
-            self._hold_proposal(turn, text)
-            reply = normalize_text(turn.get("reply"))
-        elif outcome == "revise_proposal" and active_proposal:
-            self._revise_proposal(turn, active_proposal)
-            reply = normalize_text(turn.get("reply"))
-        elif outcome == "approve_proposal" and active_proposal:
-            reply = self._approve_proposal(turn, active_proposal)
-        elif outcome == "reject_proposal":
-            self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
-            reply = normalize_text(turn.get("reply")) or "Okay, I dropped that plan."
-        elif outcome == "disconnect_command":
-            targets = [t for t in (turn.get("disconnectTargets") or []) if isinstance(t, str)]
-            return self._ask_disconnect(targets)
-        elif outcome == "confirm" and pending_disconnect:
-            return self._run_disconnect(pending_disconnect)
-        elif outcome == "decline" and pending_disconnect:
-            self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
-            reply = normalize_text(turn.get("reply")) or "Okay - nothing changed. Everything stays connected."
-        elif outcome == "calendar_choice" and pending_choice:
-            # The model read a pick the words parser could not. It hands back
-            # the numbers, and from here it is the same as typing them.
-            picked = ", ".join(str(index) for index in (turn.get("calendarIndexes") or []) if isinstance(index, int))
-            return self._answer_calendar_choice(pending_choice, text=picked, interactive_id="")
-        elif outcome == "answer_now":
-            reply = self._answer_now(turn, text, conversation)
-            if not reply and getattr(self, "_calendar_choice_asked", False):
-                # The picker is the reply; nothing else goes out with it.
-                return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice",
-                        "reply_text": "", "message_id": ""}
-        else:
-            reply = normalize_text(turn.get("reply"))
+        # From here until the reply goes out the phone shows "typing...": the
+        # model turn, and whatever runs behind it, is the long part. A branch
+        # that answers from inside the block (a picker, a held disconnect) is
+        # still a reply, and Meta clears the indicator when it lands.
+        with assistyca_typing(source_message_id):
+            turn, status = self._api("POST", "/api/agent/turn", turn_payload)
+            outcome = normalize_text(turn.get("outcome")).lower()
+            if status != 200 or not turn.get("ok"):
+                outcome = "error"
+                reply = (
+                    normalize_text(turn.get("message"))
+                    or "I'm having trouble thinking that through right now. Please try again in a moment."
+                )
+            elif outcome == "proposal":
+                self._hold_proposal(turn, text)
+                reply = normalize_text(turn.get("reply"))
+            elif outcome == "revise_proposal" and active_proposal:
+                self._revise_proposal(turn, active_proposal)
+                reply = normalize_text(turn.get("reply"))
+            elif outcome == "approve_proposal" and active_proposal:
+                reply = self._approve_proposal(turn, active_proposal)
+            elif outcome == "reject_proposal":
+                self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
+                reply = normalize_text(turn.get("reply")) or "Okay, I dropped that plan."
+            elif outcome == "disconnect_command":
+                targets = [t for t in (turn.get("disconnectTargets") or []) if isinstance(t, str)]
+                return self._ask_disconnect(targets)
+            elif outcome == "confirm" and pending_disconnect:
+                return self._run_disconnect(pending_disconnect)
+            elif outcome == "decline" and pending_disconnect:
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                reply = normalize_text(turn.get("reply")) or "Okay - nothing changed. Everything stays connected."
+            elif outcome == "calendar_choice" and pending_choice:
+                # The model read a pick the words parser could not. It hands back
+                # the numbers, and from here it is the same as typing them.
+                picked = ", ".join(str(index) for index in (turn.get("calendarIndexes") or []) if isinstance(index, int))
+                return self._answer_calendar_choice(pending_choice, text=picked, interactive_id="")
+            elif outcome == "answer_now":
+                reply = self._answer_now(turn, text, conversation)
+                if not reply and getattr(self, "_calendar_choice_asked", False):
+                    # The picker is the reply; nothing else goes out with it.
+                    return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice",
+                            "reply_text": "", "message_id": ""}
+            else:
+                reply = normalize_text(turn.get("reply"))
 
         reply = format_agent_reply_for_whatsapp(reply) or (
             "I read that, but I could not put an answer together. Please try phrasing it another way."
@@ -1482,6 +1560,10 @@ __all__ = [
     "resolve_whatsapp_signup_daily_cap",
     "send_assistyca_interactive",
     "send_assistyca_text",
+    "show_assistyca_typing",
+    "assistyca_typing",
+    "TYPING_INDICATOR_TTL_SECONDS",
+    "TYPING_INDICATOR_REFRESH_SECONDS",
     "infer_timezone_from_wa_id",
     "normalize_whatsapp_number",
     "resolve_operator_whatsapp_numbers",

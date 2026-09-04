@@ -85,6 +85,16 @@ the same loop on the server:
    Replies always answer an inbound message, so they sit inside Meta's
    24-hour service window and need no template.
 
+While step 2 runs, the phone shows "typing…". Meta's typing indicator is a
+status on the inbound message (it also marks it read), so it needs that
+message's id and nothing comes back to record. Meta clears it after 25
+seconds or when the reply lands, whichever is first, and a turn that runs a
+model can outlast that, so `assistyca_typing` renews it every 20 seconds from
+a background thread until the block that sends the reply ends. The signup
+concierge does the same around its model call. A failed indicator is logged
+and not retried; the reply is never held back by it. In mock-send mode
+nothing is sent to Meta.
+
 A scheduled message created this way is also **delivered** over WhatsApp: the
 scheduled-actions worker sends `whatsapp`-channel messages through the
 Assistyca sender using the approved scheduled-notification template (so the

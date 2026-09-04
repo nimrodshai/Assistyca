@@ -25,6 +25,7 @@ from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
 from packages.infrastructure.whatsapp_agent_chat import (
+    assistyca_typing,
     format_agent_reply_for_whatsapp,
     infer_timezone_from_wa_id,
     resolve_scheduled_message_run_at,
@@ -118,6 +119,65 @@ class WhatsAppAgentHelperTests(unittest.TestCase):
     def test_run_at_needs_a_real_time(self) -> None:
         self.assertEqual(resolve_scheduled_message_run_at({"timeLocal": "later"}), "")
         self.assertEqual(resolve_scheduled_message_run_at({}), "")
+
+
+class WhatsAppTypingIndicatorTests(unittest.TestCase):
+    """The phone shows "typing..." from the moment a message arrives until the reply."""
+
+    def setUp(self) -> None:
+        self.env = mock.patch.dict(
+            "os.environ",
+            {
+                "WHATSAPP_ALLOW_MOCK_SEND": "0",
+                "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM_PHONE_NUMBER_ID,
+                "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
+            },
+            clear=False,
+        )
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_the_indicator_is_renewed_while_the_turn_is_still_running(self) -> None:
+        with mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator"
+        ) as typing:
+            with assistyca_typing("wamid.slow", refresh_seconds=0.05):
+                import time
+                time.sleep(0.18)
+        self.assertGreaterEqual(typing.call_count, 3)
+        for call in typing.call_args_list:
+            self.assertEqual(call.kwargs["message_id"], "wamid.slow")
+            self.assertEqual(call.kwargs["phone_number_id"], PLATFORM_PHONE_NUMBER_ID)
+            self.assertEqual(call.kwargs["access_token"], "platform-token")
+
+    def test_a_failed_indicator_is_not_retried_and_never_stops_the_turn(self) -> None:
+        with mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator",
+            side_effect=RuntimeError("WhatsApp rejected the message: bad token"),
+        ) as typing, contextlib.redirect_stdout(io.StringIO()) as out:
+            with assistyca_typing("wamid.slow", refresh_seconds=0.05):
+                import time
+                time.sleep(0.15)
+                ran = True
+        self.assertTrue(ran)
+        self.assertEqual(typing.call_count, 1)
+        self.assertIn("typing indicator could not be sent", out.getvalue())
+
+    def test_nothing_is_sent_without_an_inbound_message_id(self) -> None:
+        with mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator"
+        ) as typing:
+            with assistyca_typing(""):
+                pass
+        typing.assert_not_called()
+
+    def test_mock_send_mode_never_reaches_meta(self) -> None:
+        with mock.patch.dict("os.environ", {"WHATSAPP_ALLOW_MOCK_SEND": "1"}, clear=False), mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator"
+        ) as typing:
+            with assistyca_typing("wamid.slow"):
+                pass
+        typing.assert_not_called()
 
 
 class WhatsAppAgentChatApiTests(unittest.TestCase):
@@ -223,6 +283,36 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.assertEqual([item["role"] for item in transcript], ["user", "assistant"])
         self.assertEqual(transcript[0]["text"], "What can you do?")
         self.assertEqual(transcript[1]["text"], "Hi! I can help with that.")
+
+    def test_the_phone_shows_typing_before_the_reply_arrives(self) -> None:
+        order: list[str] = []
+
+        def typing(**kwargs):
+            order.append(f"typing:{kwargs['message_id']}")
+
+        def send(**kwargs):
+            order.append("reply")
+            return "wamid.agent-reply"
+
+        self.sent.side_effect = send
+        with (
+            mock.patch.dict("os.environ", {"WHATSAPP_ALLOW_MOCK_SEND": "0"}, clear=False),
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator",
+                side_effect=typing,
+            ),
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                return_value=self._turn_response({"outcome": "message", "reply": "On it."}),
+            ),
+        ):
+            response = self._post_webhook(
+                inbound_text_payload("Book me a slot tomorrow", message_id="wamid.agent-msg-7")
+            )
+
+        actions = [entry.get("action") for entry in response.get("results", [])]
+        self.assertIn("agent_chat_reply", actions)
+        self.assertEqual(order, ["typing:wamid.agent-msg-7", "reply"])
 
     def test_the_conversation_history_reaches_the_next_turn(self) -> None:
         self.database.save_whatsapp_agent_message(

@@ -1372,6 +1372,50 @@ def send_whatsapp_message(
     )
 
 
+def send_whatsapp_typing_indicator(
+    *,
+    access_token: str,
+    phone_number_id: str,
+    api_version: str,
+    message_id: str,
+    timeout: float = 10,
+) -> None:
+    """Show "typing..." to the sender of one inbound message.
+
+    Meta shows the indicator for 25 seconds or until the next message we send,
+    whichever comes first, and marks the inbound message read at the same
+    time. It needs the inbound message's own id: the indicator is a status on
+    that message, not a message of its own, so nothing comes back to record.
+    """
+
+    url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+    request = urllib_request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(format_whatsapp_send_error(exc.code, error_body)) from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"WhatsApp typing indicator failed: {exc.reason}") from exc
+    if isinstance(response_payload, dict) and isinstance(response_payload.get("error"), dict):
+        raise RuntimeError(format_whatsapp_send_error(200, json.dumps(response_payload)))
+
+
 def render_layout(title: str, body: str, subtitle: str | None = None) -> str:
     heading = f'<p class="eyebrow">WhatsApp Reply Approval Bot</p>' if subtitle is None else f'<p class="eyebrow">{escape(subtitle)}</p>'
     return BASE_LAYOUT.substitute(
