@@ -12,6 +12,7 @@ import logging
 import os
 import time
 import uuid
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from datetime import timezone
@@ -45,7 +46,12 @@ RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504}
 # some refuse them outright, and which is which changes with every release, so
 # a model that refuses is remembered here after its first refusal instead of
 # being hardcoded into a list that goes stale.
-SAMPLING_CONTROL_KEYS = ("temperature", "top_p")
+SAMPLING_CONTROL_KEYS = ("temperature", "top_p", "reasoning")
+# A reply that ran out of output budget goes once more with this much more
+# room. Reasoning models spend the same budget thinking, so the first cap is
+# a guess at how much thinking the question needs, and one doubling covers
+# the guess being short without paying for it on every call.
+INCOMPLETE_RETRY_BUDGET_MULTIPLIER = 2
 _MODELS_REFUSING_SAMPLING_CONTROLS: set[str] = set()
 
 OpenAIEventSink = Callable[[dict[str, Any]], None]
@@ -129,6 +135,10 @@ class OpenAIRequestError(OpenAIError):
     def __init__(self, message: str, *, details: str = "", status_code: int | None = None) -> None:
         super().__init__(message, details=details)
         self.status_code = status_code
+
+
+class OpenAIIncompleteError(OpenAIRequestError):
+    """The model stopped before it finished, and had no text to show for it."""
 
 
 class OpenAITrackingError(OpenAIError):
@@ -340,6 +350,17 @@ def extract_openai_usage(payload: dict[str, Any]) -> dict[str, Any]:
             usage_payload.get("output_tokens_details") or usage_payload.get("completion_tokens_details") or {}
         ),
     }
+
+
+def response_is_incomplete(payload: dict[str, Any]) -> bool:
+    """Whether the Responses API says it stopped before the reply was done."""
+
+    return normalize_text((payload or {}).get("status")).lower() == "incomplete"
+
+
+def response_incomplete_reason(payload: dict[str, Any]) -> str:
+    details = (payload or {}).get("incomplete_details")
+    return normalize_text(details.get("reason")) if isinstance(details, dict) else ""
 
 
 def extract_openai_output_text(payload: dict[str, Any]) -> str:
@@ -694,6 +715,59 @@ class OpenAIGateway:
         return input_tokens
 
     def create_response(self, request: OpenAIRequest) -> OpenAIResult:
+        """One model call, with one more try when the reply was cut off.
+
+        A reasoning model spends part of its output budget thinking, and a
+        budget that thinking used up entirely comes back marked incomplete
+        with no text at all. That is a budget problem rather than a model
+        problem, so the request goes again once with twice the room. A reply
+        still cut off after that is returned when there is text to return,
+        and raised when there is none, because an empty string handed to a
+        caller turns into a parse failure that explains nothing.
+        """
+
+        result = self._create_response_once(request)
+        if not response_is_incomplete(result.raw_response):
+            return result
+        reason = response_incomplete_reason(result.raw_response)
+        budget = int(request.max_output_tokens or 0)
+        self._emit(
+            "openai.request.incomplete",
+            {
+                "request_id": result.request_id,
+                "tool_name": normalize_text(request.tool_name),
+                "model": result.model,
+                "reason": reason,
+                "max_output_tokens": budget,
+                "output_text_length": len(result.output_text),
+                "retrying": reason == "max_output_tokens" and budget > 0,
+            },
+        )
+        if reason == "max_output_tokens" and budget > 0:
+            retry = dataclasses.replace(request, max_output_tokens=budget * INCOMPLETE_RETRY_BUDGET_MULTIPLIER)
+            result = self._create_response_once(retry)
+            if not response_is_incomplete(result.raw_response):
+                return result
+            self._emit(
+                "openai.request.incomplete",
+                {
+                    "request_id": result.request_id,
+                    "tool_name": normalize_text(request.tool_name),
+                    "model": result.model,
+                    "reason": response_incomplete_reason(result.raw_response),
+                    "max_output_tokens": retry.max_output_tokens,
+                    "output_text_length": len(result.output_text),
+                    "retrying": False,
+                },
+            )
+        if result.output_text:
+            return result
+        raise OpenAIIncompleteError(
+            "OpenAI stopped before finishing its reply.",
+            details=json.dumps(result.raw_response.get("incomplete_details") or {}),
+        )
+
+    def _create_response_once(self, request: OpenAIRequest) -> OpenAIResult:
         api_key = normalize_text(self.config.api_key)
         if not api_key:
             raise OpenAIConfigurationError("OPENAI_API_KEY is required.")

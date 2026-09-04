@@ -30,6 +30,18 @@ COMPLEXITY_MODELS = {
 }
 
 
+# How hard each level thinks before it answers. Reasoning models take this as
+# a request setting; the effort is chosen with the model, in the same place,
+# so a task never runs a strong model with its thinking turned off by accident
+# or a cheap one that thinks longer than the work is worth.
+COMPLEXITY_REASONING_EFFORT = {
+    TaskComplexity.IMPORTANT: "medium",
+    TaskComplexity.MEDIUM: "low",
+    # The mid and small models take none/low/medium/high; "minimal" is refused.
+    TaskComplexity.SMALL: "low",
+}
+
+
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -62,9 +74,33 @@ def resolve_task_model(complexity: Any, *env_var_names: str) -> str:
     return model_for_complexity(complexity)
 
 
+def reasoning_for_complexity(complexity: Any) -> dict[str, str]:
+    """The reasoning setting a task of this complexity runs with."""
+
+    try:
+        level = TaskComplexity(complexity)
+    except ValueError:
+        level = TaskComplexity.IMPORTANT
+    return {"effort": COMPLEXITY_REASONING_EFFORT[level]}
+
+
+def resolve_task_reasoning(complexity: Any, *env_var_names: str) -> dict[str, str]:
+    """The first environment override that is set, else the effort this level
+    maps to. An override names the effort on its own, such as `low`."""
+
+    for name in env_var_names:
+        override = normalize_text(os.getenv(name)).lower()
+        if override:
+            return {"effort": override}
+    return reasoning_for_complexity(complexity)
+
+
 __all__ = [
     "COMPLEXITY_MODELS",
+    "COMPLEXITY_REASONING_EFFORT",
     "TaskComplexity",
     "model_for_complexity",
+    "reasoning_for_complexity",
     "resolve_task_model",
+    "resolve_task_reasoning",
 ]

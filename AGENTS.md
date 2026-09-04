@@ -53,6 +53,7 @@ When working here:
 - Do not hardcode a model name at a call site. Change the mapping in `task_complexity.py` instead.
 - Environment variables stay available as per-task overrides for incident response, not as the normal way to pick a model.
 - Pick the level from the work, not the feature's importance: open-ended reasoning is `IMPORTANT`, constrained drafting or structured edits are `MEDIUM`, short mechanical extraction is `SMALL`.
+- The level also decides how hard the model thinks: pass `resolve_task_reasoning(complexity, ...)` as `reasoning` on conversational calls, and size `max_output_tokens` to include that thinking. A budget the thinking uses up comes back as an incomplete reply; the gateway retries it once with double the room, and raises `OpenAIIncompleteError` if there is still no text.
 
 ## Secrets And Access
 

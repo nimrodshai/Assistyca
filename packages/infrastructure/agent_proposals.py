@@ -9,8 +9,11 @@ from typing import Any
 
 AGENT_PROPOSAL_REVISION_MAX_MESSAGES = 12
 AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH = 900
-AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS = 500
-AGENT_TURN_MAX_OUTPUT_TOKENS = 700
+# Output budgets include the model's own thinking on a reasoning model. A
+# turn's visible reply is a few hundred tokens; the rest is room to think,
+# and a budget the thinking uses up comes back as no reply at all.
+AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS = 2000
+AGENT_TURN_MAX_OUTPUT_TOKENS = 4000
 AGENT_ACTION_CONTEXT_MAX_ITEMS = 20
 AGENT_FOLDER_CONTEXT_MAX_ITEMS = 20
 # Files travel only for the folders the chat has already opened, so this

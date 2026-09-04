@@ -38,7 +38,9 @@ ANSWER_COMPOSER_MAX_CONVERSATION_MESSAGES = 8
 ANSWER_COMPOSER_MAX_FIGURE_KEYS = 20
 ANSWER_COMPOSER_MAX_FIGURE_ITEMS = 40
 ANSWER_COMPOSER_MAX_FIGURE_DEPTH = 4
-ANSWER_COMPOSER_MAX_OUTPUT_TOKENS = 600
+# Includes the model's thinking on a reasoning model; the answer itself is
+# capped separately by ANSWER_COMPOSER_MAX_REPLY_LENGTH.
+ANSWER_COMPOSER_MAX_OUTPUT_TOKENS = 2000
 # The reply lands in a chat bubble. Past a few short paragraphs it stops being
 # an answer and starts being a report nobody asked for.
 ANSWER_COMPOSER_MAX_REPLY_LENGTH = 1600

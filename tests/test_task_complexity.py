@@ -92,3 +92,22 @@ class DeclaredTaskComplexityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReasoningEffortTests(unittest.TestCase):
+    def test_each_level_has_an_effort(self) -> None:
+        from packages.infrastructure.task_complexity import TaskComplexity, reasoning_for_complexity
+
+        self.assertEqual(reasoning_for_complexity(TaskComplexity.IMPORTANT), {"effort": "medium"})
+        self.assertEqual(reasoning_for_complexity(TaskComplexity.MEDIUM), {"effort": "low"})
+        self.assertEqual(reasoning_for_complexity(TaskComplexity.SMALL), {"effort": "low"})
+
+    def test_an_override_names_the_effort(self) -> None:
+        from unittest import mock
+
+        from packages.infrastructure.task_complexity import TaskComplexity, resolve_task_reasoning
+
+        with mock.patch.dict("os.environ", {"X_EFFORT": "High"}, clear=False):
+            self.assertEqual(resolve_task_reasoning(TaskComplexity.SMALL, "X_EFFORT"), {"effort": "high"})
+        with mock.patch.dict("os.environ", {"X_EFFORT": ""}, clear=False):
+            self.assertEqual(resolve_task_reasoning(TaskComplexity.SMALL, "X_EFFORT"), {"effort": "low"})

@@ -151,6 +151,7 @@ from packages.infrastructure.answer_composer import normalize_answer_records
 from packages.infrastructure.answer_composer import normalize_composed_answer
 from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
+from packages.infrastructure.task_complexity import resolve_task_reasoning
 from packages.infrastructure.receipt_collector import RECEIPT_MANIFEST_FILENAME
 from packages.infrastructure.receipt_collector import answer_receipt_question
 from packages.infrastructure.receipt_collector import answer_receipt_rows
@@ -8233,6 +8234,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 prompt=prompt,
                 model=model,
                 instructions=ANSWER_COMPOSER_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(AGENT_ANSWER_COMPOSE_COMPLEXITY, "PORTAL_ANSWER_REASONING_EFFORT"),
                 max_output_tokens=ANSWER_COMPOSER_MAX_OUTPUT_TOKENS,
                 temperature=AGENT_ANSWER_TEMPERATURE,
                 usage_recorder=self.database,
@@ -8361,6 +8363,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 prompt=prompt,
                 model=model,
                 instructions=AGENT_TURN_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(AGENT_TURN_COMPLEXITY, "PORTAL_AGENT_REASONING_EFFORT"),
                 max_output_tokens=AGENT_TURN_MAX_OUTPUT_TOKENS,
                 temperature=AGENT_TURN_TEMPERATURE,
                 usage_recorder=self.database,
@@ -8396,7 +8399,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 has_pending_choice=pending_choice is not None,
             )
         except (ValueError, json.JSONDecodeError) as exc:
-            print(f"Portal conversational agent returned invalid JSON: {exc}", flush=True)
+            # The text is the evidence. A rejection logged without it can only
+            # be reproduced, never read.
+            print(
+                f"Portal conversational agent returned invalid JSON: {exc} "
+                f"(status={normalize_text(result.raw_response.get('status'))}, "
+                f"output={result.output_text[:2000]!r})",
+                flush=True,
+            )
             json_response(self, HTTPStatus.BAD_GATEWAY, {
                 "ok": False,
                 "error": "invalid_agent_turn",
