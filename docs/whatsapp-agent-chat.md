@@ -274,11 +274,26 @@ name one, each for a reason worth knowing rather than a gap nobody noticed:
 Meta redelivers a webhook it did not get a quick answer to, and a reply that
 runs a model and reads a calendar is never quick. Every inbound message to the
 Assistyca number is therefore claimed by its WhatsApp message id in
-`whatsapp_processed_messages` before anything else happens; a redelivery is
-answered `duplicate` and does nothing. (Traffic to a client's own number keeps
-its existing dedupe in `save_whatsapp_message`.) The proper next step is to
-acknowledge the webhook before doing the work; this makes the redelivery
-harmless in the meantime.
+`whatsapp_processed_messages` before anything else happens, and the claim is
+marked finished once the webhook has answered. A redelivery of a finished claim
+is answered `duplicate` and does nothing. (Traffic to a client's own number
+keeps its existing dedupe in `save_whatsapp_message`.)
+
+A claim is also stamped with the name of the server process that took it
+(`SERVER_BOOT_ID`, new on every start). That is what tells a duplicate from a
+message that was never answered: a deploy replaces the running server, and a
+turn in the middle of a model call dies with it - the phone shows "typing",
+then nothing, and no turn row is written. Meta redelivers a minute later. An
+open claim held by a *different* server name means exactly that, so the
+redelivery takes the claim over and the message gets its answer, late rather
+than never. An open claim under the *same* name is a turn still running, and
+stays a duplicate.
+
+The server also tries not to die mid-turn in the first place. On SIGTERM (what
+Render sends once a new deploy is live) it stops taking requests and waits up
+to `PORTAL_SHUTDOWN_GRACE_SECONDS` (default 25, inside Render's thirty) for the
+requests still in flight, then exits. A turn that outlasts the wait is the case
+the claim takeover covers.
 
 ## Choosing calendars from the phone
 

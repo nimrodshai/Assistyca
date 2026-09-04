@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import io
 import shutil
 import smtplib
@@ -3752,6 +3753,20 @@ def send_api_headers(handler: SimpleHTTPRequestHandler, *, content_length: int |
 
 class PortalAuthHandler(SimpleHTTPRequestHandler):
     server_version = "PortalAuth/1.0"
+
+    def handle(self) -> None:
+        # Counted in and out so a shutdown can wait for the requests that are
+        # still running - a WhatsApp turn in the middle of a model call - before
+        # the process goes away.
+        in_flight: InFlightRequests | None = getattr(self.server, "in_flight", None)
+        if in_flight is None:
+            super().handle()
+            return
+        in_flight.enter()
+        try:
+            super().handle()
+        finally:
+            in_flight.leave()
 
     @property
     def config(self) -> PortalConfig:
@@ -13694,6 +13709,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         approvals: list[dict[str, Any]] = []
         results: list[dict[str, Any]] = []
         routed_user_ids: set[int] = set()
+        claimed_message_ids: list[str] = []
 
         for status_event in status_events:
             metadata = status_event.get("metadata") if isinstance(status_event.get("metadata"), dict) else {}
@@ -13794,8 +13810,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if phone_number_id == resolve_whatsapp_sender_phone_number_id():
                 # Meta redelivers a webhook it did not get a quick answer to,
                 # and a reply that runs a model is never quick. The same
-                # message must never be answered twice.
-                if not self.database.claim_whatsapp_message_id(normalize_text(event.get("source_message_id"))):
+                # message must never be answered twice - but a claim left open
+                # by a server that died mid-turn is a message never answered,
+                # and the redelivery is the one chance to answer it.
+                source_message_id = normalize_text(event.get("source_message_id"))
+                if not self.database.claim_whatsapp_message_id(source_message_id, owner=SERVER_BOOT_ID):
                     results.append({
                         "type": "duplicate",
                         "sender_wa_id": event.get("sender_wa_id", ""),
@@ -13803,6 +13822,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         "message_id": event.get("source_message_id", ""),
                     })
                     continue
+                claimed_message_ids.append(source_message_id)
 
             connection, route_source = self._resolve_whatsapp_connection_for_webhook(
                 phone_number_id,
@@ -13965,6 +13985,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "error": str(exc),
                 })
 
+        # Every message this delivery took is answered by now, whatever the
+        # answer was. A process killed before this line leaves its claims open,
+        # and the next server takes them over when Meta delivers again.
+        for claimed_message_id in claimed_message_ids:
+            self.database.finish_whatsapp_message_id(claimed_message_id)
+
         self._log_whatsapp_webhook_summary(
             status_events=status_events,
             events=events,
@@ -14020,9 +14046,90 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return tokens[0] if tokens else ""
 
 
+# One name per process. A WhatsApp message claimed under it and never marked
+# answered was cut off when this process died, and whoever comes next may
+# answer it.
+SERVER_BOOT_ID = secrets.token_hex(16)
+
+# How long a stopping server waits for the requests it is still answering.
+# Render sends SIGTERM when a new deploy is live and kills the process about
+# thirty seconds later; the wait stays inside that.
+DEFAULT_SHUTDOWN_GRACE_SECONDS = 25.0
+
+
+def resolve_shutdown_grace_seconds() -> float:
+    try:
+        value = float(normalize_text(os.getenv("PORTAL_SHUTDOWN_GRACE_SECONDS")) or DEFAULT_SHUTDOWN_GRACE_SECONDS)
+    except ValueError:
+        value = DEFAULT_SHUTDOWN_GRACE_SECONDS
+    return max(0.0, value)
+
+
+class InFlightRequests:
+    """How many requests the server is answering right now, and a way to
+    wait until that is none."""
+
+    def __init__(self) -> None:
+        self._count = 0
+        self._changed = threading.Condition()
+
+    @property
+    def count(self) -> int:
+        with self._changed:
+            return self._count
+
+    def enter(self) -> None:
+        with self._changed:
+            self._count += 1
+
+    def leave(self) -> None:
+        with self._changed:
+            self._count = max(0, self._count - 1)
+            self._changed.notify_all()
+
+    def wait_until_idle(self, timeout: float) -> bool:
+        """True once nothing is in flight; False when the wait ran out first."""
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._changed:
+            while self._count > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._changed.wait(remaining)
+            return True
+
+
+class ShutdownRequested(Exception):
+    """The process was told to stop (SIGTERM); raised out of serve_forever."""
+
+
+def drain_in_flight_requests(server: ThreadingHTTPServer, grace_seconds: float) -> bool:
+    """Wait for the requests still running, up to `grace_seconds`.
+
+    True when the server went idle in time. When it did not, the server is
+    told not to block on its request threads at close, so the process exits
+    on time instead of hanging past the platform's grace period; a turn cut
+    off here leaves its WhatsApp claim open for the next server.
+    """
+
+    in_flight: InFlightRequests | None = getattr(server, "in_flight", None)
+    if in_flight is None:
+        return True
+    busy = in_flight.count
+    if busy:
+        print(f"Waiting up to {grace_seconds:.0f}s for {busy} request(s) still in flight.", flush=True)
+    if in_flight.wait_until_idle(grace_seconds):
+        return True
+    print(f"{in_flight.count} request(s) still in flight after {grace_seconds:.0f}s; stopping anyway.", flush=True)
+    server.block_on_close = False
+    return False
+
+
 def create_server(host: str, port: int, root: Path, config: PortalConfig) -> ThreadingHTTPServer:
     handler = partial(PortalAuthHandler, directory=str(root))
     server = ThreadingHTTPServer((host, port), handler)
+    server.in_flight = InFlightRequests()  # type: ignore[attr-defined]
     server.config = config  # type: ignore[attr-defined]
     server.root = root  # type: ignore[attr-defined]
     server.database = PortalDatabase(
@@ -14399,10 +14506,21 @@ def main() -> int:
     else:
         print("Weekly turn sampling is disabled.", flush=True)
 
+    def _request_shutdown(signum: int, _frame: Any) -> None:
+        raise ShutdownRequested(signum)
+
+    # Without this the default action for SIGTERM ends the process at once,
+    # and a WhatsApp turn in the middle of a model call is lost with it.
+    signal.signal(signal.SIGTERM, _request_shutdown)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down portal server.", flush=True)
+        drain_in_flight_requests(server, resolve_shutdown_grace_seconds())
+    except ShutdownRequested:
+        print("Stop requested; shutting down portal server.", flush=True)
+        drain_in_flight_requests(server, resolve_shutdown_grace_seconds())
     finally:
         scheduler_stop_event.set()
         if scheduler_thread is not None:

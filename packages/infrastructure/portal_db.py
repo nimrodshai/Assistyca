@@ -402,7 +402,9 @@ CREATE TABLE IF NOT EXISTS whatsapp_signups (
 -- same message would otherwise be answered twice.
 CREATE TABLE IF NOT EXISTS whatsapp_processed_messages (
     message_id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    claimed_by TEXT NOT NULL DEFAULT '',
+    finished_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS whatsapp_agent_messages (
@@ -1025,6 +1027,7 @@ class PortalDatabase:
                 conn.executescript(SCHEMA_SQL)
                 self._migrate_users_table(conn)
                 self._migrate_whatsapp_signups_table(conn)
+                self._migrate_whatsapp_processed_messages_table(conn)
                 self._migrate_user_billing_table(conn)
                 self._migrate_usage_events_table(conn)
                 self._migrate_whatsapp_connections_table(conn)
@@ -1122,6 +1125,21 @@ class PortalDatabase:
         }
         if state_columns and "pending_json" not in state_columns:
             conn.execute("ALTER TABLE whatsapp_agent_state ADD COLUMN pending_json TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_whatsapp_processed_messages_table(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(whatsapp_processed_messages)").fetchall()
+        }
+        if columns and "claimed_by" not in columns:
+            conn.execute("ALTER TABLE whatsapp_processed_messages ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''")
+        if columns and "finished_at" not in columns:
+            conn.execute("ALTER TABLE whatsapp_processed_messages ADD COLUMN finished_at TEXT")
+            # Every claim from before there was a finished mark was answered
+            # by a server that is long gone; none of them is a cut-off turn.
+            conn.execute(
+                "UPDATE whatsapp_processed_messages SET finished_at = created_at WHERE finished_at IS NULL"
+            )
 
     def _migrate_user_billing_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -5259,22 +5277,54 @@ class PortalDatabase:
 
         return {"ok": True, "userId": user_id, "waId": number, "claimedAt": stamp}
 
-    def claim_whatsapp_message_id(self, message_id: str) -> bool:
-        """True the first time this WhatsApp message id is seen, False after.
+    def claim_whatsapp_message_id(self, message_id: str, *, owner: str = "") -> bool:
+        """True when this delivery of a WhatsApp message should be handled.
 
-        One insert, so two deliveries racing each other cannot both win.
+        The first delivery always wins: one insert, so two deliveries racing
+        each other cannot both take it. A later delivery is a duplicate while
+        the claim is finished, or still open in the hands of `owner` - the
+        server that took it is answering. An open claim held by a different
+        owner means that server died mid-turn (a deploy replaced it) and the
+        message was never answered, so the redelivery takes the claim over.
+        Without an owner, a claim is never taken over.
         """
 
         normalized = normalize_text(message_id)
         if not normalized:
             return True
+        claimant = normalize_text(owner)
         with self._connection() as conn:
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO whatsapp_processed_messages (message_id, created_at) VALUES (?, ?)",
-                (normalized, now_iso()),
+                "INSERT OR IGNORE INTO whatsapp_processed_messages (message_id, created_at, claimed_by) "
+                "VALUES (?, ?, ?)",
+                (normalized, now_iso(), claimant),
+            )
+            if int(cursor.rowcount or 0) == 1:
+                conn.commit()
+                return True
+            if not claimant:
+                return False
+            cursor = conn.execute(
+                "UPDATE whatsapp_processed_messages SET claimed_by = ?, created_at = ? "
+                "WHERE message_id = ? AND finished_at IS NULL AND claimed_by != '' AND claimed_by != ?",
+                (claimant, now_iso(), normalized, claimant),
             )
             conn.commit()
             return int(cursor.rowcount or 0) == 1
+
+    def finish_whatsapp_message_id(self, message_id: str) -> None:
+        """Mark a claimed WhatsApp message as answered, so no redelivery ever
+        takes it over again."""
+
+        normalized = normalize_text(message_id)
+        if not normalized:
+            return
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE whatsapp_processed_messages SET finished_at = ? WHERE message_id = ? AND finished_at IS NULL",
+                (now_iso(), normalized),
+            )
+            conn.commit()
 
     def get_whatsapp_agent_pending(self, *, user_id: int) -> dict[str, Any] | None:
         """A question the conversation is waiting on before it can continue."""
