@@ -258,7 +258,15 @@ def build_portal_runtime_config(
     )
 
 
-def portal_whatsapp_store_path_for_connection(root: Path, connection: dict[str, Any]) -> Path:
+# ``db_path`` is the portal database the caller is actually using. Passing it
+# keeps the approval store beside that database, so a server built on a
+# temporary database never reads or writes the checked-out portal/ folder.
+def portal_whatsapp_store_path_for_connection(
+    root: Path,
+    connection: dict[str, Any],
+    *,
+    db_path: Path | None = None,
+) -> Path:
     user_id = int(connection.get("userId") or 0)
     if user_id > 0:
         identifier = f"user-{user_id}"
@@ -267,7 +275,7 @@ def portal_whatsapp_store_path_for_connection(root: Path, connection: dict[str, 
             re.sub(r"[^a-z0-9]+", "-", str(connection.get("email") or "portal-user").lower()).strip("-")
             or "portal-user"
         )
-    store_root = resolve_portal_whatsapp_store_root(root=root)
+    store_root = resolve_portal_whatsapp_store_root(root=root, db_path=db_path)
     return store_root / f"{identifier}.json"
 
 
@@ -277,8 +285,9 @@ def delete_portal_whatsapp_store_for_connection(
     connection: dict[str, Any],
     store_cache: dict[str, BackendStore] | None = None,
     store_lock: Any | None = None,
+    db_path: Path | None = None,
 ) -> Path:
-    data_path = portal_whatsapp_store_path_for_connection(root, connection).resolve()
+    data_path = portal_whatsapp_store_path_for_connection(root, connection, db_path=db_path).resolve()
     cache_key = str(data_path)
 
     if store_cache is not None:
@@ -304,12 +313,13 @@ def build_portal_service_from_connection(
     store_cache: dict[str, BackendStore] | None = None,
     store_lock: Any | None = None,
     database: Any | None = None,
+    db_path: Path | None = None,
 ) -> "PortalWhatsAppService":
     metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
     assistant = metadata.get("assistant") if isinstance(metadata.get("assistant"), dict) else None
     templates = metadata.get("templates") if isinstance(metadata.get("templates"), dict) else None
     settings = connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
-    data_path = portal_whatsapp_store_path_for_connection(root, connection)
+    data_path = portal_whatsapp_store_path_for_connection(root, connection, db_path=db_path)
     config = build_portal_runtime_config(
         client_id=f"portal-user-{int(connection.get('userId') or 0) or 'unknown'}",
         client_name=normalize_text(connection.get("displayName"))

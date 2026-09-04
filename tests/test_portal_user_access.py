@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+import os
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from packages.infrastructure.account_erasure import erase_account
@@ -273,6 +275,19 @@ class PortalUserAccessTests(unittest.TestCase):
 
         self.assertEqual(deleted_user["email"], "owner@example.com")
         self.assertIsNone(self.database.get_user("owner@example.com"))
+
+    def test_portal_whatsapp_store_path_follows_the_database_it_is_given(self) -> None:
+        # A server built on a temporary database must keep its approval store
+        # beside that database, not in the checked-out portal/ folder.
+        root = Path(self.temp_dir.name)
+        db_path = root / "runtime" / "portal.db"
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PORTAL_WHATSAPP_STORE_ROOT", None)
+            os.environ.pop("PORTAL_DATA_ROOT", None)
+            store_path = portal_whatsapp_store_path_for_connection(root, {"userId": 7}, db_path=db_path)
+
+        self.assertEqual(store_path, root / "runtime" / "portal-whatsapp" / "user-7.json")
 
     def test_delete_portal_whatsapp_store_for_connection_removes_cached_file(self) -> None:
         connection = {

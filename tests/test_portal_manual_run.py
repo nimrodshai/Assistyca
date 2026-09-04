@@ -58,6 +58,15 @@ class PortalManualRunDescriptionTests(unittest.TestCase):
 class PortalManualRunTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
+        # The approval store must live in the temp dir too, or every run of
+        # this class shares portal/portal-whatsapp/user-1.json and inherits
+        # approvals left behind by earlier runs.
+        self.env_patcher = mock.patch.dict(
+            os.environ,
+            {"PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp")},
+            clear=False,
+        )
+        self.env_patcher.start()
         self.root = Path(__file__).resolve().parents[1]
         self.server = create_server(
             "127.0.0.1",
@@ -96,6 +105,7 @@ class PortalManualRunTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+        self.env_patcher.stop()
         self.temp_dir.cleanup()
 
     def _request(self, method: str, path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
@@ -195,6 +205,7 @@ class PortalManualRunTests(unittest.TestCase):
             base_url=self.base_url,
             store_cache=self.server.whatsapp_stores,
             store_lock=self.server.whatsapp_store_lock,
+            db_path=self.server.config.db_path,
         )
         approval = service.store.record_inbound_message(
             thread_id="15551230000",

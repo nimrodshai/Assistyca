@@ -50,6 +50,7 @@ def erase_account(
     whatsapp_store_cache: dict[str, Any] | None = None,
     whatsapp_store_lock: Any | None = None,
     revoke_grant: RevokeGrant | None = None,
+    db_path: Path | None = None,
 ) -> AccountErasure:
     """Delete the account named by ``email`` and everything stored under it.
 
@@ -90,7 +91,7 @@ def erase_account(
     }
     # The helper drops the cached store whether or not a file is there, so it
     # runs either way; only a file that existed counts as something removed.
-    store_path = portal_whatsapp_store_path_for_connection(root, whatsapp_connection)
+    store_path = portal_whatsapp_store_path_for_connection(root, whatsapp_connection, db_path=db_path)
     store_existed = store_path.exists()
     try:
         removed_store = delete_portal_whatsapp_store_for_connection(
@@ -98,6 +99,7 @@ def erase_account(
             connection=whatsapp_connection,
             store_cache=whatsapp_store_cache,
             store_lock=whatsapp_store_lock,
+            db_path=db_path,
         )
     except OSError:
         result.failed_paths.append(store_path)
