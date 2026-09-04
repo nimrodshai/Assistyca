@@ -16,7 +16,9 @@ from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
 from packages.infrastructure.whatsapp_agent_chat import (
+    build_calendar_choice_interactive,
     build_calendar_choice_text,
+    calendars_missing_colour,
     color_dot,
     looks_like_a_question,
     parse_calendar_choice,
@@ -41,7 +43,7 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(color_dot(""), "⚪")
         self.assertEqual(color_dot("nonsense"), "⚪")
 
-    def test_the_list_is_numbered_with_a_dot_per_calendar(self) -> None:
+    def test_the_fallback_text_is_numbered_with_a_dot_per_calendar(self) -> None:
         text = build_calendar_choice_text(CALENDARS, resuming="what's on next week")
         self.assertIn("1. 🔵 Nimrod", text)
         self.assertIn("2. 🔴 Work", text)
@@ -49,12 +51,41 @@ class HelperTests(unittest.TestCase):
         self.assertIn("*all*", text)
         self.assertIn("straight away", text)
 
+    def test_the_picker_behaves_like_checkboxes(self) -> None:
+        fresh = build_calendar_choice_interactive(CALENDARS)
+        rows = fresh["action"]["sections"][0]["rows"]
+        self.assertEqual([r["id"] for r in rows], ["calpick:1", "calpick:2", "calpick:3", "calpick:all"])
+        self.assertNotIn("Done", " ".join(r["title"] for r in rows), "nothing to confirm before a tap")
+        self.assertTrue(all(len(r["title"]) <= 24 for r in rows))
+
+        partial = build_calendar_choice_interactive(CALENDARS, selected=["work@group.calendar.google.com"])
+        rows = partial["action"]["sections"][0]["rows"]
+        self.assertEqual(rows[0]["id"], "calpick:done")
+        self.assertIn("Work", rows[0]["description"])
+        self.assertTrue(rows[2]["title"].startswith("✓ 🔴"), rows[2]["title"])
+        self.assertFalse(rows[1]["title"].startswith("✓"))
+        self.assertEqual(partial["header"]["text"], "Which calendars should I read?")
+
+    def test_an_address_label_is_shortened_for_the_row_and_kept_in_full_beneath(self) -> None:
+        picker = build_calendar_choice_interactive([{"id": "primary", "label": "nimrod.shai@gmail.com", "color": "#039BE5"}])
+        row = picker["action"]["sections"][0]["rows"][0]
+        self.assertEqual(row["title"], "🔵 nimrod.shai")
+        self.assertEqual(row["description"], "nimrod.shai@gmail.com")
+
+    def test_a_cached_list_without_colours_is_worth_asking_google_again(self) -> None:
+        self.assertTrue(calendars_missing_colour([{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]))
+        self.assertFalse(calendars_missing_colour(CALENDARS))
+        self.assertFalse(calendars_missing_colour([]))
+        self.assertEqual(color_dot("#616161"), "⚫", "graphite is a dark grey, not brown")
+        self.assertEqual(color_dot("#BDBDBD"), "⚪", "a light grey reads as white, not yellow")
+
     def test_a_reply_is_read_as_numbers_names_all_or_a_tap(self) -> None:
         ids = lambda chosen: [c["id"] for c in chosen]  # noqa: E731
         self.assertEqual(ids(parse_calendar_choice("1, 3", CALENDARS)), ["primary", "family@group.calendar.google.com"])
         self.assertEqual(ids(parse_calendar_choice("work and family", CALENDARS)), ["work@group.calendar.google.com", "family@group.calendar.google.com"])
         self.assertEqual(len(parse_calendar_choice("all", CALENDARS)), 3)
         self.assertEqual(ids(parse_calendar_choice("", CALENDARS, interactive_id="calpick:2")), ["work@group.calendar.google.com"])
+        self.assertEqual(len(parse_calendar_choice("", CALENDARS, interactive_id="calpick:all")), 3)
         self.assertEqual(parse_calendar_choice("hmm", CALENDARS), [])
         self.assertEqual(ids(parse_calendar_choice("family please", CALENDARS)), ["family@group.calendar.google.com"])
         self.assertEqual(ids(parse_calendar_choice("Family and Nimrod", CALENDARS)), ["family@group.calendar.google.com", "primary"], "in the order they were named")
@@ -120,8 +151,9 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
             "reply": "Let me check.", "changes": {"fields": {"timeWindow": "next week"}}}))
 
     def _runner(self, handler):
-        from packages.infrastructure.portal_auth.server import json_response
+        from packages.infrastructure.portal_auth.server import json_response, parse_json_body
         from http import HTTPStatus
+        self._last_run_body = parse_json_body(handler)
         chosen = getattr(self, "_chosen", None)
         if not chosen:
             json_response(handler, HTTPStatus.CONFLICT, {"ok": False, "error": "calendar_selection_required",
@@ -160,18 +192,73 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
         self.assertEqual(second["results"][0]["type"], "duplicate")
         self.assertEqual(self.model.call_count, 1, "the second delivery must not reach the model")
 
-    def test_a_calendar_question_asks_with_a_coloured_list_and_a_tap_picker(self) -> None:
+    def test_a_calendar_question_asks_with_the_picker_and_nothing_else(self) -> None:
         result = self._post("Can you summarize my next week meetings?", message_id="wamid.c1")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice")
-        texts = self._texts()
-        self.assertIn("1. 🔵 Nimrod", texts[-1])
-        self.assertIn("2. 🔴 Work", texts[-1])
-        self.assertIn("straight away", texts[-1])
+        self.assertFalse(any("Which calendars" in t for t in self._texts()), "no numbered list beside the picker")
         picker = self._interactives()[-1]
         self.assertEqual(picker["type"], "list")
-        self.assertEqual(picker["action"]["sections"][0]["rows"][1]["id"], "calpick:2")
+        self.assertEqual(picker["header"]["text"], "Which calendars should I read?")
+        self.assertIn("straight away", picker["body"]["text"])
+        rows = picker["action"]["sections"][0]["rows"]
+        self.assertEqual(rows[1]["id"], "calpick:2")
+        self.assertTrue(rows[1]["title"].startswith("🔴"))
         pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
         self.assertEqual(pending["question"], "Can you summarize my next week meetings?")
+
+    def test_taps_toggle_and_done_confirms_several(self) -> None:
+        self._post("what's on next week?", message_id="wamid.m1")
+        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
+            def _save(handler):
+                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
+                from http import HTTPStatus
+                self._chosen = parse_json_body(handler)["calendars"]
+                json_response(handler, HTTPStatus.OK, {"ok": True})
+            save.side_effect = _save
+            first = self._post(message_id="wamid.m2", interactive_id="calpick:2")
+            self.assertEqual(first["results"][0]["outcome"], "calendar_choice_toggled")
+            self.assertEqual(first["results"][0]["selected"], ["work@group.calendar.google.com"])
+            picker = self._interactives()[-1]
+            rows = picker["action"]["sections"][0]["rows"]
+            self.assertEqual(rows[0]["id"], "calpick:done")
+            self.assertTrue(rows[2]["title"].startswith("✓"))
+            save.assert_not_called()
+
+            second = self._post(message_id="wamid.m3", interactive_id="calpick:3")
+            self.assertEqual(second["results"][0]["selected"], ["work@group.calendar.google.com", "family@group.calendar.google.com"])
+            # Tapping a ticked one again removes it.
+            third = self._post(message_id="wamid.m4", interactive_id="calpick:2")
+            self.assertEqual(third["results"][0]["selected"], ["family@group.calendar.google.com"])
+
+            done = self._post(message_id="wamid.m5", interactive_id="calpick:done")
+        self.assertEqual(done["results"][0]["outcome"], "calendar_choice_saved")
+        self.assertEqual([c["id"] for c in self._chosen], ["family@group.calendar.google.com"])
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+        self.assertIn("4 meetings", self._texts()[-1])
+
+    def test_all_calendars_is_one_tap(self) -> None:
+        self._post("what's on next week?", message_id="wamid.all1")
+        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
+            def _save(handler):
+                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
+                from http import HTTPStatus
+                self._chosen = parse_json_body(handler)["calendars"]
+                json_response(handler, HTTPStatus.OK, {"ok": True})
+            save.side_effect = _save
+            result = self._post(message_id="wamid.all2", interactive_id="calpick:all")
+        self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
+        self.assertEqual(len(self._chosen), 3)
+
+    def test_the_phone_asks_the_runner_for_calendar_colours(self) -> None:
+        # Only this channel draws colours, so only this channel asks; the
+        # portal's cached list stays authoritative (see test_calendar_summary).
+        self._post("what's on next week?", message_id="wamid.col1")
+        self.assertIs(self._last_run_body.get("refreshCalendarColours"), True)
+
+    def test_when_the_picker_cannot_be_sent_the_words_go_instead(self) -> None:
+        with mock.patch("packages.infrastructure.whatsapp_agent_chat.send_assistyca_interactive", return_value=""):
+            self._post("what's on next week?", message_id="wamid.fb1")
+        self.assertTrue(any("1. 🔵 Nimrod" in t for t in self._texts()))
 
     def test_answering_with_numbers_saves_the_choice_and_answers_the_question_itself(self) -> None:
         self._post("Can you summarize my next week meetings?", message_id="wamid.n1")
@@ -200,7 +287,8 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
                 self._chosen = parse_json_body(handler)["calendars"]
                 json_response(handler, HTTPStatus.OK, {"ok": True})
             save.side_effect = _save
-            result = self._post(message_id="wamid.t2", interactive_id="calpick:2")
+            self._post(message_id="wamid.t2", interactive_id="calpick:2")
+            result = self._post(message_id="wamid.t3", interactive_id="calpick:done")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
         self.assertEqual([c["id"] for c in self._chosen], ["work@group.calendar.google.com"])
 

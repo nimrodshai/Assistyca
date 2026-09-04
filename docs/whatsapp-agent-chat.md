@@ -268,23 +268,38 @@ harmless in the meantime.
 ## Choosing calendars from the phone
 
 Reading a calendar needs to know *which* calendars, and on the web a picker
-appears for that. On WhatsApp the question is asked in three ways at once:
+appears for that. On WhatsApp the question is a **picker** - a list message
+headed "Which calendars should I read?", one row per calendar with a dot in
+that calendar's colour (`color_dot` maps Google's hex to the nearest emoji
+circle; greys go to ⚫/⚪ by lightness rather than hue, or graphite would read
+as brown). No numbered text goes beside it; the words-only list is sent only
+if the picker itself cannot be.
 
-* a **numbered list**, one line per calendar with a dot in that calendar's
-  colour (`color_dot` maps Google's hex to the nearest emoji circle);
-* a **tap-to-pick list** (`interactive` list message, row ids `calpick:<n>`),
-  which WhatsApp limits to one row per tap - so it sits beside the text;
-* and the words: reply `1, 3`, the names, or `all`.
+WhatsApp's list picks one row per tap and cannot be edited afterwards, and
+Meta offers no multi-select list (the real checkbox UI is a WhatsApp Flow,
+which needs a published Flow and so sits behind business verification). So
+the picker **behaves like checkboxes**: each tap toggles a calendar and a
+fresh picker arrives with the ticks updated and a "✅ Done" row on top whose
+description names the current choice; "All calendars" is one tap; Done saves.
+Nothing is saved until Done or All. Words still work too - `1, 3`, the names,
+or `all`. Row titles are capped at 24 characters, so an address-labelled
+calendar shows the part before the `@` with the full address beneath.
 
-It is asked at the natural moment. When Google connects and returns more than
-one calendar, the "connected" message carries the list right away rather than
+It is asked at the natural moment: when Google connects and returns more than
+one calendar, the "connected" message is followed by the picker rather than
 letting the first real question run into it; one calendar is selected
-silently, because one calendar is not a choice. If a question does run into
-it later, the question is **held** in `whatsapp_agent_state.pending_json` and
-answered the moment the choice is made - "Got it, I'll read Work and Family"
-followed by the answer - instead of being asked for again. A tap on the picker
-is exempt from the approval-flow routing that otherwise claims interactive
-replies.
+silently. If a question does run into it later, the question is **held** in
+`whatsapp_agent_state.pending_json` (with the ticks so far in `selected`) and
+answered the moment the choice is saved - "Got it, I'll read Work and Family"
+followed by the answer. A tap on the picker (`calpick:*`) is exempt from the
+approval-flow routing that otherwise claims interactive replies.
+
+A calendar list cached before colours were kept has none, and a picker drawn
+from it shows every calendar the same. The portal never renders colours and
+treats a cached list as authoritative, so the refresh is asked for only by the
+WhatsApp channel (`refreshCalendarColours: true` on the run request), happens
+once per connection (`calendarColoursRefreshedAt`), and never empties the
+cache if Google returns nothing usable.
 
 An open question never swallows the messages that arrive while it is open.
 `parse_calendar_choice` reads words as a pick only when the *whole* message is

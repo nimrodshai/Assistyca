@@ -214,6 +214,7 @@ from packages.infrastructure.whatsapp_agent_chat import CALENDAR_PICK_PREFIX
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ESCALATION_WINDOW_SECONDS
 from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_interactive
 from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_text
+from packages.infrastructure.whatsapp_agent_chat import calendars_missing_colour
 from packages.infrastructure.whatsapp_agent_chat import build_link_existing_account_text
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
@@ -6906,22 +6907,40 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # older connection has none, so it is looked up once and remembered
             # rather than asked for again on the next question.
             discovered_calendars = connection_available_calendars(calendar_connection)
-            if not discovered_calendars:
+            # A cached list is authoritative for the portal, which never
+            # renders colours. WhatsApp draws a dot per calendar, so it may
+            # ask - once per connection - for a list cached before colours
+            # were kept to be fetched again. A refresh that yields nothing
+            # leaves the cache as it was rather than emptying it.
+            calendar_metadata = calendar_connection.get("metadata") if isinstance(calendar_connection, dict) else {}
+            wants_colours = (
+                payload.get("refreshCalendarColours") is True
+                and calendars_missing_colour(discovered_calendars)
+                and not (isinstance(calendar_metadata, dict) and calendar_metadata.get("calendarColoursRefreshedAt"))
+            )
+            if not discovered_calendars or wants_colours:
                 try:
-                    discovered_calendars = normalize_calendar_selection(
+                    fresh_calendars = normalize_calendar_selection(
                         CalendarSummaryRunner().fetch_calendar_list(access_token)
                     )
                 except CalendarSummaryError:
-                    discovered_calendars = []
-                if discovered_calendars:
+                    fresh_calendars = []
+                if fresh_calendars:
+                    discovered_calendars = fresh_calendars
+                metadata_updates: dict[str, Any] = {}
+                if fresh_calendars:
+                    metadata_updates.update({
+                        "provider": "google_calendar",
+                        CALENDAR_AVAILABLE_METADATA_KEY: discovered_calendars,
+                    })
+                if wants_colours:
+                    metadata_updates["calendarColoursRefreshedAt"] = datetime.now(timezone.utc).isoformat()
+                if metadata_updates:
                     self.database.update_platform_connection_status(
                         session.email,
                         platform="calendar",
                         connection_status="connected",
-                        metadata_updates={
-                            "provider": "google_calendar",
-                            CALENDAR_AVAILABLE_METADATA_KEY: discovered_calendars,
-                        },
+                        metadata_updates=metadata_updates,
                     )
             if discovered_calendars:
                 json_response(self, HTTPStatus.CONFLICT, {
@@ -10135,19 +10154,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             elif not selected and len(available) > 1:
                 self.database.save_whatsapp_agent_pending(
                     user_id=int(user.get("id") or 0),
-                    pending={"kind": "calendar_choice", "calendars": available[:10], "question": "",
+                    pending={"kind": "calendar_choice", "calendars": available[:8], "selected": [], "question": "",
                              "askedAt": datetime.now(timezone.utc).isoformat()},
                 )
                 picker = build_calendar_choice_interactive(available)
 
         if picker is not None:
-            text = f"{linked or 'Your '}{connected} connected. One thing before I read your calendar:\n\n" + build_calendar_choice_text(available)
             if wa_id:
                 try:
-                    send_assistyca_text(recipient_wa_id=wa_id, text=text)
+                    send_assistyca_text(recipient_wa_id=wa_id, text=f"{linked or 'Your '}{connected} connected. One thing before I read your calendar:")
                 except Exception as exc:  # noqa: BLE001 - the page still says what to do
                     print(f"WhatsApp connected note could not be sent: {exc}", flush=True)
-                send_assistyca_interactive(recipient_wa_id=wa_id, payload=picker)
+                if not send_assistyca_interactive(recipient_wa_id=wa_id, payload=picker):
+                    try:
+                        send_assistyca_text(recipient_wa_id=wa_id, text=build_calendar_choice_text(available))
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"WhatsApp calendar list could not be sent: {exc}", flush=True)
             self._send_whatsapp_oauth_page(ok=True, message="Connected. Back in WhatsApp, tell me which calendars to read.")
             return
 

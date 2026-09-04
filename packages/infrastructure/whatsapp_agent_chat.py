@@ -424,8 +424,20 @@ CALENDAR_PICK_PREFIX = "calpick:"
 _COLOR_DOTS = (
     ((0xE0, 0x3E, 0x3E), "🔴"), ((0xF0, 0x8C, 0x2E), "🟠"), ((0xF2, 0xD2, 0x4B), "🟡"),
     ((0x3D, 0xA8, 0x5C), "🟢"), ((0x3B, 0x82, 0xF6), "🔵"), ((0x8B, 0x5C, 0xF6), "🟣"),
-    ((0x8B, 0x5E, 0x3C), "🟤"), ((0x22, 0x22, 0x22), "⚫"),
+    ((0x8B, 0x5E, 0x3C), "🟤"), ((0x22, 0x22, 0x22), "⚫"), ((0x9E, 0x9E, 0x9E), "⚪"),
 )
+
+
+def calendars_missing_colour(calendars: list[dict[str, Any]]) -> bool:
+    """Whether a cached calendar list predates colours being kept.
+
+    A list saved before colours were carried has none, and a picker drawn from
+    it shows every calendar the same. Such a list is incomplete, not final,
+    and is worth one more call to Google.
+    """
+
+    entries = [entry for entry in calendars if isinstance(entry, dict)]
+    return bool(entries) and not any(normalize_text(entry.get("color")) for entry in entries)
 
 
 def color_dot(hex_color: Any) -> str:
@@ -444,43 +456,94 @@ def color_dot(hex_color: Any) -> str:
         r, g, b = (int(raw[i:i + 2], 16) for i in (0, 2, 4))
     except ValueError:
         return "⚪"
-    if r > 225 and g > 225 and b > 225:
-        return "⚪"
+    # A grey has almost no colour to match, and plain distance would hand it
+    # to whatever hue happens to sit nearest - brown, for Google's graphite.
+    if max(r, g, b) - min(r, g, b) < 40:
+        return "⚫" if (r + g + b) / 3 < 128 else "⚪"
     return min(_COLOR_DOTS, key=lambda item: (item[0][0] - r) ** 2 + (item[0][1] - g) ** 2 + (item[0][2] - b) ** 2)[1]
 
 
-def build_calendar_choice_text(calendars: list[dict[str, Any]], *, resuming: str = "") -> str:
-    """The numbered list a person answers, with a dot in each calendar's colour."""
+CALENDAR_PICK_ALL = f"{CALENDAR_PICK_PREFIX}all"
+CALENDAR_PICK_DONE = f"{CALENDAR_PICK_PREFIX}done"
+_ROW_TITLE_MAX = 24
+_ROW_DESCRIPTION_MAX = 72
+_MAX_CALENDAR_ROWS = 8  # ten rows in a WhatsApp list, minus All and Done
 
+
+def _calendar_row_label(entry: dict[str, Any]) -> tuple[str, str]:
+    """A short name for a list row, and the full one for its description.
+
+    The account's own calendar is labelled with the address, which does not
+    fit a 24-character row; the part before the @ does, and reads better.
+    """
+
+    full = normalize_text(entry.get("label")) or normalize_text(entry.get("id")) or "Calendar"
+    short = full.split("@", 1)[0] if "@" in full else full
+    return short, full
+
+
+def build_calendar_choice_text(calendars: list[dict[str, Any]], *, resuming: str = "", selected: list[str] | None = None) -> str:
+    """The words-only fallback, for when the picker cannot be sent."""
+
+    chosen = set(selected or [])
     rows = []
-    for index, entry in enumerate(calendars[:10], start=1):
-        label = normalize_text(entry.get("label")) or normalize_text(entry.get("id")) or f"Calendar {index}"
-        rows.append(f"{index}. {color_dot(entry.get('color'))} {label}")
-    head = "Which calendars should I read? Here's what you have:"
+    for index, entry in enumerate(calendars[:_MAX_CALENDAR_ROWS], start=1):
+        _, full = _calendar_row_label(entry)
+        mark = "✓ " if normalize_text(entry.get("id")) in chosen else ""
+        rows.append(f"{index}. {mark}{color_dot(entry.get('color'))} {full}")
+    head = "Which calendars should I read?"
     tail = "Reply with the numbers (like 1, 3), the names, or *all*."
     if resuming:
         tail += " Then I'll answer your question straight away."
     return "\n".join([head, *rows, "", tail])
 
 
-def build_calendar_choice_interactive(calendars: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """A tap-to-pick list, for the common case of choosing one calendar.
+def build_calendar_choice_interactive(
+    calendars: list[dict[str, Any]],
+    *,
+    selected: list[str] | None = None,
+    resuming: str = "",
+) -> dict[str, Any] | None:
+    """A picker that behaves like checkboxes.
 
-    WhatsApp lists pick a single row, so this sits beside the numbered text,
-    which is how more than one gets chosen.
+    WhatsApp's list picks one row per tap and cannot be edited afterwards, so
+    several calendars are chosen by tapping one at a time: each tap toggles
+    it and a fresh picker arrives with the ticks updated, and Done confirms.
+    All calendars is one tap.
     """
 
-    rows = []
-    for index, entry in enumerate(calendars[:10], start=1):
-        label = normalize_text(entry.get("label")) or normalize_text(entry.get("id")) or f"Calendar {index}"
-        title = f"{color_dot(entry.get('color'))} {label}"[:24]
-        rows.append({"id": f"{CALENDAR_PICK_PREFIX}{index}", "title": title})
-    if not rows:
+    options = [entry for entry in calendars[:_MAX_CALENDAR_ROWS] if isinstance(entry, dict)]
+    if not options:
         return None
+    chosen = [cid for cid in (selected or []) if cid]
+    chosen_set = set(chosen)
+
+    rows: list[dict[str, str]] = []
+    if chosen:
+        names = ", ".join(_calendar_row_label(e)[0] for e in options if normalize_text(e.get("id")) in chosen_set)
+        rows.append({"id": CALENDAR_PICK_DONE, "title": "✅ Done", "description": f"Read: {names}"[:_ROW_DESCRIPTION_MAX]})
+    for index, entry in enumerate(options, start=1):
+        short, full = _calendar_row_label(entry)
+        picked = normalize_text(entry.get("id")) in chosen_set
+        prefix = f"{'✓ ' if picked else ''}{color_dot(entry.get('color'))} "
+        title = (prefix + short)[:_ROW_TITLE_MAX]
+        row = {"id": f"{CALENDAR_PICK_PREFIX}{index}", "title": title}
+        if full != short or len(prefix + short) > _ROW_TITLE_MAX:
+            row["description"] = full[:_ROW_DESCRIPTION_MAX]
+        rows.append(row)
+    rows.append({"id": CALENDAR_PICK_ALL, "title": "All calendars"})
+
+    if chosen:
+        body = "Tap another to add it, tap a ticked one to remove it, or tap Done."
+    else:
+        body = "Tap the calendars I should read - one at a time, I'll keep track. Or tap All calendars."
+    if resuming:
+        body += " Then I'll answer your question straight away."
     return {
         "type": "list",
-        "body": {"text": "Tap one calendar to choose it, or reply with numbers to choose several."},
-        "action": {"button": "Choose a calendar", "sections": [{"title": "Your calendars", "rows": rows}]},
+        "header": {"type": "text", "text": "Which calendars should I read?"},
+        "body": {"text": body},
+        "action": {"button": "Choose calendars", "sections": [{"title": "Your calendars", "rows": rows}]},
     }
 
 
@@ -496,6 +559,8 @@ def parse_calendar_choice(
     if not options:
         return []
     picked = normalize_text(interactive_id)
+    if picked == CALENDAR_PICK_ALL:
+        return list(options)
     if picked.startswith(CALENDAR_PICK_PREFIX):
         try:
             index = int(picked[len(CALENDAR_PICK_PREFIX):])
@@ -918,8 +983,17 @@ class WhatsAppAgentChat:
         )
         return status == 200 and bool(response.get("ok"))
 
-    def _ask_calendar_choice(self, calendars: list[dict[str, Any]], *, question: str) -> tuple[str, dict[str, Any] | None]:
-        """Hold the question, and ask which calendars - as a list, with a tap."""
+    def _send_calendar_picker(self, calendars: list[dict[str, Any]], *, selected: list[str], question: str) -> str:
+        """The picker, or - only if it cannot be sent - the numbered words."""
+
+        payload = build_calendar_choice_interactive(calendars, selected=selected, resuming=question)
+        message_id = self._send_owner_interactive(payload)
+        if message_id:
+            return message_id
+        return self._send_owner_text(build_calendar_choice_text(calendars, resuming=question, selected=selected))
+
+    def _ask_calendar_choice(self, calendars: list[dict[str, Any]], *, question: str) -> None:
+        """Hold the question and put the picker in front of the person."""
 
         self.database.save_whatsapp_agent_pending(
             user_id=self.user_id,
@@ -927,26 +1001,42 @@ class WhatsAppAgentChat:
                 "kind": "calendar_choice",
                 "calendars": [
                     {"id": entry.get("id"), "label": entry.get("label"), "color": entry.get("color")}
-                    for entry in calendars[:10]
+                    for entry in calendars[:_MAX_CALENDAR_ROWS]
                 ],
+                "selected": [],
                 "question": normalize_text(question),
                 "askedAt": datetime.now(timezone.utc).isoformat(),
             },
         )
-        return (
-            build_calendar_choice_text(calendars, resuming=normalize_text(question)),
-            build_calendar_choice_interactive(calendars),
-        )
+        self._send_calendar_picker(calendars, selected=[], question=normalize_text(question))
 
     def _answer_calendar_choice(self, pending: dict[str, Any], *, text: str, interactive_id: str) -> dict[str, Any]:
         calendars = [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]
-        chosen = parse_calendar_choice(text, calendars, interactive_id=interactive_id)
+        selected = [cid for cid in (pending.get("selected") or []) if cid]
+        question = normalize_text(pending.get("question"))
+        tapped = normalize_text(interactive_id)
+
+        # A tap on one calendar toggles it and shows the picker again with
+        # the ticks updated. Nothing is saved until Done or All.
+        if tapped.startswith(CALENDAR_PICK_PREFIX) and tapped not in {CALENDAR_PICK_ALL, CALENDAR_PICK_DONE}:
+            toggled = parse_calendar_choice("", calendars, interactive_id=tapped)
+            if toggled:
+                cid = normalize_text(toggled[0].get("id"))
+                selected = [c for c in selected if c != cid] if cid in selected else selected + [cid]
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending={**pending, "selected": selected})
+                message_id = self._send_calendar_picker(calendars, selected=selected, question=question)
+                return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_toggled",
+                        "selected": selected, "message_id": message_id}
+
+        if tapped == CALENDAR_PICK_DONE:
+            chosen = [e for e in calendars if normalize_text(e.get("id")) in set(selected)]
+        else:
+            chosen = parse_calendar_choice(text, calendars, interactive_id=tapped)
+
         if not chosen:
-            reply = "I didn't catch which ones.\n\n" + build_calendar_choice_text(calendars, resuming=normalize_text(pending.get("question")))
-            message_id = self._send_owner_text(reply)
-            self._send_owner_interactive(build_calendar_choice_interactive(calendars))
+            message_id = self._send_calendar_picker(calendars, selected=selected, question=question)
             return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_retry",
-                    "reply_text": reply, "message_id": message_id}
+                    "message_id": message_id}
 
         if not self._save_calendar_selection(chosen):
             reply = "I couldn't save that choice just now. Please try again in a moment."
@@ -955,9 +1045,8 @@ class WhatsAppAgentChat:
                     "reply_text": reply, "message_id": message_id}
 
         self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
-        names = ", ".join(normalize_text(entry.get("label")) or "your calendar" for entry in chosen)
+        names = ", ".join(_calendar_row_label(entry)[0] for entry in chosen)
         acknowledged = f"Got it - I'll read {names}."
-        question = normalize_text(pending.get("question"))
         if not question:
             reply = acknowledged + " Ask me anything about your schedule."
             message_id = self._send_owner_text(reply)
@@ -998,6 +1087,10 @@ class WhatsAppAgentChat:
                     "fields": fields,
                     "deliveryChannel": "portal",
                     "timezone": self.timezone_name,
+                    # This channel draws a dot in each calendar's colour, so a
+                    # list cached before colours were kept is worth one more
+                    # look at Google. The portal never asks.
+                    "refreshCalendarColours": True,
                 },
                 timeout=AGENT_RUN_TIMEOUT_SECONDS,
             )
@@ -1009,14 +1102,14 @@ class WhatsAppAgentChat:
                         response, status = self._api(
                             "POST", "/api/agent/proposals/run",
                             {"proposalType": normalize_text(task.get("proposalType")).lower(), "mode": "answer",
-                             "fields": fields, "deliveryChannel": "portal", "timezone": self.timezone_name},
+                             "fields": fields, "deliveryChannel": "portal", "timezone": self.timezone_name,
+                             "refreshCalendarColours": True},
                             timeout=AGENT_RUN_TIMEOUT_SECONDS,
                         )
                 elif available and not getattr(self, "_calendar_choice_asked", False):
                     self._calendar_choice_asked = True
-                    reply, interactive = self._ask_calendar_choice(available, question=user_message)
-                    self._pending_interactive = interactive
-                    return reply
+                    self._ask_calendar_choice(available, question=user_message)
+                    return ""
             if response.get("needsReceiptDecision"):
                 questions = response.get("receiptQuestions") if isinstance(response.get("receiptQuestions"), list) else []
                 first_question = ""
@@ -1166,6 +1259,10 @@ class WhatsAppAgentChat:
             return self._answer_calendar_choice(pending_choice, text=picked, interactive_id="")
         elif outcome == "answer_now":
             reply = self._answer_now(turn, text, conversation)
+            if not reply and getattr(self, "_calendar_choice_asked", False):
+                # The picker is the reply; nothing else goes out with it.
+                return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice",
+                        "reply_text": "", "message_id": ""}
         else:
             reply = normalize_text(turn.get("reply"))
 
@@ -1173,11 +1270,6 @@ class WhatsAppAgentChat:
             "I read that, but I could not put an answer together. Please try phrasing it another way."
         )
         message_id = self._send_owner_text(reply)
-        interactive = getattr(self, "_pending_interactive", None)
-        if interactive:
-            self._pending_interactive = None
-            self._send_owner_interactive(interactive)
-            outcome = "calendar_choice"
         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
         return {
             "type": "owner",
@@ -1197,6 +1289,9 @@ __all__ = [
     "build_whatsapp_signup_link",
     "build_connect_links_line",
     "build_calendar_choice_interactive",
+    "calendars_missing_colour",
+    "CALENDAR_PICK_ALL",
+    "CALENDAR_PICK_DONE",
     "build_calendar_choice_text",
     "color_dot",
     "looks_like_a_question",
