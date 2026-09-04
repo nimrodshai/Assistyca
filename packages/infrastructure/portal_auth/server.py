@@ -8377,9 +8377,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     print(f"Agent turn record failed: {exc}", flush=True)
 
     def _handle_admin_agent_turns_get(self, parsed: urllib_parse.ParseResult) -> None:
-        """The three numbers over the last day and week, and the recent turns behind them."""
+        """The three numbers over the last day and week, and the recent turns behind them.
 
-        if self._require_admin_user() is None:
+        The same people who can see the clients can see the turns: this is a
+        house-level view, not an account setting.
+        """
+
+        if self._require_client_manager_user() is None:
             return
         query = urllib_parse.parse_qs(parsed.query or "")
         try:

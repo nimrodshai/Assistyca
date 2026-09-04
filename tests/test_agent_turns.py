@@ -437,6 +437,19 @@ class ServerRecordingTests(unittest.TestCase):
         status, _ = self._request("GET", "/api/admin/agent-turns", None, email="client@example.com")
         self.assertEqual(status, 403)
 
+        # The house owner sees the turns the same way they see the clients,
+        # admin flag or not. The menu offered the page to them; the API must
+        # not then turn them away.
+        self.database.register_user("owner@example.com")
+        code, _ = self.server.store.issue_challenge("owner@example.com")
+        ok, _, result = self.server.store.verify_code("owner@example.com", code)
+        assert ok and result is not None
+        self.tokens["owner@example.com"] = result["token"]
+        with mock.patch.dict(os.environ, {"PORTAL_OPPORTUNITIES_OWNER_EMAIL": "owner@example.com"}):
+            status, page = self._request("GET", "/api/admin/agent-turns?limit=5", None, email="owner@example.com")
+        self.assertEqual(status, 200)
+        self.assertEqual(page["recent"][0]["turnId"], payload["turnId"])
+
     def test_a_turn_row_carries_what_the_model_said(self) -> None:
         turn = {"outcome": "message", "reply": "Hi! I can help with that."}
         result = SimpleNamespace(output_text=json.dumps(turn), model="m-test", input_tokens=11, output_tokens=7, incomplete_attempts=0, request_payload={"reasoning": {"effort": "low"}})

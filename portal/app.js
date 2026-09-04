@@ -12514,7 +12514,7 @@ function setActiveTab(tab, options = {}) {
   if (nextTab === "clients" && !canManageClients()) {
     nextTab = "features";
   }
-  if (nextTab === "turns" && !isAdminUser()) {
+  if (nextTab === "turns" && !canManageClients()) {
     nextTab = "features";
   }
 
@@ -31476,6 +31476,7 @@ const ADMIN_RAIL_TABS = [
   { tab: "clients", isAllowed: canManageClients },
   { tab: "preview", isAllowed: isAdminUser },
   { tab: "simulator", isAllowed: isAdminUser },
+  { tab: "turns", isAllowed: canManageClients },
 ];
 
 function setAgentAdminMenuOpen(open) {
@@ -31541,7 +31542,7 @@ function updateClientNavigation() {
 // -- Admin > Turns: the three numbers and the turns behind them ---------------
 
 async function refreshAgentTurns(options = {}) {
-  if (!isAdminUser() || state.agentTurnsLoading) {
+  if (!canManageClients() || state.agentTurnsLoading) {
     return null;
   }
 
@@ -31636,11 +31637,11 @@ function updateTurnsPanel() {
   }
 
   if (elements.turnsRefreshButton) {
-    elements.turnsRefreshButton.disabled = state.agentTurnsLoading || !isAdminUser();
+    elements.turnsRefreshButton.disabled = state.agentTurnsLoading || !canManageClients();
     elements.turnsRefreshButton.textContent = state.agentTurnsLoading ? "Refreshing" : "Refresh";
   }
 
-  if (!isAdminUser()) {
+  if (!canManageClients()) {
     elements.turnsSummary.replaceChildren();
     elements.turnsList.replaceChildren();
     return;
