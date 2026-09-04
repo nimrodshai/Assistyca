@@ -2332,6 +2332,19 @@ def resolve_local_today(timezone_name: str, now: Optional[datetime] = None) -> s
     return local.date().isoformat()
 
 
+def resolve_local_clock(timezone_name: str, now: Optional[datetime] = None) -> str:
+    """The time of day where the user is, as HH:MM, so "in ten minutes" and
+    "is it too late to call" have something to stand on. The model has no
+    clock of its own."""
+
+    current = now or datetime.now(timezone.utc)
+    try:
+        local = current.astimezone(ZoneInfo(normalize_text(timezone_name) or "UTC"))
+    except Exception:
+        local = current.astimezone(timezone.utc)
+    return local.strftime("%H:%M")
+
+
 def agent_batch_frequency_is_monthly(fields: dict[str, Any], payload: dict[str, Any]) -> bool:
     text = normalize_text(
         fields.get("frequency")
@@ -8869,6 +8882,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 user_message=user_message,
                 conversation=conversation,
                 today=resolve_local_today(timezone_name),
+                now=resolve_local_clock(timezone_name),
                 facts=facts,
                 confirmed_call=confirmed_call,
                 declined_call=declined_call,

@@ -995,17 +995,15 @@ def resolve_scheduled_message_run_at(
     *,
     now: datetime | None = None,
 ) -> str:
-    """The exact UTC send time a timeLocal/datePolicy pair means, or "".
+    """The exact UTC send time the details mean, or "".
 
-    This mirrors the browser's resolveAgentScheduledRunAt: the model never
-    calculates runAt itself, so whichever side approves the proposal has to
-    resolve the local wall-clock time against the timezone on the details.
+    Two shapes are understood. delayMinutes is "in ten minutes": a count of
+    whole minutes from now, which wins when present. A timeLocal/datePolicy
+    pair is "at 07:30 tomorrow". This mirrors the browser's
+    resolveAgentScheduledRunAt: the model never calculates runAt itself, so
+    whichever side approves the proposal has to resolve the local wall-clock
+    time against the timezone on the details.
     """
-
-    time_local = normalize_text(details.get("timeLocal"))
-    match = _TIME_LOCAL_RE.fullmatch(time_local)
-    if not match:
-        return ""
 
     timezone_name = normalize_text(details.get("timezone")) or "UTC"
     try:
@@ -1014,6 +1012,16 @@ def resolve_scheduled_message_run_at(
         zone = ZoneInfo("UTC")
 
     current = now.astimezone(zone) if isinstance(now, datetime) else datetime.now(zone)
+
+    delay = _whole_minutes(details.get("delayMinutes"))
+    if delay:
+        return (current + timedelta(minutes=delay)).replace(microsecond=0).astimezone(timezone.utc).isoformat()
+
+    time_local = normalize_text(details.get("timeLocal"))
+    match = _TIME_LOCAL_RE.fullmatch(time_local)
+    if not match:
+        return ""
+
     hour = int(match.group(1))
     minute = int(match.group(2))
     date_policy = normalize_text(details.get("datePolicy")) or "next_occurrence"
@@ -1032,6 +1040,24 @@ def transcript_text(text: str, photo: dict[str, Any] | None) -> str:
     came with them. The picture itself is not stored; a later turn only
     needs to know it was there."""
     return f"{text} [photo attached]".strip() if photo else text
+
+
+def _whole_minutes(value: Any) -> int:
+    """A positive count of minutes, or 0 for anything that is not one."""
+
+    if isinstance(value, bool):
+        return 0
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return minutes if minutes > 0 else 0
+
+
+def describe_local_time(run_at: str, timezone_name: str) -> str:
+    """A UTC instant as the person would say it: "Fri 5 Sep at 07:30"."""
+
+    return _describe_local_time(run_at, timezone_name)
 
 
 class WhatsAppAgentChatError(RuntimeError):

@@ -493,6 +493,15 @@ anything else goes to the model with `openQuestion` in view. A calendar
 choice a tool asks for comes back as `calendarChoice` and the chat shows the
 picker it already had.
 
+**The clock is a fact code holds.** The model has no clock, so `CONTEXT`
+carries `today` and `now` (the date and the HH:MM where the person is,
+resolved by the server from the timezone on the conversation). "Get back to
+me in 10 minutes" goes to `schedule_message` as `delay_minutes`, "at 07:30
+tomorrow" as `time_local` and `date_policy`; in both cases the server resolves
+the exact instant (`resolve_scheduled_message_run_at`) and the tool result
+carries `scheduledForLocal`, the time in the person's own words, for the model
+to repeat. The model never adds minutes to a clock or works out a date.
+
 What the chat still owns is what only the channel can do: the transcript,
 the typing indicator, the held question, the picker, the WhatsApp formatting.
 `WHATSAPP_AGENT_LOOP_ENABLED=0` falls back to the older turn. The portal is

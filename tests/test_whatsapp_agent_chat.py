@@ -158,6 +158,24 @@ class WhatsAppAgentHelperTests(unittest.TestCase):
         self.assertEqual(resolve_scheduled_message_run_at({"timeLocal": "later"}), "")
         self.assertEqual(resolve_scheduled_message_run_at({}), "")
 
+    def test_a_delay_in_minutes_is_counted_from_now(self) -> None:
+        # "Get back to me in 10 minutes" at 23:24:45 lands at 23:34:45, and
+        # crosses midnight without anyone doing clock arithmetic.
+        now = datetime(2026, 9, 5, 20, 24, 45, tzinfo=timezone.utc)  # 23:24:45 in Jerusalem
+        run_at = resolve_scheduled_message_run_at({"delayMinutes": 10, "timezone": "Asia/Jerusalem"}, now=now)
+        self.assertEqual(run_at, "2026-09-05T20:34:45+00:00")
+        run_at = resolve_scheduled_message_run_at({"delayMinutes": 40, "timezone": "Asia/Jerusalem"}, now=now)
+        self.assertEqual(run_at, "2026-09-05T21:04:45+00:00")
+
+    def test_a_delay_wins_over_a_clock_time_and_a_bad_delay_is_ignored(self) -> None:
+        now = datetime(2026, 9, 1, 6, 0, tzinfo=timezone.utc)
+        details = {"delayMinutes": "15", "timeLocal": "12:40", "datePolicy": "today", "timezone": "UTC"}
+        self.assertEqual(resolve_scheduled_message_run_at(details, now=now), "2026-09-01T06:15:00+00:00")
+        for bad in (0, -5, "soon", None, True):
+            details = {"delayMinutes": bad, "timeLocal": "12:40", "datePolicy": "today", "timezone": "UTC"}
+            self.assertEqual(resolve_scheduled_message_run_at(details, now=now), "2026-09-01T12:40:00+00:00", bad)
+        self.assertEqual(resolve_scheduled_message_run_at({"delayMinutes": "soon"}, now=now), "")
+
 
 class WhatsAppTypingIndicatorTests(unittest.TestCase):
     """The phone shows "typing..." from the moment a message arrives until the reply."""

@@ -166,6 +166,32 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertIn('"confirmedAction"', context_text)
         self.assertIn('"scheduledFor"', context_text)
 
+    def test_a_delay_in_minutes_is_scheduled_by_code_and_the_clock_is_in_context(self) -> None:
+        api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
+        model = ScriptedModel([
+            _model_round(_call("schedule_message", "c1", time_local=None, date_policy="today", delay_minutes=10, message_text="Get back to me")),
+            _model_round(reply=_reply("I'll text you in 10 minutes: Get back to me. Yes?")),
+        ])
+        result = run_agent_loop(
+            context=_context(api), call_model=model, user_message="get back to me in 10 minutes", conversation=[],
+            today="2026-09-05", now="23:24",
+        )
+        context_text = model.inputs[0][0]["content"]
+        self.assertIn('"now":"23:24"', context_text)
+        self.assertEqual(api.calls, [])
+        self.assertEqual(result.pending_confirmation["arguments"]["delay_minutes"], 10)
+        asked = json.loads(model.inputs[1][-1]["output"])
+        self.assertIn("in 10 minutes", asked["error"]["whatHappened"])
+
+        model = ScriptedModel([_model_round(reply=_reply("Done, in 10 minutes.", claimsCompleted=["schedule_message"]))])
+        run_agent_loop(
+            context=_context(api), call_model=model, user_message="yes", conversation=[], today="2026-09-05", now="23:25",
+            confirmed_call=result.pending_confirmation,
+        )
+        self.assertEqual(api.calls[0][1], "/api/scheduled-actions")
+        self.assertTrue(api.calls[0][2]["runAt"])
+        self.assertIn('"scheduledForLocal"', model.inputs[0][0]["content"])
+
     def test_a_confirm_tool_that_could_not_run_is_never_asked_about(self) -> None:
         # Nothing is connected, so a disconnect has nothing to do: the model is
         # told so and no question is held for a yes that would do nothing.

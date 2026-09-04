@@ -40,6 +40,7 @@ from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
 from packages.infrastructure.whatsapp_agent_chat import connection_display_name
 from packages.infrastructure.whatsapp_agent_chat import connections_for_disconnect
+from packages.infrastructure.whatsapp_agent_chat import describe_local_time
 from packages.infrastructure.whatsapp_agent_chat import resolve_scheduled_message_run_at
 
 # How many tools one turn may run. Six covers every question answered today
@@ -362,14 +363,21 @@ def _preflight_disconnect(context: LoopContext, args: dict[str, Any]) -> dict[st
     return _error("nothing_found", "Nothing by that name is connected, so there is nothing to disconnect.")
 
 
-def _preflight_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
-    details = {
+_SCHEDULE_TIME_NEEDED = "An exact time is needed: HH:MM in 24-hour form, or a number of minutes from now."
+
+
+def _schedule_details(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    return {
         "timeLocal": str(args.get("time_local") or ""),
         "datePolicy": str(args.get("date_policy") or "next_occurrence"),
+        "delayMinutes": args.get("delay_minutes"),
         "timezone": context.timezone_name,
     }
-    if not resolve_scheduled_message_run_at(details):
-        return _error("choice_required", "An exact time is needed, as HH:MM in 24-hour form.")
+
+
+def _preflight_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
+    if not resolve_scheduled_message_run_at(_schedule_details(context, args)):
+        return _error("choice_required", _SCHEDULE_TIME_NEEDED)
     if not str(args.get("message_text") or "").strip():
         return _error("choice_required", "The message text is needed.")
     return None
@@ -388,15 +396,10 @@ def describe_disconnect(context: LoopContext, args: dict[str, Any]) -> str:
 
 
 def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
-    details = {
-        "timeLocal": str(args.get("time_local") or ""),
-        "datePolicy": str(args.get("date_policy") or "next_occurrence"),
-        "timezone": context.timezone_name,
-    }
-    run_at = resolve_scheduled_message_run_at(details)
+    run_at = resolve_scheduled_message_run_at(_schedule_details(context, args))
     message_text = str(args.get("message_text") or "").strip()
     if not run_at:
-        return _error("choice_required", "An exact time is needed, as HH:MM in 24-hour form.")
+        return _error("choice_required", _SCHEDULE_TIME_NEEDED)
     if not message_text:
         return _error("choice_required", "The message text is needed.")
     response, status = context.api(
@@ -414,7 +417,14 @@ def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[s
         },
     )
     if status == 200 and response.get("ok"):
-        return _ok({"scheduledFor": run_at, "timezone": context.timezone_name, "messageText": message_text})
+        # The local wording is a fact code holds; the model repeats it rather
+        # than working the clock out on its own.
+        return _ok({
+            "scheduledFor": run_at,
+            "scheduledForLocal": describe_local_time(run_at, context.timezone_name),
+            "timezone": context.timezone_name,
+            "messageText": message_text,
+        })
     return _error("internal", "The message could not be scheduled just now.", can_retry=True)
 
 
@@ -547,13 +557,16 @@ TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="schedule_message",
         description=(
-            "Schedule one message to the person at a time: a reminder, a nudge. time_local is HH:MM in 24-hour "
-            "form in their timezone; date_policy is today, tomorrow, or next_occurrence; message_text is what "
-            "they will receive, in their words. Never work out the exact date yourself."
+            "Schedule one message to the person at a time: a reminder, a nudge. For a clock time, time_local is "
+            "HH:MM in 24-hour form in their timezone and date_policy is today, tomorrow, or next_occurrence. For "
+            "'in 10 minutes' or 'in an hour', pass delay_minutes as the count of minutes and leave time_local "
+            "null; never add minutes to the clock yourself. message_text is what they will receive, in their "
+            "words. Never work out the exact date yourself."
         ),
         parameters=_params({
-            "time_local": {"type": "string"},
+            "time_local": {"type": ["string", "null"]},
             "date_policy": {"type": "string", "enum": ["today", "tomorrow", "next_occurrence"]},
+            "delay_minutes": {"type": ["integer", "null"]},
             "message_text": {"type": "string"},
         }),
         side_effect=True,
@@ -627,6 +640,8 @@ AGENT_LOOP_INSTRUCTIONS = (
     "about why an amount changed is answered by naming the individual items that account for it. Never "
     "invent a record, an amount, a date, or a fact that is not in a result. An empty records list means it "
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
+    "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
+    "that depends on the time of day, and never guess the time.\n"
     "Actions that need a yes: disconnect and schedule_message return confirmation_required the first time. "
     "Then ask for a plain yes in the same message, naming exactly what will happen - which accounts, what "
     "time, what text - and nothing else. When CONTEXT has confirmedAction, the person said yes and the tool "
@@ -690,6 +705,7 @@ def build_loop_context_text(
     confirmed_action: dict[str, Any] | None = None,
     declined_action: dict[str, Any] | None = None,
     open_question: dict[str, Any] | None = None,
+    now: str = "",
     photo: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
@@ -699,6 +715,7 @@ def build_loop_context_text(
         "channel": normalized_channel,
         "timezone": timezone_name,
         "today": today,
+        "now": now,
         "connected": sorted(connected_sources(tool_context)),
         "toolContext": safe_context,
         "knownFacts": facts[:40],
@@ -731,6 +748,7 @@ def run_agent_loop(
     confirmed_call: dict[str, Any] | None = None,
     declined_call: dict[str, Any] | None = None,
     open_question: dict[str, Any] | None = None,
+    now: str = "",
     photo: dict[str, Any] | None = None,
 ) -> LoopResult:
     """Run one turn. call_model takes the input items and the tool definitions
@@ -761,6 +779,7 @@ def run_agent_loop(
         confirmed_action=confirmed_action,
         declined_action=declined_call,
         open_question=open_question,
+        now=now,
         photo=photo,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
@@ -915,6 +934,8 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
     if tool.name == "disconnect":
         return describe_disconnect(context, args)
     if tool.name == "schedule_message":
+        if args.get("delay_minutes"):
+            return f"a message in {args.get('delay_minutes')} minutes saying: {args.get('message_text')}"
         return f"a message at {args.get('time_local')} ({args.get('date_policy')}) saying: {args.get('message_text')}"
     return ""
 
