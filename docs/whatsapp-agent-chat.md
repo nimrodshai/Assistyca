@@ -251,6 +251,11 @@ composes a URL.
 The rule is that a WhatsApp user is never sent to a website. Four replies still
 name one, each for a reason worth knowing rather than a gap nobody noticed:
 
+* **No sign-in link can be minted for a lookup.** With no OAuth provider
+  configured the chat cannot connect anything, and the honest next step is
+  the portal; the prompt says so rather than promising a link that nothing
+  will send (the conversation eval caught that promise on its first run).
+  Configuring a provider removes this.
 * **No sign-in provider configured.** With neither Google nor Microsoft OAuth
   set up there is nothing to prove account ownership with, so an address that
   already has an account falls back to "get a code from Settings". Configuring
@@ -435,3 +440,18 @@ An open question - which calendars, whether to disconnect - now expires after
 a day (`PENDING_QUESTION_TTL_SECONDS`). A question with no timestamp is read as
 stale. A "yes" the morning after is a fresh message for the model, not consent
 to whatever was asked last week.
+
+## Proving it stays fluent
+
+`scripts/agent_conversation_eval.py` runs scripted conversations through the
+simulator against the real model and has a second model score every reply on
+five points - truthful to the account state, gives the person a next step,
+reads as a text message, names no machinery, claims nothing that did not
+happen - each 0 to 5. A conversation passes when every reply clears the
+threshold on every point, and the exit code says whether the run did. It
+needs `OPENAI_API_KEY` and costs a few cents; run it after a change to the
+prompt, the tools, or the reply path. Its first run found that the prompt
+told the model to promise a sign-in link "in a moment" when none could be
+minted, and nothing ever sent one; the prompt now says connecting is not
+available instead. New conversations come from production turns that
+surprised somebody: add the state and the messages to `CONVERSATIONS`.

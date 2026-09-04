@@ -745,6 +745,9 @@ _TURN_OUTCOME_MESSAGE = (
 )
 
 _TURN_SCOPE = (
+    "A request to disconnect, log out of, or remove an account when toolContext shows nothing of the kind "
+    "connected is answered in one line saying nothing is connected, with outcome=message; never say you "
+    "cannot do it, because there is nothing to do.\n"
     "What one currency is worth in another is a lookup, not small talk. A business that is charged in shekels "
     "and dollars in the same month cannot read its own spending without it, so a question about a rate is "
     "answered rather than declined. Use answer_now with proposalType exchange-rate, and put the two "
@@ -1171,8 +1174,10 @@ _TURN_CHANNEL_WHATSAPP = (
     "Never send the person to a website or portal to connect an account. When they need Gmail, Outlook or a "
     "calendar connected, toolContext.connectLinks holds the only links you may send: put the matching one "
     "on its own line exactly as given (google for Gmail or Google Calendar, microsoft for Outlook), and "
-    "say it takes a few seconds. Never write any other URL. If connectLinks is absent, say you will send "
-    "the sign-in link in a moment rather than inventing one.\n"
+    "say it takes a few seconds. Never write any other URL. If connectLinks is absent, connecting from this "
+    "chat is not available right now: say in a few words that they can connect it from their Assistyca "
+    "portal and you will pick the question up once it is, and never promise to send a link, because "
+    "nothing will.\n"
 )
 
 _TURN_EXAMPLES_HEAD = (

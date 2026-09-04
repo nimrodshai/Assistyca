@@ -713,6 +713,22 @@ _NO_PHRASES = frozenset({
 })
 
 
+def _describe_local_time(run_at: str, timezone_name: str) -> str:
+    """A UTC instant as the person would say it: "Fri 5 Sep at 07:30"."""
+
+    try:
+        instant = datetime.fromisoformat(str(run_at).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    try:
+        local = instant.astimezone(ZoneInfo(timezone_name or "UTC"))
+    except (ZoneInfoNotFoundError, ValueError):
+        local = instant
+    return f"{local.strftime('%a')} {local.day} {local.strftime('%b')} at {local.strftime('%H:%M')}"
+
+
 def _pending_is_fresh(pending: dict[str, Any]) -> bool:
     """Whether an open question was asked recently enough to still be open.
 
@@ -1152,7 +1168,14 @@ class WhatsAppAgentChat:
         )
         if status == 200 and response.get("ok"):
             self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
-            return normalize_text(turn.get("reply")) or "Done — it's scheduled."
+            # The model wrote its reply before anything was scheduled, so it
+            # can only promise. The time it is now set for is a fact code
+            # holds, and saying it is what turns a promise into a confirmation.
+            when = _describe_local_time(run_at, self.timezone_name)
+            reply = normalize_text(turn.get("reply"))
+            if not reply:
+                return f"Done - it's scheduled for {when}." if when else "Done - it's scheduled."
+            return f"{reply} That's for {when}." if when else reply
         return self._recover(
             build_situation(
                 "internal",

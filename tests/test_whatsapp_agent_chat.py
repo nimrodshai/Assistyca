@@ -372,7 +372,8 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
             entry for entry in response["results"] if entry.get("action") == "agent_chat_reply"
         )
         self.assertEqual(reply_entry["outcome"], "approve_proposal")
-        self.assertEqual(reply_entry["reply_text"], "Done - it's scheduled.")
+        # The model's reply, then the time it is really set for, as a fact.
+        self.assertRegex(reply_entry["reply_text"], r"^Done - it's scheduled\. That's for \w{3} \d{1,2} \w{3} at 12:40\.$")
 
         self.assertIsNone(
             self.database.get_whatsapp_agent_active_proposal(user_id=int(self.user["id"]))
@@ -806,7 +807,16 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class WhatsAppRecoveryTests(WhatsAppAgentChatApiTests):
+class _WhatsAppApiCase(unittest.TestCase):
+    """The API fixture without its tests, so a suite built on it does not rerun them."""
+
+    setUp = WhatsAppAgentChatApiTests.setUp
+    tearDown = WhatsAppAgentChatApiTests.tearDown
+    _post_webhook = WhatsAppAgentChatApiTests._post_webhook
+    _turn_response = WhatsAppAgentChatApiTests._turn_response
+
+
+class WhatsAppRecoveryTests(_WhatsAppApiCase):
     """Fault injection at each seam: every failure still gets one reply with a way forward.
 
     The model that writes the recovery reply is mocked like the turn model, so
@@ -905,7 +915,7 @@ class WhatsAppRecoveryTests(WhatsAppAgentChatApiTests):
             self.assertTrue(any(word in sentence for word in ("Ask me again", "Reply", "Tell me", "https://")), sentence)
 
 
-class WhatsAppPreflightTests(WhatsAppAgentChatApiTests):
+class WhatsAppPreflightTests(_WhatsAppApiCase):
     def _reply(self, response: dict) -> str:
         entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
         return entry["reply_text"]
