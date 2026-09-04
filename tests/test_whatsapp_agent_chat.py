@@ -804,3 +804,102 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhatsAppRecoveryTests(WhatsAppAgentChatApiTests):
+    """Fault injection at each seam: every failure still gets one reply with a way forward.
+
+    The model that writes the recovery reply is mocked like the turn model, so
+    what these prove is the plumbing: the failure becomes a report, the report
+    reaches the composer, the composer's words are what the phone receives, and
+    when no composer can run the assembled sentence goes instead.
+    """
+
+    def _reply(self, response: dict) -> str:
+        entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
+        return entry["reply_text"]
+
+    def test_a_lookup_that_needs_a_mailbox_nobody_connected_is_explained_not_leaked(self) -> None:
+        turn = self._turn_response({
+            "outcome": "answer_now",
+            "reply": "Checking now.",
+            "proposalType": "email-digest",
+            "changes": {"fields": {"timeWindow": "today"}},
+        })
+        recovery = SimpleNamespace(output_text="I can't read your inbox yet - nothing is connected. Reply \"connect my email\" and I'll send the link.")
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[turn, recovery],
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("any important emails today?", message_id="wamid.rec-1"))
+
+        reply = self._reply(response)
+        self.assertEqual(reply, recovery.output_text)
+        self.assertNotIn("Open Email setup", reply)
+        # The second call is the recovery composer, and it was told the situation.
+        recovery_prompt = model.call_args_list[1].kwargs["prompt"]
+        self.assertIn('"code":"source_not_connected"', recovery_prompt)
+        self.assertIn('"source":"mailbox"', recovery_prompt)
+
+    def test_a_turn_the_model_never_finishes_is_repaired_then_recovered(self) -> None:
+        from packages.infrastructure.openai_api import OpenAIIncompleteError
+
+        recovery = SimpleNamespace(output_text="I lost the thread there for a second. Ask me again and I'll pick it up.")
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[OpenAIIncompleteError("cut off"), recovery],
+        ):
+            response = self._post_webhook(inbound_text_payload("what's on today?", message_id="wamid.rec-2"))
+
+        self.assertEqual(self._reply(response), recovery.output_text)
+
+    def test_an_unusable_turn_gets_one_repair_try_before_recovery(self) -> None:
+        bad = SimpleNamespace(output_text="not json at all")
+        good = self._turn_response({"outcome": "message", "reply": "Here you go."})
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[bad, good],
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("hello?", message_id="wamid.rec-3"))
+
+        self.assertEqual(self._reply(response), "Here you go.")
+        self.assertEqual(model.call_count, 2)
+        self.assertIn("could not be used", model.call_args_list[1].kwargs["prompt"])
+
+    def test_when_no_model_answers_at_all_the_assembled_sentence_goes_out(self) -> None:
+        from packages.infrastructure.openai_api import OpenAIRequestError
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=OpenAIRequestError("down", status_code=503),
+        ):
+            response = self._post_webhook(inbound_text_payload("are you there?", message_id="wamid.rec-4"))
+
+        reply = self._reply(response)
+        self.assertIn("couldn't think that through", reply)
+        self.assertIn("Ask me again", reply)
+        self.assertNotIn("OpenAI", reply)
+
+    def test_a_voice_note_is_answered_in_words_the_composer_wrote(self) -> None:
+        payload = inbound_text_payload("", message_id="wamid.rec-5")
+        message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+        message["type"] = "audio"
+        message.pop("text", None)
+        message["audio"] = {"id": "audio-1"}
+        recovery = SimpleNamespace(output_text="I can't listen to voice notes yet - type it and I'm on it.")
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=recovery,
+        ):
+            response = self._post_webhook(payload)
+
+        self.assertEqual(self._reply(response), recovery.output_text)
+
+    def test_no_reply_from_this_channel_is_ever_a_dead_end(self) -> None:
+        # The assembled sentence is the floor every reply stands on. Whatever
+        # the composer does, this is what the person gets when it cannot run.
+        from packages.infrastructure.recovery_reply import RECOVERY_CODES, build_situation, computed_recovery_sentence
+
+        for code in sorted(RECOVERY_CODES):
+            sentence = computed_recovery_sentence(build_situation(code, can_retry=True))
+            self.assertTrue(any(word in sentence for word in ("Ask me again", "Reply", "Tell me", "https://")), sentence)

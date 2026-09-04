@@ -354,3 +354,66 @@ you help me?" - always gets the full, warm answer with three or four concrete
 things the person could ask, however many times the email has been asked for.
 The capability pitch lives once, in `ASSISTANT_CAPABILITIES_PITCH`, and both
 the concierge and the working agent describe the same product from it.
+
+## When something gets in the way
+
+"Can you let me know if there are important emails from today", asked a
+minute after Gmail was disconnected from the chat, got "I couldn't form a safe
+response" (2026-09-04). The model had answered well; the reply was cut off by
+a 700-token output budget the model's own thinking had used up, the API said
+so with `status: incomplete`, nothing read the status, and a sentence written
+in code went out instead. That sentence was one of more than forty: every
+seam of the reply path had its own, and each was a dead end that named
+neither the person's situation nor a way forward.
+
+The rule now is that **code reports a situation and the model writes the
+sentence**. A failure anywhere - the model not answering, a reply that could
+not be read, a lookup that needs a mailbox nobody has connected, a runner
+that threw, a voice note - becomes a *situation report*
+(`packages/infrastructure/recovery_reply.py`): a code from a closed set,
+what the person asked, what happened in plain words, whether asking again
+would help, and the options the application has already checked are real,
+including a connect link when one can be minted. One composer
+(`portal_recovery_composer`, the mid tier at low effort) turns the report into
+the reply, and `guard_recovery_reply` checks what code can check: every link
+is one the report offered, no machinery words, a link that was forgotten is
+put back. When the composer itself cannot run, `computed_recovery_sentence`
+assembles the reply from the report's fields, so it still says what happened
+and still ends with a step. `tests/test_recovery_reply.py` proves that for
+every code and every mix of options.
+
+Where the reports come from:
+
+* `/api/agent/turn` recovers itself. A model error becomes
+  `assistant_unavailable` (or `rate_limited`, when the failure classifier says
+  so); a reply that cannot be read gets one repair try with the problem named,
+  then `assistant_unclear`. Either way the endpoint answers **200** with
+  `outcome: message`, `recovered: true`, `recoveryCode`, and - for the
+  operator - the old `diagnostic` payload with the provider's code, so a
+  billing problem is still visible without being spoken to a customer. The
+  rejected text is logged in full, because a rejection logged without it can
+  only be reproduced, never read.
+* The WhatsApp chat reports to `POST /api/agent/recover` for everything the
+  turn endpoint cannot see: a runner's `email_setup_required` or
+  `calendar_setup_required` becomes `source_not_connected` with the sign-in
+  links as options (before this the runner's "Open Email setup" sentence was
+  repeated on the phone, word for word, with nowhere to tap); a
+  `needsReceiptDecision` becomes `choice_required`; anything else a runner
+  says is read into the closed set by `_situation_for_run_failure`. A
+  question half answered and half blocked gets the answer, then the assembled
+  sentence for the blocked part with its link. A turn that came back with no
+  reply, a voice note, a schedule that would not save, a disconnect that
+  failed: all reports. A trial that has ended is the one exception - it is a
+  fact to state, not a snag to recover from, and recovering would spend on a
+  model.
+
+`WhatsAppRecoveryTests` in `tests/test_whatsapp_agent_chat.py` drives each of
+those seams with the failure injected and the composer mocked, so what they
+prove is the plumbing: the failure becomes the right report, the report
+reaches the composer, and its words are what the phone receives.
+
+The gateway change underneath (`openai_api.py`): a response marked
+`incomplete` for `max_output_tokens` is sent again once with double the
+budget; partial text is kept when there is any, and `OpenAIIncompleteError`
+is raised when there is none. Output budgets now include thinking, and the
+reasoning effort is chosen with the model in `task_complexity.py`.

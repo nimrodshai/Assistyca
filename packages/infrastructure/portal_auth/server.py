@@ -149,6 +149,15 @@ from packages.infrastructure.answer_composer import normalize_answer_conversatio
 from packages.infrastructure.answer_composer import normalize_answer_question
 from packages.infrastructure.answer_composer import normalize_answer_records
 from packages.infrastructure.answer_composer import normalize_composed_answer
+from packages.infrastructure.recovery_reply import RECOVERY_INSTRUCTIONS
+from packages.infrastructure.recovery_reply import RECOVERY_MAX_OUTPUT_TOKENS
+from packages.infrastructure.recovery_reply import build_recovery_prompt
+from packages.infrastructure.recovery_reply import build_situation
+from packages.infrastructure.recovery_reply import computed_recovery_sentence
+from packages.infrastructure.recovery_reply import guard_recovery_reply
+from packages.infrastructure.recovery_reply import make_option
+from packages.infrastructure.recovery_reply import normalize_recovery_conversation
+from packages.infrastructure.recovery_reply import normalize_situation
 from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.task_complexity import resolve_task_reasoning
@@ -314,6 +323,9 @@ AGENT_TURN_COMPLEXITY = TaskComplexity.IMPORTANT
 # Answering whatever was asked from the records a lookup read is open-ended
 # reasoning, not a structured edit, so it runs on the strongest model.
 AGENT_ANSWER_COMPOSE_COMPLEXITY = TaskComplexity.IMPORTANT
+# Saying what went wrong and what to do next is constrained drafting: the
+# facts and the options arrive settled, and only the wording is the model's.
+AGENT_RECOVERY_COMPLEXITY = TaskComplexity.MEDIUM
 # Telling a receipt from the advert beside it is short work, but it is not
 # mechanical: the two quote the same words and the same amounts, and what
 # separates them is what the message is telling the owner. The mid tier reads
@@ -3759,6 +3771,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
+            or path == "/api/agent/recover"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
@@ -3833,6 +3846,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
+            or path == "/api/agent/recover"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
@@ -4163,6 +4177,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/answer/compose":
             self._handle_agent_answer_compose()
+            return
+
+        if path == "/api/agent/recover":
+            self._handle_agent_recover()
             return
 
         if path == "/api/platform-connections":
@@ -8355,12 +8373,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "OPENAI_MODEL",
         )
 
-        try:
-            result = call_openai_response(
+        def run_turn(prompt_text: str) -> Any:
+            return call_openai_response(
                 tool_name="portal_conversational_agent",
                 tool_id="portal_agent",
                 billing_email=session.email,
-                prompt=prompt,
+                prompt=prompt_text,
                 model=model,
                 instructions=AGENT_TURN_INSTRUCTIONS,
                 reasoning=resolve_task_reasoning(AGENT_TURN_COMPLEXITY, "PORTAL_AGENT_REASONING_EFFORT"),
@@ -8378,46 +8396,233 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "hasActiveProposal": active_proposal is not None,
                 },
             )
-        except OpenAIError as exc:
-            print(f"Portal conversational agent failed: {exc.message}", flush=True)
-            json_response(
-                self,
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                build_openai_failure_payload(
-                    exc,
-                    default_code="agent_unavailable",
-                    default_message="I’m having trouble thinking through that right now. Please try again in a moment.",
-                ),
-            )
-            return
 
-        try:
-            turn = normalize_agent_turn_response(
-                parse_agent_proposal_revision_json(result.output_text),
+        def read_turn(output_text: str) -> dict[str, Any]:
+            return normalize_agent_turn_response(
+                parse_agent_proposal_revision_json(output_text),
                 has_active_proposal=active_proposal is not None,
                 active_proposal_type=str((active_proposal or {}).get("type") or ""),
                 has_pending_choice=pending_choice is not None,
             )
+
+        # Whatever goes wrong from here, the person gets a reply that says what
+        # happened and what to do next, written for this conversation. A
+        # failure is a situation report; the sentence is the model's, or
+        # assembled from the report when the model is the thing that failed.
+        try:
+            result = run_turn(prompt)
+        except OpenAIError as exc:
+            print(f"Portal conversational agent failed: {exc.message}", flush=True)
+            # What the operator needs to know - out of funds, rate-limited,
+            # misconfigured - rides along as a diagnostic. What the person
+            # hears is a reply written for them, which never names any of it.
+            diagnostic = build_openai_failure_payload(
+                exc,
+                default_code="agent_unavailable",
+                default_message="The assistant could not be reached.",
+            )
+            rate_limited = normalize_text(diagnostic.get("error")) == "agent_rate_limited"
+            self._respond_recovered(
+                session,
+                build_situation(
+                    "rate_limited" if rate_limited else "assistant_unavailable",
+                    request=user_message,
+                    what_happened=(
+                        "I'm getting a lot of requests at once and couldn't take that one."
+                        if rate_limited
+                        else "I couldn't think that through just now."
+                    ),
+                    can_retry=True,
+                    options=[make_option("retry")],
+                ),
+                conversation=conversation,
+                channel=channel,
+                timezone_name=timezone_name,
+                diagnostic=diagnostic,
+            )
+            return
+
+        try:
+            turn = read_turn(result.output_text)
         except (ValueError, json.JSONDecodeError) as exc:
             # The text is the evidence. A rejection logged without it can only
             # be reproduced, never read.
             print(
                 f"Portal conversational agent returned invalid JSON: {exc} "
-                f"(status={normalize_text(result.raw_response.get('status'))}, "
+                f"(status={normalize_text((getattr(result, 'raw_response', None) or {}).get('status'))}, "
                 f"output={result.output_text[:2000]!r})",
                 flush=True,
             )
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "invalid_agent_turn",
-                "message": "I couldn’t form a safe response. Please try phrasing that another way.",
-            })
-            return
+            # One more try, with the problem named. A model that answered in
+            # the wrong shape usually answers in the right one when told.
+            turn = None
+            try:
+                repair = run_turn(
+                    f"{prompt}\n\nYour previous reply could not be used: {exc} "
+                    "Return exactly one JSON object with the keys named above and nothing else."
+                )
+                turn = read_turn(repair.output_text)
+            except (OpenAIError, ValueError, json.JSONDecodeError) as repair_exc:
+                print(f"Portal conversational agent repair failed: {repair_exc}", flush=True)
+            if turn is None:
+                self._respond_recovered(
+                    session,
+                    build_situation(
+                        "assistant_unclear",
+                        request=user_message,
+                        what_happened="I lost the thread of that for a moment.",
+                        can_retry=True,
+                        options=[make_option("retry")],
+                    ),
+                    conversation=conversation,
+                    channel=channel,
+                    timezone_name=timezone_name,
+                )
+                return
 
         self._apply_agent_facts(user_id, turn)
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             **turn,
+        })
+
+    def _compose_recovery_reply(
+        self,
+        situation: dict[str, Any],
+        *,
+        conversation: list[dict[str, str]],
+        channel: str,
+        timezone_name: str,
+        email: str,
+    ) -> tuple[str, bool]:
+        """The reply for a situation report: the model's words, or assembled ones.
+
+        Returns the reply and whether the model wrote it. The assembled
+        sentence is what the model's reply is checked against and what stands
+        in for it, so a person is never left with nothing to go on.
+        """
+
+        fallback = computed_recovery_sentence(situation)
+        model = resolve_task_model(
+            AGENT_RECOVERY_COMPLEXITY,
+            "PORTAL_ASSISTANT_MODEL",
+            "OPENAI_MODEL",
+        )
+        prompt = build_recovery_prompt(
+            situation,
+            conversation=conversation,
+            channel=channel,
+            today=resolve_local_today(timezone_name),
+        )
+        try:
+            result = call_openai_response(
+                tool_name="portal_recovery_composer",
+                tool_id="portal_agent",
+                billing_email=email,
+                prompt=prompt,
+                model=model,
+                instructions=RECOVERY_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(AGENT_RECOVERY_COMPLEXITY, "PORTAL_RECOVERY_REASONING_EFFORT"),
+                max_output_tokens=RECOVERY_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_ANSWER_TEMPERATURE,
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                config=load_openai_config(
+                    default_model=model,
+                    strict_tracking=False,
+                    include_prompt_in_metadata=False,
+                ),
+                metadata={
+                    "source": "portal_agent",
+                    "recoveryCode": normalize_text(situation.get("code")),
+                },
+            )
+        except OpenAIError as exc:
+            print(f"Recovery composer failed: {exc.message}", flush=True)
+            return fallback, False
+        reply = guard_recovery_reply(result.output_text, situation, fallback=fallback)
+        return reply, reply != fallback
+
+    def _respond_recovered(
+        self,
+        session: PortalSession,
+        situation: dict[str, Any],
+        *,
+        conversation: list[dict[str, str]],
+        channel: str,
+        timezone_name: str,
+        diagnostic: dict[str, Any] | None = None,
+    ) -> None:
+        """Answer a turn that could not be produced with a reply that still can be.
+
+        The diagnostic, when there is one, is the operator's view of the same
+        failure: the provider's code, the upstream status, the classification
+        into billing or rate limit. It travels in the payload for the portal
+        to show an owner who is also the operator, and never in the reply.
+        """
+
+        print(
+            f"Agent turn recovered: code={situation.get('code')} channel={channel or 'portal'}",
+            flush=True,
+        )
+        reply, composed = self._compose_recovery_reply(
+            situation,
+            conversation=conversation,
+            channel=channel,
+            timezone_name=timezone_name,
+            email=session.email,
+        )
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "outcome": "message",
+            "reply": reply,
+            "proposalType": "",
+            "changes": {},
+            "recovered": True,
+            "recoveryCode": normalize_text(situation.get("code")),
+            "composed": composed,
+            **({"diagnostic": diagnostic} if diagnostic else {}),
+        })
+
+    def _handle_agent_recover(self) -> None:
+        """Write the reply for a situation report a channel ran into.
+
+        The WhatsApp chat runs lookups on the server and hits the same walls
+        the turn does - a mailbox nobody connected, a runner that failed. It
+        reports the situation here and gets back the reply to send, so the
+        words come from the same place whichever channel hit the wall.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_json",
+                "message": str(exc),
+            })
+            return
+
+        situation = normalize_situation(payload.get("situation"))
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        reply, composed = self._compose_recovery_reply(
+            situation,
+            conversation=normalize_recovery_conversation(payload.get("conversation")),
+            channel=normalize_contact_single_line(payload.get("channel"), 20).lower(),
+            timezone_name=timezone_name,
+            email=session.email,
+        )
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "reply": reply,
+            "composed": composed,
+            "code": situation["code"],
         })
 
     def _apply_agent_facts(self, user_id: int, turn: dict[str, Any]) -> None:

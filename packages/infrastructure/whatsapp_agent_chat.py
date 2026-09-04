@@ -35,6 +35,9 @@ from packages.infrastructure.notification_delivery import parse_bool
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
+from packages.infrastructure.recovery_reply import build_situation
+from packages.infrastructure.recovery_reply import computed_recovery_sentence
+from packages.infrastructure.recovery_reply import make_option
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_typing_indicator
 
@@ -705,6 +708,18 @@ _NO_PHRASES = frozenset({
 })
 
 
+def _source_name(task_type: str) -> str:
+    """What a lookup reads, in the words the person would use."""
+
+    return {
+        "email-digest": "your email",
+        "calendar-summary": "your calendar",
+        "custom": "your receipts",
+        "saved-files": "that folder",
+        "exchange-rate": "the exchange rate",
+    }.get(normalize_text(task_type).lower(), "that")
+
+
 def parse_yes_no(text: Any) -> str:
     """"yes", "no", or "" when the words are anything more than one of those."""
 
@@ -1114,9 +1129,14 @@ class WhatsAppAgentChat:
         if status == 200 and response.get("ok"):
             self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
             return normalize_text(turn.get("reply")) or "Done — it's scheduled."
-        return (
-            normalize_text(response.get("message"))
-            or "I couldn't schedule that just now. Please try again in a moment."
+        return self._recover(
+            build_situation(
+                "internal",
+                request=normalize_text(active_proposal.get("requestText")),
+                what_happened="I couldn't schedule that just now.",
+                can_retry=True,
+            ),
+            [],
         )
 
     def _save_calendar_selection(self, calendars: list[dict[str, Any]]) -> bool:
@@ -1183,7 +1203,10 @@ class WhatsAppAgentChat:
                     "message_id": message_id}
 
         if not self._save_calendar_selection(chosen):
-            reply = "I couldn't save that choice just now. Please try again in a moment."
+            reply = self._recover(
+                build_situation("internal", what_happened="I couldn't save that choice just now.", can_retry=True),
+                [],
+            )
             message_id = self._send_owner_text(reply)
             return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_failed",
                     "reply_text": reply, "message_id": message_id}
@@ -1262,7 +1285,17 @@ class WhatsAppAgentChat:
                 f"{_join_names(failed)} just now. Ask me again in a moment and I'll retry."
             )
         else:
-            reply = f"I couldn't disconnect {_join_names(failed) or 'that'} just now. Please try again in a moment."
+            return self._reply_and_log(
+                self._recover(
+                    build_situation(
+                        "internal",
+                        what_happened=f"I couldn't disconnect {_join_names(failed) or 'that'} just now.",
+                        can_retry=True,
+                    ),
+                    [],
+                ),
+                outcome="disconnect_failed",
+            )
         if notes:
             reply += " " + " ".join(notes)
         if done:
@@ -1289,38 +1322,35 @@ class WhatsAppAgentChat:
         lines: list[str] = []
         records: list[dict[str, Any]] = []
         figures: dict[str, Any] = {}
+        # What got in the way of a task, as a report rather than a sentence.
+        # Whichever runner it was and whatever it said, the person hears what
+        # happened and what they can do next, in words written for this turn.
+        situations: list[dict[str, Any]] = []
         for task in tasks[:3]:
             if not isinstance(task, dict):
                 continue
+            task_type = normalize_text(task.get("proposalType")).lower()
             task_changes = task.get("changes") if isinstance(task.get("changes"), dict) else {}
             fields = task_changes.get("fields") if isinstance(task_changes.get("fields"), dict) else {}
-            response, status = self._api(
-                "POST",
-                "/api/agent/proposals/run",
-                {
-                    "proposalType": normalize_text(task.get("proposalType")).lower(),
-                    "mode": "answer",
-                    "fields": fields,
-                    "deliveryChannel": "portal",
-                    "timezone": self.timezone_name,
-                    # This channel draws a dot in each calendar's colour, so a
-                    # list cached before colours were kept is worth one more
-                    # look at Google. The portal never asks.
-                    "refreshCalendarColours": True,
-                },
-                timeout=AGENT_RUN_TIMEOUT_SECONDS,
-            )
+            run_payload = {
+                "proposalType": task_type,
+                "mode": "answer",
+                "fields": fields,
+                "deliveryChannel": "portal",
+                "timezone": self.timezone_name,
+                # This channel draws a dot in each calendar's colour, so a
+                # list cached before colours were kept is worth one more
+                # look at Google. The portal never asks.
+                "refreshCalendarColours": True,
+            }
+            response, status = self._api("POST", "/api/agent/proposals/run", run_payload, timeout=AGENT_RUN_TIMEOUT_SECONDS)
             if status == 409 and normalize_text(response.get("error")) == "calendar_selection_required":
                 available = [entry for entry in (response.get("availableCalendars") or []) if isinstance(entry, dict)]
                 if len(available) == 1:
                     # One calendar is not a choice. Read it, and say nothing.
                     if self._save_calendar_selection(available):
                         response, status = self._api(
-                            "POST", "/api/agent/proposals/run",
-                            {"proposalType": normalize_text(task.get("proposalType")).lower(), "mode": "answer",
-                             "fields": fields, "deliveryChannel": "portal", "timezone": self.timezone_name,
-                             "refreshCalendarColours": True},
-                            timeout=AGENT_RUN_TIMEOUT_SECONDS,
+                            "POST", "/api/agent/proposals/run", run_payload, timeout=AGENT_RUN_TIMEOUT_SECONDS,
                         )
                 elif available and not getattr(self, "_calendar_choice_asked", False):
                     self._calendar_choice_asked = True
@@ -1333,17 +1363,21 @@ class WhatsAppAgentChat:
                     first_question = normalize_text((entry or {}).get("question")) if isinstance(entry, dict) else ""
                     if first_question:
                         break
-                decision_note = (
-                    "Two receipts in there look alike, and telling them apart takes a decision "
-                    "I can only collect in the portal chat for now."
-                )
-                lines.append(f"{first_question} {decision_note}".strip())
+                situations.append(build_situation(
+                    "choice_required",
+                    request=user_message,
+                    what_happened=(
+                        f"{first_question} Telling them apart takes a decision I can only collect "
+                        "in the Assistyca portal chat for now."
+                    ).strip(),
+                ))
+                continue
+            if status != 200:
+                situations.append(self._situation_for_run_failure(response, status, task_type, user_message))
                 continue
             line = normalize_text(
                 response.get("answer") or response.get("message") or response.get("summary")
             )
-            if status != 200 and not line:
-                line = "One of those lookups failed just now."
             if line:
                 lines.append(line)
             raw_records = response.get("answerRecords") if isinstance(response.get("answerRecords"), list) else []
@@ -1354,8 +1388,17 @@ class WhatsAppAgentChat:
             if isinstance(availability, dict):
                 figures.update(availability)
 
-        computed = " ".join(lines).strip() or "I ran that, but it came back without anything to report."
         conversation = history + [{"role": "user", "text": user_message}]
+        if not lines:
+            if not situations:
+                situations.append(build_situation(
+                    "nothing_found",
+                    request=user_message,
+                    what_happened="I ran that, and it came back with nothing to report.",
+                ))
+            return self._recover(situations[0], conversation)
+
+        computed = " ".join(lines).strip()
         composed, status = self._api(
             "POST",
             "/api/agent/answer/compose",
@@ -1368,9 +1411,154 @@ class WhatsAppAgentChat:
                 "timezone": self.timezone_name,
             },
         )
-        if status == 200 and normalize_text(composed.get("answer")):
-            return normalize_text(composed.get("answer"))
-        return computed
+        answer = normalize_text(composed.get("answer")) if status == 200 else ""
+        answer = answer or computed
+        if situations:
+            # Part of the question was answered and part hit a wall. The answer
+            # stands, and what stopped the rest follows it with its way forward.
+            answer = f"{answer}\n\n{computed_recovery_sentence(situations[0])}"
+        return answer
+
+    def _situation_for_run_failure(
+        self,
+        response: dict[str, Any],
+        status: int,
+        task_type: str,
+        user_message: str,
+    ) -> dict[str, Any]:
+        """Read what a runner said went wrong into a report the reply is written from."""
+
+        error = normalize_text(response.get("error")).lower()
+        if status == 402:
+            return build_situation(
+                "not_supported",
+                request=user_message,
+                what_happened=normalize_text(response.get("message")) or "Your trial has ended.",
+            )
+        if error in {"email_setup_required", "mailbox_not_connected"}:
+            return build_situation(
+                "source_not_connected",
+                request=user_message,
+                source="mailbox",
+                what_happened="Reading your email needs a connected mailbox, and there isn't one connected right now.",
+                options=self._connect_options("mailbox"),
+            )
+        if error == "calendar_setup_required":
+            return build_situation(
+                "source_not_connected",
+                request=user_message,
+                source="calendar",
+                what_happened="Reading your calendar needs it connected, and it isn't connected right now.",
+                options=self._connect_options("calendar"),
+            )
+        if error == "calendar_selection_required":
+            return build_situation(
+                "choice_required",
+                request=user_message,
+                what_happened="I need to know which calendars to read first.",
+                options=[make_option("choose", label="which calendars I should read")],
+            )
+        if error in {"delivery_not_supported", "proposal_runner_not_found", "folder_required", "invalid_json"}:
+            return build_situation(
+                "not_supported",
+                request=user_message,
+                what_happened="That kind of lookup can't run from this chat yet.",
+            )
+        if error == "receipt_export_failed":
+            return build_situation(
+                "internal",
+                request=user_message,
+                what_happened="I found the receipts but couldn't put the file together.",
+                can_retry=True,
+            )
+        if status == 429:
+            return build_situation(
+                "rate_limited",
+                request=user_message,
+                what_happened="I'm getting a lot of requests at once and couldn't take that one.",
+                can_retry=True,
+            )
+        if status == 401:
+            return build_situation(
+                "internal",
+                request=user_message,
+                what_happened="I lost my place for a moment.",
+                can_retry=True,
+            )
+        return build_situation(
+            "provider_unavailable",
+            request=user_message,
+            what_happened=f"I couldn't finish reading {_source_name(task_type)} just now.",
+            can_retry=True,
+        )
+
+    def _situation_for_turn_failure(self, turn: dict[str, Any], status: int, user_message: str) -> dict[str, Any]:
+        error = normalize_text(turn.get("error")).lower()
+        if error == "secret_in_chat":
+            return build_situation(
+                "not_supported",
+                request=user_message,
+                what_happened="I removed something that looked like a password or key, so I didn't keep it or act on it.",
+            )
+        if status == 429 or error == "rate_limited":
+            return build_situation(
+                "rate_limited",
+                request=user_message,
+                what_happened="I'm getting a lot of requests at once and couldn't take that one.",
+                can_retry=True,
+            )
+        if status == 401:
+            return build_situation(
+                "internal",
+                request=user_message,
+                what_happened="I lost my place for a moment.",
+                can_retry=True,
+            )
+        return build_situation(
+            "assistant_unavailable",
+            request=user_message,
+            what_happened="I couldn't think that through just now.",
+            can_retry=True,
+        )
+
+    def _connect_options(self, kind: str) -> list[dict[str, str]]:
+        """The sign-in links that would unblock a lookup, when there are any."""
+
+        options: list[dict[str, str]] = []
+        google = self.connect_links.get("google")
+        microsoft = self.connect_links.get("microsoft")
+        if google:
+            options.append(make_option("connect", provider="google", link=google, label="Sign in with Google"))
+        if kind == "mailbox" and microsoft:
+            options.append(make_option("connect", provider="microsoft", link=microsoft, label="Sign in with Microsoft"))
+        if not options:
+            options.append(make_option("say", say="connect my email" if kind == "mailbox" else "connect my calendar"))
+        return options
+
+    def _recover(self, situation: dict[str, Any], history: list[dict[str, str]]) -> str:
+        """The reply for something that got in the way, written for this conversation.
+
+        The server composes it from the situation report; when even that
+        cannot run, the sentence is assembled from the report here, so the
+        reply still says what happened and what to do next.
+        """
+
+        try:
+            response, status = self._api(
+                "POST",
+                "/api/agent/recover",
+                {
+                    "situation": situation,
+                    "conversation": history[-6:],
+                    "channel": "whatsapp",
+                    "timezone": self.timezone_name,
+                },
+            )
+        except WhatsAppAgentChatError as exc:
+            print(f"WhatsApp recovery reply failed: {exc}", flush=True)
+            response, status = {}, 0
+        reply = str(response.get("reply") or "").strip() if status == 200 else ""
+        return reply or computed_recovery_sentence(situation)
 
     # -- sending -----------------------------------------------------------
 
@@ -1420,9 +1608,12 @@ class WhatsAppAgentChat:
         # open, so a tap on the picker still works afterwards.
 
         if not text or normalize_text(message_type).lower() not in {"", "text", "button", "interactive"}:
-            reply = (
-                "I can only read text messages on WhatsApp so far. "
-                "Type what you need and I'll take it from there."
+            reply = self._recover(
+                build_situation(
+                    "unsupported_message",
+                    what_happened="I can only read text messages on WhatsApp so far.",
+                ),
+                [],
             )
             message_id = self._send_owner_text(reply)
             return {
@@ -1475,10 +1666,14 @@ class WhatsAppAgentChat:
             outcome = normalize_text(turn.get("outcome")).lower()
             if status != 200 or not turn.get("ok"):
                 outcome = "error"
-                reply = (
-                    normalize_text(turn.get("message"))
-                    or "I'm having trouble thinking that through right now. Please try again in a moment."
-                )
+                if status == 402:
+                    # A trial that ran out is a fact to state, not a snag to
+                    # recover from, and recovering would spend on a model.
+                    reply = normalize_text(turn.get("message")) or computed_recovery_sentence(
+                        build_situation("not_supported", what_happened="Your trial has ended.")
+                    )
+                else:
+                    reply = self._recover(self._situation_for_turn_failure(turn, status, text), conversation)
             elif outcome == "proposal":
                 self._hold_proposal(turn, text)
                 reply = normalize_text(turn.get("reply"))
@@ -1512,8 +1707,14 @@ class WhatsAppAgentChat:
             else:
                 reply = normalize_text(turn.get("reply"))
 
-        reply = format_agent_reply_for_whatsapp(reply) or (
-            "I read that, but I could not put an answer together. Please try phrasing it another way."
+        reply = format_agent_reply_for_whatsapp(reply) or self._recover(
+            build_situation(
+                "internal",
+                request=text,
+                what_happened="I read that, but couldn't put an answer together.",
+                can_retry=True,
+            ),
+            conversation,
         )
         message_id = self._send_owner_text(reply)
         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)

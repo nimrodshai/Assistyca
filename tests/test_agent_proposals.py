@@ -1571,13 +1571,20 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
                 "conversation": [],
             }, token=token)
 
-        self.assertEqual(status, 503)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"], "agent_billing_required")
-        self.assertIn("legacy quota", payload["message"])
-        self.assertNotIn("insufficient funds", payload["message"])
-        self.assertEqual(payload["upstreamStatus"], 429)
-        self.assertEqual(payload["providerCode"], "insufficient_quota")
+        # The conversation gets a reply it can use; the operator gets the
+        # classification alongside it, never inside it.
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["recovered"])
+        self.assertEqual(payload["recoveryCode"], "assistant_unavailable")
+        self.assertNotIn("quota", payload["reply"].lower())
+        self.assertNotIn("openai", payload["reply"].lower())
+        diagnostic = payload["diagnostic"]
+        self.assertEqual(diagnostic["error"], "agent_billing_required")
+        self.assertIn("legacy quota", diagnostic["message"])
+        self.assertNotIn("insufficient funds", diagnostic["message"])
+        self.assertEqual(diagnostic["upstreamStatus"], 429)
+        self.assertEqual(diagnostic["providerCode"], "insufficient_quota")
 
     def test_agent_turn_does_not_call_quota_type_a_funding_error_when_rate_code_is_present(self) -> None:
         token = self._session_token_for("owner@example.com")
@@ -1601,11 +1608,13 @@ class AgentProposalRevisionApiTests(unittest.TestCase):
                 "conversation": [],
             }, token=token)
 
-        self.assertEqual(status, 503)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"], "agent_rate_limited")
-        self.assertNotIn("insufficient funds", payload["message"])
-        self.assertEqual(payload["providerCode"], "rate_limit_exceeded")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["recovered"])
+        self.assertEqual(payload["recoveryCode"], "rate_limited")
+        diagnostic = payload["diagnostic"]
+        self.assertEqual(diagnostic["error"], "agent_rate_limited")
+        self.assertNotIn("insufficient funds", diagnostic["message"])
+        self.assertEqual(diagnostic["providerCode"], "rate_limit_exceeded")
 
 
 if __name__ == "__main__":
