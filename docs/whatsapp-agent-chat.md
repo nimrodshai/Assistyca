@@ -455,3 +455,56 @@ told the model to promise a sign-in link "in a moment" when none could be
 minted, and nothing ever sent one; the prompt now says connecting is not
 available instead. New conversations come from production turns that
 surprised somebody: add the state and the messages to `CONVERSATIONS`.
+
+## The turn is a loop
+
+Since 2026-09-04 a WhatsApp turn runs through `POST /api/agent/loop`
+(`packages/infrastructure/agent_loop.py`) rather than the three-step
+understand-run-phrase turn. The model gets the instructions, the account
+state, the conversation, and a list of **tools**; it may call one, gets the
+result back as data, and decides again - another tool, or the reply - until
+it writes. There is one place that writes to the person, and it always has
+the full picture, which is what the older turn could never have: it committed
+to "I'm checking now" before anything was checked.
+
+The tools are the registry in `agent_loop.py`: `read_inbox`, `read_calendar`,
+`search_receipts`, `exchange_rate`, `read_folder`, `connect_link`,
+`disconnect`, `schedule_message`, `remember_fact`, `forget_fact`. Each
+declares what it needs connected (`LOOKUP_SOURCE_REQUIREMENTS`), whether it
+changes anything, and whether it needs a yes. A tool whose source is not
+connected is shown to the model as UNAVAILABLE with the reason and the way
+round it, and refuses if called anyway; every tool returns the same envelope,
+`ok` with data or `ok:false` with an error the model reads and explains. The
+lookups run through the same `/api/agent/proposals/run` the portal uses, over
+loopback with the caller's own session, so a tool can do nothing the caller
+could not. Receipt records come with `groupedFigures` computed in code, so
+the model never adds up sixty rows in its head. The final reply is a JSON
+schema the API enforces (`REPLY_TEXT_FORMAT`, strict), so a reply that cannot
+be read is impossible by construction. Six tool calls per turn; past that the
+model is told the budget is spent and writes from what it has.
+
+**Actions that need a yes** (`disconnect`, `schedule_message`) pause the
+turn: the first call returns `confirmation_required` with what exactly would
+happen, the model asks for a plain yes, and the chat stores the call itself
+as `pending_json` of kind `tool_confirmation`. A whole-phrase yes runs the
+stored call - never a fresh decision - and the model is handed the result as
+`confirmedAction` to report; a no is handed over as `declinedAction`;
+anything else goes to the model with `openQuestion` in view. A calendar
+choice a tool asks for comes back as `calendarChoice` and the chat shows the
+picker it already had.
+
+What the chat still owns is what only the channel can do: the transcript,
+the typing indicator, the held question, the picker, the WhatsApp formatting.
+`WHATSAPP_AGENT_LOOP_ENABLED=0` falls back to the older turn. The portal is
+unchanged for now and still orchestrates its own chat in the browser; moving
+it onto the loop is the next step.
+
+Every turn prints one `agent.turn` record: turn id, rounds, tokens, latency,
+each tool call with its outcome, what completed, whether a confirmation is
+pending, and whether the assembled fallback was used. `fallbackUsed` is the
+number to watch.
+
+Adding a capability is adding a `ToolSpec` to the registry: a name, a
+description written for the model (the phrasing rules live there, not in the
+prompt), a strict parameter schema, what it requires, and a `run` function
+that returns the envelope. Nothing else changes.

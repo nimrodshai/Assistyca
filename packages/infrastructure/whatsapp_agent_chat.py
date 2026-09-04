@@ -115,6 +115,16 @@ _COUNTRY_CODE_TIMEZONES: dict[str, str] = {
 }
 
 
+def whatsapp_agent_loop_enabled() -> bool:
+    """Whether the turn runs as the tool loop rather than understand-run-phrase.
+
+    On by default: the loop is the turn now. Set to 0 to fall back to the
+    older three-step turn while something is being looked into.
+    """
+
+    return parse_bool(os.getenv("WHATSAPP_AGENT_LOOP_ENABLED"), True)
+
+
 def whatsapp_agent_chat_enabled() -> bool:
     """Whether owner messages to the Assistyca number reach the agent at all."""
 
@@ -1474,6 +1484,95 @@ class WhatsAppAgentChat:
             answer = f"{answer}\n\n{computed_recovery_sentence(situations[0])}"
         return answer
 
+    def _loop_turn(
+        self,
+        text: str,
+        *,
+        source_message_id: str = "",
+        confirmed_call: dict[str, Any] | None = None,
+        declined_call: dict[str, Any] | None = None,
+        open_question: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """One turn through the loop: the model reads, calls tools, and writes.
+
+        The chat's part is what only this channel can do: the transcript, the
+        typing indicator, the question held for a yes, the calendar picker,
+        and the text that finally goes to the phone.
+        """
+
+        history = self.database.list_recent_whatsapp_agent_messages(user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
+        conversation = [{"role": item["role"], "text": item["text"]} for item in history]
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=text)
+        payload: dict[str, Any] = {
+            "userMessage": text,
+            "conversation": conversation,
+            "timezone": self.timezone_name,
+            "channel": "whatsapp",
+            "toolContext": self._build_tool_context(),
+        }
+        if confirmed_call:
+            payload["confirmedCall"] = {"tool": confirmed_call.get("tool"), "arguments": confirmed_call.get("arguments") or {}}
+        if declined_call:
+            payload["declinedCall"] = {"tool": declined_call.get("tool"), "arguments": declined_call.get("arguments") or {}}
+        if open_question:
+            payload["openQuestion"] = open_question
+
+        with assistyca_typing(source_message_id):
+            turn, status = self._api("POST", "/api/agent/loop", payload, timeout=AGENT_RUN_TIMEOUT_SECONDS)
+            outcome = "message"
+            if status != 200 or not turn.get("ok"):
+                outcome = "error"
+                if status == 402:
+                    reply = normalize_text(turn.get("message")) or computed_recovery_sentence(
+                        build_situation("not_supported", what_happened="Your trial has ended.")
+                    )
+                else:
+                    reply = self._recover(self._situation_for_turn_failure(turn, status, text), conversation)
+            else:
+                reply = str(turn.get("reply") or "").strip()
+                pending_confirmation = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
+                if pending_confirmation:
+                    outcome = "confirmation_asked"
+                    self.database.save_whatsapp_agent_pending(
+                        user_id=self.user_id,
+                        pending={
+                            "kind": "tool_confirmation",
+                            "tool": normalize_text(pending_confirmation.get("tool")),
+                            "arguments": pending_confirmation.get("arguments") if isinstance(pending_confirmation.get("arguments"), dict) else {},
+                            "question": reply[:500],
+                            "askedAt": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                calendars = turn.get("calendarChoice") if isinstance(turn.get("calendarChoice"), list) else None
+                if calendars:
+                    available = [entry for entry in calendars if isinstance(entry, dict)]
+                    if len(available) == 1 and self._save_calendar_selection(available):
+                        # One calendar is not a choice: read it and run the turn again.
+                        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply or "(chose the only calendar)")
+                        return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question)
+                    if available and not open_question:
+                        outcome = "calendar_choice"
+                        if reply:
+                            self._send_owner_text(format_agent_reply_for_whatsapp(reply))
+                            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+                        self._ask_calendar_choice(available, question=text)
+                        return {"type": "owner", "action": "agent_chat_reply", "outcome": outcome, "reply_text": reply, "message_id": ""}
+
+        reply = format_agent_reply_for_whatsapp(reply) or self._recover(
+            build_situation("internal", request=text, what_happened="I read that, but couldn't put an answer together.", can_retry=True),
+            conversation,
+        )
+        message_id = self._send_owner_text(reply)
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+        return {
+            "type": "owner",
+            "action": "agent_chat_reply",
+            "outcome": outcome,
+            "reply_text": reply,
+            "message_id": message_id,
+            "turn_id": normalize_text(turn.get("turnId")),
+        }
+
     def _situation_for_run_failure(
         self,
         response: dict[str, Any],
@@ -1656,6 +1755,19 @@ class WhatsAppAgentChat:
             pending = None
         pending_choice = pending if pending and pending.get("kind") == "calendar_choice" else None
         pending_disconnect = pending if pending and pending.get("kind") == "disconnect" else None
+        # An action the loop proposed and is waiting on a yes for. The stored
+        # call is what runs; the yes is never re-read into a new decision.
+        pending_call = pending if pending and pending.get("kind") == "tool_confirmation" else None
+        if pending_call and not interactive_id and whatsapp_agent_loop_enabled():
+            answer = parse_yes_no(text)
+            if answer in {"yes", "no"}:
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                return self._loop_turn(
+                    text,
+                    source_message_id=source_message_id,
+                    confirmed_call=pending_call if answer == "yes" else None,
+                    declined_call=pending_call if answer == "no" else None,
+                )
         if pending_disconnect and not interactive_id:
             # A plain yes or no settles a held disconnect here. Anything with
             # more in it goes to the model with the question in view.
@@ -1689,6 +1801,18 @@ class WhatsAppAgentChat:
                 "reply_text": reply,
                 "message_id": message_id,
             }
+
+        if whatsapp_agent_loop_enabled():
+            open_question = None
+            if pending_call:
+                open_question = {"kind": "confirmation", "question": normalize_text(pending_call.get("question"))}
+            elif pending_choice:
+                open_question = {
+                    "kind": "calendar_choice",
+                    "question": normalize_text(pending_choice.get("question")),
+                    "calendars": [normalize_text(e.get("label")) or normalize_text(e.get("id")) for e in _pending_calendars(pending_choice)],
+                }
+            return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question)
 
         history = self.database.list_recent_whatsapp_agent_messages(
             user_id=self.user_id,

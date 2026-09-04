@@ -196,6 +196,11 @@ from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_nu
 from packages.infrastructure.whatsapp_api import register_whatsapp_phone_number
 from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
+from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
+from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
+from packages.infrastructure.agent_loop import LoopContext
+from packages.infrastructure.agent_loop import REPLY_TEXT_FORMAT
+from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
 from packages.infrastructure.whatsapp_agent_chat import CLAIM_CODE_TTL_SECONDS
@@ -320,6 +325,9 @@ NOTIFICATIONS_PAGE_SIZE = 20
 NOTIFICATIONS_PAGE_LIMIT = 100
 AGENT_PROPOSAL_REVISION_COMPLEXITY = TaskComplexity.MEDIUM
 AGENT_TURN_COMPLEXITY = TaskComplexity.IMPORTANT
+# A tool inside the loop may read a month of mail; the runner has its own
+# ceiling, and this is the one above it.
+AGENT_LOOP_TOOL_TIMEOUT_SECONDS = 300
 # Answering whatever was asked from the records a lookup read is open-ended
 # reasoning, not a structured edit, so it runs on the strongest model.
 AGENT_ANSWER_COMPOSE_COMPLEXITY = TaskComplexity.IMPORTANT
@@ -3772,6 +3780,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
+            or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
@@ -3847,6 +3856,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
+            or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
             or path == "/api/agent/files/delete"
@@ -4181,6 +4191,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/recover":
             self._handle_agent_recover()
+            return
+
+        if path == "/api/agent/loop":
+            self._handle_agent_loop()
             return
 
         if path == "/api/platform-connections":
@@ -8623,6 +8637,178 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "reply": reply,
             "composed": composed,
             "code": situation["code"],
+        })
+
+    def _handle_agent_loop(self) -> None:
+        """One turn as a loop: the model reads, calls tools, and writes.
+
+        This is the turn endpoint that replaces understand-run-phrase. The
+        tools run through the same endpoints the portal's buttons call, over
+        loopback with the caller's own session, so nothing a tool can do is
+        anything the caller could not already do.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        user_message = normalize_contact_message(payload.get("userMessage"), AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH)
+        conversation = normalize_agent_proposal_revision_conversation(payload.get("conversation"))
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        channel = normalize_contact_single_line(payload.get("channel"), 20).lower() or "portal"
+        tool_context = normalize_agent_tool_context(payload.get("toolContext"))
+        confirmed_call = payload.get("confirmedCall") if isinstance(payload.get("confirmedCall"), dict) else None
+        declined_call = payload.get("declinedCall") if isinstance(payload.get("declinedCall"), dict) else None
+        open_question = payload.get("openQuestion") if isinstance(payload.get("openQuestion"), dict) else None
+        if not user_message and not confirmed_call:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_agent_turn", "message": "Tell me what you want help with."})
+            return
+        if looks_like_agent_secret(user_message):
+            # A pasted credential never reaches the model, the logs, or the
+            # transcript. The person hears why in the assistant's own words.
+            self._respond_recovered(
+                session,
+                build_situation(
+                    "not_supported",
+                    request="",
+                    what_happened="I removed something that looked like a password or key, so I didn't keep it or act on it.",
+                ),
+                conversation=conversation,
+                channel=channel,
+                timezone_name=timezone_name,
+            )
+            return
+
+        user_id = int((self.database.get_user(session.email) or {}).get("id") or 0)
+        facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
+        authorization = normalize_text(self.headers.get("Authorization"))
+        port = int(self.server.server_address[1])  # type: ignore[attr-defined]
+
+        def loopback(method: str, path: str, body: dict[str, Any] | None = None, **_: Any) -> tuple[dict[str, Any], int]:
+            request = urllib_request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None,
+                method=method,
+                headers={"Authorization": authorization, "Content-Type": "application/json"},
+            )
+            try:
+                with urllib_request.urlopen(request, timeout=AGENT_LOOP_TOOL_TIMEOUT_SECONDS) as response:
+                    parsed = json.loads(response.read().decode("utf-8"))
+                    return (parsed if isinstance(parsed, dict) else {}), int(response.status)
+            except urllib_error.HTTPError as exc:
+                try:
+                    parsed = json.loads(exc.read().decode("utf-8"))
+                except (ValueError, OSError):
+                    parsed = {}
+                return (parsed if isinstance(parsed, dict) else {}), int(exc.code)
+
+        context = LoopContext(
+            api=loopback,
+            database=self.database,
+            email=session.email,
+            user_id=user_id,
+            timezone_name=timezone_name,
+            tool_context=tool_context,
+            connect_links=dict(tool_context.get("connectLinks") or {}),
+            channel="whatsapp" if channel == "whatsapp" else "portal",
+        )
+        model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
+
+        def call_model(input_items: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any:
+            return call_openai_response(
+                tool_name="portal_agent_loop",
+                tool_id="portal_agent",
+                billing_email=session.email,
+                prompt="",
+                input=input_items,
+                tools=tools,
+                model=model,
+                instructions=AGENT_LOOP_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(AGENT_TURN_COMPLEXITY, "PORTAL_AGENT_REASONING_EFFORT"),
+                max_output_tokens=LOOP_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_TURN_TEMPERATURE,
+                extra_payload={"text": REPLY_TEXT_FORMAT, "parallel_tool_calls": True},
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                config=load_openai_config(default_model=model, strict_tracking=False, include_prompt_in_metadata=False),
+                metadata={"source": "portal_agent", "loop": True},
+            )
+
+        try:
+            result = run_agent_loop(
+                context=context,
+                call_model=call_model,
+                user_message=user_message,
+                conversation=conversation,
+                today=resolve_local_today(timezone_name),
+                facts=facts,
+                confirmed_call=confirmed_call,
+                declined_call=declined_call,
+                open_question=open_question,
+            )
+        except OpenAIError as exc:
+            print(f"Agent loop failed: {exc.message}", flush=True)
+            diagnostic = build_openai_failure_payload(exc, default_code="agent_unavailable", default_message="The assistant could not be reached.")
+            rate_limited = normalize_text(diagnostic.get("error")) == "agent_rate_limited"
+            self._respond_recovered(
+                session,
+                build_situation(
+                    "rate_limited" if rate_limited else "assistant_unavailable",
+                    request=user_message,
+                    what_happened=(
+                        "I'm getting a lot of requests at once and couldn't take that one."
+                        if rate_limited else "I couldn't think that through just now."
+                    ),
+                    can_retry=True,
+                    options=[make_option("retry")],
+                ),
+                conversation=conversation,
+                channel=channel,
+                timezone_name=timezone_name,
+                diagnostic=diagnostic,
+            )
+            return
+
+        # Facts the reply carried, as on the older turn endpoint. The
+        # remember_fact tool is the normal way; this covers a model that put
+        # it in the reply instead.
+        self._apply_agent_facts(user_id, {"rememberFact": result.remember_fact, "forgetFact": result.forget_fact})
+        # One record per turn, whether it went well or not: the number to
+        # alert on is fallbackUsed, and the tool calls say what was tried.
+        print(json.dumps({
+            "event": "agent.turn",
+            "turnId": result.turn_id,
+            "userId": user_id,
+            "channel": context.channel,
+            "model": model,
+            "rounds": result.rounds,
+            "inputTokens": result.input_tokens,
+            "outputTokens": result.output_tokens,
+            "latencyMs": result.duration_ms,
+            "toolCalls": result.tool_calls,
+            "completed": result.completed,
+            "pendingConfirmation": bool(result.pending_confirmation),
+            "fallbackUsed": result.fallback_used,
+            "fallbackReason": result.fallback_reason,
+        }, ensure_ascii=False), flush=True)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "outcome": "message",
+            "reply": result.reply,
+            "turnId": result.turn_id,
+            "toolCalls": result.tool_calls,
+            "completed": result.completed,
+            "pendingConfirmation": result.pending_confirmation,
+            "calendarChoice": result.calendar_choice,
+            "fallbackUsed": result.fallback_used,
         })
 
     def _apply_agent_facts(self, user_id: int, turn: dict[str, Any]) -> None:

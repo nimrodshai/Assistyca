@@ -36,6 +36,8 @@ When working here:
 
 ## Shared Capability Rules
 
+- A new thing the assistant can do is a `ToolSpec` in `packages/infrastructure/agent_loop.py`, not a new branch in a turn: declare what it needs connected, whether it changes anything, whether it needs a yes, and return the shared result envelope.
+- Code never writes a customer-facing sentence for a failure. Build a situation report (`packages/infrastructure/recovery_reply.py`) and let the composer write it; the assembled sentence is the floor, never the design.
 - Build reusable capabilities around stable workflows such as intake, scheduling, quoting, follow-up, handoff, and knowledge retrieval.
 - Keep shared capabilities generic and parameterized.
 - Avoid embedding client names, client secrets, or client-specific assumptions in shared code.

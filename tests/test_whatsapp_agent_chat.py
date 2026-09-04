@@ -181,6 +181,7 @@ class WhatsAppTypingIndicatorTests(unittest.TestCase):
 
 
 class WhatsAppAgentChatApiTests(unittest.TestCase):
+    loop_enabled = "0"
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(__file__).resolve().parents[1]
@@ -218,6 +219,9 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
                 "WHATSAPP_ALLOW_MOCK_SEND": "1",
                 "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM_PHONE_NUMBER_ID,
                 "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
+                # These tests drive the older three-step turn. The loop has
+                # its own suite below, with the model's tool calls scripted.
+                "WHATSAPP_AGENT_LOOP_ENABLED": self.loop_enabled,
             },
             clear=False,
         )
@@ -810,6 +814,7 @@ if __name__ == "__main__":
 class _WhatsAppApiCase(unittest.TestCase):
     """The API fixture without its tests, so a suite built on it does not rerun them."""
 
+    loop_enabled = "0"
     setUp = WhatsAppAgentChatApiTests.setUp
     tearDown = WhatsAppAgentChatApiTests.tearDown
     _post_webhook = WhatsAppAgentChatApiTests._post_webhook
@@ -970,3 +975,124 @@ class WhatsAppPreflightTests(_WhatsAppApiCase):
         model.assert_called_once()
         self.assertEqual(self._reply(response), "Morning! What would you like?")
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+
+
+def _loop_round(*items: dict, reply: dict | None = None) -> SimpleNamespace:
+    """One model round as the loop reads it: tool calls, or the final reply."""
+
+    outputs = [{"type": "reasoning", "summary": []}, *items]
+    text = ""
+    if reply is not None:
+        text = json.dumps({"reply": "", "claimsCompleted": [], "rememberFact": None, "forgetFact": None, **reply})
+        outputs.append({"type": "message", "content": [{"type": "output_text", "text": text}]})
+    return SimpleNamespace(output_text=text, raw_response={"output": outputs}, input_tokens=10, output_tokens=5)
+
+
+def _tool_call(name: str, call_id: str, **args) -> dict:
+    return {"type": "function_call", "name": name, "call_id": call_id, "arguments": json.dumps(args)}
+
+
+class WhatsAppLoopTests(_WhatsAppApiCase):
+    """The loop on the phone: the model's tool calls are scripted, everything else is real."""
+
+    loop_enabled = "1"
+
+    def _reply(self, response: dict) -> str:
+        entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
+        return entry["reply_text"]
+
+    def test_a_plain_message_is_answered_through_the_loop(self) -> None:
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "Hi Nimrod! What can I take off your plate?"})],
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("hello", message_id="wamid.loop-1"))
+
+        self.assertEqual(self._reply(response), "Hi Nimrod! What can I take off your plate?")
+        kwargs = model.call_args.kwargs
+        self.assertEqual(kwargs["tool_name"], "portal_agent_loop")
+        self.assertTrue(any(tool["name"] == "read_inbox" for tool in kwargs["tools"]))
+        self.assertEqual(kwargs["extra_payload"]["text"]["format"]["type"], "json_schema")
+        transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
+        self.assertEqual([m["role"] for m in transcript], ["user", "assistant"])
+
+    def test_a_lookup_without_its_source_gets_the_link_not_a_failed_run(self) -> None:
+        link = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y"
+        rounds = [
+            _loop_round(_tool_call("read_inbox", "c1", time_window="today")),
+            _loop_round(_tool_call("connect_link", "c2", provider="google")),
+            _loop_round(reply={"reply": f"I need Gmail connected first, it takes a few seconds:\n{link}"}),
+        ]
+        from packages.infrastructure.portal_auth import server as server_module
+
+        handler_class = next(
+            value for value in vars(server_module).values()
+            if isinstance(value, type) and hasattr(value, "_whatsapp_oauth_links")
+        )
+        with (
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds) as model,
+            mock.patch.object(handler_class, "_whatsapp_oauth_links", return_value={"google": link}),
+        ):
+            response = self._post_webhook(inbound_text_payload("important emails today?", message_id="wamid.loop-2"))
+
+        self.assertIn(link, self._reply(response))
+        # The inbox tool answered with source_not_connected, without a runner
+        # call. The input list is the same object on every round, so read the
+        # outputs in order rather than the last item of an early call.
+        outputs = [json.loads(item["output"]) for item in model.call_args.kwargs["input"] if item.get("type") == "function_call_output"]
+        self.assertEqual(outputs[0]["error"]["code"], "source_not_connected")
+        self.assertEqual(outputs[1]["link"], link)
+
+    def test_a_schedule_is_asked_for_a_yes_and_the_yes_runs_the_stored_call(self) -> None:
+        rounds = [
+            _loop_round(_tool_call("schedule_message", "c1", time_local="12:40", date_policy="tomorrow", message_text="Stand up and stretch.")),
+            _loop_round(reply={"reply": "I can text you tomorrow at 12:40: Stand up and stretch. Say yes and it's set."}),
+        ]
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds):
+            first = self._post_webhook(inbound_text_payload("text me at 12:40 tomorrow to stretch", message_id="wamid.loop-3"))
+
+        self.assertIn("Say yes", self._reply(first))
+        pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
+        self.assertEqual(pending["kind"], "tool_confirmation")
+        self.assertEqual(pending["tool"], "schedule_message")
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "Done, it's set for tomorrow at 12:40.", "claimsCompleted": ["schedule_message"]})],
+        ) as model:
+            second = self._post_webhook(inbound_text_payload("yes", message_id="wamid.loop-4"))
+
+        self.assertEqual(self._reply(second), "Done, it's set for tomorrow at 12:40.")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+        context_text = model.call_args.kwargs["input"][0]["content"]
+        self.assertIn('"confirmedAction"', context_text)
+        self.assertIn('"scheduledFor"', context_text)
+
+    def test_a_no_clears_the_question_and_the_model_acknowledges(self) -> None:
+        self.database.save_whatsapp_agent_pending(
+            user_id=int(self.user["id"]),
+            pending={"kind": "tool_confirmation", "tool": "disconnect", "arguments": {"targets": ["google"]},
+                     "question": "Disconnect Google?", "askedAt": datetime.now(timezone.utc).isoformat()},
+        )
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "Okay, nothing changed."})],
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("no", message_id="wamid.loop-5"))
+
+        self.assertEqual(self._reply(response), "Okay, nothing changed.")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+        self.assertIn('"declinedAction"', model.call_args.kwargs["input"][0]["content"])
+
+    def test_the_model_being_down_still_gets_one_reply_with_a_way_forward(self) -> None:
+        from packages.infrastructure.openai_api import OpenAIRequestError
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=OpenAIRequestError("down", status_code=503),
+        ):
+            response = self._post_webhook(inbound_text_payload("are you there?", message_id="wamid.loop-6"))
+
+        reply = self._reply(response)
+        self.assertIn("Ask me again", reply)
+        self.assertNotIn("OpenAI", reply)
