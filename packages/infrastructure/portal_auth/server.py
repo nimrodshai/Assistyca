@@ -5716,6 +5716,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 whatsapp_store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
                 whatsapp_store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
                 revoke_grant=self._revoke_connection_grant,
+                db_path=self.config.db_path,
             )
         except KeyError as exc:
             json_response(self, HTTPStatus.NOT_FOUND, {
@@ -9748,6 +9749,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 whatsapp_store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
                 whatsapp_store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
                 revoke_grant=self._revoke_connection_grant,
+                db_path=self.config.db_path,
             )
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
@@ -10545,6 +10547,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
             store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
             database=self.database,
+            db_path=self.config.db_path,
         )
 
     def _subscribe_whatsapp_business_webhook(
