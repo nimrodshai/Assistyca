@@ -36,7 +36,7 @@ const ADMIN_CLIENT_TYPES = [
   { value: "qa", label: "QA", className: "is-client-type-qa" },
 ];
 const DEFAULT_ADMIN_CLIENT_TYPE = "demo";
-const VALID_TABS = new Set(["features", "opportunities", "clients", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
+const VALID_TABS = new Set(["features", "opportunities", "clients", "turns", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor", "history"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
@@ -57,6 +57,7 @@ const TAB_LABELS = {
   "personal-details": "About your business",
   preview: "Preview",
   simulator: "Simulator",
+  turns: "Turns",
   billing: "Billing",
   pricing: "Pricing",
   settings: "Settings",
@@ -1246,6 +1247,10 @@ const state = {
   activeTab: "features",
   settingsMode: "account",
   settingsOpen: false,
+  agentTurns: null,
+  agentTurnsLoading: false,
+  agentTurnsError: "",
+  agentTurnsLoadedAt: 0,
   adminUsers: [],
   adminUsersLoading: false,
   adminUsersNeedsRender: false,
@@ -1646,6 +1651,10 @@ const elements = {
   opportunitiesSummary: document.querySelector("#opportunitiesSummary"),
   opportunitiesList: document.querySelector("#opportunitiesList"),
   opportunitiesRefreshButton: document.querySelector("#opportunitiesRefreshButton"),
+  turnsPanel: document.querySelector("#turnsPanel"),
+  turnsSummary: document.querySelector("#turnsSummary"),
+  turnsList: document.querySelector("#turnsList"),
+  turnsRefreshButton: document.querySelector("#turnsRefreshButton"),
   clientsPanel: document.querySelector("#clientsPanel"),
   personalDetailsPanel: document.querySelector("#personalDetailsPanel"),
   personalDetailsPreviewCard: document.querySelector("#personalDetailsPreviewCard"),
@@ -12455,6 +12464,9 @@ function setActiveTab(tab, options = {}) {
   if (nextTab === "clients" && !canManageClients()) {
     nextTab = "features";
   }
+  if (nextTab === "turns" && !isAdminUser()) {
+    nextTab = "features";
+  }
 
   if (!VALID_TABS.has(nextTab)) {
     return;
@@ -12493,6 +12505,9 @@ function setActiveTab(tab, options = {}) {
   }
   if (nextTab === "clients") {
     void refreshAdminUsers();
+  }
+  if (nextTab === "turns") {
+    void refreshAgentTurns();
   }
 }
 
@@ -31304,6 +31319,190 @@ function updateClientNavigation() {
   }
 }
 
+// -- Admin > Turns: the three numbers and the turns behind them ---------------
+
+async function refreshAgentTurns(options = {}) {
+  if (!isAdminUser() || state.agentTurnsLoading) {
+    return null;
+  }
+
+  state.agentTurnsLoading = true;
+  state.agentTurnsError = "";
+  updateTurnsPanel();
+
+  try {
+    const response = await apiRequest("/api/admin/agent-turns?limit=60", {
+      timeoutMs: options.timeoutMs || 15000,
+    });
+    state.agentTurns = response;
+    state.agentTurnsLoadedAt = Date.now();
+    return response;
+  } catch (error) {
+    state.agentTurnsError = formatApiErrorMessage(error, "We couldn’t load the turns right now.");
+    return null;
+  } finally {
+    state.agentTurnsLoading = false;
+    updateTurnsPanel();
+  }
+}
+
+function formatTurnRate(value) {
+  const percent = Number(value || 0) * 100;
+  return `${percent >= 10 || percent === 0 ? percent.toFixed(0) : percent.toFixed(1)}%`;
+}
+
+function describeTurnCodes(byCode) {
+  const entries = Object.entries(byCode || {});
+  if (!entries.length) {
+    return "";
+  }
+  return entries.slice(0, 4).map(([code, count]) => `${code} ×${count}`).join(", ");
+}
+
+function createTurnCell(text, className = "") {
+  const cell = document.createElement("td");
+  if (className) {
+    cell.className = className;
+  }
+  cell.textContent = text;
+  return cell;
+}
+
+function createTurnsTable(turns) {
+  const wrap = document.createElement("article");
+  wrap.className = "glass-card turns-table-card";
+  const table = document.createElement("table");
+  table.className = "turns-table";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const label of ["When", "Channel", "Outcome", "Tools", "Tokens", "Time", "Asked", "Answered"]) {
+    const cell = document.createElement("th");
+    cell.textContent = label;
+    headRow.append(cell);
+  }
+  head.append(headRow);
+  const body = document.createElement("tbody");
+  for (const turn of turns) {
+    const row = document.createElement("tr");
+    if (turn.fallbackUsed) {
+      row.classList.add("is-fallback");
+    }
+    const toolCalls = Array.isArray(turn.toolCalls) ? turn.toolCalls : [];
+    const failed = toolCalls.filter((call) => !call.ok);
+    const toolsText = toolCalls.length
+      ? `${toolCalls.map((call) => call.name).join(", ")}${failed.length ? ` (${failed.map((call) => call.code || "failed").join(", ")})` : ""}`
+      : "";
+    const outcomeText = turn.fallbackUsed ? `${turn.outcome || "fallback"} · ${turn.fallbackReason || "fallback"}` : (turn.outcome || "");
+    row.append(
+      createTurnCell(turn.createdAt ? formatAdminDateTime(turn.createdAt) : "", "turns-cell-when"),
+      createTurnCell(turn.channel || ""),
+      createTurnCell(outcomeText + (turn.incompleteResponses ? " · cut off" : ""), "turns-cell-outcome"),
+      createTurnCell(toolsText, "turns-cell-tools"),
+      createTurnCell(`${Number(turn.inputTokens || 0) + Number(turn.outputTokens || 0)}`),
+      createTurnCell(`${(Number(turn.latencyMs || 0) / 1000).toFixed(1)}s`),
+      createTurnCell(turn.userMessage || "", "turns-cell-text"),
+      createTurnCell(turn.reply || (turn.fallbackUsed ? "" : "—"), "turns-cell-text"),
+    );
+    row.title = turn.rawOutputOnFailure ? `Raw model text: ${turn.rawOutputOnFailure}` : `Turn ${turn.turnId}`;
+    body.append(row);
+  }
+  table.append(head, body);
+  wrap.append(table);
+  return wrap;
+}
+
+function updateTurnsPanel() {
+  if (!elements.turnsPanel || !elements.turnsSummary || !elements.turnsList) {
+    return;
+  }
+
+  if (elements.turnsRefreshButton) {
+    elements.turnsRefreshButton.disabled = state.agentTurnsLoading || !isAdminUser();
+    elements.turnsRefreshButton.textContent = state.agentTurnsLoading ? "Refreshing" : "Refresh";
+  }
+
+  if (!isAdminUser()) {
+    elements.turnsSummary.replaceChildren();
+    elements.turnsList.replaceChildren();
+    return;
+  }
+
+  // The tab can be the one a reload lands on, in which case nothing asked
+  // for the numbers yet: the first render asks. A failure stays on screen
+  // rather than retrying on every render.
+  if (state.agentTurns === null && !state.agentTurnsLoading && !state.agentTurnsError && state.activeTab === "turns") {
+    void refreshAgentTurns();
+  }
+  // The fallback alert for this page lands in the notification feed, so the
+  // feed is polled while the page is open, even when a reload landed here.
+  syncNotificationsPolling();
+
+  const data = state.agentTurns;
+  const day = data?.metrics?.day || {};
+  const week = data?.metrics?.week || {};
+  const loadedLabel = state.agentTurnsLoadedAt
+    ? `Updated ${formatAdminDateTime(new Date(state.agentTurnsLoadedAt).toISOString())}`
+    : "Not loaded yet";
+  const alertLine = data?.alert ? `Alert above ${formatTurnRate(data.alert.rate)} on ${data.alert.minTurns}+ turns` : "";
+  elements.turnsSummary.replaceChildren(
+    createOpportunityMetric("Turns today", String(day.turns ?? 0), `${week.turns ?? 0} this week · ${loadedLabel}`),
+    createOpportunityMetric(
+      "Fallback rate",
+      formatTurnRate(day.fallbackRate),
+      `${day.fallbacks ?? 0} today · ${formatTurnRate(week.fallbackRate)} this week${alertLine ? ` · ${alertLine}` : ""}`,
+    ),
+    createOpportunityMetric(
+      "Cut-off replies",
+      formatTurnRate(day.incompleteRate),
+      `${day.incompleteTurns ?? 0} today · ${formatTurnRate(week.incompleteRate)} this week`,
+    ),
+    createOpportunityMetric(
+      "Tool errors",
+      formatTurnRate(day.toolErrorRate),
+      `${day.toolErrors ?? 0} of ${day.toolCalls ?? 0} today · ${formatTurnRate(week.toolErrorRate)} this week${describeTurnCodes(week.toolErrorsByCode) ? ` · ${describeTurnCodes(week.toolErrorsByCode)}` : ""}`,
+    ),
+  );
+
+  if (state.agentTurnsError) {
+    const error = document.createElement("article");
+    error.className = "glass-card empty-state opportunity-empty is-warn";
+    const title = document.createElement("h3");
+    title.textContent = "The turns did not load";
+    const copy = document.createElement("p");
+    copy.textContent = state.agentTurnsError;
+    error.append(title, copy);
+    elements.turnsList.replaceChildren(error);
+    return;
+  }
+
+  if (state.agentTurnsLoading && !data) {
+    const loading = document.createElement("article");
+    loading.className = "glass-card empty-state opportunity-empty";
+    const title = document.createElement("h3");
+    title.textContent = "Loading turns";
+    const copy = document.createElement("p");
+    copy.textContent = "Reading the last week of assistant turns.";
+    loading.append(title, copy);
+    elements.turnsList.replaceChildren(loading);
+    return;
+  }
+
+  const recent = Array.isArray(data?.recent) ? data.recent : [];
+  if (!recent.length) {
+    const empty = document.createElement("article");
+    empty.className = "glass-card empty-state opportunity-empty";
+    const title = document.createElement("h3");
+    title.textContent = "No turns in the last week";
+    const copy = document.createElement("p");
+    copy.textContent = "Every turn the assistant takes, over WhatsApp or here, will show up on this page.";
+    empty.append(title, copy);
+    elements.turnsList.replaceChildren(empty);
+    return;
+  }
+
+  elements.turnsList.replaceChildren(createTurnsTable(recent));
+}
+
 function updateOpportunitiesPanel() {
   if (!elements.opportunitiesPanel || !elements.opportunitiesSummary || !elements.opportunitiesList) {
     return;
@@ -34381,6 +34580,7 @@ function updatePanelVisibility() {
   elements.appBarBackButton?.classList.toggle("is-hidden", isChatWorkspace);
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.opportunitiesPanel?.classList.toggle("is-hidden", state.activeTab !== "opportunities");
+  elements.turnsPanel?.classList.toggle("is-hidden", state.activeTab !== "turns");
   elements.clientsPanel?.classList.toggle("is-hidden", state.activeTab !== "clients");
   elements.personalDetailsPanel.classList.toggle("is-hidden", state.activeTab !== "personal-details");
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
@@ -34489,6 +34689,7 @@ function renderApp(options = {}) {
   updateAgentWorkspace();
   updateFeatureList();
   updateOpportunitiesPanel();
+  updateTurnsPanel();
   updateFeatureActivationFields();
   populateMonitorTimezoneOptions();
   updateMonitorFields();
@@ -36680,6 +36881,12 @@ function bindEvents() {
   if (elements.opportunitiesRefreshButton) {
     elements.opportunitiesRefreshButton.addEventListener("click", () => {
       void refreshOpportunities();
+    });
+  }
+
+  if (elements.turnsRefreshButton) {
+    elements.turnsRefreshButton.addEventListener("click", () => {
+      void refreshAgentTurns();
     });
   }
 

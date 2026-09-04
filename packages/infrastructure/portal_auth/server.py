@@ -201,6 +201,14 @@ from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import REPLY_TEXT_FORMAT
 from packages.infrastructure.agent_loop import run_agent_loop
+from packages.infrastructure.agent_turns import AgentTurnSamplingScheduler
+from packages.infrastructure.agent_turns import TURN_PATHS
+from packages.infrastructure.agent_turns import TurnRecorder
+from packages.infrastructure.agent_turns import WEEK as AGENT_TURN_WINDOW
+from packages.infrastructure.agent_turns import alert_settings
+from packages.infrastructure.agent_turns import load_agent_turn_sampling_config
+from packages.infrastructure.agent_turns import public_turn
+from packages.infrastructure.agent_turns import turn_metrics
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
 from packages.infrastructure.whatsapp_agent_chat import CLAIM_CODE_TTL_SECONDS
@@ -3521,6 +3529,20 @@ def json_response(
     *,
     extra_headers: dict[str, str] | None = None,
 ) -> None:
+    # A request that is part of a recorded turn answers with the turn's id,
+    # so the channel can hand it back on the calls that follow, and the
+    # recorder reads the answer once the handler has written it.
+    recorder = getattr(handler, "_agent_turn", None)
+    if recorder is not None and isinstance(payload, dict):
+        if not normalize_text(payload.get("turnId")):
+            payload = {**payload, "turnId": recorder.turn_id}
+        handler._last_json_response = (int(status), payload)
+        # Filed before the bytes go out: the WhatsApp chat's next call for
+        # this message carries the id and must find the row.
+        try:
+            recorder.finish(int(status), payload)
+        except Exception as exc:  # noqa: BLE001 - the record never breaks the reply
+            print(f"Agent turn record failed: {exc}", flush=True)
     body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
     handler.send_response(status)
     send_api_headers(handler, content_length=len(body))
@@ -4084,6 +4106,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_admin_users_get()
             return
 
+        if path == "/api/admin/agent-turns":
+            self._handle_admin_agent_turns_get(parsed)
+            return
+
         if path == "/webhooks/whatsapp":
             self._handle_whatsapp_webhook_verification(parsed)
             return
@@ -4153,12 +4179,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_contact_agent_turn()
             return
 
-        if path == "/api/agent/turn":
-            self._handle_agent_turn()
-            return
-
-        if path == "/api/agent/proposals/revise":
-            self._handle_agent_proposal_revision()
+        if path in TURN_PATHS:
+            # The turn itself, a lookup it ran, the answer it composed, the
+            # recovery it fell back to: each is recorded onto the turn's row.
+            self._run_recorded_agent_request(path)
             return
 
         if path == "/api/agent/folders/save":
@@ -4179,22 +4203,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/agent/folders/move":
             self._handle_agent_folder_move_post()
-            return
-
-        if path == "/api/agent/proposals/run":
-            self._handle_agent_proposal_run()
-            return
-
-        if path == "/api/agent/answer/compose":
-            self._handle_agent_answer_compose()
-            return
-
-        if path == "/api/agent/recover":
-            self._handle_agent_recover()
-            return
-
-        if path == "/api/agent/loop":
-            self._handle_agent_loop()
             return
 
         if path == "/api/platform-connections":
@@ -8297,6 +8305,92 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "answer": answer,
             "composed": answer != computed_answer,
+        })
+
+    AGENT_TURN_HANDLERS = {
+        "/api/agent/turn": "_handle_agent_turn",
+        "/api/agent/loop": "_handle_agent_loop",
+        "/api/agent/recover": "_handle_agent_recover",
+        "/api/agent/proposals/run": "_handle_agent_proposal_run",
+        "/api/agent/answer/compose": "_handle_agent_answer_compose",
+        "/api/agent/proposals/revise": "_handle_agent_proposal_revision",
+    }
+
+    def _run_recorded_agent_request(self, path: str) -> None:
+        """Run one request of a turn and write what it did onto the turn's row.
+
+        The record is kept outside the handlers on purpose: a handler that
+        crashes, a handler that answers early, a handler nobody remembered
+        to instrument - each still leaves a row, because the row is written
+        from what went in and what came out, not from what the handler
+        chose to report. The body is read once here and handed back to the
+        handler unread, so the handler is unchanged.
+        """
+
+        handler = getattr(self, self.AGENT_TURN_HANDLERS[path])
+        try:
+            body = read_request_body(self)
+        except ValueError:
+            # The handler reads the header itself and answers the problem in
+            # its own words; there is nothing to record about a request that
+            # never had a body.
+            handler()
+            return
+        original_rfile = self.rfile
+        self.rfile = io.BytesIO(body)
+        request: dict[str, Any] = {}
+        try:
+            parsed = json.loads(body.decode("utf-8", errors="replace")) if body.strip() else {}
+            if isinstance(parsed, dict):
+                request = parsed
+        except ValueError:
+            request = {}
+        session = self._get_authenticated_session()
+        user = self.database.get_user(session.email) if session is not None else None
+        recorder = TurnRecorder(
+            database=self.database,
+            path=path,
+            request=request,
+            user_id=int((user or {}).get("id") or 0),
+        )
+        self._agent_turn = recorder
+        self._last_json_response = None
+        crashed = False
+        try:
+            with recorder.observing():
+                handler()
+        except Exception:
+            crashed = True
+            raise
+        finally:
+            self._agent_turn = None
+            self.rfile = original_rfile
+            if not recorder.finished:
+                # No JSON was answered: the handler crashed or wrote nothing.
+                status, payload = self._last_json_response or (0, {})
+                try:
+                    recorder.finish(status, payload, crashed=crashed)
+                except Exception as exc:  # noqa: BLE001 - the record never breaks the reply
+                    print(f"Agent turn record failed: {exc}", flush=True)
+
+    def _handle_admin_agent_turns_get(self, parsed: urllib_parse.ParseResult) -> None:
+        """The three numbers over the last day and week, and the recent turns behind them."""
+
+        if self._require_admin_user() is None:
+            return
+        query = urllib_parse.parse_qs(parsed.query or "")
+        try:
+            limit = int((query.get("limit") or ["50"])[0])
+        except ValueError:
+            limit = 50
+        limit = max(1, min(200, limit))
+        now = datetime.now(timezone.utc)
+        recent = self.database.list_agent_turns(since=(now - AGENT_TURN_WINDOW).isoformat(), limit=limit)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "metrics": turn_metrics(self.database, now=now),
+            "recent": [public_turn(record) for record in recent],
+            "alert": alert_settings(),
         })
 
     def _handle_agent_turn(self) -> None:
@@ -14189,6 +14283,31 @@ def main() -> int:
     else:
         print("Source actions are disabled.", flush=True)
 
+    sampling_config = load_agent_turn_sampling_config()
+    sampling_stop_event = threading.Event()
+    sampling_thread: threading.Thread | None = None
+    if sampling_config.enabled:
+        sampler = AgentTurnSamplingScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=sampling_config,
+        )
+        sampling_thread = threading.Thread(
+            target=sampler.serve_forever,
+            args=(sampling_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="agent-turn-sampling",
+        )
+        sampling_thread.start()
+        print(
+            "Weekly turn sampling enabled. "
+            f"Scores {sampling_config.sample_size} random turns on weekday {sampling_config.schedule_weekday} at "
+            f"{sampling_config.schedule_hour:02d}:{sampling_config.schedule_minute:02d} and reports to admins.",
+            flush=True,
+        )
+    else:
+        print("Weekly turn sampling is disabled.", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -14206,6 +14325,9 @@ def main() -> int:
         source_action_stop_event.set()
         if source_action_thread is not None:
             source_action_thread.join(timeout=1.0)
+        sampling_stop_event.set()
+        if sampling_thread is not None:
+            sampling_thread.join(timeout=1.0)
         server.server_close()
 
     return 0

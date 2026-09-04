@@ -13,11 +13,14 @@ import os
 import time
 import uuid
 import dataclasses
+from contextlib import contextmanager
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from datetime import timezone
 from typing import Any
 from typing import Callable
+from typing import Iterator
 from typing import Optional
 from typing import Sequence
 from typing import Tuple
@@ -207,6 +210,10 @@ class OpenAIResult:
     duration_ms: int
     billing_snapshot: dict[str, Any] | None = None
     usage_record: dict[str, Any] | None = None
+    # How many times this call came back cut off, and why the last time. A
+    # retry that then finished still counts: the budget was too tight once.
+    incomplete_attempts: int = 0
+    incomplete_reason: str = ""
 
 
 def normalize_text(value: Any) -> str:
@@ -398,6 +405,39 @@ def extract_openai_output_text(payload: dict[str, Any]) -> str:
 
     walk(output)
     return "\n".join(pieces).strip()
+
+
+# Whoever is recording the turn on this thread hears every result the gateway
+# returns, so a turn record can carry model, tokens and raw text without each
+# call site handing them over.
+_response_observers = threading.local()
+
+
+@contextmanager
+def observe_responses(callback: Callable[["OpenAIResult"], None]) -> Iterator[None]:
+    stack = getattr(_response_observers, "stack", None)
+    if stack is None:
+        stack = []
+        _response_observers.stack = stack
+    stack.append(callback)
+    try:
+        yield
+    finally:
+        if stack and stack[-1] is callback:
+            stack.pop()
+        else:
+            try:
+                stack.remove(callback)
+            except ValueError:
+                pass
+
+
+def _notify_response_observers(result: "OpenAIResult") -> None:
+    for callback in list(getattr(_response_observers, "stack", None) or ()):
+        try:
+            callback(result)
+        except Exception as exc:  # noqa: BLE001 - an observer never breaks the call it watched
+            _logger.warning("OpenAI response observer failed: %s", exc)
 
 
 def _request_url(base_url: str, path: str) -> str:
@@ -728,8 +768,10 @@ class OpenAIGateway:
 
         result = self._create_response_once(request)
         if not response_is_incomplete(result.raw_response):
+            _notify_response_observers(result)
             return result
         reason = response_incomplete_reason(result.raw_response)
+        result = dataclasses.replace(result, incomplete_attempts=1, incomplete_reason=reason)
         budget = int(request.max_output_tokens or 0)
         self._emit(
             "openai.request.incomplete",
@@ -745,9 +787,11 @@ class OpenAIGateway:
         )
         if reason == "max_output_tokens" and budget > 0:
             retry = dataclasses.replace(request, max_output_tokens=budget * INCOMPLETE_RETRY_BUDGET_MULTIPLIER)
-            result = self._create_response_once(retry)
+            result = dataclasses.replace(self._create_response_once(retry), incomplete_attempts=1, incomplete_reason=reason)
             if not response_is_incomplete(result.raw_response):
+                _notify_response_observers(result)
                 return result
+            result = dataclasses.replace(result, incomplete_attempts=2, incomplete_reason=response_incomplete_reason(result.raw_response))
             self._emit(
                 "openai.request.incomplete",
                 {
@@ -760,6 +804,7 @@ class OpenAIGateway:
                     "retrying": False,
                 },
             )
+        _notify_response_observers(result)
         if result.output_text:
             return result
         raise OpenAIIncompleteError(
@@ -1124,6 +1169,7 @@ __all__ = [
     "is_unsupported_sampling_error",
     "load_openai_config",
     "model_refuses_sampling_controls",
+    "observe_responses",
     "remember_model_refuses_sampling_controls",
     "strip_sampling_controls",
 ]

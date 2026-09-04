@@ -502,7 +502,10 @@ it onto the loop is the next step.
 Every turn prints one `agent.turn` record: turn id, rounds, tokens, latency,
 each tool call with its outcome, what completed, whether a confirmation is
 pending, and whether the assembled fallback was used. `fallbackUsed` is the
-number to watch.
+number to watch. The same record is written to the `agent_turns` table, with
+the lookups, composer and recovery calls of the same message attached by
+turn id, and feeds the three numbers, the alert and the weekly sample in
+`docs/agent-turns.md`.
 
 Adding a capability is adding a `ToolSpec` to the registry: a name, a
 description written for the model (the phrasing rules live there, not in the

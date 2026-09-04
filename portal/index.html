@@ -319,6 +319,9 @@
               <button class="menu-item" type="button" role="menuitem" data-admin-tab="simulator">
                 Simulator
               </button>
+              <button class="menu-item" type="button" role="menuitem" data-admin-tab="turns">
+                Turns
+              </button>
             </div>
           </div>
         </div>
@@ -525,6 +528,27 @@
 
         <div id="opportunitiesSummary" class="opportunities-summary" aria-live="polite"></div>
         <div id="opportunitiesList" class="opportunities-list"></div>
+      </section>
+
+      <section id="turnsPanel" class="tab-panel opportunities-panel turns-panel is-hidden">
+        <div class="panel-intro opportunities-intro">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h1>Turns</h1>
+            <p class="lede compact">
+              Every turn the assistant took, and the three numbers that say whether it is holding up.
+            </p>
+          </div>
+
+          <div class="opportunities-actions">
+            <button id="turnsRefreshButton" class="ghost-button small" type="button">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div id="turnsSummary" class="opportunities-summary turns-summary" aria-live="polite"></div>
+        <div id="turnsList" class="opportunities-list turns-list"></div>
       </section>
 
       <section id="clientsPanel" class="tab-panel clients-panel is-hidden">

@@ -13254,3 +13254,72 @@ body.is-chat-view {
 :root[data-theme="dark"] .app-shell.is-chat-workspace .agent-tools-scrim:not([hidden]) {
   background: rgba(0, 0, 0, 0.55);
 }
+
+/* Admin > Turns */
+.turns-table-card {
+  padding: 0.4rem 0.6rem;
+  overflow-x: auto;
+}
+
+.turns-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.turns-table th,
+.turns-table td {
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(20, 28, 38, 0.08);
+}
+
+.turns-table th {
+  color: var(--muted-strong);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.turns-table .turns-cell-when {
+  white-space: nowrap;
+}
+
+.turns-table .turns-cell-text {
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turns-table .turns-cell-outcome,
+.turns-table .turns-cell-tools {
+  min-width: 9rem;
+  max-width: 14rem;
+  overflow-wrap: break-word;
+}
+
+/* The metric cards keep their light face in both themes, so the ink on
+   them is fixed rather than the page's text colour. */
+.turns-summary .opportunity-metric span,
+.turns-summary .opportunity-metric strong,
+.turns-summary .opportunity-metric small {
+  color: #17202a;
+}
+
+.turns-summary .opportunity-metric span,
+.turns-summary .opportunity-metric small {
+  color: #4b5865;
+}
+
+.turns-table tr.is-fallback td {
+  background: rgba(214, 143, 0, 0.12);
+}
+
+.turns-table tr.is-fallback .turns-cell-outcome {
+  color: #8a5a00;
+  font-weight: 700;
+}

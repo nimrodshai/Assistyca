@@ -68,7 +68,37 @@ DEFAULT_MODEL_PRICES = (
         "output_usd_per_1m_tokens": 1.25,
     },
 )
+AGENT_TURNS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS agent_turns (
+    turn_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    channel TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    reasoning_effort TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    model_calls INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    tool_calls_json TEXT NOT NULL DEFAULT '[]',
+    outcome TEXT NOT NULL DEFAULT '',
+    status_code INTEGER NOT NULL DEFAULT 0,
+    fallback_used INTEGER NOT NULL DEFAULT 0,
+    fallback_reason TEXT NOT NULL DEFAULT '',
+    incomplete_responses INTEGER NOT NULL DEFAULT 0,
+    raw_output_on_failure TEXT NOT NULL DEFAULT '',
+    user_message TEXT NOT NULL DEFAULT '',
+    reply TEXT NOT NULL DEFAULT '',
+    account_state TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_created ON agent_turns(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_user_created ON agent_turns(user_id, created_at DESC);
+"""
+
 USER_OWNED_TABLES = (
+    "agent_turns",
     "notifications",
     "feature_activation_events",
     "feature_activations",
@@ -967,6 +997,7 @@ class PortalDatabase:
                 self._migrate_feature_tables(conn)
                 self._ensure_usage_events_tool_indexes(conn)
                 self._ensure_contact_opportunities_indexes(conn)
+                self._ensure_agent_turns_table(conn)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -975,6 +1006,15 @@ class PortalDatabase:
                 self._sync_feature_catalog(conn)
                 if self.bootstrap_paid_emails:
                     self._seed_paid_emails(conn, self.bootstrap_paid_emails)
+
+    def _ensure_agent_turns_table(self, conn: sqlite3.Connection) -> None:
+        """One row per assistant turn, written whether the turn went well or not.
+
+        Kept out of the main schema string so the turn record can grow a
+        column without a rewrite of the file every other table lives in.
+        """
+
+        conn.executescript(AGENT_TURNS_TABLE_SQL)
 
     def _migrate_feature_tables(self, conn: sqlite3.Connection) -> None:
         """Drop the per-client tool access columns. Every client sees every active tool."""
@@ -8797,3 +8837,115 @@ class PortalDatabase:
             "history": history,
             "asOf": now_iso(),
         }
+
+    # -- agent turns -------------------------------------------------------
+
+    _AGENT_TURN_COLUMNS = (
+        "turn_id", "user_id", "channel", "path", "model", "reasoning_effort", "input_tokens", "output_tokens",
+        "model_calls", "latency_ms", "tool_calls_json", "outcome", "status_code", "fallback_used", "fallback_reason",
+        "incomplete_responses", "raw_output_on_failure", "user_message", "reply", "account_state", "created_at", "updated_at",
+    )
+
+    def save_agent_turn(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Write the turn's row, replacing an earlier version of the same turn."""
+
+        turn_id = normalize_text(record.get("turn_id"))
+        if not turn_id:
+            raise ValueError("Turn id is required.")
+        now = now_iso()
+        row = {
+            "turn_id": turn_id,
+            "user_id": int(record.get("user_id") or 0),
+            "channel": normalize_text(record.get("channel")),
+            "path": normalize_text(record.get("path")),
+            "model": normalize_text(record.get("model")),
+            "reasoning_effort": normalize_text(record.get("reasoning_effort")),
+            "input_tokens": int(record.get("input_tokens") or 0),
+            "output_tokens": int(record.get("output_tokens") or 0),
+            "model_calls": int(record.get("model_calls") or 0),
+            "latency_ms": int(record.get("latency_ms") or 0),
+            "tool_calls_json": json.dumps(list(record.get("tool_calls") or []), ensure_ascii=True),
+            "outcome": normalize_text(record.get("outcome")),
+            "status_code": int(record.get("status_code") or 0),
+            "fallback_used": 1 if record.get("fallback_used") else 0,
+            "fallback_reason": normalize_text(record.get("fallback_reason")),
+            "incomplete_responses": int(record.get("incomplete_responses") or 0),
+            "raw_output_on_failure": str(record.get("raw_output_on_failure") or ""),
+            "user_message": str(record.get("user_message") or ""),
+            "reply": str(record.get("reply") or ""),
+            "account_state": str(record.get("account_state") or ""),
+            "created_at": normalize_text(record.get("created_at")) or now,
+            "updated_at": now,
+        }
+        columns = ", ".join(self._AGENT_TURN_COLUMNS)
+        placeholders = ", ".join("?" for _ in self._AGENT_TURN_COLUMNS)
+        with self._connection() as conn:
+            conn.execute(
+                f"INSERT OR REPLACE INTO agent_turns ({columns}) VALUES ({placeholders})",
+                tuple(row[column] for column in self._AGENT_TURN_COLUMNS),
+            )
+        return self._load_agent_turn_row(row)
+
+    def _load_agent_turn_row(self, row: Any) -> dict[str, Any]:
+        data = dict(row)
+        try:
+            tool_calls = json.loads(data.get("tool_calls_json") or "[]")
+        except (TypeError, ValueError):
+            tool_calls = []
+        data["tool_calls"] = [call for call in tool_calls if isinstance(call, dict)] if isinstance(tool_calls, list) else []
+        data.pop("tool_calls_json", None)
+        data["fallback_used"] = bool(data.get("fallback_used"))
+        return data
+
+    def get_agent_turn(self, turn_id: str) -> dict[str, Any] | None:
+        normalized = normalize_text(turn_id)
+        if not normalized:
+            return None
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM agent_turns WHERE turn_id = ?", (normalized,)).fetchone()
+        return self._load_agent_turn_row(row) if row is not None else None
+
+    def list_agent_turns(self, *, since: str = "", limit: int = 500, user_id: int | None = None) -> list[dict[str, Any]]:
+        """Turns since a moment, newest first."""
+
+        clauses = []
+        params: list[Any] = []
+        if normalize_text(since):
+            clauses.append("created_at >= ?")
+            params.append(normalize_text(since))
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(int(user_id))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, int(limit)))
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM agent_turns {where} ORDER BY created_at DESC, turn_id DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+        return [self._load_agent_turn_row(row) for row in rows]
+
+    def sample_agent_turns(self, *, since: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """A random handful of turns since a moment, for a person to read."""
+
+        where = "WHERE created_at >= ?" if normalize_text(since) else ""
+        params: tuple[Any, ...] = (normalize_text(since), max(1, int(limit))) if where else (max(1, int(limit)),)
+        with self._connection() as conn:
+            rows = conn.execute(f"SELECT * FROM agent_turns {where} ORDER BY RANDOM() LIMIT ?", params).fetchall()
+        return [self._load_agent_turn_row(row) for row in rows]
+
+    def list_admin_user_ids(self) -> list[int]:
+        with self._connection() as conn:
+            rows = conn.execute("SELECT id FROM users WHERE is_admin = 1 AND is_active = 1 ORDER BY id").fetchall()
+        return [int(row["id"]) for row in rows]
+
+    def has_notification(self, *, user_id: int, dedupe_key: str) -> bool:
+        normalized = normalize_text(dedupe_key)
+        if int(user_id or 0) <= 0 or not normalized:
+            return False
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM notifications WHERE user_id = ? AND dedupe_key = ? LIMIT 1",
+                (int(user_id), normalized),
+            ).fetchone()
+        return row is not None

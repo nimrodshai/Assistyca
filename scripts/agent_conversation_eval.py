@@ -27,7 +27,6 @@ Needs OPENAI_API_KEY. Each run costs a few cents.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import tempfile
@@ -47,10 +46,8 @@ from scripts.whatsapp_simulator import (  # noqa: E402
     SIMULATED_PLATFORM_PHONE_NUMBER_ID,
     Simulator,
 )
-from packages.infrastructure.openai_api import call_openai_response, load_openai_config  # noqa: E402
-from packages.infrastructure.task_complexity import TaskComplexity, resolve_task_model, resolve_task_reasoning  # noqa: E402
+from packages.infrastructure.reply_judge import RUBRIC, judge  # noqa: E402
 
-RUBRIC = ("truthful", "forward", "channel", "clean", "honest")
 
 # Each conversation: a name, the account state in words the judge can check
 # against, and the messages in order. The state is what the simulator has
@@ -97,51 +94,6 @@ CONVERSATIONS: list[dict] = [
         "messages": ["what came in this week and what's on my calendar today?"],
     },
 ]
-
-JUDGE_INSTRUCTIONS = (
-    "You are scoring one reply from a WhatsApp business assistant called Assistyca. You are given the "
-    "account state the assistant had, the conversation so far, and the reply. Score the reply from 0 to 5 "
-    "on each of five points and return exactly one JSON object with integer scores and one short note: "
-    '{"truthful":n,"forward":n,"channel":n,"clean":n,"honest":n,"note":"..."}.\n'
-    "truthful: nothing in the reply contradicts the account state; it does not claim a source is connected "
-    "when it is not, and does not answer a question it could not have looked up.\n"
-    "forward: the person is not left at a dead end. A reply that fully answers the question, confirms that "
-    "something is now set, or declines while giving examples of what to ask instead is a 5; it needs no "
-    "extra step. Score low only when the request was not fulfilled and the reply gives nothing to do about "
-    "it - no link, no words to reply, no question to answer, no promise that asking later will work.\n"
-    "channel: it reads like a text message - short, no headings, no buttons, cards, panels, settings pages "
-    "or portal sent to, except a link it was given.\n"
-    "clean: no AI vendor or model names (OpenAI, GPT), no words like model, token, server, endpoint, JSON, "
-    "runner; no URL other than a sign-in link. A reply with any of those is 0-2. Gmail, Outlook, Google, "
-    "Microsoft and Assistyca are product names the person knows and are fine.\n"
-    "honest: it does not say something was done, checked, scheduled or sent unless the conversation shows it "
-    "actually was; saying it will send a link in a moment when no link exists is at most 3.\n"
-    "Be strict but fair: a plain, correct, helpful reply is a 5 on every point."
-)
-
-
-def judge(state: str, conversation: list[dict], reply: str) -> dict:
-    model = resolve_task_model(TaskComplexity.MEDIUM, "OPENAI_MODEL")
-    prompt = json.dumps({"accountState": state, "conversation": conversation, "reply": reply}, ensure_ascii=False)
-    result = call_openai_response(
-        tool_name="conversation_eval_judge",
-        prompt=f"Score the reply in this JSON.\n{prompt}",
-        model=model,
-        instructions=JUDGE_INSTRUCTIONS,
-        reasoning=resolve_task_reasoning(TaskComplexity.MEDIUM),
-        max_output_tokens=1200,
-        config=load_openai_config(default_model=model, strict_tracking=False, include_prompt_in_metadata=False),
-    )
-    text = result.output_text.strip()
-    start, end = text.find("{"), text.rfind("}")
-    try:
-        parsed = json.loads(text[start:end + 1]) if start >= 0 else {}
-    except json.JSONDecodeError:
-        parsed = {}
-    scores = {key: int(parsed.get(key, 0) or 0) for key in RUBRIC}
-    scores["note"] = str(parsed.get("note") or "")[:160]
-    return scores
-
 
 def run_conversation(spec: dict, threshold: int) -> tuple[bool, list[str]]:
     args = SimpleNamespace(

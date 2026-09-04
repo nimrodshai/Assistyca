@@ -36,6 +36,8 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.infrastructure.agent_proposals import missing_sources_for_lookup
+from packages.infrastructure.agent_turns import TURN_FOLLOW_UP_PATHS
+from packages.infrastructure.agent_turns import TURN_STARTING_PATHS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
@@ -1004,6 +1006,11 @@ class WhatsAppAgentChat:
         self.email = normalize_email(self.connection.get("email"))
         self.owner_wa_id = normalize_text(self.connection.get("ownerWaId"))
         self.timezone_name = infer_timezone_from_wa_id(self.owner_wa_id)
+        # The turn the server is recording for this message. A turn reply
+        # carries its id; every later call for the same message - a lookup,
+        # the composer, a recovery - carries it back, so what the person
+        # finally got lands on the same row as the turn that produced it.
+        self._turn_id = ""
 
     # -- loopback ---------------------------------------------------------
 
@@ -1015,6 +1022,8 @@ class WhatsAppAgentChat:
         *,
         timeout: int = AGENT_TURN_TIMEOUT_SECONDS,
     ) -> tuple[dict[str, Any], int]:
+        if payload is not None and path in TURN_FOLLOW_UP_PATHS and self._turn_id and not payload.get("turnId"):
+            payload = {**payload, "turnId": self._turn_id}
         body = (
             json.dumps(payload, ensure_ascii=False).encode("utf-8")
             if payload is not None
@@ -1031,15 +1040,18 @@ class WhatsAppAgentChat:
         )
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8")), int(response.status)
+                parsed, status = json.loads(response.read().decode("utf-8")), int(response.status)
         except urllib_error.HTTPError as exc:
             try:
                 parsed = json.loads(exc.read().decode("utf-8"))
             except (ValueError, OSError):
                 parsed = {}
-            return parsed if isinstance(parsed, dict) else {}, int(exc.code)
+            parsed, status = (parsed if isinstance(parsed, dict) else {}), int(exc.code)
         except (urllib_error.URLError, OSError, ValueError) as exc:
             raise WhatsAppAgentChatError(f"Agent loopback request failed: {exc}") from exc
+        if path in TURN_STARTING_PATHS and isinstance(parsed, dict) and normalize_text(parsed.get("turnId")):
+            self._turn_id = normalize_text(parsed.get("turnId"))
+        return parsed, status
 
     # -- context ----------------------------------------------------------
 

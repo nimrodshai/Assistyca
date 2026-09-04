@@ -61,4 +61,8 @@ jobs:
             tests.test_contact_api \
             tests.test_feature_activation \
             tests.test_portal_runtime_paths \
-            tests.test_saved_answer_receipts
+            tests.test_saved_answer_receipts \
+            tests.test_agent_loop \
+            tests.test_recovery_reply \
+            tests.test_openai_incomplete \
+            tests.test_agent_turns

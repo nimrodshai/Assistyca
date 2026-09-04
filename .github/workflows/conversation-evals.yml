@@ -1,0 +1,66 @@
+name: Conversation evals
+
+# The scripted conversations and the judge run on every change to the
+# prompt, the tools, the loop, or the reply path. They call the real model,
+# so the job needs the OPENAI_API_KEY repository secret; without it the job
+# says so and passes, rather than failing every fork and draft.
+
+on:
+  push:
+    paths:
+      - "packages/infrastructure/agent_loop.py"
+      - "packages/infrastructure/agent_proposals.py"
+      - "packages/infrastructure/answer_composer.py"
+      - "packages/infrastructure/recovery_reply.py"
+      - "packages/infrastructure/reply_judge.py"
+      - "packages/infrastructure/whatsapp_agent_chat.py"
+      - "packages/infrastructure/portal_auth/server.py"
+      - "scripts/agent_conversation_eval.py"
+      - "scripts/whatsapp_simulator.py"
+      - ".github/workflows/conversation-evals.yml"
+  pull_request:
+    paths:
+      - "packages/infrastructure/agent_loop.py"
+      - "packages/infrastructure/agent_proposals.py"
+      - "packages/infrastructure/answer_composer.py"
+      - "packages/infrastructure/recovery_reply.py"
+      - "packages/infrastructure/reply_judge.py"
+      - "packages/infrastructure/whatsapp_agent_chat.py"
+      - "packages/infrastructure/portal_auth/server.py"
+      - "scripts/agent_conversation_eval.py"
+      - "scripts/whatsapp_simulator.py"
+      - ".github/workflows/conversation-evals.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: conversation-evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+
+      - name: Run the scripted conversations through the judge
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::warning::OPENAI_API_KEY is not set for this repository, so the conversation evals did not run."
+            exit 0
+          fi
+          python3 scripts/agent_conversation_eval.py --threshold 3
