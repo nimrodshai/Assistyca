@@ -91,8 +91,15 @@ REPLY_SCHEMA: dict[str, Any] = {
             "type": ["string", "null"],
             "description": "The key of a known fact the person said is no longer true, or null.",
         },
+        "answersOpenQuestion": {
+            "anyOf": [{"type": "string", "enum": ["yes", "no"]}, {"type": "null"}],
+            "description": (
+                "Only when CONTEXT has an openQuestion of kind confirmation: 'yes' if the message plainly agrees "
+                "to it, in any language or wording; 'no' if it plainly declines; null when it does something else."
+            ),
+        },
     },
-    "required": ["reply", "claimsCompleted", "rememberFact", "forgetFact"],
+    "required": ["reply", "claimsCompleted", "rememberFact", "forgetFact", "answersOpenQuestion"],
 }
 
 REPLY_TEXT_FORMAT: dict[str, Any] = {
@@ -159,6 +166,10 @@ class LoopResult:
     calendar_choice: list[dict[str, Any]] | None = None
     remember_fact: dict[str, str] | None = None
     forget_fact: str = ""
+    # What the model made of an open confirmation: "yes", "no", or "" when
+    # the message was about something else. Code acts on it; the model never
+    # runs the held action itself.
+    answers_open_question: str = ""
     completed: list[str] = field(default_factory=list)
     rounds: int = 0
     input_tokens: int = 0
@@ -646,7 +657,11 @@ AGENT_LOOP_INSTRUCTIONS = (
     "Then ask for a plain yes in the same message, naming exactly what will happen - which accounts, what "
     "time, what text - and nothing else. When CONTEXT has confirmedAction, the person said yes and the tool "
     "already ran: report its result as done. When it has declinedAction, say nothing changed. When it has "
-    "openQuestion, decide first whether the message answers it; if not, answer the message and leave the "
+    "openQuestion, decide first whether the message answers it. A confirmation is answered by a yes or a no "
+    "in any language or wording - כן, סבבה, יאללה, בטח, 'sounds good', 'sure thing', 'nah', 'leave it' - and "
+    "you report that in answersOpenQuestion; code then runs or drops the held action and your reply is not "
+    "shown, so keep it to a word. A message that does something else leaves answersOpenQuestion null: "
+    "answer the message and leave the "
     "question open.\n"
     "knownFacts is what the account already told you about how their business works; read it before asking "
     "anything, and use it to resolve what a message leaves out. When the owner states something about their "
@@ -866,6 +881,7 @@ def run_agent_loop(
         calendar_choice=context.calendar_choice,
         remember_fact={"key": str(remember.get("key") or ""), "fact": str(remember.get("fact") or "")} if remember else None,
         forget_fact=str(reply_payload.get("forgetFact") or ""),
+        answers_open_question=_parse_open_answer(reply_payload.get("answersOpenQuestion")),
         completed=completed,
         rounds=rounds,
         input_tokens=input_tokens,
@@ -938,6 +954,11 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
             return f"a message in {args.get('delay_minutes')} minutes saying: {args.get('message_text')}"
         return f"a message at {args.get('time_local')} ({args.get('date_policy')}) saying: {args.get('message_text')}"
     return ""
+
+
+def _parse_open_answer(value: Any) -> str:
+    answer = str(value or "").strip().lower()
+    return answer if answer in {"yes", "no"} else ""
 
 
 def _parse_arguments(value: Any) -> dict[str, Any]:

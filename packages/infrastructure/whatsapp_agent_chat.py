@@ -764,15 +764,26 @@ def _pending_calendars(pending: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 # A yes or a no the chat acts on without asking the model. Whole phrases only:
-# "yes, but first..." is a question for the model, not a yes.
+# "yes, but first..." is a question for the model, not a yes. English and
+# Hebrew are the words the owners write; anything else the model reads and
+# reports in answersOpenQuestion, so an unlisted "sure thing" is never a wall.
 _YES_PHRASES = frozenset({
     "yes", "y", "yep", "yeah", "yup", "sure", "ok", "okay", "confirm", "confirmed", "do it", "go ahead",
     "yes please", "please do", "yes do it", "ok do it", "okay do it", "sure do it", "go for it", "yes go ahead",
+    "sounds good", "sure thing", "fine", "alright", "all right", "yalla", "sababa", "ken", "beseder",
+    "כן", "כן כן", "בטח", "סבבה", "יאללה", "יאללה קדימה", "קדימה", "בסדר", "אוקיי", "אוקי", "אישור", "מאשר",
+    "מאשרת", "כן בבקשה", "כן תעשה", "כן תקבע", "סבבה תעשה", "כן סבבה", "בטח שכן", "מעולה", "אחלה", "אחלה תעשה",
+    "כן קדימה", "בסדר גמור", "לך על זה", "תעשה", "תקבע",
 })
 _NO_PHRASES = frozenset({
     "no", "n", "nope", "cancel", "stop", "dont", "do not", "never mind", "nevermind", "leave it", "keep it",
-    "no thanks", "no thank you", "forget it", "not now", "no cancel", "no leave it",
+    "no thanks", "no thank you", "forget it", "not now", "no cancel", "no leave it", "nah", "no dont",
+    "לא", "לא לא", "בטל", "תבטל", "ביטול", "עזוב", "עזבי", "עזוב את זה", "לא תודה", "לא צריך", "לא עכשיו",
+    "תשאיר", "תשאיר ככה", "לא תבטל", "לא עזוב", "לא בטל", "אל תעשה", "אל", "שכח מזה",
 })
+# A thumb or a tick on its own is a yes; a cross on its own is a no.
+_YES_EMOJI = frozenset({"👍", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿", "✅", "☑️", "👌", "🙏", "💯"})
+_NO_EMOJI = frozenset({"👎", "👎🏻", "👎🏼", "👎🏽", "👎🏾", "👎🏿", "❌", "🚫"})
 
 
 def _describe_local_time(run_at: str, timezone_name: str) -> str:
@@ -825,7 +836,13 @@ def _source_name(task_type: str) -> str:
 def parse_yes_no(text: Any) -> str:
     """"yes", "no", or "" when the words are anything more than one of those."""
 
-    words = re.findall(r"[^\W_]+", normalize_text(text).lower().replace("'", ""))
+    raw = normalize_text(text).lower().replace("'", "")
+    stripped = raw.replace("\ufe0f", "").strip(" .!,")
+    if stripped and all(ch in "".join(_YES_EMOJI) for ch in stripped):
+        return "yes"
+    if stripped and all(ch in "".join(_NO_EMOJI) for ch in stripped):
+        return "no"
+    words = re.findall(r"[^\W_]+", raw)
     phrase = " ".join(words)
     if phrase in _YES_PHRASES:
         return "yes"
@@ -1588,17 +1605,22 @@ class WhatsAppAgentChat:
         declined_call: dict[str, Any] | None = None,
         open_question: dict[str, Any] | None = None,
         photo: dict[str, Any] | None = None,
+        record_user: bool = True,
     ) -> dict[str, Any]:
         """One turn through the loop: the model reads, calls tools, and writes.
 
         The chat's part is what only this channel can do: the transcript, the
         typing indicator, the question held for a yes, the calendar picker,
-        and the text that finally goes to the phone.
+        and the text that finally goes to the phone. record_user is off when
+        a turn runs again for the same message, so the transcript keeps it once.
         """
 
         history = self.database.list_recent_whatsapp_agent_messages(user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo))
+        if record_user:
+            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo))
+        else:
+            conversation = conversation[:-1] if conversation and conversation[-1].get("role") == "user" else conversation
         payload: dict[str, Any] = {
             "userMessage": text,
             "conversation": conversation,
@@ -1628,6 +1650,23 @@ class WhatsAppAgentChat:
                     reply = self._recover(self._situation_for_turn_failure(turn, status, text), conversation)
             else:
                 reply = str(turn.get("reply") or "").strip()
+                answer = normalize_text(turn.get("answersOpenQuestion")).lower()
+                if answer in {"yes", "no"} and (open_question or {}).get("kind") == "confirmation":
+                    # The parser could not place the words; the model could.
+                    # The stored call is still what runs - never a fresh
+                    # decision - and the model's reply to the question is
+                    # not shown: the turn that runs the call reports it.
+                    held = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
+                    if held and held.get("kind") == "tool_confirmation":
+                        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                        return self._loop_turn(
+                            text,
+                            source_message_id=source_message_id,
+                            confirmed_call=held if answer == "yes" else None,
+                            declined_call=held if answer == "no" else None,
+                            photo=photo,
+                            record_user=False,
+                        )
                 pending_confirmation = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
                 if pending_confirmation:
                     outcome = "confirmation_asked"
@@ -1941,7 +1980,11 @@ class WhatsAppAgentChat:
         if whatsapp_agent_loop_enabled():
             open_question = None
             if pending_call:
-                open_question = {"kind": "confirmation", "question": normalize_text(pending_call.get("question"))}
+                open_question = {
+                    "kind": "confirmation",
+                    "tool": normalize_text(pending_call.get("tool")),
+                    "question": normalize_text(pending_call.get("question")),
+                }
             elif pending_choice:
                 open_question = {
                     "kind": "calendar_choice",

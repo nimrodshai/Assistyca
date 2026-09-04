@@ -109,6 +109,17 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(parse_yes_no("don't"), "no")
         self.assertEqual(parse_yes_no("yes, but which ones exactly?"), "", "a question first is not a yes")
         self.assertEqual(parse_yes_no("what's on tomorrow?"), "")
+        # The owners write Hebrew, and a thumb is a yes.
+        self.assertEqual(parse_yes_no("כן"), "yes")
+        self.assertEqual(parse_yes_no("סבבה"), "yes")
+        self.assertEqual(parse_yes_no("יאללה, קדימה!"), "yes")
+        self.assertEqual(parse_yes_no("sounds good"), "yes")
+        self.assertEqual(parse_yes_no("👍"), "yes")
+        self.assertEqual(parse_yes_no("👍🏽"), "yes")
+        self.assertEqual(parse_yes_no("לא"), "no")
+        self.assertEqual(parse_yes_no("לא, תבטל"), "no")
+        self.assertEqual(parse_yes_no("❌"), "no")
+        self.assertEqual(parse_yes_no("כן, אבל מתי?"), "", "a question after the yes is for the model")
 
     def test_disconnect_words_map_onto_stored_connections(self) -> None:
         records = [

@@ -1200,6 +1200,74 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         self.assertIn('"confirmedAction"', context_text)
         self.assertIn('"scheduledFor"', context_text)
 
+    def _hold_a_schedule(self) -> None:
+        self.database.save_whatsapp_agent_pending(
+            user_id=int(self.user["id"]),
+            pending={"kind": "tool_confirmation", "tool": "schedule_message",
+                     "arguments": {"time_local": "12:40", "date_policy": "tomorrow", "message_text": "Stretch."},
+                     "question": "Text you tomorrow at 12:40: Stretch. Yes?", "askedAt": datetime.now(timezone.utc).isoformat()},
+        )
+
+    def test_a_yes_in_hebrew_runs_the_stored_call_without_asking_the_model(self) -> None:
+        self._hold_a_schedule()
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "סגור, מחר ב-12:40.", "claimsCompleted": ["schedule_message"]})],
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("סבבה", message_id="wamid.loop-7"))
+
+        self.assertEqual(self._reply(response), "סגור, מחר ב-12:40.")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+        self.assertEqual(model.call_count, 1)
+        context_text = model.call_args.kwargs["input"][0]["content"]
+        self.assertIn('"confirmedAction"', context_text)
+        self.assertIn('"scheduledFor"', context_text)
+
+    def test_a_yes_the_parser_cannot_read_is_read_by_the_model_and_still_runs_the_stored_call(self) -> None:
+        self._hold_a_schedule()
+        rounds = [
+            _loop_round(reply={"reply": "Great.", "answersOpenQuestion": "yes"}),
+            _loop_round(reply={"reply": "Done, tomorrow at 12:40.", "claimsCompleted": ["schedule_message"]}),
+        ]
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds) as model:
+            response = self._post_webhook(inbound_text_payload("count me in, boss", message_id="wamid.loop-8"))
+
+        self.assertEqual(self._reply(response), "Done, tomorrow at 12:40.")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+        self.assertEqual(model.call_count, 2)
+        first = model.call_args_list[0].kwargs["input"][0]["content"]
+        self.assertIn('"openQuestion":{"kind":"confirmation","tool":"schedule_message"', first)
+        second = model.call_args_list[1].kwargs["input"][0]["content"]
+        self.assertIn('"confirmedAction"', second)
+        self.assertIn('"scheduledFor"', second)
+        transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
+        self.assertEqual([m["text"] for m in transcript], ["count me in, boss", "Done, tomorrow at 12:40."])
+
+    def test_a_no_the_parser_cannot_read_drops_the_held_call(self) -> None:
+        self._hold_a_schedule()
+        rounds = [
+            _loop_round(reply={"reply": "Okay.", "answersOpenQuestion": "no"}),
+            _loop_round(reply={"reply": "Dropped, nothing is set."}),
+        ]
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds) as model:
+            response = self._post_webhook(inbound_text_payload("actually skip that", message_id="wamid.loop-9"))
+
+        self.assertEqual(self._reply(response), "Dropped, nothing is set.")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+        self.assertIn('"declinedAction"', model.call_args_list[1].kwargs["input"][0]["content"])
+
+    def test_a_message_about_something_else_leaves_the_question_open(self) -> None:
+        self._hold_a_schedule()
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "Tomorrow is clear. Still want that 12:40 text?", "answersOpenQuestion": None})],
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("am I free tomorrow?", message_id="wamid.loop-10"))
+
+        self.assertIn("Tomorrow is clear", self._reply(response))
+        self.assertEqual(model.call_count, 1)
+        self.assertIsNotNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+
     def test_a_no_clears_the_question_and_the_model_acknowledges(self) -> None:
         self.database.save_whatsapp_agent_pending(
             user_id=int(self.user["id"]),

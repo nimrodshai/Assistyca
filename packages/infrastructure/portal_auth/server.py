@@ -9005,6 +9005,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "toolCalls": result.tool_calls,
             "completed": result.completed,
             "pendingConfirmation": result.pending_confirmation,
+            "answersOpenQuestion": result.answers_open_question,
             "calendarChoice": result.calendar_choice,
             "fallbackUsed": result.fallback_used,
         })

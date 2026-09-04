@@ -192,6 +192,21 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertTrue(api.calls[0][2]["runAt"])
         self.assertIn('"scheduledForLocal"', model.inputs[0][0]["content"])
 
+    def test_the_model_can_read_a_yes_the_parser_could_not(self) -> None:
+        open_question = {"kind": "confirmation", "tool": "schedule_message", "question": "Text you at 07:30?"}
+        model = ScriptedModel([_model_round(reply=_reply("Great.", answersOpenQuestion="yes"))])
+        result = run_agent_loop(context=_context(), call_model=model, user_message="sure thing boss", conversation=[], today="2026-09-05", open_question=open_question)
+        self.assertEqual(result.answers_open_question, "yes")
+        self.assertIn('"openQuestion"', model.inputs[0][0]["content"])
+
+        model = ScriptedModel([_model_round(reply=_reply("What's on tomorrow: nothing.", answersOpenQuestion=None))])
+        result = run_agent_loop(context=_context(), call_model=model, user_message="what's on tomorrow?", conversation=[], today="2026-09-05", open_question=open_question)
+        self.assertEqual(result.answers_open_question, "")
+
+        model = ScriptedModel([_model_round(reply=_reply("?", answersOpenQuestion="maybe"))])
+        result = run_agent_loop(context=_context(), call_model=model, user_message="hm", conversation=[], today="2026-09-05", open_question=open_question)
+        self.assertEqual(result.answers_open_question, "")
+
     def test_a_confirm_tool_that_could_not_run_is_never_asked_about(self) -> None:
         # Nothing is connected, so a disconnect has nothing to do: the model is
         # told so and no question is held for a yes that would do nothing.
