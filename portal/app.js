@@ -1255,6 +1255,7 @@ const state = {
   adminUsersLoading: false,
   adminUsersNeedsRender: false,
   adminUsersError: "",
+  adminSpendTotals: null,
   adminAddUserBusy: false,
   adminEditUserBusy: false,
   adminStatusBusyByEmail: {},
@@ -2198,8 +2199,70 @@ function getAdminClientTypeClass(value) {
   return getAdminClientTypeOption(value).className;
 }
 
+const SPEND_CHANNEL_LABELS = {
+  web: "Web",
+  whatsapp: "WhatsApp",
+  background: "Background",
+  unattributed: "Untracked",
+};
+
+function normalizeSpendChannels(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const channels = {};
+  for (const [name, entry] of Object.entries(source)) {
+    const bucket = entry && typeof entry === "object" ? entry : {};
+    const costUsd = Number(bucket.costUsd ?? bucket.cost_usd ?? 0);
+    const usageUsd = Number(bucket.usageUsd ?? bucket.usage_usd ?? 0);
+    const tokensUsed = Number(bucket.tokensUsed ?? bucket.tokens_used ?? 0);
+    const usageCount = Number(bucket.usageCount ?? bucket.usage_count ?? 0);
+    channels[String(name)] = {
+      costUsd: Number.isFinite(costUsd) ? costUsd : 0,
+      usageUsd: Number.isFinite(usageUsd) ? usageUsd : 0,
+      tokensUsed: Number.isFinite(tokensUsed) ? Math.max(0, tokensUsed) : 0,
+      usageCount: Number.isFinite(usageCount) ? Math.max(0, usageCount) : 0,
+    };
+  }
+  return channels;
+}
+
+// "Web $0.20 · WhatsApp $0.53": the channels that cost something this month,
+// in a fixed order, so the split reads the same on every row.
+function describeSpendChannels(channels, currency) {
+  const parts = [];
+  for (const name of Object.keys(SPEND_CHANNEL_LABELS)) {
+    const bucket = channels?.[name];
+    if (!bucket || (!bucket.usageCount && !bucket.costUsd)) {
+      continue;
+    }
+    parts.push(`${SPEND_CHANNEL_LABELS[name]} ${formatCurrency(bucket.costUsd, currency)}`);
+  }
+  return parts.join(" · ");
+}
+
+function normalizeAdminSpendTotals(value) {
+  const payload = value && typeof value === "object" ? value : {};
+  const currency = String(payload.currency || "USD").trim().toUpperCase() || "USD";
+  const costUsd = Number(payload.costUsd ?? 0);
+  const usageUsd = Number(payload.usageUsd ?? 0);
+  const billedUsd = Number(payload.billedUsd ?? 0);
+  const tokensUsed = Number(payload.tokensUsed ?? 0);
+  const clientsWithUsage = Number(payload.clientsWithUsage ?? 0);
+  return {
+    month: String(payload.month || "").trim(),
+    label: String(payload.label || "").trim(),
+    currency,
+    costUsd: Number.isFinite(costUsd) ? costUsd : 0,
+    usageUsd: Number.isFinite(usageUsd) ? usageUsd : 0,
+    billedUsd: Number.isFinite(billedUsd) ? billedUsd : 0,
+    tokensUsed: Number.isFinite(tokensUsed) ? Math.max(0, tokensUsed) : 0,
+    clientsWithUsage: Number.isFinite(clientsWithUsage) ? Math.max(0, clientsWithUsage) : 0,
+    channels: normalizeSpendChannels(payload.channels),
+  };
+}
+
 function normalizeAdminSpendMonth(entry = {}, currency = "USD") {
   const usageUsd = Number(entry.usageUsd ?? entry.usage_usd ?? 0);
+  const costUsd = Number(entry.costUsd ?? entry.cost_usd ?? 0);
   const billedUsd = Number(entry.billedUsd ?? entry.billed_usd ?? 0);
   const tokensUsed = Number(entry.tokensUsed ?? entry.tokens_used ?? 0);
   const usageCount = Number(entry.usageCount ?? entry.usage_count ?? 0);
@@ -2208,6 +2271,8 @@ function normalizeAdminSpendMonth(entry = {}, currency = "USD") {
     month,
     label: String(entry.label || "").trim() || formatBillingMonthLabel(month),
     usageUsd: Number.isFinite(usageUsd) ? usageUsd : 0,
+    costUsd: Number.isFinite(costUsd) ? costUsd : 0,
+    channels: normalizeSpendChannels(entry.channels),
     billedUsd: Number.isFinite(billedUsd) ? billedUsd : 0,
     minimumApplied: Boolean(entry.minimumApplied ?? entry.minimum_applied),
     tokensUsed: Number.isFinite(tokensUsed) ? Math.max(0, tokensUsed) : 0,
@@ -2221,6 +2286,7 @@ function normalizeAdminSpend(value) {
   const currency = String(payload.currency || "USD").trim().toUpperCase() || "USD";
   const minimumMonthlyCharge = Number(payload.minimumMonthlyCharge ?? payload.minimum_monthly_charge ?? 0);
   const lifetimeUsageUsd = Number(payload.lifetimeUsageUsd ?? payload.lifetime_usage_usd ?? 0);
+  const lifetimeCostUsd = Number(payload.lifetimeCostUsd ?? payload.lifetime_cost_usd ?? 0);
   const previousMonths = Array.isArray(payload.previousMonths || payload.previous_months)
     ? (payload.previousMonths || payload.previous_months).map((entry) => normalizeAdminSpendMonth(entry, currency))
     : [];
@@ -2232,6 +2298,7 @@ function normalizeAdminSpend(value) {
     currentMonth: normalizeAdminSpendMonth(payload.currentMonth || payload.current_month, currency),
     previousMonths: previousMonths.filter((entry) => entry.month),
     lifetimeUsageUsd: Number.isFinite(lifetimeUsageUsd) ? lifetimeUsageUsd : 0,
+    lifetimeCostUsd: Number.isFinite(lifetimeCostUsd) ? lifetimeCostUsd : 0,
   };
 }
 
@@ -13994,8 +14061,17 @@ function createAdminSpendSummary(user) {
 
   const amount = document.createElement("strong");
   amount.className = "admin-spend-amount";
-  amount.textContent = formatCurrency(month.usageUsd, spend.currency);
+  amount.textContent = formatCurrency(month.costUsd, spend.currency);
+  amount.title = `${formatTokenCount(month.tokensUsed)} tokens across ${month.usageCount} model call${month.usageCount === 1 ? "" : "s"}`;
   wrapper.append(amount);
+
+  const split = describeSpendChannels(month.channels, spend.currency);
+  if (split) {
+    const channels = document.createElement("span");
+    channels.className = "admin-spend-split";
+    channels.textContent = split;
+    wrapper.append(channels);
+  }
 
   const note = document.createElement("span");
   note.className = "admin-spend-note";
@@ -14028,8 +14104,16 @@ function createAdminSpendMonthRow(month, spend, options = {}) {
   values.className = "admin-spend-values";
 
   const usage = document.createElement("strong");
-  usage.textContent = formatCurrency(month.usageUsd, spend.currency);
+  usage.textContent = formatCurrency(month.costUsd, spend.currency);
   values.append(usage);
+
+  const split = describeSpendChannels(month.channels, spend.currency);
+  if (split) {
+    const channels = document.createElement("span");
+    channels.className = "admin-spend-split";
+    channels.textContent = split;
+    values.append(channels);
+  }
 
   const detail = document.createElement("span");
   detail.className = "admin-spend-row-note";
@@ -14080,8 +14164,15 @@ function createAdminSpendPanel(user) {
 
   panel.append(stack);
 
+  const costRow = createAdminDetailRow(
+    "Cost to date",
+    formatCurrency(spend.lifetimeCostUsd, spend.currency),
+  );
+  costRow.classList.add("admin-spend-total");
+  panel.append(costRow);
+
   const totalRow = createAdminDetailRow(
-    "Usage to date",
+    "Usage to date at client rates",
     formatCurrency(spend.lifetimeUsageUsd, spend.currency),
   );
   totalRow.classList.add("admin-spend-total");
@@ -14130,9 +14221,12 @@ function createAdminUsersListView() {
   wrapper.className = "admin-users-view admin-users-list-view";
 
   const stats = getAdminClientStats();
+  const totals = state.adminSpendTotals || normalizeAdminSpendTotals(null);
   const summary = document.createElement("div");
   summary.className = "clients-summary";
   const summaryItems = [
+    ["Cost this month", formatCurrency(totals.costUsd, totals.currency), describeSpendChannels(totals.channels, totals.currency) || "What the model calls cost you"],
+    ["Billed this month", formatCurrency(totals.billedUsd, totals.currency), "What clients pay"],
     ["Clients", stats.total, "Registered accounts"],
     ["Active", stats.active, "Can sign in"],
     ["Paying", stats.paying, "Client type"],
@@ -14211,7 +14305,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Client type", "Free trial", "This month", "Active", "Last login", ""]) {
+  for (const heading of ["Client", "Email", "Client type", "Free trial", "Cost this month", "Active", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -14595,6 +14689,7 @@ async function refreshAdminUsers(options = {}) {
       timeoutMs: options.timeoutMs || 15000,
     });
 
+    state.adminSpendTotals = normalizeAdminSpendTotals(response.spendTotals);
     state.adminUsers = sortAdminUsers((Array.isArray(response.users) ? response.users : [])
       .map((user) => normalizeAdminUserRecord(user))
       .filter((user) => user.email));

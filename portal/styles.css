@@ -10414,6 +10414,14 @@ body.is-agent-dragging {
   font-weight: 600;
 }
 
+.admin-spend-split {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 .admin-spend-note.is-not-billed,
 .admin-spend-row-note.is-not-billed {
   color: #8c5a10;

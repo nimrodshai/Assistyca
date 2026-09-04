@@ -37,6 +37,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import normalize_text
 from packages.infrastructure.openai_api import observe_responses
+from packages.infrastructure.openai_api import usage_context
 from packages.infrastructure.openai_api import parse_bool
 from packages.infrastructure.openai_api import safe_int
 
@@ -296,7 +297,9 @@ class TurnRecorder:
 
     @contextmanager
     def observing(self) -> Iterator[None]:
-        with observe_responses(self.observe):
+        # The usage rows this turn's model calls write carry the channel and
+        # the turn id, so cost can be split by channel later without a join.
+        with usage_context(channel=self.channel, turn_id=self.turn_id), observe_responses(self.observe):
             yield
 
     def finish(self, status: int, payload: dict[str, Any] | None, *, crashed: bool = False) -> dict[str, Any]:

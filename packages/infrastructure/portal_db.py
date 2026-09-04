@@ -897,6 +897,41 @@ def cents_per_1k_tokens_from_usd_per_1m_tokens(value: Any) -> float:
     return float((usd_per_1m_tokens / Decimal("10")).quantize(RAW_CENTS_QUANT, rounding=ROUND_HALF_UP))
 
 
+# Where a usage row's work came from. "web" and "whatsapp" are the two ways a
+# person talks to the assistant; "background" is work nobody asked for in a
+# conversation (monitors, re-engagement, receipt reading); "unattributed" is a
+# conversation row from before rows carried a channel, with no turn to place it.
+SPEND_CHANNELS = ("web", "whatsapp", "background", "unattributed")
+CONVERSATION_TOOL_IDS = frozenset({"portal_agent", "portal_agent_loop", "portal_assistant"})
+TURN_WINDOW_LOOKUP_LIMIT = 5000
+TURN_WINDOW_SLACK_MS = 2000
+
+
+def classify_usage_channel(
+    metadata: dict[str, Any],
+    *,
+    tool_id: Any = "",
+    used_at: Any = None,
+    turn_windows: list[tuple[datetime, datetime, str]] | None = None,
+) -> str:
+    channel = normalize_text(metadata.get("channel")).lower()
+    if channel == "whatsapp":
+        return "whatsapp"
+    if channel in {"portal", "web"}:
+        return "web"
+
+    resolved_tool = normalize_text(tool_id) or normalize_text(metadata.get("tool_id"))
+    if resolved_tool not in CONVERSATION_TOOL_IDS:
+        return "background"
+
+    moment = parse_datetime(used_at) if used_at else None
+    if moment is not None:
+        for started, finished, turn_channel in turn_windows or ():
+            if started <= moment <= finished:
+                return "whatsapp" if turn_channel == "whatsapp" else "web"
+    return "unattributed"
+
+
 def calculate_charge_cents(tokens: Any, price_cents_per_1k_tokens: Any, multiplier: Any) -> Decimal:
     token_count = to_decimal(tokens)
     price = to_decimal(price_cents_per_1k_tokens)
@@ -8468,6 +8503,10 @@ class PortalDatabase:
         reference_time: datetime | None = None,
         history_months: int = 6,
     ) -> dict[str, Any] | None:
+        """What a client used, what it cost the house, and what they are
+        charged, month by month, with the cost split by where the work came
+        from: the web chat, WhatsApp, or a background job."""
+
         normalized_email = normalize_email(email)
         if not normalized_email:
             return None
@@ -8481,12 +8520,17 @@ class PortalDatabase:
                 """
                 SELECT
                     COALESCE(NULLIF(billing_month, ''), substr(used_at, 1, 7)) AS month_key,
-                    SUM(input_charge_cents + output_charge_cents) AS charge_cents,
-                    SUM(input_tokens + output_tokens) AS tokens_used,
-                    COUNT(*) AS usage_count
+                    used_at,
+                    input_tokens,
+                    output_tokens,
+                    input_price_cents_per_1k_tokens,
+                    output_price_cents_per_1k_tokens,
+                    input_charge_cents,
+                    output_charge_cents,
+                    tool_id,
+                    metadata_json
                 FROM usage_events
                 WHERE user_id = ?
-                GROUP BY month_key
                 """,
                 (int(user["id"]),),
             ).fetchall()
@@ -8497,40 +8541,73 @@ class PortalDatabase:
             billing.get("monthlyMinimumCents") or self.default_billing_plan.monthly_minimum_cents
         )
         minimum_monthly_charge = cents_to_usd(Decimal(minimum_monthly_cents))
+        turn_windows = self._agent_turn_windows(int(user.get("id") or 0)) if rows else []
 
-        def build_month(
-            month_key: str,
-            *,
-            usage_usd: float = 0.0,
-            tokens_used: int = 0,
-            usage_count: int = 0,
-        ) -> dict[str, Any]:
+        def empty_channels() -> dict[str, dict[str, Any]]:
+            return {
+                name: {"costCents": Decimal("0"), "chargeCents": Decimal("0"), "tokensUsed": 0, "usageCount": 0}
+                for name in SPEND_CHANNELS
+            }
+
+        totals: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            month_key = normalize_text(row["month_key"])
+            if not MONTH_KEY_RE.match(month_key):
+                continue
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            metadata = metadata if isinstance(metadata, dict) else {}
+            input_tokens = max(0, int(row["input_tokens"] or 0))
+            output_tokens = max(0, int(row["output_tokens"] or 0))
+            cost = (
+                calculate_charge_cents(input_tokens, row["input_price_cents_per_1k_tokens"], 1)
+                + calculate_charge_cents(output_tokens, row["output_price_cents_per_1k_tokens"], 1)
+            )
+            charge = to_decimal(row["input_charge_cents"]) + to_decimal(row["output_charge_cents"])
+            channel = classify_usage_channel(
+                metadata,
+                tool_id=row["tool_id"],
+                used_at=row["used_at"],
+                turn_windows=turn_windows,
+            )
+            month = totals.setdefault(
+                month_key,
+                {"costCents": Decimal("0"), "chargeCents": Decimal("0"), "tokensUsed": 0, "usageCount": 0, "channels": empty_channels()},
+            )
+            for bucket in (month, month["channels"][channel]):
+                bucket["costCents"] += cost
+                bucket["chargeCents"] += charge
+                bucket["tokensUsed"] += input_tokens + output_tokens
+                bucket["usageCount"] += 1
+
+        def build_month(month_key: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+            data = data or {"costCents": Decimal("0"), "chargeCents": Decimal("0"), "tokensUsed": 0, "usageCount": 0, "channels": empty_channels()}
+            usage_usd = cents_to_usd(data["chargeCents"])
             billed_usd = round(max(usage_usd, minimum_monthly_charge), 2) if is_billed else 0.0
             return {
                 "month": month_key,
                 "label": month_label(month_key),
                 "usageUsd": round(usage_usd, 2),
+                "costUsd": round(cents_to_usd(data["costCents"]), 2),
                 "billedUsd": billed_usd,
                 "minimumApplied": bool(is_billed and billed_usd > round(usage_usd, 2)),
-                "tokensUsed": int(tokens_used),
-                "usageCount": int(usage_count),
+                "tokensUsed": int(data["tokensUsed"]),
+                "usageCount": int(data["usageCount"]),
                 "currency": currency,
+                "channels": {
+                    name: {
+                        "costUsd": round(cents_to_usd(bucket["costCents"]), 2),
+                        "usageUsd": round(cents_to_usd(bucket["chargeCents"]), 2),
+                        "tokensUsed": int(bucket["tokensUsed"]),
+                        "usageCount": int(bucket["usageCount"]),
+                    }
+                    for name, bucket in data["channels"].items()
+                },
             }
 
-        months: list[dict[str, Any]] = []
-        for row in rows:
-            month_key = normalize_text(row["month_key"])
-            if not MONTH_KEY_RE.match(month_key):
-                continue
-            months.append(
-                build_month(
-                    month_key,
-                    usage_usd=cents_to_usd(to_decimal(row["charge_cents"])),
-                    tokens_used=int(row["tokens_used"] or 0),
-                    usage_count=int(row["usage_count"] or 0),
-                )
-            )
-
+        months = [build_month(key, data) for key, data in totals.items()]
         months.sort(key=lambda row: month_sort_key(str(row.get("month", ""))), reverse=True)
 
         current_key = month_key_for(reference_time)
@@ -8553,9 +8630,26 @@ class PortalDatabase:
             "currentMonth": current_month,
             "previousMonths": previous_months,
             "lifetimeUsageUsd": round(sum(float(row["usageUsd"]) for row in months), 2),
+            "lifetimeCostUsd": round(sum(float(row["costUsd"]) for row in months), 2),
             "knownBilledUsd": round(sum(float(row["billedUsd"]) for row in known_months), 2),
             "asOf": now_iso(),
         }
+
+    def _agent_turn_windows(self, user_id: int) -> list[tuple[datetime, datetime, str]]:
+        """When each of this user's turns ran, and over which channel. A usage
+        row recorded before rows carried a channel is placed by the turn
+        whose window holds it."""
+
+        if user_id <= 0:
+            return []
+        windows: list[tuple[datetime, datetime, str]] = []
+        for turn in self.list_agent_turns(user_id=user_id, limit=TURN_WINDOW_LOOKUP_LIMIT):
+            finished = parse_datetime(turn.get("created_at"))
+            if finished is None:
+                continue
+            started = finished - timedelta(milliseconds=max(0, int(turn.get("latency_ms") or 0)) + TURN_WINDOW_SLACK_MS)
+            windows.append((started, finished + timedelta(milliseconds=TURN_WINDOW_SLACK_MS), normalize_text(turn.get("channel")).lower()))
+        return windows
 
     def build_billing_report(
         self,

@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 
@@ -168,6 +169,45 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertEqual([month["month"] for month in summary["previousMonths"]], ["2026-06"])
         self.assertAlmostEqual(summary["previousMonths"][0]["usageUsd"], 0.05)
         self.assertAlmostEqual(summary["lifetimeUsageUsd"], 0.16)
+
+    def test_client_spend_summary_splits_cost_by_where_the_work_came_from(self) -> None:
+        from packages.infrastructure.agent_turns import new_turn_record
+
+        database = PortalDatabase(self.db_path, default_monthly_minimum_cents=0)
+        database.register_user("owner@example.com")
+        user_id = int(database.get_user("owner@example.com")["id"])
+        when = datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+
+        # A row stamped with its channel, one from a background job, and one
+        # conversation row from before rows carried a channel.
+        database.record_usage("owner@example.com", "gpt-5.5", tool_id="portal_agent", used_at=when,
+                              input_tokens=1000, output_tokens=1000, metadata={"channel": "whatsapp"})
+        database.record_usage("owner@example.com", "gpt-5.5", tool_id="portal_agent", used_at=when,
+                              input_tokens=1000, output_tokens=1000, metadata={"channel": "portal"})
+        database.record_usage("owner@example.com", "gpt-5.5", tool_id="scheduled_monitor", used_at=when,
+                              input_tokens=1000, output_tokens=1000)
+        database.record_usage("owner@example.com", "gpt-5.5", tool_id="portal_agent", used_at=when,
+                              input_tokens=1000, output_tokens=1000)
+
+        summary = database.summarize_client_spend("owner@example.com", reference_time=when)
+        month = summary["currentMonth"]
+        # gpt-5.5 seeds at 0.5 / 3.0 cents per 1k: one row costs 3.5 cents.
+        self.assertAlmostEqual(month["costUsd"], 0.14)
+        self.assertAlmostEqual(month["usageUsd"], 0.21)
+        self.assertAlmostEqual(summary["lifetimeCostUsd"], 0.14)
+        self.assertEqual({name: b["usageCount"] for name, b in month["channels"].items()},
+                         {"web": 1, "whatsapp": 1, "background": 1, "unattributed": 1})
+        self.assertAlmostEqual(month["channels"]["whatsapp"]["costUsd"], 0.035, places=2)
+
+        # Once a turn says when it ran and over which channel, the row that
+        # carried no channel is placed by it.
+        turn = new_turn_record(turn_id="t1", path="/api/agent/loop", user_id=user_id, channel="whatsapp")
+        turn["latency_ms"] = 5000
+        turn["created_at"] = (when + timedelta(seconds=1)).isoformat()
+        database.save_agent_turn(turn)
+        placed = database.summarize_client_spend("owner@example.com", reference_time=when)["currentMonth"]["channels"]
+        self.assertEqual(placed["unattributed"]["usageCount"], 0)
+        self.assertEqual(placed["whatsapp"]["usageCount"], 2)
 
     def test_client_spend_summary_reports_zero_billed_for_demo_clients(self) -> None:
         database = PortalDatabase(self.db_path, default_monthly_minimum_cents=500)

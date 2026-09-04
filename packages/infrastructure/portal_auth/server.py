@@ -802,6 +802,54 @@ CONTACT_AGENT_GENERAL_HELP_MARKERS = (
     "קוד",
 )
 CONTACT_OPPORTUNITY_OWNER_EMAIL = "nimrod.shai@gmail.com"
+
+
+def summarize_admin_spend_totals(users: list[dict[str, Any]]) -> dict[str, Any]:
+    """This month across every client: what it cost the house, what clients
+    used at their rates, what they are billed, and the cost by channel."""
+
+    totals: dict[str, Any] = {
+        "month": "",
+        "label": "",
+        "currency": "",
+        "costUsd": 0.0,
+        "usageUsd": 0.0,
+        "billedUsd": 0.0,
+        "tokensUsed": 0,
+        "usageCount": 0,
+        "clientsWithUsage": 0,
+        "channels": {},
+    }
+    for user in users:
+        spend = user.get("spend") if isinstance(user.get("spend"), dict) else {}
+        month = spend.get("currentMonth") if isinstance(spend.get("currentMonth"), dict) else {}
+        if not month:
+            continue
+        totals["month"] = totals["month"] or normalize_text(month.get("month"))
+        totals["label"] = totals["label"] or normalize_text(month.get("label"))
+        totals["currency"] = totals["currency"] or normalize_text(spend.get("currency"))
+        totals["costUsd"] += float(month.get("costUsd") or 0)
+        totals["usageUsd"] += float(month.get("usageUsd") or 0)
+        totals["billedUsd"] += float(month.get("billedUsd") or 0)
+        totals["tokensUsed"] += int(month.get("tokensUsed") or 0)
+        totals["usageCount"] += int(month.get("usageCount") or 0)
+        if int(month.get("usageCount") or 0) > 0:
+            totals["clientsWithUsage"] += 1
+        channels = month.get("channels") if isinstance(month.get("channels"), dict) else {}
+        for name, bucket in channels.items():
+            if not isinstance(bucket, dict):
+                continue
+            entry = totals["channels"].setdefault(name, {"costUsd": 0.0, "usageUsd": 0.0, "tokensUsed": 0, "usageCount": 0})
+            entry["costUsd"] += float(bucket.get("costUsd") or 0)
+            entry["usageUsd"] += float(bucket.get("usageUsd") or 0)
+            entry["tokensUsed"] += int(bucket.get("tokensUsed") or 0)
+            entry["usageCount"] += int(bucket.get("usageCount") or 0)
+    for key in ("costUsd", "usageUsd", "billedUsd"):
+        totals[key] = round(totals[key], 2)
+    for entry in totals["channels"].values():
+        entry["costUsd"] = round(entry["costUsd"], 2)
+        entry["usageUsd"] = round(entry["usageUsd"], 2)
+    return totals
 MINIMUM_SESSION_SECRET_LENGTH = 32
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
@@ -9936,6 +9984,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "isAdmin": bool(current_user.get("isAdmin")),
             },
             "users": users,
+            "spendTotals": summarize_admin_spend_totals(users),
         })
 
     def _handle_admin_users_post(self, parsed: urllib_parse.ParseResult) -> None:

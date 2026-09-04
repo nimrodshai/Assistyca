@@ -440,6 +440,40 @@ def _notify_response_observers(result: "OpenAIResult") -> None:
             _logger.warning("OpenAI response observer failed: %s", exc)
 
 
+# What every usage record made on this thread should carry while a turn is
+# running: the channel it came over and the turn it belongs to. Set once by
+# whoever runs the turn, so no call site has to hand it over, and read when
+# the request's tracking metadata is built.
+_usage_context = threading.local()
+
+
+@contextmanager
+def usage_context(**fields: Any) -> Iterator[None]:
+    stack = getattr(_usage_context, "stack", None)
+    if stack is None:
+        stack = []
+        _usage_context.stack = stack
+    entry = {key: normalize_text(value) for key, value in fields.items() if normalize_text(value)}
+    stack.append(entry)
+    try:
+        yield
+    finally:
+        if stack and stack[-1] is entry:
+            stack.pop()
+        else:
+            try:
+                stack.remove(entry)
+            except ValueError:
+                pass
+
+
+def current_usage_context() -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for entry in getattr(_usage_context, "stack", None) or ():
+        merged.update(entry)
+    return merged
+
+
 def _request_url(base_url: str, path: str) -> str:
     return f"{normalize_text(base_url).rstrip('/')}/{path.lstrip('/')}"
 
@@ -645,6 +679,8 @@ class OpenAIGateway:
             if instructions:
                 tracking_metadata["instructions"] = instructions
         tracking_metadata["skills"] = [normalize_text(skill) for skill in request.skills if normalize_text(skill)]
+        for key, value in current_usage_context().items():
+            tracking_metadata.setdefault(key, value)
         return make_json_safe(payload), make_json_safe(tracking_metadata)
 
     def _resolve_price_snapshot(self, request: OpenAIRequest, *, model: str) -> dict[str, Any] | None:

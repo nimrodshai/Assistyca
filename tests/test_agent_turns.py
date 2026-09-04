@@ -450,6 +450,15 @@ class ServerRecordingTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(page["recent"][0]["turnId"], payload["turnId"])
 
+    def test_a_turn_stamps_its_channel_on_every_usage_row(self) -> None:
+        from packages.infrastructure.openai_api import current_usage_context
+
+        recorder = TurnRecorder(database=self.database, path="/api/agent/loop", request={"channel": "whatsapp"}, user_id=2)
+        self.assertEqual(current_usage_context(), {})
+        with recorder.observing():
+            self.assertEqual(current_usage_context(), {"channel": "whatsapp", "turn_id": recorder.turn_id})
+        self.assertEqual(current_usage_context(), {})
+
     def test_a_turn_row_carries_what_the_model_said(self) -> None:
         turn = {"outcome": "message", "reply": "Hi! I can help with that."}
         result = SimpleNamespace(output_text=json.dumps(turn), model="m-test", input_tokens=11, output_tokens=7, incomplete_attempts=0, request_payload={"reasoning": {"effort": "low"}})

@@ -98,3 +98,13 @@ prints the report and the three numbers.
 It does not make the model right every time. It makes every wrong turn
 visible, bounded, and recoverable in the conversation, which is the standard
 the best assistants actually meet.
+
+
+## Cost by channel
+
+Every model call a turn makes writes its usage row with the turn's `channel`
+and `turn_id` (`usage_context` in `openai_api.py`, entered by the recorder),
+so **Admin > Clients** can say what this month cost the house in total and per
+client, split into web, WhatsApp and background work. A conversation row from
+before rows carried a channel is placed by the turn whose time window holds
+it; one with no such turn shows as untracked.
