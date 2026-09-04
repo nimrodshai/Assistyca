@@ -46,11 +46,13 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
 
+from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
 from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH
 from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.agent_proposals import AGENT_TURN_MAX_OUTPUT_TOKENS
+from packages.infrastructure.agent_proposals import build_agent_turn_input
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
 from packages.infrastructure.agent_proposals import normalize_agent_action_context
@@ -63,6 +65,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_for
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
 from packages.infrastructure.account_erasure import erase_account
+from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.agent_proposals import normalize_agent_source_context
 from packages.infrastructure.agent_proposals import normalize_agent_turn_response
 from packages.infrastructure.agent_proposals import parse_agent_proposal_revision_json
@@ -8415,6 +8418,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             payload.get("userMessage"),
             AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH,
         )
+        # A photo sent with the message. It goes to the model as an image, so
+        # the person can show a receipt or a screenshot instead of typing it
+        # out; the prompt and everything that gets logged only name it.
+        photo_context = normalize_agent_photo_context(payload.get("photoContext"))
+        if not user_message and photo_context:
+            # A picture on its own is a message: the words that go with it are
+            # the ones the composer would have supplied.
+            user_message = AGENT_PHOTO_DEFAULT_TEXT
         if not user_message:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -8474,6 +8485,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             fact_context=fact_context,
             channel=channel,
             pending_choice=pending_choice,
+            photo_context=photo_context,
         )
         model = resolve_task_model(
             AGENT_TURN_COMPLEXITY,
@@ -8487,6 +8499,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 tool_id="portal_agent",
                 billing_email=session.email,
                 prompt=prompt_text,
+                # With a photo the request is text plus image; the prompt
+                # string stays the text half, so a repair retry carries the
+                # picture too.
+                input=build_agent_turn_input(prompt_text, photo_context),
                 model=model,
                 instructions=AGENT_TURN_INSTRUCTIONS,
                 reasoning=resolve_task_reasoning(AGENT_TURN_COMPLEXITY, "PORTAL_AGENT_REASONING_EFFORT"),
@@ -8502,6 +8518,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 metadata={
                     "source": "portal_agent",
                     "hasActiveProposal": active_proposal is not None,
+                    "hasPhoto": bool(photo_context),
                 },
             )
 

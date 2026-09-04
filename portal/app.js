@@ -1377,6 +1377,16 @@ let agentTurnBusy = false;
 let accountDeleteBusy = false;
 let agentTurnProgressText = "Thinking";
 let agentSourceAttachment = null;
+// A photo waiting to go with the next message. It is sent once, resized in
+// the browser so a phone picture does not become a multi-megabyte request,
+// and only a small copy of it is kept in the transcript.
+let agentPhotoAttachment = null;
+const AGENT_PHOTO_MAX_INPUT_BYTES = 20 * 1024 * 1024;
+const AGENT_PHOTO_KEEP_ORIGINAL_BYTES = 1024 * 1024;
+const AGENT_PHOTO_MAX_EDGE = 1600;
+const AGENT_PHOTO_THUMBNAIL_EDGE = 360;
+const AGENT_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const AGENT_PHOTO_DEFAULT_TEXT = "Have a look at this photo.";
 let agentAttachSourceMenuOpen = false;
 let agentAttachSourceMenuMode = "options";
 let featureActivationBusy = false;
@@ -1472,6 +1482,12 @@ const elements = {
   agentSourceUrlAttachButton: document.querySelector("#agentSourceUrlAttachButton"),
   agentSourceUrlError: document.querySelector("#agentSourceUrlError"),
   agentSourceAttachment: document.querySelector("#agentSourceAttachment"),
+  agentAttachSourcePhotoOption: document.querySelector("#agentAttachSourcePhotoOption"),
+  agentPhotoFileInput: document.querySelector("#agentPhotoFileInput"),
+  agentPhotoAttachment: document.querySelector("#agentPhotoAttachment"),
+  agentPhotoAttachmentImage: document.querySelector("#agentPhotoAttachmentImage"),
+  agentPhotoAttachmentName: document.querySelector("#agentPhotoAttachmentName"),
+  agentPhotoAttachmentRemove: document.querySelector("#agentPhotoAttachmentRemove"),
   agentProposalCard: document.querySelector("#agentProposalCard"),
   agentHelperCount: document.querySelector("#agentHelperCount"),
   agentHelperList: document.querySelector("#agentHelperList"),
@@ -4542,6 +4558,12 @@ function normalizeAgentMessage(value = {}) {
       .filter((action) => action.id && action.label)
     : [];
   metadata.keepActions = Boolean(metadata.keepActions);
+  const photo = normalizeAgentMessagePhoto(metadata.photo);
+  if (photo) {
+    metadata.photo = photo;
+  } else {
+    delete metadata.photo;
+  }
   const chart = normalizeAgentChart(metadata.chart);
   if (chart) {
     metadata.chart = chart;
@@ -4633,6 +4655,34 @@ function createAgentChat(messages = [], options = {}) {
     lastOpenedAt: normalizeAgentTextItem(source.lastOpenedAt || source.last_opened_at, ""),
     archivedAt: normalizeAgentTextItem(source.archivedAt || source.archived_at, ""),
   };
+}
+
+function normalizeAgentMessagePhoto(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const thumbnailUrl = String(source.thumbnailUrl || "");
+  if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(thumbnailUrl)) {
+    return null;
+  }
+  return {
+    fileName: String(source.fileName || "").trim().slice(0, 240),
+    thumbnailUrl,
+    // The words were supplied for the model because the person sent only
+    // the picture; the bubble shows the picture alone.
+    textless: Boolean(source.textless),
+  };
+}
+
+function getAgentMessagePhoto(message) {
+  return normalizeAgentMessagePhoto(message?.metadata?.photo);
+}
+
+function describeAgentMessageForModel(message) {
+  const text = String(message?.text || "");
+  const photo = getAgentMessagePhoto(message);
+  if (!photo) {
+    return text;
+  }
+  return `${text} [photo attached${photo.fileName ? `: ${photo.fileName}` : ""}]`.trim();
 }
 
 function normalizeAgentChat(value = {}) {
@@ -17843,6 +17893,9 @@ async function handleAgentWhatsAppApprovalAction(button) {
 }
 
 function getAgentDisplayMessageText(message, kind, proposal) {
+  if (getAgentMessagePhoto(message)?.textless) {
+    return "";
+  }
   return String(message?.text || "");
 }
 
@@ -18452,6 +18505,15 @@ function renderAgentMessage(message) {
   const bubble = document.createElement("div");
   bubble.className = "agent-message-bubble";
   renderAgentMessageBubbleContent(bubble, message, kind, proposal, displayText);
+  const photo = getAgentMessagePhoto(message);
+  if (photo) {
+    const image = document.createElement("img");
+    image.className = "agent-message-photo";
+    image.src = photo.thumbnailUrl;
+    image.alt = photo.fileName ? `Photo: ${photo.fileName}` : "Attached photo";
+    image.decoding = "async";
+    bubble.prepend(image);
+  }
 
   const messageLine = document.createElement("div");
   messageLine.className = "agent-message-line";
@@ -28774,13 +28836,23 @@ async function handleAgentUserText(text) {
   }
 
   resolvePendingAgentMessageActions("user-message");
-  pushAgentMessage("user", cleanText);
+  // The photo goes with this message and only this one: once it is in the
+  // transcript the composer is empty again, whatever the server says next.
+  const photo = agentPhotoAttachment;
+  const textless = Boolean(photo) && cleanText === AGENT_PHOTO_DEFAULT_TEXT;
+  clearAgentPhotoAttachment();
+  pushAgentMessage("user", cleanText, photo
+    ? { photo: { fileName: photo.fileName, thumbnailUrl: photo.thumbnailUrl, textless } }
+    : {});
   const agent = getAgentWorkspace();
   const activeProposal = getActiveAgentProposal();
   const conversation = agent.messages.slice(-12).filter((message) => !message.metadata?.excludeFromModel).map((message) => ({
     role: message.role,
-    text: message.text,
+    text: describeAgentMessageForModel(message),
   }));
+  const photoContext = photo
+    ? { fileName: photo.fileName, mimeType: photo.mimeType, dataUrl: photo.dataUrl }
+    : {};
   const activeProposalPayload = buildAgentTurnActiveProposal(activeProposal);
   const sourceUrlMatch = cleanText.match(/https?:\/\/[^\s<>)\]}]+/i);
   const sourceContext = agentSourceAttachment?.sourceType === "file"
@@ -28820,6 +28892,7 @@ async function handleAgentUserText(text) {
         folderContext: buildAgentFolderContext(),
         fileContext: buildAgentFileContext(),
         sourceContext,
+        photoContext,
       },
     });
     await applyAgentTurnResponse(turn, cleanText);
@@ -28941,7 +29014,7 @@ function handleAgentComposerSubmit(event = null) {
   }
   const input = elements.agentComposerInput;
   const text = String(input?.value || "").trim();
-  if (!text && !agentSourceAttachment) {
+  if (!text && !agentSourceAttachment && !agentPhotoAttachment) {
     input?.focus();
     return;
   }
@@ -28954,7 +29027,8 @@ function handleAgentComposerSubmit(event = null) {
   const defaultSourceText = agentSourceAttachment?.sourceType === "url"
     ? "Please check the attached URL on a recurring schedule."
     : "Please check the attached file on a recurring schedule.";
-  void handleAgentUserText(text || defaultSourceText);
+  const defaultText = agentPhotoAttachment && !agentSourceAttachment ? AGENT_PHOTO_DEFAULT_TEXT : defaultSourceText;
+  void handleAgentUserText(text || defaultText);
 }
 
 function normalizeAgentComposerPastedText(text) {
@@ -28983,7 +29057,18 @@ function insertAgentComposerText(input, text) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function getAgentPhotoFileFromTransfer(transfer) {
+  const files = Array.from(transfer?.files || []);
+  return files.find((file) => String(file?.type || "").startsWith("image/")) || null;
+}
+
 function handleAgentComposerPaste(event) {
+  const pastedPhoto = getAgentPhotoFileFromTransfer(event.clipboardData);
+  if (pastedPhoto) {
+    event.preventDefault();
+    void attachAgentPhoto(pastedPhoto);
+    return;
+  }
   const pastedText = event.clipboardData?.getData("text") || "";
   const normalizedText = normalizeAgentComposerPastedText(pastedText);
   if (!normalizedText || normalizedText === pastedText) {
@@ -29125,6 +29210,140 @@ function handleAgentSourceFileChange(event) {
     setStatus("That file could not be read.");
   };
   reader.readAsDataURL(file);
+}
+
+// Decoded from a data URL rather than an object URL: the portal's content
+// policy lets an image come from data: and not from blob:.
+function loadAgentPhotoImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("That photo could not be read."));
+    image.src = dataUrl;
+  });
+}
+
+function readAgentFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("That photo could not be read."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function drawAgentPhoto(image, maxEdge, mimeType, quality) {
+  const longestEdge = Math.max(image.naturalWidth || 1, image.naturalHeight || 1);
+  const scale = Math.min(1, maxEdge / longestEdge);
+  const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
+  const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  // JPEG has no transparency; without a ground a transparent PNG turns black.
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL(mimeType, quality);
+}
+
+async function attachAgentPhoto(file) {
+  if (!file || !String(file.type || "").startsWith("image/")) {
+    setStatus("That doesn’t look like a photo. Try a JPG, PNG, or WebP.");
+    return;
+  }
+  if (file.size > AGENT_PHOTO_MAX_INPUT_BYTES) {
+    setStatus("Photos must be 20 MB or smaller.");
+    return;
+  }
+  setStatus("Preparing the photo…");
+  let originalDataUrl = "";
+  let image;
+  try {
+    originalDataUrl = await readAgentFileAsDataUrl(file);
+    image = await loadAgentPhotoImage(originalDataUrl);
+  } catch {
+    setStatus("That photo could not be read. Try a JPG or PNG.");
+    return;
+  }
+  // A small photo in a format the model reads goes as it is; anything
+  // bigger is resized and re-encoded so the request stays light.
+  const longestEdge = Math.max(image.naturalWidth || 0, image.naturalHeight || 0);
+  const keepOriginal = AGENT_PHOTO_MIME_TYPES.has(file.type)
+    && longestEdge <= AGENT_PHOTO_MAX_EDGE
+    && file.size <= AGENT_PHOTO_KEEP_ORIGINAL_BYTES;
+  const dataUrl = keepOriginal
+    ? originalDataUrl
+    : drawAgentPhoto(image, AGENT_PHOTO_MAX_EDGE, "image/jpeg", 0.85);
+  const mimeType = (dataUrl.match(/^data:([^;]+);/) || [])[1] || "image/jpeg";
+  agentPhotoAttachment = {
+    fileName: String(file.name || "").trim() || "photo",
+    mimeType,
+    size: Math.round((dataUrl.length - dataUrl.indexOf(",") - 1) * 3 / 4),
+    dataUrl,
+    thumbnailUrl: drawAgentPhoto(image, AGENT_PHOTO_THUMBNAIL_EDGE, "image/jpeg", 0.75),
+  };
+  renderAgentPhotoAttachment();
+  setStatus("Photo attached. Add a note, or send it as is.");
+  elements.agentComposerInput?.focus();
+}
+
+function renderAgentPhotoAttachment() {
+  const photo = agentPhotoAttachment;
+  if (elements.agentPhotoAttachment) {
+    elements.agentPhotoAttachment.hidden = !photo;
+  }
+  if (elements.agentPhotoAttachmentImage) {
+    elements.agentPhotoAttachmentImage.src = photo?.thumbnailUrl || "";
+  }
+  if (elements.agentPhotoAttachmentName) {
+    elements.agentPhotoAttachmentName.textContent = photo
+      ? `${photo.fileName} · ${Math.max(1, Math.ceil(photo.size / 1024))} KB`
+      : "";
+  }
+  elements.agentComposerForm?.classList.toggle("has-photo", Boolean(photo));
+}
+
+function clearAgentPhotoAttachment() {
+  agentPhotoAttachment = null;
+  if (elements.agentPhotoFileInput) {
+    elements.agentPhotoFileInput.value = "";
+  }
+  renderAgentPhotoAttachment();
+}
+
+function handleAgentPhotoFileChange(event) {
+  const file = event.target?.files?.[0];
+  if (file) {
+    void attachAgentPhoto(file);
+  }
+}
+
+function handleAgentComposerDragOver(event) {
+  if (!Array.from(event.dataTransfer?.types || []).includes("Files")) {
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  elements.agentComposerForm?.classList.add("is-photo-drop");
+}
+
+function handleAgentComposerDragLeave(event) {
+  if (event.relatedTarget && elements.agentComposerForm?.contains(event.relatedTarget)) {
+    return;
+  }
+  elements.agentComposerForm?.classList.remove("is-photo-drop");
+}
+
+function handleAgentComposerDrop(event) {
+  elements.agentComposerForm?.classList.remove("is-photo-drop");
+  const file = getAgentPhotoFileFromTransfer(event.dataTransfer);
+  if (!file) {
+    return;
+  }
+  event.preventDefault();
+  void attachAgentPhoto(file);
 }
 
 async function scheduleAgentScheduledMessageProposal(proposal) {
@@ -36600,6 +36819,30 @@ function bindEvents() {
 
   if (elements.agentSourceFileInput) {
     elements.agentSourceFileInput.addEventListener("change", handleAgentSourceFileChange);
+  }
+
+  if (elements.agentAttachSourcePhotoOption && elements.agentPhotoFileInput) {
+    elements.agentAttachSourcePhotoOption.addEventListener("click", () => {
+      setAgentAttachSourceMenuOpen(false);
+      elements.agentPhotoFileInput.click();
+    });
+  }
+
+  if (elements.agentPhotoFileInput) {
+    elements.agentPhotoFileInput.addEventListener("change", handleAgentPhotoFileChange);
+  }
+
+  if (elements.agentPhotoAttachmentRemove) {
+    elements.agentPhotoAttachmentRemove.addEventListener("click", () => {
+      clearAgentPhotoAttachment();
+      elements.agentComposerInput?.focus();
+    });
+  }
+
+  if (elements.agentComposerForm) {
+    elements.agentComposerForm.addEventListener("dragover", handleAgentComposerDragOver);
+    elements.agentComposerForm.addEventListener("dragleave", handleAgentComposerDragLeave);
+    elements.agentComposerForm.addEventListener("drop", handleAgentComposerDrop);
   }
 
   for (const button of elements.agentPromptButtons) {

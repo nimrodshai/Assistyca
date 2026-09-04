@@ -13291,6 +13291,39 @@ body.is-chat-view {
 .turns-table .turns-cell-text {
   max-width: 18rem;
   overflow: hidden;
+
+/* A photo waiting in the composer: a small preview, its name, and a way to
+   drop it. It sits above the text so the two read as one message. */
+.agent-photo-attachment {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.3rem 0.35rem 0.3rem 0.3rem;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 12px;
+  background: rgba(15, 118, 110, 0.06);
+}
+
+.agent-photo-attachment[hidden] {
+  display: none;
+}
+
+.agent-photo-attachment-image {
+  display: block;
+  width: 3.4rem;
+  height: 3.4rem;
+  object-fit: cover;
+  border-radius: 8px;
+  background: rgba(20, 28, 38, 0.06);
+}
+
+.agent-photo-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-strong);
+  font-size: 0.8rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -13322,4 +13355,65 @@ body.is-chat-view {
 .turns-table tr.is-fallback .turns-cell-outcome {
   color: #8a5a00;
   font-weight: 700;
+
+.agent-photo-attachment-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  color: var(--muted-strong);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow: none;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.agent-photo-attachment-remove:hover,
+.agent-photo-attachment-remove:focus-visible {
+  color: var(--text);
+  background: rgba(20, 28, 38, 0.08);
+}
+
+.agent-composer.is-photo-drop {
+  border-color: rgba(15, 118, 110, 0.5);
+  box-shadow:
+    0 0 0 3px rgba(15, 118, 110, 0.14),
+    0 10px 28px rgba(25, 38, 54, 0.08);
+}
+
+.agent-attach-source-option-icon-photo svg {
+  stroke-width: 1.9;
+}
+
+/* The photo a message was sent with, shown in the bubble above its words. */
+.agent-message-photo {
+  display: block;
+  width: min(100%, 18rem);
+  max-height: 18rem;
+  margin: 0 0 0.45rem;
+  object-fit: contain;
+  object-position: left center;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.agent-message.is-user .agent-message-bubble:has(> .agent-message-photo:only-child) {
+  padding: 0.4rem;
+}
+
+.agent-message.is-user .agent-message-bubble:has(> .agent-message-photo:only-child) .agent-message-photo {
+  margin: 0;
+}
+
+:root[data-theme="dark"] .agent-photo-attachment {
+  border-color: var(--line-strong);
+  background: rgba(24, 35, 44, 0.78);
+}
+
+:root[data-theme="dark"] .agent-photo-attachment-remove:hover,
+:root[data-theme="dark"] .agent-photo-attachment-remove:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from typing import Any
@@ -531,6 +532,82 @@ def normalize_agent_source_context(value: Any) -> dict[str, str]:
     if result["sourceType"] == "file":
         result["sourceUrl"] = ""
     return result
+
+
+# A photo attached to a chat message. It rides with the turn as an image the
+# model can look at, never as text, and the prompt only ever names it. The
+# formats are the ones the model reads; the cap is on the decoded bytes, well
+# above what a phone photo the browser has already resized comes to.
+AGENT_PHOTO_MIME_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
+AGENT_PHOTO_MAX_BYTES = 8 * 1024 * 1024
+AGENT_PHOTO_DEFAULT_TEXT = "Have a look at this photo."
+_DATA_URL_RE = re.compile(r"^data:(?P<mime>[a-z0-9.+/-]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)$", re.IGNORECASE)
+
+
+def normalize_agent_photo_context(value: Any) -> dict[str, Any]:
+    """The photo a message carries, or nothing.
+
+    Accepts a data URL or a bare base64 body with its mime type. Anything that
+    is not a readable image of a known format, or is too big, is dropped
+    rather than sent along: a photo the model cannot open is worse than no
+    photo, because the reply would talk around something that is not there.
+    """
+    source = value if isinstance(value, dict) else {}
+    mime_type = _single_line(source.get("mimeType") or source.get("mime_type"), 80).lower()
+    data = re.sub(r"\s+", "", str(source.get("imageBase64") or source.get("image_base64") or ""))
+    data_url = str(source.get("dataUrl") or source.get("data_url") or "").strip()
+    if data_url:
+        match = _DATA_URL_RE.match(data_url)
+        if not match:
+            return {}
+        mime_type = match.group("mime").lower()
+        data = re.sub(r"\s+", "", match.group("data"))
+    if mime_type == "image/jpg":
+        mime_type = "image/jpeg"
+    if mime_type not in AGENT_PHOTO_MIME_TYPES or not data:
+        return {}
+    # Base64 grows bytes by a third, so the encoded length bounds the decode
+    # before any of it is decoded.
+    if len(data) > AGENT_PHOTO_MAX_BYTES * 4 // 3 + 4:
+        return {}
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (ValueError, TypeError):
+        return {}
+    if not raw or len(raw) > AGENT_PHOTO_MAX_BYTES:
+        return {}
+    file_name = _single_line(source.get("fileName") or source.get("file_name"), 240)
+    return {
+        "fileName": file_name,
+        "mimeType": mime_type,
+        "size": len(raw),
+        "dataUrl": f"data:{mime_type};base64,{data}",
+    }
+
+
+def describe_agent_photo_context(photo: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What the prompt says about the photo: its name and kind, never its bytes."""
+    if not isinstance(photo, dict) or not photo.get("dataUrl"):
+        return None
+    return {
+        "fileName": _single_line(photo.get("fileName"), 240),
+        "mimeType": _single_line(photo.get("mimeType"), 80),
+    }
+
+
+def build_agent_turn_input(prompt: str, photo: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    """The structured input for a turn that carries a photo, or None when
+    the prompt string is the whole message. The text goes first so the
+    model reads the request before it looks at the picture."""
+    if not isinstance(photo, dict) or not photo.get("dataUrl"):
+        return None
+    return [{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": str(prompt or "")},
+            {"type": "input_image", "image_url": str(photo["dataUrl"]), "detail": "auto"},
+        ],
+    }]
 
 
 def _normalize_agent_field_key(value: Any) -> str:
@@ -1106,6 +1183,17 @@ _TURN_SOURCE_ACTION = (
     "file bytes or credentials in chat.\n"
 )
 
+_TURN_PHOTO = (
+    "A photo is attached to this message and is part of it: what it shows is what the person is talking "
+    "about, and the words may say nothing more than \"this\" or \"here\". Look at it before deciding what the "
+    "message is about, and answer from what is in it: a receipt or invoice, a screenshot of a chat, a "
+    "calendar, or an inbox, a whiteboard, a handwritten note, a product, a sign, a form. Read text in it "
+    "(amounts, dates, names, senders) as if the person had typed it, and quote what matters. Describe the "
+    "photo only as far as the request needs. It is off topic only when the photo and the words together "
+    "are not about running this business. Never say you cannot see or open images. If the photo is too "
+    "blurry or dark to read the part that matters, say which part, so a better one can be sent.\n"
+)
+
 _TURN_WEB_MONITOR = (
     "For web-monitor, use the built-in public web monitoring action. Do not ask for a platform API key or a "
     "Google connection just because the user wants to monitor the public web.\n"
@@ -1288,8 +1376,10 @@ def build_agent_turn_prompt(
     fact_context: Any = None,
     channel: str = "portal",
     pending_choice: Any = None,
+    photo_context: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if _single_line(channel, 20).lower() == "whatsapp" else "portal"
+    attached_photo = describe_agent_photo_context(photo_context)
     context = {
         "channel": normalized_channel,
         "timezone": _single_line(timezone_name, 120) or "UTC",
@@ -1299,6 +1389,7 @@ def build_agent_turn_prompt(
         "lookupRequirements": {key: list(value) for key, value in LOOKUP_SOURCE_REQUIREMENTS.items()},
         "toolContext": normalize_agent_tool_context(tool_context),
         "sourceContext": normalize_agent_source_context(source_context),
+        "attachedPhoto": attached_photo,
         "existingActions": normalize_agent_action_context(action_context),
         "existingFolders": normalize_agent_folder_context(folder_context),
         "existingFolderFiles": normalize_agent_file_context(file_context),
@@ -1379,6 +1470,8 @@ def build_agent_turn_prompt(
     sections.append(_TURN_DELIVERY)
     if context["sourceContext"].get("sourceType"):
         sections.append(_TURN_SOURCE_ACTION)
+    if attached_photo:
+        sections.append(_TURN_PHOTO)
     sections.extend([_TURN_WEB_MONITOR, _TURN_CALENDAR])
     if context["toolContext"].get("mailboxes"):
         # This one is about what the account has rather than what it could set
@@ -1819,6 +1912,12 @@ def _normalize_agent_turn_outcome(
 
 
 __all__ = [
+    "normalize_agent_photo_context",
+    "describe_agent_photo_context",
+    "build_agent_turn_input",
+    "AGENT_PHOTO_MIME_TYPES",
+    "AGENT_PHOTO_MAX_BYTES",
+    "AGENT_PHOTO_DEFAULT_TEXT",
     "AGENT_PROPOSAL_REVISION_INSTRUCTIONS",
     "AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH",
     "AGENT_PROPOSAL_REVISION_MAX_OUTPUT_TOKENS",
