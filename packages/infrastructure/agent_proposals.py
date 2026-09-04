@@ -666,6 +666,16 @@ _TURN_OUTCOME_CALENDAR_CHOICE = (
     "listed calendars to read.\n"
 )
 
+_TURN_OUTCOME_CONFIRMATION = (
+    "- confirm: the latest message is a clear yes to the open pendingChoice question.\n"
+    "- decline: the latest message is a clear no to the open pendingChoice question.\n"
+)
+
+_TURN_OUTCOME_DISCONNECT = (
+    "- disconnect_command: the user wants a connected account - Google, Gmail, Google Calendar, Google "
+    "Drive, or Outlook - disconnected from Assistyca.\n"
+)
+
 _TURN_OUTCOME_ACTION_COMMAND = (
     "- action_command: delete, pause, or resume actions the account already has, once it is clear which "
     "ones.\n"
@@ -806,16 +816,40 @@ _TURN_FACTS = (
 )
 
 _TURN_PENDING_CHOICE = (
-    "pendingChoice is a question you asked and have not had an answer to yet: which of the calendars in "
-    "pendingChoice.calendars to read, so that pendingChoice.question can be answered. Decide first whether "
-    "the latest message answers it. A number, a calendar's name, \"the first one\", \"mine and the family "
-    "one\", \"all of them\", \"everything but work\" are answers: return outcome=calendar_choice with "
-    "calendarIndexes holding the index of every chosen calendar from pendingChoice.calendars, and a reply of "
-    "one short line saying which you will read. Anything else - a different question, a request to log out "
-    "or disconnect something, a change of mind, a greeting, a complaint that you did not understand - is not "
-    "an answer to it. Handle it exactly as you would with no question open, using the outcomes above, and "
-    "never answer it by repeating the calendar question or by treating it as a failed pick. The calendar "
+    "pendingChoice is a question you asked and have not had an answer to yet. Decide first whether the "
+    "latest message answers it. Anything else - a different question, a new request such as asking to log "
+    "out of or disconnect something, a change of mind, a greeting, a complaint that you did not understand "
+    "- is not an answer to it: handle it exactly as you would with no question open, using the outcomes "
+    "above, and never answer it by repeating the question or by treating it as a failed answer. The "
     "question stays open on its own; do not mention it unless they ask about it.\n"
+)
+
+_TURN_PENDING_CALENDAR_CHOICE = (
+    "This pendingChoice asks which of the calendars in pendingChoice.calendars to read, so that "
+    "pendingChoice.question can be answered. A number, a calendar's name, \"the first one\", \"mine and "
+    "the family one\", \"all of them\", \"everything but work\" are answers: return outcome=calendar_choice "
+    "with calendarIndexes holding the index of every chosen calendar from pendingChoice.calendars, and a "
+    "reply of one short line saying which you will read.\n"
+)
+
+_TURN_PENDING_CONFIRMATION = (
+    "This pendingChoice is a yes-or-no - pendingChoice.question - and the application acts the moment it "
+    "gets a yes, so read it strictly. A clear yes (yes, do it, go ahead, sure, confirm, please) is "
+    "outcome=confirm; a clear no (no, cancel, leave it, never mind, don't) is outcome=decline; for both, "
+    "reply is one short line and the application says what actually happened. A message that asks "
+    "something first, or is about anything else, is neither.\n"
+)
+
+_TURN_DISCONNECT = (
+    "Disconnecting an account is done from this chat. When the user asks to disconnect, log out of, "
+    "remove, unlink, or revoke a connected account - toolContext shows what is connected: calendar and "
+    "drive are Google's, gmail is Google's mailbox, outlook is Microsoft's - return "
+    "outcome=disconnect_command with disconnectTargets holding one or more of google, calendar, gmail, "
+    "drive, outlook. google means everything Google holds; use it when they name Google without saying "
+    "which part. Put one short line in reply saying what you are about to disconnect. Do not ask them to "
+    "confirm and never say it is done: the application asks for a yes in the next message, disconnects "
+    "when it gets one, and reports the result. When nothing they name is connected, say so with "
+    "outcome=message and offer nothing else.\n"
 )
 
 # The keys follow the sections. Naming a key whose rules were left out tells
@@ -838,6 +872,10 @@ _TURN_RETURN_KEYS_FOLDERS = (
 
 _TURN_RETURN_KEYS_CALENDAR_CHOICE = (
     ", calendarIndexes"
+)
+
+_TURN_RETURN_KEYS_DISCONNECT = (
+    ", disconnectTargets"
 )
 
 _TURN_RETURN_KEYS_TAIL = (
@@ -1126,7 +1164,14 @@ def normalize_agent_pending_choice(value: Any) -> dict[str, Any] | None:
     """
 
     source = value if isinstance(value, dict) else {}
-    if _single_line(source.get("kind"), 40).lower() != "calendar_choice":
+    kind = _single_line(source.get("kind"), 40).lower()
+    if kind == "confirmation":
+        # A yes-or-no the application will act on, such as a disconnect.
+        question = _single_line(source.get("question"), AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH)
+        if not question:
+            return None
+        return {"kind": "confirmation", "question": question, "about": _single_line(source.get("about"), 40).lower()}
+    if kind != "calendar_choice":
         return None
     raw = source.get("calendars") if isinstance(source.get("calendars"), list) else []
     calendars = []
@@ -1140,6 +1185,20 @@ def normalize_agent_pending_choice(value: Any) -> dict[str, Any] | None:
         "question": _single_line(source.get("question"), AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH),
         "calendars": calendars,
     }
+
+
+DISCONNECT_TARGETS = ("google", "calendar", "gmail", "drive", "outlook")
+
+
+def _normalize_disconnect_targets(value: Any) -> list[str]:
+    """Which connected accounts a disconnect names, in the words the chat knows."""
+
+    targets: list[str] = []
+    for item in (value if isinstance(value, list) else [value])[:10]:
+        target = _single_line(item, 40).lower()
+        if target in DISCONNECT_TARGETS and target not in targets:
+            targets.append(target)
+    return targets
 
 
 def _normalize_calendar_indexes(value: Any) -> list[int]:
@@ -1193,8 +1252,19 @@ def build_agent_turn_prompt(
     if active_proposal:
         sections.append(_TURN_OUTCOME_ACTIVE_PROPOSAL)
     sections.append(_TURN_OUTCOME_ANSWER)
-    if context["pendingChoice"]:
+    pending_kind = (context["pendingChoice"] or {}).get("kind")
+    if pending_kind == "calendar_choice":
         sections.append(_TURN_OUTCOME_CALENDAR_CHOICE)
+    if pending_kind == "confirmation":
+        sections.append(_TURN_OUTCOME_CONFIRMATION)
+    # Disconnecting is a chat command only where there is no card to do it
+    # with, and only once something is connected.
+    can_disconnect = normalized_channel == "whatsapp" and any(
+        isinstance(context["toolContext"].get(slot), dict) and context["toolContext"][slot].get("platformConnected")
+        for slot in ("calendar", "gmail", "outlook", "drive")
+    )
+    if can_disconnect:
+        sections.append(_TURN_OUTCOME_DISCONNECT)
     if context["existingActions"]:
         sections.append(_TURN_OUTCOME_ACTION_COMMAND)
     if context["existingFolders"]:
@@ -1220,13 +1290,21 @@ def build_agent_turn_prompt(
         # A question left open on the channel is only worth explaining when
         # there is one; the browser has a picker on screen instead.
         sections.append(_TURN_PENDING_CHOICE)
+        if pending_kind == "calendar_choice":
+            sections.append(_TURN_PENDING_CALENDAR_CHOICE)
+        if pending_kind == "confirmation":
+            sections.append(_TURN_PENDING_CONFIRMATION)
+    if can_disconnect:
+        sections.append(_TURN_DISCONNECT)
     sections.append(_TURN_RETURN_KEYS_HEAD)
     if context["existingActions"]:
         sections.append(_TURN_RETURN_KEYS_ACTIONS)
     if context["existingFolders"]:
         sections.append(_TURN_RETURN_KEYS_FOLDERS)
-    if context["pendingChoice"]:
+    if pending_kind == "calendar_choice":
         sections.append(_TURN_RETURN_KEYS_CALENDAR_CHOICE)
+    if can_disconnect:
+        sections.append(_TURN_RETURN_KEYS_DISCONNECT)
     sections.extend([
         _TURN_RETURN_KEYS_TAIL,
         _TURN_SCHEDULED_MESSAGE,
@@ -1578,6 +1656,20 @@ def _normalize_agent_turn_outcome(
                 "calendarIndexes": indexes,
             }
 
+    if outcome in {"confirm", "decline"} and has_pending_choice:
+        return {"outcome": outcome, "reply": reply, "proposalType": "", "changes": {}}
+
+    if outcome == "disconnect_command":
+        targets = _normalize_disconnect_targets(response.get("disconnectTargets"))
+        if targets:
+            return {
+                "outcome": "disconnect_command",
+                "reply": reply,
+                "proposalType": "",
+                "changes": {},
+                "disconnectTargets": targets,
+            }
+
     if outcome == "revise_proposal" and has_active_proposal and changes:
         return {
             "outcome": "revise_proposal",
@@ -1676,6 +1768,7 @@ __all__ = [
     "build_agent_turn_prompt",
     "build_agent_proposal_revision_prompt",
     "normalize_agent_mailbox_context",
+    "DISCONNECT_TARGETS",
     "normalize_agent_pending_choice",
     "normalize_agent_tool_context",
     "normalize_agent_action_context",

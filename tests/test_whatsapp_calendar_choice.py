@@ -16,6 +16,9 @@ from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
 from packages.infrastructure.whatsapp_agent_chat import (
+    connection_display_name,
+    connections_for_disconnect,
+    parse_yes_no,
     build_calendar_choice_interactive,
     build_calendar_choice_text,
     calendars_missing_colour,
@@ -98,6 +101,30 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(parse_calendar_choice("12", CALENDARS), [], "a number that is not on the list is not a pick")
         addressed = [{"id": "primary", "label": "nimrod.shai@gmail.com"}, {"id": "fam", "label": "Family"}]
         self.assertEqual(ids(parse_calendar_choice("nimrod.shai and family", addressed)), ["primary", "fam"], "the part before the @ names an address")
+
+    def test_a_yes_or_no_is_only_the_whole_message(self) -> None:
+        self.assertEqual(parse_yes_no("Yes!"), "yes")
+        self.assertEqual(parse_yes_no("go ahead"), "yes")
+        self.assertEqual(parse_yes_no("No, cancel"), "no")
+        self.assertEqual(parse_yes_no("don't"), "no")
+        self.assertEqual(parse_yes_no("yes, but which ones exactly?"), "", "a question first is not a yes")
+        self.assertEqual(parse_yes_no("what's on tomorrow?"), "")
+
+    def test_disconnect_words_map_onto_stored_connections(self) -> None:
+        records = [
+            {"id": "c1", "platform": "calendar", "provider": "google_calendar"},
+            {"id": "m1", "platform": "email", "provider": "google_gmail", "accountAddress": "nimrod@gmail.com"},
+            {"id": "m2", "platform": "email", "metadata": {"provider": "microsoft_outlook", "accountEmail": "nimrod@outlook.com"}},
+            {"id": "d1", "platform": "drive"},
+            {"id": "s1", "platform": "slack"},
+        ]
+        ids = lambda chosen: [c["id"] for c in chosen]  # noqa: E731
+        self.assertEqual(ids(connections_for_disconnect(records, ["google"])), ["c1", "m1", "d1"])
+        self.assertEqual(ids(connections_for_disconnect(records, ["outlook"])), ["m2"])
+        self.assertEqual(ids(connections_for_disconnect(records, ["gmail", "calendar"])), ["c1", "m1"])
+        self.assertEqual(connection_display_name(records[1]), "Gmail (nimrod@gmail.com)")
+        self.assertEqual(connection_display_name(records[2]), "Outlook (nimrod@outlook.com)")
+        self.assertEqual(connection_display_name(records[0]), "Google Calendar")
 
     def test_a_question_is_recognised_however_the_email_count_stands(self) -> None:
         self.assertTrue(looks_like_a_question("How can you help me?"))
@@ -372,6 +399,115 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in self._chosen], ["family@group.calendar.google.com"])
         # The resumed question reaches the model; the pick itself never does.
         self.assertLessEqual(self.model.call_count - calls, 2)
+
+
+class DisconnectOverWhatsAppTests(unittest.TestCase):
+    """"Just disconnect me from google" disconnects, after a yes, from the chat."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.server = create_server("127.0.0.1", 0, Path(__file__).resolve().parents[1], PortalConfig(
+            db_path=Path(self.temp_dir.name) / "portal.db", session_secret="disc-secret"))
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.database = self.server.database
+        self.database.register_user("owner@example.com")
+        self.user = self.database.get_user("owner@example.com") or {}
+        self.database.link_user_whatsapp_number(user_id=int(self.user["id"]), wa_id=PHONE)
+        self.database.save_platform_connection("owner@example.com", platform="calendar", auth_type="oauth",
+                                               secret_ciphertext="cal-cipher", secret_hint="••••cal", provider="google_calendar")
+        self.database.save_platform_connection("owner@example.com", platform="email", auth_type="oauth",
+                                               secret_ciphertext="mail-cipher", secret_hint="••••mail", provider="google_gmail",
+                                               account_address="nimrod@gmail.com", metadata={"accountEmail": "nimrod@gmail.com"})
+        self.env = mock.patch.dict("os.environ", {
+            "PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp"),
+            "WHATSAPP_APP_SECRET": APP_SECRET, "WHATSAPP_ALLOW_MOCK_SEND": "1",
+            "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM, "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
+        }, clear=False); self.env.start()
+        self.send_patch = mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", return_value="wamid.r")
+        self.sent = self.send_patch.start()
+        self.model_patch = mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=self._model)
+        self.model = self.model_patch.start()
+        # Revoking is a call to Google; the test checks that it is asked for, not made.
+        self.revoke_patch = mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._revoke_google_calendar_connection",
+                                       autospec=True, return_value=(True, ""))
+        self.revoke = self.revoke_patch.start()
+        self.prompts: list[str] = []
+
+    def tearDown(self) -> None:
+        self.revoke_patch.stop(); self.model_patch.stop(); self.send_patch.stop(); self.env.stop()
+        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=5); self.temp_dir.cleanup()
+
+    def _model(self, **kwargs):
+        prompt = str(kwargs.get("prompt") or "")
+        self.prompts.append(prompt)
+        if '"latestUserMessage":"Just disconnect me from google"' in prompt:
+            return SimpleNamespace(output_text=json.dumps({
+                "outcome": "disconnect_command", "proposalType": "", "changes": {},
+                "reply": "Disconnecting Google.", "disconnectTargets": ["google"]}))
+        if '"latestUserMessage":"wait, what will stop working?"' in prompt:
+            return SimpleNamespace(output_text=json.dumps({
+                "outcome": "message", "proposalType": "", "changes": {},
+                "reply": "Calendar questions and receipt searches, until you connect again."}))
+        if '"latestUserMessage":"alright then, go on"' in prompt:
+            return SimpleNamespace(output_text=json.dumps({
+                "outcome": "confirm", "proposalType": "", "changes": {}, "reply": "Doing it now."}))
+        return SimpleNamespace(output_text=json.dumps({
+            "outcome": "message", "proposalType": "", "changes": {}, "reply": "Sure."}))
+
+    _post = CalendarChoiceOverWhatsAppTests._post
+    _texts = CalendarChoiceOverWhatsAppTests._texts
+
+    def _connected(self):
+        return sorted(c["platform"] for c in self.database.list_platform_connections("owner@example.com"))
+
+    def test_a_disconnect_names_what_would_go_and_waits_for_a_yes(self) -> None:
+        result = self._post("Just disconnect me from google", message_id="wamid.d1")
+        self.assertEqual(result["results"][0]["outcome"], "disconnect_confirmation")
+        self.assertIn("- disconnect_command:", self.prompts[-1], "the phone is offered the command")
+        asked = self._texts()[-1]
+        self.assertIn("Disconnect Google Calendar and Gmail (nimrod@gmail.com) from Assistyca?", asked)
+        self.assertIn("*yes*", asked)
+        self.assertEqual(self._connected(), ["calendar", "email"], "nothing goes before the yes")
+
+        done = self._post("Yes", message_id="wamid.d2")
+        self.assertEqual(done["results"][0]["outcome"], "disconnected")
+        self.assertIn("Google Calendar and Gmail (nimrod@gmail.com) are disconnected", self._texts()[-1])
+        self.assertEqual(self._connected(), [])
+        self.assertEqual(self.revoke.call_count, 2, "each Google grant is revoked, as the portal button does")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+        self.assertEqual(len(self.prompts), 1, "a plain yes never needs the model")
+
+    def test_a_no_keeps_everything(self) -> None:
+        self._post("Just disconnect me from google", message_id="wamid.n1")
+        result = self._post("no", message_id="wamid.n2")
+        self.assertEqual(result["results"][0]["outcome"], "disconnect_declined")
+        self.assertIn("nothing changed", self._texts()[-1].lower())
+        self.assertEqual(self._connected(), ["calendar", "email"])
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+
+    def test_a_question_before_the_yes_is_answered_and_the_yes_can_come_in_words(self) -> None:
+        self._post("Just disconnect me from google", message_id="wamid.q1")
+        asked = self._post("wait, what will stop working?", message_id="wamid.q2")
+        self.assertEqual(asked["results"][0]["outcome"], "message")
+        self.assertIn("until you connect again", self._texts()[-1])
+        self.assertIn('"pendingChoice":{"kind":"confirmation","question":"Disconnect Google Calendar and Gmail (nimrod@gmail.com) from Assistyca?","about":"disconnect"}', self.prompts[-1])
+        self.assertIn("- confirm:", self.prompts[-1])
+        self.assertEqual(self._connected(), ["calendar", "email"], "a question is not a yes")
+        self.assertEqual(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))["kind"], "disconnect")
+
+        done = self._post("alright then, go on", message_id="wamid.q3")
+        self.assertEqual(done["results"][0]["outcome"], "disconnected")
+        self.assertEqual(self._connected(), [])
+
+    def test_nothing_connected_by_that_name_says_so(self) -> None:
+        self.model.side_effect = lambda **kwargs: SimpleNamespace(output_text=json.dumps({
+            "outcome": "disconnect_command", "proposalType": "", "changes": {},
+            "reply": "Disconnecting Outlook.", "disconnectTargets": ["outlook"]}))
+        result = self._post("disconnect outlook", message_id="wamid.x1")
+        self.assertEqual(result["results"][0]["outcome"], "disconnect_nothing")
+        self.assertIn("nothing to disconnect", self._texts()[-1])
+        self.assertEqual(self._connected(), ["calendar", "email"])
 
 
 class SignupWarmthTests(unittest.TestCase):

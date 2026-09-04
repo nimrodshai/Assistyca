@@ -106,6 +106,42 @@ class AgentProposalRevisionTests(unittest.TestCase):
         empty = normalize_agent_turn_response({**response, "calendarIndexes": []}, has_active_proposal=False, has_pending_choice=True)
         self.assertEqual(empty["outcome"], "message")
 
+    def test_a_disconnect_is_a_command_with_targets_and_a_yes_or_no_needs_an_open_question(self) -> None:
+        turn = normalize_agent_turn_response({
+            "outcome": "disconnect_command", "reply": "Disconnecting Google.", "proposalType": "", "changes": {},
+            "disconnectTargets": ["google", "Google", "slack", "gmail"]}, has_active_proposal=False)
+        self.assertEqual(turn["outcome"], "disconnect_command")
+        self.assertEqual(turn["disconnectTargets"], ["google", "gmail"])
+        nothing = normalize_agent_turn_response({
+            "outcome": "disconnect_command", "reply": "Nothing is connected.", "proposalType": "", "changes": {},
+            "disconnectTargets": ["slack"]}, has_active_proposal=False)
+        self.assertEqual(nothing["outcome"], "message")
+        yes = normalize_agent_turn_response({"outcome": "confirm", "reply": "Doing it.", "proposalType": "", "changes": {}},
+                                            has_active_proposal=False, has_pending_choice=True)
+        self.assertEqual(yes["outcome"], "confirm")
+        stray = normalize_agent_turn_response({"outcome": "decline", "reply": "Okay.", "proposalType": "", "changes": {}},
+                                              has_active_proposal=False)
+        self.assertEqual(stray["outcome"], "message", "a yes or no with nothing open is just words")
+
+    def test_the_prompt_offers_disconnecting_only_on_the_phone_and_only_when_connected(self) -> None:
+        connected = {"calendar": {"platformConnected": True, "connectionStatus": "connected"}}
+        phone = build_agent_turn_prompt(user_message="log me out of google", conversation=[], timezone_name="UTC",
+                                        channel="whatsapp", tool_context=connected)
+        self.assertIn("- disconnect_command:", phone)
+        self.assertIn("disconnectTargets", phone)
+        portal = build_agent_turn_prompt(user_message="log me out of google", conversation=[], timezone_name="UTC",
+                                         tool_context=connected)
+        self.assertNotIn("disconnect_command", portal, "the portal has a button for that")
+        bare = build_agent_turn_prompt(user_message="log me out of google", conversation=[], timezone_name="UTC",
+                                       channel="whatsapp")
+        self.assertNotIn("disconnect_command", bare, "nothing connected, nothing to disconnect")
+        confirming = build_agent_turn_prompt(user_message="wait, which ones?", conversation=[], timezone_name="UTC",
+                                             channel="whatsapp", tool_context=connected,
+                                             pending_choice={"kind": "confirmation", "question": "Disconnect Google Calendar?", "about": "disconnect"})
+        self.assertIn("- confirm:", confirming)
+        self.assertIn('"pendingChoice":{"kind":"confirmation","question":"Disconnect Google Calendar?","about":"disconnect"}', confirming)
+        self.assertNotIn("calendarIndexes", confirming)
+
     def test_the_prompt_carries_the_open_calendar_question_only_when_there_is_one(self) -> None:
         pending = {"kind": "calendar_choice", "question": "what's on next week?",
                    "calendars": [{"label": "Nimrod"}, {"label": ""}, "Family"]}

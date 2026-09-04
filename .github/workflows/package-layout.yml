@@ -48,6 +48,7 @@ jobs:
             tests.test_scheduled_actions \
             tests.test_source_actions \
             tests.test_whatsapp_reengagement \
+            tests.test_whatsapp_calendar_choice \
             tests.test_platform_connections \
             tests.test_portal_static_pages \
             tests.test_portal_db \

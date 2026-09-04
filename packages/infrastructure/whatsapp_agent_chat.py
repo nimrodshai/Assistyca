@@ -621,6 +621,78 @@ def _pending_calendars(pending: dict[str, Any]) -> list[dict[str, Any]]:
     return [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]
 
 
+# A yes or a no the chat acts on without asking the model. Whole phrases only:
+# "yes, but first..." is a question for the model, not a yes.
+_YES_PHRASES = frozenset({
+    "yes", "y", "yep", "yeah", "yup", "sure", "ok", "okay", "confirm", "confirmed", "do it", "go ahead",
+    "yes please", "please do", "yes do it", "ok do it", "okay do it", "sure do it", "go for it", "yes go ahead",
+})
+_NO_PHRASES = frozenset({
+    "no", "n", "nope", "cancel", "stop", "dont", "do not", "never mind", "nevermind", "leave it", "keep it",
+    "no thanks", "no thank you", "forget it", "not now", "no cancel", "no leave it",
+})
+
+
+def parse_yes_no(text: Any) -> str:
+    """"yes", "no", or "" when the words are anything more than one of those."""
+
+    words = re.findall(r"[^\W_]+", normalize_text(text).lower().replace("'", ""))
+    phrase = " ".join(words)
+    if phrase in _YES_PHRASES:
+        return "yes"
+    if phrase in _NO_PHRASES:
+        return "no"
+    return ""
+
+
+def connection_group(record: dict[str, Any]) -> str:
+    """Which of the chat's disconnect words a stored connection answers to."""
+
+    platform = normalize_text(record.get("platform")).lower()
+    if platform in {"calendar", "drive"}:
+        return platform
+    if platform != "email":
+        return ""
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    provider = normalize_text(record.get("provider") or metadata.get("provider")).lower()
+    return "outlook" if "outlook" in provider or "microsoft" in provider else "gmail"
+
+
+def connection_display_name(record: dict[str, Any]) -> str:
+    """What a person calls a connection: 'Gmail (nimrod@gmail.com)', 'Google Calendar'."""
+
+    group = connection_group(record)
+    if group in {"gmail", "outlook"}:
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        address = normalize_text(record.get("accountAddress") or metadata.get("accountEmail"))
+        name = "Gmail" if group == "gmail" else "Outlook"
+        return f"{name} ({address})" if address else name
+    return {"calendar": "Google Calendar", "drive": "Google Drive"}.get(group, "")
+
+
+def connections_for_disconnect(records: list[dict[str, Any]], targets: list[str]) -> list[dict[str, Any]]:
+    """The stored connections a disconnect names. google is everything Google holds."""
+
+    wanted = {normalize_text(target).lower() for target in targets}
+    chosen = []
+    for record in records:
+        if not isinstance(record, dict) or not normalize_text(record.get("id")):
+            continue
+        group = connection_group(record)
+        if group in wanted or ("google" in wanted and group in {"calendar", "gmail", "drive"}):
+            chosen.append(record)
+    # Named in a fixed order rather than the store's newest-first, so the
+    # question reads the same however the accounts were connected.
+    order = {"calendar": 0, "gmail": 1, "outlook": 2, "drive": 3}
+    return sorted(chosen, key=lambda record: order.get(connection_group(record), 9))
+
+
+def _join_names(names: list[str]) -> str:
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
 def send_assistyca_interactive(*, recipient_wa_id: str, payload: dict[str, Any] | None, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> str:
     """Send one interactive message (a list, buttons) from the Assistyca number.
 
@@ -1059,6 +1131,78 @@ class WhatsAppAgentChat:
         result["outcome"] = "calendar_choice_saved"
         return result
 
+    def _ask_disconnect(self, targets: list[str]) -> dict[str, Any]:
+        """Name exactly what would go, and hold the disconnect until a yes."""
+
+        try:
+            records = self.database.list_platform_connections(self.email)
+        except Exception:  # noqa: BLE001 - a list that cannot be read is an empty one
+            records = []
+        chosen = connections_for_disconnect(records, targets)
+        if not chosen:
+            reply = "Nothing by that name is connected right now, so there's nothing to disconnect."
+            return self._reply_and_log(reply, outcome="disconnect_nothing")
+        names = [connection_display_name(record) or "that connection" for record in chosen]
+        question = f"Disconnect {_join_names(names)} from Assistyca?"
+        self.database.save_whatsapp_agent_pending(
+            user_id=self.user_id,
+            pending={
+                "kind": "disconnect",
+                "question": question,
+                "connectionIds": [normalize_text(record.get("id")) for record in chosen],
+                "names": names,
+                "askedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        reply = (
+            f"{question} I'll remove the saved sign-in, and anything that reads "
+            f"{'them' if len(names) > 1 else 'it'} stops until you connect again.\n\n"
+            "Reply *yes* to go ahead, or *no* to keep things as they are."
+        )
+        return self._reply_and_log(reply, outcome="disconnect_confirmation")
+
+    def _run_disconnect(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """The yes arrived: disconnect each held connection and say what happened."""
+
+        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+        ids = [normalize_text(cid) for cid in (pending.get("connectionIds") or []) if normalize_text(cid)]
+        names = [normalize_text(name) for name in (pending.get("names") or [])]
+        done: list[str] = []
+        failed: list[str] = []
+        notes: list[str] = []
+        for position, cid in enumerate(ids):
+            name = names[position] if position < len(names) else "that connection"
+            response, status = self._api("DELETE", f"/api/platform-connections/{urllib_parse.quote(cid)}")
+            if status == 200 and response.get("ok"):
+                done.append(name)
+                if response.get("providerRevoked") is False:
+                    notes.append(
+                        f"Google didn't confirm it let go of {name}, so it may still list Assistyca under "
+                        "your Google Account's third-party access until you remove it there."
+                    )
+            else:
+                failed.append(name)
+        if done and not failed:
+            reply = f"Done - {_join_names(done)} {'are' if len(done) > 1 else 'is'} disconnected and the saved sign-in removed."
+        elif done:
+            reply = (
+                f"{_join_names(done)} {'are' if len(done) > 1 else 'is'} disconnected, but I couldn't disconnect "
+                f"{_join_names(failed)} just now. Ask me again in a moment and I'll retry."
+            )
+        else:
+            reply = f"I couldn't disconnect {_join_names(failed) or 'that'} just now. Please try again in a moment."
+        if notes:
+            reply += " " + " ".join(notes)
+        if done:
+            reply += " Whenever you want it back, just say so and I'll send the sign-in link."
+        return self._reply_and_log(reply, outcome="disconnected" if done else "disconnect_failed")
+
+    def _reply_and_log(self, reply: str, *, outcome: str) -> dict[str, Any]:
+        message_id = self._send_owner_text(reply)
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+        return {"type": "owner", "action": "agent_chat_reply", "outcome": outcome,
+                "reply_text": reply, "message_id": message_id}
+
     def _send_owner_interactive(self, payload: dict[str, Any] | None) -> str:
         return send_assistyca_interactive(recipient_wa_id=self.owner_wa_id, payload=payload, api_version=self.api_version)
 
@@ -1184,6 +1328,16 @@ class WhatsAppAgentChat:
         # question that was interrupted is picked straight back up.
         pending = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
         pending_choice = pending if pending and pending.get("kind") == "calendar_choice" else None
+        pending_disconnect = pending if pending and pending.get("kind") == "disconnect" else None
+        if pending_disconnect and not interactive_id:
+            # A plain yes or no settles a held disconnect here. Anything with
+            # more in it goes to the model with the question in view.
+            answer = parse_yes_no(text)
+            if answer == "yes":
+                return self._run_disconnect(pending_disconnect)
+            if answer == "no":
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                return self._reply_and_log("Okay - nothing changed. Everything stays connected.", outcome="disconnect_declined")
         if pending_choice and (interactive_id or parse_calendar_choice(text, _pending_calendars(pending_choice))):
             return self._answer_calendar_choice(pending_choice, text=text, interactive_id=interactive_id)
         # Any other words go to the model with the open question in view. It
@@ -1223,7 +1377,13 @@ class WhatsAppAgentChat:
         }
         if active_proposal:
             turn_payload["activeProposal"] = active_proposal
-        if pending_choice:
+        if pending_disconnect:
+            turn_payload["pendingChoice"] = {
+                "kind": "confirmation",
+                "about": "disconnect",
+                "question": normalize_text(pending_disconnect.get("question")),
+            }
+        elif pending_choice:
             turn_payload["pendingChoice"] = {
                 "kind": "calendar_choice",
                 "question": normalize_text(pending_choice.get("question")),
@@ -1252,6 +1412,14 @@ class WhatsAppAgentChat:
         elif outcome == "reject_proposal":
             self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
             reply = normalize_text(turn.get("reply")) or "Okay, I dropped that plan."
+        elif outcome == "disconnect_command":
+            targets = [t for t in (turn.get("disconnectTargets") or []) if isinstance(t, str)]
+            return self._ask_disconnect(targets)
+        elif outcome == "confirm" and pending_disconnect:
+            return self._run_disconnect(pending_disconnect)
+        elif outcome == "decline" and pending_disconnect:
+            self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+            reply = normalize_text(turn.get("reply")) or "Okay - nothing changed. Everything stays connected."
         elif outcome == "calendar_choice" and pending_choice:
             # The model read a pick the words parser could not. It hands back
             # the numbers, and from here it is the same as typing them.
@@ -1296,6 +1464,9 @@ __all__ = [
     "color_dot",
     "looks_like_a_question",
     "parse_calendar_choice",
+    "parse_yes_no",
+    "connections_for_disconnect",
+    "connection_display_name",
     "CALENDAR_PICK_PREFIX",
     "SIGNUP_ESCALATION_WINDOW_SECONDS",
     "build_link_existing_account_text",

@@ -316,6 +316,26 @@ question open, and the calendar question stays held so a tap on the picker
 still works afterwards. Before this (2026-09-04) every non-pick got "I didn't
 catch which ones" and the list again, three times in a row.
 
+## Disconnecting an account from the phone
+
+"Just disconnect me from google" used to get "I can't disconnect Google from
+this chat" (2026-09-04): the model had no outcome for it, so it said so. On
+WhatsApp there is no card with a Disconnect button, so the chat is the only
+place it can happen, and now it does. When something is connected, the turn
+prompt offers `outcome=disconnect_command` with `disconnectTargets` drawn from
+`google`, `calendar`, `gmail`, `drive`, `outlook` (`google` is everything
+Google holds). The chat maps those words onto the stored connections
+(`connections_for_disconnect`), names exactly what would go - "Disconnect
+Google Calendar and Gmail (nimrod@gmail.com) from Assistyca?" - and holds the
+ids in `pending_json` as `kind: disconnect`. A plain *yes* or *no*
+(`parse_yes_no`, whole phrases only) is settled locally; anything with more in
+it goes to the model as an ordinary turn with `pendingChoice` of kind
+`confirmation`, which comes back as `confirm`, `decline`, or whatever the
+message actually was, and the question stays open. On yes the chat calls the
+same `DELETE /api/platform-connections/<id>` the portal's button calls, once
+per connection, so Google's grant is revoked the same way, and the reply says
+what happened - including when Google did not confirm the revocation.
+
 ## A fresh morning is a fresh conversation
 
 The signup concierge gets firmer each turn the email is not given. That count
