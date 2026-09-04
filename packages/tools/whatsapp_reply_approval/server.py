@@ -1675,6 +1675,27 @@ def parse_json_body(body: bytes) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def extract_message_media(message: dict[str, Any]) -> dict[str, str]:
+    """The picture a message carries, as the id Meta will serve it under.
+
+    Only images for now: they are what a person sends to make a point. The
+    bytes are fetched later, by whoever needs them, never here.
+    """
+    if normalize_text(message.get("type")) != "image":
+        return {}
+    image = message.get("image") if isinstance(message.get("image"), dict) else {}
+    media_id = normalize_text(image.get("id"))
+    if not media_id:
+        return {}
+    return {
+        "kind": "image",
+        "id": media_id,
+        "mimeType": normalize_text(image.get("mime_type")),
+        "sha256": normalize_text(image.get("sha256")),
+        "caption": normalize_text(image.get("caption")),
+    }
+
+
 def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
 
@@ -1728,6 +1749,7 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                                 "metadata": metadata,
                                 "reply_to_message_id": reply_to_message_id,
                                 "interactive_reply": interactive_reply,
+                                "media": extract_message_media(message),
                                 "message_payload": message,
                                 "raw_payload": payload,
                             }
@@ -1746,6 +1768,7 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "metadata": {},
                 "reply_to_message_id": normalize_text(payload.get("reply_to_message_id")),
                 "interactive_reply": {},
+                "media": {},
                 "message_payload": payload,
                 "raw_payload": payload,
             }

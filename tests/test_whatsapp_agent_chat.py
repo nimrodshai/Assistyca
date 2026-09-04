@@ -8,6 +8,7 @@ at their module seams.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import hmac
@@ -30,6 +31,28 @@ from packages.infrastructure.whatsapp_agent_chat import (
     infer_timezone_from_wa_id,
     resolve_scheduled_message_run_at,
 )
+
+
+def inbound_image_payload(
+    caption: str,
+    *,
+    media_id: str = "media-1",
+    sender: str = "972507322341",
+    phone_number_id: str = "platform-phone-1",
+    message_id: str = "wamid.image-1",
+) -> dict:
+    payload = inbound_text_payload("", sender=sender, phone_number_id=phone_number_id, message_id=message_id)
+    message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    message["type"] = "image"
+    del message["text"]
+    message["image"] = {"id": media_id, "mime_type": "image/jpeg", "sha256": "abc"}
+    if caption:
+        message["image"]["caption"] = caption
+    return payload
+
+
+PHOTO_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256))).decode("ascii")
+PHOTO_DATA_URL = f"data:image/png;base64,{PHOTO_BASE64}"
 
 
 OWNER_WA_ID = "972507322341"
@@ -78,6 +101,21 @@ def inbound_text_payload(
 
 
 class WhatsAppAgentHelperTests(unittest.TestCase):
+    def test_an_inbound_photo_carries_the_id_it_can_be_fetched_by(self) -> None:
+        from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+
+        events = extract_inbound_events(inbound_image_payload("", media_id="media-9"))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message_type"], "image")
+        self.assertEqual(events[0]["message_text"], "[image]")
+        self.assertEqual(events[0]["media"]["id"], "media-9")
+        self.assertEqual(events[0]["media"]["kind"], "image")
+
+        captioned = extract_inbound_events(inbound_image_payload("what is this?", media_id="media-8"))
+        self.assertEqual(captioned[0]["message_text"], "what is this?")
+        self.assertEqual(captioned[0]["media"]["id"], "media-8")
+        self.assertEqual(extract_inbound_events(inbound_text_payload("hi"))[0]["media"], {})
+
     def test_timezone_is_inferred_from_the_country_code(self) -> None:
         self.assertEqual(infer_timezone_from_wa_id("972507322341"), "Asia/Jerusalem")
         self.assertEqual(infer_timezone_from_wa_id("447911123456"), "Europe/London")
@@ -1015,6 +1053,82 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         self.assertEqual(kwargs["extra_payload"]["text"]["format"]["type"], "json_schema")
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
         self.assertEqual([m["role"] for m in transcript], ["user", "assistant"])
+
+    def test_a_photo_with_a_caption_reaches_the_model_as_an_image(self) -> None:
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                return_value={"mimeType": "image/png", "imageBase64": PHOTO_BASE64, "size": 264},
+            ) as download,
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                side_effect=[_loop_round(reply={"reply": "That's a flyer for LifeDance's 20th, Friday 4.9.26, 9:00-13:00."})],
+            ) as model,
+        ):
+            response = self._post_webhook(inbound_image_payload("What do you see here?", media_id="media-1", message_id="wamid.photo-1"))
+
+        self.assertIn("LifeDance", self._reply(response))
+        download.assert_called_once_with("media-1")
+        content = model.call_args.kwargs["input"][0]["content"]
+        self.assertEqual(content[0]["type"], "input_text")
+        self.assertIn('"latestUserMessage":"What do you see here?"', content[0]["text"])
+        self.assertIn('"attachedPhoto":{"fileName":"photo","mimeType":"image/png"}', content[0]["text"])
+        self.assertIn("A photo is attached to the latest message", content[0]["text"])
+        self.assertNotIn(PHOTO_BASE64[:40], content[0]["text"])
+        self.assertEqual(content[1], {"type": "input_image", "image_url": PHOTO_DATA_URL, "detail": "auto"})
+        self.assertTrue(model.call_args.kwargs["metadata"]["hasPhoto"])
+        transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
+        self.assertEqual(transcript[0]["text"], "What do you see here? [photo attached]")
+
+    def test_a_photo_on_its_own_is_a_message(self) -> None:
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                return_value={"mimeType": "image/png", "imageBase64": PHOTO_BASE64, "size": 264},
+            ),
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                side_effect=[_loop_round(reply={"reply": "That's a receipt from Cafe Noir for 98 shekels."})],
+            ) as model,
+        ):
+            response = self._post_webhook(inbound_image_payload("", media_id="media-2", message_id="wamid.photo-2"))
+
+        self.assertIn("Cafe Noir", self._reply(response))
+        content = model.call_args.kwargs["input"][0]["content"]
+        self.assertIn('"latestUserMessage":"Have a look at this photo."', content[0]["text"])
+        self.assertNotIn("[image]", content[0]["text"])
+        self.assertEqual(content[1]["type"], "input_image")
+        transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
+        self.assertEqual(transcript[0]["text"], "Have a look at this photo. [photo attached]")
+
+    def test_a_photo_that_cannot_be_fetched_is_said_so_without_a_model_turn(self) -> None:
+        from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
+
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                side_effect=WhatsAppAgentChatError("Meta refused the media download (404)."),
+            ),
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response") as model,
+        ):
+            response = self._post_webhook(inbound_image_payload("this one", media_id="media-3", message_id="wamid.photo-3"))
+
+        entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
+        self.assertEqual(entry["outcome"], "photo_unreadable")
+        self.assertIn("photo", entry["reply_text"].lower())
+        # The recovery composer may run; the turn itself never does.
+        self.assertFalse(any(call.kwargs.get("tool_name") == "portal_agent_loop" for call in model.call_args_list))
+        self.assertEqual(self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"])), [])
+
+    def test_a_customer_photo_is_not_a_conversation_with_the_agent(self) -> None:
+        with (
+            mock.patch("packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media") as download,
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", return_value=SimpleNamespace(output_text="ok")),
+        ):
+            response = self._post_webhook(inbound_image_payload("", sender="15559990000", media_id="media-4", message_id="wamid.photo-4"))
+
+        self.assertFalse(any(entry.get("action") == "agent_chat_reply" for entry in response["results"]))
+        download.assert_not_called()
 
     def test_a_lookup_without_its_source_gets_the_link_not_a_failed_run(self) -> None:
         link = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y"

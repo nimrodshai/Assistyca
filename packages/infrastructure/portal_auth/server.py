@@ -8783,6 +8783,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         confirmed_call = payload.get("confirmedCall") if isinstance(payload.get("confirmedCall"), dict) else None
         declined_call = payload.get("declinedCall") if isinstance(payload.get("declinedCall"), dict) else None
         open_question = payload.get("openQuestion") if isinstance(payload.get("openQuestion"), dict) else None
+        # A photo sent with the message goes to the model as an image; the
+        # context and the logs only name it.
+        photo_context = normalize_agent_photo_context(payload.get("photoContext"))
+        if not user_message and photo_context:
+            user_message = AGENT_PHOTO_DEFAULT_TEXT
         if not user_message and not confirmed_call:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_agent_turn", "message": "Tell me what you want help with."})
             return
@@ -8854,7 +8859,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 usage_recorder=self.database,
                 price_resolver=self.database.get_model_price,
                 config=load_openai_config(default_model=model, strict_tracking=False, include_prompt_in_metadata=False),
-                metadata={"source": "portal_agent", "loop": True},
+                metadata={"source": "portal_agent", "loop": True, "hasPhoto": bool(photo_context)},
             )
 
         try:
@@ -8868,6 +8873,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 confirmed_call=confirmed_call,
                 declined_call=declined_call,
                 open_question=open_question,
+                photo=photo_context,
             )
         except OpenAIError as exc:
             print(f"Agent loop failed: {exc.message}", flush=True)
@@ -11696,6 +11702,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 message_type=normalize_text(event.get("message_type")) or "text",
                 interactive_id=normalize_text(interactive_reply.get("id")),
                 source_message_id=normalize_text(event.get("source_message_id")),
+                media=event.get("media") if isinstance(event.get("media"), dict) else None,
             )
         except WhatsAppAgentChatError as exc:
             print(f"WhatsApp agent chat failed: {exc}", flush=True)

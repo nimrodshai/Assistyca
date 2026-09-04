@@ -14,6 +14,7 @@ the webhook handler, not here.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
@@ -34,8 +35,11 @@ from packages.infrastructure.notification_delivery import normalize_text
 from packages.infrastructure.notification_delivery import parse_bool
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
+from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
+from packages.infrastructure.agent_proposals import AGENT_PHOTO_MAX_BYTES
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.infrastructure.agent_proposals import missing_sources_for_lookup
+from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.agent_turns import TURN_FOLLOW_UP_PATHS
 from packages.infrastructure.agent_turns import TURN_STARTING_PATHS
 from packages.infrastructure.recovery_reply import build_situation
@@ -193,6 +197,52 @@ def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = D
     raise WhatsAppAgentChatError(
         "Assistyca WhatsApp sending is not configured, so the agent cannot reply on this channel."
     )
+
+
+def download_whatsapp_media(media_id: str, *, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> dict[str, Any]:
+    """Fetch a picture someone sent to the Assistyca number.
+
+    Meta serves media in two steps: the id resolves to a short-lived URL,
+    and the URL serves the bytes to the same token. The result is what the
+    turn's photo context takes; the caller decides whether it is an image
+    the model can read.
+    """
+
+    access_token = resolve_whatsapp_sender_access_token()
+    clean_id = normalize_text(media_id)
+    if not access_token or not clean_id:
+        raise WhatsAppAgentChatError("WhatsApp media cannot be fetched without the sender access token.")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        lookup = urllib_request.Request(
+            f"https://graph.facebook.com/{api_version}/{urllib_parse.quote(clean_id, safe='')}",
+            headers=headers,
+            method="GET",
+        )
+        with urllib_request.urlopen(lookup, timeout=20) as response:
+            described = json.loads(response.read().decode("utf-8"))
+        url = normalize_text((described or {}).get("url")) if isinstance(described, dict) else ""
+        mime_type = normalize_text((described or {}).get("mime_type")) if isinstance(described, dict) else ""
+        declared_size = int((described or {}).get("file_size") or 0) if isinstance(described, dict) else 0
+        if not url:
+            raise WhatsAppAgentChatError("Meta did not return a download URL for that media.")
+        if declared_size > AGENT_PHOTO_MAX_BYTES:
+            raise WhatsAppAgentChatError("That media is larger than a photo the assistant reads.")
+        fetch = urllib_request.Request(url, headers=headers, method="GET")
+        with urllib_request.urlopen(fetch, timeout=30) as response:
+            raw = response.read(AGENT_PHOTO_MAX_BYTES + 1)
+            mime_type = normalize_text(response.headers.get("Content-Type")).split(";")[0] or mime_type
+    except urllib_error.HTTPError as exc:
+        raise WhatsAppAgentChatError(f"Meta refused the media download ({exc.code}).") from exc
+    except (urllib_error.URLError, OSError, ValueError) as exc:
+        raise WhatsAppAgentChatError(f"The media download failed: {exc}") from exc
+    if not raw or len(raw) > AGENT_PHOTO_MAX_BYTES:
+        raise WhatsAppAgentChatError("That media is empty or larger than a photo the assistant reads.")
+    return {
+        "mimeType": mime_type,
+        "imageBase64": base64.b64encode(raw).decode("ascii"),
+        "size": len(raw),
+    }
 
 
 # Meta keeps "typing..." on screen for 25 seconds, then drops it. A turn that
@@ -977,6 +1027,13 @@ def resolve_scheduled_message_run_at(
     return candidate.astimezone(timezone.utc).isoformat()
 
 
+def transcript_text(text: str, photo: dict[str, Any] | None) -> str:
+    """What the transcript keeps of a message: its words, and that a photo
+    came with them. The picture itself is not stored; a later turn only
+    needs to know it was there."""
+    return f"{text} [photo attached]".strip() if photo else text
+
+
 class WhatsAppAgentChatError(RuntimeError):
     """The conversation could not produce or deliver a reply."""
 
@@ -1504,6 +1561,7 @@ class WhatsAppAgentChat:
         confirmed_call: dict[str, Any] | None = None,
         declined_call: dict[str, Any] | None = None,
         open_question: dict[str, Any] | None = None,
+        photo: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """One turn through the loop: the model reads, calls tools, and writes.
 
@@ -1514,7 +1572,7 @@ class WhatsAppAgentChat:
 
         history = self.database.list_recent_whatsapp_agent_messages(user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=text)
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo))
         payload: dict[str, Any] = {
             "userMessage": text,
             "conversation": conversation,
@@ -1522,6 +1580,8 @@ class WhatsAppAgentChat:
             "channel": "whatsapp",
             "toolContext": self._build_tool_context(),
         }
+        if photo:
+            payload["photoContext"] = photo
         if confirmed_call:
             payload["confirmedCall"] = {"tool": confirmed_call.get("tool"), "arguments": confirmed_call.get("arguments") or {}}
         if declined_call:
@@ -1561,7 +1621,7 @@ class WhatsAppAgentChat:
                     if len(available) == 1 and self._save_calendar_selection(available):
                         # One calendar is not a choice: read it and run the turn again.
                         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply or "(chose the only calendar)")
-                        return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question)
+                        return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question, photo=photo)
                     if available and not open_question:
                         outcome = "calendar_choice"
                         if reply:
@@ -1749,10 +1809,48 @@ class WhatsAppAgentChat:
         interactive_id: str = "",
         resumed: bool = False,
         source_message_id: str = "",
+        media: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         text = normalize_text(message_text)
         if self.user_id <= 0 or not self.email or not self.owner_wa_id:
             raise WhatsAppAgentChatError("The WhatsApp connection does not resolve to an active owner.")
+
+        # A photo is a message: it is fetched from Meta and goes to the model
+        # as an image beside the words, which may be just a caption or nothing
+        # at all. A photo that cannot be opened is said so, in the
+        # assistant's own words, rather than answered as if it were text.
+        kind = normalize_text(message_type).lower()
+        media_id = normalize_text((media or {}).get("id")) if isinstance(media, dict) else ""
+        photo: dict[str, Any] = {}
+        if kind == "image" and media_id:
+            try:
+                fetched = download_whatsapp_media(media_id)
+                photo = normalize_agent_photo_context({**fetched, "fileName": "photo"})
+            except WhatsAppAgentChatError as exc:
+                print(f"WhatsApp photo for user {self.user_id} could not be fetched: {exc}", flush=True)
+            if not photo:
+                reply = self._recover(
+                    build_situation(
+                        "unsupported_message",
+                        what_happened="I couldn't open that photo.",
+                        can_retry=True,
+                        options=[make_option("retry")],
+                    ),
+                    [],
+                )
+                message_id = self._send_owner_text(reply)
+                return {
+                    "type": "owner",
+                    "action": "agent_chat_reply",
+                    "outcome": "photo_unreadable",
+                    "reply_text": reply,
+                    "message_id": message_id,
+                }
+            if not text or text.lower() == "[image]":
+                # A photo with no caption arrives as the placeholder the
+                # webhook reader puts in for it. The model gets words that
+                # ask it to look, not a bracketed type name.
+                text = AGENT_PHOTO_DEFAULT_TEXT
 
         # A question the conversation is waiting on - which calendars to read -
         # is answered before anything else, by a tap or by words, and then the
@@ -1797,7 +1895,7 @@ class WhatsAppAgentChat:
         # request instead of asking the question again. The question stays
         # open, so a tap on the picker still works afterwards.
 
-        if not text or normalize_text(message_type).lower() not in {"", "text", "button", "interactive"}:
+        if not text or (kind not in {"", "text", "button", "interactive"} and not photo):
             reply = self._recover(
                 build_situation(
                     "unsupported_message",
@@ -1824,14 +1922,14 @@ class WhatsAppAgentChat:
                     "question": normalize_text(pending_choice.get("question")),
                     "calendars": [normalize_text(e.get("label")) or normalize_text(e.get("id")) for e in _pending_calendars(pending_choice)],
                 }
-            return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question)
+            return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question, photo=photo)
 
         history = self.database.list_recent_whatsapp_agent_messages(
             user_id=self.user_id,
             limit=AGENT_CHAT_HISTORY_LIMIT,
         )
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=text)
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo))
         active_proposal = self.database.get_whatsapp_agent_active_proposal(user_id=self.user_id)
 
         turn_payload: dict[str, Any] = {
@@ -1841,6 +1939,8 @@ class WhatsAppAgentChat:
             "channel": "whatsapp",
             "toolContext": self._build_tool_context(),
         }
+        if photo:
+            turn_payload["photoContext"] = photo
         if active_proposal:
             turn_payload["activeProposal"] = active_proposal
         if pending_disconnect:

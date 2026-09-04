@@ -31,7 +31,9 @@ from typing import Any, Callable
 
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.infrastructure.agent_proposals import LOOKUP_SOURCE_REQUIREMENTS
+from packages.infrastructure.agent_proposals import build_agent_turn_input
 from packages.infrastructure.agent_proposals import connected_sources
+from packages.infrastructure.agent_proposals import describe_agent_photo_context
 from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
@@ -661,6 +663,21 @@ _CHANNEL_RULES = {
 }
 
 
+# A photo rides with the latest message as an image the model can look at.
+# These rules say what to make of it; the picture itself is in the input
+# beside this text, never inside it.
+_PHOTO_RULES = (
+    "A photo is attached to the latest message and is part of it: what it shows is what the person is "
+    "talking about, and the words may say nothing more than \"this\". Look at it before deciding what the "
+    "message is about, and answer from what is in it - a receipt or invoice, a screenshot of a chat, a "
+    "calendar, or an inbox, a note, a product, a flyer, a form. Read text in it (amounts, dates, names) as "
+    "if the person had typed it, and quote what matters. Describe the photo only as far as the request "
+    "needs. It is off topic only when the photo and the words together are not about running this "
+    "business. Never say you cannot see or open images. If the part that matters is too blurry or dark to "
+    "read, say which part, so a better one can be sent.\n"
+)
+
+
 def build_loop_context_text(
     *,
     user_message: str,
@@ -673,9 +690,11 @@ def build_loop_context_text(
     confirmed_action: dict[str, Any] | None = None,
     declined_action: dict[str, Any] | None = None,
     open_question: dict[str, Any] | None = None,
+    photo: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
+    attached_photo = describe_agent_photo_context(photo)
     context: dict[str, Any] = {
         "channel": normalized_channel,
         "timezone": timezone_name,
@@ -685,6 +704,7 @@ def build_loop_context_text(
         "knownFacts": facts[:40],
         "recentConversation": conversation[-MAX_CONVERSATION_MESSAGES:],
         "latestUserMessage": user_message,
+        "attachedPhoto": attached_photo,
     }
     if confirmed_action:
         context["confirmedAction"] = confirmed_action
@@ -694,7 +714,8 @@ def build_loop_context_text(
         context["openQuestion"] = open_question
     return (
         f"{_CHANNEL_RULES[normalized_channel]}\n"
-        "Respond to CONTEXT.latestUserMessage using the conversation and the tools.\n"
+        + (_PHOTO_RULES if attached_photo else "")
+        + "Respond to CONTEXT.latestUserMessage using the conversation and the tools.\n"
         f"CONTEXT\n{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
     )
 
@@ -710,9 +731,11 @@ def run_agent_loop(
     confirmed_call: dict[str, Any] | None = None,
     declined_call: dict[str, Any] | None = None,
     open_question: dict[str, Any] | None = None,
+    photo: dict[str, Any] | None = None,
 ) -> LoopResult:
     """Run one turn. call_model takes the input items and the tool definitions
-    and returns an OpenAIResult-like object with output_text and raw_response."""
+    and returns an OpenAIResult-like object with output_text and raw_response.
+    A photo, when there is one, goes in beside the context as an image."""
 
     started = time.monotonic()
     turn_id = uuid.uuid4().hex[:12]
@@ -727,21 +750,22 @@ def run_agent_loop(
         confirmed_action = _execute_confirmed(context, confirmed_call, tool_calls, completed)
 
     tools = tool_definitions(context.tool_context)
-    input_items: list[dict[str, Any]] = [{
-        "role": "user",
-        "content": build_loop_context_text(
-            user_message=user_message,
-            conversation=conversation,
-            timezone_name=context.timezone_name,
-            today=today,
-            tool_context=context.tool_context,
-            facts=facts or [],
-            channel=context.channel,
-            confirmed_action=confirmed_action,
-            declined_action=declined_call,
-            open_question=open_question,
-        ),
-    }]
+    context_text = build_loop_context_text(
+        user_message=user_message,
+        conversation=conversation,
+        timezone_name=context.timezone_name,
+        today=today,
+        tool_context=context.tool_context,
+        facts=facts or [],
+        channel=context.channel,
+        confirmed_action=confirmed_action,
+        declined_action=declined_call,
+        open_question=open_question,
+        photo=photo,
+    )
+    input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
+        {"role": "user", "content": context_text},
+    ]
 
     reply_payload: dict[str, Any] | None = None
     rounds = 0
