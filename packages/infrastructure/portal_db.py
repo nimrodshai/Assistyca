@@ -366,6 +366,15 @@ CREATE TABLE IF NOT EXISTS whatsapp_signups (
     completed_at TEXT
 );
 
+-- Every WhatsApp message id the platform number has already acted on. Meta
+-- redelivers a webhook it did not get a quick answer to, and a conversation
+-- that runs a model and a calendar before answering is never quick, so the
+-- same message would otherwise be answered twice.
+CREATE TABLE IF NOT EXISTS whatsapp_processed_messages (
+    message_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS whatsapp_agent_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -378,6 +387,7 @@ CREATE TABLE IF NOT EXISTS whatsapp_agent_messages (
 CREATE TABLE IF NOT EXISTS whatsapp_agent_state (
     user_id INTEGER PRIMARY KEY,
     active_proposal_json TEXT NOT NULL DEFAULT '',
+    pending_json TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -1031,6 +1041,12 @@ class PortalDatabase:
         }
         if columns and "transcript_json" not in columns:
             conn.execute("ALTER TABLE whatsapp_signups ADD COLUMN transcript_json TEXT NOT NULL DEFAULT '[]'")
+        state_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(whatsapp_agent_state)").fetchall()
+        }
+        if state_columns and "pending_json" not in state_columns:
+            conn.execute("ALTER TABLE whatsapp_agent_state ADD COLUMN pending_json TEXT NOT NULL DEFAULT ''")
 
     def _migrate_user_billing_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -4921,21 +4937,29 @@ class PortalDatabase:
             )
             conn.commit()
 
-    def record_whatsapp_signup_attempt(self, *, wa_id: str, give_up: bool = False) -> dict[str, Any]:
+    def record_whatsapp_signup_attempt(self, *, wa_id: str, give_up: bool = False, reset: bool = False) -> dict[str, Any]:
+        """Count one more turn without an email - or, with reset, start counting afresh."""
+
         number = normalize_whatsapp_lookup_id(wa_id)
         if not number:
             return {}
         with self._connection() as conn:
-            conn.execute(
-                """
-                UPDATE whatsapp_signups
-                SET attempts = attempts + 1,
-                    status = CASE WHEN ? THEN 'abandoned' ELSE status END,
-                    updated_at = ?
-                WHERE wa_id = ?
-                """,
-                (1 if give_up else 0, now_iso(), number),
-            )
+            if reset:
+                conn.execute(
+                    "UPDATE whatsapp_signups SET attempts = 0, status = 'awaiting_email', updated_at = ? WHERE wa_id = ?",
+                    (now_iso(), number),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE whatsapp_signups
+                    SET attempts = attempts + 1,
+                        status = CASE WHEN ? THEN 'abandoned' ELSE status END,
+                        updated_at = ?
+                    WHERE wa_id = ?
+                    """,
+                    (1 if give_up else 0, now_iso(), number),
+                )
             conn.commit()
         return self.get_whatsapp_signup(number) or {}
 
@@ -5159,6 +5183,61 @@ class PortalDatabase:
             conn.commit()
 
         return {"ok": True, "userId": user_id, "waId": number, "claimedAt": stamp}
+
+    def claim_whatsapp_message_id(self, message_id: str) -> bool:
+        """True the first time this WhatsApp message id is seen, False after.
+
+        One insert, so two deliveries racing each other cannot both win.
+        """
+
+        normalized = normalize_text(message_id)
+        if not normalized:
+            return True
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO whatsapp_processed_messages (message_id, created_at) VALUES (?, ?)",
+                (normalized, now_iso()),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0) == 1
+
+    def get_whatsapp_agent_pending(self, *, user_id: int) -> dict[str, Any] | None:
+        """A question the conversation is waiting on before it can continue."""
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT pending_json FROM whatsapp_agent_state WHERE user_id = ?",
+                (resolved_user_id,),
+            ).fetchone()
+        raw = str(row["pending_json"] or "") if row else ""
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) and parsed else None
+
+    def save_whatsapp_agent_pending(self, *, user_id: int, pending: dict[str, Any] | None) -> None:
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return
+        serialized = json.dumps(pending, ensure_ascii=False, separators=(",", ":")) if isinstance(pending, dict) and pending else ""
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO whatsapp_agent_state (user_id, active_proposal_json, pending_json, updated_at)
+                VALUES (?, '', ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    pending_json = excluded.pending_json,
+                    updated_at = excluded.updated_at
+                """,
+                (resolved_user_id, serialized, now_iso()),
+            )
+            conn.commit()
 
     def save_whatsapp_agent_message(self, *, user_id: int, role: str, text: str) -> dict[str, Any]:
         """One turn of the owner's WhatsApp conversation with the agent.

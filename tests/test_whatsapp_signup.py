@@ -203,15 +203,17 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertNotIn("mallory", self.replies()[0])
 
     def test_the_steer_gets_firmer_each_turn(self) -> None:
+        # Non-answers only: a question ("tell me more", "and?") is always
+        # answered in full, whatever the count, so it cannot show the steer.
         self.post("hi", message_id="wamid.t1")
-        self.post("tell me more", message_id="wamid.t2")
-        self.post("and?", message_id="wamid.t3")
+        self.post("hmm", message_id="wamid.t2")
+        self.post("later", message_id="wamid.t3")
         prompts = [c.kwargs["prompt"] for c in self.model.call_args_list]
         self.assertIn("Answer whatever they said", prompts[0])
         self.assertIn("ask for it again", prompts[1])
         self.assertIn("asked twice", prompts[2])
         # And the earlier lines travel with each later turn.
-        self.assertIn("tell me more", prompts[2])
+        self.assertIn("hmm", prompts[2])
 
     def test_the_concierge_reply_is_plain_whatsapp_text(self) -> None:
         reply = normalize_signup_concierge_reply({"reply": "**Sure.** I can help.\n- mail\n- calendar"}, fallback="x")

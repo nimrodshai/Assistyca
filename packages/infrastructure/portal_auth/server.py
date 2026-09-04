@@ -196,6 +196,7 @@ from packages.infrastructure.whatsapp_agent_chat import normalize_whatsapp_numbe
 from packages.infrastructure.whatsapp_agent_chat import resolve_assistyca_display_number
 from packages.infrastructure.whatsapp_agent_chat import resolve_operator_whatsapp_numbers
 from packages.infrastructure.whatsapp_agent_chat import send_assistyca_text
+from packages.infrastructure.whatsapp_agent_chat import send_assistyca_interactive
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_agent_chat_enabled
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_AGAIN_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_CONCIERGE_INSTRUCTIONS
@@ -208,6 +209,10 @@ from packages.infrastructure.whatsapp_agent_chat import SIGNUP_REOPEN_AFTER_SECO
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_WELCOME_TEXT
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
 from packages.infrastructure.whatsapp_agent_chat import build_connect_links_line
+from packages.infrastructure.whatsapp_agent_chat import CALENDAR_PICK_PREFIX
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ESCALATION_WINDOW_SECONDS
+from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_interactive
+from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_text
 from packages.infrastructure.whatsapp_agent_chat import build_link_existing_account_text
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
@@ -472,10 +477,16 @@ def normalize_calendar_selection(value: Any) -> list[dict[str, str]]:
             continue
         calendar_id = calendar_ids[0]
         seen.add(calendar_id)
-        selection.append({
+        normalized: dict[str, str] = {
             "id": calendar_id,
             "label": (label or ("My calendar" if calendar_id == "primary" else calendar_id))[:200],
-        })
+        }
+        # The colour a person knows the calendar by. Kept only when Google
+        # sent one, so lists built from bare ids keep their old shape.
+        color = normalize_text(entry.get("color")) if isinstance(entry, dict) else ""
+        if color:
+            normalized["color"] = color[:16]
+        selection.append(normalized)
         if len(selection) >= CALENDAR_MAX_CALENDARS:
             break
     return selection
@@ -10098,6 +10109,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         print(json.dumps({"event": "whatsapp_oauth_connected", "provider": provider, "purpose": purpose,
                           "senderWaId": self._mask_whatsapp_log_identifier(wa_id)}, ensure_ascii=True, sort_keys=True), flush=True)
+
+        # The question about which calendars to read is asked now, at the
+        # moment of connecting, not after the person's first real question.
+        # One calendar is no question at all.
+        picker: dict[str, Any] | None = None
+        if provider == "google":
+            calendar_connection = self._calendar_connection_record(email)
+            available = connection_available_calendars(calendar_connection)
+            selected = connection_calendar_selection(calendar_connection)
+            if not selected and len(available) == 1:
+                self.database.update_platform_connection_status(
+                    email, platform="calendar", connection_status="connected",
+                    metadata_updates={CALENDAR_SELECTION_METADATA_KEY: available},
+                )
+            elif not selected and len(available) > 1:
+                self.database.save_whatsapp_agent_pending(
+                    user_id=int(user.get("id") or 0),
+                    pending={"kind": "calendar_choice", "calendars": available[:10], "question": "",
+                             "askedAt": datetime.now(timezone.utc).isoformat()},
+                )
+                picker = build_calendar_choice_interactive(available)
+
+        if picker is not None:
+            text = f"{linked or 'Your '}{connected} connected. One thing before I read your calendar:\n\n" + build_calendar_choice_text(available)
+            if wa_id:
+                try:
+                    send_assistyca_text(recipient_wa_id=wa_id, text=text)
+                except Exception as exc:  # noqa: BLE001 - the page still says what to do
+                    print(f"WhatsApp connected note could not be sent: {exc}", flush=True)
+                send_assistyca_interactive(recipient_wa_id=wa_id, payload=picker)
+            self._send_whatsapp_oauth_page(ok=True, message="Connected. Back in WhatsApp, tell me which calendars to read.")
+            return
+
         finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.")
 
     def _build_google_calendar_oauth_state(
@@ -10713,6 +10757,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         transcript = list((signup or {}).get("transcript") or [])
         attempt = int((signup or {}).get("attempts") or 0) + 1
+        if (now - last_touch).total_seconds() > SIGNUP_ESCALATION_WINDOW_SECONDS:
+            # Coming back after an hour is a new conversation, not the fourth
+            # time in a row they ignored the question. The transcript stays;
+            # the impatience does not.
+            attempt = 1
+            self.database.record_whatsapp_signup_attempt(wa_id=sender_wa_id, reset=True)
         self.database.append_whatsapp_signup_message(wa_id=sender_wa_id, role="user", text=message_text)
 
         email = find_email_in_text(message_text)
@@ -11021,7 +11071,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         interactive_reply = event.get("interactive_reply")
         if isinstance(interactive_reply, dict) and normalize_text(interactive_reply.get("id")):
-            return True
+            # A tap on the agent's own calendar picker belongs to the agent.
+            return not normalize_text(interactive_reply.get("id")).startswith(CALENDAR_PICK_PREFIX)
 
         if service.resolve_reengagement_report_request(event) is not None:
             return True
@@ -11084,10 +11135,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 wa_id=normalize_text(connection.get("ownerWaId")),
             ),
         )
+        interactive_reply = event.get("interactive_reply") if isinstance(event.get("interactive_reply"), dict) else {}
         try:
             return chat.handle_message(
                 event.get("message_text"),
                 message_type=normalize_text(event.get("message_type")) or "text",
+                interactive_id=normalize_text(interactive_reply.get("id")),
             )
         except WhatsAppAgentChatError as exc:
             print(f"WhatsApp agent chat failed: {exc}", flush=True)
@@ -13112,6 +13165,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "error": "Missing phone_number_id in webhook metadata.",
                 })
                 continue
+
+            if phone_number_id == resolve_whatsapp_sender_phone_number_id():
+                # Meta redelivers a webhook it did not get a quick answer to,
+                # and a reply that runs a model is never quick. The same
+                # message must never be answered twice.
+                if not self.database.claim_whatsapp_message_id(normalize_text(event.get("source_message_id"))):
+                    results.append({
+                        "type": "duplicate",
+                        "sender_wa_id": event.get("sender_wa_id", ""),
+                        "phone_number_id": phone_number_id,
+                        "message_id": event.get("source_message_id", ""),
+                    })
+                    continue
 
             connection, route_source = self._resolve_whatsapp_connection_for_webhook(
                 phone_number_id,

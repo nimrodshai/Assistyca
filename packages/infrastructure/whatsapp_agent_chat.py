@@ -32,6 +32,7 @@ from packages.infrastructure.notification_delivery import normalize_text
 from packages.infrastructure.notification_delivery import parse_bool
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
+from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 
 
@@ -295,25 +296,27 @@ def build_whatsapp_signup_link() -> str:
 
 SIGNUP_CONCIERGE_INSTRUCTIONS = (
     "You are Assistyca, a personal assistant a person reaches by texting on WhatsApp. This person "
-    "does not have an account yet. Reply as yourself, in a short WhatsApp message, and return valid "
-    "JSON only with a single key \"reply\"."
+    "does not have an account yet. Be warm and a little playful - a sharp assistant who is glad they "
+    "wrote - never procedural or stiff. Reply as yourself, in a short WhatsApp message, and return "
+    "valid JSON only with a single key \"reply\"."
 )
+
+SIGNUP_ESCALATION_WINDOW_SECONDS = 3600
+_QUESTION_OPENERS = ("how ", "what ", "can ", "could ", "who ", "why ", "tell me", "do you", "are you", "is this", "which ")
+
+
+def looks_like_a_question(text: Any) -> bool:
+    """Whether a message is asking something rather than answering."""
+
+    body = normalize_text(text).lower()
+    return "?" in body or body.startswith(_QUESTION_OPENERS)
 
 # What the assistant can truthfully say it does. Kept in one place so the
 # signup conversation and the product never drift apart.
 SIGNUP_PRODUCT_SUMMARY = (
-    "Assistyca is a personal assistant that lives in this chat and works from the person's own inbox and "
-    "calendar once they connect them. Concretely: every morning it can text what is on today and where "
-    "the gaps are; it can answer 'what did I spend on software last month' or 'did the plumber ever send "
-    "the invoice' by actually reading the mail; it chases missing receipts and gathers a month of them into "
-    "one folder for the accountant; it summarises a long thread into three lines; it finds a free hour that "
-    "works for two calendars; it watches the web on a schedule - a competitor's prices, a venue's "
-    "availability, tickets going on sale, a keyword in the news - and messages when something changes; "
-    "it sets reminders and recurring nudges ('text me every Friday to send the weekly report'); and it "
-    "notices people the person has not replied to in a while. Anything it does once it can do on a "
-    "schedule. It never sends anything or spends anything without asking first. Nothing personal is read "
-    "until they have an account and connect an inbox or calendar themselves - a tap on a link, no "
-    "website needed."
+    ASSISTANT_CAPABILITIES_PITCH
+    + " Nothing personal is read until they have an account and connect an inbox or calendar themselves "
+    "- a tap on a link, no website needed."
 )
 
 
@@ -339,11 +342,18 @@ def build_signup_concierge_prompt(
             "they asked something earlier in this conversation, pick that up now rather than starting over. "
             "Do not ask for their email again."
         )
-    elif attempt <= 1:
+    elif attempt <= 1 or looks_like_a_question(user_message):
+        # A real question always gets the real answer, however many times the
+        # email has been asked for: "how can you help me?" is not a refusal.
         task = (
-            "Answer whatever they said or asked, honestly, from the summary of what you do. Then, in the "
-            "same message, say that you need an email address to set up their account before you can do "
-            "any of it, and ask for it."
+            "Answer whatever they said or asked, honestly and warmly, from the summary of what you do. If "
+            "they asked what you can do or how you can help, do not list features: describe their week "
+            "getting easier and then offer three or four concrete things they could say to you, in their "
+            "own voice, mixing the practical with the delightful - for example 'Text me at 7 with what's on "
+            "today', 'Tell me if flights to Lisbon drop under 120', 'Every Sunday remind me to call mum', "
+            "'What did I spend at Amazon last month?' - inventing fresh ones rather than repeating these. "
+            "Then, in the same message, say that you need an email address to set up their account before "
+            "you can start, and ask for it."
         )
     elif attempt == 2:
         task = (
@@ -408,6 +418,133 @@ SIGNUP_WELCOME_TEXT = (
     "You're set up. Ask me anything — I can go through your inbox, check your calendar, chase "
     "receipts, or remind you about things. What's on your plate?"
 )
+
+
+CALENDAR_PICK_PREFIX = "calpick:"
+_COLOR_DOTS = (
+    ((0xE0, 0x3E, 0x3E), "🔴"), ((0xF0, 0x8C, 0x2E), "🟠"), ((0xF2, 0xD2, 0x4B), "🟡"),
+    ((0x3D, 0xA8, 0x5C), "🟢"), ((0x3B, 0x82, 0xF6), "🔵"), ((0x8B, 0x5C, 0xF6), "🟣"),
+    ((0x8B, 0x5E, 0x3C), "🟤"), ((0x22, 0x22, 0x22), "⚫"),
+)
+
+
+def color_dot(hex_color: Any) -> str:
+    """The emoji circle nearest a calendar's colour, or a neutral one.
+
+    WhatsApp has no coloured UI to draw, so the colour a person knows their
+    calendar by is carried the one way a text message can carry it.
+    """
+
+    raw = normalize_text(hex_color).lstrip("#")
+    if len(raw) == 3:
+        raw = "".join(ch * 2 for ch in raw)
+    if len(raw) != 6:
+        return "⚪"
+    try:
+        r, g, b = (int(raw[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return "⚪"
+    if r > 225 and g > 225 and b > 225:
+        return "⚪"
+    return min(_COLOR_DOTS, key=lambda item: (item[0][0] - r) ** 2 + (item[0][1] - g) ** 2 + (item[0][2] - b) ** 2)[1]
+
+
+def build_calendar_choice_text(calendars: list[dict[str, Any]], *, resuming: str = "") -> str:
+    """The numbered list a person answers, with a dot in each calendar's colour."""
+
+    rows = []
+    for index, entry in enumerate(calendars[:10], start=1):
+        label = normalize_text(entry.get("label")) or normalize_text(entry.get("id")) or f"Calendar {index}"
+        rows.append(f"{index}. {color_dot(entry.get('color'))} {label}")
+    head = "Which calendars should I read? Here's what you have:"
+    tail = "Reply with the numbers (like 1, 3), the names, or *all*."
+    if resuming:
+        tail += " Then I'll answer your question straight away."
+    return "\n".join([head, *rows, "", tail])
+
+
+def build_calendar_choice_interactive(calendars: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A tap-to-pick list, for the common case of choosing one calendar.
+
+    WhatsApp lists pick a single row, so this sits beside the numbered text,
+    which is how more than one gets chosen.
+    """
+
+    rows = []
+    for index, entry in enumerate(calendars[:10], start=1):
+        label = normalize_text(entry.get("label")) or normalize_text(entry.get("id")) or f"Calendar {index}"
+        title = f"{color_dot(entry.get('color'))} {label}"[:24]
+        rows.append({"id": f"{CALENDAR_PICK_PREFIX}{index}", "title": title})
+    if not rows:
+        return None
+    return {
+        "type": "list",
+        "body": {"text": "Tap one calendar to choose it, or reply with numbers to choose several."},
+        "action": {"button": "Choose a calendar", "sections": [{"title": "Your calendars", "rows": rows}]},
+    }
+
+
+def parse_calendar_choice(
+    text: Any,
+    calendars: list[dict[str, Any]],
+    *,
+    interactive_id: str = "",
+) -> list[dict[str, Any]]:
+    """Which calendars a reply means: a tap, numbers, names, or all of them."""
+
+    options = calendars[:10]
+    if not options:
+        return []
+    picked = normalize_text(interactive_id)
+    if picked.startswith(CALENDAR_PICK_PREFIX):
+        try:
+            index = int(picked[len(CALENDAR_PICK_PREFIX):])
+        except ValueError:
+            return []
+        return [options[index - 1]] if 1 <= index <= len(options) else []
+
+    body = normalize_text(text).lower()
+    if not body:
+        return []
+    if re.fullmatch(r"(all|all of them|both|everything|every one)\W*", body):
+        return list(options)
+
+    chosen: list[dict[str, Any]] = []
+    for token in re.findall(r"\d+", body):
+        index = int(token)
+        if 1 <= index <= len(options) and options[index - 1] not in chosen:
+            chosen.append(options[index - 1])
+    if chosen:
+        return chosen
+    for entry in options:
+        label = normalize_text(entry.get("label")).lower()
+        if label and (label in body or body in label) and entry not in chosen:
+            chosen.append(entry)
+    return chosen
+
+
+def send_assistyca_interactive(*, recipient_wa_id: str, payload: dict[str, Any] | None, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> str:
+    """Send one interactive message (a list, buttons) from the Assistyca number.
+
+    Never raises: an interactive message always rides beside plain text that
+    carries the same choice, so losing it costs a tap, not the conversation.
+    """
+
+    if not payload:
+        return ""
+    access_token = resolve_whatsapp_sender_access_token()
+    phone_number_id = resolve_whatsapp_sender_phone_number_id()
+    try:
+        if access_token and phone_number_id:
+            return send_whatsapp_message(
+                access_token=access_token, phone_number_id=phone_number_id, api_version=api_version,
+                recipient_wa_id=recipient_wa_id, message_text=None, interactive=payload,
+            )
+        if parse_bool(os.getenv("WHATSAPP_ALLOW_MOCK_SEND")):
+            return f"mock-{uuid.uuid4().hex}"
+    except Exception as exc:  # noqa: BLE001
+        print(f"WhatsApp interactive message could not be sent: {exc}", flush=True)
+    return ""
 
 
 def normalize_whatsapp_number(value: Any) -> str:
@@ -740,6 +877,69 @@ class WhatsAppAgentChat:
             or "I couldn't schedule that just now. Please try again in a moment."
         )
 
+    def _save_calendar_selection(self, calendars: list[dict[str, Any]]) -> bool:
+        response, status = self._api(
+            "POST",
+            "/api/platform-connections/calendars",
+            {"calendars": [{"id": entry.get("id"), "label": entry.get("label")} for entry in calendars]},
+        )
+        return status == 200 and bool(response.get("ok"))
+
+    def _ask_calendar_choice(self, calendars: list[dict[str, Any]], *, question: str) -> tuple[str, dict[str, Any] | None]:
+        """Hold the question, and ask which calendars - as a list, with a tap."""
+
+        self.database.save_whatsapp_agent_pending(
+            user_id=self.user_id,
+            pending={
+                "kind": "calendar_choice",
+                "calendars": [
+                    {"id": entry.get("id"), "label": entry.get("label"), "color": entry.get("color")}
+                    for entry in calendars[:10]
+                ],
+                "question": normalize_text(question),
+                "askedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return (
+            build_calendar_choice_text(calendars, resuming=normalize_text(question)),
+            build_calendar_choice_interactive(calendars),
+        )
+
+    def _answer_calendar_choice(self, pending: dict[str, Any], *, text: str, interactive_id: str) -> dict[str, Any]:
+        calendars = [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]
+        chosen = parse_calendar_choice(text, calendars, interactive_id=interactive_id)
+        if not chosen:
+            reply = "I didn't catch which ones.\n\n" + build_calendar_choice_text(calendars, resuming=normalize_text(pending.get("question")))
+            message_id = self._send_owner_text(reply)
+            self._send_owner_interactive(build_calendar_choice_interactive(calendars))
+            return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_retry",
+                    "reply_text": reply, "message_id": message_id}
+
+        if not self._save_calendar_selection(chosen):
+            reply = "I couldn't save that choice just now. Please try again in a moment."
+            message_id = self._send_owner_text(reply)
+            return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_failed",
+                    "reply_text": reply, "message_id": message_id}
+
+        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+        names = ", ".join(normalize_text(entry.get("label")) or "your calendar" for entry in chosen)
+        acknowledged = f"Got it - I'll read {names}."
+        question = normalize_text(pending.get("question"))
+        if not question:
+            reply = acknowledged + " Ask me anything about your schedule."
+            message_id = self._send_owner_text(reply)
+            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+            return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_saved",
+                    "reply_text": reply, "message_id": message_id}
+        # The interrupted question, answered now rather than asked for again.
+        self._send_owner_text(acknowledged)
+        result = self.handle_message(question, resumed=True)
+        result["outcome"] = "calendar_choice_saved"
+        return result
+
+    def _send_owner_interactive(self, payload: dict[str, Any] | None) -> str:
+        return send_assistyca_interactive(recipient_wa_id=self.owner_wa_id, payload=payload, api_version=self.api_version)
+
     def _answer_now(self, turn: dict[str, Any], user_message: str, history: list[dict[str, str]]) -> str:
         tasks = turn.get("tasks") if isinstance(turn.get("tasks"), list) else []
         if not tasks:
@@ -768,6 +968,22 @@ class WhatsAppAgentChat:
                 },
                 timeout=AGENT_RUN_TIMEOUT_SECONDS,
             )
+            if status == 409 and normalize_text(response.get("error")) == "calendar_selection_required":
+                available = [entry for entry in (response.get("availableCalendars") or []) if isinstance(entry, dict)]
+                if len(available) == 1:
+                    # One calendar is not a choice. Read it, and say nothing.
+                    if self._save_calendar_selection(available):
+                        response, status = self._api(
+                            "POST", "/api/agent/proposals/run",
+                            {"proposalType": normalize_text(task.get("proposalType")).lower(), "mode": "answer",
+                             "fields": fields, "deliveryChannel": "portal", "timezone": self.timezone_name},
+                            timeout=AGENT_RUN_TIMEOUT_SECONDS,
+                        )
+                elif available and not getattr(self, "_calendar_choice_asked", False):
+                    self._calendar_choice_asked = True
+                    reply, interactive = self._ask_calendar_choice(available, question=user_message)
+                    self._pending_interactive = interactive
+                    return reply
             if response.get("needsReceiptDecision"):
                 questions = response.get("receiptQuestions") if isinstance(response.get("receiptQuestions"), list) else []
                 first_question = ""
@@ -825,10 +1041,24 @@ class WhatsAppAgentChat:
 
     # -- the whole loop ----------------------------------------------------
 
-    def handle_message(self, message_text: Any, *, message_type: str = "text") -> dict[str, Any]:
+    def handle_message(
+        self,
+        message_text: Any,
+        *,
+        message_type: str = "text",
+        interactive_id: str = "",
+        resumed: bool = False,
+    ) -> dict[str, Any]:
         text = normalize_text(message_text)
         if self.user_id <= 0 or not self.email or not self.owner_wa_id:
             raise WhatsAppAgentChatError("The WhatsApp connection does not resolve to an active owner.")
+
+        # A question the conversation is waiting on - which calendars to read -
+        # is answered before anything else, by a tap or by words, and then the
+        # question that was interrupted is picked straight back up.
+        pending = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
+        if pending and pending.get("kind") == "calendar_choice":
+            return self._answer_calendar_choice(pending, text=text, interactive_id=interactive_id)
 
         if not text or normalize_text(message_type).lower() not in {"", "text", "button", "interactive"}:
             reply = (
@@ -890,6 +1120,11 @@ class WhatsAppAgentChat:
             "I read that, but I could not put an answer together. Please try phrasing it another way."
         )
         message_id = self._send_owner_text(reply)
+        interactive = getattr(self, "_pending_interactive", None)
+        if interactive:
+            self._pending_interactive = None
+            self._send_owner_interactive(interactive)
+            outcome = "calendar_choice"
         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
         return {
             "type": "owner",
@@ -908,6 +1143,13 @@ __all__ = [
     "build_whatsapp_claim_link",
     "build_whatsapp_signup_link",
     "build_connect_links_line",
+    "build_calendar_choice_interactive",
+    "build_calendar_choice_text",
+    "color_dot",
+    "looks_like_a_question",
+    "parse_calendar_choice",
+    "CALENDAR_PICK_PREFIX",
+    "SIGNUP_ESCALATION_WINDOW_SECONDS",
     "build_link_existing_account_text",
     "infer_mail_provider",
     "build_signup_concierge_prompt",
@@ -919,6 +1161,7 @@ __all__ = [
     "generate_whatsapp_claim_code",
     "resolve_assistyca_display_number",
     "resolve_whatsapp_signup_daily_cap",
+    "send_assistyca_interactive",
     "send_assistyca_text",
     "infer_timezone_from_wa_id",
     "normalize_whatsapp_number",

@@ -253,3 +253,44 @@ name one, each for a reason worth knowing rather than a gap nobody noticed:
   receipt look-alike question**: two v1 limits of the conversation itself,
   noted under "How a turn runs". Both are about porting more of the browser's
   dispatch to the server, not about links.
+
+## One message, one answer
+
+Meta redelivers a webhook it did not get a quick answer to, and a reply that
+runs a model and reads a calendar is never quick. Every inbound message to the
+Assistyca number is therefore claimed by its WhatsApp message id in
+`whatsapp_processed_messages` before anything else happens; a redelivery is
+answered `duplicate` and does nothing. (Traffic to a client's own number keeps
+its existing dedupe in `save_whatsapp_message`.) The proper next step is to
+acknowledge the webhook before doing the work; this makes the redelivery
+harmless in the meantime.
+
+## Choosing calendars from the phone
+
+Reading a calendar needs to know *which* calendars, and on the web a picker
+appears for that. On WhatsApp the question is asked in three ways at once:
+
+* a **numbered list**, one line per calendar with a dot in that calendar's
+  colour (`color_dot` maps Google's hex to the nearest emoji circle);
+* a **tap-to-pick list** (`interactive` list message, row ids `calpick:<n>`),
+  which WhatsApp limits to one row per tap - so it sits beside the text;
+* and the words: reply `1, 3`, the names, or `all`.
+
+It is asked at the natural moment. When Google connects and returns more than
+one calendar, the "connected" message carries the list right away rather than
+letting the first real question run into it; one calendar is selected
+silently, because one calendar is not a choice. If a question does run into
+it later, the question is **held** in `whatsapp_agent_state.pending_json` and
+answered the moment the choice is made - "Got it, I'll read Work and Family"
+followed by the answer - instead of being asked for again. A tap on the picker
+is exempt from the approval-flow routing that otherwise claims interactive
+replies.
+
+## A fresh morning is a fresh conversation
+
+The signup concierge gets firmer each turn the email is not given. That count
+now resets after an hour's gap, and a message that is a *question* - "how can
+you help me?" - always gets the full, warm answer with three or four concrete
+things the person could ask, however many times the email has been asked for.
+The capability pitch lives once, in `ASSISTANT_CAPABILITIES_PITCH`, and both
+the concierge and the working agent describe the same product from it.
