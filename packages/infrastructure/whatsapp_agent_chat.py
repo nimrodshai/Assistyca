@@ -35,6 +35,7 @@ from packages.infrastructure.notification_delivery import parse_bool
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
+from packages.infrastructure.agent_proposals import missing_sources_for_lookup
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
@@ -47,6 +48,10 @@ AGENT_CHAT_REPLY_MAX_LENGTH = 3500
 AGENT_CHAT_RECORD_LIMIT = 60
 AGENT_TURN_TIMEOUT_SECONDS = 120
 AGENT_RUN_TIMEOUT_SECONDS = 300
+# How long a question the chat asked stays open. WhatsApp's own service
+# window is a day; a "yes" the morning after that is a fresh conversation,
+# not consent to whatever was asked last week.
+PENDING_QUESTION_TTL_SECONDS = 24 * 60 * 60
 
 _TIME_LOCAL_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
@@ -708,6 +713,25 @@ _NO_PHRASES = frozenset({
 })
 
 
+def _pending_is_fresh(pending: dict[str, Any]) -> bool:
+    """Whether an open question was asked recently enough to still be open.
+
+    A question with no timestamp is from before timestamps were kept, and is
+    read as stale rather than as eternal.
+    """
+
+    asked_at = normalize_text(pending.get("askedAt"))
+    if not asked_at:
+        return False
+    try:
+        asked = datetime.fromisoformat(asked_at)
+    except ValueError:
+        return False
+    if asked.tzinfo is None:
+        asked = asked.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - asked).total_seconds() < PENDING_QUESTION_TTL_SECONDS
+
+
 def _source_name(task_type: str) -> str:
     """What a lookup reads, in the words the person would use."""
 
@@ -1322,6 +1346,7 @@ class WhatsAppAgentChat:
         lines: list[str] = []
         records: list[dict[str, Any]] = []
         figures: dict[str, Any] = {}
+        tool_context = self._build_tool_context()
         # What got in the way of a task, as a report rather than a sentence.
         # Whichever runner it was and whatever it said, the person hears what
         # happened and what they can do next, in words written for this turn.
@@ -1332,6 +1357,13 @@ class WhatsAppAgentChat:
             task_type = normalize_text(task.get("proposalType")).lower()
             task_changes = task.get("changes") if isinstance(task.get("changes"), dict) else {}
             fields = task_changes.get("fields") if isinstance(task_changes.get("fields"), dict) else {}
+            # Preflight: a lookup that needs a source nobody connected is not
+            # started. The declaration is the same one the model was shown,
+            # so this is the check for the times it started one anyway.
+            missing = missing_sources_for_lookup(task_type, tool_context)
+            if missing:
+                situations.append(self._situation_for_missing_source(missing[0], user_message))
+                continue
             run_payload = {
                 "proposalType": task_type,
                 "mode": "answer",
@@ -1436,21 +1468,9 @@ class WhatsAppAgentChat:
                 what_happened=normalize_text(response.get("message")) or "Your trial has ended.",
             )
         if error in {"email_setup_required", "mailbox_not_connected"}:
-            return build_situation(
-                "source_not_connected",
-                request=user_message,
-                source="mailbox",
-                what_happened="Reading your email needs a connected mailbox, and there isn't one connected right now.",
-                options=self._connect_options("mailbox"),
-            )
+            return self._situation_for_missing_source("mailbox", user_message)
         if error == "calendar_setup_required":
-            return build_situation(
-                "source_not_connected",
-                request=user_message,
-                source="calendar",
-                what_happened="Reading your calendar needs it connected, and it isn't connected right now.",
-                options=self._connect_options("calendar"),
-            )
+            return self._situation_for_missing_source("calendar", user_message)
         if error == "calendar_selection_required":
             return build_situation(
                 "choice_required",
@@ -1490,6 +1510,22 @@ class WhatsAppAgentChat:
             request=user_message,
             what_happened=f"I couldn't finish reading {_source_name(task_type)} just now.",
             can_retry=True,
+        )
+
+    def _situation_for_missing_source(self, source: str, user_message: str) -> dict[str, Any]:
+        """A lookup that needs something nobody has connected, with the way to connect it."""
+
+        what_happened = {
+            "mailbox": "Reading your email needs a connected mailbox, and there isn't one connected right now.",
+            "calendar": "Reading your calendar needs it connected, and it isn't connected right now.",
+            "drive": "That needs Google Drive connected, and it isn't connected right now.",
+        }.get(source, "That needs an account that isn't connected right now.")
+        return build_situation(
+            "source_not_connected",
+            request=user_message,
+            source=source,
+            what_happened=what_happened,
+            options=self._connect_options(source),
         )
 
     def _situation_for_turn_failure(self, turn: dict[str, Any], status: int, user_message: str) -> dict[str, Any]:
@@ -1588,6 +1624,13 @@ class WhatsAppAgentChat:
         # is answered before anything else, by a tap or by words, and then the
         # question that was interrupted is picked straight back up.
         pending = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
+        if pending and not _pending_is_fresh(pending):
+            print(
+                f"WhatsApp pending {normalize_text(pending.get('kind'))} question expired for user {self.user_id}",
+                flush=True,
+            )
+            self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+            pending = None
         pending_choice = pending if pending and pending.get("kind") == "calendar_choice" else None
         pending_disconnect = pending if pending and pending.get("kind") == "disconnect" else None
         if pending_disconnect and not interactive_id:

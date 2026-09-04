@@ -903,3 +903,60 @@ class WhatsAppRecoveryTests(WhatsAppAgentChatApiTests):
         for code in sorted(RECOVERY_CODES):
             sentence = computed_recovery_sentence(build_situation(code, can_retry=True))
             self.assertTrue(any(word in sentence for word in ("Ask me again", "Reply", "Tell me", "https://")), sentence)
+
+
+class WhatsAppPreflightTests(WhatsAppAgentChatApiTests):
+    def _reply(self, response: dict) -> str:
+        entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
+        return entry["reply_text"]
+
+    def test_a_lookup_missing_its_source_is_never_started(self) -> None:
+        from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
+
+        turn = self._turn_response({
+            "outcome": "answer_now",
+            "reply": "Checking now.",
+            "proposalType": "calendar-summary",
+            "changes": {"fields": {"timeWindow": "2026-09-05"}},
+        })
+        recovery = SimpleNamespace(output_text="Your calendar isn't connected yet - reply \"connect my calendar\" and I'll send the link.")
+        calls: list[str] = []
+        original = WhatsAppAgentChat._api
+
+        def recording(self_chat, method, path, payload=None, **kwargs):
+            calls.append(path)
+            return original(self_chat, method, path, payload, **kwargs)
+
+        with (
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=[turn, recovery]),
+            mock.patch.object(WhatsAppAgentChat, "_api", recording),
+        ):
+            response = self._post_webhook(inbound_text_payload("am I free tomorrow?", message_id="wamid.pre-1"))
+
+        self.assertEqual(self._reply(response), recovery.output_text)
+        self.assertNotIn("/api/agent/proposals/run", calls)
+        self.assertIn("/api/agent/recover", calls)
+
+    def test_a_question_older_than_a_day_is_no_longer_open(self) -> None:
+        from packages.infrastructure.portal_auth.server import PortalSession  # noqa: F401 - import check only
+
+        self.database.save_whatsapp_agent_pending(
+            user_id=int(self.user["id"]),
+            pending={
+                "kind": "disconnect",
+                "question": "Disconnect Gmail?",
+                "connectionIds": ["conn-1"],
+                "names": ["Gmail"],
+                "askedAt": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+            },
+        )
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=self._turn_response({"outcome": "message", "reply": "Morning! What would you like?"}),
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("yes", message_id="wamid.pre-2"))
+
+        # A stale yes is a message for the model, not consent to last week's disconnect.
+        model.assert_called_once()
+        self.assertEqual(self._reply(response), "Morning! What would you like?")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))

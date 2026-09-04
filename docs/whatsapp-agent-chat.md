@@ -417,3 +417,21 @@ The gateway change underneath (`openai_api.py`): a response marked
 budget; partial text is kept when there is any, and `OpenAIIncompleteError`
 is raised when there is none. Output budgets now include thinking, and the
 reasoning effort is chosen with the model in `task_complexity.py`.
+
+## What a lookup needs, declared once
+
+`LOOKUP_SOURCE_REQUIREMENTS` in `agent_proposals.py` says what each lookup
+has to have connected: a mailbox (Gmail or Outlook) for the inbox digest and
+receipt searches, the calendar for calendar questions, nothing for exchange
+rates and saved folders. The same table is shown to the model as
+`lookupRequirements` with a rule that covers every lookup and every source,
+and it is checked in code before a runner is called
+(`missing_sources_for_lookup`), so a lookup that needs a source nobody
+connected is never started only to fail. It becomes a `source_not_connected`
+report with the connect link, the same report a runner's own
+`email_setup_required` becomes when one slips through.
+
+An open question - which calendars, whether to disconnect - now expires after
+a day (`PENDING_QUESTION_TTL_SECONDS`). A question with no timestamp is read as
+stale. A "yes" the morning after is a fresh message for the model, not consent
+to whatever was asked last week.

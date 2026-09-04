@@ -75,6 +75,19 @@ _AGENT_PROPOSAL_TYPES = {
 # The lookups that already have a runner, so a question can be answered from
 # connected sources in the same chat turn instead of becoming a saved action.
 _AGENT_ANSWER_NOW_TYPES = {"calendar-summary", "email-digest", "custom", "exchange-rate", "saved-files"}
+# What each lookup has to have connected before it can run. One declaration,
+# read by code before a runner is called and shown to the model in the prompt,
+# so a question that needs a mailbox nobody connected is answered with what it
+# needs instead of started and failed. "mailbox" is satisfied by Gmail or
+# Outlook; a lookup that needs nothing is listed with nothing, so the absence
+# of an entry is never mistaken for the absence of a requirement.
+LOOKUP_SOURCE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "email-digest": ("mailbox",),
+    "calendar-summary": ("calendar",),
+    "custom": ("mailbox",),
+    "exchange-rate": (),
+    "saved-files": (),
+}
 # Every type that carries fields, whether or not it can be saved as an action.
 # An exchange rate is only ever answered, never kept, but the fields it is
 # answered from still have to survive normalization.
@@ -410,6 +423,38 @@ def normalize_agent_mailbox_context(value: Any) -> list[dict[str, str]]:
     return mailboxes
 
 
+def connected_sources(tool_context: dict[str, Any] | None) -> set[str]:
+    """Which sources the account has connected, in the lookup requirements' words."""
+
+    context = tool_context if isinstance(tool_context, dict) else {}
+
+    def connected(key: str) -> bool:
+        entry = context.get(key)
+        return isinstance(entry, dict) and entry.get("platformConnected") is True
+
+    sources: set[str] = set()
+    if connected("gmail") or connected("outlook"):
+        sources.add("mailbox")
+    if connected("calendar"):
+        sources.add("calendar")
+    if connected("drive"):
+        sources.add("drive")
+    return sources
+
+
+def missing_sources_for_lookup(proposal_type: Any, tool_context: dict[str, Any] | None) -> list[str]:
+    """What a lookup needs that is not connected, in the order it needs them.
+
+    An unknown lookup needs nothing, because the runner will say what it
+    lacks; this is the check that stops the known ones being started only
+    to fail.
+    """
+
+    required = LOOKUP_SOURCE_REQUIREMENTS.get(_single_line(proposal_type, 80).lower(), ())
+    have = connected_sources(tool_context)
+    return [source for source in required if source not in have]
+
+
 def normalize_agent_tool_context(value: Any) -> dict[str, Any]:
     """Keep only safe, non-secret integration state for the agent prompt."""
     source = value if isinstance(value, dict) else {}
@@ -716,6 +761,11 @@ _TURN_SCOPE = (
 )
 
 _TURN_ANSWER_NOW = (
+    "Every lookup needs what lookupRequirements lists for it: mailbox means Gmail or Outlook, calendar "
+    "means the calendar, and an empty list means nothing. toolContext shows what is connected. When a "
+    "lookup needs a source that is not connected, do not start it and do not say you are checking: say in "
+    "one line what it needs, and when connectLinks holds the matching link put that link on its own line. "
+    "This is the same for every lookup and every source, whatever the question was about.\n"
     "Prefer answer_now over proposal whenever the user asks about something that already happened and a "
     "connected source holds the answer: how much they paid a vendor, which receipts or invoices arrived, what "
     "is on the calendar. Do not offer to create an action for these and do not ask for approval. Use "
@@ -1241,6 +1291,7 @@ def build_agent_turn_prompt(
         "today": _single_line(today, 40),
         "activeProposal": active_proposal,
         "proposalFieldSchemas": _AGENT_PROPOSAL_FIELD_SCHEMAS,
+        "lookupRequirements": {key: list(value) for key, value in LOOKUP_SOURCE_REQUIREMENTS.items()},
         "toolContext": normalize_agent_tool_context(tool_context),
         "sourceContext": normalize_agent_source_context(source_context),
         "existingActions": normalize_agent_action_context(action_context),
@@ -1773,6 +1824,9 @@ __all__ = [
     "normalize_agent_mailbox_context",
     "DISCONNECT_TARGETS",
     "normalize_agent_pending_choice",
+    "LOOKUP_SOURCE_REQUIREMENTS",
+    "connected_sources",
+    "missing_sources_for_lookup",
     "normalize_agent_tool_context",
     "normalize_agent_action_context",
     "normalize_agent_file_context",
