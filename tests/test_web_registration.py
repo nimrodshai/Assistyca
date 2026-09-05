@@ -181,6 +181,14 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), int(user["id"]))
         self.assertEqual((self.database.get_whatsapp_signup(PHONE) or {}).get("status"), "completed")
 
+    def test_names_and_the_business_are_capitalised(self) -> None:
+        status, payload = self.register(registration(name="nimrod shai-cohen", business="barber in tel aviv"))
+        self.assertEqual(status, 200, payload)
+        signup = self.database.get_whatsapp_signup(PHONE) or {}
+        self.assertEqual(signup["registration"]["name"], "Nimrod Shai-Cohen")
+        self.assertEqual(signup["registration"]["business"], "Barber in tel aviv")
+        self.assertIn("Nimrod Shai-Cohen", self.model.call_args.kwargs["prompt"])
+
     def test_the_fields_are_checked_before_anything_is_recorded(self) -> None:
         status, payload = self.register(registration(name="D", phone="+9720", business=""))
         self.assertEqual(status, 400)

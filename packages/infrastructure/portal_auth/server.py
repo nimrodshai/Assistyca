@@ -1889,6 +1889,26 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def capitalize_name(value: Any) -> str:
+    """Each word with a capital, the rest as typed: "nimrod shai" -> "Nimrod Shai".
+
+    Not `str.title()`, which would lower-case the rest and turn "McCarthy"
+    into "Mccarthy". Hyphenated names get a capital after the hyphen too.
+    """
+
+    def _cap(word: str) -> str:
+        return "-".join(part[:1].upper() + part[1:] for part in word.split("-"))
+
+    return " ".join(_cap(word) for word in normalize_text(value).split(" ") if word)
+
+
+def capitalize_sentence(value: Any) -> str:
+    """A capital first letter, the rest as typed: "barber" -> "Barber"."""
+
+    text = normalize_text(value)
+    return text[:1].upper() + text[1:]
+
+
 def registration_facts(*, name: str, business: str) -> list[tuple[str, str]]:
     """What a registration tells the agent, as the facts it already reads.
 
@@ -11965,9 +11985,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        name = normalize_contact_single_line(payload.get("name"), CONTACT_NAME_MAX_LENGTH)
+        name = capitalize_name(normalize_contact_single_line(payload.get("name"), CONTACT_NAME_MAX_LENGTH))
         phone = normalize_whatsapp_number(payload.get("phone"))
-        business = normalize_contact_single_line(payload.get("business"), CONTACT_BUSINESS_MAX_LENGTH)
+        business = capitalize_sentence(
+            normalize_contact_single_line(payload.get("business"), CONTACT_BUSINESS_MAX_LENGTH)
+        )
 
         field_errors: dict[str, str] = {}
         if len(name) < 2:

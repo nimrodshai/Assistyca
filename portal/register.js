@@ -161,6 +161,28 @@ window.addEventListener("DOMContentLoaded", () => {
     preview.textContent = displayNumber() ? `I'll text ${displayNumber()}` : "";
   };
 
+  // Tidy the text fields when they leave them: each word of the name with a
+  // capital, the business with a capital first letter. The server does the
+  // same, so what is stored matches what they saw.
+  const capitalizeName = (value) => value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("-"))
+    .join(" ");
+  const capitalizeSentence = (value) => {
+    const text = value.trim();
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  };
+  const nameInput = form.querySelector('input[name="name"]');
+  const businessInput = form.querySelector('input[name="business"]');
+  nameInput.addEventListener("blur", () => {
+    nameInput.value = capitalizeName(nameInput.value);
+  });
+  businessInput.addEventListener("blur", () => {
+    businessInput.value = capitalizeSentence(businessInput.value);
+  });
+
   countrySelect.addEventListener("change", syncPhone);
   nationalInput.addEventListener("input", () => {
     // Digits only, but keep it readable while they type.
@@ -274,10 +296,10 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const data = new FormData(form);
     const values = {
-      name: String(data.get("name") || "").trim(),
+      name: capitalizeName(String(data.get("name") || "")),
       phone: internationalNumber(),
       country: countrySelect.value,
-      business: String(data.get("business") || "").trim(),
+      business: capitalizeSentence(String(data.get("business") || "")),
       companyWebsite: String(data.get("companyWebsite") || "").trim(),
     };
 
