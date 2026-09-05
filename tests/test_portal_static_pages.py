@@ -289,7 +289,7 @@ class PortalStaticPageTests(unittest.TestCase):
         # Google account holds several, so the question follows the connect.
         self.assertIn("function openGoogleCalendarChoice", script)
         self.assertIn('if (connectedPlatforms.includes("calendar")) {', script)
-        self.assertIn("openGoogleCalendarChoice(option, { onDone: finishConnection });", script)
+        self.assertIn("openGoogleCalendarChoice(option, { onDone: finishConnection, duringConnection: true });", script)
 
         # The Google tool is where a connection is managed, so it names the
         # calendars alongside the permissions, the mailboxes and disconnect.
@@ -447,7 +447,7 @@ class PortalStaticPageTests(unittest.TestCase):
         # pins that the sweep asks.
         google_sweep = script[
             script.index("function getUniqueConnectedGoogleOAuthConnections"):
-            script.index("function createGoogleConnectionDisconnectButton")
+            script.index("function openPlatformConnectionDisconnectConfirmation")
         ]
         self.assertIn("isVendorOwnedPlatformConnection(connection, VENDOR_GOOGLE)", google_sweep)
         self.assertNotIn("isGoogleToolPlatformConnection", google_sweep)
@@ -1103,7 +1103,9 @@ class PortalStaticPageTests(unittest.TestCase):
         # from local state, so the merge keys on connection id.
         self.assertIn("const savedIds = new Set(savedConnections.map((savedConnection) => savedConnection.id)", script)
         self.assertIn(".connected-mailbox-row", styles)
-        self.assertIn("connected-mailbox-disconnect", styles)
+        # The mailbox disconnect is drawn as the danger link every card shares.
+        self.assertIn("connected-mailbox-disconnect", script)
+        self.assertIn(".connection-danger-link {", styles)
         calendar_oauth_flow = script[
             script.index("function openCalendarOAuthConnection"):
             script.index("function openPlatformConnection(optionId, options = {})")
@@ -1115,19 +1117,24 @@ class PortalStaticPageTests(unittest.TestCase):
         # The mailbox card only ever adds one; the Google card is where the
         # connected mailboxes and their disconnects live.
         self.assertIn('? (gmailCount ? "Add a Gmail mailbox" : "Connect Gmail")', calendar_oauth_flow)
-        self.assertIn('"These Google permissions are connected and ready to use."', calendar_oauth_flow)
+        self.assertIn('"Here is what Assistyca reads from this account."', calendar_oauth_flow)
         self.assertNotIn("createOutlookConnectButton", calendar_oauth_flow)
         self.assertNotIn("Disconnect one to remove its access.", calendar_oauth_flow[:calendar_oauth_flow.index("const permissionList")])
         self.assertIn("const gmailList = usesAggregateGoogleConnection", calendar_oauth_flow)
         self.assertIn(
-            "createConnectedMailboxList(getPlatformConnectionOption(\"email\") || option, connectedGmailMailboxes)",
+            "createConnectedMailboxList(\n      getPlatformConnectionOption(\"email\") || option,\n"
+            "      connectedGmailMailboxes,\n      { allowDisconnect: false },\n    )",
             calendar_oauth_flow,
         )
         self.assertIn("createGoogleOAuthPermissionList(option, { readOnly: isConnected });", calendar_oauth_flow)
-        self.assertIn("? createGoogleConnectionDisconnectButton(option, connectedGoogleConnections)", calendar_oauth_flow)
-        self.assertIn("hidePrimaryButton: isConnected && !isEmailConnection,", calendar_oauth_flow)
-        self.assertIn('secondaryButtonLabel: "Cancel"', calendar_oauth_flow)
-        self.assertIn("onPrimary: (isConnected && !isEmailConnection) ? null : startOAuth,", calendar_oauth_flow)
+        # Disconnecting Google is the card's own primary button, drawn as the
+        # destructive thing it is; Cancel takes the focus so Enter never fires it.
+        self.assertIn("? getUniqueConnectedGoogleOAuthConnections(connectedGoogleConnections)", calendar_oauth_flow)
+        self.assertIn("? () => openGoogleConnectionDisconnectConfirmation(", calendar_oauth_flow)
+        self.assertIn("hidePrimaryButton: isConnected && !isEmailConnection && !disconnectGoogle,", calendar_oauth_flow)
+        self.assertIn('secondaryButtonLabel: goBack ? "Back" : "Cancel"', calendar_oauth_flow)
+        self.assertIn('focusTarget: disconnectGoogle ? "secondary" : "",', calendar_oauth_flow)
+        self.assertIn("onPrimary: disconnectGoogle || ((isConnected && !isEmailConnection) ? null : startOAuth),", calendar_oauth_flow)
         self.assertIn('elements.authAlertIcon.classList.remove("is-spinner");', calendar_oauth_flow)
         self.assertNotIn('elements.authAlertIcon.classList.add("is-spinner");', calendar_oauth_flow)
         self.assertIn('setCalendarOAuthPrimaryButton("Opening Google", { loading: true });', calendar_oauth_flow)
@@ -1146,7 +1153,7 @@ class PortalStaticPageTests(unittest.TestCase):
         )
         self.assertIn("const mailboxList = isAddingMailbox\n    ? null", microsoft_oauth_flow)
         self.assertIn("function getConnectedGoogleOAuthConnections", script)
-        self.assertIn("function createGoogleConnectionDisconnectButton", script)
+        self.assertIn("function openGoogleConnectionDisconnectConfirmation", script)
         self.assertIn("/api/oauth/google/calendar/start?scopes=", script)
         self.assertIn("/api/oauth/google/calendar/code", script)
         self.assertIn("body: { code: authorization.code, scopes: selectedScopeIds }", script)

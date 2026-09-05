@@ -456,7 +456,22 @@ def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[s
             "timezone": context.timezone_name,
             "messageText": message_text,
         })
-    return _error("internal", "The message could not be scheduled just now.", can_retry=True)
+    # The server said why. That reason is what the person needs to hear and
+    # what the turn record needs to keep; "just now" on its own is a wall.
+    code = str(response.get("error") or "") if isinstance(response, dict) else ""
+    detail = str(response.get("message") or "") if isinstance(response, dict) else ""
+    print(f"agent.loop.schedule_failed status={status} error={code or '-'} message={detail!r}", flush=True)
+    why = _SCHEDULE_FAILURE_WORDS.get(code) or detail or "The message could not be scheduled just now."
+    return _error(code or "internal", why, can_retry=code not in _SCHEDULE_FAILURE_WORDS)
+
+
+# What each refusal of the scheduling API means in the person's terms.
+_SCHEDULE_FAILURE_WORDS = {
+    "missing_whatsapp_recipient": "No WhatsApp number is saved to receive it; the number has to be added in the portal first.",
+    "whatsapp_delivery_not_configured": "Sending WhatsApp messages is not set up on the server, so nothing can be scheduled yet.",
+    "trial_expired": "The trial has ended, so nothing new can be scheduled.",
+    "unauthorized": "The chat's own sign-in was not accepted by the scheduler, which is a fault on our side.",
+}
 
 
 def _tool_remember_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:

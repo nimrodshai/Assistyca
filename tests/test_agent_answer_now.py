@@ -1518,7 +1518,10 @@ class AgentAnswerChatTests(unittest.TestCase):
         # Gmail or Outlook is a question the connect flow already asks, so the
         # chat offers one button rather than answering it twice.
         self.assertIn('{ platformId: "email", label: "Connect a mailbox" }', actions)
-        self.assertIn('{ platformId: "calendar", label: "Connect your calendar" }', actions)
+        # A calendar that is connected but unanswered needs the picker, not
+        # the sign-in it already did; both blocks wear the same button.
+        self.assertIn('{ platformId: "calendar", label: "Choose calendars", action: "choose-calendars" }', actions)
+        self.assertIn('{ platformId: "calendar", label: "Connect your calendar", action: "open-connection" }', actions)
         # Two lookups waiting on the same mailbox are one button.
         self.assertIn("const connections = new Map();", actions)
 

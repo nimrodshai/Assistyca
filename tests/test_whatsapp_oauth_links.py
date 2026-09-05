@@ -31,6 +31,21 @@ SESSION_SECRET = "oauth-session-secret-that-is-long-enough"
 PHONE = "447700900123"
 
 
+def _loop_round(*items: dict, reply: dict | None = None) -> SimpleNamespace:
+    """One model round as the loop reads it: tool calls, or the final reply."""
+
+    outputs = [{"type": "reasoning", "summary": []}, *items]
+    text = ""
+    if reply is not None:
+        text = json.dumps({"reply": "", "claimsCompleted": [], "rememberFact": None, "forgetFact": None, **reply})
+        outputs.append({"type": "message", "content": [{"type": "output_text", "text": text}]})
+    return SimpleNamespace(output_text=text, raw_response={"output": outputs}, input_tokens=10, output_tokens=5)
+
+
+def _tool_call(name: str, call_id: str, **args) -> dict:
+    return {"type": "function_call", "name": name, "call_id": call_id, "arguments": json.dumps(args)}
+
+
 class ProviderInferenceTests(unittest.TestCase):
     def test_consumer_domains_name_their_provider(self) -> None:
         self.assertEqual(infer_mail_provider("dana@gmail.com"), "google")
@@ -171,15 +186,26 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), 0)
 
     def test_the_agent_is_handed_the_links_for_a_linked_phone(self) -> None:
+        # Under the loop the link is a tool result, not part of the prompt:
+        # the model asks for it with connect_link and may only send what
+        # came back. The link itself is signed for this phone and account.
         self.database.register_user("dana@gmail.com")
         user = self.database.get_user("dana@gmail.com") or {}
         self.database.link_user_whatsapp_number(user_id=int(user["id"]), wa_id=PHONE)
-        self.model.return_value = SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Tap the link."}))
+        self.model.side_effect = [
+            _loop_round(_tool_call("read_inbox", "c1", time_window="today")),
+            _loop_round(_tool_call("connect_link", "c2", provider="google")),
+            _loop_round(reply={"reply": "Tap the link."}),
+        ]
         self._webhook("can you read my email?", message_id="wamid.c1")
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn('"connectLinks"', prompt)
-        self.assertIn("accounts.google.com", prompt)
-        self.assertIn("Never send the person to a website or portal", prompt)
+        items = self.model.call_args.kwargs["input"]
+        shown = [json.loads(item["output"]) for item in items if item.get("type") == "function_call_output"]
+        self.assertEqual(shown[0]["error"]["code"], "source_not_connected")
+        self.assertIn("accounts.google.com/o/oauth2/v2/auth", shown[1]["link"])
+        self.assertIn("login_hint=dana%40gmail.com", shown[1]["link"])
+        context = str(items[0]["content"])
+        self.assertNotIn("connectLinks", context, "the link reaches the model through the tool, never the context")
+        self.assertIn("Never send the person to a website except a link a tool returned", context)
 
     # --- the callback, with no browser session ---------------------------
 

@@ -144,7 +144,43 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(looks_like_a_question("ok"))
 
 
+def _loop_round(*items: dict, reply: dict | None = None) -> SimpleNamespace:
+    """One model round as the loop reads it: tool calls, or the final reply."""
+
+    outputs = [{"type": "reasoning", "summary": []}, *items]
+    text = ""
+    if reply is not None:
+        text = json.dumps({"reply": "", "claimsCompleted": [], "rememberFact": None, "forgetFact": None, **reply})
+        outputs.append({"type": "message", "content": [{"type": "output_text", "text": text}]})
+    return SimpleNamespace(output_text=text, raw_response={"output": outputs}, input_tokens=10, output_tokens=5)
+
+
+def _tool_call(name: str, call_id: str, **args) -> dict:
+    return {"type": "function_call", "name": name, "call_id": call_id, "arguments": json.dumps(args)}
+
+
+def _tool_outputs(model_call) -> list[dict]:
+    """Every tool result the model was shown in that call, in order."""
+
+    return [json.loads(item["output"]) for item in model_call.kwargs["input"] if item.get("type") == "function_call_output"]
+
+
+def _context_of(model_call) -> dict:
+    """The CONTEXT block the model was given, as data."""
+
+    text = str(model_call.kwargs["input"][0]["content"])
+    return json.loads(text.split("CONTEXT\n", 1)[1])
+
+
 class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
+    """The picker on the phone: the loop's tool calls are scripted, the rest is real.
+
+    The model asks to read the calendar; the runner behind the tool is a
+    stand-in that first demands a choice and, once one exists, answers. What
+    is proved here is code's part: the picker, the held question, a tap or
+    words settling it, and the interrupted question answered afterwards.
+    """
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.server = create_server("127.0.0.1", 0, Path(__file__).resolve().parents[1], PortalConfig(
@@ -156,16 +192,19 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
         self.database.register_user("owner@example.com")
         self.user = self.database.get_user("owner@example.com") or {}
         self.database.link_user_whatsapp_number(user_id=int(self.user["id"]), wa_id=PHONE)
+        # The loop only reads a calendar that is connected; which of its
+        # calendars is the question this suite is about.
+        self.database.save_platform_connection("owner@example.com", platform="calendar", auth_type="oauth",
+                                               secret_ciphertext="cal-cipher", secret_hint="••••cal", provider="google_calendar")
         self.env = mock.patch.dict("os.environ", {
             "PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp"),
             "WHATSAPP_APP_SECRET": APP_SECRET, "WHATSAPP_ALLOW_MOCK_SEND": "1",
             "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM, "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
+            "WHATSAPP_AGENT_LOOP_ENABLED": "1",
         }, clear=False)
         self.env.start()
         self.send_patch = mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", return_value="wamid.reply")
         self.sent = self.send_patch.start()
-        # The agent asks for a calendar summary; the runner is a stand-in that
-        # first demands a choice and, once one exists, answers.
         self.model_patch = mock.patch(
             "packages.infrastructure.portal_auth.server.call_openai_response",
             side_effect=self._model)
@@ -175,18 +214,22 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
             side_effect=self._runner, autospec=True)
         self.runner = self.runner_patch.start()
         self.available = list(CALENDARS)
+        self._rounds = 0
 
     def tearDown(self) -> None:
         self.runner_patch.stop(); self.model_patch.stop(); self.send_patch.stop(); self.env.stop()
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=5); self.temp_dir.cleanup()
 
     def _model(self, **kwargs):
-        prompt = str(kwargs.get("prompt") or "")
-        if kwargs.get("tool_name") == "portal_answer_composer":
-            return SimpleNamespace(output_text="You have 4 meetings next week; Tuesday is the busy one.")
-        return SimpleNamespace(output_text=json.dumps({
-            "outcome": "answer_now", "proposalType": "calendar-summary",
-            "reply": "Let me check.", "changes": {"fields": {"timeWindow": "next week"}}}))
+        """A stand-in for the loop's model: reads the calendar, writes from what came back."""
+
+        self._rounds += 1
+        shown = [json.loads(item["output"]) for item in (kwargs.get("input") or []) if item.get("type") == "function_call_output"]
+        if not shown:
+            return _loop_round(_tool_call("read_calendar", f"c{self._rounds}", time_window="2026-09-07 to 2026-09-13"))
+        if shown[-1].get("ok"):
+            return _loop_round(reply={"reply": "You have 4 meetings next week; Tuesday is the busy one."})
+        return _loop_round(reply={"reply": "Which calendars should I read? Pick below and I'll answer straight away."})
 
     def _runner(self, handler):
         from packages.infrastructure.portal_auth.server import json_response, parse_json_body
@@ -222,18 +265,40 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
     def _interactives(self):
         return [c.kwargs.get("interactive") for c in self.sent.call_args_list if c.kwargs.get("interactive")]
 
+    def _saving_the_choice(self):
+        """The portal endpoint that stores the choice, replaced so the test can read it."""
+
+        patcher = mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True)
+
+        def _save(handler):
+            from packages.infrastructure.portal_auth.server import json_response, parse_json_body
+            from http import HTTPStatus
+            payload = parse_json_body(handler)
+            self._chosen = payload["calendars"]
+            json_response(handler, HTTPStatus.OK, {"ok": True, "selectedCalendars": payload["calendars"]})
+
+        save = patcher.start()
+        save.side_effect = _save
+        self.addCleanup(patcher.stop)
+        return save
+
     def test_the_same_message_delivered_twice_is_answered_once(self) -> None:
         # Meta redelivers when we are slow. Both deliveries carry one id.
         first = self._post("hello", message_id="wamid.dup-1")
         second = self._post("hello", message_id="wamid.dup-1")
         self.assertEqual(first["results"][0]["action"], "agent_chat_reply")
         self.assertEqual(second["results"][0]["type"], "duplicate")
-        self.assertEqual(self.model.call_count, 1, "the second delivery must not reach the model")
+        self.assertEqual(self.model.call_count, 2, "the second delivery must not reach the model")
 
-    def test_a_calendar_question_asks_with_the_picker_and_nothing_else(self) -> None:
+    def test_a_calendar_question_asks_with_the_picker(self) -> None:
         result = self._post("Can you summarize my next week meetings?", message_id="wamid.c1")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice")
-        self.assertFalse(any("Which calendars" in t for t in self._texts()), "no numbered list beside the picker")
+        # The runner named the calendars; the model was told a choice is
+        # needed and wrote the question; code put the picker under it.
+        told = _tool_outputs(self.model.call_args)[0]["error"]
+        self.assertEqual(told["code"], "choice_required")
+        self.assertEqual(told["availableCalendars"], ["Nimrod", "Work", "Family"])
+        self.assertIn("Which calendars should I read?", self._texts()[-1])
         picker = self._interactives()[-1]
         self.assertEqual(picker["type"], "list")
         self.assertEqual(picker["header"]["text"], "Which calendars should I read?")
@@ -242,50 +307,42 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
         self.assertEqual(rows[1]["id"], "calpick:2")
         self.assertTrue(rows[1]["title"].startswith("🔴"))
         pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
+        self.assertEqual(pending["kind"], "calendar_choice")
         self.assertEqual(pending["question"], "Can you summarize my next week meetings?")
 
     def test_taps_toggle_and_done_confirms_several(self) -> None:
         self._post("what's on next week?", message_id="wamid.m1")
-        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
-            def _save(handler):
-                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
-                from http import HTTPStatus
-                self._chosen = parse_json_body(handler)["calendars"]
-                json_response(handler, HTTPStatus.OK, {"ok": True})
-            save.side_effect = _save
-            first = self._post(message_id="wamid.m2", interactive_id="calpick:2")
-            self.assertEqual(first["results"][0]["outcome"], "calendar_choice_toggled")
-            self.assertEqual(first["results"][0]["selected"], ["work@group.calendar.google.com"])
-            picker = self._interactives()[-1]
-            rows = picker["action"]["sections"][0]["rows"]
-            self.assertEqual(rows[0]["id"], "calpick:done")
-            self.assertTrue(rows[2]["title"].startswith("✓"))
-            save.assert_not_called()
+        save = self._saving_the_choice()
+        rounds = self.model.call_count
+        first = self._post(message_id="wamid.m2", interactive_id="calpick:2")
+        self.assertEqual(first["results"][0]["outcome"], "calendar_choice_toggled")
+        self.assertEqual(first["results"][0]["selected"], ["work@group.calendar.google.com"])
+        picker = self._interactives()[-1]
+        rows = picker["action"]["sections"][0]["rows"]
+        self.assertEqual(rows[0]["id"], "calpick:done")
+        self.assertTrue(rows[2]["title"].startswith("✓"))
+        save.assert_not_called()
 
-            second = self._post(message_id="wamid.m3", interactive_id="calpick:3")
-            self.assertEqual(second["results"][0]["selected"], ["work@group.calendar.google.com", "family@group.calendar.google.com"])
-            # Tapping a ticked one again removes it.
-            third = self._post(message_id="wamid.m4", interactive_id="calpick:2")
-            self.assertEqual(third["results"][0]["selected"], ["family@group.calendar.google.com"])
+        second = self._post(message_id="wamid.m3", interactive_id="calpick:3")
+        self.assertEqual(second["results"][0]["selected"], ["work@group.calendar.google.com", "family@group.calendar.google.com"])
+        # Tapping a ticked one again removes it.
+        third = self._post(message_id="wamid.m4", interactive_id="calpick:2")
+        self.assertEqual(third["results"][0]["selected"], ["family@group.calendar.google.com"])
+        self.assertEqual(self.model.call_count, rounds, "a tap is settled by code, never by the model")
 
-            done = self._post(message_id="wamid.m5", interactive_id="calpick:done")
+        done = self._post(message_id="wamid.m5", interactive_id="calpick:done")
         self.assertEqual(done["results"][0]["outcome"], "calendar_choice_saved")
         self.assertEqual([c["id"] for c in self._chosen], ["family@group.calendar.google.com"])
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
-        self.assertIn("4 meetings", self._texts()[-1])
+        self.assertIn("4 meetings", self._texts()[-1], "the interrupted question is answered, not asked for again")
 
     def test_all_calendars_is_one_tap(self) -> None:
         self._post("what's on next week?", message_id="wamid.all1")
-        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
-            def _save(handler):
-                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
-                from http import HTTPStatus
-                self._chosen = parse_json_body(handler)["calendars"]
-                json_response(handler, HTTPStatus.OK, {"ok": True})
-            save.side_effect = _save
-            result = self._post(message_id="wamid.all2", interactive_id="calpick:all")
+        self._saving_the_choice()
+        result = self._post(message_id="wamid.all2", interactive_id="calpick:all")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
         self.assertEqual(len(self._chosen), 3)
+        self.assertIn("4 meetings", self._texts()[-1])
 
     def test_the_phone_asks_the_runner_for_calendar_colours(self) -> None:
         # Only this channel draws colours, so only this channel asks; the
@@ -300,15 +357,8 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
 
     def test_answering_with_numbers_saves_the_choice_and_answers_the_question_itself(self) -> None:
         self._post("Can you summarize my next week meetings?", message_id="wamid.n1")
-        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
-            def _save(handler):
-                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
-                from http import HTTPStatus
-                payload = parse_json_body(handler)
-                self._chosen = payload["calendars"]
-                json_response(handler, HTTPStatus.OK, {"ok": True, "selectedCalendars": payload["calendars"]})
-            save.side_effect = _save
-            result = self._post("1, 3", message_id="wamid.n2")
+        self._saving_the_choice()
+        result = self._post("1, 3", message_id="wamid.n2")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
         self.assertEqual([c["id"] for c in self._chosen], ["primary", "family@group.calendar.google.com"])
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
@@ -318,102 +368,73 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
 
     def test_a_tap_on_the_picker_chooses_that_calendar(self) -> None:
         self._post("what's on next week?", message_id="wamid.t1")
-        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
-            def _save(handler):
-                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
-                from http import HTTPStatus
-                self._chosen = parse_json_body(handler)["calendars"]
-                json_response(handler, HTTPStatus.OK, {"ok": True})
-            save.side_effect = _save
-            self._post(message_id="wamid.t2", interactive_id="calpick:2")
-            result = self._post(message_id="wamid.t3", interactive_id="calpick:done")
+        self._saving_the_choice()
+        self._post(message_id="wamid.t2", interactive_id="calpick:2")
+        result = self._post(message_id="wamid.t3", interactive_id="calpick:done")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
         self.assertEqual([c["id"] for c in self._chosen], ["work@group.calendar.google.com"])
 
     def test_one_calendar_is_no_question_at_all(self) -> None:
         self.available = [CALENDARS[0]]
-        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
-            def _save(handler):
-                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
-                from http import HTTPStatus
-                self._chosen = parse_json_body(handler)["calendars"]
-                json_response(handler, HTTPStatus.OK, {"ok": True})
-            save.side_effect = _save
-            result = self._post("what's on next week?", message_id="wamid.one-1")
-        self.assertEqual(result["results"][0]["outcome"], "answer_now")
+        self._saving_the_choice()
+        result = self._post("what's on next week?", message_id="wamid.one-1")
+        # The only calendar is chosen by code and the turn runs again; the
+        # phone sees one answer and no picker.
+        self.assertEqual(result["results"][0]["outcome"], "message")
+        self.assertEqual([c["id"] for c in self._chosen], ["primary"])
         self.assertIn("4 meetings", self._texts()[-1])
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
         self.assertFalse(any("Which calendars" in t for t in self._texts()))
+        self.assertEqual(self._interactives(), [])
 
     def test_a_message_that_is_not_a_pick_is_understood_while_the_question_stays_open(self) -> None:
         # 2026-09-04: "I want to log out from google" got "I didn't catch
         # which ones" and the list again, three times. Words that are not
-        # plainly a pick go to the model with the open question in view.
+        # plainly a pick go to the model with the open question in view, and
+        # the question stays open, so the picker still works afterwards.
         self._post("what's on next week?", message_id="wamid.o1")
         user_id = int(self.user["id"])
-        prompts: list[str] = []
-
-        def _model(**kwargs):
-            if kwargs.get("tool_name") == "portal_answer_composer":
-                return SimpleNamespace(output_text="You have 4 meetings next week.")
-            prompt = str(kwargs.get("prompt") or "")
-            prompts.append(prompt)
-            # The earlier message stays in recentConversation, so the
-            # branch is chosen by the latest message alone.
-            if '"latestUserMessage":"I want to log out from google"' in prompt:
-                return SimpleNamespace(output_text=json.dumps({
-                    "outcome": "message", "proposalType": "", "changes": {},
-                    "reply": "To disconnect Google, open Connections in the portal and choose Disconnect."}))
-            if '"latestUserMessage":"the first and the last"' in prompt:
-                return SimpleNamespace(output_text=json.dumps({
-                    "outcome": "calendar_choice", "proposalType": "", "changes": {},
-                    "reply": "I'll read Nimrod and Family.", "calendarIndexes": [1, 3]}))
-            return self._model(**kwargs)
-        self.model.side_effect = _model
+        self.model.side_effect = [_loop_round(reply={
+            "reply": "To disconnect Google, just say so and I'll ask you to confirm.", "answersOpenQuestion": None})]
 
         result = self._post("I want to log out from google", message_id="wamid.o2")
         self.assertEqual(result["results"][0]["outcome"], "message")
-        self.assertIn("Disconnect", self._texts()[-1])
+        self.assertIn("disconnect Google", self._texts()[-1])
         self.assertNotIn("didn't catch", self._texts()[-1])
-        self.assertIn('"pendingChoice":{"kind":"calendar_choice","question":"what\'s on next week?"', prompts[-1])
-        self.assertIn('{"index":2,"label":"Work"}', prompts[-1])
+        context = _context_of(self.model.call_args)
+        self.assertEqual(context["openQuestion"], {
+            "kind": "calendar_choice", "question": "what's on next week?", "calendars": ["Nimrod", "Work", "Family"]})
+        self.assertEqual(context["latestUserMessage"], "I want to log out from google")
         self.assertEqual(self.database.get_whatsapp_agent_pending(user_id=user_id)["question"], "what's on next week?",
                          "the calendar question is still open")
+        self.assertEqual(len(self._interactives()), 1, "the picker is not sent again")
 
-        # A pick in words the parser cannot read is read by the model, and
-        # saved exactly as if the numbers had been typed.
-        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
-            def _save(handler):
-                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
-                from http import HTTPStatus
-                self._chosen = parse_json_body(handler)["calendars"]
-                json_response(handler, HTTPStatus.OK, {"ok": True})
-            save.side_effect = _save
-            result = self._post("the first and the last", message_id="wamid.o3")
+        self.model.side_effect = self._model
+        self._saving_the_choice()
+        result = self._post(message_id="wamid.o3", interactive_id="calpick:all")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
-        self.assertEqual([c["id"] for c in self._chosen], ["primary", "family@group.calendar.google.com"])
+        self.assertEqual(len(self._chosen), 3)
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=user_id))
         self.assertIn("4 meetings", self._texts()[-1])
 
     def test_a_pick_in_plain_words_never_needs_the_model(self) -> None:
         self._post("what's on next week?", message_id="wamid.p1")
         calls = self.model.call_count
-        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_post", autospec=True) as save:
-            def _save(handler):
-                from packages.infrastructure.portal_auth.server import json_response, parse_json_body
-                from http import HTTPStatus
-                self._chosen = parse_json_body(handler)["calendars"]
-                json_response(handler, HTTPStatus.OK, {"ok": True})
-            save.side_effect = _save
-            result = self._post("family please", message_id="wamid.p2")
+        self._saving_the_choice()
+        result = self._post("family please", message_id="wamid.p2")
         self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
         self.assertEqual([c["id"] for c in self._chosen], ["family@group.calendar.google.com"])
-        # The resumed question reaches the model; the pick itself never does.
-        self.assertLessEqual(self.model.call_count - calls, 2)
+        # The resumed question takes its two rounds; the pick itself takes none.
+        self.assertEqual(self.model.call_count - calls, 2)
 
 
 class DisconnectOverWhatsAppTests(unittest.TestCase):
-    """"Just disconnect me from google" disconnects, after a yes, from the chat."""
+    """"Just disconnect me from google" disconnects, after a yes, from the chat.
+
+    The loop's disconnect tool needs a yes: its first call comes back as
+    confirmation_required, code holds the call, and a yes runs exactly what
+    was held. Google is asked to let go, as the portal button does.
+    """
 
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -434,90 +455,109 @@ class DisconnectOverWhatsAppTests(unittest.TestCase):
             "PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp"),
             "WHATSAPP_APP_SECRET": APP_SECRET, "WHATSAPP_ALLOW_MOCK_SEND": "1",
             "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM, "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
+            "WHATSAPP_AGENT_LOOP_ENABLED": "1",
         }, clear=False); self.env.start()
         self.send_patch = mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", return_value="wamid.r")
         self.sent = self.send_patch.start()
-        self.model_patch = mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=self._model)
+        self.model_patch = mock.patch("packages.infrastructure.portal_auth.server.call_openai_response")
         self.model = self.model_patch.start()
         # Revoking is a call to Google; the test checks that it is asked for, not made.
         self.revoke_patch = mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._revoke_google_calendar_connection",
                                        autospec=True, return_value=(True, ""))
         self.revoke = self.revoke_patch.start()
-        self.prompts: list[str] = []
 
     def tearDown(self) -> None:
         self.revoke_patch.stop(); self.model_patch.stop(); self.send_patch.stop(); self.env.stop()
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=5); self.temp_dir.cleanup()
 
-    def _model(self, **kwargs):
-        prompt = str(kwargs.get("prompt") or "")
-        self.prompts.append(prompt)
-        if '"latestUserMessage":"Just disconnect me from google"' in prompt:
-            return SimpleNamespace(output_text=json.dumps({
-                "outcome": "disconnect_command", "proposalType": "", "changes": {},
-                "reply": "Disconnecting Google.", "disconnectTargets": ["google"]}))
-        if '"latestUserMessage":"wait, what will stop working?"' in prompt:
-            return SimpleNamespace(output_text=json.dumps({
-                "outcome": "message", "proposalType": "", "changes": {},
-                "reply": "Calendar questions and receipt searches, until you connect again."}))
-        if '"latestUserMessage":"alright then, go on"' in prompt:
-            return SimpleNamespace(output_text=json.dumps({
-                "outcome": "confirm", "proposalType": "", "changes": {}, "reply": "Doing it now."}))
-        return SimpleNamespace(output_text=json.dumps({
-            "outcome": "message", "proposalType": "", "changes": {}, "reply": "Sure."}))
-
     _post = CalendarChoiceOverWhatsAppTests._post
     _texts = CalendarChoiceOverWhatsAppTests._texts
+
+    QUESTION = "Disconnect Google Calendar and Gmail (nimrod@gmail.com) from Assistyca? Reply yes and it's done."
 
     def _connected(self):
         return sorted(c["platform"] for c in self.database.list_platform_connections("owner@example.com"))
 
-    def test_a_disconnect_names_what_would_go_and_waits_for_a_yes(self) -> None:
-        result = self._post("Just disconnect me from google", message_id="wamid.d1")
-        self.assertEqual(result["results"][0]["outcome"], "disconnect_confirmation")
-        self.assertIn("- disconnect_command:", self.prompts[-1], "the phone is offered the command")
-        asked = self._texts()[-1]
-        self.assertIn("Disconnect Google Calendar and Gmail (nimrod@gmail.com) from Assistyca?", asked)
-        self.assertIn("*yes*", asked)
-        self.assertEqual(self._connected(), ["calendar", "email"], "nothing goes before the yes")
+    def _ask_to_disconnect_google(self):
+        self.model.side_effect = [
+            _loop_round(_tool_call("disconnect", "d1", targets=["google"])),
+            _loop_round(reply={"reply": self.QUESTION}),
+        ]
+        return self._post("Just disconnect me from google", message_id="wamid.d1")
 
+    def test_a_disconnect_names_what_would_go_and_waits_for_a_yes(self) -> None:
+        result = self._ask_to_disconnect_google()
+        self.assertEqual(result["results"][0]["outcome"], "confirmation_asked")
+        told = _tool_outputs(self.model.call_args)[0]["error"]
+        self.assertEqual(told["code"], "confirmation_required")
+        self.assertIn("Google Calendar, Gmail (nimrod@gmail.com)", told["whatHappened"], "the model is told exactly what would go")
+        self.assertIn("Disconnect Google Calendar and Gmail (nimrod@gmail.com) from Assistyca?", self._texts()[-1])
+        pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
+        self.assertEqual(pending["kind"], "tool_confirmation")
+        self.assertEqual(pending["tool"], "disconnect")
+        self.assertEqual(pending["arguments"], {"targets": ["google"]})
+        self.assertEqual(self._connected(), ["calendar", "email"], "nothing goes before the yes")
+        self.revoke.assert_not_called()
+
+        self.model.side_effect = [_loop_round(reply={
+            "reply": "Done - Google Calendar and Gmail (nimrod@gmail.com) are disconnected.", "claimsCompleted": ["disconnect"]})]
+        rounds = self.model.call_count
         done = self._post("Yes", message_id="wamid.d2")
-        self.assertEqual(done["results"][0]["outcome"], "disconnected")
-        self.assertIn("Google Calendar and Gmail (nimrod@gmail.com) are disconnected", self._texts()[-1])
+        self.assertEqual(done["results"][0]["outcome"], "message")
+        self.assertIn("are disconnected", self._texts()[-1])
         self.assertEqual(self._connected(), [])
         self.assertEqual(self.revoke.call_count, 2, "each Google grant is revoked, as the portal button does")
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
-        self.assertEqual(len(self.prompts), 1, "a plain yes never needs the model")
+        self.assertEqual(self.model.call_count - rounds, 1, "a plain yes is read by code; the model only writes the report")
+        confirmed = _context_of(self.model.call_args)["confirmedAction"]
+        self.assertEqual(confirmed["tool"], "disconnect")
+        self.assertEqual(sorted(confirmed["result"]["disconnected"]), ["Gmail (nimrod@gmail.com)", "Google Calendar"])
 
     def test_a_no_keeps_everything(self) -> None:
-        self._post("Just disconnect me from google", message_id="wamid.n1")
+        self._ask_to_disconnect_google()
+        self.model.side_effect = [_loop_round(reply={"reply": "Okay - nothing changed. Everything stays connected."})]
         result = self._post("no", message_id="wamid.n2")
-        self.assertEqual(result["results"][0]["outcome"], "disconnect_declined")
+        self.assertEqual(result["results"][0]["outcome"], "message")
         self.assertIn("nothing changed", self._texts()[-1].lower())
+        self.assertEqual(_context_of(self.model.call_args)["declinedAction"]["tool"], "disconnect")
         self.assertEqual(self._connected(), ["calendar", "email"])
+        self.revoke.assert_not_called()
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
 
     def test_a_question_before_the_yes_is_answered_and_the_yes_can_come_in_words(self) -> None:
-        self._post("Just disconnect me from google", message_id="wamid.q1")
+        self._ask_to_disconnect_google()
+        self.model.side_effect = [_loop_round(reply={
+            "reply": "Calendar questions and receipt searches, until you connect again.", "answersOpenQuestion": None})]
         asked = self._post("wait, what will stop working?", message_id="wamid.q2")
         self.assertEqual(asked["results"][0]["outcome"], "message")
         self.assertIn("until you connect again", self._texts()[-1])
-        self.assertIn('"pendingChoice":{"kind":"confirmation","question":"Disconnect Google Calendar and Gmail (nimrod@gmail.com) from Assistyca?","about":"disconnect"}', self.prompts[-1])
-        self.assertIn("- confirm:", self.prompts[-1])
+        self.assertEqual(_context_of(self.model.call_args)["openQuestion"],
+                         {"kind": "confirmation", "tool": "disconnect", "question": self.QUESTION})
         self.assertEqual(self._connected(), ["calendar", "email"], "a question is not a yes")
-        self.assertEqual(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))["kind"], "disconnect")
+        self.assertEqual(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))["tool"], "disconnect")
 
+        # Words the parser cannot place are read by the model; the stored
+        # call is still what runs, and only the report is shown.
+        self.model.side_effect = [
+            _loop_round(reply={"reply": "Sure.", "answersOpenQuestion": "yes"}),
+            _loop_round(reply={"reply": "Done - both are disconnected.", "claimsCompleted": ["disconnect"]}),
+        ]
         done = self._post("alright then, go on", message_id="wamid.q3")
-        self.assertEqual(done["results"][0]["outcome"], "disconnected")
+        self.assertEqual(done["results"][0]["outcome"], "message")
+        self.assertEqual(self._texts()[-1], "Done - both are disconnected.")
         self.assertEqual(self._connected(), [])
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
 
     def test_nothing_connected_by_that_name_says_so(self) -> None:
-        self.model.side_effect = lambda **kwargs: SimpleNamespace(output_text=json.dumps({
-            "outcome": "disconnect_command", "proposalType": "", "changes": {},
-            "reply": "Disconnecting Outlook.", "disconnectTargets": ["outlook"]}))
+        self.model.side_effect = [
+            _loop_round(_tool_call("disconnect", "x1", targets=["outlook"])),
+            _loop_round(reply={"reply": "Nothing from Outlook is connected, so there's nothing to disconnect."}),
+        ]
         result = self._post("disconnect outlook", message_id="wamid.x1")
-        self.assertEqual(result["results"][0]["outcome"], "disconnect_nothing")
+        self.assertEqual(result["results"][0]["outcome"], "message")
+        self.assertEqual(_tool_outputs(self.model.call_args)[0]["error"]["code"], "nothing_found")
         self.assertIn("nothing to disconnect", self._texts()[-1])
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])), "no yes is asked for something that would do nothing")
         self.assertEqual(self._connected(), ["calendar", "email"])
 
 
