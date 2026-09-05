@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Shared list</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <script src="/portal/theme-init.js?v=1"></script>
+    <link rel="stylesheet" href="/portal/lists.css?v=1" />
+  </head>
+  <body data-view="loading">
+    <header class="topbar">
+      <span></span>
+      <h1 id="pageTitle" class="topbar-title">Shared list</h1>
+      <a class="topbar-link" href="/">Assistyca</a>
+    </header>
+
+    <main class="shell">
+      <section id="loadingView" class="view" aria-live="polite" aria-busy="true">
+        <div class="spinner" aria-hidden="true"></div>
+        <span class="sr-only">Loading list</span>
+      </section>
+
+      <section id="missingView" class="view is-hidden">
+        <div class="card notice">
+          <h2>This list is not shared</h2>
+          <p>The link may have been turned off, or the list was put away. Ask whoever sent it for a fresh link.</p>
+        </div>
+      </section>
+
+      <section id="listView" class="view is-hidden">
+        <div class="card list-head">
+          <h2 id="listName" class="list-name"></h2>
+          <p class="list-meta"><span id="listKind" class="badge"></span> <span id="listCounts"></span></p>
+        </div>
+        <ul id="items" class="items"></ul>
+        <p id="emptyList" class="empty is-hidden">Nothing on this list.</p>
+        <div class="card share">
+          <h3>For other apps</h3>
+          <div class="share-links">
+            <a id="jsonLink" href="#">JSON</a>
+            <a id="csvLink" href="#">CSV</a>
+          </div>
+          <p class="share-help">Read-only. It always shows the list as it is right now.</p>
+        </div>
+      </section>
+    </main>
+    <script src="/portal/list-share.js?v=1"></script>
+  </body>
+</html>

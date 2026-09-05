@@ -68,6 +68,54 @@ DEFAULT_MODEL_PRICES = (
         "output_usd_per_1m_tokens": 1.25,
     },
 )
+ACCOUNT_LISTS_TABLE_SQL = """
+-- Lists the account keeps: shopping, packing, ideas, a to-do. The agent
+-- reads and edits them from chat and the lists page edits them by hand;
+-- both write here, so there is one list and never two copies of it.
+-- share_token is a read-only capability for the public share page. It is
+-- stored in the clear because the owner copies the link again whenever they
+-- like; turning sharing off or on again replaces it, and the old link dies.
+CREATE TABLE IF NOT EXISTS account_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'general',
+    share_token TEXT NOT NULL DEFAULT '',
+    archived_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_lists_user
+ON account_lists(user_id, archived_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_lists_share_token
+ON account_lists(share_token) WHERE share_token <> '';
+
+CREATE TABLE IF NOT EXISTS account_list_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    done INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(list_id) REFERENCES account_lists(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_list_items_list
+ON account_list_items(list_id, position, id);
+"""
+
+_LIST_NAME_NOISE = {"the", "my", "list", "lists", "of", "for", "a", "an", "to", "and"}
+
+ACCOUNT_LIST_KINDS = ("todo", "general")
+ACCOUNT_LIST_MAX_NAME_LENGTH = 120
+ACCOUNT_LIST_ITEM_MAX_LENGTH = 300
+ACCOUNT_LIST_MAX_ITEMS = 500
+ACCOUNT_LIST_MAX_LISTS = 200
+
 AGENT_TURNS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS agent_turns (
     turn_id TEXT PRIMARY KEY,
@@ -1036,6 +1084,7 @@ class PortalDatabase:
                 self._ensure_usage_events_tool_indexes(conn)
                 self._ensure_contact_opportunities_indexes(conn)
                 self._ensure_agent_turns_table(conn)
+                self._ensure_account_lists_tables(conn)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -1044,6 +1093,9 @@ class PortalDatabase:
                 self._sync_feature_catalog(conn)
                 if self.bootstrap_paid_emails:
                     self._seed_paid_emails(conn, self.bootstrap_paid_emails)
+
+    def _ensure_account_lists_tables(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(ACCOUNT_LISTS_TABLE_SQL)
 
     def _ensure_agent_turns_table(self, conn: sqlite3.Connection) -> None:
         """One row per assistant turn, written whether the turn went well or not.
@@ -6634,6 +6686,362 @@ class PortalDatabase:
         return {
             "key": str(row["fact_key"] or ""),
             "fact": str(row["fact"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    # -- lists -----------------------------------------------------------------
+
+    def create_account_list(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        kind: str = "general",
+        items: Iterable[Any] = (),
+    ) -> dict[str, Any]:
+        """Start a list. A to-do list has things to tick off; a general list is
+        just things, in order: a shopping list, a packing list, ideas."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        list_name = normalize_text(name)[:ACCOUNT_LIST_MAX_NAME_LENGTH]
+        if not list_name:
+            raise ValueError("A list needs a name.")
+        list_kind = normalize_text(kind).lower()
+        if list_kind not in ACCOUNT_LIST_KINDS:
+            list_kind = "general"
+        now = now_iso()
+        with self._connection() as conn:
+            count = int(conn.execute(
+                "SELECT COUNT(*) FROM account_lists WHERE user_id = ?", (int(user_id),)
+            ).fetchone()[0] or 0)
+            if count >= ACCOUNT_LIST_MAX_LISTS:
+                raise ValueError("This account already has as many lists as it can keep.")
+            cursor = conn.execute(
+                """
+                INSERT INTO account_lists (user_id, name, kind, share_token, archived_at, created_at, updated_at)
+                VALUES (?, ?, ?, '', NULL, ?, ?)
+                """,
+                (int(user_id), list_name, list_kind, now, now),
+            )
+            list_id = int(cursor.lastrowid or 0)
+            self._insert_account_list_items(conn, list_id, items, now)
+        return self.get_account_list(user_id=int(user_id), list_id=list_id) or {}
+
+    def list_account_lists(self, *, user_id: int, include_archived: bool = False) -> list[dict[str, Any]]:
+        """Every list the account keeps, newest change first, with its counts
+        but not its items: the page shows this as cards."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT l.*,
+                       (SELECT COUNT(*) FROM account_list_items i WHERE i.list_id = l.id) AS item_count,
+                       (SELECT COUNT(*) FROM account_list_items i WHERE i.list_id = l.id AND i.done = 0) AS open_count
+                FROM account_lists l
+                WHERE l.user_id = ? AND (? = 1 OR l.archived_at IS NULL)
+                ORDER BY (l.archived_at IS NOT NULL), l.updated_at DESC, l.id DESC
+                """,
+                (int(user_id), 1 if include_archived else 0),
+            ).fetchall()
+        return [self._load_account_list_row(row) for row in rows]
+
+    def get_account_list(self, *, user_id: int, list_id: int, include_items: bool = True) -> dict[str, Any] | None:
+        if int(user_id or 0) <= 0 or int(list_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT l.*,
+                       (SELECT COUNT(*) FROM account_list_items i WHERE i.list_id = l.id) AS item_count,
+                       (SELECT COUNT(*) FROM account_list_items i WHERE i.list_id = l.id AND i.done = 0) AS open_count
+                FROM account_lists l
+                WHERE l.id = ? AND l.user_id = ?
+                """,
+                (int(list_id), int(user_id)),
+            ).fetchone()
+            if row is None:
+                return None
+            record = self._load_account_list_row(row)
+            if include_items:
+                record["items"] = self._load_account_list_items(conn, int(list_id))
+        return record
+
+    def find_account_lists(self, *, user_id: int, name: str) -> list[dict[str, Any]]:
+        """The lists a name could mean, best match first.
+
+        An exact name wins outright. Otherwise a list whose name contains the
+        words, or is contained in them, is a candidate: "shopping" finds
+        "Shopping list", and "the packing list for Rome" finds "Rome packing".
+        The caller decides what to do with more than one.
+        """
+
+        wanted = normalize_text(name).casefold()
+        if not wanted:
+            return []
+        candidates = self.list_account_lists(user_id=user_id)
+        exact = [record for record in candidates if normalize_text(record.get("name")).casefold() == wanted]
+        if exact:
+            return exact
+        wanted_words = {word for word in re.split(r"[^\w]+", wanted) if len(word) > 1 and word not in _LIST_NAME_NOISE}
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for record in candidates:
+            own = normalize_text(record.get("name")).casefold()
+            own_words = {word for word in re.split(r"[^\w]+", own) if len(word) > 1 and word not in _LIST_NAME_NOISE}
+            if wanted in own or (own and own in wanted):
+                scored.append((3, record))
+                continue
+            overlap = len(wanted_words & own_words)
+            if overlap and (overlap == len(own_words) or overlap == len(wanted_words)):
+                scored.append((2, record))
+            elif overlap:
+                scored.append((1, record))
+        scored.sort(key=lambda entry: -entry[0])
+        if not scored:
+            return []
+        best = scored[0][0]
+        return [record for score, record in scored if score == best]
+
+    def update_account_list(
+        self,
+        *,
+        user_id: int,
+        list_id: int,
+        name: str | None = None,
+        kind: str | None = None,
+        archived: bool | None = None,
+    ) -> dict[str, Any] | None:
+        current = self.get_account_list(user_id=user_id, list_id=list_id, include_items=False)
+        if current is None:
+            return None
+        next_name = normalize_text(name)[:ACCOUNT_LIST_MAX_NAME_LENGTH] if name is not None else current["name"]
+        if not next_name:
+            raise ValueError("A list needs a name.")
+        next_kind = normalize_text(kind).lower() if kind is not None else current["kind"]
+        if next_kind not in ACCOUNT_LIST_KINDS:
+            next_kind = current["kind"]
+        now = now_iso()
+        archived_at = current.get("archivedAt") or None
+        if archived is not None:
+            archived_at = now if archived else None
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE account_lists SET name = ?, kind = ?, archived_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (next_name, next_kind, archived_at, now, int(list_id), int(user_id)),
+            )
+        return self.get_account_list(user_id=user_id, list_id=list_id)
+
+    def delete_account_list(self, *, user_id: int, list_id: int) -> bool:
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM account_lists WHERE id = ? AND user_id = ?", (int(list_id), int(user_id))
+            )
+        return cursor.rowcount > 0
+
+    def add_account_list_items(self, *, user_id: int, list_id: int, texts: Iterable[Any]) -> dict[str, Any]:
+        """Put things on a list. Something already on it, spelled the same,
+        is not added twice; the result says what went on and what was
+        already there."""
+
+        current = self.get_account_list(user_id=user_id, list_id=list_id)
+        if current is None:
+            raise KeyError("List not found.")
+        now = now_iso()
+        with self._connection() as conn:
+            added, skipped = self._insert_account_list_items(conn, int(list_id), texts, now, existing=current["items"])
+            conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
+        return {"added": added, "skipped": skipped, "list": self.get_account_list(user_id=user_id, list_id=list_id)}
+
+    def update_account_list_item(
+        self,
+        *,
+        user_id: int,
+        list_id: int,
+        item_id: int,
+        text: str | None = None,
+        done: bool | None = None,
+        position: int | None = None,
+    ) -> dict[str, Any] | None:
+        if self.get_account_list(user_id=user_id, list_id=list_id, include_items=False) is None:
+            return None
+        now = now_iso()
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM account_list_items WHERE id = ? AND list_id = ?", (int(item_id), int(list_id))
+            ).fetchone()
+            if row is None:
+                return None
+            next_text = normalize_text(text)[:ACCOUNT_LIST_ITEM_MAX_LENGTH] if text is not None else str(row["text"])
+            if not next_text:
+                raise ValueError("An item needs some words.")
+            next_done = (1 if done else 0) if done is not None else int(row["done"] or 0)
+            next_position = int(position) if position is not None else int(row["position"] or 0)
+            conn.execute(
+                "UPDATE account_list_items SET text = ?, done = ?, position = ?, updated_at = ? WHERE id = ?",
+                (next_text, next_done, next_position, now, int(item_id)),
+            )
+            conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
+            updated = conn.execute("SELECT * FROM account_list_items WHERE id = ?", (int(item_id),)).fetchone()
+        return self._load_account_list_item_row(updated)
+
+    def set_account_list_items_done(self, *, user_id: int, list_id: int, item_ids: Iterable[int], done: bool) -> int:
+        ids = [int(value) for value in item_ids if int(value or 0) > 0]
+        if not ids or self.get_account_list(user_id=user_id, list_id=list_id, include_items=False) is None:
+            return 0
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE account_list_items SET done = ?, updated_at = ? WHERE list_id = ? AND id IN ({','.join('?' * len(ids))})",
+                (1 if done else 0, now, int(list_id), *ids),
+            )
+            conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
+        return cursor.rowcount
+
+    def remove_account_list_items(self, *, user_id: int, list_id: int, item_ids: Iterable[int]) -> int:
+        ids = [int(value) for value in item_ids if int(value or 0) > 0]
+        if not ids or self.get_account_list(user_id=user_id, list_id=list_id, include_items=False) is None:
+            return 0
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM account_list_items WHERE list_id = ? AND id IN ({','.join('?' * len(ids))})",
+                (int(list_id), *ids),
+            )
+            conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
+        return cursor.rowcount
+
+    def clear_done_account_list_items(self, *, user_id: int, list_id: int) -> int:
+        if self.get_account_list(user_id=user_id, list_id=list_id, include_items=False) is None:
+            return 0
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute("DELETE FROM account_list_items WHERE list_id = ? AND done = 1", (int(list_id),))
+            conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
+        return cursor.rowcount
+
+    def set_account_list_share(self, *, user_id: int, list_id: int, enabled: bool) -> dict[str, Any] | None:
+        """Turn the public link on or off. Turning it on always mints a new
+        token, so switching it off and on again is how an owner retires a
+        link that got forwarded too far."""
+
+        if self.get_account_list(user_id=user_id, list_id=list_id, include_items=False) is None:
+            return None
+        token = secrets.token_urlsafe(24) if enabled else ""
+        now = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE account_lists SET share_token = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (token, now, int(list_id), int(user_id)),
+            )
+        return self.get_account_list(user_id=user_id, list_id=list_id)
+
+    def get_account_list_by_share_token(self, token: str) -> dict[str, Any] | None:
+        """The list behind a share link, items included, or None. An archived
+        list is off the air even if its link is still around."""
+
+        share_token = normalize_text(token)
+        if not share_token:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT l.*,
+                       (SELECT COUNT(*) FROM account_list_items i WHERE i.list_id = l.id) AS item_count,
+                       (SELECT COUNT(*) FROM account_list_items i WHERE i.list_id = l.id AND i.done = 0) AS open_count
+                FROM account_lists l
+                WHERE l.share_token = ? AND l.archived_at IS NULL
+                """,
+                (share_token,),
+            ).fetchone()
+            if row is None:
+                return None
+            record = self._load_account_list_row(row)
+            record["items"] = self._load_account_list_items(conn, int(record["id"]))
+        return record
+
+    def _insert_account_list_items(
+        self,
+        conn: sqlite3.Connection,
+        list_id: int,
+        texts: Iterable[Any],
+        now: str,
+        *,
+        existing: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        present = existing
+        if present is None:
+            present = self._load_account_list_items(conn, list_id)
+        seen = {normalize_text(item.get("text")).casefold() for item in present}
+        position = max([int(item.get("position") or 0) for item in present] + [0])
+        added: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        room = ACCOUNT_LIST_MAX_ITEMS - len(present)
+        for raw in texts:
+            text = normalize_text(raw)[:ACCOUNT_LIST_ITEM_MAX_LENGTH]
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                skipped.append(text)
+                continue
+            if room <= 0:
+                skipped.append(text)
+                continue
+            position += 1
+            room -= 1
+            cursor = conn.execute(
+                """
+                INSERT INTO account_list_items (list_id, text, done, position, created_at, updated_at)
+                VALUES (?, ?, 0, ?, ?, ?)
+                """,
+                (int(list_id), text, position, now, now),
+            )
+            seen.add(key)
+            added.append({
+                "id": int(cursor.lastrowid or 0),
+                "text": text,
+                "done": False,
+                "position": position,
+                "createdAt": now,
+                "updatedAt": now,
+            })
+        return added, skipped
+
+    def _load_account_list_items(self, conn: sqlite3.Connection, list_id: int) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM account_list_items WHERE list_id = ? ORDER BY position ASC, id ASC",
+            (int(list_id),),
+        ).fetchall()
+        return [self._load_account_list_item_row(row) for row in rows]
+
+    def _load_account_list_item_row(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        return {
+            "id": int(row["id"] or 0),
+            "text": str(row["text"] or ""),
+            "done": bool(int(row["done"] or 0)),
+            "position": int(row["position"] or 0),
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def _load_account_list_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        keys = row.keys()
+        return {
+            "id": int(row["id"] or 0),
+            "userId": int(row["user_id"] or 0),
+            "name": str(row["name"] or ""),
+            "kind": str(row["kind"] or "general"),
+            "shareToken": str(row["share_token"] or ""),
+            "shared": bool(str(row["share_token"] or "")),
+            "archived": bool(row["archived_at"]),
+            "archivedAt": str(row["archived_at"] or ""),
+            "itemCount": int(row["item_count"] or 0) if "item_count" in keys else 0,
+            "openCount": int(row["open_count"] or 0) if "open_count" in keys else 0,
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }

@@ -18585,7 +18585,39 @@ function renderAgentMessageBubbleContent(bubble, message, kind, proposal, displa
     return;
   }
 
-  bubble.textContent = displayText;
+  appendAgentTextWithLinks(bubble, displayText);
+}
+
+const AGENT_REPLY_URL_PATTERN = /https?:\/\/[^\s<>"')\]]+/g;
+
+// A link in a reply is only tappable when it points at this portal - the
+// lists page, for one. Anything else stays plain text, the way the model
+// wrote it; the model is not allowed to send people elsewhere anyway.
+function appendAgentTextWithLinks(container, text) {
+  const value = String(text ?? "");
+  let cursor = 0;
+  for (const match of value.matchAll(AGENT_REPLY_URL_PATTERN)) {
+    const raw = match[0];
+    const trimmed = raw.replace(/[.,;:!?]+$/, "");
+    let url = null;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      url = null;
+    }
+    if (!url || url.origin !== window.location.origin) {
+      continue;
+    }
+    container.append(document.createTextNode(value.slice(cursor, match.index)));
+    const link = document.createElement("a");
+    link.href = trimmed;
+    link.textContent = trimmed;
+    link.target = "_blank";
+    link.rel = "noopener";
+    container.append(link);
+    cursor = match.index + trimmed.length;
+  }
+  container.append(document.createTextNode(value.slice(cursor)));
 }
 
 function renderAgentMessage(message) {
@@ -36278,6 +36310,13 @@ function syncAccountProfileField(key) {
 function handleMenuAction(action) {
   if (action === "personal-details") {
     setActiveTab("personal-details");
+    return;
+  }
+
+  if (action === "lists") {
+    // The lists page is its own small app, built for a phone; it shares the
+    // session cookie, so no hand-off is needed from here.
+    window.location.assign("/lists");
     return;
   }
 

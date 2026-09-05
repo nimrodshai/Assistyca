@@ -854,7 +854,17 @@ def summarize_admin_spend_totals(users: list[dict[str, Any]]) -> dict[str, Any]:
 MINIMUM_SESSION_SECRET_LENGTH = 32
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
+    "/lists": Path("portal/lists.html"),
 }
+# The public, read-only view of one shared list. The token is the rest of
+# the path; the page reads it from its own address and asks the API.
+LIST_SHARE_PAGE_PREFIX = "/l/"
+LIST_SHARE_PAGE = Path("portal/list-share.html")
+# A link from WhatsApp opens the lists page on a phone that has no browser
+# session. The link carries a short signed sign-in that is spent on first
+# use; the page it lands on holds the session cookie from then on.
+LISTS_HANDOFF_PREFIX = "/lists/open/"
+LISTS_HANDOFF_TTL_SECONDS = 48 * 3600
 
 # Every response carries these. The portal serves no inline scripts -- the theme
 # bootstrap and the about-page behaviour live in their own .js files -- so the
@@ -1102,22 +1112,35 @@ class PortalAuthStore:
                 }
 
             self._challenges.pop(normalized_email, None)
-            session = PortalSession(
-                token="",
-                email=normalized_email,
-                issued_at=now,
-                expires_at=now + self.session_ttl_seconds,
-            )
-            token = create_session_token(session, self.session_secret) if self.session_secret else secrets.token_urlsafe(32)
-            session.token = token
-            if not self.session_secret:
-                self._sessions[token] = session
-            return True, "ok", {
-                "token": token,
-                "email": session.email,
-                "issuedAt": to_millis(session.issued_at),
-                "expiresAt": to_millis(session.expires_at),
-            }
+            return True, "ok", self._issue_session_locked(normalized_email, now)
+
+    def issue_session(self, email: str) -> dict[str, Any]:
+        """A signed-in session for an account that proved itself another way
+        than the emailed code: a signed link tapped from its own WhatsApp."""
+
+        normalized_email = normalize_email(email)
+        if not self.is_registered_email(normalized_email):
+            raise ValueError("Unknown account.")
+        with self._lock:
+            return self._issue_session_locked(normalized_email, time.time())
+
+    def _issue_session_locked(self, normalized_email: str, now: float) -> dict[str, Any]:
+        session = PortalSession(
+            token="",
+            email=normalized_email,
+            issued_at=now,
+            expires_at=now + self.session_ttl_seconds,
+        )
+        token = create_session_token(session, self.session_secret) if self.session_secret else secrets.token_urlsafe(32)
+        session.token = token
+        if not self.session_secret:
+            self._sessions[token] = session
+        return {
+            "token": token,
+            "email": session.email,
+            "issuedAt": to_millis(session.issued_at),
+            "expiresAt": to_millis(session.expires_at),
+        }
 
     def get_session(self, token: str) -> PortalSession | None:
         normalized_token = str(token or "").strip()
@@ -3899,6 +3922,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
             or path.startswith("/api/threads")
+            or path == "/api/lists"
+            or path.startswith("/api/lists/")
+            or path.startswith("/api/public/lists/")
         ):
             self.send_response(HTTPStatus.NO_CONTENT)
             send_api_headers(self)
@@ -3933,8 +3959,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
             or path.startswith("/api/threads")
+            or path == "/api/lists"
+            or path.startswith("/api/lists/")
+            or path.startswith("/api/public/lists/")
         ):
             self._handle_api_get(parsed)
+            return
+        if path.startswith(LISTS_HANDOFF_PREFIX):
+            self._handle_lists_handoff(parsed)
             return
 
         super().do_GET()
@@ -3975,6 +4007,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/webhooks/whatsapp"
             or path.startswith("/api/whatsapp/")
             or path.startswith("/api/approvals")
+            or path == "/api/lists"
+            or path.startswith("/api/lists/")
         ):
             try:
                 self._handle_api_post(parsed)
@@ -4002,6 +4036,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/source-actions/")
             or path.startswith("/api/notifications/")
             or path.startswith("/api/whatsapp/history/")
+            or path.startswith("/api/lists/")
         ):
             self._handle_api_delete(parsed)
             return
@@ -4015,6 +4050,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         static_alias = resolve_static_page_alias(parsed.path)
         if static_alias is not None:
             return self._send_static_page(static_alias)
+        if parsed.path.startswith(LIST_SHARE_PAGE_PREFIX) and len(parsed.path) > len(LIST_SHARE_PAGE_PREFIX):
+            return self._send_static_page(LIST_SHARE_PAGE)
         if not is_public_static_path(parsed.path):
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
@@ -4058,6 +4095,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_agent_folder_archive_get(parsed)
             return
 
+        if path == "/api/lists" or path.startswith("/api/lists/"):
+            self._handle_lists_get(parsed)
+            return
+        if path.startswith("/api/public/lists/"):
+            self._handle_public_list_get(parsed)
+            return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_get(parsed)
             return
@@ -4312,6 +4355,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_claim_code_post()
             return
 
+        if path == "/api/lists" or path.startswith("/api/lists/"):
+            self._handle_lists_post(parsed)
+            return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
             return
@@ -4359,6 +4405,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/whatsapp/my-numbers/"):
             self._handle_whatsapp_my_numbers_delete(parsed)
+            return
+        if path.startswith("/api/lists/"):
+            self._handle_lists_delete(parsed)
             return
         if path.startswith("/api/scheduled-actions/"):
             self._handle_scheduled_actions_delete(parsed)
@@ -8915,6 +8964,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             tool_context=tool_context,
             connect_links=dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
+            list_link=self._lists_link_builder(session.email, channel),
         )
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
 
@@ -11734,6 +11784,263 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 or service.store.list_approvals(status="awaiting_edit")
             )
         return False
+
+    def _lists_link_builder(self, email: str, channel: str) -> Callable[[int], str]:
+        """How a list result turns into a link the person can open.
+
+        In the browser the portal session is already in the cookie, so the
+        link is the page itself. From WhatsApp the phone's browser has no
+        session: the link carries a short signed sign-in for this account
+        that is spent on first use, and lands on the list.
+        """
+
+        base = self._public_base_url()
+        is_whatsapp = normalize_text(channel).lower() == "whatsapp"
+        secret = self.store.session_secret
+
+        def build(list_id: int) -> str:
+            target = f"#/list/{int(list_id)}" if int(list_id or 0) > 0 else ""
+            if not is_whatsapp or not secret:
+                return f"{base}/lists{target}"
+            now = time.time()
+            token = create_session_token(
+                PortalSession(token="", email=normalize_email(email), issued_at=now, expires_at=now + LISTS_HANDOFF_TTL_SECONDS),
+                secret,
+            )
+            suffix = f"?list={int(list_id)}" if int(list_id or 0) > 0 else ""
+            return f"{base}{LISTS_HANDOFF_PREFIX}{token}{suffix}"
+
+        return build
+
+    def _handle_lists_handoff(self, parsed: urllib_parse.ParseResult) -> None:
+        """Spend a signed sign-in from a WhatsApp link and open the lists page.
+
+        The token is a short-lived session token. It is checked like any
+        session (signature, expiry, registered account, not revoked), then
+        revoked so the same link opens nothing a second time, and the
+        browser gets a normal session cookie for the account instead.
+        """
+
+        token = urllib_parse.unquote(parsed.path[len(LISTS_HANDOFF_PREFIX):]).strip("/")
+        query = urllib_parse.parse_qs(parsed.query)
+        try:
+            list_id = int(normalize_text(query.get("list", ["0"])[0]) or 0)
+        except ValueError:
+            list_id = 0
+        target = f"/lists#/list/{list_id}" if list_id > 0 else "/lists"
+
+        session = self.store.get_session(token) if token else None
+        if session is None:
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "/lists?expired=1")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.store.revoke_session(token)
+        issued = self.store.issue_session(session.email)
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", target)
+        self.send_header("Set-Cookie", self._build_session_cookie(str(issued.get("token") or "")))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    # -- lists API ---------------------------------------------------------
+
+    def _serialize_list_for_owner(self, record: dict[str, Any]) -> dict[str, Any]:
+        payload = {key: value for key, value in record.items() if key not in {"userId", "shareToken"}}
+        token = normalize_text(record.get("shareToken"))
+        payload["shareUrl"] = f"{self._public_base_url()}{LIST_SHARE_PAGE_PREFIX}{token}" if token else ""
+        payload["shareJsonUrl"] = f"{self._public_base_url()}/api/public/lists/{token}" if token else ""
+        payload["shareCsvUrl"] = f"{self._public_base_url()}/api/public/lists/{token}.csv" if token else ""
+        return payload
+
+    def _lists_path_parts(self, parsed: urllib_parse.ParseResult) -> list[str]:
+        return [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part][2:]
+
+    def _handle_lists_get(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        parts = self._lists_path_parts(parsed)
+        if not parts:
+            query = urllib_parse.parse_qs(parsed.query)
+            include_archived = normalize_text(query.get("archived", ["0"])[0]) in {"1", "true"}
+            records = self.database.list_account_lists(user_id=user_id, include_archived=include_archived)
+            json_response(self, HTTPStatus.OK, {"ok": True, "lists": [self._serialize_list_for_owner(r) for r in records]})
+            return
+        list_id = self._parse_list_id(parts[0])
+        record = self.database.get_account_list(user_id=user_id, list_id=list_id) if list_id else None
+        if record is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "list_not_found", "message": "That list is not here."})
+            return
+        json_response(self, HTTPStatus.OK, {"ok": True, "list": self._serialize_list_for_owner(record)})
+
+    def _parse_list_id(self, raw: str) -> int:
+        try:
+            return int(normalize_text(raw))
+        except ValueError:
+            return 0
+
+    def _handle_lists_post(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        parts = self._lists_path_parts(parsed)
+
+        def invalid(message: str) -> None:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_list", "message": message})
+
+        def not_found() -> None:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "list_not_found", "message": "That list is not here."})
+
+        try:
+            if not parts:
+                items = payload.get("items") if isinstance(payload.get("items"), list) else []
+                record = self.database.create_account_list(
+                    user_id=user_id,
+                    name=normalize_text(payload.get("name")),
+                    kind=normalize_text(payload.get("kind")) or "general",
+                    items=[normalize_text(item) for item in items],
+                )
+                json_response(self, HTTPStatus.OK, {"ok": True, "list": self._serialize_list_for_owner(record)})
+                return
+
+            list_id = self._parse_list_id(parts[0])
+            if list_id <= 0 or self.database.get_account_list(user_id=user_id, list_id=list_id, include_items=False) is None:
+                not_found()
+                return
+
+            if len(parts) == 1:
+                record = self.database.update_account_list(
+                    user_id=user_id,
+                    list_id=list_id,
+                    name=normalize_text(payload.get("name")) if "name" in payload else None,
+                    kind=normalize_text(payload.get("kind")) if "kind" in payload else None,
+                    archived=bool(payload.get("archived")) if "archived" in payload else None,
+                )
+                json_response(self, HTTPStatus.OK, {"ok": True, "list": self._serialize_list_for_owner(record or {})})
+                return
+
+            if parts[1] == "share" and len(parts) == 2:
+                record = self.database.set_account_list_share(user_id=user_id, list_id=list_id, enabled=bool(payload.get("enabled")))
+                json_response(self, HTTPStatus.OK, {"ok": True, "list": self._serialize_list_for_owner(record or {})})
+                return
+
+            if parts[1] == "items" and len(parts) == 2:
+                raw_items = payload.get("items") if isinstance(payload.get("items"), list) else [payload.get("text")]
+                outcome = self.database.add_account_list_items(
+                    user_id=user_id, list_id=list_id, texts=[normalize_text(item) for item in raw_items],
+                )
+                json_response(self, HTTPStatus.OK, {
+                    "ok": True,
+                    "added": outcome["added"],
+                    "skipped": outcome["skipped"],
+                    "list": self._serialize_list_for_owner(outcome["list"]),
+                })
+                return
+
+            if parts[1] == "items" and len(parts) == 3 and parts[2] == "clear-done":
+                cleared = self.database.clear_done_account_list_items(user_id=user_id, list_id=list_id)
+                record = self.database.get_account_list(user_id=user_id, list_id=list_id) or {}
+                json_response(self, HTTPStatus.OK, {"ok": True, "cleared": cleared, "list": self._serialize_list_for_owner(record)})
+                return
+
+            if parts[1] == "items" and len(parts) == 3:
+                item_id = self._parse_list_id(parts[2])
+                item = self.database.update_account_list_item(
+                    user_id=user_id,
+                    list_id=list_id,
+                    item_id=item_id,
+                    text=normalize_text(payload.get("text")) if "text" in payload else None,
+                    done=bool(payload.get("done")) if "done" in payload else None,
+                    position=int(payload.get("position")) if isinstance(payload.get("position"), int) else None,
+                )
+                if item is None:
+                    json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "item_not_found", "message": "That item is not on the list."})
+                    return
+                record = self.database.get_account_list(user_id=user_id, list_id=list_id) or {}
+                json_response(self, HTTPStatus.OK, {"ok": True, "item": item, "list": self._serialize_list_for_owner(record)})
+                return
+        except ValueError as exc:
+            invalid(str(exc))
+            return
+        except KeyError:
+            not_found()
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_lists_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        parts = self._lists_path_parts(parsed)
+        list_id = self._parse_list_id(parts[0]) if parts else 0
+        if list_id <= 0:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if len(parts) == 1:
+            deleted = self.database.delete_account_list(user_id=user_id, list_id=list_id)
+            json_response(self, HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND, {"ok": deleted, "deleted": deleted})
+            return
+        if len(parts) == 3 and parts[1] == "items":
+            removed = self.database.remove_account_list_items(user_id=user_id, list_id=list_id, item_ids=[self._parse_list_id(parts[2])])
+            record = self.database.get_account_list(user_id=user_id, list_id=list_id)
+            if record is None:
+                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "list_not_found", "message": "That list is not here."})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "removed": removed, "list": self._serialize_list_for_owner(record)})
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_public_list_get(self, parsed: urllib_parse.ParseResult) -> None:
+        """A shared list for anyone holding its link: as JSON, or as CSV for
+        a spreadsheet. Only the words on the list; nothing about the owner."""
+
+        raw = urllib_parse.unquote(parsed.path[len("/api/public/lists/"):]).strip("/")
+        as_csv = raw.endswith(".csv")
+        token = raw[:-4] if as_csv else raw
+        record = self.database.get_account_list_by_share_token(token) if token else None
+        if record is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "list_not_found", "message": "This list is not shared, or the link has been turned off."})
+            return
+        items = [{"text": item["text"], "done": bool(item["done"])} for item in record.get("items") or []]
+        if record.get("kind") != "todo":
+            for entry in items:
+                entry.pop("done", None)
+        if as_csv:
+            lines = ["text,done"] if record.get("kind") == "todo" else ["text"]
+            for entry in items:
+                cell = '"' + str(entry["text"]).replace('"', '""') + '"'
+                lines.append(f"{cell},{'true' if entry.get('done') else 'false'}" if record.get("kind") == "todo" else cell)
+            body = ("\n".join(lines) + "\n").encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "list": {
+                "name": record["name"],
+                "kind": record["kind"],
+                "items": items,
+                "updatedAt": record["updatedAt"],
+            },
+        })
 
     def _mint_whatsapp_agent_session_token(self, email: str) -> str:
         """A short-lived signed session for the webhook-resolved owner.

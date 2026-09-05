@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Assistyca | Lists</title>
+    <meta name="description" content="Your lists, kept by Assistyca. See them, change them, share them." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <script src="/portal/theme-init.js?v=1"></script>
+    <link rel="stylesheet" href="/portal/lists.css?v=1" />
+  </head>
+  <body data-view="loading">
+    <header class="topbar">
+      <button id="backButton" class="icon-button is-hidden" type="button" aria-label="Back to all lists">
+        <span aria-hidden="true">&#8592;</span>
+      </button>
+      <h1 id="pageTitle" class="topbar-title">Lists</h1>
+      <a class="topbar-link" href="/portal/">Chat</a>
+    </header>
+
+    <main id="app" class="shell">
+      <section id="loadingView" class="view" aria-live="polite" aria-busy="true">
+        <div class="spinner" aria-hidden="true"></div>
+        <span class="sr-only">Loading lists</span>
+      </section>
+
+      <section id="signedOutView" class="view is-hidden">
+        <div class="card notice">
+          <h2>Sign in to see your lists</h2>
+          <p id="signedOutText">Your lists live with your Assistyca account. Sign in from the portal and come back here.</p>
+          <a class="button primary" href="/portal/">Sign in</a>
+        </div>
+      </section>
+
+      <section id="homeView" class="view is-hidden">
+        <form id="createForm" class="card create-card" autocomplete="off">
+          <label class="field">
+            <span class="field-label">New list</span>
+            <input id="createName" type="text" maxlength="120" placeholder="Shopping, packing, ideas…" required />
+          </label>
+          <div class="kind-row" role="radiogroup" aria-label="List type">
+            <label class="kind-option">
+              <input type="radio" name="kind" value="general" checked />
+              <span>List</span>
+            </label>
+            <label class="kind-option">
+              <input type="radio" name="kind" value="todo" />
+              <span>To-do</span>
+            </label>
+            <button class="button primary" type="submit">Create</button>
+          </div>
+        </form>
+
+        <div id="listCards" class="cards" aria-live="polite"></div>
+        <p id="emptyHome" class="empty is-hidden">No lists yet. Make one above, or ask Assistyca in chat: "start a shopping list".</p>
+
+        <details id="archivedSection" class="archived is-hidden">
+          <summary>Archived lists</summary>
+          <div id="archivedCards" class="cards"></div>
+        </details>
+      </section>
+
+      <section id="listView" class="view is-hidden">
+        <div class="card list-head">
+          <div class="list-head-row">
+            <h2 id="listName" class="list-name"></h2>
+            <button id="renameButton" class="text-button" type="button">Rename</button>
+          </div>
+          <form id="renameForm" class="rename-form is-hidden" autocomplete="off">
+            <input id="renameInput" type="text" maxlength="120" required />
+            <button class="button primary" type="submit">Save</button>
+            <button id="renameCancel" class="button" type="button">Cancel</button>
+          </form>
+          <p class="list-meta"><span id="listKind" class="badge"></span> <span id="listCounts"></span></p>
+        </div>
+
+        <ul id="items" class="items" aria-live="polite"></ul>
+        <p id="emptyList" class="empty is-hidden">Nothing on this list yet.</p>
+
+        <form id="addForm" class="add-bar" autocomplete="off">
+          <input id="addInput" type="text" maxlength="300" placeholder="Add an item" enterkeyhint="done" />
+          <button class="button primary" type="submit">Add</button>
+        </form>
+
+        <div class="card tools">
+          <button id="clearDoneButton" class="button is-hidden" type="button">Clear ticked items</button>
+          <button id="shareToggleButton" class="button" type="button">Share this list</button>
+          <button id="archiveButton" class="button" type="button">Archive</button>
+          <button id="restoreButton" class="button is-hidden" type="button">Restore</button>
+          <button id="deleteButton" class="button danger" type="button">Delete for good</button>
+        </div>
+
+        <section id="sharePanel" class="card share is-hidden" aria-labelledby="shareTitle">
+          <h3 id="shareTitle">Anyone with the link can view</h3>
+          <p class="share-help">Read-only. Turn sharing off and on again to get a new link; the old one stops working.</p>
+          <div class="share-row">
+            <input id="shareUrl" type="text" readonly />
+            <button id="copyShareButton" class="button primary" type="button">Copy link</button>
+          </div>
+          <div class="share-links">
+            <a id="openShareLink" href="#" target="_blank" rel="noopener">Open</a>
+            <button id="copyJsonButton" class="text-button" type="button">Copy JSON link</button>
+            <button id="copyCsvButton" class="text-button" type="button">Copy CSV link</button>
+          </div>
+          <p class="share-help">The JSON and CSV links are for other apps: a spreadsheet, an automation, a shortcut on your phone.</p>
+          <button id="shareOffButton" class="text-button danger" type="button">Stop sharing</button>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/portal/lists.js?v=1"></script>
+  </body>
+</html>

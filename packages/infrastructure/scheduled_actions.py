@@ -75,6 +75,23 @@ def load_scheduled_action_config() -> ScheduledActionConfig:
     )
 
 
+def describe_list_for_message(record: dict[str, Any], *, limit: int = 40) -> str:
+    """The list as lines of text: the name, then what is still on it."""
+
+    name = normalize_text(record.get("name")) or "Your list"
+    items = [item for item in (record.get("items") or []) if isinstance(item, dict)]
+    if record.get("kind") == "todo":
+        items = [item for item in items if not item.get("done")]
+    if not items:
+        return f"{name}: nothing left on it." if record.get("kind") == "todo" else f"{name}: empty."
+    lines = [f"{name}:"]
+    for item in items[:limit]:
+        lines.append(f"• {normalize_text(item.get('text'))}")
+    if len(items) > limit:
+        lines.append(f"…and {len(items) - limit} more")
+    return "\n".join(lines)
+
+
 class ScheduledActionScheduler:
     def __init__(
         self,
@@ -155,6 +172,7 @@ class ScheduledActionScheduler:
         message_text = normalize_text(payload.get("messageText") or payload.get("text"))
         if not message_text:
             raise RuntimeError("Scheduled message text is missing.")
+        message_text = self._attach_list(action, payload, message_text)
 
         if channel == "whatsapp":
             try:
@@ -171,6 +189,22 @@ class ScheduledActionScheduler:
 
         payload["deliveredVia"] = "portal"
         return self._deliver_in_app(action, message_text)
+
+    def _attach_list(self, action: dict[str, Any], payload: dict[str, Any], message_text: str) -> str:
+        """A reminder about a list carries the list as it is now, not as it
+        was when the reminder was set. What is ticked off stays off it."""
+
+        try:
+            list_id = int(payload.get("listId") or 0)
+        except (TypeError, ValueError):
+            list_id = 0
+        if list_id <= 0:
+            return message_text
+        record = self.database.get_account_list(user_id=int(action.get("userId") or 0), list_id=list_id)
+        if record is None:
+            payload["listMissing"] = True
+            return f"{message_text}\n\n(The list this was about is no longer there.)"
+        return f"{message_text}\n\n{describe_list_for_message(record)}"
 
     def _deliver_whatsapp(self, action: dict[str, Any], message_text: str) -> str:
         """Send the scheduled message to the owner over WhatsApp.
@@ -259,5 +293,6 @@ __all__ = [
     "DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME",
     "ScheduledActionConfig",
     "ScheduledActionScheduler",
+    "describe_list_for_message",
     "load_scheduled_action_config",
 ]

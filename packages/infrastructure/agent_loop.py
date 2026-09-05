@@ -156,6 +156,10 @@ class LoopContext:
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
+    # Builds the link to one list on the lists page, signed in for the
+    # channel that has no browser session. The server knows the public
+    # address and the session secret; the loop only hands the link on.
+    list_link: Callable[[int], str] | None = None
 
 
 @dataclass
@@ -391,6 +395,11 @@ def _preflight_schedule_message(context: LoopContext, args: dict[str, Any]) -> d
         return _error("choice_required", _SCHEDULE_TIME_NEEDED)
     if not str(args.get("message_text") or "").strip():
         return _error("choice_required", "The message text is needed.")
+    list_name = str(args.get("list_name") or "").strip()
+    if list_name:
+        _record, problem = _resolve_list(context, list_name)
+        if problem:
+            return problem
     return None
 
 
@@ -413,6 +422,17 @@ def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[s
         return _error("choice_required", _SCHEDULE_TIME_NEEDED)
     if not message_text:
         return _error("choice_required", "The message text is needed.")
+    payload: dict[str, Any] = {"messageText": message_text}
+    list_name = str(args.get("list_name") or "").strip()
+    if list_name:
+        # The reminder names the list, not its items: what is still on it
+        # is read when the message goes out, so a Friday reminder about
+        # groceries reflects what got bought on Thursday.
+        record, problem = _resolve_list(context, list_name)
+        if problem:
+            return problem
+        payload["listId"] = int(record["id"])
+        payload["listName"] = record["name"]
     response, status = context.api(
         "POST",
         "/api/scheduled-actions",
@@ -424,7 +444,7 @@ def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[s
             "timezone": context.timezone_name,
             "messageText": message_text,
             "source": f"{context.channel}_agent",
-            "payload": {"messageText": message_text},
+            "payload": payload,
         },
     )
     if status == 200 and response.get("ok"):
@@ -436,22 +456,7 @@ def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[s
             "timezone": context.timezone_name,
             "messageText": message_text,
         })
-    # The server said why. That reason is what the person needs to hear and
-    # what the turn record needs to keep; "just now" on its own is a wall.
-    code = str(response.get("error") or "") if isinstance(response, dict) else ""
-    detail = str(response.get("message") or "") if isinstance(response, dict) else ""
-    print(f"agent.loop.schedule_failed status={status} error={code or '-'} message={detail!r}", flush=True)
-    why = _SCHEDULE_FAILURE_WORDS.get(code) or detail or "The message could not be scheduled just now."
-    return _error(code or "internal", why, can_retry=code not in _SCHEDULE_FAILURE_WORDS)
-
-
-# What each refusal of the scheduling API means in the person's terms.
-_SCHEDULE_FAILURE_WORDS = {
-    "missing_whatsapp_recipient": "No WhatsApp number is saved to receive it; the number has to be added in the portal first.",
-    "whatsapp_delivery_not_configured": "Sending WhatsApp messages is not set up on the server, so nothing can be scheduled yet.",
-    "trial_expired": "The trial has ended, so nothing new can be scheduled.",
-    "unauthorized": "The chat's own sign-in was not accepted by the scheduler, which is a fault on our side.",
-}
+    return _error("internal", "The message could not be scheduled just now.", can_retry=True)
 
 
 def _tool_remember_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -475,6 +480,227 @@ def _tool_forget_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, A
     except Exception as exc:  # noqa: BLE001
         return _error("internal", f"The fact could not be forgotten: {exc}", can_retry=True)
     return _ok({"forgot": key})
+
+
+# -- lists ---------------------------------------------------------------------
+
+# How many items one list result carries to the model. A list longer than
+# this is summarised past the cut; the page shows all of it.
+MAX_LIST_ITEMS_TO_MODEL = 150
+LIST_ACTIONS = ("add", "remove", "check", "uncheck", "rename", "clear_done", "delete")
+
+
+def _list_link(context: LoopContext, record: dict[str, Any]) -> str:
+    """The link to this list on the lists page, remembered as one the reply may carry."""
+
+    if context.list_link is None:
+        return ""
+    try:
+        link = str(context.list_link(int(record.get("id") or 0)) or "").strip()
+    except Exception as exc:  # noqa: BLE001 - a missing link is not a failed list
+        print(f"agent.loop.list_link_failed error={exc!r}", flush=True)
+        return ""
+    if link and link not in context.links_offered:
+        context.links_offered.append(link)
+    return link
+
+
+def _list_payload(context: LoopContext, record: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    items = [item for item in (record.get("items") or []) if isinstance(item, dict)]
+    shown = [{"id": int(item.get("id") or 0), "text": str(item.get("text") or ""), "done": bool(item.get("done"))} for item in items[:MAX_LIST_ITEMS_TO_MODEL]]
+    if record.get("kind") != "todo":
+        for entry in shown:
+            entry.pop("done", None)
+    payload: dict[str, Any] = {
+        "list": {
+            "id": int(record.get("id") or 0),
+            "name": str(record.get("name") or ""),
+            "kind": str(record.get("kind") or "general"),
+            "items": shown,
+            "itemCount": len(items),
+            "openCount": sum(1 for item in items if not item.get("done")),
+            "moreItems": max(0, len(items) - len(shown)),
+            "shared": bool(record.get("shared")),
+        },
+        "link": _list_link(context, record),
+        "note": "The link opens this list on the lists page, where it can be seen and edited by hand; put it in the reply on its own line exactly as given.",
+    }
+    payload.update(extra)
+    return payload
+
+
+def _resolve_list(context: LoopContext, name: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The one list a name means, or the error that says why there is not one."""
+
+    wanted = str(name or "").strip()
+    try:
+        matches = context.database.find_account_lists(user_id=context.user_id, name=wanted)
+    except Exception as exc:  # noqa: BLE001
+        return {}, _error("internal", f"The lists could not be read: {exc}", can_retry=True)
+    if len(matches) == 1:
+        record = context.database.get_account_list(user_id=context.user_id, list_id=int(matches[0]["id"]))
+        if record is None:
+            return {}, _error("nothing_found", f"There is no list called {wanted!r}.")
+        return record, None
+    if not matches:
+        names = [str(entry.get("name") or "") for entry in context.database.list_account_lists(user_id=context.user_id)]
+        if names:
+            return {}, _error(
+                "nothing_found",
+                f"There is no list called {wanted!r}. The lists kept are: {', '.join(names)}. Use one of those, or create_list to start a new one.",
+                options=[make_option("say", say=entry, label=entry) for entry in names[:6]],
+            )
+        return {}, _error("nothing_found", "There are no lists yet. create_list starts one.")
+    names = [str(entry.get("name") or "") for entry in matches]
+    return {}, _error(
+        "choice_required",
+        f"More than one list could be meant by {wanted!r}: {', '.join(names)}. Ask which one.",
+        options=[make_option("say", say=entry, label=entry) for entry in names[:6]],
+    )
+
+
+def _match_list_items(items: list[dict[str, Any]], wanted: list[str]) -> tuple[list[int], list[str]]:
+    """Which items the person's words name. Spelled the same wins; otherwise
+    the words inside an item, or the item inside the words, so 'the milk'
+    finds 'Milk 2L'. What matches nothing is handed back."""
+
+    matched: list[int] = []
+    missing: list[str] = []
+    taken: set[int] = set()
+    for raw in wanted:
+        text = str(raw or "").strip().casefold()
+        if not text:
+            continue
+        found = None
+        for item in items:
+            own = str(item.get("text") or "").strip().casefold()
+            if int(item.get("id") or 0) in taken:
+                continue
+            if own == text:
+                found = item
+                break
+        if found is None:
+            for item in items:
+                own = str(item.get("text") or "").strip().casefold()
+                if int(item.get("id") or 0) in taken:
+                    continue
+                if text in own or (own and own in text):
+                    found = item
+                    break
+        if found is None:
+            missing.append(str(raw).strip())
+            continue
+        taken.add(int(found.get("id") or 0))
+        matched.append(int(found.get("id") or 0))
+    return matched, missing
+
+
+def _tool_create_list(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    name = str(args.get("name") or "").strip()
+    kind = str(args.get("kind") or "general").strip().lower()
+    items = [str(item).strip() for item in (args.get("items") or []) if str(item).strip()]
+    if not name:
+        return _error("choice_required", "The list needs a name.")
+    existing = context.database.find_account_lists(user_id=context.user_id, name=name)
+    exact = [entry for entry in existing if str(entry.get("name") or "").casefold() == name.casefold()]
+    if exact:
+        return _error(
+            "already_exists",
+            f"A list called {exact[0]['name']!r} already exists. Use update_list to add to it, or choose another name.",
+        )
+    try:
+        record = context.database.create_account_list(user_id=context.user_id, name=name, kind=kind, items=items)
+    except ValueError as exc:
+        return _error("not_supported", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"The list could not be created: {exc}", can_retry=True)
+    return _ok(_list_payload(context, record, created=True))
+
+
+def _tool_update_list(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    action = str(args.get("action") or "").strip().lower()
+    items = [str(item).strip() for item in (args.get("items") or []) if str(item).strip()]
+    new_name = str(args.get("new_name") or "").strip()
+    if action not in LIST_ACTIONS:
+        return _error("not_supported", f"action must be one of: {', '.join(LIST_ACTIONS)}.")
+    record, problem = _resolve_list(context, str(args.get("list_name") or ""))
+    if problem:
+        return problem
+    list_id = int(record["id"])
+    database = context.database
+    try:
+        if action == "add":
+            if not items:
+                return _error("choice_required", "Say what to add.")
+            outcome = database.add_account_list_items(user_id=context.user_id, list_id=list_id, texts=items)
+            return _ok(_list_payload(
+                context, outcome["list"],
+                added=[entry["text"] for entry in outcome["added"]],
+                alreadyThere=outcome["skipped"],
+            ))
+        if action in {"remove", "check", "uncheck"}:
+            if not items:
+                return _error("choice_required", f"Say which items to {action}.")
+            if action != "remove" and record.get("kind") != "todo":
+                return _error("not_supported", f"{record['name']!r} is a general list; its items are not ticked off. Use remove to take one off.")
+            matched, missing = _match_list_items(record.get("items") or [], items)
+            if not matched:
+                return _error("nothing_found", f"None of those is on {record['name']!r}: {', '.join(missing)}.", notOnList=missing)
+            if action == "remove":
+                database.remove_account_list_items(user_id=context.user_id, list_id=list_id, item_ids=matched)
+            else:
+                database.set_account_list_items_done(user_id=context.user_id, list_id=list_id, item_ids=matched, done=action == "check")
+            updated = database.get_account_list(user_id=context.user_id, list_id=list_id) or record
+            return _ok(_list_payload(context, updated, **{f"{action}ed" if action != "remove" else "removed": len(matched), "notOnList": missing}))
+        if action == "rename":
+            if not new_name:
+                return _error("choice_required", "The new name is needed.")
+            updated = database.update_account_list(user_id=context.user_id, list_id=list_id, name=new_name)
+            return _ok(_list_payload(context, updated or record, renamedFrom=record["name"]))
+        if action == "clear_done":
+            cleared = database.clear_done_account_list_items(user_id=context.user_id, list_id=list_id)
+            updated = database.get_account_list(user_id=context.user_id, list_id=list_id) or record
+            return _ok(_list_payload(context, updated, cleared=cleared))
+        if action == "delete":
+            database.update_account_list(user_id=context.user_id, list_id=list_id, archived=True)
+            return _ok({
+                "deleted": record["name"],
+                "note": "The list is put away, not destroyed: it can be brought back from the lists page.",
+                "link": _list_link(context, record),
+            })
+    except ValueError as exc:
+        return _error("not_supported", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"The list could not be changed: {exc}", can_retry=True)
+    return _error("not_supported", "That change is not understood.")
+
+
+def _tool_show_lists(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    list_name = str(args.get("list_name") or "").strip()
+    if list_name:
+        record, problem = _resolve_list(context, list_name)
+        if problem:
+            return problem
+        return _ok(_list_payload(context, record))
+    try:
+        records = context.database.list_account_lists(user_id=context.user_id)
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"The lists could not be read: {exc}", can_retry=True)
+    if not records:
+        return _ok({"lists": [], "note": "No lists yet. create_list starts one."})
+    lists = [{
+        "id": int(entry.get("id") or 0),
+        "name": str(entry.get("name") or ""),
+        "kind": str(entry.get("kind") or "general"),
+        "itemCount": int(entry.get("itemCount") or 0),
+        "openCount": int(entry.get("openCount") or 0),
+    } for entry in records[:40]]
+    link = _list_link(context, records[0]) if len(records) == 1 else _lists_home_link(context)
+    return _ok({"lists": lists, "link": link, "note": "The link opens the lists page; put it in the reply on its own line exactly as given."})
+
+
+def _lists_home_link(context: LoopContext) -> str:
+    return _list_link(context, {"id": 0})
 
 
 def _params(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -587,18 +813,62 @@ TOOLS: list[ToolSpec] = [
             "HH:MM in 24-hour form in their timezone and date_policy is today, tomorrow, or next_occurrence. For "
             "'in 10 minutes' or 'in an hour', pass delay_minutes as the count of minutes and leave time_local "
             "null; never add minutes to the clock yourself. message_text is what they will receive, in their "
-            "words. Never work out the exact date yourself."
+            "words. Never work out the exact date yourself. For a reminder about one of their lists, list_name "
+            "is that list: what is still on it is read and attached when the message goes out, so keep the items "
+            "out of message_text. Otherwise null."
         ),
         parameters=_params({
             "time_local": {"type": ["string", "null"]},
             "date_policy": {"type": "string", "enum": ["today", "tomorrow", "next_occurrence"]},
             "delay_minutes": {"type": ["integer", "null"]},
             "message_text": {"type": "string"},
+            "list_name": {"type": ["string", "null"]},
         }),
         side_effect=True,
         confirm=True,
         run=_tool_schedule_message,
         preflight=_preflight_schedule_message,
+    ),
+    ToolSpec(
+        name="create_list",
+        description=(
+            "Start a list for the person. kind is todo for things to tick off, general for a plain list such as "
+            "shopping, packing, ideas or names. name is the list's name in their words; items is what goes on it "
+            "now, one entry per item, or an empty array. The result carries the link to the lists page."
+        ),
+        parameters=_params({
+            "name": {"type": "string"},
+            "kind": {"type": "string", "enum": ["todo", "general"]},
+            "items": {"type": "array", "items": {"type": "string"}},
+        }),
+        side_effect=True,
+        run=_tool_create_list,
+    ),
+    ToolSpec(
+        name="update_list",
+        description=(
+            "Change one of the person's lists. list_name is the list as they call it. action is add, remove, "
+            "check, uncheck (to-do lists only), rename, clear_done, or delete. items is the entries to add, "
+            "remove, check or uncheck, one per entry in the person's words, or an empty array; new_name is only "
+            "for rename, else null. delete puts the list away; it can be brought back from the lists page."
+        ),
+        parameters=_params({
+            "list_name": {"type": "string"},
+            "action": {"type": "string", "enum": list(LIST_ACTIONS)},
+            "items": {"type": "array", "items": {"type": "string"}},
+            "new_name": {"type": ["string", "null"]},
+        }),
+        side_effect=True,
+        run=_tool_update_list,
+    ),
+    ToolSpec(
+        name="show_lists",
+        description=(
+            "Read the person's lists. list_name reads that one list with its items; null reads the names and "
+            "counts of every list. Use it before answering what is on a list or how many lists there are."
+        ),
+        parameters=_params({"list_name": {"type": ["string", "null"]}}),
+        run=_tool_show_lists,
     ),
     ToolSpec(
         name="remember_fact",
@@ -678,6 +948,13 @@ AGENT_LOOP_INSTRUCTIONS = (
     "shown, so keep it to a word. A message that does something else leaves answersOpenQuestion null: "
     "answer the message and leave the "
     "question open.\n"
+    "Lists: the person can keep lists - a to-do list with things to tick off, or a general list such as "
+    "shopping, packing, ideas, names. create_list starts one, update_list changes one, show_lists reads one or "
+    "all of them; read before answering what is on a list. Name the list the way the person did; the tool says "
+    "when more than one could be meant or none exists. Every list result carries a link to the lists page, "
+    "where they can see and edit the list by hand and copy a link for other apps: put it in the reply on its "
+    "own line exactly as given, once. A reminder about a list is schedule_message with list_name set; the "
+    "items are read when it fires, so never copy them into message_text.\n"
     "knownFacts is what the account already told you about how their business works; read it before asking "
     "anything, and use it to resolve what a message leaves out. When the owner states something about their "
     "business that will still be true next month, call remember_fact; when they say something is no longer "
@@ -699,7 +976,8 @@ _CHANNEL_RULES = {
         "job; use the person's first name if you know it. When someone asks what you can do, do not list "
         "features: describe their week getting easier, then offer three or four concrete things they could say "
         "right now, in their own voice, shaped by what is connected, and invent fresh ones each time. Never "
-        "send the person to a website except a link connect_link returned, on its own line exactly as given."
+        "send the person to a website except a link a tool returned in this turn, on its own line exactly as "
+        "given."
     ),
     "portal": (
         "This conversation is in the Assistyca chat in the browser. Keep the reply short; the application may "
@@ -965,9 +1243,13 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
     if tool.name == "disconnect":
         return describe_disconnect(context, args)
     if tool.name == "schedule_message":
+        about = ""
+        if args.get("list_name"):
+            record, _problem = _resolve_list(context, str(args.get("list_name") or ""))
+            about = f" with what is still on the list {str(record.get('name') or args.get('list_name'))!r}"
         if args.get("delay_minutes"):
-            return f"a message in {args.get('delay_minutes')} minutes saying: {args.get('message_text')}"
-        return f"a message at {args.get('time_local')} ({args.get('date_policy')}) saying: {args.get('message_text')}"
+            return f"a message in {args.get('delay_minutes')} minutes saying: {args.get('message_text')}{about}"
+        return f"a message at {args.get('time_local')} ({args.get('date_policy')}) saying: {args.get('message_text')}{about}"
     return ""
 
 
