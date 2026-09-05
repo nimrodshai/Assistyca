@@ -38,6 +38,7 @@ class AccountErasure:
     revoked_grants: int = 0
     revocation_warnings: list[str] = field(default_factory=list)
     contact_submissions_removed: int = 0
+    signups_removed: int = 0
 
 
 def erase_account(
@@ -117,6 +118,11 @@ def erase_account(
             result.removed_paths.append(owner_root)
 
     result.contact_submissions_removed = database.delete_contact_opportunities_for_email(normalized_email)
+    # The signup conversation is keyed on the phone, not the account, so the
+    # cascade never reaches it. The phones are read before the rows that name
+    # them go.
+    phones = [str(record.get("waId") or "") for record in database.list_user_whatsapp_numbers(user_id=user_id)]
+    result.signups_removed = database.delete_whatsapp_signups(user_id=user_id, wa_ids=phones)
     database.delete_user(normalized_email)
     return result
 

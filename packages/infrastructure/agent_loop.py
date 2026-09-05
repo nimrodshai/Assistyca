@@ -161,6 +161,9 @@ class LoopContext:
     # channel that has no browser session. The server knows the public
     # address and the session secret; the loop only hands the link on.
     list_link: Callable[[int], str] | None = None
+    # The phone this turn came from, on WhatsApp. Signing out unlinks that
+    # phone and no other; on the portal there is no phone and no sign_out.
+    sender_wa_id: str = ""
 
 
 @dataclass
@@ -414,6 +417,91 @@ def describe_disconnect(context: LoopContext, args: dict[str, Any]) -> str:
         records = []
     names = [connection_display_name(r) for r in connections_for_disconnect(records, targets)]
     return ", ".join(name for name in names if name)
+
+
+def _linked_phone(context: LoopContext) -> dict[str, Any] | None:
+    """The row for the phone that wrote, when it is one the person linked themselves."""
+
+    number = str(context.sender_wa_id or "").strip()
+    if not number:
+        return None
+    try:
+        numbers = context.database.list_user_whatsapp_numbers(user_id=context.user_id)
+    except Exception:  # noqa: BLE001 - a list that cannot be read is an empty one
+        numbers = []
+    for record in numbers:
+        if str(record.get("waId") or "").strip() == number:
+            return record
+    return None
+
+
+SIGN_OUT_MEANING = (
+    "this phone stops reaching the assistant until it is linked again; the account, its connected sources "
+    "and everything saved in it stay"
+)
+
+
+def _preflight_sign_out(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
+    if context.channel != "whatsapp" or not context.sender_wa_id:
+        return _error(
+            "not_supported",
+            "Signing out happens from the portal here: the Sign out button under Settings.",
+        )
+    if _linked_phone(context) is None:
+        return _error(
+            "not_supported",
+            "This phone is set up as the account's own line rather than a linked number, so it cannot be "
+            "signed out from the chat. Phones are managed under Settings in the portal.",
+        )
+    return None
+
+
+def _tool_sign_out(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    problem = _preflight_sign_out(context, args)
+    if problem is not None:
+        return problem
+    number = str(context.sender_wa_id or "").strip()
+    response, status = context.api("DELETE", f"/api/whatsapp/my-numbers/{number}")
+    if status != 200 or not response.get("ok"):
+        return _error("internal", "Could not sign this phone out just now.", can_retry=True)
+    return _ok({
+        "signedOut": True,
+        "note": (
+            "This phone is unlinked and messages from it no longer reach the account. The account and "
+            "everything in it stay. To use this phone again: sign in at assistyca.com and get a link code "
+            "from Settings, or text here and sign in with the account's email when asked."
+        ),
+    })
+
+
+def describe_delete_account(context: LoopContext) -> str:
+    """Everything a deletion removes, named in full, so the yes is an informed one."""
+
+    return (
+        f"delete the Assistyca account for {context.email} permanently: the saved Google and Microsoft "
+        "sign-ins are revoked, every saved receipt, list, reminder, remembered fact and this chat's history "
+        "is erased, every linked phone is unlinked, and none of it can be brought back"
+    )
+
+
+def _tool_delete_account(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    response, status = context.api("DELETE", "/api/account")
+    if status == 200 and response.get("ok"):
+        return _ok({
+            "deleted": True,
+            "note": (
+                "The account and everything stored in it are gone, and nothing can be brought back. The "
+                "next message from this phone is treated as a stranger's and starts a fresh signup."
+            ),
+        })
+    code = str(response.get("error") or "")
+    if code == "last_admin":
+        return _error(
+            "not_supported",
+            "This is the portal's only admin account, so it cannot be deleted until another admin is added "
+            "from the portal.",
+        )
+    return _error("internal", "Could not delete the account just now.", can_retry=True)
 
 
 def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -841,6 +929,33 @@ TOOLS: list[ToolSpec] = [
         preflight=_preflight_disconnect,
     ),
     ToolSpec(
+        name="sign_out",
+        description=(
+            "Sign the person out of Assistyca on the phone they are writing from: the phone is unlinked and "
+            "stops reaching the assistant until it is linked again. The account and everything in it stay. "
+            "For 'sign out', 'log out', 'log me out', 'unlink this number', 'stop using this phone'. Not for "
+            "disconnecting Google or Outlook (that is disconnect) and not for deleting the account."
+        ),
+        parameters=_params({}),
+        side_effect=True,
+        confirm=True,
+        run=_tool_sign_out,
+        preflight=_preflight_sign_out,
+    ),
+    ToolSpec(
+        name="delete_account",
+        description=(
+            "Delete the person's whole Assistyca account and every piece of data stored in it, permanently: "
+            "saved sign-ins revoked, receipts, lists, reminders, facts and chat history erased, phones "
+            "unlinked. For 'delete my account', 'delete my data', 'erase everything you have on me', 'forget "
+            "me', 'remove me from Assistyca'. Never for signing out or for disconnecting one source."
+        ),
+        parameters=_params({}),
+        side_effect=True,
+        confirm=True,
+        run=_tool_delete_account,
+    ),
+    ToolSpec(
         name="schedule_message",
         description=(
             "Schedule one message to the person at a time: a reminder, a nudge. For a clock time, time_local is "
@@ -975,9 +1090,16 @@ AGENT_LOOP_INSTRUCTIONS = (
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
     "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
     "that depends on the time of day, and never guess the time.\n"
-    "Actions that need a yes: disconnect and schedule_message return confirmation_required the first time. "
-    "Then ask for a plain yes in the same message, naming exactly what will happen - which accounts, what "
-    "time, what text - and nothing else. When CONTEXT has confirmedAction, the person said yes and the tool "
+    "Actions that need a yes: disconnect, schedule_message, sign_out and delete_account return "
+    "confirmation_required the first time. Then ask for a plain yes in the same message, naming exactly what "
+    "will happen - which accounts, what time, what text - and nothing else. For sign_out say in one line that "
+    "only this phone is signed out and the account and its data stay. For delete_account the person must "
+    "understand what they are agreeing to before they say yes: spell out, in their words, that the whole "
+    "account and every piece of data in it will be erased for good, that connected sign-ins are revoked and "
+    "the phone unlinked, that nothing can be brought back, and then ask whether they understand and want to "
+    "go ahead. Someone who only wanted to stop for a while, sign out, or disconnect one account is offered "
+    "that instead of a deletion. A hesitant or unclear answer is not a yes: leave answersOpenQuestion null "
+    "and ask again plainly. When CONTEXT has confirmedAction, the person said yes and the tool "
     "already ran: report its result as done. When it has declinedAction, say nothing changed. When it has "
     "openQuestion, decide first whether the message answers it. A confirmation is answered by a yes or a no "
     "in any language or wording - כן, סבבה, יאללה, בטח, 'sounds good', 'sure thing', 'nah', 'leave it' - and "
@@ -1301,6 +1423,10 @@ def _execute_confirmed(context: LoopContext, confirmed_call: dict[str, Any], too
 def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -> str:
     if tool.name == "disconnect":
         return describe_disconnect(context, args)
+    if tool.name == "sign_out":
+        return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}"
+    if tool.name == "delete_account":
+        return describe_delete_account(context)
     if tool.name == "schedule_message":
         about = ""
         if args.get("list_name"):

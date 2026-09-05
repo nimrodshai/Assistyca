@@ -5240,6 +5240,32 @@ class PortalDatabase:
             conn.commit()
         return self.get_whatsapp_signup(number) or {}
 
+    def delete_whatsapp_signups(self, *, user_id: int, wa_ids: list[str]) -> int:
+        """Drop the signup conversations that belong to one account.
+
+        A signup row is keyed on the phone and carries the name, the business
+        and the first messages before there was an account. It is found by
+        the account it opened and by the phones linked to that account, so an
+        erasure leaves nothing behind for the phone either.
+        """
+
+        numbers = [number for number in (normalize_whatsapp_lookup_id(value) for value in wa_ids) if number]
+        resolved_user_id = int(user_id or 0)
+        clauses: list[str] = []
+        params: list[Any] = []
+        if resolved_user_id > 0:
+            clauses.append("user_id = ?")
+            params.append(resolved_user_id)
+        if numbers:
+            clauses.append(f"wa_id IN ({', '.join('?' for _ in numbers)})")
+            params.extend(numbers)
+        if not clauses:
+            return 0
+        with self._connection() as conn:
+            cursor = conn.execute(f"DELETE FROM whatsapp_signups WHERE {' OR '.join(clauses)}", params)
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def count_whatsapp_signups_since(self, moment: datetime, *, completed_only: bool = False) -> int:
         """How many phones started (or finished) signing up after this moment."""
 

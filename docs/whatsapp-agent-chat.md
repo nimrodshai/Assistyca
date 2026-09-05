@@ -383,6 +383,42 @@ question open, and the calendar question stays held so a tap on the picker
 still works afterwards. Before this (2026-09-04) every non-pick got "I didn't
 catch which ones" and the list again, three times in a row.
 
+## Signing out and deleting the account from the phone
+
+Until 2026-09-05 the phone had no way out: signing out and deleting the
+account were buttons under Settings in the portal, and someone who only ever
+used WhatsApp had to sign in at assistyca.com to reach either. Both are now
+loop tools, and both are held for a yes.
+
+`sign_out` unlinks the phone the message came from and nothing else: the
+chat sends `senderWaId` with the loop request, the server passes it to the
+tool as `LoopContext.sender_wa_id`, and the tool calls the same
+`DELETE /api/whatsapp/my-numbers/{wa_id}` the Settings page uses, over
+loopback with the caller's own session, so it can only ever unlink a number
+this account owns. The question names what the yes means - only this phone
+stops reaching the assistant; the account, its connected sources and
+everything saved stay - and the result tells the model how to get back in
+(a link code from Settings, or texting again and signing in with the
+account's email). It refuses before asking on the portal, where the Sign out
+button is the way, and for a phone that reaches the account through the
+environment mapping rather than a link the person made.
+
+`delete_account` is the whole erasure (`erase_account`): sign-ins revoked at
+Google and Microsoft, receipts on disk removed, every user-owned table
+cleared, phones unlinked. Because it cannot be undone, the confirmation is
+deliberately heavier than the others: the tool's `confirmation_required`
+names everything that goes, and the prompt tells the model to spell it out in
+the person's words, say that nothing comes back, ask whether they understand
+and want to go ahead, offer sign-out or a disconnect to someone who only
+wanted to stop for a while, and treat a hesitant answer as not a yes. After
+the yes runs, the chat sends the goodbye and writes nothing more: the
+transcript row would have no account to belong to, and the turn record for
+that request is discarded (`TurnRecorder.discard`) so no row saying "yes,
+delete me" outlives the deletion. The signup conversation, keyed on the
+phone rather than the account and so never reached by the cascade, is
+deleted with the account too (`delete_whatsapp_signups`). The next message
+from that phone is a stranger's and starts a fresh signup.
+
 ## Disconnecting an account from the phone
 
 "Just disconnect me from google" used to get "I can't disconnect Google from
@@ -521,7 +557,8 @@ to "I'm checking now" before anything was checked.
 
 The tools are the registry in `agent_loop.py`: `read_inbox`, `read_calendar`,
 `search_receipts`, `exchange_rate`, `read_folder`, `connect_link`,
-`disconnect`, `schedule_message`, `remember_fact`, `forget_fact`. Each
+`disconnect`, `sign_out`, `delete_account`, `schedule_message`, `remember_fact`,
+`forget_fact`. Each
 declares what it needs connected (`LOOKUP_SOURCE_REQUIREMENTS`), whether it
 changes anything, and whether it needs a yes. A tool whose source is not
 connected is shown to the model as UNAVAILABLE with the reason and the way
@@ -535,7 +572,8 @@ schema the API enforces (`REPLY_TEXT_FORMAT`, strict), so a reply that cannot
 be read is impossible by construction. Six tool calls per turn; past that the
 model is told the budget is spent and writes from what it has.
 
-**Actions that need a yes** (`disconnect`, `schedule_message`) pause the
+**Actions that need a yes** (`disconnect`, `sign_out`, `delete_account`,
+`schedule_message`) pause the
 turn: the first call returns `confirmation_required` with what exactly would
 happen, the model asks for a plain yes, and the chat stores the call itself
 as `pending_json` of kind `tool_confirmation`. A whole-phrase yes runs the

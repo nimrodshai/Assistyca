@@ -9265,6 +9265,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     parsed = {}
                 return (parsed if isinstance(parsed, dict) else {}), int(exc.code)
 
+        # The phone the message came from, so sign_out can unlink that phone
+        # and no other. It is only ever a number this account owns: the
+        # unlink runs over loopback with the caller's own session, which
+        # refuses any number that is not linked to it.
+        sender_wa_id = normalize_whatsapp_number(payload.get("senderWaId")) if channel == "whatsapp" else ""
         context = LoopContext(
             api=loopback,
             database=self.database,
@@ -9275,6 +9280,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connect_links=dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
             list_link=self._lists_link_builder(session.email, channel),
+            sender_wa_id=sender_wa_id,
         )
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
 
@@ -9335,10 +9341,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             return
 
-        # Facts the reply carried, as on the older turn endpoint. The
-        # remember_fact tool is the normal way; this covers a model that put
-        # it in the reply instead.
-        self._apply_agent_facts(user_id, {"rememberFact": result.remember_fact, "forgetFact": result.forget_fact})
+        if "delete_account" in result.completed:
+            # The account is gone. Nothing from this turn is written under it:
+            # not a fact, and not the turn record with the yes and the goodbye.
+            recorder = getattr(self, "_agent_turn", None)
+            if recorder is not None:
+                recorder.discard()
+        else:
+            # Facts the reply carried, as on the older turn endpoint. The
+            # remember_fact tool is the normal way; this covers a model that put
+            # it in the reply instead.
+            self._apply_agent_facts(user_id, {"rememberFact": result.remember_fact, "forgetFact": result.forget_fact})
         # One record per turn, whether it went well or not: the number to
         # alert on is fallbackUsed, and the tool calls say what was tried.
         print(json.dumps({

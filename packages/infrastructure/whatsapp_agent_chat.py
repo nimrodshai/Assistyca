@@ -1711,6 +1711,7 @@ class WhatsAppAgentChat:
             "timezone": self.timezone_name,
             "channel": "whatsapp",
             "toolContext": self._build_tool_context(),
+            "senderWaId": self.owner_wa_id,
         }
         if photo:
             payload["photoContext"] = photo
@@ -1785,7 +1786,13 @@ class WhatsAppAgentChat:
             conversation,
         )
         message_id = self._send_owner_text(reply)
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+        completed = [normalize_text(name) for name in (turn.get("completed") or []) if isinstance(name, str)]
+        if "delete_account" in completed:
+            # The account is gone, and with it the transcript: the goodbye is
+            # sent and nothing is written down anywhere.
+            outcome = "account_deleted"
+        else:
+            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
         return {
             "type": "owner",
             "action": "agent_chat_reply",

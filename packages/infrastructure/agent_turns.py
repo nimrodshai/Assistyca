@@ -278,6 +278,7 @@ class TurnRecorder:
         self.model_calls = 0
         self.incomplete_responses = 0
         self.last_output = ""
+        self.discarded = False
         self.record: dict[str, Any] | None = None
         self.finished = False
 
@@ -302,10 +303,24 @@ class TurnRecorder:
         with usage_context(channel=self.channel, turn_id=self.turn_id), observe_responses(self.observe):
             yield
 
+    def discard(self) -> None:
+        """Leave this turn out of the log.
+
+        The one turn that deletes the account would otherwise be filed under
+        it after everything else was erased: the yes, the goodbye, the
+        account's state. An erasure that leaves a row saying "yes, delete me"
+        is not an erasure.
+        """
+
+        self.discarded = True
+        self.finished = True
+
     def finish(self, status: int, payload: dict[str, Any] | None, *, crashed: bool = False) -> dict[str, Any]:
         """File the row. Called once, before the reply leaves, so a call that
         follows with this turn's id finds the row it attaches to."""
 
+        if self.discarded:
+            return {}
         if self.finished and self.record is not None:
             return self.record
         self.finished = True

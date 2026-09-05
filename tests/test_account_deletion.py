@@ -96,6 +96,23 @@ class AccountDeletionTests(unittest.TestCase):
         self.assertEqual(self.server.database.list_platform_connections("owner@example.com"), [])
         self.assertFalse(owner_folder.parent.exists())
 
+    def test_account_delete_takes_the_whatsapp_signup_conversation_with_it(self) -> None:
+        # The signup row is keyed on the phone, not the account: it holds the
+        # name, the business and the first messages, and no cascade reaches it.
+        database = self.server.database
+        database.register_user("owner@example.com")
+        user_id = int((database.get_user("owner@example.com") or {}).get("id") or 0)
+        database.start_whatsapp_signup(wa_id="972501234567", sender_name="Nimrod")
+        database.complete_whatsapp_signup(wa_id="972501234567", user_id=user_id)
+        database.link_user_whatsapp_number(user_id=user_id, wa_id="972501234567")
+        database.start_whatsapp_signup(wa_id="972509999999", sender_name="Someone else")
+        cookie = self._cookie()
+
+        self._delete_account(cookie)
+
+        self.assertIsNone(database.get_whatsapp_signup("972501234567"))
+        self.assertIsNotNone(database.get_whatsapp_signup("972509999999"))
+
     def test_account_delete_ends_the_session_it_was_asked_from(self) -> None:
         self.server.database.register_user("owner@example.com")
         cookie = self._cookie()

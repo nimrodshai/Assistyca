@@ -1293,6 +1293,48 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
                      "question": "Text you tomorrow at 12:40: Stretch. Yes?", "askedAt": datetime.now(timezone.utc).isoformat()},
         )
 
+    def _hold(self, tool: str, question: str) -> None:
+        self.database.save_whatsapp_agent_pending(
+            user_id=int(self.user["id"]),
+            pending={"kind": "tool_confirmation", "tool": tool, "arguments": {}, "question": question,
+                     "askedAt": datetime.now(timezone.utc).isoformat()},
+        )
+
+    def test_a_yes_to_signing_out_unlinks_this_phone_and_keeps_the_account(self) -> None:
+        user_id = int(self.user["id"])
+        self.database.link_user_whatsapp_number(user_id=user_id, wa_id=OWNER_WA_ID)
+        self._hold("sign_out", "Sign this phone out? Your account stays.")
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "Signed out. Text me when you want back in.", "claimsCompleted": ["sign_out"]})],
+        ) as model:
+            response = self._post_webhook(inbound_text_payload("yes", message_id="wamid.loop-signout"))
+
+        self.assertEqual(self._reply(response), "Signed out. Text me when you want back in.")
+        self.assertEqual(self.database.list_user_whatsapp_numbers(user_id=user_id), [])
+        self.assertIsNotNone(self.database.get_user("owner@example.com"))
+        self.assertIn('"signedOut":true', model.call_args.kwargs["input"][0]["content"])
+
+    def test_a_yes_to_deleting_the_account_erases_it_and_the_goodbye_still_goes_out(self) -> None:
+        user_id = int(self.user["id"])
+        self.database.link_user_whatsapp_number(user_id=user_id, wa_id=OWNER_WA_ID)
+        self.database.start_whatsapp_signup(wa_id=OWNER_WA_ID, sender_name="Nimrod")
+        self.database.complete_whatsapp_signup(wa_id=OWNER_WA_ID, user_id=user_id)
+        self._hold("delete_account", "Delete everything for good. Do you understand and want to go ahead?")
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "Done. Everything is gone. Goodbye.", "claimsCompleted": ["delete_account"]})],
+        ):
+            response = self._post_webhook(inbound_text_payload("yes", message_id="wamid.loop-delete"))
+
+        self.assertEqual(self._reply(response), "Done. Everything is gone. Goodbye.")
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(OWNER_WA_ID), 0)
+        self.assertIsNone(self.database.get_whatsapp_signup(OWNER_WA_ID))
+        self.assertEqual(self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=10), [])
+        # Not even the turn that said yes is filed under the account afterwards.
+        self.assertEqual(self.database.list_agent_turns(user_id=user_id), [])
+
     def test_a_yes_in_hebrew_runs_the_stored_call_without_asking_the_model(self) -> None:
         self._hold_a_schedule()
         with mock.patch(
