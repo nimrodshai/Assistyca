@@ -141,7 +141,7 @@
       }
 
       .field input,
-      .field textarea {
+      .field select {
         width: 100%;
         font: inherit;
         color: inherit;
@@ -152,20 +152,15 @@
         transition: border-color 120ms ease, box-shadow 120ms ease;
       }
 
-      .field textarea {
-        min-height: 6.5rem;
-        resize: vertical;
-      }
-
       .field input:focus,
-      .field textarea:focus {
+      .field select:focus {
         outline: none;
         border-color: var(--accent-deep);
         box-shadow: 0 0 0 4px var(--accent-soft);
       }
 
       .field[data-invalid="true"] input,
-      .field[data-invalid="true"] textarea {
+      .field[data-invalid="true"] select {
         border-color: var(--danger);
         box-shadow: 0 0 0 4px var(--danger-soft);
       }
@@ -179,6 +174,43 @@
 
       .field[data-invalid="true"] .field-error {
         display: block;
+      }
+
+      /* The phone is two parts that read as one line: the country, then the
+         national number. The dial code is shown, not typed. */
+      .phone-row {
+        display: grid;
+        grid-template-columns: minmax(9rem, 2fr) 3fr;
+        gap: 0.6rem;
+      }
+
+      .phone-national {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+
+      .phone-dial {
+        position: absolute;
+        left: 0.95rem;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        pointer-events: none;
+      }
+
+      .phone-national input {
+        padding-left: var(--dial-width, 4rem);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.02em;
+      }
+
+      .phone-preview {
+        display: block;
+        margin-top: 0.45rem;
+        color: var(--muted);
+        font-size: 0.86rem;
+        font-variant-numeric: tabular-nums;
+        min-height: 1.2rem;
       }
 
       .honeypot {
@@ -260,10 +292,6 @@
         color: var(--accent-deep);
       }
 
-      .done {
-        text-align: left;
-      }
-
       .done h2 {
         margin: 0 0 0.6rem;
         font-size: 1.5rem;
@@ -280,6 +308,7 @@
         color: var(--ink);
         font-weight: 700;
         white-space: nowrap;
+        font-variant-numeric: tabular-nums;
       }
 
       @media (max-width: 480px) {
@@ -290,6 +319,10 @@
         .card {
           padding: 1.25rem;
           border-radius: 1.1rem;
+        }
+
+        .phone-row {
+          grid-template-columns: 1fr;
         }
       }
     </style>
@@ -314,32 +347,33 @@
             <span class="field-error" data-error-for="name"></span>
           </label>
 
-          <label class="field" data-field="phone">
-            <span class="field-label">Your WhatsApp number</span>
-            <span class="field-hint">With the country code, for example +972 50 123 4567. This is the number I'll text.</span>
-            <input name="phone" type="tel" inputmode="tel" autocomplete="tel" required />
+          <div class="field" data-field="phone">
+            <label class="field-label" for="register-phone">Your WhatsApp number</label>
+            <span class="field-hint">Pick your country, then type the number as you would dial it at home.</span>
+            <div class="phone-row">
+              <select name="country" data-phone-country aria-label="Country"></select>
+              <div class="phone-national">
+                <span class="phone-dial" data-phone-dial aria-hidden="true"></span>
+                <input
+                  id="register-phone"
+                  name="national"
+                  type="tel"
+                  inputmode="numeric"
+                  autocomplete="tel-national"
+                  data-phone-national
+                  required
+                />
+              </div>
+            </div>
+            <span class="phone-preview" data-phone-preview aria-live="polite"></span>
             <span class="field-error" data-error-for="phone"></span>
-          </label>
-
-          <label class="field" data-field="email">
-            <span class="field-label">Your email</span>
-            <span class="field-hint">Only for signing in on the web, if you ever want to.</span>
-            <input name="email" type="email" autocomplete="email" required />
-            <span class="field-error" data-error-for="email"></span>
-          </label>
+          </div>
 
           <label class="field" data-field="business">
             <span class="field-label">What do you do?</span>
-            <span class="field-hint">A line is enough, for example "I run a small architecture studio".</span>
-            <input name="business" type="text" autocomplete="organization-title" />
+            <span class="field-hint">A line is enough, for example "I run a small architecture studio". I'll use it to make my examples fit your work.</span>
+            <input name="business" type="text" autocomplete="organization-title" required />
             <span class="field-error" data-error-for="business"></span>
-          </label>
-
-          <label class="field" data-field="wants">
-            <span class="field-label">What would you like help with?</span>
-            <span class="field-hint">In your own words. Chasing receipts, keeping the calendar straight, reminders, anything.</span>
-            <textarea name="wants"></textarea>
-            <span class="field-error" data-error-for="wants"></span>
           </label>
 
           <label class="honeypot" for="register-company-website">Company website</label>
@@ -360,7 +394,6 @@
           <p data-done-text></p>
           <div class="actions">
             <a class="button button-primary" data-done-link href="#" target="_blank" rel="noopener" hidden>Open WhatsApp</a>
-            <a class="button button-secondary" href="/portal/">Open the web portal</a>
           </div>
         </div>
       </section>

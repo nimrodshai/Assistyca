@@ -205,40 +205,40 @@ the public door is one request away.
 
 ## Registering on the web
 
-`/register` (`portal/register.html`) is the other door: name, WhatsApp number,
-email, what they do, and what they would like help with. `POST /api/register`
-opens the account with the default trial, keeps what they wrote where the agent
-already looks (`account_facts`, plus the profile's business summary), and the
-agent sends the **first** message — a welcome the model writes from what they
-typed (`build_registration_welcome_prompt`, cheapest tier, unbilled, fixed
-sentence as the fallback), followed by a line saying to ignore it if they did
-not register.
+`/register` (`portal/register.html`) is the other door: a name, a WhatsApp
+number, and what they do. No email — accounts are keyed on an email, and the
+chat asks for it, so the page opens no account. `POST /api/register` records
+an ordinary `awaiting_email` signup for the phone that already carries the
+name and business (`registration_json` on `whatsapp_signups`), and the agent
+sends the **first** message: a welcome the model writes from what they typed
+(`build_registration_welcome_prompt`, cheapest tier, unbilled, fixed sentence
+as the fallback), ending with a line saying to ignore it if they did not
+register.
 
-Two things make this different from the texting signup:
+The phone is structured on the page rather than typed free: a country from a
+list, the national number as they would dial it, the trunk zero dropped and
+the dial code added in the browser, the result shown back before it is sent.
+The server normalises it again and refuses anything outside international
+length.
 
-* **The phone was typed, not proved**, so nothing is linked when the page is
-  submitted. The number is recorded in `whatsapp_signups` as `awaiting_reply`
-  with the account it belongs to, and it is linked the moment it *replies*
-  (`_handle_registered_phone_reply`, checked after the claim code and before
-  the signup conversation). The reply is the proof: whoever holds the phone
-  chose to answer a message that named the site and said to ignore it
-  otherwise. A registration nobody answers for thirty days is a stranger
-  again, and a number that already answers for another account is refused at
-  the page, as is an address that already has an account.
-* **We speak first**, outside Meta's 24-hour window, so the welcome goes out
-  as the approved `notification_message` template (the same one scheduled
-  messages use, on one line — a template parameter may carry no newline).
-  The reply opens the window, and the agent answers it as an ordinary turn
-  with the welcome already in the transcript.
+From there it is the texting signup. The reply from that phone is a stranger
+with a signup already open: the concierge sees `registeredOnTheWebsite` in
+its context, addresses them by name and fits its examples to their work, and
+asks for the email. When the account opens, the typed name becomes the display
+name, the business becomes the profile summary, and both become account facts
+— what the agent already reads — so the first real turn knows who it is
+talking to. Reopening a stale signup keeps the registration.
 
-If the welcome cannot be sent — no sender token, a bad number — the account
-still stands and the page gets a `wa.me` link carrying an ordinary claim code,
-so the person can open WhatsApp and send it themselves. The link is returned
-in every case as the "didn't get it?" fallback.
+We speak first, outside Meta's 24-hour window, so the welcome goes out as the
+approved `notification_message` template on one line (a template parameter
+may carry no newline). If it cannot be sent — no sender token, a bad number —
+the registration still stands and the page shows the public `wa.me` link, so
+saying hi from that phone lands in the same signup. The link is returned in
+every case as the "didn't get it?" fallback.
 
-The signup kill switch and daily cap apply to this door too: the page returns
-`503 registration_closed` and `429 registration_capped`, and each address may
-register five times an hour.
+A number already linked to an account is refused at the page, and the signup
+kill switch and daily cap apply to this door too (`503 registration_closed`,
+`429 registration_capped`; five registrations an hour per address).
 
 ## Connecting Gmail or Outlook from WhatsApp
 

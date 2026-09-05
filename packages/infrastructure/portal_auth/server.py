@@ -251,7 +251,6 @@ from packages.infrastructure.whatsapp_agent_chat import build_link_existing_acco
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
 from packages.infrastructure.whatsapp_agent_chat import REGISTRATION_NOT_YOU_TEXT
-from packages.infrastructure.whatsapp_agent_chat import REGISTRATION_REPLY_WINDOW_SECONDS
 from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_fallback
 from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_prompt
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
@@ -1890,7 +1889,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def registration_facts(*, name: str, business: str, wants: str) -> list[tuple[str, str]]:
+def registration_facts(*, name: str, business: str) -> list[tuple[str, str]]:
     """What a registration tells the agent, as the facts it already reads.
 
     The agent learns about a business through `remember_fact`; a registration
@@ -1903,8 +1902,6 @@ def registration_facts(*, name: str, business: str, wants: str) -> list[tuple[st
         facts.append(("name", f"Their name is {normalize_text(name)}."))
     if normalize_text(business):
         facts.append(("what they do", normalize_text(business)))
-    if normalize_text(wants):
-        facts.append(("what they want help with", f"When they registered they asked for help with: {normalize_text(wants)}"))
     return facts
 
 
@@ -11751,6 +11748,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             signup = self.database.start_whatsapp_signup(wa_id=sender_wa_id, sender_name=sender_name)
 
         transcript = list((signup or {}).get("transcript") or [])
+        registration = (signup or {}).get("registration") if isinstance((signup or {}).get("registration"), dict) else {}
         attempt = int((signup or {}).get("attempts") or 0) + 1
         if (now - last_touch).total_seconds() > SIGNUP_ESCALATION_WINDOW_SECONDS:
             # Coming back after an hour is a new conversation, not the fourth
@@ -11778,6 +11776,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 attempt=attempt,
                 fallback=SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT,
                 typing_for_message_id=normalize_text(event.get("source_message_id")),
+                registration=registration,
             )
             return self._finish_whatsapp_signup_step(
                 sender_wa_id,
@@ -11795,7 +11794,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
 
         try:
-            self.database.register_user(email, display_name=sender_name, notes="Signed up over WhatsApp.")
+            registered_name = normalize_text(registration.get("name"))
+            registered_business = normalize_text(registration.get("business"))
+            self.database.register_user(
+                email,
+                display_name=registered_name or sender_name,
+                notes="Registered on the web, then signed up over WhatsApp." if registration else "Signed up over WhatsApp.",
+            )
             self.database.set_user_trial(email, trial_days=resolve_default_trial_days(), start_now=True)
             user = self.database.get_user(email) or {}
             self.database.link_user_whatsapp_number(
@@ -11804,6 +11809,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 label=sender_name,
             )
             self.database.complete_whatsapp_signup(wa_id=sender_wa_id, user_id=int(user.get("id") or 0))
+            if registration:
+                # What they typed on the page is what the agent knows from the
+                # first turn: the same facts it would otherwise have to be told.
+                self.database.update_user_profile(email, profile={"businessSummary": registered_business})
+                for key, fact in registration_facts(name=registered_name, business=registered_business):
+                    self.database.save_account_fact(user_id=int(user.get("id") or 0), key=key, fact=fact)
         except (ValueError, KeyError, sqlite3.Error) as exc:
             print(f"WhatsApp signup could not create the account: {exc}", flush=True)
             return self._finish_whatsapp_signup_step(
@@ -11833,6 +11844,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             fallback=SIGNUP_WELCOME_TEXT,
             account_created=True,
             typing_for_message_id=normalize_text(event.get("source_message_id")),
+            registration=registration,
         )
         link_line = build_connect_links_line(email, self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id))
         if link_line:
@@ -11848,6 +11860,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         fallback: str,
         account_created: bool = False,
         typing_for_message_id: str = "",
+        registration: dict[str, Any] | None = None,
     ) -> str:
         """One model-written line of the signup conversation, or the fixed one.
 
@@ -11867,6 +11880,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             transcript=transcript,
             attempt=attempt,
             account_created=account_created,
+            registration=registration,
         )
         try:
             # The phone shows "typing..." while the model writes the line.
@@ -11912,14 +11926,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         }
 
     def _handle_register_post(self) -> None:
-        """Open an account from the registration page and text the phone first.
+        """Take a registration from the web page and text the phone first.
 
-        The phone is typed rather than proved, so nothing is linked yet: the
-        account exists, the welcome goes out, and the phone joins the account
-        the moment it replies (`_handle_registered_phone_reply`). Until then a
-        typed number is only a number somebody typed, and the welcome says so
-        to whoever holds it. The reply also opens Meta's service window, which
-        is why the welcome itself goes as the approved template.
+        The page asks for a name, a phone and what they do - no email, so no
+        account: accounts are keyed on an email, and that is asked for in the
+        chat. The phone gets an ordinary signup row that already carries the
+        name and business, and the welcome goes out as the approved template
+        because we are speaking first, outside Meta's service window. When the
+        phone replies it is a stranger with a signup open, and the signup
+        conversation takes it from there; until then a typed number is only a
+        number somebody typed, and the welcome says so to whoever holds it.
         """
 
         if not self._enforce_rate_limit(
@@ -11950,18 +11966,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         name = normalize_contact_single_line(payload.get("name"), CONTACT_NAME_MAX_LENGTH)
-        email = normalize_email(payload.get("email", ""))
         phone = normalize_whatsapp_number(payload.get("phone"))
         business = normalize_contact_single_line(payload.get("business"), CONTACT_BUSINESS_MAX_LENGTH)
-        wants = normalize_contact_message(payload.get("wants"), CONTACT_MESSAGE_MAX_LENGTH)
 
         field_errors: dict[str, str] = {}
         if len(name) < 2:
             field_errors["name"] = "Enter your name."
-        if not is_valid_email(email):
-            field_errors["email"] = "Enter a valid email address."
-        if not 8 <= len(phone) <= 15:
-            field_errors["phone"] = "Enter the WhatsApp number you will text from, with the country code."
+        if not 8 <= len(phone) <= 15 or phone.startswith("0"):
+            field_errors["phone"] = "Enter the WhatsApp number you will text from, with its country."
+        if len(business) < 2:
+            field_errors["business"] = "Tell me what you do, in a few words."
         if field_errors:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -11971,7 +11985,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        # The same switch and cap as the texting door: both open accounts.
+        # The same switch and cap as the texting door: both open signups.
         if not whatsapp_agent_chat_enabled() or not whatsapp_signup_enabled():
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
                 "ok": False,
@@ -11998,17 +12012,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        if self.database.get_user(email) is not None:
-            # Typing someone else's address must never hand this phone their
-            # workspace; the account's owner links a phone from inside it.
-            json_response(self, HTTPStatus.CONFLICT, {
-                "ok": False,
-                "error": "email_taken",
-                "message": "That address already has an Assistyca account. Sign in, and link your phone from Settings.",
-                "fieldErrors": {"email": "This address already has an account."},
-                "signInUrl": "/portal/",
-            })
-            return
         if self.database.get_user_id_for_whatsapp_number(phone) > 0:
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
@@ -12020,19 +12023,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            self.database.register_user(email, display_name=name, notes="Registered on the web.")
-            self.database.set_user_trial(email, trial_days=resolve_default_trial_days(), start_now=True)
-            user = self.database.get_user(email) or {}
-            user_id = int(user.get("id") or 0)
-            if user_id <= 0:
-                raise ValueError("The account was not created.")
-            self.database.update_user_profile(email, profile={"businessSummary": business})
-            # What they told us is what the agent knows on the first turn.
-            for key, fact in registration_facts(name=name, business=business, wants=wants):
-                self.database.save_account_fact(user_id=user_id, key=key, fact=fact)
-            self.database.record_web_registration(wa_id=phone, user_id=user_id, sender_name=name)
-        except (ValueError, KeyError, sqlite3.Error) as exc:
-            print(f"Web registration could not create the account: {exc}", flush=True)
+            self.database.start_web_registration(wa_id=phone, name=name, business=business)
+        except (ValueError, sqlite3.Error) as exc:
+            print(f"Web registration could not be saved: {exc}", flush=True)
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {
                 "ok": False,
                 "error": "registration_failed",
@@ -12040,10 +12033,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        welcome = f"{self._write_registration_welcome(name=name, business=business, wants=wants)} {REGISTRATION_NOT_YOU_TEXT}"
-        # Both transcripts start with the welcome, so the agent answering the
-        # reply knows what it said, and the signup record shows what went out.
-        self.database.save_whatsapp_agent_message(user_id=user_id, role="assistant", text=welcome)
+        welcome = f"{self._write_registration_welcome(name=name, business=business)} {REGISTRATION_NOT_YOU_TEXT}"
+        # The signup conversation starts with the welcome, so the reply to it
+        # is answered as a reply and not as a first hello.
         self.database.append_whatsapp_signup_message(wa_id=phone, role="assistant", text=welcome)
 
         template = load_scheduled_action_config()
@@ -12056,29 +12048,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 template_name=template.whatsapp_template_name,
                 template_language=template.whatsapp_template_language,
             )
-        except Exception as exc:  # noqa: BLE001 - the account stands; the page gets another way in
+        except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
             send_error = str(exc)
             print(f"Web registration welcome could not be sent: {exc}", flush=True)
-
-        # A way in that does not depend on our message arriving: the same
-        # code the portal issues, in a tap-to-open link.
-        link = ""
-        try:
-            saved = self.database.create_whatsapp_claim_code(
-                user_id=user_id,
-                code=generate_whatsapp_claim_code(),
-                expires_at=now + timedelta(seconds=CLAIM_CODE_TTL_SECONDS),
-            )
-            link = build_whatsapp_claim_link(saved["code"])
-        except (ValueError, sqlite3.Error) as exc:
-            print(f"Web registration claim code could not be created: {exc}", flush=True)
 
         print(
             json.dumps(
                 {
                     "event": "web_registration_completed",
                     "phone": self._mask_whatsapp_log_identifier(phone),
-                    "trialDays": resolve_default_trial_days(),
                     "welcomeSent": bool(sent_message_id),
                     "sendError": send_error[:200],
                 },
@@ -12092,20 +12070,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "message": (
                 "Done. I have sent you a WhatsApp message - reply to it and we will get started."
                 if sent_message_id
-                else "Your account is ready. Open WhatsApp and send me the code to get started."
+                else "Almost there. Open WhatsApp and say hi, and we will get started."
             ),
             "whatsappSent": bool(sent_message_id),
-            "whatsappLink": link,
+            # The same public door as the signup link: a message from this
+            # phone lands in the signup that already knows their name.
+            "whatsappLink": build_whatsapp_signup_link(),
             "assistycaNumber": resolve_assistyca_display_number(),
-            "trialDays": resolve_default_trial_days(),
+            "phone": phone,
         })
 
-    def _write_registration_welcome(self, *, name: str, business: str, wants: str) -> str:
+    def _write_registration_welcome(self, *, name: str, business: str) -> str:
         """The first message to a web registrant, by the model or the fixed line.
 
-        Unbilled, like the signup concierge: the account is minutes old and
-        this is house cost, bounded by the registration rate limit and the
-        daily signup cap.
+        Unbilled, like the signup concierge: there is no account yet and this
+        is house cost, bounded by the registration rate limit and the daily
+        signup cap.
         """
 
         model = resolve_task_model(
@@ -12118,7 +12098,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             result = call_openai_response(
                 tool_name="whatsapp_registration_welcome",
                 tool_id="whatsapp_signup",
-                prompt=build_registration_welcome_prompt(name=name, business=business, wants=wants),
+                prompt=build_registration_welcome_prompt(name=name, business=business),
                 model=model,
                 instructions=SIGNUP_CONCIERGE_INSTRUCTIONS,
                 max_output_tokens=WHATSAPP_SIGNUP_MAX_OUTPUT_TOKENS,
@@ -12133,70 +12113,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except (OpenAIError, ValueError, json.JSONDecodeError) as exc:
             print(f"Web registration welcome model failed: {getattr(exc, 'message', exc)}", flush=True)
             return fallback
-
-    def _handle_registered_phone_reply(
-        self,
-        phone_number_id: str,
-        event: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Link a phone that answers the welcome its registration sent it.
-
-        The registration page typed this number; answering from it is the
-        proof the claim code gives elsewhere - whoever holds the phone chose
-        to reply to a message that named the site and said to ignore it
-        otherwise. Returns None when this phone has no registration waiting,
-        so the caller goes on to the signup conversation as before. A
-        registration older than the reply window is a stranger again.
-        """
-
-        if normalize_text(phone_number_id) != resolve_whatsapp_sender_phone_number_id():
-            return None
-        if not whatsapp_agent_chat_enabled():
-            return None
-        sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
-        if not sender_wa_id:
-            return None
-
-        signup = self.database.get_whatsapp_signup(sender_wa_id) or {}
-        user_id = int(signup.get("userId") or 0)
-        if normalize_text(signup.get("status")) != "awaiting_reply" or user_id <= 0:
-            return None
-        started = _parse_iso_moment(signup.get("startedAt"))
-        now = datetime.now(timezone.utc)
-        if started is None or (now - started).total_seconds() > REGISTRATION_REPLY_WINDOW_SECONDS:
-            return None
-        user = self.database.get_user_by_id(user_id) or {}
-        if not user or not bool(user.get("isActive", True)):
-            return None
-
-        try:
-            self.database.link_user_whatsapp_number(
-                user_id=user_id,
-                wa_id=sender_wa_id,
-                label=normalize_text(event.get("sender_name")) or normalize_text(signup.get("senderName")),
-            )
-            self.database.complete_whatsapp_signup(wa_id=sender_wa_id, user_id=user_id)
-        except (ValueError, sqlite3.Error) as exc:
-            print(f"Registered phone could not be linked: {exc}", flush=True)
-            return None
-
-        print(
-            json.dumps(
-                {
-                    "event": "web_registration_phone_linked",
-                    "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-            ),
-            flush=True,
-        )
-        return {
-            "type": "registration",
-            "action": "phone_linked",
-            "sender_wa_id": sender_wa_id,
-            "phone_number_id": normalize_text(phone_number_id),
-        }
 
     def _handle_admin_whatsapp_signup_get(self) -> None:
         """Where the public door stands: the link, the switch, and today's count."""
@@ -14751,17 +14667,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 if claim_result is not None:
                     results.append(claim_result)
                     continue
-                registration_result = self._handle_registered_phone_reply(phone_number_id, event)
-                if registration_result is not None:
-                    # The phone has just proved itself by answering our welcome,
-                    # and the message that did so is its first turn with the
-                    # agent, not a formality to acknowledge.
-                    results.append(registration_result)
-                    connection, route_source = self._resolve_whatsapp_connection_for_webhook(
-                        phone_number_id,
-                        owner_wa_id=normalize_text(event.get("sender_wa_id")),
-                    )
-            if not connection:
                 signup_result = self._handle_whatsapp_signup(phone_number_id, event)
                 if signup_result is not None:
                     results.append(signup_result)
