@@ -51,6 +51,23 @@ def inbound_image_payload(
     return payload
 
 
+def inbound_audio_payload(
+    *,
+    media_id: str = "media-voice-1",
+    sender: str = "972507322341",
+    phone_number_id: str = "platform-phone-1",
+    message_id: str = "wamid.audio-1",
+    voice: bool = True,
+) -> dict:
+    payload = inbound_text_payload("", sender=sender, phone_number_id=phone_number_id, message_id=message_id)
+    message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    message["type"] = "audio"
+    del message["text"]
+    message["audio"] = {"id": media_id, "mime_type": "audio/ogg; codecs=opus", "sha256": "def", "voice": voice}
+    return payload
+
+
+VOICE_BASE64 = base64.b64encode(b"OggS" + bytes(range(256))).decode("ascii")
 PHOTO_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256))).decode("ascii")
 PHOTO_DATA_URL = f"data:image/png;base64,{PHOTO_BASE64}"
 
@@ -115,6 +132,18 @@ class WhatsAppAgentHelperTests(unittest.TestCase):
         self.assertEqual(captioned[0]["message_text"], "what is this?")
         self.assertEqual(captioned[0]["media"]["id"], "media-8")
         self.assertEqual(extract_inbound_events(inbound_text_payload("hi"))[0]["media"], {})
+
+    def test_an_inbound_voice_note_carries_the_id_it_can_be_fetched_by(self) -> None:
+        from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+
+        events = extract_inbound_events(inbound_audio_payload(media_id="media-voice-9"))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["message_type"], "audio")
+        self.assertEqual(events[0]["message_text"], "[audio]")
+        self.assertEqual(events[0]["media"]["id"], "media-voice-9")
+        self.assertEqual(events[0]["media"]["kind"], "audio")
+        self.assertEqual(events[0]["media"]["mimeType"], "audio/ogg; codecs=opus")
+        self.assertEqual(events[0]["media"]["voice"], "true")
 
     def test_timezone_is_inferred_from_the_country_code(self) -> None:
         self.assertEqual(infer_timezone_from_wa_id("972507322341"), "Asia/Jerusalem")
@@ -1118,6 +1147,62 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         self.assertEqual(content[1]["type"], "input_image")
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
         self.assertEqual(transcript[0]["text"], "Have a look at this photo. [photo attached]")
+
+    def test_a_voice_note_is_written_down_and_answered_as_words(self) -> None:
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                return_value={"mimeType": "audio/ogg", "imageBase64": VOICE_BASE64, "dataBase64": VOICE_BASE64, "size": 260},
+            ) as download,
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.transcribe_voice_note",
+                return_value="What's on my calendar tomorrow?",
+            ) as transcribe,
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                side_effect=[_loop_round(reply={"reply": "Tomorrow you have two meetings, at 10 and at 15."})],
+            ) as model,
+        ):
+            response = self._post_webhook(inbound_audio_payload(media_id="media-voice-1", message_id="wamid.voice-1"))
+
+        self.assertIn("two meetings", self._reply(response))
+        download.assert_called_once_with("media-voice-1")
+        note = transcribe.call_args.args[0]
+        self.assertEqual(note["mimeType"], "audio/ogg")
+        self.assertEqual(note["audioBytes"], base64.b64decode(VOICE_BASE64))
+        self.assertEqual(transcribe.call_args.kwargs["billing_email"], self.user["email"])
+        self.assertIs(transcribe.call_args.kwargs["usage_recorder"], self.database)
+        self.assertEqual(transcribe.call_args.kwargs["source"], "whatsapp")
+        # With no photo the turn is plain text, exactly as a typed message is.
+        content = model.call_args.kwargs["input"][0]["content"]
+        self.assertIsInstance(content, str)
+        self.assertIn('"latestUserMessage":"What\'s on my calendar tomorrow?"', content)
+        self.assertNotIn("[audio]", content)
+        self.assertFalse(model.call_args.kwargs["metadata"]["hasPhoto"])
+        transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
+        self.assertEqual(transcript[0]["text"], "What's on my calendar tomorrow? [voice note]")
+
+    def test_a_voice_note_that_cannot_be_made_out_is_said_so_without_a_model_turn(self) -> None:
+        from packages.infrastructure.voice_notes import VoiceNoteError
+
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                return_value={"mimeType": "audio/ogg", "imageBase64": VOICE_BASE64, "dataBase64": VOICE_BASE64, "size": 260},
+            ),
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.transcribe_voice_note",
+                side_effect=VoiceNoteError("The recording had no words in it."),
+            ),
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response") as model,
+        ):
+            response = self._post_webhook(inbound_audio_payload(media_id="media-voice-2", message_id="wamid.voice-2"))
+
+        entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
+        self.assertEqual(entry["outcome"], "voice_note_unreadable")
+        self.assertIn("voice note", entry["reply_text"].lower())
+        self.assertFalse(any(call.kwargs.get("tool_name") == "portal_agent_loop" for call in model.call_args_list))
+        self.assertEqual(self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"])), [])
 
     def test_a_photo_that_cannot_be_fetched_is_said_so_without_a_model_turn(self) -> None:
         from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError

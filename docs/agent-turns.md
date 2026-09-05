@@ -108,3 +108,27 @@ so **Admin > Clients** can say what this month cost the house in total and per
 client, split into web, WhatsApp and background work. A conversation row from
 before rows carried a channel is placed by the turn whose time window holds
 it; one with no such turn shows as untracked.
+
+## Voice notes
+
+A person can speak a message instead of typing it. The composer records
+in the browser (`MediaRecorder`, Opus in WebM or Ogg, MP4 on Safari, two
+minutes at most) and posts the recording to `POST /api/agent/transcribe`
+as a base64 data URL under `voiceNote`. The server turns it into words
+through the OpenAI gateway (`OpenAIGateway.transcribe_audio`, the model
+named by `TRANSCRIPTION_MODEL` in `task_complexity.py`, overridable with
+`OPENAI_TRANSCRIPTION_MODEL`) and returns `{ "text": ... }`.
+
+The words go into the composer, not straight to the model: the person
+reads what was heard, fixes a word if one was misheard, and sends. From
+there the turn is an ordinary text turn; nothing downstream knows the
+message was spoken.
+
+The call is billed to the account like a turn, on the same ledger, with
+`kind: "transcription"` in the usage row's metadata. Tracking is not
+strict for it: a transcription model whose price is not in the pricing
+table still answers, and the skipped charge shows in the log as
+`openai.usage.skipped`. The endpoint is gated like a turn (signed in,
+active trial) and rate-limited per account (`VOICE_TRANSCRIBE_PER_USER`).
+Recordings are accepted in the containers browsers and WhatsApp produce
+(`VOICE_NOTE_MIME_TYPES` in `voice_notes.py`), up to 5 MB.

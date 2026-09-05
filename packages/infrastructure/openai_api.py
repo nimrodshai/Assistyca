@@ -29,12 +29,14 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.task_complexity import TaskComplexity, model_for_complexity
+from packages.infrastructure.task_complexity import TRANSCRIPTION_MODEL
 
 
 _logger = logging.getLogger("assistyca.openai_api")
 
 DEFAULT_OPENAI_API_BASE = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MODEL = model_for_complexity(TaskComplexity.IMPORTANT)
+DEFAULT_OPENAI_TRANSCRIPTION_MODEL = TRANSCRIPTION_MODEL
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 60.0
 DEFAULT_OPENAI_CURRENCY = "USD"
 
@@ -214,6 +216,46 @@ class OpenAIResult:
     # retry that then finished still counts: the budget was too tight once.
     incomplete_attempts: int = 0
     incomplete_reason: str = ""
+
+
+@dataclass
+class OpenAITranscriptionRequest:
+    """A recording to turn into words. The bytes go up as a file; nothing
+    about the request is a prompt the model reasons over."""
+
+    tool_name: str
+    audio_bytes: bytes
+    mime_type: str = "audio/webm"
+    file_name: str = ""
+    billing_email: str = ""
+    tool_id: str = ""
+    model: str = ""
+    # A hint for the transcriber: the language the person usually speaks
+    # (ISO-639-1), or words it should know how to spell. Both optional.
+    language: str = ""
+    prompt: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    input_price_cents_per_1k_tokens: float | None = None
+    output_price_cents_per_1k_tokens: float | None = None
+    currency: str | None = None
+    timeout_seconds: float | None = None
+
+
+@dataclass
+class OpenAITranscriptionResult:
+    request_id: str
+    billing_email: str
+    tool_name: str
+    tool_id: str
+    model: str
+    text: str
+    usage: dict[str, Any]
+    raw_response: dict[str, Any]
+    started_at: str
+    completed_at: str
+    duration_ms: int
+    billing_snapshot: dict[str, Any] | None = None
+    usage_record: dict[str, Any] | None = None
 
 
 def normalize_text(value: Any) -> str:
@@ -478,24 +520,13 @@ def _request_url(base_url: str, path: str) -> str:
     return f"{normalize_text(base_url).rstrip('/')}/{path.lstrip('/')}"
 
 
-def _json_request(
-    url: str,
-    payload: dict[str, Any],
-    *,
-    api_key: str,
-    timeout_seconds: float,
-) -> tuple[dict[str, Any], int]:
-    body = json.dumps(make_json_safe(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    request = urllib_request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
+def _perform_request(request: urllib_request.Request, *, timeout_seconds: float) -> tuple[str, int]:
+    """Send one prepared request and return its body and status.
+
+    Every OpenAI call goes through here so the retry policy is one policy:
+    the JSON endpoints and the file upload behind transcription fail and
+    recover the same way.
+    """
 
     # Bounded retry with exponential backoff. A single transient blip used to be
     # terminal, and for scheduled actions that meant a message was silently never
@@ -528,6 +559,10 @@ def _json_request(
             reason = normalize_text(getattr(exc, "reason", "")) or "The network request failed."
             raise OpenAIRequestError("OpenAI did not respond. Check the network and try again.", details=reason) from exc
 
+    return raw_body, status_code
+
+
+def _parse_json_body(raw_body: str) -> dict[str, Any]:
     try:
         parsed_body = json.loads(raw_body)
     except json.JSONDecodeError as exc:
@@ -536,7 +571,79 @@ def _json_request(
     if not isinstance(parsed_body, dict):
         raise OpenAIRequestError("OpenAI returned an unexpected response.", details=raw_body)
 
-    return parsed_body, status_code
+    return parsed_body
+
+
+def _json_request(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    api_key: str,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], int]:
+    body = json.dumps(make_json_safe(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    request = urllib_request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    raw_body, status_code = _perform_request(request, timeout_seconds=timeout_seconds)
+    return _parse_json_body(raw_body), status_code
+
+
+def encode_multipart_form(
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]],
+) -> tuple[bytes, str]:
+    """A multipart/form-data body and its content type, built by hand.
+
+    The standard library has no encoder for uploads, and the shape is small:
+    a few text fields and one file, each its own part.
+    """
+
+    boundary = f"----AssistycaForm{uuid.uuid4().hex}"
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode("utf-8")
+        )
+    for name, (file_name, data, content_type) in files.items():
+        safe_file_name = normalize_text(file_name).replace('"', "") or "file"
+        header = (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{safe_file_name}\"\r\n"
+            f"Content-Type: {content_type or 'application/octet-stream'}\r\n\r\n"
+        ).encode("utf-8")
+        parts.append(header + bytes(data) + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def _multipart_request(
+    url: str,
+    *,
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]],
+    api_key: str,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], int]:
+    body, content_type = encode_multipart_form(fields, files)
+    request = urllib_request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": content_type,
+            "Accept": "application/json",
+        },
+    )
+    raw_body, status_code = _perform_request(request, timeout_seconds=timeout_seconds)
+    return _parse_json_body(raw_body), status_code
 
 
 class OpenAIGateway:
@@ -1100,6 +1207,251 @@ class OpenAIGateway:
         )
 
 
+    # -- speech to text ----------------------------------------------------
+
+    def transcribe_audio(self, request: OpenAITranscriptionRequest) -> OpenAITranscriptionResult:
+        """Turn a recording into words, billed like any other call.
+
+        A voice note is a message someone chose to speak instead of type, so
+        it costs the account what the transcription costs, on the same
+        ledger. Transcription models report their usage in tokens; a model
+        that reports only seconds records nothing, and says so in the log.
+        """
+
+        api_key = normalize_text(self.config.api_key)
+        if not api_key:
+            raise OpenAIConfigurationError("OPENAI_API_KEY is required.")
+        tool_name = normalize_text(request.tool_name)
+        if not tool_name:
+            raise OpenAIConfigurationError("OpenAI tool_name is required.")
+        audio = bytes(request.audio_bytes or b"")
+        if not audio:
+            raise OpenAIConfigurationError("There is no audio to transcribe.")
+
+        request_id = uuid.uuid4().hex
+        billing_email = normalize_text(request.billing_email) or self.billing_email
+        model = normalize_text(request.model) or DEFAULT_OPENAI_TRANSCRIPTION_MODEL
+        tool_id = normalize_text(request.tool_id) or tool_name
+        started_at = now_utc()
+        timeout_seconds = request.timeout_seconds or self.config.timeout_seconds
+
+        price_request = OpenAIRequest(
+            tool_name=tool_name,
+            prompt="",
+            input_price_cents_per_1k_tokens=request.input_price_cents_per_1k_tokens,
+            output_price_cents_per_1k_tokens=request.output_price_cents_per_1k_tokens,
+            currency=request.currency,
+        )
+        if self.usage_recorder is not None and self.config.strict_tracking:
+            if not billing_email:
+                raise OpenAITrackingError(
+                    "OpenAI usage tracking is enabled, but no billing email was provided.",
+                    data={"request_id": request_id, "tool_name": tool_name, "model": model},
+                )
+            price_snapshot = self._resolve_price_snapshot(price_request, model=model)
+            if not isinstance(price_snapshot, dict) or price_snapshot.get("input_price_cents_per_1k_tokens") is None:
+                raise OpenAITrackingError(
+                    f"OpenAI usage tracking is enabled, but pricing for {model} could not be resolved.",
+                    data={"request_id": request_id, "tool_name": tool_name, "model": model},
+                )
+        else:
+            price_snapshot = self._resolve_price_snapshot(price_request, model=model)
+
+        fields: dict[str, str] = {"model": model, "response_format": "json"}
+        language = normalize_text(request.language).lower()
+        if language:
+            fields["language"] = language
+        prompt = normalize_text(request.prompt)
+        if prompt:
+            fields["prompt"] = prompt
+        mime_type = normalize_text(request.mime_type).split(";")[0].lower() or "audio/webm"
+        file_name = normalize_text(request.file_name) or f"voice-note.{_audio_extension(mime_type)}"
+
+        self._emit(
+            "openai.transcription.started",
+            {
+                "request_id": request_id,
+                "billing_email": billing_email,
+                "tool_name": tool_name,
+                "tool_id": tool_id,
+                "model": model,
+                "mime_type": mime_type,
+                "audio_bytes": len(audio),
+            },
+        )
+        try:
+            response_body, status_code = _multipart_request(
+                _request_url(self.config.base_url, "/audio/transcriptions"),
+                fields=fields,
+                files={"file": (file_name, audio, mime_type)},
+                api_key=api_key,
+                timeout_seconds=timeout_seconds,
+            )
+        except OpenAIRequestError as exc:
+            self._emit(
+                "openai.transcription.failed",
+                {
+                    "request_id": request_id,
+                    "billing_email": billing_email,
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "model": model,
+                    "error": exc.message,
+                    "details": exc.details,
+                    "status_code": exc.status_code,
+                },
+            )
+            raise
+
+        completed_at = now_utc()
+        duration_ms = int(round((completed_at - started_at).total_seconds() * 1000))
+        text = normalize_text(response_body.get("text"))
+        usage = extract_openai_usage(response_body)
+        self._emit(
+            "openai.transcription.completed",
+            {
+                "request_id": request_id,
+                "billing_email": billing_email,
+                "tool_name": tool_name,
+                "tool_id": tool_id,
+                "model": model,
+                "status_code": status_code,
+                "input_tokens": usage["input_tokens"],
+                "output_tokens": usage["output_tokens"],
+                "text_length": len(text),
+                "duration_ms": duration_ms,
+            },
+        )
+
+        usage_record: dict[str, Any] | None = None
+        if self.usage_recorder is not None:
+            tracking_issue = ""
+            if not billing_email:
+                tracking_issue = "billing email was not provided"
+            elif usage["input_tokens"] <= 0 and usage["output_tokens"] <= 0:
+                tracking_issue = "the OpenAI response did not include token usage"
+            elif not isinstance(price_snapshot, dict) or price_snapshot.get("input_price_cents_per_1k_tokens") is None:
+                tracking_issue = f"pricing for {model} could not be resolved"
+
+            if tracking_issue:
+                if self.config.strict_tracking:
+                    raise OpenAITrackingError(
+                        f"OpenAI usage tracking is enabled, but {tracking_issue}.",
+                        data={"request_id": request_id, "tool_name": tool_name, "model": model},
+                    )
+                self._emit(
+                    "openai.usage.skipped",
+                    {
+                        "request_id": request_id,
+                        "billing_email": billing_email,
+                        "tool_name": tool_name,
+                        "tool_id": tool_id,
+                        "model": model,
+                        "reason": tracking_issue,
+                    },
+                )
+            else:
+                record_metadata = make_json_safe(dict(request.metadata or {}))
+                record_metadata.setdefault("tool_name", tool_name)
+                record_metadata.setdefault("tool_id", tool_id)
+                record_metadata.setdefault("model", model)
+                record_metadata["kind"] = "transcription"
+                for key, value in current_usage_context().items():
+                    record_metadata.setdefault(key, value)
+                record_metadata["openai"] = make_json_safe(
+                    {
+                        "request_id": request_id,
+                        "status_code": status_code,
+                        "response_model": model,
+                        "usage": usage,
+                        "audio_bytes": len(audio),
+                        "billing_snapshot": price_snapshot,
+                    }
+                )
+                try:
+                    usage_record = self.usage_recorder.record_usage(
+                        billing_email,
+                        model,
+                        tool_id=tool_id,
+                        used_at=completed_at,
+                        input_tokens=usage["input_tokens"],
+                        output_tokens=usage["output_tokens"],
+                        input_price_cents_per_1k_tokens=price_snapshot["input_price_cents_per_1k_tokens"],
+                        output_price_cents_per_1k_tokens=price_snapshot["output_price_cents_per_1k_tokens"],
+                        currency=price_snapshot["currency"],
+                        metadata=record_metadata,
+                    )
+                except Exception as exc:  # noqa: BLE001 - tracking failures should stay visible
+                    self._emit(
+                        "openai.usage.failed",
+                        {
+                            "request_id": request_id,
+                            "billing_email": billing_email,
+                            "tool_name": tool_name,
+                            "tool_id": tool_id,
+                            "model": model,
+                            "error": str(exc),
+                        },
+                    )
+                    raise OpenAITrackingError(
+                        "OpenAI usage could not be recorded.",
+                        details=str(exc),
+                        data={"request_id": request_id, "tool_name": tool_name, "model": model},
+                    ) from exc
+                self._emit(
+                    "openai.usage.recorded",
+                    {
+                        "request_id": request_id,
+                        "billing_email": billing_email,
+                        "tool_name": tool_name,
+                        "tool_id": tool_id,
+                        "model": model,
+                        "input_tokens": usage["input_tokens"],
+                        "output_tokens": usage["output_tokens"],
+                        "billing_snapshot": price_snapshot,
+                        "usage_record": make_json_safe(usage_record),
+                    },
+                )
+
+        return OpenAITranscriptionResult(
+            request_id=request_id,
+            billing_email=billing_email,
+            tool_name=tool_name,
+            tool_id=tool_id,
+            model=model,
+            text=text,
+            usage=usage,
+            raw_response=make_json_safe(response_body),
+            started_at=started_at.isoformat(),
+            completed_at=completed_at.isoformat(),
+            duration_ms=duration_ms,
+            billing_snapshot=price_snapshot,
+            usage_record=make_json_safe(usage_record) if usage_record is not None else None,
+        )
+
+
+AUDIO_EXTENSIONS = {
+    "audio/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/flac": "flac",
+    "audio/amr": "amr",
+}
+
+
+def _audio_extension(mime_type: str) -> str:
+    """The file name extension the upload carries: OpenAI reads the container
+    from it when the content type alone is ambiguous."""
+
+    return AUDIO_EXTENSIONS.get(normalize_text(mime_type).split(";")[0].lower(), "webm")
+
+
 def create_openai_gateway(
     *,
     usage_recorder: Any | None = None,
@@ -1185,8 +1537,57 @@ def call_openai_response(
     )
 
 
+def call_openai_transcription(
+    *,
+    tool_name: str,
+    audio_bytes: bytes,
+    mime_type: str = "audio/webm",
+    file_name: str = "",
+    billing_email: str = "",
+    tool_id: str = "",
+    model: str = "",
+    language: str = "",
+    prompt: str = "",
+    metadata: dict[str, Any] | None = None,
+    timeout_seconds: float | None = None,
+    usage_recorder: Any | None = None,
+    event_sink: OpenAIEventSink | None = None,
+    price_resolver: OpenAIPriceResolver | None = None,
+    config: OpenAIConfig | None = None,
+) -> OpenAITranscriptionResult:
+    """Transcribe one recording through a gateway built for the call."""
+
+    gateway = create_openai_gateway(
+        usage_recorder=usage_recorder,
+        billing_email=billing_email,
+        event_sink=event_sink,
+        price_resolver=price_resolver,
+        config=config,
+    )
+    return gateway.transcribe_audio(
+        OpenAITranscriptionRequest(
+            tool_name=tool_name,
+            audio_bytes=audio_bytes,
+            mime_type=mime_type,
+            file_name=file_name,
+            billing_email=billing_email,
+            tool_id=tool_id,
+            model=model,
+            language=language,
+            prompt=prompt,
+            metadata=dict(metadata or {}),
+            timeout_seconds=timeout_seconds,
+        )
+    )
+
+
 __all__ = [
     "DEFAULT_OPENAI_API_BASE",
+    "DEFAULT_OPENAI_TRANSCRIPTION_MODEL",
+    "OpenAITranscriptionRequest",
+    "OpenAITranscriptionResult",
+    "call_openai_transcription",
+    "encode_multipart_form",
     "SAMPLING_CONTROL_KEYS",
     "DEFAULT_OPENAI_CURRENCY",
     "DEFAULT_OPENAI_MODEL",

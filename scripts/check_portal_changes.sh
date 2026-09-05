@@ -20,6 +20,7 @@ python3 -m unittest \
   tests.test_answer_composer \
   tests.test_fx_rates \
   tests.test_openai_sampling \
+  tests.test_voice_notes \
   tests.test_agent_answer_now \
   tests.test_scheduled_monitor \
   tests.test_whatsapp_tool_delivery \

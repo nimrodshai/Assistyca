@@ -115,3 +115,5 @@ CONTACT_AGENT_PER_IP = RateLimitRule(limit=15, window_seconds=3600)
 CONTACT_AGENT_GLOBAL = RateLimitRule(limit=300, window_seconds=3600)
 # Each registration creates an account and sends one WhatsApp message.
 REGISTER_PER_IP = RateLimitRule(limit=5, window_seconds=3600)
+# Each voice note is one transcription call on the account's bill.
+VOICE_TRANSCRIBE_PER_USER = RateLimitRule(limit=120, window_seconds=3600)

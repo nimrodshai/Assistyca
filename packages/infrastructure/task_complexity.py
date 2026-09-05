@@ -34,6 +34,12 @@ COMPLEXITY_MODELS = {
 # a request setting; the effort is chosen with the model, in the same place,
 # so a task never runs a strong model with its thinking turned off by accident
 # or a cheap one that thinks longer than the work is worth.
+# Speech to text is not a reasoning task and runs on a different model
+# family. It is named here, beside the other model choices, for the same
+# reason: changing it is one edit, not a hunt through call sites.
+TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe"
+
+
 COMPLEXITY_REASONING_EFFORT = {
     TaskComplexity.IMPORTANT: "medium",
     TaskComplexity.MEDIUM: "low",
@@ -74,6 +80,17 @@ def resolve_task_model(complexity: Any, *env_var_names: str) -> str:
     return model_for_complexity(complexity)
 
 
+def resolve_transcription_model(*env_var_names: str) -> str:
+    """The first environment override that is set, else the transcription
+    model named above."""
+
+    for name in env_var_names:
+        override = normalize_text(os.getenv(name))
+        if override:
+            return override
+    return TRANSCRIPTION_MODEL
+
+
 def reasoning_for_complexity(complexity: Any) -> dict[str, str]:
     """The reasoning setting a task of this complexity runs with."""
 
@@ -98,8 +115,10 @@ def resolve_task_reasoning(complexity: Any, *env_var_names: str) -> dict[str, st
 __all__ = [
     "COMPLEXITY_MODELS",
     "COMPLEXITY_REASONING_EFFORT",
+    "TRANSCRIPTION_MODEL",
     "TaskComplexity",
     "model_for_complexity",
+    "resolve_transcription_model",
     "reasoning_for_complexity",
     "resolve_task_model",
     "resolve_task_reasoning",

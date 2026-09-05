@@ -572,3 +572,21 @@ Adding a capability is adding a `ToolSpec` to the registry: a name, a
 description written for the model (the phrasing rules live there, not in the
 prompt), a strict parameter schema, what it requires, and a `run` function
 that returns the envelope. Nothing else changes.
+
+## Voice notes
+
+A WhatsApp voice message is the message, spoken. The webhook reader keeps
+the media id for `audio` messages the way it does for images
+(`extract_message_media`, kind `audio`, with Meta's `voice` flag). The chat
+fetches the recording from Meta (`download_whatsapp_media`), turns it into
+words through the shared `transcribe_voice_note` helper on the owner's
+bill, and then runs the turn exactly as it would for typed text: the model
+sees the words as `latestUserMessage`, and the transcript keeps them with a
+`[voice note]` marker so a later turn knows they were spoken.
+
+A recording that cannot be fetched or made out gets one reply in the
+assistant's own words (situation `unsupported_message`, outcome
+`voice_note_unreadable`) and no model turn, the same way an unreadable
+photo does. A voice note answering a held question (a yes to a proposed
+action, a calendar choice) is read like a typed answer, because by the time
+the pending check runs it already is text.

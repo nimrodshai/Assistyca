@@ -33,7 +33,7 @@ RECOVERY_CODES = frozenset({
     "rate_limited",             # too much, too fast
     "assistant_unavailable",    # the model did not answer
     "assistant_unclear",        # the model answered in a shape that could not be used
-    "unsupported_message",      # a voice note, image or sticker where words were needed
+    "unsupported_message",      # a sticker, video or file where words were needed
     "internal",                 # something of ours failed
 })
 OPTION_KINDS = frozenset({"connect", "reconnect", "retry", "say", "choose"})
@@ -241,7 +241,7 @@ _DEFAULT_WHAT_HAPPENED = {
     "rate_limited": "I'm getting a lot of requests at once.",
     "assistant_unavailable": "I couldn't think that through just now.",
     "assistant_unclear": "I lost the thread of that for a moment.",
-    "unsupported_message": "I can only read text messages here so far.",
+    "unsupported_message": "I couldn't read that kind of message; text, a photo, or a voice note works here.",
     "internal": "Something on my side got in the way of that.",
 }
 

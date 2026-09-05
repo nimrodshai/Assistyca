@@ -67,6 +67,18 @@ DEFAULT_MODEL_PRICES = (
         "input_usd_per_1m_tokens": 0.2,
         "output_usd_per_1m_tokens": 1.25,
     },
+    # Speech to text for voice notes. The pricing sync never lists this
+    # model, so the seed is what bills it. Input is charged at the audio
+    # rate: nearly every input token of a voice note is audio.
+    {
+        "model_name": "gpt-4o-mini-transcribe",
+        "input_usd_per_1m_tokens": 3.0,
+        "output_usd_per_1m_tokens": 5.0,
+        "notes": (
+            "OpenAI transcription pricing (audio input rate) seeded from "
+            "https://developers.openai.com/api/docs/pricing on 2026-09-05."
+        ),
+    },
 )
 ACCOUNT_LISTS_TABLE_SQL = """
 -- Lists the account keeps: shopping, packing, ideas, a to-do. The agent
@@ -1431,7 +1443,7 @@ class PortalDatabase:
                     cents_per_1k_tokens_from_usd_per_1m_tokens(record.get("input_usd_per_1m_tokens")),
                     cents_per_1k_tokens_from_usd_per_1m_tokens(record.get("output_usd_per_1m_tokens")),
                     DEFAULT_MODEL_PRICE_PROVIDER,
-                    DEFAULT_MODEL_PRICE_NOTES,
+                    normalize_text(record.get("notes")) or DEFAULT_MODEL_PRICE_NOTES,
                     now,
                     now,
                 ),

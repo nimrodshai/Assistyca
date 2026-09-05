@@ -117,6 +117,11 @@ from packages.infrastructure.openai_api import OpenAIConfigurationError
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
+from packages.infrastructure.voice_notes import VOICE_NOTE_MAX_BYTES
+from packages.infrastructure.voice_notes import VoiceNoteError
+from packages.infrastructure.voice_notes import describe_voice_note_problem
+from packages.infrastructure.voice_notes import normalize_voice_note
+from packages.infrastructure.voice_notes import transcribe_voice_note
 from packages.infrastructure.openai_pricing import OpenAIPricingError
 from packages.infrastructure.openai_pricing import build_pricing_snapshot_json
 from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
@@ -139,6 +144,7 @@ from packages.infrastructure.rate_limiter import (
     CONTACT_PER_IP,
     OTP_REQUEST_PER_EMAIL,
     REGISTER_PER_IP,
+    VOICE_TRANSCRIBE_PER_USER,
     OTP_REQUEST_PER_IP,
     OTP_VERIFY_PER_EMAIL,
     OTP_VERIFY_PER_IP,
@@ -309,6 +315,8 @@ MAX_JSON_BODY_BYTES = 1024 * 1024
 # A chat message may carry a photo of a receipt: AGENT_PHOTO_MAX_BYTES as base64,
 # plus the words around it.
 MAX_AGENT_TURN_BODY_BYTES = 12 * 1024 * 1024
+# A voice note from the composer: VOICE_NOTE_MAX_BYTES as base64, plus its type.
+MAX_AGENT_TRANSCRIBE_BODY_BYTES = VOICE_NOTE_MAX_BYTES * 4 // 3 + 64 * 1024
 # A source action may carry the file it watches, 5 MB at most, as base64.
 MAX_SOURCE_ACTION_BODY_BYTES = 8 * 1024 * 1024
 # Meta signs its deliveries, and one delivery batches many messages.
@@ -4102,6 +4110,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/contact/agent"
             or path == "/api/register"
             or path == "/api/agent/turn"
+            or path == "/api/agent/transcribe"
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
@@ -4190,6 +4199,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/contact/agent"
             or path == "/api/register"
             or path == "/api/agent/turn"
+            or path == "/api/agent/transcribe"
             or path == "/api/agent/proposals/revise"
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
@@ -4523,6 +4533,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # The turn itself, a lookup it ran, the answer it composed, the
             # recovery it fell back to: each is recorded onto the turn's row.
             self._run_recorded_agent_request(path)
+            return
+
+        if path == "/api/agent/transcribe":
+            self._handle_agent_transcribe_post()
             return
 
         if path == "/api/agent/folders/save":
@@ -8755,6 +8769,70 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "metrics": turn_metrics(self.database, now=now),
             "recent": [public_turn(record) for record in recent],
             "alert": alert_settings(),
+        })
+
+    def _handle_agent_transcribe_post(self) -> None:
+        """Turn a recording from the composer into the words it holds.
+
+        The words come back to the browser and go into the composer, where
+        the person sees them before they send: a misheard word is fixed
+        with a tap instead of sent to the model. The call is billed to the
+        account like a turn, and gated like one.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        if not self._enforce_rate_limit(
+            f"voice-transcribe:{session.email}",
+            VOICE_TRANSCRIBE_PER_USER,
+            message="That is a lot of voice notes at once. Give it a minute and try again.",
+        ):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_AGENT_TRANSCRIBE_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        raw_note = payload.get("voiceNote") if isinstance(payload.get("voiceNote"), dict) else payload
+        note = normalize_voice_note(raw_note)
+        if not note:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_voice_note",
+                "message": describe_voice_note_problem(raw_note),
+            })
+            return
+
+        language = normalize_contact_single_line(payload.get("language"), 8).lower()
+        if not re.fullmatch(r"[a-z]{2}", language or ""):
+            language = ""
+        try:
+            text = transcribe_voice_note(
+                note,
+                billing_email=session.email,
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                language=language,
+                source="portal",
+            )
+        except VoiceNoteError as exc:
+            print(f"Voice note transcription failed for {session.email}: {exc}", flush=True)
+            json_response(self, HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": "transcription_failed",
+                "message": "I couldn't make out that recording. Try again, or type it instead.",
+            })
+            return
+
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "text": text,
+            "durationSeconds": note.get("durationSeconds") or 0,
         })
 
     def _handle_agent_turn(self) -> None:

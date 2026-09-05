@@ -45,6 +45,10 @@ from packages.infrastructure.agent_turns import TURN_STARTING_PATHS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
+from packages.infrastructure.voice_notes import VoiceNoteError
+from packages.infrastructure.voice_notes import normalize_voice_note_mime_type
+from packages.infrastructure.voice_notes import transcribe_voice_note
+from packages.infrastructure.voice_notes import voice_note_transcript_text
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
 from packages.tools.whatsapp_reply_approval.server import send_whatsapp_typing_indicator
 
@@ -200,12 +204,12 @@ def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = D
 
 
 def download_whatsapp_media(media_id: str, *, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> dict[str, Any]:
-    """Fetch a picture someone sent to the Assistyca number.
+    """Fetch a picture or a recording someone sent to the Assistyca number.
 
     Meta serves media in two steps: the id resolves to a short-lived URL,
-    and the URL serves the bytes to the same token. The result is what the
-    turn's photo context takes; the caller decides whether it is an image
-    the model can read.
+    and the URL serves the bytes to the same token. The bytes come back as
+    base64 under `dataBase64`, and again under `imageBase64` because that is
+    what the turn's photo context takes; the caller decides what they are.
     """
 
     access_token = resolve_whatsapp_sender_access_token()
@@ -227,7 +231,7 @@ def download_whatsapp_media(media_id: str, *, api_version: str = DEFAULT_WHATSAP
         if not url:
             raise WhatsAppAgentChatError("Meta did not return a download URL for that media.")
         if declared_size > AGENT_PHOTO_MAX_BYTES:
-            raise WhatsAppAgentChatError("That media is larger than a photo the assistant reads.")
+            raise WhatsAppAgentChatError("That media is larger than what the assistant reads.")
         fetch = urllib_request.Request(url, headers=headers, method="GET")
         with urllib_request.urlopen(fetch, timeout=30) as response:
             raw = response.read(AGENT_PHOTO_MAX_BYTES + 1)
@@ -237,10 +241,12 @@ def download_whatsapp_media(media_id: str, *, api_version: str = DEFAULT_WHATSAP
     except (urllib_error.URLError, OSError, ValueError) as exc:
         raise WhatsAppAgentChatError(f"The media download failed: {exc}") from exc
     if not raw or len(raw) > AGENT_PHOTO_MAX_BYTES:
-        raise WhatsAppAgentChatError("That media is empty or larger than a photo the assistant reads.")
+        raise WhatsAppAgentChatError("That media is empty or larger than what the assistant reads.")
+    encoded = base64.b64encode(raw).decode("ascii")
     return {
         "mimeType": mime_type,
-        "imageBase64": base64.b64encode(raw).decode("ascii"),
+        "imageBase64": encoded,
+        "dataBase64": encoded,
         "size": len(raw),
     }
 
@@ -1127,10 +1133,12 @@ def resolve_scheduled_message_run_at(
     return candidate.astimezone(timezone.utc).isoformat()
 
 
-def transcript_text(text: str, photo: dict[str, Any] | None) -> str:
+def transcript_text(text: str, photo: dict[str, Any] | None, *, voice: bool = False) -> str:
     """What the transcript keeps of a message: its words, and that a photo
-    came with them. The picture itself is not stored; a later turn only
-    needs to know it was there."""
+    came with them or that they were spoken. The picture and the recording
+    are not stored; a later turn only needs to know they were there."""
+    if voice:
+        return voice_note_transcript_text(text)
     return f"{text} [photo attached]".strip() if photo else text
 
 
@@ -1680,6 +1688,7 @@ class WhatsAppAgentChat:
         declined_call: dict[str, Any] | None = None,
         open_question: dict[str, Any] | None = None,
         photo: dict[str, Any] | None = None,
+        voice: bool = False,
         record_user: bool = True,
     ) -> dict[str, Any]:
         """One turn through the loop: the model reads, calls tools, and writes.
@@ -1693,7 +1702,7 @@ class WhatsAppAgentChat:
         history = self.database.list_recent_whatsapp_agent_messages(user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
         if record_user:
-            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo))
+            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo, voice=voice))
         else:
             conversation = conversation[:-1] if conversation and conversation[-1].get("role") == "user" else conversation
         payload: dict[str, Any] = {
@@ -1740,6 +1749,7 @@ class WhatsAppAgentChat:
                             confirmed_call=held if answer == "yes" else None,
                             declined_call=held if answer == "no" else None,
                             photo=photo,
+                            voice=voice,
                             record_user=False,
                         )
                 pending_confirmation = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
@@ -1761,7 +1771,7 @@ class WhatsAppAgentChat:
                     if len(available) == 1 and self._save_calendar_selection(available):
                         # One calendar is not a choice: read it and run the turn again.
                         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply or "(chose the only calendar)")
-                        return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question, photo=photo)
+                        return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question, photo=photo, voice=voice)
                     if available and not open_question:
                         outcome = "calendar_choice"
                         if reply:
@@ -1992,6 +2002,54 @@ class WhatsAppAgentChat:
                 # ask it to look, not a bracketed type name.
                 text = AGENT_PHOTO_DEFAULT_TEXT
 
+        # A voice note is the message, spoken. It is fetched from Meta,
+        # turned into words on the account's bill, and from there the turn
+        # runs exactly as it would for typed text. A recording that cannot
+        # be made out is said so, rather than answered as "[audio]".
+        voice_note = False
+        if kind == "audio" and media_id:
+            spoken = ""
+            try:
+                fetched = download_whatsapp_media(media_id)
+                mime_type = (
+                    normalize_voice_note_mime_type(fetched.get("mimeType"))
+                    or normalize_voice_note_mime_type((media or {}).get("mimeType"))
+                    or "audio/ogg"
+                )
+                spoken = transcribe_voice_note(
+                    {
+                        "mimeType": mime_type,
+                        "audioBytes": base64.b64decode(fetched.get("dataBase64") or fetched.get("imageBase64") or ""),
+                        "fileName": "voice-note",
+                    },
+                    billing_email=self.email,
+                    usage_recorder=self.database,
+                    price_resolver=getattr(self.database, "get_model_price", None),
+                    source="whatsapp",
+                )
+            except (WhatsAppAgentChatError, VoiceNoteError, ValueError) as exc:
+                print(f"WhatsApp voice note for user {self.user_id} could not be transcribed: {exc}", flush=True)
+            if not spoken:
+                reply = self._recover(
+                    build_situation(
+                        "unsupported_message",
+                        what_happened="I couldn't make out that voice note.",
+                        can_retry=True,
+                        options=[make_option("retry")],
+                    ),
+                    [],
+                )
+                message_id = self._send_owner_text(reply)
+                return {
+                    "type": "owner",
+                    "action": "agent_chat_reply",
+                    "outcome": "voice_note_unreadable",
+                    "reply_text": reply,
+                    "message_id": message_id,
+                }
+            text = spoken
+            voice_note = True
+
         # A question the conversation is waiting on - which calendars to read -
         # is answered before anything else, by a tap or by words, and then the
         # question that was interrupted is picked straight back up.
@@ -2017,6 +2075,7 @@ class WhatsAppAgentChat:
                     source_message_id=source_message_id,
                     confirmed_call=pending_call if answer == "yes" else None,
                     declined_call=pending_call if answer == "no" else None,
+                    voice=voice_note,
                 )
         if pending_disconnect and not interactive_id:
             # A plain yes or no settles a held disconnect here. Anything with
@@ -2035,11 +2094,11 @@ class WhatsAppAgentChat:
         # request instead of asking the question again. The question stays
         # open, so a tap on the picker still works afterwards.
 
-        if not text or (kind not in {"", "text", "button", "interactive"} and not photo):
+        if not text or (kind not in {"", "text", "button", "interactive"} and not photo and not voice_note):
             reply = self._recover(
                 build_situation(
                     "unsupported_message",
-                    what_happened="I can only read text messages on WhatsApp so far.",
+                    what_happened="I can read text, photos and voice notes on WhatsApp so far.",
                 ),
                 [],
             )
@@ -2066,14 +2125,14 @@ class WhatsAppAgentChat:
                     "question": normalize_text(pending_choice.get("question")),
                     "calendars": [normalize_text(e.get("label")) or normalize_text(e.get("id")) for e in _pending_calendars(pending_choice)],
                 }
-            return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question, photo=photo)
+            return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question, photo=photo, voice=voice_note)
 
         history = self.database.list_recent_whatsapp_agent_messages(
             user_id=self.user_id,
             limit=AGENT_CHAT_HISTORY_LIMIT,
         )
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo))
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo, voice=voice_note))
         active_proposal = self.database.get_whatsapp_agent_active_proposal(user_id=self.user_id)
 
         turn_payload: dict[str, Any] = {

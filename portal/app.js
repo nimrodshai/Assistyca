@@ -1388,6 +1388,27 @@ const AGENT_PHOTO_MAX_EDGE = 1600;
 const AGENT_PHOTO_THUMBNAIL_EDGE = 360;
 const AGENT_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const AGENT_PHOTO_DEFAULT_TEXT = "Have a look at this photo.";
+// A voice note: recorded in the browser, written down by the server, and put
+// in the composer for the person to read before they send it.
+let agentVoiceRecorder = null;
+let agentVoiceStream = null;
+let agentVoiceChunks = [];
+let agentVoiceStartedAt = 0;
+let agentVoiceTimerId = 0;
+let agentVoiceDiscard = false;
+let agentVoiceTranscribing = false;
+const AGENT_VOICE_MAX_SECONDS = 120;
+const AGENT_VOICE_MIN_SECONDS = 0.6;
+const AGENT_VOICE_MIN_BYTES = 600;
+// What browsers can record into, best first. Safari has no WebM and records
+// into MP4; Chrome and Firefox record Opus in WebM or Ogg.
+const AGENT_VOICE_MIME_CANDIDATES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+  "audio/ogg;codecs=opus",
+  "audio/ogg",
+];
 let agentAttachSourceMenuOpen = false;
 let agentAttachSourceMenuMode = "options";
 let featureActivationBusy = false;
@@ -1489,6 +1510,11 @@ const elements = {
   agentPhotoAttachmentImage: document.querySelector("#agentPhotoAttachmentImage"),
   agentPhotoAttachmentName: document.querySelector("#agentPhotoAttachmentName"),
   agentPhotoAttachmentRemove: document.querySelector("#agentPhotoAttachmentRemove"),
+  agentVoiceButton: document.querySelector("#agentVoiceButton"),
+  agentVoiceIndicator: document.querySelector("#agentVoiceIndicator"),
+  agentVoiceIndicatorText: document.querySelector("#agentVoiceIndicatorText"),
+  agentVoiceTimer: document.querySelector("#agentVoiceTimer"),
+  agentVoiceCancelButton: document.querySelector("#agentVoiceCancelButton"),
   agentProposalCard: document.querySelector("#agentProposalCard"),
   agentHelperCount: document.querySelector("#agentHelperCount"),
   agentHelperList: document.querySelector("#agentHelperList"),
@@ -26351,6 +26377,7 @@ function updateAgentWorkspace() {
   if (elements.agentComposerButton) {
     elements.agentComposerButton.disabled = agentTurnBusy;
   }
+  renderAgentVoiceState();
 }
 
 function applyAgentScheduledMessageRevision(proposal, changes = {}) {
@@ -29446,6 +29473,225 @@ function handleAgentPhotoFileChange(event) {
   if (file) {
     void attachAgentPhoto(file);
   }
+}
+
+function isAgentVoiceRecording() {
+  return Boolean(agentVoiceRecorder) && agentVoiceRecorder.state !== "inactive";
+}
+
+function isAgentVoiceSupported() {
+  return Boolean(
+    window.isSecureContext
+    && navigator.mediaDevices
+    && typeof navigator.mediaDevices.getUserMedia === "function"
+    && typeof window.MediaRecorder === "function",
+  );
+}
+
+function pickAgentVoiceMimeType() {
+  if (typeof MediaRecorder.isTypeSupported !== "function") {
+    return "";
+  }
+  return AGENT_VOICE_MIME_CANDIDATES.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+}
+
+function formatAgentVoiceClock(seconds) {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+function renderAgentVoiceState() {
+  const recording = isAgentVoiceRecording();
+  const busy = recording || agentVoiceTranscribing;
+  const form = elements.agentComposerForm;
+  form?.classList.toggle("is-recording", recording);
+  form?.classList.toggle("is-transcribing", agentVoiceTranscribing);
+  if (elements.agentVoiceIndicator) {
+    elements.agentVoiceIndicator.hidden = !busy;
+  }
+  if (elements.agentVoiceIndicatorText) {
+    elements.agentVoiceIndicatorText.textContent = agentVoiceTranscribing ? "Writing it down…" : "Recording…";
+  }
+  if (elements.agentVoiceTimer) {
+    const elapsed = recording ? (Date.now() - agentVoiceStartedAt) / 1000 : 0;
+    elements.agentVoiceTimer.textContent = recording ? formatAgentVoiceClock(elapsed) : "";
+    elements.agentVoiceTimer.hidden = !recording;
+  }
+  if (elements.agentVoiceCancelButton) {
+    elements.agentVoiceCancelButton.hidden = !recording;
+  }
+  if (elements.agentVoiceButton) {
+    elements.agentVoiceButton.disabled = agentTurnBusy || agentVoiceTranscribing;
+    elements.agentVoiceButton.setAttribute("aria-pressed", String(recording));
+    const label = recording ? "Stop and write it down" : "Record a voice note";
+    elements.agentVoiceButton.setAttribute("aria-label", label);
+    elements.agentVoiceButton.title = label;
+  }
+  if (elements.agentComposerButton) {
+    elements.agentComposerButton.disabled = agentTurnBusy || busy;
+  }
+  if (elements.agentAttachSourceButton) {
+    elements.agentAttachSourceButton.disabled = busy;
+  }
+}
+
+async function startAgentVoiceRecording() {
+  if (isAgentVoiceRecording() || agentVoiceTranscribing || agentTurnBusy) {
+    return;
+  }
+  if (!isAgentVoiceSupported()) {
+    setStatus("Voice notes need a browser with microphone access on a secure (https) page.");
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    const refused = /notallowed|permission|denied|security/i.test(`${error?.name || ""} ${error?.message || ""}`);
+    setStatus(refused
+      ? "Microphone access was refused. Allow it in the browser to record a voice note."
+      : "No microphone was found to record with.");
+    return;
+  }
+  const mimeType = pickAgentVoiceMimeType();
+  let recorder;
+  try {
+    recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  } catch {
+    stream.getTracks().forEach((track) => track.stop());
+    setStatus("This browser cannot record audio.");
+    return;
+  }
+  setAgentAttachSourceMenuOpen(false);
+  agentVoiceStream = stream;
+  agentVoiceRecorder = recorder;
+  agentVoiceChunks = [];
+  agentVoiceDiscard = false;
+  agentVoiceStartedAt = Date.now();
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data && event.data.size > 0) {
+      agentVoiceChunks.push(event.data);
+    }
+  });
+  recorder.addEventListener("stop", () => {
+    void finishAgentVoiceRecording(recorder);
+  });
+  recorder.addEventListener("error", () => {
+    agentVoiceDiscard = true;
+    setStatus("The recording stopped unexpectedly. Try again.");
+  });
+  recorder.start();
+  window.clearInterval(agentVoiceTimerId);
+  agentVoiceTimerId = window.setInterval(() => {
+    if (!isAgentVoiceRecording()) {
+      window.clearInterval(agentVoiceTimerId);
+      return;
+    }
+    renderAgentVoiceState();
+    if ((Date.now() - agentVoiceStartedAt) / 1000 >= AGENT_VOICE_MAX_SECONDS) {
+      setStatus(`Voice notes stop at ${Math.round(AGENT_VOICE_MAX_SECONDS / 60)} minutes. Writing this one down.`);
+      stopAgentVoiceRecording();
+    }
+  }, 250);
+  renderAgentVoiceState();
+  setStatus("Recording. Tap the square when you're done.");
+}
+
+function stopAgentVoiceRecording(options = {}) {
+  agentVoiceDiscard = Boolean(options.discard);
+  const recorder = agentVoiceRecorder;
+  if (recorder && recorder.state !== "inactive") {
+    try {
+      recorder.stop();
+      return;
+    } catch {
+      // Fall through and clean up as if it had stopped.
+    }
+  }
+  void finishAgentVoiceRecording(recorder);
+}
+
+function releaseAgentVoiceRecorder() {
+  window.clearInterval(agentVoiceTimerId);
+  agentVoiceTimerId = 0;
+  agentVoiceStream?.getTracks().forEach((track) => track.stop());
+  agentVoiceStream = null;
+  agentVoiceRecorder = null;
+}
+
+async function finishAgentVoiceRecording(recorder) {
+  if (recorder && recorder !== agentVoiceRecorder) {
+    return;
+  }
+  const durationSeconds = agentVoiceStartedAt ? (Date.now() - agentVoiceStartedAt) / 1000 : 0;
+  const mimeType = String(recorder?.mimeType || agentVoiceChunks[0]?.type || "audio/webm");
+  const chunks = agentVoiceChunks;
+  const discard = agentVoiceDiscard;
+  agentVoiceChunks = [];
+  agentVoiceDiscard = false;
+  releaseAgentVoiceRecorder();
+  renderAgentVoiceState();
+  if (discard) {
+    setStatus("Recording discarded.");
+    elements.agentComposerInput?.focus();
+    return;
+  }
+  const blob = new Blob(chunks, { type: mimeType });
+  if (blob.size < AGENT_VOICE_MIN_BYTES || durationSeconds < AGENT_VOICE_MIN_SECONDS) {
+    setStatus("That was too short to make out. Hold on a moment longer before stopping.");
+    elements.agentComposerInput?.focus();
+    return;
+  }
+  await transcribeAgentVoiceNote(blob, durationSeconds);
+}
+
+async function transcribeAgentVoiceNote(blob, durationSeconds) {
+  agentVoiceTranscribing = true;
+  renderAgentVoiceState();
+  setStatus("Writing down what you said…");
+  try {
+    const dataUrl = await readAgentFileAsDataUrl(blob);
+    const response = await apiRequest("/api/agent/transcribe", {
+      method: "POST",
+      timeoutMs: 75000,
+      body: {
+        voiceNote: {
+          dataUrl,
+          durationSeconds: Math.round(durationSeconds * 10) / 10,
+          fileName: "voice-note",
+        },
+      },
+    });
+    const text = String(response?.text || "").trim();
+    if (!text) {
+      throw new Error("The recording had no words in it.");
+    }
+    agentVoiceTranscribing = false;
+    renderAgentVoiceState();
+    const input = elements.agentComposerInput;
+    if (input) {
+      const existing = String(input.value || "");
+      const needsSpace = existing && !/\s$/.test(existing);
+      input.setSelectionRange?.(existing.length, existing.length);
+      insertAgentComposerText(input, `${needsSpace ? " " : ""}${text}`);
+      resizeAgentComposerInput();
+      input.focus();
+    }
+    setStatus("Here's what I heard. Fix anything that's off, then send.");
+  } catch (error) {
+    agentVoiceTranscribing = false;
+    renderAgentVoiceState();
+    setStatus(formatApiErrorMessage(error, "I couldn't make out that recording. Try again, or type it instead."));
+    elements.agentComposerInput?.focus();
+  }
+}
+
+function handleAgentVoiceButtonClick() {
+  if (isAgentVoiceRecording()) {
+    stopAgentVoiceRecording();
+    return;
+  }
+  void startAgentVoiceRecording();
 }
 
 function handleAgentComposerDragOver(event) {
@@ -36978,6 +37224,24 @@ function bindEvents() {
       elements.agentComposerInput?.focus();
     });
   }
+
+  if (elements.agentVoiceButton) {
+    elements.agentVoiceButton.addEventListener("click", handleAgentVoiceButtonClick);
+  }
+
+  if (elements.agentVoiceCancelButton) {
+    elements.agentVoiceCancelButton.addEventListener("click", () => {
+      stopAgentVoiceRecording({ discard: true });
+    });
+  }
+
+  // A page that goes away mid-recording leaves the microphone on until the
+  // tab closes; stopping it here turns the light off with the page.
+  window.addEventListener("pagehide", () => {
+    if (isAgentVoiceRecording()) {
+      stopAgentVoiceRecording({ discard: true });
+    }
+  });
 
   if (elements.agentComposerForm) {
     elements.agentComposerForm.addEventListener("dragover", handleAgentComposerDragOver);

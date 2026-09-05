@@ -516,10 +516,38 @@
                 wrap="soft"
                 placeholder="Message Assistyca…"
               ></textarea>
+              <div id="agentVoiceIndicator" class="agent-voice-indicator" hidden>
+                <button id="agentVoiceCancelButton" class="agent-voice-cancel" type="button" aria-label="Discard recording" title="Discard recording">
+                  <span aria-hidden="true">&times;</span>
+                </button>
+                <span class="agent-voice-dot" aria-hidden="true"></span>
+                <span id="agentVoiceIndicatorText" class="agent-voice-indicator-text" role="status" aria-live="polite">Recording…</span>
+                <span id="agentVoiceTimer" class="agent-voice-timer">0:00</span>
+              </div>
               <span id="agentSourceAttachment" class="agent-source-attachment" hidden></span>
-              <button id="agentComposerButton" class="primary-button" type="submit">
-                Send
-              </button>
+              <div class="agent-composer-actions">
+                <button
+                  id="agentVoiceButton"
+                  class="agent-voice-button"
+                  type="button"
+                  aria-label="Record a voice note"
+                  title="Record a voice note"
+                  aria-pressed="false"
+                >
+                  <svg class="agent-voice-icon-mic" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                    <rect x="9" y="3" width="6" height="11" rx="3" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <path d="M12 18v3" />
+                    <path d="M9 21h6" />
+                  </svg>
+                  <svg class="agent-voice-icon-stop" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                    <rect x="6.5" y="6.5" width="11" height="11" rx="2.2" />
+                  </svg>
+                </button>
+                <button id="agentComposerButton" class="primary-button" type="submit">
+                  Send
+                </button>
+              </div>
             </form>
           </section>
         </div>

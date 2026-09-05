@@ -1676,23 +1676,29 @@ def parse_json_body(body: bytes) -> dict[str, Any]:
 
 
 def extract_message_media(message: dict[str, Any]) -> dict[str, str]:
-    """The picture a message carries, as the id Meta will serve it under.
+    """The picture or recording a message carries, as the id Meta will serve
+    it under.
 
-    Only images for now: they are what a person sends to make a point. The
-    bytes are fetched later, by whoever needs them, never here.
+    Images and audio: a photo makes a point, a voice note is the message
+    spoken instead of typed. The bytes are fetched later, by whoever needs
+    them, never here.
     """
-    if normalize_text(message.get("type")) != "image":
+    kind = normalize_text(message.get("type"))
+    if kind not in {"image", "audio"}:
         return {}
-    image = message.get("image") if isinstance(message.get("image"), dict) else {}
-    media_id = normalize_text(image.get("id"))
+    media = message.get(kind) if isinstance(message.get(kind), dict) else {}
+    media_id = normalize_text(media.get("id"))
     if not media_id:
         return {}
     return {
-        "kind": "image",
+        "kind": kind,
         "id": media_id,
-        "mimeType": normalize_text(image.get("mime_type")),
-        "sha256": normalize_text(image.get("sha256")),
-        "caption": normalize_text(image.get("caption")),
+        "mimeType": normalize_text(media.get("mime_type")),
+        "sha256": normalize_text(media.get("sha256")),
+        "caption": normalize_text(media.get("caption")),
+        # Meta marks a recording made in the chat, as opposed to an audio
+        # file someone forwarded. Both are transcribed the same way.
+        "voice": "true" if bool(media.get("voice")) else "",
     }
 
 

@@ -72,7 +72,7 @@ User-facing copy should say “helper” or “helper agent” before using the 
 - Unreviewed helper blueprints or user-supplied Python and JavaScript.
 - A general OAuth platform for providers outside Gmail in the first complete complex workflow.
 - Shared multi-user workspaces, roles beyond the current client/admin split, or collaborative chat.
-- Voice conversations, file uploads, or image generation.
+- Spoken replies, file uploads, or image generation. (A voice note as input is in scope: it is transcribed and then handled as text; see `docs/agent-turns.md`.)
 - Autonomous purchases or plan upgrades.
 - External delete operations.
 - External write operations that the approved proposal did not name.
