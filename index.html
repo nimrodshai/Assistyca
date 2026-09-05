@@ -400,15 +400,6 @@
         padding: 4.5rem 0 0;
       }
 
-      .label {
-        margin: 0 0 0.8rem;
-        font-size: 0.78rem;
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: var(--teal-deep);
-      }
-
       h2 {
         margin: 0 0 1.1rem;
         font-size: clamp(2rem, 8vw, 3rem);
@@ -425,24 +416,66 @@
         color: transparent;
       }
 
-      /* Things to say: a slanted dark band with frosted pills drifting across */
+      /* The band: a slanted dark strip carrying the headline and two drifting rows */
 
       .say {
-        margin: 3.5rem calc(50% - 50vw) 0;
-        padding: 2.6rem 0;
+        position: relative;
+        margin: 1.5rem calc(50% - 50vw) 0;
+        padding: 3.25rem 0 3rem;
         overflow: hidden;
         transform: skewY(-2.5deg);
         color: #fff;
         background:
-          radial-gradient(40rem 22rem at 85% 0%, rgba(110, 196, 190, 0.38), transparent 60%),
-          radial-gradient(30rem 18rem at 5% 100%, rgba(79, 146, 144, 0.25), transparent 60%),
+          radial-gradient(34rem 20rem at 12% 0%, rgba(110, 196, 190, 0.34), transparent 60%),
+          radial-gradient(30rem 18rem at 95% 100%, rgba(79, 146, 144, 0.28), transparent 60%),
           linear-gradient(165deg, #0b1526 0%, var(--ink) 55%, #14303a 100%);
       }
 
+      .say::before,
+      .say::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent 5%, rgba(142, 209, 203, 0.75) 40%, rgba(142, 209, 203, 0.2) 70%, transparent 95%);
+      }
+
+      .say::before {
+        top: 0;
+      }
+
+      .say::after {
+        bottom: 0;
+        opacity: 0.45;
+      }
+
       .say-inner {
+        transform: skewY(2.5deg);
+      }
+
+      .say-head {
+        width: min(100% - 2.75rem, var(--column));
+        margin: 0 auto 2.25rem;
+      }
+
+      .say h2 {
+        margin: 0;
+        color: #fff;
+        font-size: clamp(2.2rem, 9vw, 3.6rem);
+        max-width: 14ch;
+      }
+
+      .say h2 em {
+        background: linear-gradient(90deg, var(--teal-bright), #d6f3ef);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .say-rows {
         display: grid;
         gap: 0.9rem;
-        transform: skewY(2.5deg);
         -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
         mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
       }
@@ -464,14 +497,16 @@
         display: inline-flex;
         align-items: center;
         gap: 0.65rem;
-        padding: 0.75rem 1.2rem;
+        padding: 0.78rem 1.25rem;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.07);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-        color: rgba(255, 255, 255, 0.92);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.14),
+          0 10px 30px -18px rgba(0, 0, 0, 0.8);
+        color: rgba(255, 255, 255, 0.94);
         font-weight: 500;
-        font-size: 0.95rem;
+        font-size: 0.97rem;
         letter-spacing: -0.005em;
         white-space: nowrap;
       }
@@ -486,8 +521,8 @@
       }
 
       .say-row span.alt {
-        background: rgba(142, 209, 203, 0.14);
-        border-color: rgba(142, 209, 203, 0.3);
+        background: linear-gradient(180deg, rgba(142, 209, 203, 0.22), rgba(142, 209, 203, 0.1));
+        border-color: rgba(142, 209, 203, 0.36);
       }
 
       @keyframes drift {
@@ -708,8 +743,16 @@
         }
 
         .say {
-          margin-top: 4.5rem;
-          padding: 3.4rem 0;
+          margin-top: 0;
+          padding: 4.5rem 0 4rem;
+        }
+
+        .say-head {
+          margin-bottom: 3rem;
+        }
+
+        .say h2 {
+          font-size: 3.6rem;
         }
 
         .say-row span {
@@ -805,13 +848,12 @@
 
     <main>
       <div class="col">
-        <section class="what" aria-labelledby="what-title">
-          <p class="label">No commands</p>
-          <h2 id="what-title">An LLM agent, designed for <em>businesses</em>.</h2>
-        </section>
-
-        <div class="say" aria-hidden="true">
+        <section class="say" aria-labelledby="what-title">
           <div class="say-inner">
+            <div class="say-head">
+              <h2 id="what-title">An LLM agent, designed for <em>businesses</em>.</h2>
+            </div>
+            <div class="say-rows" aria-hidden="true">
           <div class="say-row">
             <span>Did the plumber ever send the invoice?</span>
             <span class="alt">What's on tomorrow?</span>
@@ -840,11 +882,11 @@
             <span class="alt">Tell me when the venue posts new dates</span>
             <span>Did the deposit come in?</span>
           </div>
+            </div>
           </div>
-        </div>
+        </section>
 
         <section class="trust" aria-labelledby="trust-title">
-          <p class="label">Built for trust</p>
           <h2 id="trust-title">It asks before it acts.</h2>
           <ul class="tiles">
             <li>
