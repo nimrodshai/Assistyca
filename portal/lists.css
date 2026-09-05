@@ -290,6 +290,8 @@ input[type="text"]:focus {
 }
 
 .list-card-name {
+  grid-column: 1;
+  grid-row: 1;
   font-weight: 600;
   font-size: 1.05rem;
   overflow: hidden;
@@ -299,11 +301,13 @@ input[type="text"]:focus {
 
 .list-card-meta {
   grid-column: 1;
+  grid-row: 2;
   color: var(--muted);
   font-size: 0.9rem;
 }
 
 .list-card-arrow {
+  grid-column: 2;
   grid-row: 1 / span 2;
   color: var(--muted);
   font-size: 1.2rem;
@@ -345,9 +349,54 @@ input[type="text"]:focus {
 
 .list-head-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.list-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 6;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.menu-item.danger {
+  color: var(--warn);
 }
 
 .list-name {
@@ -471,12 +520,12 @@ input[type="text"]:focus {
 
 .tools {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  justify-content: flex-end;
+  padding: 0 4px;
 }
 
-.tools .button {
-  flex: 1 1 45%;
+.tools:empty {
+  display: none;
 }
 
 .share h3 {
@@ -554,12 +603,12 @@ input[type="text"]:focus {
   transform: translateX(-50%) translateY(0);
 }
 
+.topbar-spacer {
+  width: 44px;
+}
+
 @media (min-width: 720px) {
   .shell {
     padding-top: 28px;
-  }
-
-  .tools .button {
-    flex: 0 1 auto;
   }
 }

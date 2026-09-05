@@ -8,7 +8,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
     <script src="/portal/theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="/portal/lists.css?v=1" />
+    <link rel="stylesheet" href="/portal/lists.css?v=2" />
   </head>
   <body data-view="loading">
     <header class="topbar">
@@ -16,7 +16,7 @@
         <span aria-hidden="true">&#8592;</span>
       </button>
       <h1 id="pageTitle" class="topbar-title">Lists</h1>
-      <a class="topbar-link" href="/portal/">Chat</a>
+      <span class="topbar-spacer" aria-hidden="true"></span>
     </header>
 
     <main id="app" class="shell">
@@ -65,7 +65,19 @@
         <div class="card list-head">
           <div class="list-head-row">
             <h2 id="listName" class="list-name"></h2>
-            <button id="renameButton" class="text-button" type="button">Rename</button>
+            <div class="list-menu">
+              <button id="listMenuButton" class="icon-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="List options">
+                <span aria-hidden="true">&#8943;</span>
+              </button>
+              <div id="listMenu" class="menu is-hidden" role="menu">
+                <button id="renameButton" class="menu-item" type="button" role="menuitem">Rename</button>
+                <button id="shareToggleButton" class="menu-item" type="button" role="menuitem">Share this list</button>
+                <button id="shareOffButton" class="menu-item is-hidden" type="button" role="menuitem">Stop sharing</button>
+                <button id="archiveButton" class="menu-item" type="button" role="menuitem">Archive</button>
+                <button id="restoreButton" class="menu-item is-hidden" type="button" role="menuitem">Restore</button>
+                <button id="deleteButton" class="menu-item danger" type="button" role="menuitem">Delete for good</button>
+              </div>
+            </div>
           </div>
           <form id="renameForm" class="rename-form is-hidden" autocomplete="off">
             <input id="renameInput" type="text" maxlength="120" required />
@@ -83,12 +95,8 @@
           <button class="button primary" type="submit">Add</button>
         </form>
 
-        <div class="card tools">
-          <button id="clearDoneButton" class="button is-hidden" type="button">Clear ticked items</button>
-          <button id="shareToggleButton" class="button" type="button">Share this list</button>
-          <button id="archiveButton" class="button" type="button">Archive</button>
-          <button id="restoreButton" class="button is-hidden" type="button">Restore</button>
-          <button id="deleteButton" class="button danger" type="button">Delete for good</button>
+        <div class="tools">
+          <button id="clearDoneButton" class="text-button is-hidden" type="button">Clear ticked items</button>
         </div>
 
         <section id="sharePanel" class="card share is-hidden" aria-labelledby="shareTitle">
@@ -104,12 +112,11 @@
             <button id="copyCsvButton" class="text-button" type="button">Copy CSV link</button>
           </div>
           <p class="share-help">The JSON and CSV links are for other apps: a spreadsheet, an automation, a shortcut on your phone.</p>
-          <button id="shareOffButton" class="text-button danger" type="button">Stop sharing</button>
         </section>
       </section>
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/portal/lists.js?v=1"></script>
+    <script src="/portal/lists.js?v=2"></script>
   </body>
 </html>

@@ -48,8 +48,31 @@
     copyJsonButton: $("copyJsonButton"),
     copyCsvButton: $("copyCsvButton"),
     shareOffButton: $("shareOffButton"),
+    listMenuButton: $("listMenuButton"),
+    listMenu: $("listMenu"),
     toast: $("toast"),
   };
+
+  function setMenuOpen(open) {
+    elements.listMenu.classList.toggle("is-hidden", !open);
+    elements.listMenuButton.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  elements.listMenuButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setMenuOpen(elements.listMenu.classList.contains("is-hidden"));
+  });
+  document.addEventListener("click", (event) => {
+    if (!elements.listMenu.contains(event.target)) {
+      setMenuOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setMenuOpen(false);
+    }
+  });
+  elements.listMenu.addEventListener("click", () => setMenuOpen(false));
 
   let toastTimer = null;
   function toast(message) {
@@ -238,11 +261,12 @@
     elements.restoreButton.classList.toggle("is-hidden", !list.archived);
     elements.addForm.classList.toggle("is-hidden", Boolean(list.archived));
     elements.renameForm.classList.add("is-hidden");
-    elements.renameButton.classList.remove("is-hidden");
+    setMenuOpen(false);
 
     const shared = Boolean(list.shared && list.shareUrl);
     elements.sharePanel.classList.toggle("is-hidden", !shared);
     elements.shareToggleButton.classList.toggle("is-hidden", shared);
+    elements.shareOffButton.classList.toggle("is-hidden", !shared);
     if (shared) {
       elements.shareUrl.value = list.shareUrl;
       elements.openShareLink.href = list.shareUrl;
@@ -390,7 +414,6 @@
   elements.renameButton.addEventListener("click", () => {
     elements.renameInput.value = state.current?.name || "";
     elements.renameForm.classList.remove("is-hidden");
-    elements.renameButton.classList.add("is-hidden");
     elements.renameInput.focus();
     elements.renameInput.select();
   });
