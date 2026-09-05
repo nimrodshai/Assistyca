@@ -195,13 +195,29 @@
       row.append(bullet);
     }
 
+    const body = document.createElement("div");
+    body.className = "item-body";
     const text = document.createElement("button");
     text.type = "button";
     text.className = "item-text";
     text.textContent = item.text;
     text.title = "Tap to edit";
     text.addEventListener("click", () => startItemEdit(row, item));
-    row.append(text);
+    body.append(text);
+
+    if (list.kind === "todo") {
+      // The deadline sits under the words; tapping it opens the phone's
+      // own date picker, so there is no calendar to build here.
+      const due = document.createElement("button");
+      due.type = "button";
+      const state = dueState(item.dueOn);
+      due.className = `item-due${state ? ` is-${state}` : ""}`;
+      due.textContent = item.dueOn ? describeDue(item.dueOn) : "Add a due date";
+      due.setAttribute("aria-label", item.dueOn ? `Due ${item.dueOn}. Change due date` : "Add a due date");
+      due.addEventListener("click", () => startDueEdit(row, item));
+      body.append(due);
+    }
+    row.append(body);
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -211,6 +227,72 @@
     remove.addEventListener("click", () => void removeItem(item.id));
     row.append(remove);
     return row;
+  }
+
+  function localToday() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+
+  function parseDue(value) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+  }
+
+  function dueState(value) {
+    const due = parseDue(value);
+    if (!due) return "";
+    const days = Math.round((due - localToday()) / 86400000);
+    if (days < 0) return "overdue";
+    if (days <= 1) return "soon";
+    return "later";
+  }
+
+  function describeDue(value) {
+    const due = parseDue(value);
+    if (!due) return "";
+    const days = Math.round((due - localToday()) / 86400000);
+    if (days === 0) return "Due today";
+    if (days === 1) return "Due tomorrow";
+    if (days < 0) return `${-days} day${-days === 1 ? "" : "s"} overdue`;
+    if (days < 7) return `Due ${due.toLocaleDateString(undefined, { weekday: "long" })}`;
+    return `Due ${due.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}`;
+  }
+
+  function startDueEdit(row, item) {
+    const existing = row.querySelector(".due-editor");
+    if (existing) {
+      existing.remove();
+      return;
+    }
+    const editor = document.createElement("div");
+    editor.className = "due-editor";
+    const input = document.createElement("input");
+    input.type = "date";
+    input.value = item.dueOn || "";
+    input.setAttribute("aria-label", "Due date");
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "button primary";
+    save.textContent = "Save";
+    save.addEventListener("click", () => void updateItem(item.id, { dueOn: input.value || "" }));
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "text-button";
+    clear.textContent = item.dueOn ? "Remove date" : "Cancel";
+    clear.addEventListener("click", () => {
+      if (item.dueOn) {
+        void updateItem(item.id, { dueOn: "" });
+      } else {
+        editor.remove();
+      }
+    });
+    input.addEventListener("change", () => {
+      if (input.value) void updateItem(item.id, { dueOn: input.value });
+    });
+    editor.append(input, save, clear);
+    row.append(editor);
+    input.focus();
   }
 
   function startItemEdit(row, item) {

@@ -40,6 +40,23 @@ session, it is `/lists/open/<token>?list=<id>`, a signed sign-in for this
 account that lasts 48 hours and is spent on first use (the server revokes it
 and sets a normal session cookie, then redirects to the list).
 
+## Due dates and the morning nudge
+
+A to-do item may carry `dueOn` (YYYY-MM-DD); a general list never does.
+From chat, `update_list` takes `due` on `add` and on the `set_due` action
+(null clears it); the model works the date out from `CONTEXT.today` and
+`todayWeekday`. On the page, the deadline sits under the item and opens the
+phone's own date picker. Reminders and the share output say the date too.
+
+`packages/infrastructure/list_due_nudges.py` runs beside the scheduler.
+Once a day, after 08:00 where the person is (`PORTAL_LIST_NUDGE_HOUR`; the
+timezone comes from their WhatsApp number, else the last message they
+scheduled, else UTC), every account with an unticked dated item that is due
+today, due tomorrow, or overdue gets one message listing them. It is queued
+as a scheduled `send_message`, so it reaches WhatsApp when that is set up
+and the in-app feed otherwise. `account_list_nudges` records the day so a
+second poll never sends it twice. `PORTAL_LIST_NUDGES_ENABLED=0` turns it off.
+
 A reminder about a list is `schedule_message` with `list_name`. The payload
 carries `listId`, never the items: `ScheduledActionScheduler` reads the list
 when the message goes out and appends what is still on it.

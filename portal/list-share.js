@@ -25,10 +25,19 @@
       bullet.className = "item-bullet";
       row.append(bullet);
     }
+    const body = document.createElement("div");
+    body.className = "item-body";
     const text = document.createElement("span");
     text.className = "item-text";
     text.textContent = item.text;
-    row.append(text);
+    body.append(text);
+    if (kind === "todo" && item.dueOn) {
+      const due = document.createElement("span");
+      due.className = "item-due";
+      due.textContent = `Due ${item.dueOn}`;
+      body.append(due);
+    }
+    row.append(body);
     return row;
   }
 

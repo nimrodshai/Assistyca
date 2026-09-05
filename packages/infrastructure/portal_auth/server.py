@@ -185,6 +185,8 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_INSTRUCTIONS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
+from packages.infrastructure.list_due_nudges import ListDueNudger
+from packages.infrastructure.list_due_nudges import load_list_due_nudge_config
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
@@ -12216,6 +12218,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 raw_items = payload.get("items") if isinstance(payload.get("items"), list) else [payload.get("text")]
                 outcome = self.database.add_account_list_items(
                     user_id=user_id, list_id=list_id, texts=[normalize_text(item) for item in raw_items],
+                    due_on=normalize_text(payload.get("dueOn")) or None,
                 )
                 json_response(self, HTTPStatus.OK, {
                     "ok": True,
@@ -12240,6 +12243,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     text=normalize_text(payload.get("text")) if "text" in payload else None,
                     done=bool(payload.get("done")) if "done" in payload else None,
                     position=int(payload.get("position")) if isinstance(payload.get("position"), int) else None,
+                    **({"due_on": normalize_text(payload.get("dueOn")) or None} if "dueOn" in payload else {}),
                 )
                 if item is None:
                     json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "item_not_found", "message": "That item is not on the list."})
@@ -12292,15 +12296,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if record is None:
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "list_not_found", "message": "This list is not shared, or the link has been turned off."})
             return
-        items = [{"text": item["text"], "done": bool(item["done"])} for item in record.get("items") or []]
-        if record.get("kind") != "todo":
+        is_todo = record.get("kind") == "todo"
+        items = [{"text": item["text"], "done": bool(item["done"]), "dueOn": str(item.get("dueOn") or "")} for item in record.get("items") or []]
+        if not is_todo:
             for entry in items:
                 entry.pop("done", None)
+                entry.pop("dueOn", None)
         if as_csv:
-            lines = ["text,done"] if record.get("kind") == "todo" else ["text"]
+            lines = ["text,done,due"] if is_todo else ["text"]
             for entry in items:
                 cell = '"' + str(entry["text"]).replace('"', '""') + '"'
-                lines.append(f"{cell},{'true' if entry.get('done') else 'false'}" if record.get("kind") == "todo" else cell)
+                lines.append(f"{cell},{'true' if entry.get('done') else 'false'},{entry.get('dueOn') or ''}" if is_todo else cell)
             body = ("\n".join(lines) + "\n").encode("utf-8")
             self.send_response(HTTPStatus.OK)
             send_cors_headers(self)
@@ -15058,6 +15064,23 @@ def main() -> int:
     else:
         print("Scheduled actions are disabled.", flush=True)
 
+    list_nudge_config = load_list_due_nudge_config()
+    list_nudge_stop_event = threading.Event()
+    list_nudge_thread: threading.Thread | None = None
+    if list_nudge_config.enabled and scheduled_action_config.enabled:
+        list_nudger = ListDueNudger(server.database, config=list_nudge_config)  # type: ignore[attr-defined]
+        list_nudge_thread = threading.Thread(
+            target=list_nudger.serve_forever,
+            args=(list_nudge_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="list-due-nudger",
+        )
+        list_nudge_thread.start()
+        print(f"To-do due-date nudges enabled. Sent after {list_nudge_config.hour:02d}:00 local time.", flush=True)
+    else:
+        print("To-do due-date nudges are disabled.", flush=True)
+
     source_action_config = load_source_action_config()
     source_action_stop_event = threading.Event()
     source_action_thread: threading.Thread | None = None
@@ -15132,6 +15155,9 @@ def main() -> int:
         scheduled_action_stop_event.set()
         if scheduled_action_thread is not None:
             scheduled_action_thread.join(timeout=1.0)
+        list_nudge_stop_event.set()
+        if list_nudge_thread is not None:
+            list_nudge_thread.join(timeout=1.0)
         source_action_stop_event.set()
         if source_action_thread is not None:
             source_action_thread.join(timeout=1.0)

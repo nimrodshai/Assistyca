@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from datetime import datetime
 from datetime import timezone
 import os
@@ -8,6 +9,7 @@ import threading
 from typing import Any
 from typing import Callable
 
+from packages.infrastructure.list_due_nudges import describe_due
 from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
@@ -85,8 +87,10 @@ def describe_list_for_message(record: dict[str, Any], *, limit: int = 40) -> str
     if not items:
         return f"{name}: nothing left on it." if record.get("kind") == "todo" else f"{name}: empty."
     lines = [f"{name}:"]
+    today = date.today()
     for item in items[:limit]:
-        lines.append(f"• {normalize_text(item.get('text'))}")
+        due = describe_due(item.get("dueOn"), today) if record.get("kind") == "todo" else ""
+        lines.append(f"• {normalize_text(item.get('text'))}{f' ({due})' if due else ''}")
     if len(items) > limit:
         lines.append(f"…and {len(items) - limit} more")
     return "\n".join(lines)

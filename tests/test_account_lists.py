@@ -38,6 +38,10 @@ from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.scheduled_actions import ScheduledActionConfig
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import describe_list_for_message
+from packages.infrastructure.list_due_nudges import ListDueNudgeConfig
+from packages.infrastructure.list_due_nudges import ListDueNudger
+from packages.infrastructure.list_due_nudges import describe_due
+from datetime import date
 
 LINK = "https://assistyca.test/lists#/list/{id}"
 
@@ -91,6 +95,20 @@ class ListStoreTests(unittest.TestCase):
         self.assertNotEqual(again["shareToken"], token)
         self.database.update_account_list(user_id=self.user_id, list_id=record["id"], archived=True)
         self.assertIsNone(self.database.get_account_list_by_share_token(again["shareToken"]))
+
+    def test_a_todo_item_keeps_a_due_date_and_a_general_list_does_not(self) -> None:
+        todo = self.database.create_account_list(user_id=self.user_id, name="Admin", kind="todo")
+        added = self.database.add_account_list_items(user_id=self.user_id, list_id=todo["id"], texts=["VAT return"], due_on="2026-09-15")
+        self.assertEqual(added["added"][0]["dueOn"], "2026-09-15")
+        item_id = added["added"][0]["id"]
+        self.assertEqual(self.database.update_account_list_item(user_id=self.user_id, list_id=todo["id"], item_id=item_id, due_on="")["dueOn"], "")
+        with self.assertRaises(ValueError):
+            self.database.update_account_list_item(user_id=self.user_id, list_id=todo["id"], item_id=item_id, due_on="next friday")
+
+        general = self.database.create_account_list(user_id=self.user_id, name="Shopping")
+        added = self.database.add_account_list_items(user_id=self.user_id, list_id=general["id"], texts=["Milk"], due_on="2026-09-15")
+        self.assertEqual(added["added"][0]["dueOn"], "")
+        self.assertEqual(self.database.list_open_due_items(user_id=self.user_id), [])
 
     def test_another_account_cannot_see_or_touch_the_list(self) -> None:
         self.database.register_user("other@example.com")
@@ -242,6 +260,22 @@ class ListToolTests(unittest.TestCase):
         self.assertEqual(ticked["checked"], 1)
         self.assertEqual(ticked["list"]["openCount"], 0)
 
+    def test_a_deadline_rides_with_the_item_and_the_weekday_is_in_context(self) -> None:
+        self.database.create_account_list(user_id=self.user_id, name="Admin", kind="todo", items=["Call bank"])
+        model = ScriptedModel([
+            _model_round(_call("update_list", "c1", list_name="admin", action="add", items=["Renew insurance"], due="2026-09-11", new_name=None)),
+            _model_round(_call("update_list", "c2", list_name="admin", action="set_due", items=["bank"], due="2026-09-08", new_name=None)),
+            _model_round(reply=_reply("Added, due Friday; the bank call is due Tuesday.")),
+        ])
+        run_agent_loop(context=self._context(), call_model=model, user_message="add renew insurance by friday, and the bank call by tuesday", conversation=[], today="2026-09-05")
+        self.assertIn('"todayWeekday":"Saturday"', model.inputs[0][0]["content"])
+        added = json.loads(model.inputs[1][-1]["output"])
+        self.assertEqual(added["dueOn"], "2026-09-11")
+        dated = json.loads(model.inputs[2][-1]["output"])
+        self.assertEqual(dated["dueSet"], 1)
+        by_text = {item["text"]: item.get("dueOn") for item in dated["list"]["items"]}
+        self.assertEqual(by_text, {"Call bank": "2026-09-08", "Renew insurance": "2026-09-11"})
+
     def test_deleting_from_chat_puts_the_list_away_not_gone(self) -> None:
         record = self.database.create_account_list(user_id=self.user_id, name="Old")
         model = ScriptedModel([
@@ -307,6 +341,49 @@ class ListReminderTests(unittest.TestCase):
         self.assertIn("• Bread", body)
         self.assertNotIn("Eggs", body)
         self.assertEqual(self.database.get_scheduled_action(int(action["id"]))["status"], "sent")
+
+    def test_the_morning_nudge_goes_once_and_only_after_the_hour(self) -> None:
+        record = self.database.create_account_list(user_id=self.user_id, name="Admin", kind="todo")
+        self.database.add_account_list_items(user_id=self.user_id, list_id=record["id"], texts=["VAT return"], due_on="2026-09-05")
+        self.database.add_account_list_items(user_id=self.user_id, list_id=record["id"], texts=["Renew insurance"], due_on="2026-09-03")
+        self.database.add_account_list_items(user_id=self.user_id, list_id=record["id"], texts=["Book courier"], due_on="2026-09-06")
+        self.database.add_account_list_items(user_id=self.user_id, list_id=record["id"], texts=["Far away"], due_on="2026-10-01")
+        nudger = ListDueNudger(self.database, config=ListDueNudgeConfig(hour=8, poll_seconds=60))
+
+        # 07:30 UTC: nothing yet, the account has no timezone so UTC stands in.
+        early = nudger.run_pending(now=datetime(2026, 9, 5, 7, 30, tzinfo=timezone.utc))
+        self.assertEqual(early["queued"], 0)
+
+        sent = nudger.run_pending(now=datetime(2026, 9, 5, 8, 5, tzinfo=timezone.utc))
+        self.assertEqual(sent["queued"], 1)
+        actions = self.database.list_scheduled_actions_for_user(self.user_id, limit=5)
+        self.assertEqual(len(actions), 1)
+        text = actions[0]["payload"]["messageText"]
+        self.assertIn("Due today:\n• VAT return (Admin)", text)
+        self.assertIn("Due tomorrow:\n• Book courier (Admin)", text)
+        self.assertIn("Overdue:\n• Renew insurance (Admin) - 2 days overdue", text)
+        self.assertNotIn("Far away", text)
+        self.assertEqual(actions[0]["channel"], "portal")
+
+        again = nudger.run_pending(now=datetime(2026, 9, 5, 9, 0, tzinfo=timezone.utc))
+        self.assertEqual((again["queued"], again["skipped"]), (0, 1))
+        self.assertEqual(len(self.database.list_scheduled_actions_for_user(self.user_id, limit=5)), 1)
+
+    def test_a_ticked_item_is_never_nudged_about(self) -> None:
+        record = self.database.create_account_list(user_id=self.user_id, name="Admin", kind="todo")
+        added = self.database.add_account_list_items(user_id=self.user_id, list_id=record["id"], texts=["VAT return"], due_on="2026-09-01")
+        self.database.set_account_list_items_done(user_id=self.user_id, list_id=record["id"], item_ids=[added["added"][0]["id"]], done=True)
+        summary = ListDueNudger(self.database, config=ListDueNudgeConfig(hour=0)).run_pending(now=datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc))
+        self.assertEqual(summary["queued"], 0)
+
+    def test_due_dates_are_said_in_words(self) -> None:
+        today = date(2026, 9, 5)
+        self.assertEqual(describe_due("2026-09-05", today), "due today")
+        self.assertEqual(describe_due("2026-09-06", today), "due tomorrow")
+        self.assertEqual(describe_due("2026-09-08", today), "due Tuesday")
+        self.assertEqual(describe_due("2026-09-30", today), "due Wed 30 Sep")
+        self.assertEqual(describe_due("2026-09-04", today), "1 day overdue")
+        self.assertEqual(describe_due("", today), "")
 
     def test_a_list_with_nothing_left_says_so(self) -> None:
         self.assertEqual(describe_list_for_message({"name": "Today", "kind": "todo", "items": [{"text": "x", "done": True}]}), "Today: nothing left on it.")
@@ -399,6 +476,17 @@ class ListApiTests(unittest.TestCase):
         status, _ = self._request("GET", f"/api/lists/{list_id}")
         self.assertEqual(status, 404)
 
+    def test_a_due_date_is_set_and_cleared_through_the_api(self) -> None:
+        _, created = self._request("POST", "/api/lists", {"name": "Admin", "kind": "todo", "items": []})
+        list_id = created["list"]["id"]
+        _, added = self._request("POST", f"/api/lists/{list_id}/items", {"items": ["VAT return"], "dueOn": "2026-09-15"})
+        item = added["added"][0]
+        self.assertEqual(item["dueOn"], "2026-09-15")
+        _, cleared = self._request("POST", f"/api/lists/{list_id}/items/{item['id']}", {"dueOn": ""})
+        self.assertEqual(cleared["item"]["dueOn"], "")
+        status, bad = self._request("POST", f"/api/lists/{list_id}/items/{item['id']}", {"dueOn": "friday"})
+        self.assertEqual(status, 400)
+
     def test_without_a_session_the_lists_api_says_sign_in(self) -> None:
         status, payload = self._request("GET", "/api/lists", cookie=None)
         self.assertEqual(status, 401)
@@ -420,12 +508,12 @@ class ListApiTests(unittest.TestCase):
         status, public = self._request("GET", f"/api/public/lists/{token}", cookie=None)
         self.assertEqual(status, 200)
         self.assertEqual(public["list"]["name"], "Packing")
-        self.assertEqual(public["list"]["items"], [{"text": "Passport", "done": False}, {"text": "Charger", "done": False}])
+        self.assertEqual(public["list"]["items"], [{"text": "Passport", "done": False, "dueOn": ""}, {"text": "Charger", "done": False, "dueOn": ""}])
         self.assertNotIn("owner", json.dumps(public))
         self.assertNotIn("example.com", json.dumps(public))
 
         status, csv_text = self._request("GET", f"/api/public/lists/{token}.csv", cookie=None, raw=True)
-        self.assertEqual(csv_text, "text,done\n\"Passport\",false\n\"Charger\",false\n")
+        self.assertEqual(csv_text, "text,done,due\n\"Passport\",false,\n\"Charger\",false,\n")
 
         self._request("POST", f"/api/lists/{list_id}/share", {"enabled": False})
         status, _ = self._request("GET", f"/api/public/lists/{token}", cookie=None)

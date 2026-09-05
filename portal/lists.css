@@ -461,6 +461,61 @@ input[type="text"]:focus {
   opacity: 0.7;
 }
 
+.item-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.item-due {
+  border: 0;
+  background: transparent;
+  padding: 0 4px 6px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.item-due.is-later {
+  color: var(--accent);
+}
+
+.item-due.is-soon {
+  color: var(--accent-2);
+}
+
+.item-due.is-overdue {
+  color: var(--warn);
+}
+
+.item.done .item-due {
+  color: var(--muted);
+}
+
+.due-editor {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 8px;
+}
+
+.due-editor input[type="date"] {
+  flex: 1 1 160px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-alt);
+  color: var(--text);
+  font: inherit;
+}
+
 .item-text {
   border: 0;
   background: transparent;

@@ -27,6 +27,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable
 
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
@@ -502,7 +503,7 @@ def _tool_forget_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, A
 # How many items one list result carries to the model. A list longer than
 # this is summarised past the cut; the page shows all of it.
 MAX_LIST_ITEMS_TO_MODEL = 150
-LIST_ACTIONS = ("add", "remove", "check", "uncheck", "rename", "clear_done", "delete")
+LIST_ACTIONS = ("add", "remove", "check", "uncheck", "set_due", "rename", "clear_done", "delete")
 
 
 def _list_link(context: LoopContext, record: dict[str, Any]) -> str:
@@ -522,10 +523,18 @@ def _list_link(context: LoopContext, record: dict[str, Any]) -> str:
 
 def _list_payload(context: LoopContext, record: dict[str, Any], **extra: Any) -> dict[str, Any]:
     items = [item for item in (record.get("items") or []) if isinstance(item, dict)]
-    shown = [{"id": int(item.get("id") or 0), "text": str(item.get("text") or ""), "done": bool(item.get("done"))} for item in items[:MAX_LIST_ITEMS_TO_MODEL]]
+    shown = [
+        {"id": int(item.get("id") or 0), "text": str(item.get("text") or ""), "done": bool(item.get("done")), "dueOn": str(item.get("dueOn") or "")}
+        for item in items[:MAX_LIST_ITEMS_TO_MODEL]
+    ]
     if record.get("kind") != "todo":
         for entry in shown:
             entry.pop("done", None)
+            entry.pop("dueOn", None)
+    else:
+        for entry in shown:
+            if not entry["dueOn"]:
+                entry.pop("dueOn")
     payload: dict[str, Any] = {
         "list": {
             "id": int(record.get("id") or 0),
@@ -636,6 +645,7 @@ def _tool_update_list(context: LoopContext, args: dict[str, Any]) -> dict[str, A
     action = str(args.get("action") or "").strip().lower()
     items = [str(item).strip() for item in (args.get("items") or []) if str(item).strip()]
     new_name = str(args.get("new_name") or "").strip()
+    due = str(args.get("due") or "").strip() or None
     if action not in LIST_ACTIONS:
         return _error("not_supported", f"action must be one of: {', '.join(LIST_ACTIONS)}.")
     record, problem = _resolve_list(context, str(args.get("list_name") or ""))
@@ -647,26 +657,35 @@ def _tool_update_list(context: LoopContext, args: dict[str, Any]) -> dict[str, A
         if action == "add":
             if not items:
                 return _error("choice_required", "Say what to add.")
-            outcome = database.add_account_list_items(user_id=context.user_id, list_id=list_id, texts=items)
+            if due and record.get("kind") != "todo":
+                return _error("not_supported", f"{record['name']!r} is a general list; only a to-do list keeps due dates.")
+            outcome = database.add_account_list_items(user_id=context.user_id, list_id=list_id, texts=items, due_on=due)
             return _ok(_list_payload(
                 context, outcome["list"],
                 added=[entry["text"] for entry in outcome["added"]],
                 alreadyThere=outcome["skipped"],
+                dueOn=due or "",
             ))
-        if action in {"remove", "check", "uncheck"}:
+        if action in {"remove", "check", "uncheck", "set_due"}:
             if not items:
-                return _error("choice_required", f"Say which items to {action}.")
+                return _error("choice_required", f"Say which items to {action.replace('_', ' ')}.")
             if action != "remove" and record.get("kind") != "todo":
-                return _error("not_supported", f"{record['name']!r} is a general list; its items are not ticked off. Use remove to take one off.")
+                what = "given due dates" if action == "set_due" else "ticked off"
+                return _error("not_supported", f"{record['name']!r} is a general list; its items are not {what}. Use remove to take one off.")
             matched, missing = _match_list_items(record.get("items") or [], items)
             if not matched:
                 return _error("nothing_found", f"None of those is on {record['name']!r}: {', '.join(missing)}.", notOnList=missing)
             if action == "remove":
                 database.remove_account_list_items(user_id=context.user_id, list_id=list_id, item_ids=matched)
+                changed = {"removed": len(matched)}
+            elif action == "set_due":
+                database.set_account_list_items_due(user_id=context.user_id, list_id=list_id, item_ids=matched, due_on=due)
+                changed = {"dueSet": len(matched), "dueOn": due or ""}
             else:
                 database.set_account_list_items_done(user_id=context.user_id, list_id=list_id, item_ids=matched, done=action == "check")
+                changed = {f"{action}ed": len(matched)}
             updated = database.get_account_list(user_id=context.user_id, list_id=list_id) or record
-            return _ok(_list_payload(context, updated, **{f"{action}ed" if action != "remove" else "removed": len(matched), "notOnList": missing}))
+            return _ok(_list_payload(context, updated, notOnList=missing, **changed))
         if action == "rename":
             if not new_name:
                 return _error("choice_required", "The new name is needed.")
@@ -863,14 +882,17 @@ TOOLS: list[ToolSpec] = [
         name="update_list",
         description=(
             "Change one of the person's lists. list_name is the list as they call it. action is add, remove, "
-            "check, uncheck (to-do lists only), rename, clear_done, or delete. items is the entries to add, "
-            "remove, check or uncheck, one per entry in the person's words, or an empty array; new_name is only "
-            "for rename, else null. delete puts the list away; it can be brought back from the lists page."
+            "check, uncheck, set_due (to-do lists only), rename, clear_done, or delete. items is the entries to "
+            "add, remove, check, uncheck or date, one per entry in the person's words, or an empty array. due is "
+            "a deadline as YYYY-MM-DD for the items being added or dated, worked out from CONTEXT.today and "
+            "todayWeekday; null when there is none, and null with set_due clears the date. new_name is only for "
+            "rename, else null. delete puts the list away; it can be brought back from the lists page."
         ),
         parameters=_params({
             "list_name": {"type": "string"},
             "action": {"type": "string", "enum": list(LIST_ACTIONS)},
             "items": {"type": "array", "items": {"type": "string"}},
+            "due": {"type": ["string", "null"]},
             "new_name": {"type": ["string", "null"]},
         }),
         side_effect=True,
@@ -971,8 +993,11 @@ AGENT_LOOP_INSTRUCTIONS = (
     "own line exactly as given, once. CONTEXT.listsPage is that page for the whole account: whenever the "
     "conversation is about lists or todos - including asking whether you can help with them, or how they work "
     "- put that link in the reply on its own line, unless a reply in recentConversation already carried a "
-    "lists link. A reminder about a list is schedule_message with list_name set; the items are read when it "
-    "fires, so never copy them into message_text.\n"
+    "lists link. A to-do item with a deadline gets due as YYYY-MM-DD, from CONTEXT.today and todayWeekday: "
+    "'renew the insurance by Friday' is add with due set. Every morning the person is nudged about items due "
+    "today, due tomorrow, or overdue, so do not schedule a reminder for a dated item unless they ask. A "
+    "reminder about a list is schedule_message with list_name set; the items are read when it fires, so never "
+    "copy them into message_text.\n"
     "knownFacts is what the account already told you about how their business works; read it before asking "
     "anything, and use it to resolve what a message leaves out. When the owner states something about their "
     "business that will still be true next month, call remember_fact; when they say something is no longer "
@@ -1019,6 +1044,13 @@ _PHOTO_RULES = (
 )
 
 
+def _weekday_name(today: str) -> str:
+    try:
+        return datetime.strptime(str(today or "")[:10], "%Y-%m-%d").strftime("%A")
+    except ValueError:
+        return ""
+
+
 def build_loop_context_text(
     *,
     user_message: str,
@@ -1042,6 +1074,7 @@ def build_loop_context_text(
         "channel": normalized_channel,
         "timezone": timezone_name,
         "today": today,
+        "todayWeekday": _weekday_name(today),
         "now": now,
         "connected": sorted(connected_sources(tool_context)),
         "toolContext": safe_context,

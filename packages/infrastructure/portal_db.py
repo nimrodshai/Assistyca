@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS account_list_items (
     text TEXT NOT NULL,
     done INTEGER NOT NULL DEFAULT 0,
     position INTEGER NOT NULL DEFAULT 0,
+    due_on TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(list_id) REFERENCES account_lists(id) ON DELETE CASCADE
@@ -106,9 +107,33 @@ CREATE TABLE IF NOT EXISTS account_list_items (
 
 CREATE INDEX IF NOT EXISTS idx_account_list_items_list
 ON account_list_items(list_id, position, id);
+
+-- One morning nudge per account per local day about what is due; the row
+-- is what stops a second poll from sending it again.
+CREATE TABLE IF NOT EXISTS account_list_nudges (
+    user_id INTEGER NOT NULL,
+    local_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, local_date),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 """
 
 _LIST_NAME_NOISE = {"the", "my", "list", "lists", "of", "for", "a", "an", "to", "and"}
+
+def normalize_due_on(value: Any) -> str:
+    """A due date as YYYY-MM-DD, or "" for none. Anything else is refused."""
+
+    text = normalize_text(value)
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise ValueError("A due date is written as YYYY-MM-DD.") from exc
+
+
+_UNSET = object()
 
 ACCOUNT_LIST_KINDS = ("todo", "general")
 ACCOUNT_LIST_MAX_NAME_LENGTH = 120
@@ -1098,6 +1123,9 @@ class PortalDatabase:
 
     def _ensure_account_lists_tables(self, conn: sqlite3.Connection) -> None:
         conn.executescript(ACCOUNT_LISTS_TABLE_SQL)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_list_items)").fetchall()}
+        if "due_on" not in columns:
+            conn.execute("ALTER TABLE account_list_items ADD COLUMN due_on TEXT")
 
     def _ensure_agent_turns_table(self, conn: sqlite3.Connection) -> None:
         """One row per assistant turn, written whether the turn went well or not.
@@ -6873,17 +6901,26 @@ class PortalDatabase:
             )
         return cursor.rowcount > 0
 
-    def add_account_list_items(self, *, user_id: int, list_id: int, texts: Iterable[Any]) -> dict[str, Any]:
+    def add_account_list_items(
+        self,
+        *,
+        user_id: int,
+        list_id: int,
+        texts: Iterable[Any],
+        due_on: str | None = None,
+    ) -> dict[str, Any]:
         """Put things on a list. Something already on it, spelled the same,
         is not added twice; the result says what went on and what was
-        already there."""
+        already there. due_on, when given, is the deadline for everything
+        added in this call; only a to-do list keeps it."""
 
         current = self.get_account_list(user_id=user_id, list_id=list_id)
         if current is None:
             raise KeyError("List not found.")
+        due = normalize_due_on(due_on) if current.get("kind") == "todo" else ""
         now = now_iso()
         with self._connection() as conn:
-            added, skipped = self._insert_account_list_items(conn, int(list_id), texts, now, existing=current["items"])
+            added, skipped = self._insert_account_list_items(conn, int(list_id), texts, now, existing=current["items"], due_on=due)
             conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
         return {"added": added, "skipped": skipped, "list": self.get_account_list(user_id=user_id, list_id=list_id)}
 
@@ -6896,8 +6933,10 @@ class PortalDatabase:
         text: str | None = None,
         done: bool | None = None,
         position: int | None = None,
+        due_on: Any = _UNSET,
     ) -> dict[str, Any] | None:
-        if self.get_account_list(user_id=user_id, list_id=list_id, include_items=False) is None:
+        current = self.get_account_list(user_id=user_id, list_id=list_id, include_items=False)
+        if current is None:
             return None
         now = now_iso()
         with self._connection() as conn:
@@ -6911,9 +6950,12 @@ class PortalDatabase:
                 raise ValueError("An item needs some words.")
             next_done = (1 if done else 0) if done is not None else int(row["done"] or 0)
             next_position = int(position) if position is not None else int(row["position"] or 0)
+            next_due = str(row["due_on"] or "") if due_on is _UNSET else normalize_due_on(due_on)
+            if current.get("kind") != "todo":
+                next_due = ""
             conn.execute(
-                "UPDATE account_list_items SET text = ?, done = ?, position = ?, updated_at = ? WHERE id = ?",
-                (next_text, next_done, next_position, now, int(item_id)),
+                "UPDATE account_list_items SET text = ?, done = ?, position = ?, due_on = ?, updated_at = ? WHERE id = ?",
+                (next_text, next_done, next_position, next_due or None, now, int(item_id)),
             )
             conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
             updated = conn.execute("SELECT * FROM account_list_items WHERE id = ?", (int(item_id),)).fetchone()
@@ -6931,6 +6973,62 @@ class PortalDatabase:
             )
             conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
         return cursor.rowcount
+
+    def set_account_list_items_due(self, *, user_id: int, list_id: int, item_ids: Iterable[int], due_on: str | None) -> int:
+        """Give several items the same deadline, or none."""
+
+        ids = [int(value) for value in item_ids if int(value or 0) > 0]
+        current = self.get_account_list(user_id=user_id, list_id=list_id, include_items=False)
+        if not ids or current is None:
+            return 0
+        if current.get("kind") != "todo":
+            raise ValueError("Only a to-do list keeps due dates.")
+        due = normalize_due_on(due_on)
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE account_list_items SET due_on = ?, updated_at = ? WHERE list_id = ? AND id IN ({','.join('?' * len(ids))})",
+                (due or None, now, int(list_id), *ids),
+            )
+            conn.execute("UPDATE account_lists SET updated_at = ? WHERE id = ?", (now, int(list_id)))
+        return cursor.rowcount
+
+    def list_open_due_items(self, *, user_id: int | None = None) -> list[dict[str, Any]]:
+        """Every unticked to-do item with a deadline, across live lists, for
+        one account or for all of them. What the morning nudge reads."""
+
+        query = """
+            SELECT i.*, l.user_id AS user_id, l.name AS list_name
+            FROM account_list_items i
+            JOIN account_lists l ON l.id = i.list_id
+            WHERE i.done = 0 AND i.due_on IS NOT NULL AND i.due_on <> ''
+              AND l.kind = 'todo' AND l.archived_at IS NULL
+        """
+        params: list[Any] = []
+        if user_id is not None:
+            query += " AND l.user_id = ?"
+            params.append(int(user_id))
+        query += " ORDER BY l.user_id, i.due_on, i.list_id, i.position, i.id"
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        items = []
+        for row in rows:
+            item = self._load_account_list_item_row(row)
+            item["userId"] = int(row["user_id"] or 0)
+            item["listId"] = int(row["list_id"] or 0)
+            item["listName"] = str(row["list_name"] or "")
+            items.append(item)
+        return items
+
+    def record_list_nudge(self, *, user_id: int, local_date: str) -> bool:
+        """Claim today's nudge for this account. False when it already went."""
+
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO account_list_nudges (user_id, local_date, created_at) VALUES (?, ?, ?)",
+                (int(user_id), normalize_text(local_date), now_iso()),
+            )
+        return cursor.rowcount > 0
 
     def remove_account_list_items(self, *, user_id: int, list_id: int, item_ids: Iterable[int]) -> int:
         ids = [int(value) for value in item_ids if int(value or 0) > 0]
@@ -7002,6 +7100,7 @@ class PortalDatabase:
         now: str,
         *,
         existing: list[dict[str, Any]] | None = None,
+        due_on: str = "",
     ) -> tuple[list[dict[str, Any]], list[str]]:
         present = existing
         if present is None:
@@ -7026,10 +7125,10 @@ class PortalDatabase:
             room -= 1
             cursor = conn.execute(
                 """
-                INSERT INTO account_list_items (list_id, text, done, position, created_at, updated_at)
-                VALUES (?, ?, 0, ?, ?, ?)
+                INSERT INTO account_list_items (list_id, text, done, position, due_on, created_at, updated_at)
+                VALUES (?, ?, 0, ?, ?, ?, ?)
                 """,
-                (int(list_id), text, position, now, now),
+                (int(list_id), text, position, due_on or None, now, now),
             )
             seen.add(key)
             added.append({
@@ -7037,6 +7136,7 @@ class PortalDatabase:
                 "text": text,
                 "done": False,
                 "position": position,
+                "dueOn": due_on or "",
                 "createdAt": now,
                 "updatedAt": now,
             })
@@ -7057,6 +7157,7 @@ class PortalDatabase:
             "text": str(row["text"] or ""),
             "done": bool(int(row["done"] or 0)),
             "position": int(row["position"] or 0),
+            "dueOn": str(row["due_on"] or "") if "due_on" in row.keys() else "",
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
