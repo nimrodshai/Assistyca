@@ -142,6 +142,14 @@ class PortalSecurityTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
 
+    def test_the_www_twin_of_the_public_address_is_the_same_site(self) -> None:
+        cookie = self._cookie()
+
+        with mock.patch.dict(os.environ, {"PUBLIC_BASE_URL": "https://assistyca.example"}):
+            status = self._logout(cookie, {"Origin": "https://www.assistyca.example"})
+
+        self.assertEqual(status, 200)
+
     def test_an_origin_named_in_the_environment_is_allowed(self) -> None:
         cookie = self._cookie()
 

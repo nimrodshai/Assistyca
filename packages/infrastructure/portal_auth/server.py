@@ -10752,7 +10752,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if configured:
             parsed = urllib_parse.urlparse(configured)
             if parsed.scheme and parsed.netloc:
-                origins.add(f"{parsed.scheme}://{parsed.netloc}".lower())
+                netloc = parsed.netloc.lower()
+                origins.add(f"{parsed.scheme}://{netloc}")
+                # The www twin of the public address is the same site: today
+                # it only redirects here, but a page served from it one day
+                # must not find the API refusing its own portal.
+                twin = netloc[4:] if netloc.startswith("www.") else f"www.{netloc}"
+                origins.add(f"{parsed.scheme}://{twin}")
         # The host this request was addressed to is ours by definition: a
         # browser sets it from the URL, never from the page that made the
         # request. Both schemes, since the proxy in front decides which one
