@@ -36,9 +36,12 @@ as `nothing_found` naming the lists that do exist.
 Every turn's context carries `listsPage`, the account's lists page, so a reply about lists or todos can point at it even when no tool ran. Every list result also carries `link`: that list on the page. The link is
 added to `links_offered`, so the reply guard lets it through. From the
 browser it is `/lists#/list/<id>`; from WhatsApp, where the phone has no
-session, it is `/lists/open/<token>?list=<id>`, a signed sign-in for this
-account that lasts 48 hours and is spent on first use (the server revokes it
-and sets a normal session cookie, then redirects to the list).
+session, it is `/lists/open/<code>`: a twelve-character one-time code kept
+in `list_open_codes` with the account, the list, and a 48-hour expiry. The
+server marks it used, sets a normal session cookie, and redirects to the
+list; a second tap lands on `/lists?expired=1`. The code replaced a signed
+session token in the URL, which made the link too long to read in a chat
+message. Redemption is rate limited per IP so a guessed code stays slow.
 
 ## Due dates and the morning nudge
 

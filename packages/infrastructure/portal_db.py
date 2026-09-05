@@ -750,6 +750,20 @@ CREATE TABLE IF NOT EXISTS revoked_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_revoked_sessions_expires_at ON revoked_sessions(expires_at);
+
+-- A short code inside a list link sent over WhatsApp. Tapping it signs the
+-- phone's browser into the account once and opens one list. The code is the
+-- whole secret, so it is spent on first use and swept once it has expired.
+CREATE TABLE IF NOT EXISTS list_open_codes (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    list_id INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    expires_at REAL NOT NULL,
+    used_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_list_open_codes_expires_at ON list_open_codes(expires_at);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, billing_month, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_model ON usage_events(user_id, model_name, used_at DESC);
 CREATE INDEX IF NOT EXISTS idx_model_prices_is_active ON model_prices(is_active);
@@ -821,6 +835,12 @@ ON scheduled_actions(status, run_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_scheduled_actions_user_created
 ON scheduled_actions(user_id, created_at DESC);
 """
+
+
+# Codes are lower-case letters and digits with the look-alikes (0/o, 1/l/i)
+# left out, so one read aloud or retyped from a screenshot still opens.
+LIST_OPEN_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+LIST_OPEN_CODE_LENGTH = 12
 
 
 def normalize_email(value: Any) -> str:
@@ -3319,6 +3339,72 @@ class PortalDatabase:
             ).fetchone()
 
         return row is not None
+
+    def create_list_open_code(self, *, user_id: int, list_id: int, expires_at: float) -> str:
+        """A short one-time code that signs a phone in and opens one list.
+
+        The code stands in for a signed session token, which is too long to
+        read in a chat message. It is drawn from a large enough alphabet to
+        be unguessable, and only lives in this table until it is spent or
+        expires; expired codes are swept whenever a new one is minted.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            raise ValueError("A list open code needs an account.")
+        resolved_list_id = max(0, int(list_id or 0))
+        with self._connection() as conn:
+            conn.execute("DELETE FROM list_open_codes WHERE expires_at <= ?", (time.time(),))
+            for _attempt in range(5):
+                code = "".join(secrets.choice(LIST_OPEN_CODE_ALPHABET) for _ in range(LIST_OPEN_CODE_LENGTH))
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO list_open_codes (code, user_id, list_id, created_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (code, resolved_user_id, resolved_list_id, now_iso(), float(expires_at)),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
+                return code
+        raise RuntimeError("Could not mint a list open code.")
+
+    def spend_list_open_code(self, code: str) -> dict[str, Any] | None:
+        """Mark a code used and say whose list it opens.
+
+        None when the code is unknown, already spent, expired, or belongs
+        to an account that no longer exists. The update is what makes it
+        one-time: two taps racing for the same code see one row change.
+        """
+
+        normalized_code = normalize_text(code).lower()
+        if not normalized_code:
+            return None
+        with self._connection() as conn:
+            updated = conn.execute(
+                "UPDATE list_open_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND expires_at > ?",
+                (now_iso(), normalized_code, time.time()),
+            )
+            if updated.rowcount != 1:
+                return None
+            row = conn.execute(
+                """
+                SELECT codes.user_id AS user_id, codes.list_id AS list_id, users.email AS email
+                FROM list_open_codes AS codes
+                JOIN users ON users.id = codes.user_id
+                WHERE codes.code = ?
+                LIMIT 1
+                """,
+                (normalized_code,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "userId": int(row["user_id"] or 0),
+            "listId": int(row["list_id"] or 0),
+            "email": normalize_email(row["email"]),
+        }
 
     def get_whatsapp_connection(self, email: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)

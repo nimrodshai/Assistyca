@@ -519,20 +519,21 @@ class ListApiTests(unittest.TestCase):
         status, _ = self._request("GET", f"/api/public/lists/{token}", cookie=None)
         self.assertEqual(status, 404)
 
-    def test_a_link_from_whatsapp_signs_the_phone_in_once(self) -> None:
-        now = time.time()
-        token = create_session_token(
-            PortalSession(token="", email="owner@example.com", issued_at=now, expires_at=now + 3600),
-            self.server.store.session_secret,
-        )
-
+    def _no_redirect_opener(self):
         class NoRedirect(urllib_request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):
                 return None
 
-        opener = urllib_request.build_opener(NoRedirect)
+        return urllib_request.build_opener(NoRedirect)
+
+    def test_a_link_from_whatsapp_signs_the_phone_in_once(self) -> None:
+        user = self.server.database.get_user("owner@example.com")
+        code = self.server.database.create_list_open_code(user_id=int(user["id"]), list_id=7, expires_at=time.time() + 3600)
+        self.assertEqual(len(code), 12)
+
+        opener = self._no_redirect_opener()
         try:
-            opener.open(f"{self.base_url}{LISTS_HANDOFF_PREFIX}{token}?list=7")
+            opener.open(f"{self.base_url}{LISTS_HANDOFF_PREFIX}{code}")
             self.fail("expected a redirect")
         except urllib_error.HTTPError as exc:
             self.assertEqual(exc.code, 302)
@@ -547,24 +548,63 @@ class ListApiTests(unittest.TestCase):
 
         # The same link a second time opens nothing.
         try:
-            opener.open(f"{self.base_url}{LISTS_HANDOFF_PREFIX}{token}?list=7")
+            opener.open(f"{self.base_url}{LISTS_HANDOFF_PREFIX}{code}")
             self.fail("expected a redirect")
         except urllib_error.HTTPError as exc:
             self.assertEqual(exc.code, 302)
             self.assertEqual(exc.headers.get("Location"), "/lists?expired=1")
             self.assertNotIn(SESSION_COOKIE_NAME, exc.headers.get("Set-Cookie", "") or "")
 
-    def test_the_loop_hands_whatsapp_a_signed_link_and_the_browser_a_plain_one(self) -> None:
+        # A made-up code opens nothing either.
+        try:
+            opener.open(f"{self.base_url}{LISTS_HANDOFF_PREFIX}notarealcode")
+            self.fail("expected a redirect")
+        except urllib_error.HTTPError as exc:
+            self.assertEqual(exc.code, 302)
+            self.assertEqual(exc.headers.get("Location"), "/lists?expired=1")
+
+    def test_an_expired_code_opens_nothing(self) -> None:
+        user = self.server.database.get_user("owner@example.com")
+        code = self.server.database.create_list_open_code(user_id=int(user["id"]), list_id=0, expires_at=time.time() - 1)
+        self.assertIsNone(self.server.database.spend_list_open_code(code))
+
+    def test_an_older_signed_link_still_opens_until_it_expires(self) -> None:
+        now = time.time()
+        token = create_session_token(
+            PortalSession(token="", email="owner@example.com", issued_at=now, expires_at=now + 3600),
+            self.server.store.session_secret,
+        )
+        opener = self._no_redirect_opener()
+        try:
+            opener.open(f"{self.base_url}{LISTS_HANDOFF_PREFIX}{token}?list=7")
+            self.fail("expected a redirect")
+        except urllib_error.HTTPError as exc:
+            self.assertEqual(exc.code, 302)
+            self.assertEqual(exc.headers.get("Location"), "/lists#/list/7")
+            self.assertIn(f"{SESSION_COOKIE_NAME}=", exc.headers.get("Set-Cookie", ""))
+        try:
+            opener.open(f"{self.base_url}{LISTS_HANDOFF_PREFIX}{token}?list=7")
+            self.fail("expected a redirect")
+        except urllib_error.HTTPError as exc:
+            self.assertEqual(exc.headers.get("Location"), "/lists?expired=1")
+
+    def test_the_loop_hands_whatsapp_a_short_link_and_the_browser_a_plain_one(self) -> None:
         handler = SimpleNamespace(
             _public_base_url=lambda: "https://assistyca.test",
             store=self.server.store,
+            database=self.server.database,
         )
         from packages.infrastructure.portal_auth.server import PortalAuthHandler
 
         build_whatsapp = PortalAuthHandler._lists_link_builder(handler, "owner@example.com", "whatsapp")
         link = build_whatsapp(3)
         self.assertTrue(link.startswith(f"https://assistyca.test{LISTS_HANDOFF_PREFIX}"))
-        self.assertTrue(link.endswith("?list=3"))
+        code = link.rsplit("/", 1)[1]
+        self.assertEqual(len(code), 12)
+        self.assertLess(len(link), 60)
+        spent = self.server.database.spend_list_open_code(code)
+        self.assertEqual(spent["email"], "owner@example.com")
+        self.assertEqual(spent["listId"], 3)
         build_portal = PortalAuthHandler._lists_link_builder(handler, "owner@example.com", "portal")
         self.assertEqual(build_portal(3), "https://assistyca.test/lists#/list/3")
         self.assertEqual(build_portal(0), "https://assistyca.test/lists")

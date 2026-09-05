@@ -110,6 +110,8 @@ OTP_REQUEST_PER_IP = RateLimitRule(limit=10, window_seconds=600)
 OTP_REQUEST_PER_EMAIL = RateLimitRule(limit=5, window_seconds=600)
 OTP_VERIFY_PER_IP = RateLimitRule(limit=20, window_seconds=600)
 OTP_VERIFY_PER_EMAIL = RateLimitRule(limit=10, window_seconds=600)
+# A list link from WhatsApp carries a short one-time code; guessing one has to be slow.
+LIST_OPEN_PER_IP = RateLimitRule(limit=30, window_seconds=600)
 CONTACT_PER_IP = RateLimitRule(limit=5, window_seconds=3600)
 CONTACT_AGENT_PER_IP = RateLimitRule(limit=15, window_seconds=3600)
 CONTACT_AGENT_GLOBAL = RateLimitRule(limit=300, window_seconds=3600)

@@ -117,6 +117,31 @@ class ScheduledActionTests(unittest.TestCase):
         # The phone carried the message, so the feed stays quiet.
         self.assertEqual(self.database.list_notifications(user_id=int(self.user["id"])), [])
 
+    def test_an_older_action_without_a_stored_recipient_reaches_a_linked_phone(self) -> None:
+        self.database.link_user_whatsapp_number(user_id=int(self.user["id"]), wa_id="972501234567")
+        action = self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Drum lesson at 16:00."},
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            return_value="wamid.linked-phone-1",
+        ) as send:
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(send.call_args.kwargs["recipient_wa_id"], "972501234567")
+
     def test_a_failed_whatsapp_send_falls_back_to_the_in_app_feed(self) -> None:
         self.database.save_whatsapp_connection(
             "owner@example.com",
@@ -315,6 +340,77 @@ class ScheduledActionApiTests(unittest.TestCase):
         stored = self.server.database.get_scheduled_action(int(payload["action"]["id"])) or {}
         self.assertEqual(stored["payload"]["recipientWaId"], "972507322341")
         self.assertNotIn("recipientWaId", payload["action"]["payload"])
+
+    def _create_action(self, body: dict) -> tuple[int, dict]:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/scheduled-actions",
+            data=json.dumps(
+                {
+                    "actionType": "send_message",
+                    "channel": "whatsapp",
+                    "recipientRef": "owner",
+                    "runAt": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                    "timezone": "Asia/Jerusalem",
+                    "messageText": "Drum lesson",
+                    **body,
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        env = {
+            "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
+            "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": "platform-phone",
+        }
+        with mock.patch.dict("os.environ", env, clear=False):
+            try:
+                with urllib_request.urlopen(request, timeout=5) as response:
+                    return response.status, json.loads(response.read().decode("utf-8"))
+            except urllib_error.HTTPError as exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_a_phone_linked_to_the_account_receives_reminders_without_a_notification_number(self) -> None:
+        # An account that signed up over WhatsApp has a linked phone and no
+        # notification number from the older setup. The reminder still goes.
+        user = self.server.database.get_user("owner@example.com") or {}
+        self.server.database.link_user_whatsapp_number(user_id=int(user["id"]), wa_id="972501234567")
+
+        status, payload = self._create_action({})
+
+        self.assertEqual(status, 200, payload)
+        stored = self.server.database.get_scheduled_action(int(payload["action"]["id"])) or {}
+        self.assertEqual(stored["payload"]["recipientWaId"], "972501234567")
+
+    def test_the_phone_that_asked_is_the_one_reminded(self) -> None:
+        user = self.server.database.get_user("owner@example.com") or {}
+        self.server.database.save_whatsapp_connection(
+            "owner@example.com", owner_wa_id="972507322341", connection_status="connected",
+        )
+        self.server.database.link_user_whatsapp_number(user_id=int(user["id"]), wa_id="972501234567")
+
+        status, payload = self._create_action({"payload": {"recipientWaId": "972501234567"}})
+
+        self.assertEqual(status, 200, payload)
+        stored = self.server.database.get_scheduled_action(int(payload["action"]["id"])) or {}
+        self.assertEqual(stored["payload"]["recipientWaId"], "972501234567")
+
+    def test_a_phone_not_linked_to_the_account_cannot_be_named_as_the_recipient(self) -> None:
+        user = self.server.database.get_user("owner@example.com") or {}
+        self.server.database.link_user_whatsapp_number(user_id=int(user["id"]), wa_id="972501234567")
+
+        status, payload = self._create_action({"payload": {"recipientWaId": "447700900999"}})
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "recipient_not_linked")
+
+    def test_an_account_with_no_phone_at_all_is_told_to_link_one(self) -> None:
+        status, payload = self._create_action({})
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"], "missing_whatsapp_recipient")
 
     def test_active_action_can_be_cancelled_from_api(self) -> None:
         user = self.server.database.get_user("owner@example.com") or {}

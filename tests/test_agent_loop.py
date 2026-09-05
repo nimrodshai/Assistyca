@@ -166,6 +166,25 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertIn('"confirmedAction"', context_text)
         self.assertIn('"scheduledFor"', context_text)
 
+    def test_a_reminder_asked_for_over_whatsapp_goes_back_to_the_phone_that_asked(self) -> None:
+        api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
+        context = _context(api)
+        context.sender_wa_id = "972501234567"
+        model = ScriptedModel([
+            _model_round(_call("schedule_message", "c1", time_local="16:00", date_policy="next_occurrence", message_text="take my kid to drum lesson")),
+            _model_round(reply=_reply("Say yes and I'll remind you at 16:00.")),
+        ])
+        asked = run_agent_loop(context=context, call_model=model, user_message="remind me at 16:00", conversation=[], today="2026-09-04")
+
+        model = ScriptedModel([_model_round(reply=_reply("Set for 16:00.", claimsCompleted=["schedule_message"]))])
+        run_agent_loop(
+            context=context, call_model=model, user_message="yes", conversation=[], today="2026-09-04",
+            confirmed_call=asked.pending_confirmation,
+        )
+
+        self.assertEqual(api.calls[0][1], "/api/scheduled-actions")
+        self.assertEqual(api.calls[0][2]["payload"]["recipientWaId"], "972501234567")
+
     def test_a_delay_in_minutes_is_scheduled_by_code_and_the_clock_is_in_context(self) -> None:
         api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
         model = ScriptedModel([

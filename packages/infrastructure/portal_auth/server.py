@@ -140,6 +140,7 @@ from packages.infrastructure.portal_runtime_paths import resolve_portal_agent_ou
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.rate_limiter import (
     CONTACT_AGENT_GLOBAL,
+    LIST_OPEN_PER_IP,
     CONTACT_AGENT_PER_IP,
     CONTACT_PER_IP,
     OTP_REQUEST_PER_EMAIL,
@@ -12417,36 +12418,45 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         In the browser the portal session is already in the cookie, so the
         link is the page itself. From WhatsApp the phone's browser has no
-        session: the link carries a short signed sign-in for this account
-        that is spent on first use, and lands on the list.
+        session: the link carries a short one-time code that signs this
+        account in and lands on the list. The code is kept in the database
+        rather than signed into the link, so the link stays short enough
+        to read in a chat message.
         """
 
         base = self._public_base_url()
         is_whatsapp = normalize_text(channel).lower() == "whatsapp"
-        secret = self.store.session_secret
+        user = self.database.get_user(email) if is_whatsapp else None
+        user_id = int((user or {}).get("id") or 0)
 
         def build(list_id: int) -> str:
             target = f"#/list/{int(list_id)}" if int(list_id or 0) > 0 else ""
-            if not is_whatsapp or not secret:
+            if not is_whatsapp or user_id <= 0:
                 return f"{base}/lists{target}"
-            now = time.time()
-            token = create_session_token(
-                PortalSession(token="", email=normalize_email(email), issued_at=now, expires_at=now + LISTS_HANDOFF_TTL_SECONDS),
-                secret,
+            code = self.database.create_list_open_code(
+                user_id=user_id,
+                list_id=int(list_id or 0),
+                expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
             )
-            suffix = f"?list={int(list_id)}" if int(list_id or 0) > 0 else ""
-            return f"{base}{LISTS_HANDOFF_PREFIX}{token}{suffix}"
+            return f"{base}{LISTS_HANDOFF_PREFIX}{code}"
 
         return build
 
     def _handle_lists_handoff(self, parsed: urllib_parse.ParseResult) -> None:
-        """Spend a signed sign-in from a WhatsApp link and open the lists page.
+        """Spend a one-time code from a WhatsApp link and open the lists page.
 
-        The token is a short-lived session token. It is checked like any
-        session (signature, expiry, registered account, not revoked), then
-        revoked so the same link opens nothing a second time, and the
-        browser gets a normal session cookie for the account instead.
+        The code is looked up and marked used in one step, so the same link
+        opens nothing a second time, and the browser gets a normal session
+        cookie for the account instead. Links minted before codes existed
+        carried a signed session token; those still open until they expire.
         """
+
+        if not self._enforce_rate_limit(
+            f"list-open-ip:{self._client_ip()}",
+            LIST_OPEN_PER_IP,
+            message="Too many attempts. Wait a moment and try again.",
+        ):
+            return
 
         token = urllib_parse.unquote(parsed.path[len(LISTS_HANDOFF_PREFIX):]).strip("/")
         query = urllib_parse.parse_qs(parsed.query)
@@ -12454,17 +12464,32 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             list_id = int(normalize_text(query.get("list", ["0"])[0]) or 0)
         except ValueError:
             list_id = 0
-        target = f"/lists#/list/{list_id}" if list_id > 0 else "/lists"
 
-        session = self.store.get_session(token) if token else None
-        if session is None:
+        email = ""
+        spent = self.database.spend_list_open_code(token) if token else None
+        if spent is not None:
+            email = normalize_email(spent.get("email"))
+            list_id = int(spent.get("listId") or 0)
+        elif token:
+            session = self.store.get_session(token)
+            if session is not None:
+                self.store.revoke_session(token)
+                email = normalize_email(session.email)
+
+        issued: dict[str, Any] = {}
+        if email:
+            try:
+                issued = self.store.issue_session(email)
+            except ValueError:
+                issued = {}
+        if not issued.get("token"):
             self.send_response(HTTPStatus.FOUND)
             self.send_header("Location", "/lists?expired=1")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        self.store.revoke_session(token)
-        issued = self.store.issue_session(session.email)
+
+        target = f"/lists#/list/{list_id}" if list_id > 0 else "/lists"
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", target)
         self.send_header("Set-Cookie", self._build_session_cookie(str(issued.get("token") or "")))

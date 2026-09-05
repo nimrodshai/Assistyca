@@ -512,6 +512,10 @@ def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[s
     if not message_text:
         return _error("choice_required", "The message text is needed.")
     payload: dict[str, Any] = {"messageText": message_text}
+    if context.channel == "whatsapp" and str(context.sender_wa_id or "").strip():
+        # The phone that asked is the phone that gets the reminder. The server
+        # checks it belongs to the account before it is kept.
+        payload["recipientWaId"] = str(context.sender_wa_id).strip()
     list_name = str(args.get("list_name") or "").strip()
     if list_name:
         # The reminder names the list, not its items: what is still on it
@@ -556,7 +560,8 @@ def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[s
 
 # What each refusal of the scheduling API means in the person's terms.
 _SCHEDULE_FAILURE_WORDS = {
-    "missing_whatsapp_recipient": "No WhatsApp number is saved to receive it; the number has to be added in the portal first.",
+    "missing_whatsapp_recipient": "No WhatsApp number is saved on this account to receive it; link a phone from Settings in the portal first.",
+    "recipient_not_linked": "That phone is not linked to this account, so the reminder cannot be sent to it.",
     "whatsapp_delivery_not_configured": "Sending WhatsApp messages is not set up on the server, so nothing can be scheduled yet.",
     "trial_expired": "The trial has ended, so nothing new can be scheduled.",
     "unauthorized": "The chat's own sign-in was not accepted by the scheduler, which is a fault on our side.",

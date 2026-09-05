@@ -225,9 +225,14 @@ class ScheduledActionScheduler:
             if user_id <= 0:
                 raise RuntimeError("Scheduled WhatsApp message is missing a user id.")
             connection = self.database.get_whatsapp_connection_by_user_id(user_id)
-            if not connection:
+            recipient_ref = normalize_text((connection or {}).get("ownerWaId"))
+            if not recipient_ref:
+                # No notification number from the older setup: the newest
+                # phone linked to the account is the one that reaches it.
+                linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
+                recipient_ref = normalize_text(linked[0].get("waId")) if linked else ""
+            if not recipient_ref:
                 raise RuntimeError("No WhatsApp notification recipient is configured for this account.")
-            recipient_ref = normalize_text(connection.get("ownerWaId"))
 
         if not recipient_ref:
             raise RuntimeError("WhatsApp recipient is missing.")
