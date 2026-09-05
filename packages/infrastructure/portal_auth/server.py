@@ -292,8 +292,19 @@ MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 # Transport-level cap on any single request body. Generous enough for the largest
 # supported WhatsApp history import, but bounded so a declared Content-Length can
-# no longer be used to exhaust memory on the threading server.
+# no longer be used to exhaust memory on the threading server. Only the history
+# import reads this much; every other route names a cap sized to what it takes.
 MAX_REQUEST_BODY_BYTES = 128 * 1024 * 1024
+# What a signed-in request carries unless it says otherwise: a list, a form, a
+# question. Nothing on the portal but files needs more than this.
+MAX_JSON_BODY_BYTES = 1024 * 1024
+# A chat message may carry a photo of a receipt: AGENT_PHOTO_MAX_BYTES as base64,
+# plus the words around it.
+MAX_AGENT_TURN_BODY_BYTES = 12 * 1024 * 1024
+# A source action may carry the file it watches, 5 MB at most, as base64.
+MAX_SOURCE_ACTION_BODY_BYTES = 8 * 1024 * 1024
+# Meta signs its deliveries, and one delivery batches many messages.
+MAX_WEBHOOK_BODY_BYTES = 4 * 1024 * 1024
 # Unauthenticated endpoints get a far tighter cap.
 MAX_PUBLIC_REQUEST_BODY_BYTES = 256 * 1024
 WHATSAPP_HISTORY_IMPORT_MAX_FILES = 20
@@ -2355,7 +2366,9 @@ def send_otp_email(config: PortalConfig, email: str, code: str) -> None:
     send_otp_email_via_smtp(config, email, code)
 
 
-class RequestBodyTooLarge(ValueError):
+# Not a ValueError: a body past its cap is answered as 413 by the dispatcher,
+# never folded into a handler's "that is not valid JSON".
+class RequestBodyTooLarge(Exception):
     """Raised when a request declares or sends more body bytes than allowed."""
 
 
@@ -2400,7 +2413,7 @@ def read_request_body(
 def parse_json_body(
     handler: SimpleHTTPRequestHandler,
     *,
-    max_bytes: int = MAX_REQUEST_BODY_BYTES,
+    max_bytes: int = MAX_JSON_BODY_BYTES,
 ) -> dict[str, Any]:
     raw = read_request_body(handler, max_bytes=max_bytes).decode("utf-8", errors="replace")
     if not raw.strip():
@@ -3881,10 +3894,27 @@ def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
     )
 
 
-def send_api_headers(handler: SimpleHTTPRequestHandler, *, content_length: int | None = None) -> None:
-    handler.send_header("Access-Control-Allow-Origin", "*")
+def send_cors_headers(handler: SimpleHTTPRequestHandler) -> None:
+    """Let a browser on another origin read the answer only if that origin is ours.
+
+    The portal is served from the same origin as its API, so a browser never
+    needs these; they exist for a deployment that names a second origin of
+    its own. An origin this deployment does not know gets no permission at
+    all, and never a wildcard.
+    """
+
+    resolver = getattr(handler, "_cors_origin", None)
+    origin = resolver() if callable(resolver) else ""
+    if not origin:
+        return
+    handler.send_header("Access-Control-Allow-Origin", origin)
+    handler.send_header("Vary", "Origin")
     handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
     handler.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+
+
+def send_api_headers(handler: SimpleHTTPRequestHandler, *, content_length: int | None = None) -> None:
+    send_cors_headers(handler)
     handler.send_header("Content-Type", JSON_CONTENT_TYPE)
     handler.send_header("Cache-Control", "no-store")
     if content_length is not None:
@@ -4098,6 +4128,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self._reject_cross_site_write():
+            return
         parsed = urllib_parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if (
@@ -4149,6 +4181,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_DELETE(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if self._reject_cross_site_write():
+            return
         parsed = urllib_parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         if (
@@ -4164,7 +4198,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/whatsapp/history/")
             or path.startswith("/api/lists/")
         ):
-            self._handle_api_delete(parsed)
+            try:
+                self._handle_api_delete(parsed)
+            except RequestBodyTooLarge as exc:
+                json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {
+                    "ok": False,
+                    "error": "payload_too_large",
+                    "message": str(exc),
+                })
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -6333,7 +6374,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         session, _ = authenticated
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_AGENT_TURN_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -6582,7 +6623,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not self._require_active_trial(authenticated_user):
             return
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_AGENT_TURN_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -8016,9 +8057,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         body = buffer.getvalue()
         filename = build_agent_folder_archive_filename(logical_folder)
         self.send_response(HTTPStatus.OK)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        send_cors_headers(self)
         self.send_header("Content-Type", "application/zip")
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Cache-Control", "no-store")
@@ -8599,7 +8638,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         handler = getattr(self, self.AGENT_TURN_HANDLERS[path])
         try:
-            body = read_request_body(self)
+            body = read_request_body(self, max_bytes=MAX_AGENT_TURN_BODY_BYTES)
         except ValueError:
             # The handler reads the header itself and answers the problem in
             # its own words; there is nothing to record about a request that
@@ -8676,7 +8715,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not self._require_active_trial(authenticated_user):
             return
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_AGENT_TURN_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -9037,7 +9076,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not self._require_active_trial(authenticated_user):
             return
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_AGENT_TURN_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
             return
@@ -9456,7 +9495,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if action_id is not None:
             if parsed.path.rstrip("/").endswith("/settings"):
                 try:
-                    payload = parse_json_body(self)
+                    payload = parse_json_body(self, max_bytes=MAX_SOURCE_ACTION_BODY_BYTES)
                     interval_minutes = int(payload.get("intervalMinutes") or payload.get("interval_minutes") or 0)
                     if not SOURCE_ACTION_MIN_INTERVAL_MINUTES <= interval_minutes <= SOURCE_ACTION_MAX_INTERVAL_MINUTES:
                         raise ValueError("Choose a frequency between hourly and every 30 days.")
@@ -9556,7 +9595,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "source_action_too_large", "message": "The source upload is too large."})
             return
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_SOURCE_ACTION_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
             return
@@ -9905,7 +9944,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "label": success_label,
         })
 
-    def _read_body(self, *, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> bytes:
+    def _read_body(self, *, max_bytes: int = MAX_JSON_BODY_BYTES) -> bytes:
         return read_request_body(self, max_bytes=max_bytes)
 
     def _send_static_page(self, relative_path: Path):
@@ -10691,6 +10730,66 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             extra_headers={"Retry-After": str(decision.retry_after_seconds)},
         )
         return False
+
+    def _allowed_origins(self) -> set[str]:
+        """The origins a browser may write to this server from: our own, and any named in PORTAL_ALLOWED_ORIGINS."""
+
+        origins: set[str] = set()
+        configured = normalize_text(os.getenv("PUBLIC_BASE_URL"))
+        if configured:
+            parsed = urllib_parse.urlparse(configured)
+            if parsed.scheme and parsed.netloc:
+                origins.add(f"{parsed.scheme}://{parsed.netloc}".lower())
+        # The host this request was addressed to is ours by definition: a
+        # browser sets it from the URL, never from the page that made the
+        # request. Both schemes, since the proxy in front decides which one
+        # the browser saw.
+        host = self._request_host()
+        if host:
+            origins.add(f"http://{host}".lower())
+            origins.add(f"https://{host}".lower())
+        for extra in normalize_text(os.getenv("PORTAL_ALLOWED_ORIGINS")).split(","):
+            extra = extra.strip().rstrip("/").lower()
+            if extra:
+                origins.add(extra)
+        return origins
+
+    def _request_origin(self) -> str:
+        headers = getattr(self, "headers", None)
+        if headers is None:
+            return ""
+        return normalize_text(headers.get("Origin")).rstrip("/").lower()
+
+    def _cors_origin(self) -> str:
+        origin = self._request_origin()
+        return origin if origin and origin in self._allowed_origins() else ""
+
+    def _reject_cross_site_write(self) -> bool:
+        """Refuse a POST or DELETE that a page on another site made a browser send.
+
+        The session cookie is SameSite=Lax and the API reads only JSON, so a
+        cross-site write already arrives without a session. This is the
+        second lock: a browser always names the page's origin on a write,
+        and a page that is not ours gets a refusal before any handler runs.
+        A client that is not a browser sends no Origin and is let through
+        to prove itself the usual way.
+        """
+
+        origin = self._request_origin()
+        if origin:
+            if origin in self._allowed_origins():
+                return False
+        else:
+            fetch_site = normalize_text(self.headers.get("Sec-Fetch-Site")).lower()
+            if fetch_site != "cross-site":
+                return False
+
+        json_response(self, HTTPStatus.FORBIDDEN, {
+            "ok": False,
+            "error": "cross_site_request",
+            "message": "This request came from another site, so Assistyca did not act on it.",
+        })
+        return True
 
     def _public_base_url(self) -> str:
         configured = normalize_text(os.getenv("PUBLIC_BASE_URL"))
@@ -12185,7 +12284,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 lines.append(f"{cell},{'true' if entry.get('done') else 'false'}" if record.get("kind") == "todo" else cell)
             body = ("\n".join(lines) + "\n").encode("utf-8")
             self.send_response(HTTPStatus.OK)
-            self.send_header("Access-Control-Allow-Origin", "*")
+            send_cors_headers(self)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -13555,7 +13654,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            payload = parse_json_body(self)
+            payload = parse_json_body(self, max_bytes=MAX_REQUEST_BODY_BYTES)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -14148,7 +14247,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self._send_text(HTTPStatus.OK, challenge or "ok")
 
     def _handle_whatsapp_webhook_ingest(self) -> None:
-        body = self._read_body()
+        body = self._read_body(max_bytes=MAX_WEBHOOK_BODY_BYTES)
         if not verify_whatsapp_signature(
             normalize_text(os.getenv("WHATSAPP_APP_SECRET")),
             body,
