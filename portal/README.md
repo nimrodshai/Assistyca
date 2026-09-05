@@ -21,6 +21,7 @@ It is intentionally separate from the reusable spec and client config layers.
 - The Scheduled Web Monitor runs in the backend on a recurring day interval, uses the shared OpenAI gateway plus the web search tool, and sends alerts by email, Telegram, or WhatsApp
 - WhatsApp approval pages and webhook handling now live inside the portal backend at `/approval/<approval_id>` and `/webhooks/whatsapp`
 - `Settings` opens as a modal overlay for account details and portal preferences
+- `/register` is the public registration page: basic details in, and the agent texts the person on WhatsApp. See `docs/whatsapp-agent-chat.md`, "Registering on the web".
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
 - The top-right menu opens business details, billing, settings, and log out actions
 - The simulator's Edit button opens [`../approval.html`](../approval.html), a reusable local approval page that is now only a debug fallback.

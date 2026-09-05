@@ -113,3 +113,5 @@ OTP_VERIFY_PER_EMAIL = RateLimitRule(limit=10, window_seconds=600)
 CONTACT_PER_IP = RateLimitRule(limit=5, window_seconds=3600)
 CONTACT_AGENT_PER_IP = RateLimitRule(limit=15, window_seconds=3600)
 CONTACT_AGENT_GLOBAL = RateLimitRule(limit=300, window_seconds=3600)
+# Each registration creates an account and sends one WhatsApp message.
+REGISTER_PER_IP = RateLimitRule(limit=5, window_seconds=3600)

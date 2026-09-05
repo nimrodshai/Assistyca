@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Register | Assistyca</title>
+    <meta
+      name="description"
+      content="Tell Assistyca a little about yourself and your assistant will text you on WhatsApp."
+    />
+    <meta name="robots" content="noindex" />
+    <link rel="canonical" href="https://assistyca.com/register" />
+    <style>
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-regular.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+      }
+
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-medium.ttf") format("truetype");
+        font-weight: 500;
+        font-style: normal;
+      }
+
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-semibold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+      }
+
+      :root {
+        color-scheme: light;
+        --bg: #fbf8f1;
+        --bg-deep: #f3efe6;
+        --surface: rgba(255, 255, 255, 0.82);
+        --ink: #132038;
+        --muted: #667185;
+        --line: rgba(19, 32, 56, 0.12);
+        --accent: #6aa7a3;
+        --accent-deep: #4f9290;
+        --accent-soft: rgba(106, 167, 163, 0.14);
+        --danger: #b4443c;
+        --danger-soft: rgba(180, 68, 60, 0.1);
+        --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+
+      body {
+        font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(60rem 40rem at 110% -10%, var(--accent-soft), transparent 60%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .page {
+        max-width: 36rem;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 4rem;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.65rem;
+        color: inherit;
+        text-decoration: none;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+
+      .brand-mark {
+        width: 2.1rem;
+        height: 2.1rem;
+        border-radius: 0.7rem;
+        display: grid;
+        place-items: center;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .intro {
+        margin: 2rem 0 1.5rem;
+      }
+
+      h1 {
+        font-size: clamp(1.7rem, 4vw, 2.2rem);
+        line-height: 1.15;
+        margin: 0 0 0.6rem;
+        letter-spacing: -0.02em;
+      }
+
+      .intro p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 1.4rem;
+        box-shadow: var(--shadow);
+        padding: 1.6rem;
+        backdrop-filter: blur(12px);
+      }
+
+      .field {
+        display: block;
+        margin-bottom: 1.15rem;
+      }
+
+      .field-label {
+        display: block;
+        font-weight: 700;
+        font-size: 0.95rem;
+        margin-bottom: 0.35rem;
+      }
+
+      .field-hint {
+        display: block;
+        color: var(--muted);
+        font-size: 0.86rem;
+        margin-bottom: 0.45rem;
+      }
+
+      .field input,
+      .field textarea {
+        width: 100%;
+        font: inherit;
+        color: inherit;
+        padding: 0.8rem 0.95rem;
+        border-radius: 0.85rem;
+        border: 1px solid var(--line);
+        background: #fff;
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }
+
+      .field textarea {
+        min-height: 6.5rem;
+        resize: vertical;
+      }
+
+      .field input:focus,
+      .field textarea:focus {
+        outline: none;
+        border-color: var(--accent-deep);
+        box-shadow: 0 0 0 4px var(--accent-soft);
+      }
+
+      .field[data-invalid="true"] input,
+      .field[data-invalid="true"] textarea {
+        border-color: var(--danger);
+        box-shadow: 0 0 0 4px var(--danger-soft);
+      }
+
+      .field-error {
+        display: none;
+        color: var(--danger);
+        font-size: 0.86rem;
+        margin-top: 0.35rem;
+      }
+
+      .field[data-invalid="true"] .field-error {
+        display: block;
+      }
+
+      .honeypot {
+        position: absolute;
+        left: -9999px;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+      }
+
+      .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        font: inherit;
+        font-weight: 700;
+        padding: 0.9rem 1.3rem;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        text-decoration: none;
+        transition: transform 120ms ease, background 120ms ease;
+      }
+
+      .button-primary {
+        background: var(--accent-deep);
+        color: #fff;
+      }
+
+      .button-primary:hover {
+        background: var(--accent);
+      }
+
+      .button-primary:disabled {
+        opacity: 0.6;
+        cursor: progress;
+      }
+
+      .button-secondary {
+        background: transparent;
+        color: var(--ink);
+        border-color: var(--line);
+      }
+
+      .button-secondary:hover {
+        background: var(--accent-soft);
+      }
+
+      .status {
+        margin: 0.9rem 0 0;
+        min-height: 1.4rem;
+        font-size: 0.95rem;
+        color: var(--muted);
+      }
+
+      .status[data-tone="error"] {
+        color: var(--danger);
+      }
+
+      .status a {
+        color: var(--accent-deep);
+      }
+
+      .fine-print {
+        margin: 1.4rem 0 0;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .fine-print a {
+        color: var(--accent-deep);
+      }
+
+      .done {
+        text-align: left;
+      }
+
+      .done h2 {
+        margin: 0 0 0.6rem;
+        font-size: 1.5rem;
+        letter-spacing: -0.01em;
+      }
+
+      .done p {
+        margin: 0 0 1rem;
+        color: var(--muted);
+        font-size: 1.02rem;
+      }
+
+      .done .number {
+        color: var(--ink);
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      @media (max-width: 480px) {
+        .page {
+          padding-top: 1.5rem;
+        }
+
+        .card {
+          padding: 1.25rem;
+          border-radius: 1.1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <a class="brand" href="/about">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <span>Assistyca</span>
+      </a>
+
+      <div class="intro">
+        <h1>Tell me a little about yourself.</h1>
+        <p>When you're done I'll text you on WhatsApp and we'll get started from there.</p>
+      </div>
+
+      <section class="card">
+        <form data-register-form novalidate>
+          <label class="field" data-field="name">
+            <span class="field-label">Your name</span>
+            <input name="name" type="text" autocomplete="name" required />
+            <span class="field-error" data-error-for="name"></span>
+          </label>
+
+          <label class="field" data-field="phone">
+            <span class="field-label">Your WhatsApp number</span>
+            <span class="field-hint">With the country code, for example +972 50 123 4567. This is the number I'll text.</span>
+            <input name="phone" type="tel" inputmode="tel" autocomplete="tel" required />
+            <span class="field-error" data-error-for="phone"></span>
+          </label>
+
+          <label class="field" data-field="email">
+            <span class="field-label">Your email</span>
+            <span class="field-hint">Only for signing in on the web, if you ever want to.</span>
+            <input name="email" type="email" autocomplete="email" required />
+            <span class="field-error" data-error-for="email"></span>
+          </label>
+
+          <label class="field" data-field="business">
+            <span class="field-label">What do you do?</span>
+            <span class="field-hint">A line is enough, for example "I run a small architecture studio".</span>
+            <input name="business" type="text" autocomplete="organization-title" />
+            <span class="field-error" data-error-for="business"></span>
+          </label>
+
+          <label class="field" data-field="wants">
+            <span class="field-label">What would you like help with?</span>
+            <span class="field-hint">In your own words. Chasing receipts, keeping the calendar straight, reminders, anything.</span>
+            <textarea name="wants"></textarea>
+            <span class="field-error" data-error-for="wants"></span>
+          </label>
+
+          <label class="honeypot" for="register-company-website">Company website</label>
+          <input class="honeypot" id="register-company-website" name="companyWebsite" type="text" tabindex="-1" autocomplete="off" />
+
+          <div class="actions">
+            <button class="button button-primary" type="submit" data-register-submit>Register and text me</button>
+          </div>
+          <p class="status" data-register-status role="status" aria-live="polite"></p>
+          <p class="fine-print">
+            Already have an account? <a href="/portal/">Sign in</a>. By registering you agree to the
+            <a href="/privacy.html">privacy policy</a>.
+          </p>
+        </form>
+
+        <div class="done" data-register-done hidden>
+          <h2 data-done-title>Check WhatsApp</h2>
+          <p data-done-text></p>
+          <div class="actions">
+            <a class="button button-primary" data-done-link href="#" target="_blank" rel="noopener" hidden>Open WhatsApp</a>
+            <a class="button button-secondary" href="/portal/">Open the web portal</a>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/portal/register.js" defer></script>
+  </body>
+</html>

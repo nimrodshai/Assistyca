@@ -5168,6 +5168,41 @@ class PortalDatabase:
             conn.commit()
         return self.get_whatsapp_signup(number) or {}
 
+    def record_web_registration(self, *, wa_id: str, user_id: int, sender_name: str = "") -> dict[str, Any]:
+        """A phone typed into the registration page, waiting for its first reply.
+
+        The account already exists; the phone has not proved itself yet. The
+        row sits in the same table as the texting signups so the daily cap
+        counts both doors together, and the status says which side of the
+        proof it is on: `awaiting_reply` becomes `completed` when the phone
+        answers, and only then is it linked.
+        """
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        resolved_user_id = int(user_id or 0)
+        if not number or resolved_user_id <= 0:
+            raise ValueError("A registration needs a phone number and an account.")
+        stamp = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO whatsapp_signups (wa_id, status, sender_name, attempts, user_id, started_at, updated_at)
+                VALUES (?, 'awaiting_reply', ?, 0, ?, ?, ?)
+                ON CONFLICT(wa_id) DO UPDATE SET
+                    status = 'awaiting_reply',
+                    sender_name = excluded.sender_name,
+                    attempts = 0,
+                    user_id = excluded.user_id,
+                    transcript_json = '[]',
+                    started_at = excluded.started_at,
+                    updated_at = excluded.updated_at,
+                    completed_at = NULL
+                """,
+                (number, normalize_text(sender_name)[:120], resolved_user_id, stamp, stamp),
+            )
+            conn.commit()
+        return self.get_whatsapp_signup(number) or {}
+
     def complete_whatsapp_signup(self, *, wa_id: str, user_id: int) -> dict[str, Any]:
         number = normalize_whatsapp_lookup_id(wa_id)
         stamp = now_iso()
