@@ -94,7 +94,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const doneText = done.querySelector("[data-done-text]");
   const doneLink = done.querySelector("[data-done-link]");
 
-  COUNTRIES.forEach(([iso, name, dial]) => {
+  // Alphabetical by name, so a country is found where the eye expects it.
+  [...COUNTRIES].sort((a, b) => a[1].localeCompare(b[1], "en")).forEach(([iso, name, dial]) => {
     const option = document.createElement("option");
     option.value = iso;
     option.textContent = `${flag(iso)} ${name} (+${dial})`;
@@ -223,7 +224,9 @@ window.addEventListener("DOMContentLoaded", () => {
   const validateLocally = (values) => {
     const errors = {};
     if (values.name.length < 2) {
-      errors.name = "Enter your name.";
+      errors.name = "Enter your full name.";
+    } else if (values.name.split(/\s+/).length < 2) {
+      errors.name = "Enter your first and last name.";
     }
     const phoneError = phoneProblem();
     if (phoneError) {
