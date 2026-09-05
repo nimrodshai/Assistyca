@@ -3,101 +3,163 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta http-equiv="refresh" content="0; url=./portal/" />
-    <title>Assistyca Portal</title>
+    <title>Assistyca | Your assistant on WhatsApp</title>
     <meta
       name="description"
-      content="Open the Assistyca portal."
+      content="Assistyca is a personal assistant for small business owners that lives in WhatsApp. It reads your inbox and calendar, keeps your lists, chases receipts and reminds you at the right moment. Register in a minute and it texts you first."
     />
+    <meta property="og:title" content="Assistyca | Your assistant on WhatsApp" />
+    <meta
+      property="og:description"
+      content="Text it like a person. It reads your inbox and calendar, keeps your lists and reminds you at the right moment. Register free and it texts you first."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://assistyca.com/" />
+    <meta property="og:image" content="https://assistyca.com/assets/Robot-200.png" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="canonical" href="https://assistyca.com/" />
+    <link rel="icon" type="image/png" href="/assets/Robot-200.png" />
+    <link rel="apple-touch-icon" href="/assets/Robot-200.png" />
     <style>
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-regular.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-medium.ttf") format("truetype");
+        font-weight: 500;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-semibold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+
       :root {
         color-scheme: light;
-        --bg: #f4f0e8;
-        --bg2: #edf6f5;
-        --ink: #1f2937;
-        --muted: #5b6472;
-        --card: rgba(255, 255, 255, 0.86);
-        --line: rgba(30, 41, 59, 0.12);
-        --accent: #0f766e;
-        --accent-ink: #ffffff;
-        --shadow: 0 28px 60px rgba(15, 23, 42, 0.12);
+        --bg: #fbf8f1;
+        --bg-deep: #f3efe6;
+        --surface: rgba(255, 255, 255, 0.82);
+        --surface-solid: #ffffff;
+        --ink: #132038;
+        --muted: #667185;
+        --line: rgba(19, 32, 56, 0.12);
+        --accent: #6aa7a3;
+        --accent-deep: #4f9290;
+        --accent-soft: rgba(106, 167, 163, 0.14);
+        --accent-ink: #1d4b49;
+        --sand: #eee9df;
+        --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
+        --shadow-soft: 0 12px 30px rgba(19, 32, 56, 0.06);
+        --page-max: 68rem;
       }
 
       * {
         box-sizing: border-box;
       }
 
+      html {
+        scroll-behavior: smooth;
+      }
+
       html,
       body {
-        min-height: 100%;
         margin: 0;
+        min-height: 100%;
       }
 
       body {
-        display: grid;
-        place-items: center;
-        padding: 24px;
-        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-          sans-serif;
+        font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
         color: var(--ink);
         background:
-          radial-gradient(circle at top left, rgba(15, 118, 110, 0.18), transparent 34%),
-          radial-gradient(circle at bottom right, rgba(245, 158, 11, 0.14), transparent 28%),
-          linear-gradient(145deg, var(--bg), var(--bg2));
+          radial-gradient(60rem 40rem at 110% -10%, var(--accent-soft), transparent 60%),
+          radial-gradient(40rem 30rem at -10% 40%, rgba(216, 208, 194, 0.35), transparent 60%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+        overflow-x: hidden;
       }
 
-      .card {
-        width: min(100%, 42rem);
-        border: 1px solid var(--line);
-        border-radius: 28px;
-        background: var(--card);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(14px);
-        padding: clamp(1.5rem, 4vw, 2.5rem);
+      a {
+        color: var(--accent-deep);
       }
 
-      .eyebrow {
-        margin: 0 0 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.18em;
-        font-size: 0.75rem;
-        color: var(--accent);
-        font-weight: 800;
+      img {
+        max-width: 100%;
       }
 
-      h1 {
-        margin: 0;
-        font-size: clamp(2rem, 5vw, 3.5rem);
-        line-height: 0.98;
-        letter-spacing: -0.05em;
+      .wrap {
+        width: min(100% - 2.5rem, var(--page-max));
+        margin: 0 auto;
       }
 
-      p {
-        margin: 1rem 0 0;
-        font-size: 1rem;
-        line-height: 1.65;
-        color: var(--muted);
-        max-width: 34rem;
-      }
+      /* Header */
 
-      .actions {
+      .site-header {
         display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem;
-        margin-top: 1.6rem;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1.1rem 0;
       }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        text-decoration: none;
+        color: inherit;
+      }
+
+      .brand img {
+        height: 2rem;
+        width: auto;
+        display: block;
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .link-quiet {
+        color: var(--ink);
+        text-decoration: none;
+        font-weight: 500;
+        padding: 0.6rem 0.75rem;
+        border-radius: 999px;
+      }
+
+      .link-quiet:hover {
+        background: rgba(19, 32, 56, 0.05);
+      }
+
+      /* Buttons */
 
       .button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        gap: 0.5rem;
         min-height: 3rem;
-        padding: 0.85rem 1.15rem;
+        padding: 0.8rem 1.35rem;
         border-radius: 999px;
         border: 1px solid transparent;
         text-decoration: none;
+        font: inherit;
         font-weight: 700;
-        font-size: 0.96rem;
+        font-size: 1rem;
+        cursor: pointer;
         transition:
           transform 160ms ease,
           box-shadow 160ms ease,
@@ -105,45 +167,680 @@
           border-color 160ms ease;
       }
 
-      .button.primary {
-        color: var(--accent-ink);
-        background: var(--accent);
-        box-shadow: 0 18px 34px rgba(15, 118, 110, 0.22);
+      .button-primary {
+        color: #fff;
+        background: var(--accent-deep);
+        box-shadow: 0 16px 30px rgba(79, 146, 144, 0.28);
       }
 
-      .button.secondary {
-        color: var(--ink);
-        border-color: var(--line);
-        background: rgba(255, 255, 255, 0.75);
-      }
-
-      .button:hover,
-      .button:focus-visible {
+      .button-primary:hover,
+      .button-primary:focus-visible {
+        background: #447f7d;
         transform: translateY(-1px);
       }
 
-      .meta {
-        margin-top: 1.2rem;
-        font-size: 0.9rem;
+      .button-secondary {
+        color: var(--ink);
+        border-color: var(--line);
+        background: rgba(255, 255, 255, 0.7);
+      }
+
+      .button-secondary:hover,
+      .button-secondary:focus-visible {
+        border-color: var(--accent-deep);
+        transform: translateY(-1px);
+      }
+
+      .button-small {
+        min-height: 2.5rem;
+        padding: 0.5rem 1.05rem;
+        font-size: 0.95rem;
+      }
+
+      /* Hero */
+
+      .hero {
+        display: grid;
+        gap: 2.25rem;
+        padding: 1.5rem 0 3rem;
+        align-items: center;
+      }
+
+      .eyebrow {
+        margin: 0 0 0.85rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent-ink);
+        background: var(--accent-soft);
+        padding: 0.4rem 0.8rem;
+        border-radius: 999px;
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+        background: var(--accent-deep);
+      }
+
+      h1 {
+        margin: 0 0 1rem;
+        font-size: clamp(2.1rem, 6.2vw, 3.6rem);
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+      }
+
+      .hero-copy p {
+        margin: 0;
+        font-size: clamp(1.05rem, 2.4vw, 1.2rem);
         color: var(--muted);
+        max-width: 34rem;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 1.6rem;
+      }
+
+      .hero-note {
+        margin-top: 1rem;
+        font-size: 0.92rem;
+        color: var(--muted);
+      }
+
+      /* Phone mock */
+
+      .phone {
+        justify-self: center;
+        width: min(100%, 22rem);
+        background: var(--surface-solid);
+        border: 1px solid var(--line);
+        border-radius: 2rem;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .phone-top {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.9rem 1rem;
+        background: var(--sand);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .phone-top img {
+        width: 2.4rem;
+        height: 2.4rem;
+        border-radius: 50%;
+      }
+
+      .phone-top strong {
+        display: block;
+        font-size: 0.98rem;
+      }
+
+      .phone-top span {
+        display: block;
+        font-size: 0.8rem;
+        color: var(--accent-deep);
+      }
+
+      .chat {
+        list-style: none;
+        margin: 0;
+        padding: 1rem 0.9rem 1.15rem;
+        display: grid;
+        gap: 0.55rem;
+        background:
+          radial-gradient(20rem 12rem at 100% 0%, var(--accent-soft), transparent 70%),
+          #fbf9f4;
+      }
+
+      .chat li {
+        max-width: 85%;
+        padding: 0.6rem 0.85rem;
+        border-radius: 1.1rem;
+        font-size: 0.93rem;
+        line-height: 1.45;
+        box-shadow: var(--shadow-soft);
+      }
+
+      .chat .them {
+        justify-self: start;
+        background: #fff;
+        border-bottom-left-radius: 0.35rem;
+      }
+
+      .chat .me {
+        justify-self: end;
+        background: #d9efe3;
+        border-bottom-right-radius: 0.35rem;
+      }
+
+      .chat time {
+        display: block;
+        margin-top: 0.2rem;
+        font-size: 0.7rem;
+        color: var(--muted);
+        text-align: right;
+      }
+
+      /* Sections */
+
+      section {
+        padding: 2.5rem 0;
+      }
+
+      .section-head {
+        max-width: 38rem;
+        margin-bottom: 1.5rem;
+      }
+
+      h2 {
+        margin: 0 0 0.6rem;
+        font-size: clamp(1.55rem, 4vw, 2.2rem);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+      }
+
+      .section-head p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+
+      /* Asks */
+
+      .asks {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.7rem;
+        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+      }
+
+      .asks li {
+        position: relative;
+        padding: 0.95rem 1.1rem 0.95rem 3.1rem;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 1.2rem;
+        border-bottom-left-radius: 0.4rem;
+        font-weight: 500;
+        box-shadow: var(--shadow-soft);
+      }
+
+      .asks li::before {
+        content: "“";
+        position: absolute;
+        left: 1rem;
+        top: 0.35rem;
+        font-size: 2.2rem;
+        line-height: 1;
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      /* Steps */
+
+      .steps {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 1rem;
+        counter-reset: step;
+      }
+
+      .steps li {
+        counter-increment: step;
+        display: grid;
+        grid-template-columns: 2.6rem 1fr;
+        gap: 1rem;
+        align-items: start;
+        padding: 1.25rem;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 1.4rem;
+        box-shadow: var(--shadow-soft);
+      }
+
+      .steps li::before {
+        content: counter(step);
+        display: grid;
+        place-items: center;
+        width: 2.6rem;
+        height: 2.6rem;
+        border-radius: 50%;
+        background: var(--accent-deep);
+        color: #fff;
+        font-weight: 700;
+        font-size: 1.1rem;
+      }
+
+      .steps h3 {
+        margin: 0.2rem 0 0.3rem;
+        font-size: 1.12rem;
+      }
+
+      .steps p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      /* Sources */
+
+      .sources {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.9rem;
+        grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+      }
+
+      .sources li {
+        padding: 1.2rem 1.25rem;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 1.4rem;
+        box-shadow: var(--shadow-soft);
+      }
+
+      .sources .icon {
+        display: grid;
+        place-items: center;
+        width: 2.5rem;
+        height: 2.5rem;
+        border-radius: 0.85rem;
+        background: var(--accent-soft);
+        color: var(--accent-ink);
+        margin-bottom: 0.8rem;
+      }
+
+      .sources .icon svg {
+        width: 1.3rem;
+        height: 1.3rem;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .sources h3 {
+        margin: 0 0 0.3rem;
+        font-size: 1.08rem;
+      }
+
+      .sources p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.97rem;
+      }
+
+      /* Trust */
+
+      .trust {
+        display: grid;
+        gap: 1rem;
+        padding: 1.75rem;
+        border-radius: 1.6rem;
+        background: var(--ink);
+        color: #f6f3ec;
+      }
+
+      .trust h2 {
+        color: #fff;
+      }
+
+      .trust-grid {
+        display: grid;
+        gap: 1.25rem;
+        grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+      }
+
+      .trust h3 {
+        margin: 0 0 0.3rem;
+        font-size: 1.05rem;
+        color: #fff;
+      }
+
+      .trust p {
+        margin: 0;
+        color: rgba(246, 243, 236, 0.78);
+        font-size: 0.97rem;
+      }
+
+      .trust .check {
+        display: inline-grid;
+        place-items: center;
+        width: 1.6rem;
+        height: 1.6rem;
+        border-radius: 50%;
+        background: var(--accent);
+        color: var(--ink);
+        margin-bottom: 0.6rem;
+      }
+
+      .trust .check svg {
+        width: 0.95rem;
+        height: 0.95rem;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 2.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      /* Final CTA */
+
+      .final {
+        text-align: center;
+        padding: 3rem 0 2rem;
+      }
+
+      .final img {
+        width: 5.5rem;
+        height: 5.5rem;
+        margin-bottom: 0.75rem;
+      }
+
+      .final h2 {
+        margin-bottom: 0.5rem;
+      }
+
+      .final p {
+        margin: 0 auto;
+        color: var(--muted);
+        max-width: 30rem;
+      }
+
+      .final .hero-actions {
+        justify-content: center;
+      }
+
+      /* Footer */
+
+      .site-footer {
+        border-top: 1px solid var(--line);
+        margin-top: 2rem;
+        padding: 1.5rem 0 2.5rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1.5rem;
+        align-items: center;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .site-footer nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 1.25rem;
+      }
+
+      .site-footer a {
+        color: var(--ink);
+        text-decoration: none;
+      }
+
+      .site-footer a:hover {
+        text-decoration: underline;
+      }
+
+      @media (min-width: 52rem) {
+        .site-header {
+          padding: 1.5rem 0;
+        }
+
+        .brand img {
+          height: 2.3rem;
+        }
+
+        .hero {
+          grid-template-columns: 1.15fr 0.85fr;
+          gap: 3rem;
+          padding: 2.5rem 0 4rem;
+        }
+
+        .phone {
+          justify-self: end;
+          transform: rotate(-2deg);
+        }
+
+        section {
+          padding: 3.25rem 0;
+        }
+
+        .trust {
+          padding: 2.5rem;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        .button,
+        .phone {
+          transition: none;
+          transform: none;
+        }
       }
     </style>
   </head>
   <body>
-    <main class="card">
-      <p class="eyebrow">Assistyca</p>
-      <h1>Opening the Assistyca portal.</h1>
-      <p>
-        This GitHub Pages entry point sends you to the Assistyca portal where the client
-        guidance editor and preview tools live.
-      </p>
-      <div class="actions">
-        <a class="button primary" href="./portal/">Open Assistyca</a>
-        <a class="button secondary" href="./portal/" rel="noopener">Go directly</a>
-      </div>
-      <p class="meta">
-        If the redirect does not happen automatically, use the button above.
-      </p>
-    </main>
+    <div class="wrap">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="Assistyca home">
+          <img src="/assets/AssistycaLogoTitle.png" alt="Assistyca" />
+        </a>
+        <div class="header-actions">
+          <a class="link-quiet" href="/portal/">Sign in</a>
+          <a class="button button-primary button-small" href="/register">Register</a>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="hero-title">
+          <div class="hero-copy">
+            <p class="eyebrow">A personal assistant on WhatsApp</p>
+            <h1 id="hero-title">Text it like a person. It gets the work done.</h1>
+            <p>
+              Assistyca reads your inbox and calendar, keeps your lists, chases receipts and reminds you at
+              the right moment. All from the WhatsApp chat you already have open.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="/register">Register free</a>
+              <a class="button button-secondary" href="#ask">See what you can ask</a>
+            </div>
+            <p class="hero-note">Takes a minute. Nothing to install. Your assistant texts you first.</p>
+          </div>
+
+          <div class="phone" aria-label="Example conversation with Assistyca">
+            <div class="phone-top">
+              <img src="/assets/Robot-200.png" alt="" />
+              <div>
+                <strong>Assistyca</strong>
+                <span>online</span>
+              </div>
+            </div>
+            <ol class="chat">
+              <li class="me">What's on today?<time>8:02</time></li>
+              <li class="them">
+                Three things: Dana at 10, the accountant at 13:30, and a free afternoon. Two invoices came in
+                overnight, want the total?<time>8:02</time>
+              </li>
+              <li class="me">Yes, and remind me Friday to pay them<time>8:03</time></li>
+              <li class="them">
+                Both together come to 4,120. I'll text you Friday at 9 with the two of them.<time>8:03</time>
+              </li>
+            </ol>
+          </div>
+        </section>
+
+        <section id="ask" aria-labelledby="ask-title">
+          <div class="section-head">
+            <h2 id="ask-title">Things people text it</h2>
+            <p>No commands to learn. Say it the way you would say it to a person who works with you.</p>
+          </div>
+          <ul class="asks">
+            <li>Did the plumber ever send the invoice?</li>
+            <li>What did I spend on software last month?</li>
+            <li>Put last month's receipts in a folder for the accountant</li>
+            <li>Find me a free hour with Yael next week</li>
+            <li>Every Friday, remind me to send the weekly report</li>
+            <li>Add “renew the insurance by Tuesday” to my to-dos</li>
+            <li>Tell me when the venue posts new dates</li>
+            <li>Summarise that long thread from the supplier</li>
+          </ul>
+        </section>
+
+        <section id="how" aria-labelledby="how-title">
+          <div class="section-head">
+            <h2 id="how-title">How it starts</h2>
+            <p>Three steps, and the first one is the only form you will ever fill in.</p>
+          </div>
+          <ol class="steps">
+            <li>
+              <div>
+                <h3>Register</h3>
+                <p>Your name, your WhatsApp number, and what you do. That last part matters: everything it
+                  suggests later fits your kind of work.</p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <h3>Your assistant texts you first</h3>
+                <p>Connect Gmail, Outlook or your calendar from a link in the chat. Sign-in goes through
+                  Google or Microsoft, so Assistyca never sees your password.</p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <h3>Just text</h3>
+                <p>It answers from your real mail and calendar, sets things up when you ask, and checks
+                  with you before anything it cannot undo.</p>
+              </div>
+            </li>
+          </ol>
+        </section>
+
+        <section id="does" aria-labelledby="does-title">
+          <div class="section-head">
+            <h2 id="does-title">What it works from</h2>
+            <p>Connect what you use. Skip what you don't. Anything it does once, it can do on a schedule.</p>
+          </div>
+          <ul class="sources">
+            <li>
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M3 6h18v12H3z" /><path d="m3 7 9 6 9-6" /></svg>
+              </span>
+              <h3>Your inbox</h3>
+              <p>Gmail and Outlook. What arrived, what matters, what someone never sent, and a long thread
+                in three lines.</p>
+            </li>
+            <li>
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4" /></svg>
+              </span>
+              <h3>Your calendar</h3>
+              <p>What is on today, where the gaps are, and an hour that works for two people.</p>
+            </li>
+            <li>
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z" /><path d="M9 12h6M9 16h6" /></svg>
+              </span>
+              <h3>Receipts and folders</h3>
+              <p>It chases the missing ones, gathers a month into one folder, and answers what you spent
+                and with whom.</p>
+            </li>
+            <li>
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11" /><path d="m4 6 1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" /></svg>
+              </span>
+              <h3>Lists and to-dos</h3>
+              <p>Shopping, packing, the jobs for the week. Give an item a due date and it nudges you each
+                morning about what is due or late.</p>
+            </li>
+            <li>
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+              </span>
+              <h3>Reminders</h3>
+              <p>Once, at a time you name, or every week. Text me at 7 with what is on. Every Sunday, remind
+                me to call mum.</p>
+            </li>
+            <li>
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+              </span>
+              <h3>Watching the web</h3>
+              <p>A competitor's prices, a venue's availability, tickets going on sale. It looks on a
+                schedule and messages you when something changes.</p>
+            </li>
+          </ul>
+        </section>
+
+        <section aria-labelledby="trust-title">
+          <div class="trust">
+            <div class="section-head">
+              <h2 id="trust-title">Made to be trusted with your business</h2>
+            </div>
+            <div class="trust-grid">
+              <div>
+                <span class="check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7" /></svg></span>
+                <h3>It asks before it acts</h3>
+                <p>Nothing is sent, moved or spent without a plain yes from you, in the same chat.</p>
+              </div>
+              <div>
+                <span class="check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7" /></svg></span>
+                <h3>Your accounts stay yours</h3>
+                <p>Connections go through Google and Microsoft sign-in. Credentials are encrypted, never
+                  shown to the model, and a text disconnects them.</p>
+              </div>
+              <div>
+                <span class="check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7" /></svg></span>
+                <h3>Free to start</h3>
+                <p>Try it on your own inbox first. No card to begin, and you can stop by simply not
+                  texting back.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="final" aria-labelledby="final-title">
+          <img src="/assets/Robot-200.png" alt="" />
+          <h2 id="final-title">Ready when you are.</h2>
+          <p>Register with your name and WhatsApp number, and your assistant will say hello.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="/register">Register free</a>
+            <a class="button button-secondary" href="/portal/">I already have an account</a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <span>Assistyca</span>
+        <nav aria-label="Footer">
+          <a href="/about">About Nimrod</a>
+          <a href="/privacy.html">Privacy</a>
+          <a href="/portal/">Sign in</a>
+        </nav>
+      </footer>
+    </div>
   </body>
 </html>

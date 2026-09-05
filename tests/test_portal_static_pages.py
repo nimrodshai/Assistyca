@@ -105,6 +105,44 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertEqual(resolve_static_page_alias("/about/"), Path("about/index.html"))
         self.assertIsNone(resolve_static_page_alias("/"))
 
+    def test_the_root_serves_the_product_landing_page(self) -> None:
+        """Searching for Assistyca lands on the root, so the root must explain the product.
+
+        The page used to be a redirect into the portal. A person who has never heard
+        of us needs the pitch and the way in; the sign-in stays one link away.
+        """
+        with urllib_request.urlopen(f"{self.base_url}/") as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/html", response.headers.get("Content-Type", ""))
+            markup = response.read().decode("utf-8")
+
+        self.assertNotIn("http-equiv=\"refresh\"", markup)
+        self.assertIn('href="/register"', markup)
+        self.assertIn('href="/portal/"', markup)
+        self.assertIn('href="/privacy.html"', markup)
+        self.assertIn('href="/about"', markup)
+        self.assertIn('<link rel="canonical" href="https://assistyca.com/" />', markup)
+        self.assertNotIn("noindex", markup)
+
+    def test_landing_page_assets_are_served(self) -> None:
+        markup = (self.root / "index.html").read_text(encoding="utf-8")
+        referenced = set(re.findall(r'(?:src|href)="(/assets/[^"]+)"', markup))
+        self.assertTrue(referenced, "the landing page should reference its assets by absolute /assets paths")
+        for path in sorted(referenced):
+            with self.subTest(path=path):
+                with urllib_request.urlopen(f"{self.base_url}{path}") as response:
+                    self.assertEqual(response.status, 200)
+                    # Drain the body so the server never sees a half-read socket.
+                    self.assertTrue(response.read())
+
+    def test_robots_lets_crawlers_index_the_landing_page_but_not_the_portal(self) -> None:
+        with urllib_request.urlopen(f"{self.base_url}/robots.txt") as response:
+            self.assertEqual(response.status, 200)
+            body = response.read().decode("utf-8")
+        self.assertIn("Allow: /", body)
+        self.assertIn("Disallow: /portal/", body)
+        self.assertIn("Disallow: /api/", body)
+
     def test_admin_client_type_select_applies_value_after_options_exist(self) -> None:
         body = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
         start = body.index("function createAdminClientTypeSelect")
