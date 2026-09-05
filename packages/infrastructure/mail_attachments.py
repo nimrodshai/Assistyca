@@ -19,6 +19,17 @@ from urllib import parse as urllib_parse
 MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE = 10
 MAX_RECEIPT_ATTACHMENT_BYTES = 8 * 1024 * 1024
 ATTACHMENT_TOO_LARGE_REASON = "Attachment is too large to include in the receipt bundle."
+ATTACHMENT_NOT_A_RECEIPT_FILE_REASON = "Attachment is not the PDF or image its name says it is, so it was not saved."
+
+# What the first bytes of a real file look like. A mailbox reports a type and
+# a name, and both are whatever the sender wrote; the bytes are not.
+_PDF_HEADER = b"%PDF-"
+_IMAGE_HEADERS: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"GIF87a", "gif"),
+    (b"GIF89a", "gif"),
+)
 
 _ATTACHMENT_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._ -]+")
 _IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
@@ -34,6 +45,44 @@ def is_receipt_attachment(mime_type: str, filename: str) -> bool:
         or suffix in _IMAGE_EXTENSIONS
         or suffix == ".pdf"
     )
+
+
+def sniff_attachment_kind(content: bytes) -> str:
+    """"pdf", "image", or "" - from the bytes alone."""
+
+    head = bytes(content[:1024] or b"")
+    if not head:
+        return ""
+    # A PDF may open with a little junk before its header; the format allows
+    # it and some generators do it. Anywhere in the first kilobyte is fine.
+    if _PDF_HEADER in head:
+        return "pdf"
+    for header, _name in _IMAGE_HEADERS:
+        if head.startswith(header):
+            return "image"
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "image"
+    return ""
+
+
+def content_is_receipt_attachment(content: bytes, *, mime_type: str, filename: str) -> bool:
+    """Whether the bytes are the PDF or image the message said they were.
+
+    A name and a type are claims; this checks them against the file. A PDF
+    that is really a web page, or a picture wearing a .pdf name, is refused
+    before it is written into a folder someone will open.
+    """
+
+    kind = sniff_attachment_kind(content)
+    if not kind:
+        return False
+    normalized_mime_type = str(mime_type or "").strip().lower()
+    suffix = Path(str(filename or "")).suffix.lower()
+    says_pdf = normalized_mime_type in _RECEIPT_ATTACHMENT_MIME_TYPES or suffix == ".pdf"
+    says_image = normalized_mime_type.startswith("image/") or suffix in _IMAGE_EXTENSIONS
+    if kind == "pdf":
+        return says_pdf
+    return says_image
 
 
 def safe_attachment_filename(
@@ -99,13 +148,19 @@ def decode_base64_attachment(value: str, *, url_safe: bool) -> bytes:
         raise ValueError("invalid attachment data") from exc
 
 
-def skipped_attachment(filename: str, *, mime_type: str, size: int) -> dict[str, object]:
+def skipped_attachment(
+    filename: str,
+    *,
+    mime_type: str,
+    size: int,
+    reason: str = ATTACHMENT_TOO_LARGE_REASON,
+) -> dict[str, object]:
     return {
         "filename": filename,
         "mimeType": mime_type,
         "size": size,
         "status": "skipped",
-        "reason": ATTACHMENT_TOO_LARGE_REASON,
+        "reason": reason,
     }
 
 

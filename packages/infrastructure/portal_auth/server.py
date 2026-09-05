@@ -9992,9 +9992,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
 
-        return self._send_file_path(file_path)
+        return self._send_file_path(file_path, download_unless_viewable=True)
 
-    def _send_file_path(self, file_path: Path):
+    def _send_file_path(self, file_path: Path, *, download_unless_viewable: bool = False):
         try:
             handle = file_path.open("rb")
         except OSError:
@@ -10008,6 +10008,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
+        if download_unless_viewable:
+            # A file out of someone's mailbox opens in the browser only when it
+            # is a PDF or a picture. Anything else is handed over as a download,
+            # so a web page that arrived as an attachment is never rendered on
+            # the portal's own origin.
+            base_type = content_type.split(";", 1)[0].strip().lower()
+            viewable = base_type == "application/pdf" or base_type.startswith("image/")
+            ascii_name = file_path.name.encode("ascii", "ignore").decode("ascii").replace('"', "") or "file"
+            encoded_name = urllib_parse.quote(file_path.name)
+            self.send_header(
+                "Content-Disposition",
+                f"{'inline' if viewable else 'attachment'}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}",
+            )
         self.send_header("Content-Length", str(stats.st_size))
         self.send_header("Last-Modified", self.date_time_string(stats.st_mtime))
         self.end_headers()

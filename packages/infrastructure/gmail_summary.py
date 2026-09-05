@@ -454,6 +454,14 @@ class GmailDigestRunner:
                     size=len(content),
                 ))
                 continue
+            if not mail_attachments.content_is_receipt_attachment(content, mime_type=mime_type, filename=filename):
+                attachments.append(mail_attachments.skipped_attachment(
+                    safe_name,
+                    mime_type=mime_type,
+                    size=len(content),
+                    reason=mail_attachments.ATTACHMENT_NOT_A_RECEIPT_FILE_REASON,
+                ))
+                continue
             attachments.append(mail_attachments.save_attachment(
                 content,
                 output_dir=output_dir,

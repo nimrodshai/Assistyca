@@ -436,7 +436,8 @@ class GmailDigestTests(unittest.TestCase):
 
     def test_runner_saves_receipt_image_attachments(self) -> None:
         requests: list[object] = []
-        image_bytes = b"small-receipt-image"
+        # Real PNG bytes: a file whose bytes are not the picture it claims to be is refused.
+        image_bytes = b"\x89PNG\r\n\x1a\n" + b"small-receipt-image"
         image_data = base64.urlsafe_b64encode(image_bytes).decode("ascii").rstrip("=")
 
         def opener(request, *, timeout):  # type: ignore[no-untyped-def]

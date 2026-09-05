@@ -12,6 +12,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from packages.infrastructure.portal_auth.server import PortalConfig
+from packages.infrastructure.portal_auth.server import build_agent_receipt_owner_key
 from packages.infrastructure.portal_auth.server import create_server
 
 
@@ -28,6 +29,7 @@ class PortalSecurityTests(unittest.TestCase):
             PortalConfig(
                 db_path=Path(self.temp_dir.name) / "portal.db",
                 session_secret="test-session-secret",
+                agent_output_dir=Path(self.temp_dir.name) / "agent_receipts",
             ),
         )
         self.server.database.register_user("owner@example.com")
@@ -241,6 +243,42 @@ class PortalSecurityTests(unittest.TestCase):
         status, _ = self._post_large("/api/contact", self._oversized_json(300 * 1024), {})
 
         self.assertEqual(status, 413)
+
+    # --- saved files ----------------------------------------------------------
+
+    def _saved_file(self, name: str, content: bytes) -> str:
+        owner_key = build_agent_receipt_owner_key("owner@example.com")
+        folder = Path(self.temp_dir.name) / "agent_receipts" / owner_key
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_bytes(content)
+        return f"/output/agent_receipts/{owner_key}/{name}"
+
+    def test_a_saved_pdf_opens_in_the_browser(self) -> None:
+        cookie = self._cookie()
+        path = self._saved_file("receipt.pdf", b"%PDF-1.4\n")
+
+        status, _, headers = self._request(path, headers={"Cookie": cookie})
+
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["Content-Disposition"].startswith("inline;"))
+
+    def test_a_saved_file_that_is_not_a_pdf_or_picture_is_offered_as_a_download(self) -> None:
+        cookie = self._cookie()
+        path = self._saved_file("report.html", b"<script>alert(1)</script>")
+
+        status, _, headers = self._request(path, headers={"Cookie": cookie})
+
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["Content-Disposition"].startswith("attachment;"))
+        self.assertIn('filename="report.html"', headers["Content-Disposition"])
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+
+    def test_a_saved_file_is_not_served_to_a_stranger(self) -> None:
+        path = self._saved_file("receipt.pdf", b"%PDF-1.4\n")
+
+        status, _, _ = self._request(path)
+
+        self.assertEqual(status, 404)
 
 
 if __name__ == "__main__":
