@@ -416,10 +416,6 @@
         padding: 4rem 0 0;
       }
 
-      .split section + section {
-        padding-top: 1.25rem;
-      }
-
       .label {
         margin: 0 0 0.7rem;
         font-size: 0.78rem;
@@ -440,38 +436,6 @@
         margin: -0.6rem 0 1.6rem;
         color: var(--muted);
         font-size: 1.05rem;
-      }
-
-      /* Asks: floating bubbles */
-
-      .asks {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        display: grid;
-        gap: 0.7rem;
-      }
-
-      .asks li {
-        justify-self: start;
-        max-width: 90%;
-        padding: 0.85rem 1.15rem;
-        background: #fff;
-        border-radius: 1.3rem;
-        border-top-left-radius: 0.35rem;
-        font-weight: 600;
-        font-size: 1.02rem;
-        letter-spacing: -0.01em;
-        box-shadow:
-          0 1px 0 rgba(15, 27, 48, 0.04),
-          0 14px 30px -18px rgba(15, 27, 48, 0.35);
-      }
-
-      .asks li:nth-child(even) {
-        justify-self: end;
-        background: var(--wa-me);
-        border-top-left-radius: 1.3rem;
-        border-top-right-radius: 0.35rem;
       }
 
       /* Steps: big numerals */
@@ -682,21 +646,6 @@
           padding-top: 5.5rem;
         }
 
-        .split {
-          display: grid;
-          grid-template-columns: 0.9fr 1.1fr;
-          gap: 4rem;
-          align-items: start;
-        }
-
-        .split section + section {
-          padding-top: 5.5rem;
-        }
-
-        .asks li {
-          font-size: 1.1rem;
-        }
-
         .steps {
           grid-template-columns: repeat(3, 1fr);
           gap: 2.5rem;
@@ -782,21 +731,11 @@
 
     <main>
       <div class="col">
-        <div class="split">
-          <section aria-labelledby="ask-title">
-            <p class="label">No commands</p>
-            <h2 id="ask-title">Just say it.</h2>
-            <p class="lead">The way you'd say it to someone who works with you.</p>
-          </section>
-          <section aria-hidden="false">
-            <ul class="asks">
-              <li>Did the plumber ever send the invoice?</li>
-              <li>Put last month's receipts in a folder for the accountant</li>
-              <li>Find me a free hour with Yael next week</li>
-              <li>Every Friday, remind me to send the weekly report</li>
-            </ul>
-          </section>
-        </div>
+        <section aria-labelledby="what-title">
+          <p class="label">No commands</p>
+          <h2 id="what-title">An LLM agent, designed for businesses.</h2>
+          <p class="lead">Just say it, the way you'd say it to someone who works with you.</p>
+        </section>
 
         <section aria-labelledby="how-title">
           <p class="label">Getting started</p>
