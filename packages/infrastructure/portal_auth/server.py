@@ -13970,7 +13970,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         challenge = normalize_text(query.get("hub.challenge", [""])[0])
         verify_token = normalize_text(os.getenv("WHATSAPP_VERIFY_TOKEN"))
 
-        if verify_token and token != verify_token:
+        # No configured token means nobody can prove they are Meta, so nobody
+        # gets the challenge echoed back. Delivery already fails closed without
+        # its app secret; subscription must fail the same way rather than
+        # letting anyone who finds the URL pass verification.
+        if not verify_token:
+            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Webhook verification is not configured")
+            return
+
+        if token != verify_token:
             self.send_error(HTTPStatus.FORBIDDEN, "Invalid verify token")
             return
 

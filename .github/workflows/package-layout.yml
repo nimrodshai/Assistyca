@@ -53,6 +53,7 @@ jobs:
             tests.test_portal_static_pages \
             tests.test_portal_db \
             tests.test_portal_auth_sessions \
+            tests.test_portal_security \
             tests.test_portal_user_access \
             tests.test_openai_pricing \
             tests.test_lemon_squeezy_api \
