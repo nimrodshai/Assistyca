@@ -425,13 +425,6 @@
         color: transparent;
       }
 
-      .lead {
-        margin: 0;
-        color: var(--muted);
-        font-size: 1.1rem;
-        max-width: 30rem;
-      }
-
       /* Things to say: two drifting rows of pills, full bleed */
 
       .say {
@@ -702,17 +695,6 @@
           padding-top: 5.5rem;
         }
 
-        .what {
-          display: grid;
-          grid-template-columns: 1.3fr 1fr;
-          gap: 3rem;
-          align-items: end;
-        }
-
-        .what .lead {
-          padding-bottom: 0.4rem;
-        }
-
         .say {
           margin-top: 3.5rem;
         }
@@ -811,11 +793,8 @@
     <main>
       <div class="col">
         <section class="what" aria-labelledby="what-title">
-          <div>
-            <p class="label">No commands</p>
-            <h2 id="what-title">An LLM agent, designed for <em>businesses</em>.</h2>
-          </div>
-          <p class="lead">Just say it, the way you'd say it to someone who works with you.</p>
+          <p class="label">No commands</p>
+          <h2 id="what-title">An LLM agent, designed for <em>businesses</em>.</h2>
         </section>
 
         <div class="say" aria-hidden="true">
