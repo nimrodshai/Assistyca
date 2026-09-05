@@ -397,11 +397,11 @@
       /* ---------- Sections ---------- */
 
       section {
-        padding: 4rem 0 0;
+        padding: 4.5rem 0 0;
       }
 
       .label {
-        margin: 0 0 0.7rem;
+        margin: 0 0 0.8rem;
         font-size: 0.78rem;
         font-weight: 700;
         letter-spacing: 0.14em;
@@ -410,85 +410,157 @@
       }
 
       h2 {
-        margin: 0 0 1.4rem;
-        font-size: clamp(1.9rem, 7.5vw, 2.7rem);
-        line-height: 1.04;
-        letter-spacing: -0.035em;
+        margin: 0 0 1.1rem;
+        font-size: clamp(2rem, 8vw, 3rem);
+        line-height: 1.02;
+        letter-spacing: -0.04em;
+        max-width: 18ch;
+      }
+
+      h2 em {
+        font-style: normal;
+        background: linear-gradient(90deg, var(--teal-deep), var(--teal-bright));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
       }
 
       .lead {
-        margin: -0.6rem 0 1.6rem;
+        margin: 0;
         color: var(--muted);
-        font-size: 1.05rem;
+        font-size: 1.1rem;
+        max-width: 30rem;
       }
 
-      /* Steps: big numerals */
+      /* Things to say: two drifting rows of pills, full bleed */
 
-      .steps {
+      .say {
+        margin: 2.5rem calc(50% - 50vw) 0;
+        padding: 0.5rem 0;
+        display: grid;
+        gap: 0.85rem;
+        overflow: hidden;
+        -webkit-mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+        mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+      }
+
+      .say-row {
+        display: flex;
+        gap: 0.85rem;
+        width: max-content;
+        animation: drift 46s linear infinite;
+      }
+
+      .say-row.reverse {
+        animation-direction: reverse;
+        animation-duration: 54s;
+      }
+
+      .say-row span {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.8rem 1.2rem;
+        border-radius: 999px;
+        background: #fff;
+        border: 1px solid rgba(15, 27, 48, 0.06);
+        box-shadow: 0 12px 26px -18px rgba(15, 27, 48, 0.45);
+        font-weight: 600;
+        font-size: 0.98rem;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+      }
+
+      .say-row span::before {
+        content: "";
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+        background: var(--teal);
+      }
+
+      .say-row span.alt {
+        background: var(--wa-me);
+        border-color: transparent;
+      }
+
+      @keyframes drift {
+        from { transform: translateX(0); }
+        to { transform: translateX(-50%); }
+      }
+
+      /* Trust: three glass tiles over a soft glow */
+
+      .trust {
+        position: relative;
+      }
+
+      .trust::before {
+        content: "";
+        position: absolute;
+        left: -30vw;
+        right: -30vw;
+        top: 40%;
+        height: 55%;
+        background: radial-gradient(closest-side, rgba(110, 196, 190, 0.32), transparent);
+        filter: blur(30px);
+        z-index: -1;
+        pointer-events: none;
+      }
+
+      .tiles {
         list-style: none;
-        margin: 0;
+        margin: 1.75rem 0 0;
         padding: 0;
         display: grid;
-        gap: 1.5rem;
-        counter-reset: step;
+        gap: 0.9rem;
       }
 
-      .steps li {
-        counter-increment: step;
-        padding-top: 1.1rem;
-        border-top: 1px solid var(--line);
+      .tiles li {
+        padding: 1.6rem 1.45rem;
+        border-radius: 1.6rem;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.95);
+        box-shadow:
+          0 1px 0 rgba(15, 27, 48, 0.04),
+          0 28px 60px -34px rgba(15, 27, 48, 0.4);
+        backdrop-filter: blur(12px);
       }
 
-      .steps li::before {
-        content: "0" counter(step);
+      .tiles .ico {
+        width: 2.8rem;
+        height: 2.8rem;
+        border-radius: 1rem;
+        display: grid;
+        place-items: center;
+        color: var(--ink);
+        background: linear-gradient(135deg, #c3ece7, var(--teal));
+        box-shadow: 0 12px 22px -12px var(--teal-glow);
+        margin-bottom: 1.1rem;
+      }
+
+      .tiles svg {
+        width: 1.3rem;
+        height: 1.3rem;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .tiles strong {
         display: block;
-        font-size: 0.85rem;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        color: var(--teal-deep);
-        margin-bottom: 0.45rem;
-      }
-
-      .steps strong {
-        display: block;
-        font-size: 1.25rem;
+        font-size: 1.15rem;
         letter-spacing: -0.02em;
-        margin-bottom: 0.25rem;
+        margin-bottom: 0.3rem;
       }
 
-      .steps span {
-        color: var(--muted);
-      }
-
-      /* Trust: one calm card */
-
-      .trust-card {
-        border-radius: var(--radius);
-        padding: 1.9rem 1.6rem;
-        background:
-          radial-gradient(22rem 14rem at 100% 0%, rgba(110, 196, 190, 0.28), transparent 60%),
-          #fff;
-        border: 1px solid rgba(110, 196, 190, 0.3);
-      }
-
-      .trust-card h2 {
-        font-size: clamp(1.6rem, 6.5vw, 2.1rem);
-        margin-bottom: 1rem;
-      }
-
-      .trust-card p {
+      .tiles p {
         margin: 0;
         color: var(--muted);
-        font-size: 1.02rem;
-      }
-
-      .trust-card p + p {
-        margin-top: 0.7rem;
-      }
-
-      .trust-card p strong {
-        color: var(--ink);
-        font-weight: 700;
+        font-size: 0.98rem;
       }
 
       /* Final: dark card */
@@ -630,21 +702,34 @@
           padding-top: 5.5rem;
         }
 
-        .steps {
-          grid-template-columns: repeat(3, 1fr);
-          gap: 2.5rem;
-        }
-
-        .trust-card {
-          padding: 3rem;
+        .what {
           display: grid;
-          grid-template-columns: 1fr 1.2fr;
+          grid-template-columns: 1.3fr 1fr;
           gap: 3rem;
-          align-items: center;
+          align-items: end;
         }
 
-        .trust-card h2 {
-          margin: 0;
+        .what .lead {
+          padding-bottom: 0.4rem;
+        }
+
+        .say {
+          margin-top: 3.5rem;
+        }
+
+        .say-row span {
+          font-size: 1.05rem;
+          padding: 0.9rem 1.4rem;
+        }
+
+        .tiles {
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1.25rem;
+          margin-top: 2.5rem;
+        }
+
+        .tiles li {
+          padding: 2rem 1.75rem;
         }
 
         .final-card {
@@ -666,6 +751,17 @@
         .cta,
         .cta::after {
           transition: none;
+        }
+
+        .say-row {
+          animation: none;
+          flex-wrap: wrap;
+          width: auto;
+          padding: 0 1.5rem;
+        }
+
+        .say-row span:nth-child(n + 7) {
+          display: none;
         }
       }
     </style>
@@ -714,39 +810,65 @@
 
     <main>
       <div class="col">
-        <section aria-labelledby="what-title">
-          <p class="label">No commands</p>
-          <h2 id="what-title">An LLM agent, designed for businesses.</h2>
+        <section class="what" aria-labelledby="what-title">
+          <div>
+            <p class="label">No commands</p>
+            <h2 id="what-title">An LLM agent, designed for <em>businesses</em>.</h2>
+          </div>
           <p class="lead">Just say it, the way you'd say it to someone who works with you.</p>
         </section>
 
-        <section aria-labelledby="how-title">
-          <p class="label">Getting started</p>
-          <h2 id="how-title">Three steps. One form, ever.</h2>
-          <ol class="steps">
-            <li>
-              <strong>Register</strong>
-              <span>Your name, your WhatsApp number, what you do.</span>
-            </li>
-            <li>
-              <strong>It texts you first</strong>
-              <span>Connect Gmail, Outlook or your calendar from a link in the chat.</span>
-            </li>
-            <li>
-              <strong>Just text</strong>
-              <span>It works from your real mail and calendar, and asks before anything it can't undo.</span>
-            </li>
-          </ol>
-        </section>
-
-        <section aria-labelledby="trust-title">
-          <div class="trust-card">
-            <h2 id="trust-title">It asks before it acts.</h2>
-            <div>
-              <p><strong>Nothing is sent or spent</strong> without a plain yes from you, in the same chat.</p>
-              <p>Accounts connect through Google or Microsoft sign-in. Assistyca never sees your password, and a text disconnects them.</p>
-            </div>
+        <div class="say" aria-hidden="true">
+          <div class="say-row">
+            <span>Did the plumber ever send the invoice?</span>
+            <span class="alt">What's on tomorrow?</span>
+            <span>Put last month's receipts in a folder for the accountant</span>
+            <span>Every Friday, remind me to send the weekly report</span>
+            <span class="alt">Find me a free hour with Yael next week</span>
+            <span>What did I spend on software last month?</span>
+            <span>Did the plumber ever send the invoice?</span>
+            <span class="alt">What's on tomorrow?</span>
+            <span>Put last month's receipts in a folder for the accountant</span>
+            <span>Every Friday, remind me to send the weekly report</span>
+            <span class="alt">Find me a free hour with Yael next week</span>
+            <span>What did I spend on software last month?</span>
           </div>
+          <div class="say-row reverse">
+            <span>Add renew the insurance to my to-dos, due Tuesday</span>
+            <span class="alt">Summarise that long thread from the supplier</span>
+            <span>Text me at 7 with what's on</span>
+            <span>Who haven't I replied to this week?</span>
+            <span class="alt">Tell me when the venue posts new dates</span>
+            <span>Did the deposit come in?</span>
+            <span>Add renew the insurance to my to-dos, due Tuesday</span>
+            <span class="alt">Summarise that long thread from the supplier</span>
+            <span>Text me at 7 with what's on</span>
+            <span>Who haven't I replied to this week?</span>
+            <span class="alt">Tell me when the venue posts new dates</span>
+            <span>Did the deposit come in?</span>
+          </div>
+        </div>
+
+        <section class="trust" aria-labelledby="trust-title">
+          <p class="label">Built for trust</p>
+          <h2 id="trust-title">It asks before it acts.</h2>
+          <ul class="tiles">
+            <li>
+              <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7" /></svg></span>
+              <strong>Nothing without a yes</strong>
+              <p>Nothing is sent or spent without a plain yes from you, in the same chat.</p>
+            </li>
+            <li>
+              <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="10.5" width="16" height="10" rx="2.5" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></svg></span>
+              <strong>Your accounts stay yours</strong>
+              <p>Gmail, Outlook and calendar connect through Google or Microsoft sign-in. Assistyca never sees your password.</p>
+            </li>
+            <li>
+              <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" /><path d="M10 8 6 12l4 4M6 12h9" /></svg></span>
+              <strong>Leave any time</strong>
+              <p>A text disconnects an account. Stop by simply not texting back.</p>
+            </li>
+          </ul>
         </section>
 
         <section class="final" aria-labelledby="final-title">
