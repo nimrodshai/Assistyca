@@ -953,8 +953,11 @@ AGENT_LOOP_INSTRUCTIONS = (
     "all of them; read before answering what is on a list. Name the list the way the person did; the tool says "
     "when more than one could be meant or none exists. Every list result carries a link to the lists page, "
     "where they can see and edit the list by hand and copy a link for other apps: put it in the reply on its "
-    "own line exactly as given, once. A reminder about a list is schedule_message with list_name set; the "
-    "items are read when it fires, so never copy them into message_text.\n"
+    "own line exactly as given, once. CONTEXT.listsPage is that page for the whole account: whenever the "
+    "conversation is about lists or todos - including asking whether you can help with them, or how they work "
+    "- put that link in the reply on its own line, unless a reply in recentConversation already carried a "
+    "lists link. A reminder about a list is schedule_message with list_name set; the items are read when it "
+    "fires, so never copy them into message_text.\n"
     "knownFacts is what the account already told you about how their business works; read it before asking "
     "anything, and use it to resolve what a message leaves out. When the owner states something about their "
     "business that will still be true next month, call remember_fact; when they say something is no longer "
@@ -1015,6 +1018,7 @@ def build_loop_context_text(
     open_question: dict[str, Any] | None = None,
     now: str = "",
     photo: dict[str, Any] | None = None,
+    lists_page: str = "",
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -1031,6 +1035,8 @@ def build_loop_context_text(
         "latestUserMessage": user_message,
         "attachedPhoto": attached_photo,
     }
+    if lists_page:
+        context["listsPage"] = lists_page
     if confirmed_action:
         context["confirmedAction"] = confirmed_action
     if declined_action:
@@ -1076,6 +1082,10 @@ def run_agent_loop(
         confirmed_action = _execute_confirmed(context, confirmed_call, tool_calls, completed)
 
     tools = tool_definitions(context.tool_context)
+    # The lists page is in the context from the start, not only inside a
+    # list result: "can you help with my todos" is answered without a tool,
+    # and the answer still has somewhere to point.
+    lists_page = _lists_home_link(context)
     context_text = build_loop_context_text(
         user_message=user_message,
         conversation=conversation,
@@ -1089,6 +1099,7 @@ def run_agent_loop(
         open_question=open_question,
         now=now,
         photo=photo,
+        lists_page=lists_page,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},

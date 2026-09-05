@@ -149,7 +149,8 @@ class ListToolTests(unittest.TestCase):
     def _context(self) -> LoopContext:
         return LoopContext(
             api=self.api, database=self.database, email="owner@example.com", user_id=self.user_id,
-            timezone_name="Asia/Jerusalem", channel="whatsapp", list_link=lambda list_id: LINK.format(id=list_id),
+            timezone_name="Asia/Jerusalem", channel="whatsapp",
+            list_link=lambda list_id: LINK.format(id=list_id) if list_id else LINK.format(id=0).replace("#/list/0", ""),
         )
 
     def _last_output(self, model: ScriptedModel) -> dict:
@@ -160,6 +161,15 @@ class ListToolTests(unittest.TestCase):
         for name in ("create_list", "update_list", "show_lists"):
             self.assertNotIn("UNAVAILABLE", by_name[name]["description"])
         self.assertIn("list_name", by_name["schedule_message"]["parameters"]["properties"])
+
+    def test_the_lists_page_is_in_context_so_a_reply_without_a_tool_can_point_at_it(self) -> None:
+        # "Can you help with my todos?" is answered without a tool; the link
+        # must still be there to give, and the guard must let it through.
+        home = LINK.format(id=0).replace("#/list/0", "")
+        model = ScriptedModel([_model_round(reply=_reply(f"Yes. Dump them here or open the page:\n{home}"))])
+        result = run_agent_loop(context=self._context(), call_model=model, user_message="can you help with my todos?", conversation=[], today="2026-09-05")
+        self.assertIn(f'"listsPage":"{home}"', model.inputs[0][0]["content"])
+        self.assertIn(home, result.reply)
 
     def test_creating_a_list_hands_back_the_link_and_the_reply_may_carry_it(self) -> None:
         model = ScriptedModel([
