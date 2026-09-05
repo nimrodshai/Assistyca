@@ -207,6 +207,25 @@ class LoopMechanicsTests(unittest.TestCase):
         result = run_agent_loop(context=_context(), call_model=model, user_message="hm", conversation=[], today="2026-09-05", open_question=open_question)
         self.assertEqual(result.answers_open_question, "")
 
+    def test_a_refused_schedule_tells_the_model_why(self) -> None:
+        # The stored call runs on the yes; the scheduler refuses; the model is
+        # told the reason in the person's terms, and the turn keeps the code.
+        api = FakeApi({"/api/scheduled-actions": ({"ok": False, "error": "missing_whatsapp_recipient", "message": "Add the number."}, 409)})
+        held = {"tool": "schedule_message", "arguments": {"time_local": None, "date_policy": "today", "delay_minutes": 10, "message_text": "Call back"}}
+        model = ScriptedModel([_model_round(reply=_reply("I couldn't set it: no WhatsApp number is saved yet."))])
+        result = run_agent_loop(context=_context(api), call_model=model, user_message="yes", conversation=[], today="2026-09-05", confirmed_call=held)
+        context_text = model.inputs[0][0]["content"]
+        self.assertIn('"code":"missing_whatsapp_recipient"', context_text)
+        self.assertIn("No WhatsApp number is saved", context_text)
+        self.assertEqual(result.completed, [])
+        self.assertEqual(result.tool_calls[0]["code"], "missing_whatsapp_recipient")
+
+        api = FakeApi({"/api/scheduled-actions": ({}, 500)})
+        model = ScriptedModel([_model_round(reply=_reply("Something failed on our side; try again."))])
+        result = run_agent_loop(context=_context(api), call_model=model, user_message="yes", conversation=[], today="2026-09-05", confirmed_call=held)
+        self.assertIn('"code":"internal"', model.inputs[0][0]["content"])
+        self.assertEqual(result.tool_calls[0]["code"], "internal")
+
     def test_a_confirm_tool_that_could_not_run_is_never_asked_about(self) -> None:
         # Nothing is connected, so a disconnect has nothing to do: the model is
         # told so and no question is held for a yes that would do nothing.
