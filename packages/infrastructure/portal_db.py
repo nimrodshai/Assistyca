@@ -237,6 +237,8 @@ CREATE TABLE IF NOT EXISTS users (
     -- because a trial was introduced around them.
     trial_days INTEGER NOT NULL DEFAULT 0,
     trial_started_at TEXT,
+    -- "Sign out everywhere", as a moment: sessions signed in before it are out.
+    sessions_valid_after REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -1163,6 +1165,8 @@ class PortalDatabase:
             conn.execute("ALTER TABLE users ADD COLUMN trial_days INTEGER NOT NULL DEFAULT 0")
         if "trial_started_at" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
+        if "sessions_valid_after" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN sessions_valid_after REAL NOT NULL DEFAULT 0")
 
     def _migrate_whatsapp_signups_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -3209,6 +3213,34 @@ class PortalDatabase:
                 """,
                 (now, now, now, normalized_email),
             )
+
+    def set_session_floor(self, email: str, valid_after: float) -> None:
+        """Sign this account out everywhere: sessions signed in before now are refused."""
+
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE users SET sessions_valid_after = ?, updated_at = ? WHERE email = ?",
+                (float(valid_after), now_iso(), normalized_email),
+            )
+
+    def get_session_floor(self, email: str) -> float:
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return 0.0
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT sessions_valid_after FROM users WHERE email = ?",
+                (normalized_email,),
+            ).fetchone()
+        if row is None:
+            return 0.0
+        try:
+            return float(row["sessions_valid_after"] or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def revoke_session_token(self, token_hash: str, expires_at: float) -> None:
         """Remember that a signed session token must no longer be accepted."""

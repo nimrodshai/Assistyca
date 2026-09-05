@@ -272,7 +272,14 @@ EMAIL_RE = re.compile(r"^\S+@\S+\.\S+$")
 DEFAULT_PRODUCT_NAME = "Assistyca"
 DEFAULT_MAIL_PROVIDER = "smtp"
 DEFAULT_OTP_TTL_SECONDS = 10 * 60
-DEFAULT_SESSION_TTL_SECONDS = 180 * 24 * 60 * 60
+# A session lasts a month of silence, not half a year. Activity extends it: a
+# cookie older than a day is swapped for a fresh one on the next request, so a
+# client who keeps coming back is never asked to sign in, and one who stops is
+# after thirty days. The original sign-in caps it all the same: ninety days
+# after the code was typed, it is asked for again whatever happened between.
+DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 90 * 24 * 60 * 60
+SESSION_RENEWAL_AFTER_SECONDS = 24 * 60 * 60
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_SMTP_PORT = 587
 DEFAULT_BILLING_MULTIPLIER = 1.5
@@ -974,6 +981,7 @@ class PortalConfig:
     mail_provider: str = DEFAULT_MAIL_PROVIDER
     otp_ttl_seconds: int = DEFAULT_OTP_TTL_SECONDS
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    session_max_lifetime_seconds: int = DEFAULT_SESSION_MAX_LIFETIME_SECONDS
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     session_secret: str = ""
     credential_encryption_key: str = ""
@@ -1017,6 +1025,14 @@ class PortalSession:
     email: str
     issued_at: float
     expires_at: float
+    # When the code was last typed. A renewed session keeps this from the one
+    # it replaces, which is what lets "sign out everywhere" and the ninety-day
+    # cap reach a session however many times it has been renewed since.
+    authenticated_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.authenticated_at <= 0:
+            self.authenticated_at = self.issued_at
 
 
 class PortalAuthStore:
@@ -1030,9 +1046,13 @@ class PortalAuthStore:
         registered_email_lookup: Callable[[str], bool],
         record_revocation: Callable[[str, float], None] | None = None,
         revocation_lookup: Callable[[str], bool] | None = None,
+        session_max_lifetime_seconds: int = DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
+        record_session_floor: Callable[[str, float], None] | None = None,
+        session_floor_lookup: Callable[[str], float] | None = None,
     ) -> None:
         self.otp_ttl_seconds = otp_ttl_seconds
         self.session_ttl_seconds = session_ttl_seconds
+        self.session_max_lifetime_seconds = max(int(session_max_lifetime_seconds), int(session_ttl_seconds))
         self.max_attempts = max_attempts
         self.session_secret = session_secret.encode("utf-8") if session_secret else b""
         self.registered_email_lookup = registered_email_lookup
@@ -1042,9 +1062,14 @@ class PortalAuthStore:
         # standing on its own in a test.
         self.record_revocation = record_revocation
         self.revocation_lookup = revocation_lookup
+        # "Sign out everywhere" is a line drawn per account: a session whose
+        # code was typed before the line is refused, one typed after is fine.
+        self.record_session_floor = record_session_floor
+        self.session_floor_lookup = session_floor_lookup
         self._challenges: dict[str, OtpChallenge] = {}
         self._sessions: dict[str, PortalSession] = {}
         self._revoked_tokens: dict[str, float] = {}
+        self._session_floors: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def is_registered_email(self, email: str) -> bool:
@@ -1124,12 +1149,20 @@ class PortalAuthStore:
         with self._lock:
             return self._issue_session_locked(normalized_email, time.time())
 
-    def _issue_session_locked(self, normalized_email: str, now: float) -> dict[str, Any]:
+    def _issue_session_locked(
+        self,
+        normalized_email: str,
+        now: float,
+        *,
+        authenticated_at: float | None = None,
+    ) -> dict[str, Any]:
+        authenticated_at = float(authenticated_at) if authenticated_at and authenticated_at > 0 else now
         session = PortalSession(
             token="",
             email=normalized_email,
             issued_at=now,
-            expires_at=now + self.session_ttl_seconds,
+            expires_at=min(now + self.session_ttl_seconds, authenticated_at + self.session_max_lifetime_seconds),
+            authenticated_at=authenticated_at,
         )
         token = create_session_token(session, self.session_secret) if self.session_secret else secrets.token_urlsafe(32)
         session.token = token
@@ -1156,7 +1189,7 @@ class PortalAuthStore:
             if self.session_secret:
                 session = parse_session_token(normalized_token, self.session_secret)
                 if session is not None and self.is_registered_email(session.email):
-                    return session
+                    return None if self._is_shut_out_locked(session, now) else session
                 if session is not None:
                     return None
 
@@ -1171,7 +1204,72 @@ class PortalAuthStore:
                 self._sessions.pop(normalized_token, None)
                 return None
 
+            if self._is_shut_out_locked(session, now):
+                self._sessions.pop(normalized_token, None)
+                return None
+
             return session
+
+    def _is_shut_out_locked(self, session: PortalSession, now: float) -> bool:
+        """Past the cap, or signed in before the account was signed out everywhere.
+
+        The cap is checked here and not only when the token is written, so a
+        token signed under a longer setting stops at the setting in force now.
+        """
+
+        if now > session.authenticated_at + self.session_max_lifetime_seconds:
+            return True
+        return self._is_below_floor_locked(session)
+
+    def _session_floor(self, email: str) -> float:
+        normalized_email = normalize_email(email)
+        if self.session_floor_lookup is not None:
+            try:
+                return float(self.session_floor_lookup(normalized_email) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        return float(self._session_floors.get(normalized_email, 0.0))
+
+    def _is_below_floor_locked(self, session: PortalSession) -> bool:
+        return session.authenticated_at <= self._session_floor(session.email)
+
+    def renew_session(self, session: PortalSession) -> dict[str, Any] | None:
+        """A fresh token for a session old enough to deserve one, or None.
+
+        Renewal keeps the sign-in time, so the ninety-day cap and "sign out
+        everywhere" still count from the code that was typed, not from the
+        last visit. A session already past what the cap allows gets nothing.
+        """
+
+        now = time.time()
+        if now - session.issued_at < SESSION_RENEWAL_AFTER_SECONDS:
+            return None
+        # A renewal that would not reach further than the session already
+        # does - one sitting at the ninety-day cap - is not worth a cookie.
+        renewed_expiry = min(now + self.session_ttl_seconds, session.authenticated_at + self.session_max_lifetime_seconds)
+        if renewed_expiry <= session.expires_at + 1:
+            return None
+        if not self.is_registered_email(session.email):
+            return None
+        with self._lock:
+            if self._is_below_floor_locked(session):
+                return None
+            return self._issue_session_locked(normalize_email(session.email), now, authenticated_at=session.authenticated_at)
+
+    def revoke_all_sessions(self, email: str) -> None:
+        """Draw the line: every session of this account signed in until now is out."""
+
+        normalized_email = normalize_email(email)
+        if not normalized_email:
+            return
+        now = time.time()
+        if self.record_session_floor is not None:
+            self.record_session_floor(normalized_email, now)
+        with self._lock:
+            self._session_floors[normalized_email] = now
+            for token, session in list(self._sessions.items()):
+                if normalize_email(session.email) == normalized_email:
+                    self._sessions.pop(token, None)
 
     def revoke_session(self, token: str) -> bool:
         normalized_token = str(token or "").strip()
@@ -1691,6 +1789,12 @@ def create_session_token(session: PortalSession, secret: bytes) -> str:
         "email": normalize_email(session.email),
         "iat": int(session.issued_at),
         "exp": int(session.expires_at),
+        # Full precision: "sign out everywhere" draws its line at a moment,
+        # and a sign-in a few hundred milliseconds later must fall after it.
+        "auth": float(session.authenticated_at),
+        # Two sign-ins in the same second are two sessions, not one token
+        # twice: signing out on the phone must not sign out the laptop.
+        "n": secrets.token_urlsafe(9),
     }
     payload_segment = encode_token_segment(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     signature_segment = sign_token_segment(payload_segment, secret)
@@ -1732,6 +1836,17 @@ def parse_session_token(token: str, secret: bytes, *, validate_expiry: bool = Tr
     if issued_at <= 0 or expires_at <= issued_at:
         return None
 
+    # Tokens from before renewals existed carry no sign-in time; their issue
+    # time is the sign-in, which is what it always meant for them.
+    try:
+        authenticated_at = float(payload.get("auth", issued_at))
+    except (TypeError, ValueError):
+        return None
+    # The issue time is written in whole seconds and the sign-in time is not,
+    # so a token minted at sign-in carries a sign-in time a fraction later.
+    if authenticated_at <= 0 or authenticated_at > issued_at + 1:
+        return None
+
     if validate_expiry and time.time() > expires_at:
         return None
 
@@ -1740,6 +1855,7 @@ def parse_session_token(token: str, secret: bytes, *, validate_expiry: bool = Tr
         email=email,
         issued_at=issued_at,
         expires_at=expires_at,
+        authenticated_at=authenticated_at,
     )
 
 
@@ -1916,6 +2032,7 @@ def load_config() -> PortalConfig:
         mail_provider=provider,
         otp_ttl_seconds=read_int_env("PORTAL_OTP_TTL_SECONDS", DEFAULT_OTP_TTL_SECONDS),
         session_ttl_seconds=read_int_env("PORTAL_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS),
+        session_max_lifetime_seconds=read_int_env("PORTAL_SESSION_MAX_LIFETIME_SECONDS", DEFAULT_SESSION_MAX_LIFETIME_SECONDS),
         max_attempts=read_int_env("PORTAL_OTP_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS),
         session_secret=session_secret,
         credential_encryption_key=(
@@ -3837,6 +3954,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if self._request_is_https():
             self.send_header("Strict-Transport-Security", STRICT_TRANSPORT_SECURITY)
 
+        renewed_cookie = getattr(self, "_renewed_session_cookie", "")
+        if renewed_cookie:
+            self.send_header("Set-Cookie", renewed_cookie)
+            self._renewed_session_cookie = ""
+
         super().end_headers()
 
     def _request_is_https(self) -> bool:
@@ -3862,6 +3984,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return public_base_url.startswith("https://")
 
     def _build_session_cookie(self, token: str) -> str:
+        # Whoever writes a cookie on purpose - sign-in, sign-out, a handoff -
+        # is not to be second-guessed by a renewal the same response queued.
+        self._renewed_session_cookie = ""
         cookie = SimpleCookie()
         cookie[SESSION_COOKIE_NAME] = str(token or "").strip()
         morsel = cookie[SESSION_COOKIE_NAME]
@@ -3874,6 +3999,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return morsel.OutputString()
 
     def _build_cleared_session_cookie(self) -> str:
+        self._renewed_session_cookie = ""
         cookie = SimpleCookie()
         cookie[SESSION_COOKIE_NAME] = ""
         morsel = cookie[SESSION_COOKIE_NAME]
@@ -5830,17 +5956,33 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def _handle_logout(self) -> None:
         tokens = self._extract_session_tokens()
+        try:
+            payload = parse_json_body(self)
+        except ValueError:
+            payload = {}
         if not tokens:
-            try:
-                payload = parse_json_body(self)
-            except ValueError:
-                payload = {}
             fallback_token = str(payload.get("token", "")).strip()
             tokens = [fallback_token] if fallback_token else []
 
+        # "Everywhere" needs a live session to name the account; a stale
+        # cookie can sign itself out, but not every other device of an
+        # account it no longer proves.
+        everywhere = bool(payload.get("everywhere"))
+        signed_out_everywhere = False
+        if everywhere:
+            for token in tokens:
+                session = self.store.get_session(token)
+                if session is not None:
+                    self.store.revoke_all_sessions(session.email)
+                    signed_out_everywhere = True
+                    break
+
         for token in tokens:
             self.store.revoke_session(token)
-        json_response(self, HTTPStatus.OK, {"ok": True}, extra_headers={"Set-Cookie": self._build_cleared_session_cookie()})
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "everywhere": signed_out_everywhere,
+        }, extra_headers={"Set-Cookie": self._build_cleared_session_cookie()})
 
     def _handle_account_profile_get(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -9854,11 +9996,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def _get_authenticated_session(self) -> PortalSession | None:
+        cookie_token = self._cookie_session_token()
         for token in self._extract_session_tokens():
             session = self.store.get_session(token)
             if session is not None:
+                if token == cookie_token:
+                    self._renew_session_cookie(session)
                 return session
         return None
+
+    def _renew_session_cookie(self, session: PortalSession) -> None:
+        """Swap a cookie that has done a day's work for a fresh one on the way out.
+
+        The swap rides on whatever response this request writes, so the
+        browser is never asked to do anything; it simply keeps coming back
+        with a cookie that is never more than a day old.
+        """
+
+        renewed = self.store.renew_session(session)
+        if not renewed:
+            return
+        cookie = self._build_session_cookie(str(renewed.get("token") or ""))
+        self._renewed_session_cookie = cookie
 
     def _require_authenticated_session(self) -> PortalSession | None:
         session = self._get_authenticated_session()
@@ -14323,6 +14482,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "routedUserCount": len([user_id for user_id in routed_user_ids if user_id > 0]),
         })
 
+    def _cookie_session_token(self) -> str:
+        raw_cookie = str(self.headers.get("Cookie", "")).strip()
+        if not raw_cookie:
+            return ""
+        parsed_cookie = SimpleCookie()
+        try:
+            parsed_cookie.load(raw_cookie)
+        except Exception:
+            return ""
+        morsel = parsed_cookie.get(SESSION_COOKIE_NAME)
+        return str(morsel.value).strip() if morsel else ""
+
     def _extract_session_tokens(self) -> list[str]:
         """Session tokens arrive in the Authorization header or the httpOnly cookie.
 
@@ -14338,16 +14509,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if bearer_token:
                 tokens.append(bearer_token)
 
-        raw_cookie = str(self.headers.get("Cookie", "")).strip()
-        if raw_cookie:
-            parsed_cookie = SimpleCookie()
-            try:
-                parsed_cookie.load(raw_cookie)
-            except Exception:
-                parsed_cookie = SimpleCookie()
-            cookie_token = str(parsed_cookie.get(SESSION_COOKIE_NAME).value).strip() if parsed_cookie.get(SESSION_COOKIE_NAME) else ""
-            if cookie_token:
-                tokens.append(cookie_token)
+        cookie_token = self._cookie_session_token()
+        if cookie_token:
+            tokens.append(cookie_token)
 
         deduped_tokens: list[str] = []
         seen_tokens: set[str] = set()
@@ -14466,6 +14630,9 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
         registered_email_lookup=server.database.is_registered_email,
         record_revocation=server.database.revoke_session_token,
         revocation_lookup=server.database.is_session_token_revoked,
+        session_max_lifetime_seconds=config.session_max_lifetime_seconds,
+        record_session_floor=server.database.set_session_floor,
+        session_floor_lookup=server.database.get_session_floor,
     )  # type: ignore[attr-defined]
     server.rate_limiter = SlidingWindowRateLimiter()  # type: ignore[attr-defined]
     server.whatsapp_stores = {}  # type: ignore[attr-defined]

@@ -1759,6 +1759,7 @@ const elements = {
   adminUsersContent: document.querySelector("#adminUsersContent"),
   signedInEmail: document.querySelector("#signedInEmail"),
   signOutButton: document.querySelector("#signOutButton"),
+  signOutEverywhereButton: document.querySelector("#signOutEverywhereButton"),
   deleteAccountButton: document.querySelector("#deleteAccountButton"),
   displayNameInput: document.querySelector("#displayNameInput"),
   workspaceNameInput: document.querySelector("#workspaceNameInput"),
@@ -35610,15 +35611,16 @@ async function confirmAccountDelete(email) {
   );
 }
 
-async function signOut() {
+async function signOut({ everywhere = false } = {}) {
   persistClientState();
   const previousEmail = normalizeEmail(authSession?.email || activeEmail || "");
   if (authSession?.signedIn) {
     try {
       // The server revokes the session named by the cookie and clears it.
+      // "Everywhere" also refuses every other session of the account.
       await apiRequest("/api/auth/logout", {
         method: "POST",
-        body: {},
+        body: everywhere ? { everywhere: true } : {},
       });
     } catch {
       // Ignore logout failures; the local session is still cleared.
@@ -36449,6 +36451,9 @@ function bindEvents() {
   });
   elements.signOutButton.addEventListener("click", () => {
     void signOut();
+  });
+  elements.signOutEverywhereButton?.addEventListener("click", () => {
+    void signOut({ everywhere: true });
   });
   elements.deleteAccountButton?.addEventListener("click", () => {
     deleteMyAccount();

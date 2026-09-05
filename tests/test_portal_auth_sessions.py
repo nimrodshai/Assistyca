@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
+import time
 import threading
 import unittest
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from packages.infrastructure.portal_auth.server import DEFAULT_SESSION_MAX_LIFETIME_SECONDS
+from packages.infrastructure.portal_auth.server import DEFAULT_SESSION_TTL_SECONDS
 from packages.infrastructure.portal_auth.server import PortalConfig
+from packages.infrastructure.portal_auth.server import PortalSession
 from packages.infrastructure.portal_auth.server import SESSION_COOKIE_NAME
 from packages.infrastructure.portal_auth.server import create_server
+from packages.infrastructure.portal_auth.server import create_session_token
+from packages.infrastructure.portal_auth.server import parse_session_token
+
+DAY = 24 * 60 * 60
 
 
 class PortalAuthSessionTests(unittest.TestCase):
@@ -72,6 +81,152 @@ class PortalAuthSessionTests(unittest.TestCase):
             cookie_header = response.headers.get("Set-Cookie", "")
             self.assertIn(f"{SESSION_COOKIE_NAME}=", cookie_header)
             return cookie_header.split(";", 1)[0]
+
+    def _session_status(self, cookie_value: str) -> tuple[int, dict, str]:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/session",
+            headers={"Cookie": cookie_value},
+        )
+        try:
+            with urllib_request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8")), response.headers.get("Set-Cookie", "")
+        except urllib_error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8")), exc.headers.get("Set-Cookie", "")
+
+    def _signed_cookie(self, *, authenticated_at: float, issued_at: float, expires_at: float) -> str:
+        token = create_session_token(
+            PortalSession(
+                token="",
+                email="owner@example.com",
+                issued_at=issued_at,
+                expires_at=expires_at,
+                authenticated_at=authenticated_at,
+            ),
+            b"test-session-secret",
+        )
+        return f"{SESSION_COOKIE_NAME}={token}"
+
+    def test_a_session_lasts_a_month_and_the_code_is_asked_again_after_three(self) -> None:
+        self.assertEqual(DEFAULT_SESSION_TTL_SECONDS, 30 * DAY)
+        self.assertEqual(DEFAULT_SESSION_MAX_LIFETIME_SECONDS, 90 * DAY)
+        cookie_value = self._verify_otp_and_get_cookie()
+
+        _, payload, _ = self._session_status(cookie_value)
+
+        self.assertEqual(payload["expiresAt"] - payload["issuedAt"], 30 * DAY * 1000)
+
+    def test_a_fresh_cookie_is_left_alone(self) -> None:
+        cookie_value = self._verify_otp_and_get_cookie()
+
+        status, _, set_cookie = self._session_status(cookie_value)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(set_cookie, "")
+
+    def test_a_cookie_older_than_a_day_is_renewed_and_keeps_its_sign_in_time(self) -> None:
+        now = time.time()
+        signed_in_at = now - 2 * DAY
+        cookie_value = self._signed_cookie(
+            authenticated_at=signed_in_at,
+            issued_at=signed_in_at,
+            expires_at=signed_in_at + 30 * DAY,
+        )
+
+        status, _, set_cookie = self._session_status(cookie_value)
+
+        self.assertEqual(status, 200)
+        self.assertIn(f"{SESSION_COOKIE_NAME}=", set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+        renewed_token = set_cookie.split(";", 1)[0].split("=", 1)[1]
+        renewed = parse_session_token(renewed_token, b"test-session-secret")
+        assert renewed is not None
+        self.assertNotIn(renewed_token, cookie_value)
+        self.assertAlmostEqual(renewed.authenticated_at, signed_in_at, places=3)
+        self.assertGreaterEqual(renewed.issued_at, int(now))
+        self.assertAlmostEqual(renewed.expires_at, renewed.issued_at + 30 * DAY, delta=2)
+
+    def test_renewal_never_reaches_past_ninety_days_from_the_sign_in(self) -> None:
+        now = time.time()
+        signed_in_at = now - 85 * DAY
+        cookie_value = self._signed_cookie(
+            authenticated_at=signed_in_at,
+            issued_at=now - 2 * DAY,
+            expires_at=signed_in_at + 90 * DAY,
+        )
+
+        status, _, set_cookie = self._session_status(cookie_value)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(set_cookie, "")
+
+    def test_a_session_signed_in_more_than_ninety_days_ago_is_refused(self) -> None:
+        now = time.time()
+        cookie_value = self._signed_cookie(
+            authenticated_at=now - 91 * DAY,
+            issued_at=now - DAY,
+            expires_at=now + 29 * DAY,
+        )
+
+        status, _, _ = self._session_status(cookie_value)
+
+        self.assertEqual(status, 401)
+
+    def test_a_token_from_before_renewals_still_signs_in(self) -> None:
+        now = time.time()
+        session = PortalSession(token="", email="owner@example.com", issued_at=now - DAY, expires_at=now + 29 * DAY)
+        token = create_session_token(session, b"test-session-secret")
+        stripped = json.loads(base64.urlsafe_b64decode(token.split(".", 1)[0] + "==").decode("utf-8"))
+        stripped.pop("auth")
+        # Re-sign the payload the way the old server wrote it: no sign-in time.
+        from packages.infrastructure.portal_auth.server import encode_token_segment, sign_token_segment
+        payload_segment = encode_token_segment(json.dumps(stripped, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        old_token = f"{payload_segment}.{sign_token_segment(payload_segment, b'test-session-secret')}"
+
+        status, payload, _ = self._session_status(f"{SESSION_COOKIE_NAME}={old_token}")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["email"], "owner@example.com")
+
+    def test_logging_out_everywhere_ends_the_other_device_too(self) -> None:
+        phone_cookie = self._verify_otp_and_get_cookie()
+        laptop_cookie = self._verify_otp_and_get_cookie()
+        self.assertNotEqual(phone_cookie, laptop_cookie)
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/logout",
+            data=json.dumps({"everywhere": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Cookie": laptop_cookie},
+            method="POST",
+        )
+        with urllib_request.urlopen(request) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            self.assertTrue(payload["everywhere"])
+            self.assertEqual(response.headers.get_all("Set-Cookie"), [response.headers.get("Set-Cookie")])
+            self.assertIn("Max-Age=0", response.headers.get("Set-Cookie", ""))
+
+        self.assertEqual(self._session_status(phone_cookie)[0], 401)
+        self.assertEqual(self._session_status(laptop_cookie)[0], 401)
+
+        self._restart_server()
+        self.assertEqual(self._session_status(phone_cookie)[0], 401)
+
+        fresh_cookie = self._verify_otp_and_get_cookie()
+        self.assertEqual(self._session_status(fresh_cookie)[0], 200)
+
+    def test_a_plain_log_out_leaves_the_other_device_signed_in(self) -> None:
+        phone_cookie = self._verify_otp_and_get_cookie()
+        laptop_cookie = self._verify_otp_and_get_cookie()
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/logout",
+            data=json.dumps({}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Cookie": laptop_cookie},
+            method="POST",
+        )
+        with urllib_request.urlopen(request) as response:
+            self.assertFalse(json.loads(response.read().decode("utf-8"))["everywhere"])
+
+        self.assertEqual(self._session_status(phone_cookie)[0], 200)
 
     def test_session_can_be_restored_from_cookie_without_authorization_header(self) -> None:
         cookie_value = self._verify_otp_and_get_cookie()
