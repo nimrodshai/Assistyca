@@ -136,7 +136,6 @@ from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPL
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_client_type
 from packages.infrastructure.portal_db import normalize_user_profile
-from packages.infrastructure.portal_db import normalize_whatsapp_lookup_id
 from packages.infrastructure.portal_runtime_paths import resolve_portal_agent_output_root
 from packages.infrastructure.portal_runtime_paths import resolve_portal_billing_data_path
 from packages.infrastructure.rate_limiter import (
@@ -9898,32 +9897,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             run_at = run_at.replace(tzinfo=timezone.utc)
         run_at_utc = run_at.astimezone(timezone.utc)
 
-        # Any phone that reaches the account can receive its reminders: the
-        # notification number from the older single-connection setup, or a
-        # phone linked to the account by signup or a link code. A phone the
-        # request names has to be one of those.
-        user_id = int(user.get("id") or 0)
         connection = self.database.get_whatsapp_connection(session.email)
-        owner_wa_id = normalize_whatsapp_lookup_id((connection or {}).get("ownerWaId"))
-        linked_numbers = [
-            normalize_whatsapp_lookup_id(record.get("waId"))
-            for record in self.database.list_user_whatsapp_numbers(user_id=user_id)
-        ]
-        reachable = [number for number in [owner_wa_id, *linked_numbers] if number]
-        requested_wa_id = normalize_whatsapp_lookup_id(action_payload.get("recipientWaId"))
-        if requested_wa_id and requested_wa_id not in reachable:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "recipient_not_linked",
-                "message": "That WhatsApp number is not linked to this account.",
-            })
-            return
-        recipient_wa_id = requested_wa_id or (reachable[0] if reachable else "")
-        if not recipient_wa_id:
+        if (
+            not connection
+            or not normalize_text(connection.get("ownerWaId"))
+        ):
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
                 "error": "missing_whatsapp_recipient",
-                "message": "Link the WhatsApp number that should receive scheduled notifications.",
+                "message": "Add the WhatsApp number that should receive scheduled notifications.",
             })
             return
         if not resolve_whatsapp_sender_access_token() or not resolve_whatsapp_sender_phone_number_id():
@@ -9939,11 +9921,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "messageText": message_text[:1600],
             "source": normalize_text(payload.get("source")) or "portal_agent",
         }
-        scheduled_payload["recipientWaId"] = recipient_wa_id
+        if "recipientWaId" not in scheduled_payload:
+            scheduled_payload["recipientWaId"] = normalize_text(connection.get("ownerWaId"))
 
         try:
             action = self.database.create_scheduled_action(
-                user_id=user_id,
+                user_id=int(user.get("id") or 0),
                 action_type=action_type,
                 channel=channel,
                 recipient_ref=recipient_ref,
