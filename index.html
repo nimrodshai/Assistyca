@@ -418,10 +418,57 @@
 
       /* The band: a slanted dark strip carrying the headline and two drifting rows */
 
+      .pitch {
+        position: relative;
+        text-align: center;
+        padding: 4.75rem 0 3.75rem;
+      }
+
+      .pitch::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 32rem;
+        height: 18rem;
+        transform: translate(-50%, -50%);
+        background: radial-gradient(closest-side, rgba(110, 196, 190, 0.24), transparent);
+        filter: blur(24px);
+        z-index: -1;
+        pointer-events: none;
+      }
+
+      .pitch h2 {
+        margin: 0 auto;
+        max-width: 13ch;
+        font-size: clamp(2.5rem, 10vw, 4.2rem);
+        line-height: 1;
+        letter-spacing: -0.045em;
+      }
+
+      .pitch h2::before {
+        content: "";
+        display: block;
+        width: 2.75rem;
+        height: 3px;
+        border-radius: 999px;
+        margin: 0 auto 1.5rem;
+        background: linear-gradient(90deg, var(--teal-deep), var(--teal-bright));
+      }
+
+      .pitch .soft {
+        display: block;
+        margin-bottom: 0.45rem;
+        font-size: 0.5em;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        color: var(--muted);
+      }
+
       .say {
         position: relative;
-        margin: 1.5rem calc(50% - 50vw) 0;
-        padding: 3.25rem 0 3rem;
+        margin: 0 calc(50% - 50vw) 0;
+        padding: 2.9rem 0 2.75rem;
         overflow: hidden;
         transform: skewY(-2.5deg);
         color: #fff;
@@ -452,25 +499,6 @@
 
       .say-inner {
         transform: skewY(2.5deg);
-      }
-
-      .say-head {
-        width: min(100% - 2.75rem, var(--column));
-        margin: 0 auto 2.25rem;
-      }
-
-      .say h2 {
-        margin: 0;
-        color: #fff;
-        font-size: clamp(2.2rem, 9vw, 3.6rem);
-        max-width: 14ch;
-      }
-
-      .say h2 em {
-        background: linear-gradient(90deg, var(--teal-bright), #d6f3ef);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
       }
 
       .say-rows {
@@ -742,17 +770,16 @@
           padding-top: 5.5rem;
         }
 
+        .pitch {
+          padding: 6rem 0 4.5rem;
+        }
+
+        .pitch h2 {
+          font-size: 4.4rem;
+        }
+
         .say {
-          margin-top: 0;
-          padding: 4.5rem 0 4rem;
-        }
-
-        .say-head {
-          margin-bottom: 3rem;
-        }
-
-        .say h2 {
-          font-size: 3.6rem;
+          padding: 3.6rem 0 3.4rem;
         }
 
         .say-row span {
@@ -848,11 +875,12 @@
 
     <main>
       <div class="col">
-        <section class="say" aria-labelledby="what-title">
+        <section class="pitch" aria-labelledby="what-title">
+          <h2 id="what-title"><span class="soft">An LLM agent,</span>designed for <em>businesses</em>.</h2>
+        </section>
+
+        <div class="say">
           <div class="say-inner">
-            <div class="say-head">
-              <h2 id="what-title">An LLM agent, designed for <em>businesses</em>.</h2>
-            </div>
             <div class="say-rows" aria-hidden="true">
           <div class="say-row">
             <span>Did the plumber ever send the invoice?</span>
@@ -884,7 +912,7 @@
           </div>
             </div>
           </div>
-        </section>
+        </div>
 
         <section class="trust" aria-labelledby="trust-title">
           <h2 id="trust-title">It asks before it acts.</h2>
