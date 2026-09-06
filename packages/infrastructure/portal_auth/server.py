@@ -903,6 +903,9 @@ LIST_SHARE_PAGE = Path("portal/list-share.html")
 # session. The link carries a short signed sign-in that is spent on first
 # use; the page it lands on holds the session cookie from then on.
 LISTS_HANDOFF_PREFIX = "/lists/open/"
+# The same one-time code, landing on the receipts page instead. The code
+# only says whose account signs in; the page comes from the address.
+RECEIPTS_HANDOFF_PREFIX = "/receipts/open/"
 LISTS_HANDOFF_TTL_SECONDS = 48 * 3600
 
 # Every response carries these. The portal serves no inline scripts -- the theme
@@ -4186,6 +4189,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith(LISTS_HANDOFF_PREFIX):
             self._handle_lists_handoff(parsed)
+            return
+        if path.startswith(RECEIPTS_HANDOFF_PREFIX):
+            self._handle_receipts_handoff(parsed)
             return
 
         super().do_GET()
@@ -9419,6 +9425,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connect_links=dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
             list_link=self._lists_link_builder(session.email, channel),
+            receipts_link=self._receipts_link_builder(session.email, channel),
             sender_wa_id=sender_wa_id,
         )
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
@@ -12597,8 +12604,44 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         return build
 
+    def _receipts_link_builder(self, email: str, channel: str) -> Callable[[], str]:
+        """How the receipts page turns into a link the person can open.
+
+        The same arrangement as the lists link: the page itself in the
+        browser, where the session is already in the cookie, and from
+        WhatsApp a short one-time code that signs the phone in and lands
+        on the page.
+        """
+
+        base = self._public_base_url()
+        is_whatsapp = normalize_text(channel).lower() == "whatsapp"
+        user = self.database.get_user(email) if is_whatsapp else None
+        user_id = int((user or {}).get("id") or 0)
+
+        def build() -> str:
+            if not is_whatsapp or user_id <= 0:
+                return f"{base}/receipts"
+            code = self.database.create_list_open_code(
+                user_id=user_id,
+                list_id=0,
+                expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
+            )
+            return f"{base}{RECEIPTS_HANDOFF_PREFIX}{code}"
+
+        return build
+
     def _handle_lists_handoff(self, parsed: urllib_parse.ParseResult) -> None:
-        """Spend a one-time code from a WhatsApp link and open the lists page.
+        """Spend a one-time code from a WhatsApp link and open the lists page."""
+
+        self._handle_page_handoff(parsed, prefix=LISTS_HANDOFF_PREFIX, page="/lists")
+
+    def _handle_receipts_handoff(self, parsed: urllib_parse.ParseResult) -> None:
+        """Spend a one-time code from a WhatsApp link and open the receipts page."""
+
+        self._handle_page_handoff(parsed, prefix=RECEIPTS_HANDOFF_PREFIX, page="/receipts")
+
+    def _handle_page_handoff(self, parsed: urllib_parse.ParseResult, *, prefix: str, page: str) -> None:
+        """Spend a one-time code from a WhatsApp link and open one portal page.
 
         The code is looked up and marked used in one step, so the same link
         opens nothing a second time, and the browser gets a normal session
@@ -12613,7 +12656,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         ):
             return
 
-        token = urllib_parse.unquote(parsed.path[len(LISTS_HANDOFF_PREFIX):]).strip("/")
+        token = urllib_parse.unquote(parsed.path[len(prefix):]).strip("/")
         query = urllib_parse.parse_qs(parsed.query)
         try:
             list_id = int(normalize_text(query.get("list", ["0"])[0]) or 0)
@@ -12639,12 +12682,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 issued = {}
         if not issued.get("token"):
             self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", "/lists?expired=1")
+            self.send_header("Location", f"{page}?expired=1")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
 
-        target = f"/lists#/list/{list_id}" if list_id > 0 else "/lists"
+        target = f"/lists#/list/{list_id}" if page == "/lists" and list_id > 0 else page
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", target)
         self.send_header("Set-Cookie", self._build_session_cookie(str(issued.get("token") or "")))

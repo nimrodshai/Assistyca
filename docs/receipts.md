@@ -39,9 +39,19 @@ email carried a file, the server goes back to the mailbox once
 At most 60 messages are fetched per search.
 
 The lookup result tells the model how many receipts were kept and how many
-are waiting for a yes or no (`receiptsPageNote`), and on the portal channel
-hands it the page link (`receiptsPage`). On WhatsApp there is no browser
-session, so no link is offered.
+are waiting for a yes or no (`receiptsPageNote`), and hands it the page
+link (`receiptsPage`). In the browser the link is the page itself. From
+WhatsApp the phone has no browser session, so the link carries a short
+one-time code (`/receipts/open/<code>`, the same codes the lists link
+uses) that signs the account in and lands on the page; WhatsApp shows it
+as a button under the reply, labelled "Open receipts".
+
+There are no folders any more. When the person asks to see their receipts,
+the model calls `open_receipts`, which reads `/api/receipts` over the
+caller's own session and returns how many receipts are kept, the totals per
+currency, by month and by vendor, and the link; the reply says what is
+there and carries the button. `CONTEXT.receiptsPage` is in every turn, so
+"can you help with receipts" has somewhere to point without a tool call.
 
 ## The page
 

@@ -167,6 +167,10 @@ class LoopContext:
     # channel that has no browser session. The server knows the public
     # address and the session secret; the loop only hands the link on.
     list_link: Callable[[int], str] | None = None
+    # Builds the link to the receipts page the same way. Minted once per
+    # turn and reused, so a turn that mentions the page twice mints one code.
+    receipts_link: Callable[[], str] | None = None
+    receipts_page: str = ""
     # The phone this turn came from, on WhatsApp. Signing out unlinks that
     # phone and no other; on the portal there is no phone and no sign_out.
     sender_wa_id: str = ""
@@ -272,10 +276,73 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
         if unsure:
             note += f" {unsure} of them are waiting for a yes or no from the person on whether they are receipts at all."
         data["receiptsPageNote"] = note
-        link = str(manager.get("url") or "").strip()
-        if link and context.channel != "whatsapp":
+        link = _receipts_page_link(context)
+        if not link and context.channel != "whatsapp":
+            # No builder was wired in; the browser has a session, so the
+            # bare page address still opens.
+            link = str(manager.get("url") or "").strip()
+            _offer_link(context, link, RECEIPTS_LINK_LABEL)
+        if link:
             data["receiptsPage"] = link
-            _offer_link(context, link, "Open receipts")
+    return _ok(data)
+
+
+RECEIPTS_LINK_LABEL = "Open receipts"
+
+
+def _receipts_page_link(context: LoopContext) -> str:
+    """The link to the receipts page, remembered as one the reply may carry."""
+
+    if context.receipts_page:
+        return context.receipts_page
+    if context.receipts_link is None:
+        return ""
+    try:
+        link = str(context.receipts_link() or "").strip()
+    except Exception as exc:  # noqa: BLE001 - a missing link is not a failed answer
+        print(f"agent.loop.receipts_link_failed error={exc!r}", flush=True)
+        return ""
+    context.receipts_page = link
+    _offer_link(context, link, RECEIPTS_LINK_LABEL)
+    return link
+
+
+MAX_RECEIPT_MONTHS_TO_MODEL = 6
+MAX_RECEIPT_VENDORS_TO_MODEL = 8
+
+
+def _tool_open_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """What the receipts page holds, in figures, and the link that opens it.
+
+    The counts and totals come from the same API the page reads, over the
+    caller's own session, so the model says what the page will show and
+    never guesses. The link is the page for the person to open themselves.
+    """
+
+    response, status = context.api("GET", "/api/receipts", None)
+    if status != 200 or not isinstance(response, dict) or not response.get("ok", True):
+        return _error("provider_unavailable", "The receipts page could not be read just now.", can_retry=True)
+    summary = response.get("summary") if isinstance(response.get("summary"), dict) else {}
+    by_month = summary.get("byMonth") if isinstance(summary.get("byMonth"), list) else []
+    by_vendor = summary.get("byVendor") if isinstance(summary.get("byVendor"), list) else []
+    data: dict[str, Any] = {
+        "confirmed": int(summary.get("count") or 0),
+        "waitingForYesOrNo": int(response.get("unsureTotal") or summary.get("unsureCount") or 0),
+        "missingAmount": int(summary.get("missingAmountCount") or 0),
+        "totalsByCurrency": summary.get("totals") if isinstance(summary.get("totals"), dict) else {},
+        "byMonth": by_month[:MAX_RECEIPT_MONTHS_TO_MODEL],
+        "byVendor": by_vendor[:MAX_RECEIPT_VENDORS_TO_MODEL],
+        "note": (
+            "These are the receipts and invoices already kept on the receipts page: every one a mailbox "
+            "search pulled, with the vendor's file, plus any added by hand. The page is where the person "
+            "sees them, answers the yes/no questions, corrects amounts and exports for an accountant. To "
+            "pull new receipts from the mailbox, use search_receipts."
+        ),
+    }
+    link = _receipts_page_link(context)
+    if link:
+        data["link"] = link
+        data["note"] += " Put the link in the reply on its own line exactly as given."
     return _ok(data)
 
 
@@ -347,10 +414,6 @@ def _tool_exchange_rate(context: LoopContext, args: dict[str, Any]) -> dict[str,
             rateDate=args.get("rate_date"),
         ),
     )
-
-
-def _tool_read_folder(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
-    return _run_lookup(context, "saved-files", _fields(savedFolder=args.get("folder"), vendor=args.get("vendor")))
 
 
 def _tool_connect_link(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -928,13 +991,18 @@ TOOLS: list[ToolSpec] = [
         run=_tool_exchange_rate,
     ),
     ToolSpec(
-        name="read_folder",
+        name="open_receipts",
         description=(
-            "Read one of the folders Assistyca keeps for this account - saved receipts, exports - and get back "
-            "its files and any amounts in them. folder is the folder name; vendor narrows it, or null."
+            "The receipts page: every receipt and invoice Assistyca has pulled from the mailbox for this "
+            "account, kept with the vendor's file, with yes/no questions for the unsure ones, corrections by "
+            "hand and exports for an accountant. Returns how many are there, the totals per currency, by "
+            "month and by vendor, and the link that opens the page. Call it when the person asks to see, "
+            "open, check or go over their receipts or invoices, asks where they are kept, or asks what "
+            "you have on file - then reply with a line on what is there and the link. Not for pulling new "
+            "receipts from the mailbox or for how much was paid in a month: that is search_receipts."
         ),
-        parameters=_params({"folder": {"type": "string"}, "vendor": {"type": ["string", "null"]}}),
-        run=_tool_read_folder,
+        parameters=_params({}),
+        run=_tool_open_receipts,
     ),
     ToolSpec(
         name="connect_link",
@@ -1161,7 +1229,14 @@ AGENT_LOOP_INSTRUCTIONS = (
     "receiptsPageNote says how many, and receiptsPage is the link when there is one): amounts, dates, the "
     "vendor's own PDF, and a yes/no question for anything the reading was not sure about, with exports for "
     "an accountant. Mention it in one short sentence after a receipt answer, and put receiptsPage on its "
-    "own line exactly as given when it is there. A "
+    "own line exactly as given when it is there. There are no folders: the receipts page is the one place "
+    "receipts are kept, so never speak of a receipts folder or of saving receipts to a folder. When the "
+    "person asks to see, open or go over their receipts, or where they are, call open_receipts and answer "
+    "with what is there in a line or two and the link on its own line; when the page is empty, say so and "
+    "offer to pull receipts from the mailbox. CONTEXT.receiptsPage is that link for the whole account: "
+    "whenever the conversation is about receipts or invoices in general - what you can do with them, how "
+    "they work - put it in the reply on its own line, unless a reply in recentConversation already carried "
+    "a receipts link. A "
     "reminder about a list is schedule_message with list_name set; the items are read when it fires, so never "
     "copy them into message_text.\n"
     "knownFacts is what the account already told you about how their business works; read it before asking "
@@ -1232,6 +1307,7 @@ def build_loop_context_text(
     now: str = "",
     photo: dict[str, Any] | None = None,
     lists_page: str = "",
+    receipts_page: str = "",
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -1251,6 +1327,8 @@ def build_loop_context_text(
     }
     if lists_page:
         context["listsPage"] = lists_page
+    if receipts_page:
+        context["receiptsPage"] = receipts_page
     if confirmed_action:
         context["confirmedAction"] = confirmed_action
     if declined_action:
@@ -1300,6 +1378,7 @@ def run_agent_loop(
     # list result: "can you help with my todos" is answered without a tool,
     # and the answer still has somewhere to point.
     lists_page = _lists_home_link(context)
+    receipts_page = _receipts_page_link(context)
     context_text = build_loop_context_text(
         user_message=user_message,
         conversation=conversation,
@@ -1314,6 +1393,7 @@ def run_agent_loop(
         now=now,
         photo=photo,
         lists_page=lists_page,
+        receipts_page=receipts_page,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},

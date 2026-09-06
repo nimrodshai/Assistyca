@@ -15,9 +15,11 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -26,6 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from packages.infrastructure import receipt_manager
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import _run_lookup
+from packages.infrastructure.agent_loop import _tool_open_receipts
+from packages.infrastructure.agent_loop import build_loop_context_text
+from packages.infrastructure.agent_loop import tool_definitions
+from packages.infrastructure.portal_auth.server import RECEIPTS_HANDOFF_PREFIX
+from packages.infrastructure.portal_auth.server import SESSION_COOKIE_NAME
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_auth.server import resolve_static_page_alias
@@ -394,6 +401,50 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
 
 
+    def test_a_link_from_whatsapp_opens_the_receipts_page_once(self) -> None:
+        # The phone has no browser session, so the link carries a one-time
+        # code that signs the account in and lands on the receipts page.
+        code = self.server.database.create_list_open_code(user_id=self.user_id, list_id=0, expires_at=time.time() + 3600)
+
+        class NoRedirect(urllib_request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        opener = urllib_request.build_opener(NoRedirect)
+        try:
+            opener.open(f"{self.base_url}{RECEIPTS_HANDOFF_PREFIX}{code}")
+            self.fail("expected a redirect")
+        except urllib_error.HTTPError as exc:
+            self.assertEqual(exc.code, 302)
+            self.assertEqual(exc.headers.get("Location"), "/receipts")
+            cookie = exc.headers.get("Set-Cookie", "")
+            self.assertIn(f"{SESSION_COOKIE_NAME}=", cookie)
+            session_cookie = cookie.split(";", 1)[0]
+        status, payload, _ = self._request("GET", "/api/receipts", cookie=session_cookie)
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+
+        # The same link a second time opens nothing.
+        try:
+            opener.open(f"{self.base_url}{RECEIPTS_HANDOFF_PREFIX}{code}")
+            self.fail("expected a redirect")
+        except urllib_error.HTTPError as exc:
+            self.assertEqual(exc.headers.get("Location"), "/receipts?expired=1")
+            self.assertNotIn(SESSION_COOKIE_NAME, exc.headers.get("Set-Cookie", "") or "")
+
+    def test_the_loop_hands_whatsapp_a_short_receipts_link_and_the_browser_the_page(self) -> None:
+        from packages.infrastructure.portal_auth.server import PortalAuthHandler
+
+        handler = SimpleNamespace(_public_base_url=lambda: "https://assistyca.test", store=self.server.store, database=self.server.database)
+        whatsapp = PortalAuthHandler._receipts_link_builder(handler, "owner@example.com", "whatsapp")()
+        self.assertTrue(whatsapp.startswith(f"https://assistyca.test{RECEIPTS_HANDOFF_PREFIX}"))
+        self.assertLess(len(whatsapp), 60)
+        spent = self.server.database.spend_list_open_code(whatsapp.rsplit("/", 1)[1])
+        self.assertEqual(spent["email"], "owner@example.com")
+        portal = PortalAuthHandler._receipts_link_builder(handler, "owner@example.com", "portal")()
+        self.assertEqual(portal, "https://assistyca.test/receipts")
+
+
 class LoopTests(unittest.TestCase):
     def test_the_lookup_tells_the_model_the_receipts_are_kept_and_where(self) -> None:
         response = {
@@ -409,10 +460,70 @@ class LoopTests(unittest.TestCase):
         self.assertIn("1 of them are waiting", result["receiptsPageNote"])
         self.assertEqual(context.link_labels["https://assistyca.test/receipts"], "Open receipts")
 
+        # On WhatsApp the bare page would open nothing, so the link only
+        # goes out when the server wired in a way to mint a signed one.
         whatsapp = LoopContext(api=lambda method, path, payload: (response, 200), database=None, email="owner@example.com", user_id=1, channel="whatsapp")
         result = _run_lookup(whatsapp, "custom", {"result": "receipts"})
         self.assertNotIn("receiptsPage", result)
         self.assertEqual(whatsapp.links_offered, [])
+
+        minted: list[str] = []
+
+        def mint() -> str:
+            minted.append(f"https://assistyca.test/receipts/open/code{len(minted)}")
+            return minted[-1]
+
+        whatsapp = LoopContext(api=lambda method, path, payload: (response, 200), database=None, email="owner@example.com", user_id=1, channel="whatsapp", receipts_link=mint)
+        result = _run_lookup(whatsapp, "custom", {"result": "receipts"})
+        self.assertEqual(result["receiptsPage"], "https://assistyca.test/receipts/open/code0")
+        self.assertEqual(whatsapp.link_labels[result["receiptsPage"]], "Open receipts")
+        # A second mention in the same turn reuses the code instead of minting another.
+        self.assertEqual(_tool_open_receipts(whatsapp, {})["link"], "https://assistyca.test/receipts/open/code0")
+        self.assertEqual(minted, ["https://assistyca.test/receipts/open/code0"])
+
+    def test_open_receipts_says_what_the_page_holds_and_hands_over_the_link(self) -> None:
+        # "Show me my receipts" is answered from the page, in figures the
+        # code worked out, with the link the channel turns into a button.
+        page = {
+            "ok": True,
+            "receipts": [],
+            "summary": {
+                "count": 4, "unsureCount": 1, "missingAmountCount": 1,
+                "totals": {"ILS": 262.0, "USD": 25.0},
+                "byMonth": [{"month": "2026-08", "count": 4, "totals": {"ILS": 262.0, "USD": 25.0}}],
+                "byVendor": [{"vendor": "Render", "count": 1, "totals": {"USD": 25.0}}],
+            },
+            "unsureTotal": 1,
+        }
+        calls: list[tuple[str, str]] = []
+
+        def api(method: str, path: str, payload: dict | None = None) -> tuple[dict, int]:
+            calls.append((method, path))
+            return page, 200
+
+        context = LoopContext(api=api, database=None, email="owner@example.com", user_id=1, channel="whatsapp", receipts_link=lambda: "https://assistyca.test/receipts/open/abc")
+        result = _tool_open_receipts(context, {})
+        self.assertEqual(calls, [("GET", "/api/receipts")])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["confirmed"], 4)
+        self.assertEqual(result["waitingForYesOrNo"], 1)
+        self.assertEqual(result["totalsByCurrency"], {"ILS": 262.0, "USD": 25.0})
+        self.assertEqual(result["link"], "https://assistyca.test/receipts/open/abc")
+        self.assertIn("on its own line", result["note"])
+        self.assertNotIn("folder", json.dumps(result).lower())
+
+        failing = LoopContext(api=lambda method, path, payload=None: ({"ok": False}, 500), database=None, email="owner@example.com", user_id=1)
+        self.assertFalse(_tool_open_receipts(failing, {})["ok"])
+
+    def test_the_folder_tool_is_gone_and_the_page_is_in_every_turn(self) -> None:
+        names = {tool["name"] for tool in tool_definitions({})}
+        self.assertIn("open_receipts", names)
+        self.assertNotIn("read_folder", names)
+        text = build_loop_context_text(
+            user_message="hi", conversation=[], timezone_name="UTC", today="2026-09-06",
+            tool_context={}, facts=[], channel="whatsapp", receipts_page="https://assistyca.test/receipts/open/abc",
+        )
+        self.assertIn('"receiptsPage":"https://assistyca.test/receipts/open/abc"', text)
 
 
 if __name__ == "__main__":

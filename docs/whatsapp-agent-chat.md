@@ -516,7 +516,7 @@ reasoning effort is chosen with the model in `task_complexity.py`.
 `LOOKUP_SOURCE_REQUIREMENTS` in `agent_proposals.py` says what each lookup
 has to have connected: a mailbox (Gmail or Outlook) for the inbox digest and
 receipt searches, the calendar for calendar questions, nothing for exchange
-rates and saved folders. The same table is shown to the model as
+rates and the receipts page. The same table is shown to the model as
 `lookupRequirements` with a rule that covers every lookup and every source,
 and it is checked in code before a runner is called
 (`missing_sources_for_lookup`), so a lookup that needs a source nobody
@@ -556,7 +556,7 @@ the full picture, which is what the older turn could never have: it committed
 to "I'm checking now" before anything was checked.
 
 The tools are the registry in `agent_loop.py`: `read_inbox`, `read_calendar`,
-`search_receipts`, `exchange_rate`, `read_folder`, `connect_link`,
+`search_receipts`, `exchange_rate`, `open_receipts`, `connect_link`,
 `disconnect`, `sign_out`, `delete_account`, `schedule_message`, `remember_fact`,
 `forget_fact`. Each
 declares what it needs connected (`LOOKUP_SOURCE_REQUIREMENTS`), whether it
