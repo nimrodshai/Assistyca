@@ -78,6 +78,14 @@
         scroll-behavior: smooth;
       }
 
+      /* iOS Safari ignores overflow-x on body alone; clip at the root so
+         decorative glows that bleed past the edge can never widen the page */
+      html,
+      body {
+        overflow-x: hidden;
+        overflow-x: clip;
+      }
+
       body {
         font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
         color: var(--ink);
@@ -429,7 +437,7 @@
         position: absolute;
         left: 50%;
         top: 50%;
-        width: 32rem;
+        width: min(32rem, 100vw);
         height: 18rem;
         transform: translate(-50%, -50%);
         background: radial-gradient(closest-side, rgba(110, 196, 190, 0.24), transparent);
@@ -581,8 +589,8 @@
       .trust::before {
         content: "";
         position: absolute;
-        left: -30vw;
-        right: -30vw;
+        left: calc(50% - 50vw);
+        right: calc(50% - 50vw);
         top: 40%;
         height: 55%;
         background: radial-gradient(closest-side, rgba(110, 196, 190, 0.32), transparent);
