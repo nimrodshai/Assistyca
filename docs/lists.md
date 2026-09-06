@@ -33,7 +33,7 @@ that to a row (exact name, then contained words). More than one candidate
 comes back as `choice_required` with the names as options; none comes back
 as `nothing_found` naming the lists that do exist.
 
-Every turn's context carries `listsPage`, the account's lists page, so a reply about lists or todos can point at it even when no tool ran. Every list result also carries `link`: that list on the page. The link is
+Every turn's context carries `listsPage`, the account's lists page, so a reply about lists or todos - or about what the assistant can do at all - can point at it even when no tool ran. Every list result also carries `link`: that list on the page. The link is
 added to `links_offered`, so the reply guard lets it through. From the
 browser it is `/lists#/list/<id>`; from WhatsApp, where the phone has no
 session, it is `/lists/open/<code>`: a twelve-character one-time code kept

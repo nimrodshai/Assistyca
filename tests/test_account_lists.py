@@ -25,9 +25,11 @@ from urllib import request as urllib_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.agent_loop import tool_definitions
+from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.infrastructure.portal_auth.server import LISTS_HANDOFF_PREFIX
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import PortalSession
@@ -186,6 +188,22 @@ class ListToolTests(unittest.TestCase):
         home = LINK.format(id=0).replace("#/list/0", "")
         model = ScriptedModel([_model_round(reply=_reply(f"Yes. Dump them here or open the page:\n{home}"))])
         result = run_agent_loop(context=self._context(), call_model=model, user_message="can you help with my todos?", conversation=[], today="2026-09-05")
+        self.assertIn(f'"listsPage":"{home}"', model.inputs[0][0]["content"])
+        self.assertIn(home, result.reply)
+
+    def test_what_can_you_do_names_lists_and_points_at_their_page(self) -> None:
+        # "What actions can I do here?" was answered from the mailbox and the
+        # diary alone (2026-09-06); the person was never told they keep lists,
+        # or that there is a page for them. The pitch and the instructions
+        # both say so now, and the answer carries the page.
+        self.assertIn("lists", ASSISTANT_CAPABILITIES_PITCH)
+        self.assertIn("receipts", ASSISTANT_CAPABILITIES_PITCH)
+        self.assertIn("what you can do here at all", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("The lists are a page of their own", AGENT_LOOP_INSTRUCTIONS)
+
+        home = LINK.format(id=0).replace("#/list/0", "")
+        model = ScriptedModel([_model_round(reply=_reply(f"Diary, mail, receipts, reminders and your lists - here is that page:\n{home}"))])
+        result = run_agent_loop(context=self._context(), call_model=model, user_message="What actions can I do here?", conversation=[], today="2026-09-06")
         self.assertIn(f'"listsPage":"{home}"', model.inputs[0][0]["content"])
         self.assertIn(home, result.reply)
 

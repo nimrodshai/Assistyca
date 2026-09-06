@@ -447,6 +447,14 @@ you help me?" - always gets the full, warm answer with three or four concrete
 things the person could ask, however many times the email has been asked for.
 The capability pitch lives once, in `ASSISTANT_CAPABILITIES_PITCH`, and both
 the concierge and the working agent describe the same product from it.
+"What actions can I do here?" (2026-09-06) was answered with the diary, the
+mail and the receipts pile and never mentioned that the person keeps lists,
+or that lists have a page of their own. The pitch now names the lists page
+and the receipt totals, the loop instructions say a what-can-you-do answer
+covers every kind of thing the person has - diary, mail, receipts, reminders,
+lists - and carries `listsPage` on its own line (a button on WhatsApp), and
+the WhatsApp example prompts are spread across those rather than all drawn
+from the mailbox.
 
 ## When something gets in the way
 
