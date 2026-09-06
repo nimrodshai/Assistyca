@@ -138,6 +138,18 @@ class LoopMechanicsTests(unittest.TestCase):
         result = run_agent_loop(context=_context(), call_model=model, user_message="hi", conversation=[], today="2026-09-04")
         self.assertNotIn("evil.example", result.reply)
 
+    def test_the_links_the_reply_carries_come_back_labelled_for_a_button(self) -> None:
+        link = "https://accounts.google.com/o/oauth2/v2/auth?state=abc"
+        context = _context()
+        context.connect_links = {"google": link}
+        model = ScriptedModel([
+            _model_round(_call("connect_link", "c1", provider="google")),
+            _model_round(reply=_reply(f"Tap the button below, it takes a few seconds.\n{link}")),
+        ])
+        result = run_agent_loop(context=context, call_model=model, user_message="read my mail", conversation=[], today="2026-09-04")
+        self.assertIn(link, result.reply)
+        self.assertEqual(result.links, [{"url": link, "label": "Connect Google"}])
+
     def test_a_confirm_tool_pauses_the_turn_and_a_yes_resumes_the_stored_call(self) -> None:
         api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
         model = ScriptedModel([

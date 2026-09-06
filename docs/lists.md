@@ -42,6 +42,11 @@ server marks it used, sets a normal session cookie, and redirects to the
 list; a second tap lands on `/lists?expired=1`. The code replaced a signed
 session token in the URL, which made the link too long to read in a chat
 message. Redemption is rate limited per IP so a guessed code stays slow.
+On WhatsApp the address is not shown at all: the loop reports the links the
+reply carries (`links`, each with a button label such as "Open Packing"),
+and the chat lifts each one out of the text and sends it as a call-to-action
+button under the message. If the button message fails, the plain text with
+the address goes instead.
 
 ## Due dates and the morning nudge
 

@@ -27,7 +27,9 @@ from unittest import mock
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
 from packages.infrastructure.whatsapp_agent_chat import (
     assistyca_typing,
+    build_link_button_payload,
     format_agent_reply_for_whatsapp,
+    lift_links_from_reply,
     infer_timezone_from_wa_id,
     resolve_scheduled_message_run_at,
 )
@@ -892,6 +894,25 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.assertNotIn("agent_chat_reply", actions)
 
 
+class LinkButtonTests(unittest.TestCase):
+    def test_known_links_are_lifted_and_the_text_tidied(self) -> None:
+        link = "https://assistyca.com/lists/open/k3x9v2qm7h4t"
+        text, used = lift_links_from_reply(f"Here you go, your todos live here:\n\n{link}", [{"url": link, "label": "Open Todos"}])
+        self.assertEqual(text, "Here you go, your todos live here.")
+        self.assertEqual(used, [{"url": link, "label": "Open Todos"}])
+
+    def test_a_link_nobody_handed_out_stays_in_the_text(self) -> None:
+        text, used = lift_links_from_reply("See https://example.com/x for more.", [{"url": "https://other.test/y", "label": "Open"}])
+        self.assertEqual(text, "See https://example.com/x for more.")
+        self.assertEqual(used, [])
+
+    def test_the_button_label_is_cut_to_what_whatsapp_allows(self) -> None:
+        payload = build_link_button_payload(body="Open it.", label="Open the very long packing list name", url="https://assistyca.com/lists/open/abc")
+        self.assertEqual(payload["type"], "cta_url")
+        self.assertLessEqual(len(payload["action"]["parameters"]["display_text"]), 20)
+        self.assertEqual(payload["action"]["parameters"]["url"], "https://assistyca.com/lists/open/abc")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1260,32 +1281,82 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         self.assertEqual(outputs[0]["error"]["code"], "source_not_connected")
         self.assertEqual(outputs[1]["link"], link)
 
-    def test_a_schedule_is_asked_for_a_yes_and_the_yes_runs_the_stored_call(self) -> None:
+    def test_a_link_in_the_reply_goes_out_as_a_button_not_an_address(self) -> None:
+        link = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y"
+        rounds = [
+            _loop_round(_tool_call("read_inbox", "c1", time_window="today")),
+            _loop_round(_tool_call("connect_link", "c2", provider="google")),
+            _loop_round(reply={"reply": f"I need Gmail connected first, tap the button below:\n\n{link}"}),
+        ]
+        from packages.infrastructure.portal_auth import server as server_module
+
+        handler_class = next(
+            value for value in vars(server_module).values()
+            if isinstance(value, type) and hasattr(value, "_whatsapp_oauth_links")
+        )
+        with (
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds),
+            mock.patch.object(handler_class, "_whatsapp_oauth_links", return_value={"google": link}),
+        ):
+            response = self._post_webhook(inbound_text_payload("important emails today?", message_id="wamid.loop-btn"))
+
+        # The transcript keeps the address; the phone gets a button.
+        self.assertIn(link, self._reply(response))
+        sent = self.sent.call_args.kwargs
+        self.assertIsNone(sent["message_text"])
+        self.assertEqual(sent["interactive"]["type"], "cta_url")
+        self.assertEqual(sent["interactive"]["body"]["text"], "I need Gmail connected first, tap the button below.")
+        self.assertEqual(sent["interactive"]["action"]["parameters"], {"display_text": "Connect Google", "url": link})
+
+    def test_when_the_button_cannot_be_sent_the_address_goes_as_text(self) -> None:
+        link = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y"
+        rounds = [
+            _loop_round(_tool_call("connect_link", "c2", provider="google")),
+            _loop_round(reply={"reply": f"Tap the button below.\n{link}"}),
+        ]
+        from packages.infrastructure.portal_auth import server as server_module
+
+        handler_class = next(
+            value for value in vars(server_module).values()
+            if isinstance(value, type) and hasattr(value, "_whatsapp_oauth_links")
+        )
+
+        def send(**kwargs):
+            if kwargs.get("interactive") is not None:
+                raise RuntimeError("WhatsApp send failed: (#131009) parameter invalid")
+            return "wamid.text-fallback"
+
+        self.sent.side_effect = send
+        with (
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds),
+            mock.patch.object(handler_class, "_whatsapp_oauth_links", return_value={"google": link}),
+        ):
+            self._post_webhook(inbound_text_payload("connect my gmail", message_id="wamid.loop-btn-2"))
+
+        texts = [call.kwargs["message_text"] for call in self.sent.call_args_list if call.kwargs.get("message_text")]
+        self.assertEqual(texts[-1], f"Tap the button below.\n{link}")
+
+    def test_a_reminder_is_set_on_the_first_message_and_nobody_is_asked_for_a_yes(self) -> None:
         rounds = [
             _loop_round(_tool_call("schedule_message", "c1", time_local="12:40", date_policy="tomorrow", message_text="Stand up and stretch.")),
-            _loop_round(reply={"reply": "I can text you tomorrow at 12:40: Stand up and stretch. Say yes and it's set."}),
+            _loop_round(reply={"reply": "Done, I'll remind you tomorrow at 12:40: Stand up and stretch.", "claimsCompleted": ["schedule_message"]}),
         ]
-        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds):
-            first = self._post_webhook(inbound_text_payload("text me at 12:40 tomorrow to stretch", message_id="wamid.loop-3"))
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds) as model:
+            response = self._post_webhook(inbound_text_payload("text me at 12:40 tomorrow to stretch", message_id="wamid.loop-3"))
 
-        self.assertIn("Say yes", self._reply(first))
-        pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
-        self.assertEqual(pending["kind"], "tool_confirmation")
-        self.assertEqual(pending["tool"], "schedule_message")
-
-        with mock.patch(
-            "packages.infrastructure.portal_auth.server.call_openai_response",
-            side_effect=[_loop_round(reply={"reply": "Done, it's set for tomorrow at 12:40.", "claimsCompleted": ["schedule_message"]})],
-        ) as model:
-            second = self._post_webhook(inbound_text_payload("yes", message_id="wamid.loop-4"))
-
-        self.assertEqual(self._reply(second), "Done, it's set for tomorrow at 12:40.")
+        self.assertEqual(self._reply(response), "Done, I'll remind you tomorrow at 12:40: Stand up and stretch.")
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
-        context_text = model.call_args.kwargs["input"][0]["content"]
-        self.assertIn('"confirmedAction"', context_text)
-        self.assertIn('"scheduledFor"', context_text)
+        self.assertEqual(model.call_count, 2)
+        told = json.loads(model.call_args_list[1].kwargs["input"][-1]["output"])
+        self.assertTrue(told["ok"])
+        actions = self.database.list_scheduled_actions_for_user(int(self.user["id"]))
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["payload"]["messageText"], "Stand up and stretch.")
 
     def _hold_a_schedule(self) -> None:
+        # A reminder no longer waits for a yes, but a held call of any tool
+        # exercises the same hold-and-answer machinery, and this one is the
+        # simplest to run and to check.
         self.database.save_whatsapp_agent_pending(
             user_id=int(self.user["id"]),
             pending={"kind": "tool_confirmation", "tool": "schedule_message",

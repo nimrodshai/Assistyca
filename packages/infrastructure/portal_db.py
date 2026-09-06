@@ -3365,8 +3365,10 @@ class PortalDatabase:
                         """,
                         (code, resolved_user_id, resolved_list_id, now_iso(), float(expires_at)),
                     )
-                except sqlite3.IntegrityError:
-                    continue
+                except sqlite3.IntegrityError as exc:
+                    if "UNIQUE" in str(exc).upper():
+                        continue
+                    raise ValueError("A list open code needs an account that exists.") from exc
                 return code
         raise RuntimeError("Could not mint a list open code.")
 

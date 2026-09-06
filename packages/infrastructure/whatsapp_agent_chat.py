@@ -1057,6 +1057,67 @@ def infer_timezone_from_wa_id(wa_id: Any) -> str:
     return "UTC"
 
 
+# A call-to-action button holds a label this long and a body this long.
+LINK_BUTTON_LABEL_LIMIT = 20
+LINK_BUTTON_BODY_LIMIT = 1024
+_REPLY_URL_PATTERN = re.compile(r"https?://[^\s<>\"')\]]+")
+
+
+def build_link_button_payload(*, body: str, label: str, url: str) -> dict[str, Any]:
+    """One WhatsApp message with a button that opens a link, the address kept out of sight."""
+
+    words = " ".join(str(label or "").split()) or "Open"
+    if len(words) > LINK_BUTTON_LABEL_LIMIT:
+        words = words[:LINK_BUTTON_LABEL_LIMIT].rstrip()
+    return {
+        "type": "cta_url",
+        "body": {"text": str(body or "").strip()[:LINK_BUTTON_BODY_LIMIT]},
+        "action": {"name": "cta_url", "parameters": {"display_text": words, "url": str(url or "").strip()}},
+    }
+
+
+def lift_links_from_reply(reply: str, links: list[dict[str, Any]] | None) -> tuple[str, list[dict[str, str]]]:
+    """Take the known links out of a reply so each can become a button.
+
+    Only links the loop handed out are lifted; anything else stays as it
+    is. The text that remains is tidied: a line that only held the address
+    goes, and a sentence that ended with a colon to introduce it ends with
+    a full stop instead.
+    """
+
+    wanted: dict[str, str] = {}
+    for entry in links or []:
+        if isinstance(entry, dict):
+            url = str(entry.get("url") or "").strip()
+            if url:
+                wanted[url] = str(entry.get("label") or "").strip() or "Open"
+    if not wanted:
+        return reply, []
+
+    used: list[dict[str, str]] = []
+
+    def take(match: re.Match[str]) -> str:
+        link = match.group(0)
+        bare = link.rstrip(".,;:!?")
+        if bare not in wanted:
+            return link
+        if all(item["url"] != bare for item in used):
+            used.append({"url": bare, "label": wanted[bare]})
+        return ""
+
+    text = _REPLY_URL_PATTERN.sub(take, reply)
+    if not used:
+        return reply, []
+    lines = [line.rstrip() for line in text.splitlines()]
+    lines = [line for line in lines if line.strip() not in {"", "(", ")", "()"} or line == ""]
+    text = "\n".join(lines)
+    text = re.sub(r"[ \t]*\(\s*\)", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if text.endswith(":"):
+        text = text[:-1].rstrip() + "."
+    return text, used
+
+
 def format_agent_reply_for_whatsapp(text: Any) -> str:
     """Reshape a portal-flavoured reply into WhatsApp text.
 
@@ -1785,7 +1846,8 @@ class WhatsAppAgentChat:
             build_situation("internal", request=text, what_happened="I read that, but couldn't put an answer together.", can_retry=True),
             conversation,
         )
-        message_id = self._send_owner_text(reply)
+        links = turn.get("links") if isinstance(turn.get("links"), list) else []
+        message_id = self._send_owner_reply(reply, links if outcome == "message" else [])
         completed = [normalize_text(name) for name in (turn.get("completed") or []) if isinstance(name, str)]
         if "delete_account" in completed:
             # The account is gone, and with it the transcript: the goodbye is
@@ -1955,6 +2017,33 @@ class WhatsAppAgentChat:
             text=reply_text,
             api_version=self.api_version,
         )
+
+    def _send_owner_reply(self, reply_text: str, links: list[dict[str, Any]] | None) -> str:
+        """Send the reply, with each link the loop handed out as a button under it.
+
+        A bare address in a chat bubble is hard to read, so the reply's
+        links ride on call-to-action buttons instead. The first button sits
+        under the reply itself; any further link gets a small message of
+        its own. Should a button not go through, the plain text with the
+        address goes instead, so the person always gets the link.
+        """
+
+        text, used = lift_links_from_reply(reply_text, links)
+        if not used:
+            return self._send_owner_text(reply_text)
+        first, rest = used[0], used[1:]
+        body = text or "Tap the button to open it."
+        if len(body) > LINK_BUTTON_BODY_LIMIT:
+            # Too long for one bubble with a button: the words first, then the button.
+            self._send_owner_text(body)
+            body = "Tap the button below to open it."
+        message_id = self._send_owner_interactive(build_link_button_payload(body=body, label=first["label"], url=first["url"]))
+        if not message_id:
+            return self._send_owner_text(reply_text)
+        for link in rest:
+            if not self._send_owner_interactive(build_link_button_payload(body=link["label"], label=link["label"], url=link["url"])):
+                self._send_owner_text(f"{link['label']}:\n{link['url']}")
+        return message_id
 
     # -- the whole loop ----------------------------------------------------
 

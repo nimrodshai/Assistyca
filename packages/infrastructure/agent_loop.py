@@ -59,6 +59,9 @@ LOOP_MAX_OUTPUT_TOKENS = 4000
 MAX_RECORDS_TO_MODEL = 40
 MAX_RECORD_FIELD_LENGTH = 300
 MAX_REPLY_LENGTH = 3500
+# WhatsApp shows a link as a button under the reply, and a button label is
+# at most this long.
+MAX_LINK_BUTTON_LABEL = 20
 MAX_CONVERSATION_MESSAGES = 12
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -154,6 +157,9 @@ class LoopContext:
     # Which sign-in links this turn handed out. The reply may carry these and
     # nothing else that looks like a link.
     links_offered: list[str] = field(default_factory=list)
+    # What each offered link is for, in a few words, so a channel that can
+    # show a button under the reply has something to write on it.
+    link_labels: dict[str, str] = field(default_factory=dict)
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
@@ -179,6 +185,9 @@ class LoopResult:
     # runs the held action itself.
     answers_open_question: str = ""
     completed: list[str] = field(default_factory=list)
+    # The links the reply carries, each with its label, in the order they
+    # appear. A channel that shows buttons lifts them out of the text.
+    links: list[dict[str, str]] = field(default_factory=list)
     rounds: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -338,8 +347,7 @@ def _tool_connect_link(context: LoopContext, args: dict[str, Any]) -> dict[str, 
             "Connecting from this chat is not available right now. The person can connect it from their "
             "Assistyca portal, and you will pick the question up once it is connected.",
         )
-    if link not in context.links_offered:
-        context.links_offered.append(link)
+    _offer_link(context, link, f"Connect {provider.capitalize()}")
     return _ok({
         "provider": provider,
         "link": link,
@@ -392,19 +400,6 @@ def _schedule_details(context: LoopContext, args: dict[str, Any]) -> dict[str, A
         "delayMinutes": args.get("delay_minutes"),
         "timezone": context.timezone_name,
     }
-
-
-def _preflight_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
-    if not resolve_scheduled_message_run_at(_schedule_details(context, args)):
-        return _error("choice_required", _SCHEDULE_TIME_NEEDED)
-    if not str(args.get("message_text") or "").strip():
-        return _error("choice_required", "The message text is needed.")
-    list_name = str(args.get("list_name") or "").strip()
-    if list_name:
-        _record, problem = _resolve_list(context, list_name)
-        if problem:
-            return problem
-    return None
 
 
 def describe_disconnect(context: LoopContext, args: dict[str, Any]) -> str:
@@ -599,6 +594,27 @@ MAX_LIST_ITEMS_TO_MODEL = 150
 LIST_ACTIONS = ("add", "remove", "check", "uncheck", "set_due", "rename", "clear_done", "delete")
 
 
+def _offer_link(context: LoopContext, link: str, label: str) -> None:
+    """Remember a link the reply may carry, and what to call it on a button."""
+
+    if not link:
+        return
+    if link not in context.links_offered:
+        context.links_offered.append(link)
+    context.link_labels[link] = label
+
+
+def _list_link_label(record: dict[str, Any]) -> str:
+    """What the button that opens this list says: the list's own name when it fits."""
+
+    if int(record.get("id") or 0) <= 0:
+        return "Open my lists"
+    name = " ".join(str(record.get("name") or "").split())
+    if name and len(f"Open {name}") <= MAX_LINK_BUTTON_LABEL:
+        return f"Open {name}"
+    return "Open my todos" if str(record.get("kind") or "") == "todo" else "Open the list"
+
+
 def _list_link(context: LoopContext, record: dict[str, Any]) -> str:
     """The link to this list on the lists page, remembered as one the reply may carry."""
 
@@ -609,8 +625,7 @@ def _list_link(context: LoopContext, record: dict[str, Any]) -> str:
     except Exception as exc:  # noqa: BLE001 - a missing link is not a failed list
         print(f"agent.loop.list_link_failed error={exc!r}", flush=True)
         return ""
-    if link and link not in context.links_offered:
-        context.links_offered.append(link)
+    _offer_link(context, link, _list_link_label(record))
     return link
 
 
@@ -978,10 +993,10 @@ TOOLS: list[ToolSpec] = [
             "message_text": {"type": "string"},
             "list_name": {"type": ["string", "null"]},
         }),
+        # A reminder is the person's own words sent back to them at the time
+        # they named, and nothing else changes: it runs on the first call.
         side_effect=True,
-        confirm=True,
         run=_tool_schedule_message,
-        preflight=_preflight_schedule_message,
     ),
     ToolSpec(
         name="create_list",
@@ -1095,9 +1110,11 @@ AGENT_LOOP_INSTRUCTIONS = (
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
     "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
     "that depends on the time of day, and never guess the time.\n"
-    "Actions that need a yes: disconnect, schedule_message, sign_out and delete_account return "
+    "A reminder needs no yes: schedule_message runs on the first call, so never ask the person to confirm "
+    "one; call it, then say it is set, repeating scheduledForLocal and the text. Actions that need a yes: "
+    "disconnect, sign_out and delete_account return "
     "confirmation_required the first time. Then ask for a plain yes in the same message, naming exactly what "
-    "will happen - which accounts, what time, what text - and nothing else. For sign_out say in one line that "
+    "will happen - which accounts, what is signed out or erased - and nothing else. For sign_out say in one line that "
     "only this phone is signed out and the account and its data stay. For delete_account the person must "
     "understand what they are agreeing to before they say yes: spell out, in their words, that the whole "
     "account and every piece of data in it will be erased for good, that connected sign-ins are revoked and "
@@ -1117,7 +1134,9 @@ AGENT_LOOP_INSTRUCTIONS = (
     "all of them; read before answering what is on a list. Name the list the way the person did; the tool says "
     "when more than one could be meant or none exists. Every list result carries a link to the lists page, "
     "where they can see and edit the list by hand and copy a link for other apps: put it in the reply on its "
-    "own line exactly as given, once. CONTEXT.listsPage is that page for the whole account: whenever the "
+    "own line exactly as given, once. On WhatsApp (CONTEXT.channel is whatsapp) every link you write is "
+    "shown as a button under the message, not as an address, so word the sentence for a button - 'tap the "
+    "button below to open it' - and still put the link on its own line. CONTEXT.listsPage is that page for the whole account: whenever the "
     "conversation is about lists or todos - including asking whether you can help with them, or how they work "
     "- put that link in the reply on its own line, unless a reply in recentConversation already carried a "
     "lists link. A to-do item with a deadline gets due as YYYY-MM-DD, from CONTEXT.today and todayWeekday: "
@@ -1347,6 +1366,7 @@ def run_agent_loop(
         reply_payload = {"reply": reply_text, "claimsCompleted": [], "rememberFact": None, "forgetFact": None}
 
     reply = _guard_reply(str(reply_payload.get("reply") or ""), context.links_offered)
+    links_in_reply = _links_in_reply(reply, context)
     claims = [str(c) for c in (reply_payload.get("claimsCompleted") or []) if isinstance(c, str)]
     overclaimed = [c for c in claims if c not in completed]
     if overclaimed:
@@ -1356,6 +1376,7 @@ def run_agent_loop(
     return LoopResult(
         reply=reply,
         tool_calls=tool_calls,
+        links=links_in_reply,
         pending_confirmation=pending,
         calendar_choice=context.calendar_choice,
         remember_fact={"key": str(remember.get("key") or ""), "fact": str(remember.get("fact") or "")} if remember else None,
@@ -1432,14 +1453,6 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
         return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}"
     if tool.name == "delete_account":
         return describe_delete_account(context)
-    if tool.name == "schedule_message":
-        about = ""
-        if args.get("list_name"):
-            record, _problem = _resolve_list(context, str(args.get("list_name") or ""))
-            about = f" with what is still on the list {str(record.get('name') or args.get('list_name'))!r}"
-        if args.get("delay_minutes"):
-            return f"a message in {args.get('delay_minutes')} minutes saying: {args.get('message_text')}{about}"
-        return f"a message at {args.get('time_local')} ({args.get('date_policy')}) saying: {args.get('message_text')}{about}"
     return ""
 
 
@@ -1468,6 +1481,19 @@ def _parse_reply(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _links_in_reply(reply: str, context: LoopContext) -> list[dict[str, str]]:
+    """The offered links the guarded reply carries, in order, each with its label."""
+
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in _URL_PATTERN.finditer(reply):
+        bare = match.group(0).rstrip(".,;:!?")
+        if bare in context.links_offered and bare not in seen:
+            seen.add(bare)
+            found.append({"url": bare, "label": context.link_labels.get(bare) or "Open"})
+    return found
 
 
 def _guard_reply(reply: str, links_offered: list[str]) -> str:
