@@ -455,7 +455,10 @@ receipts page replaced), the loop instructions say a what-can-you-do answer
 covers every kind of thing the person has - diary, mail, receipts, reminders,
 lists - and carries `listsPage` and `receiptsPage` each on its own line
 (buttons on WhatsApp), and the WhatsApp example prompts are spread across
-those rather than all drawn from the mailbox.
+those rather than all drawn from the mailbox. The business typed on the
+register page reaches the working agent as the known fact keyed `what they
+do`; the answer and every example prompt are told to fit that line of work,
+the same way the signup concierge and the welcome message already did.
 
 ## When something gets in the way
 

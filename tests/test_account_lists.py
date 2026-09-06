@@ -202,11 +202,17 @@ class ListToolTests(unittest.TestCase):
         self.assertEqual(AGENT_LOOP_INSTRUCTIONS.count("what you can do here at all"), 2)
         self.assertIn("Lists and receipts are each a page of the person's own", AGENT_LOOP_INSTRUCTIONS)
         self.assertIn("CONTEXT.listsPage and CONTEXT.receiptsPage each on its own line", AGENT_LOOP_INSTRUCTIONS)
+        # The business typed on the register page is the fact keyed 'what
+        # they do'; the answer and its example prompts are told to fit it.
+        self.assertIn("by what knownFacts says they do", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("The fact keyed 'what they do' is what they wrote when they registered", AGENT_LOOP_INSTRUCTIONS)
 
         home = LINK.format(id=0).replace("#/list/0", "")
         model = ScriptedModel([_model_round(reply=_reply(f"Diary, mail, receipts, reminders and your lists - here is that page:\n{home}"))])
-        result = run_agent_loop(context=self._context(), call_model=model, user_message="What actions can I do here?", conversation=[], today="2026-09-06")
+        facts = [{"key": "what they do", "fact": "Wedding photographer in Haifa"}]
+        result = run_agent_loop(context=self._context(), call_model=model, user_message="What actions can I do here?", conversation=[], today="2026-09-06", facts=facts)
         self.assertIn(f'"listsPage":"{home}"', model.inputs[0][0]["content"])
+        self.assertIn("Wedding photographer in Haifa", model.inputs[0][0]["content"])
         self.assertIn(home, result.reply)
 
     def test_creating_a_list_hands_back_the_link_and_the_reply_may_carry_it(self) -> None:
