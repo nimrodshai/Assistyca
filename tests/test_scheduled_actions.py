@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import threading
@@ -116,6 +118,150 @@ class ScheduledActionTests(unittest.TestCase):
         self.assertEqual(send.call_args.kwargs["template_name"], "notification_message")
         # The phone carried the message, so the feed stays quiet.
         self.assertEqual(self.database.list_notifications(user_id=int(self.user["id"])), [])
+
+    def _whatsapp_reminder(self, text: str = "You have a meeting with bisi") -> dict:
+        self.database.save_whatsapp_connection(
+            "owner@example.com",
+            owner_wa_id="972507322341",
+            connection_status="connected",
+        )
+        return self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": text, "recipientWaId": "972507322341"},
+        )
+
+    def _scheduler(self) -> ScheduledActionScheduler:
+        return ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+        )
+
+    def _backdate_last_message(self, hours: float) -> None:
+        stamp = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        with self.database._connection() as conn:  # noqa: SLF001 - the clock is the thing under test
+            conn.execute("UPDATE whatsapp_agent_messages SET created_at = ?", (stamp,))
+            conn.commit()
+
+    def test_a_reminder_asked_for_minutes_ago_goes_out_as_plain_text(self) -> None:
+        # "Remind me in 10 minutes" arrives on WhatsApp and the reminder is
+        # due well inside Meta's 24-hour window, so it goes the way the
+        # chat's own replies go, and never depends on a template.
+        self.database.save_whatsapp_agent_message(
+            user_id=int(self.user["id"]), role="user", text="Remind me in 10 minutes I have a meeting with bisi"
+        )
+        action = self._whatsapp_reminder()
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            return_value="wamid.plain-text-1",
+        ) as send:
+            summary = self._scheduler().run_pending(now=datetime.now(timezone.utc))
+
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(summary["fallback"], 0)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["recipient_wa_id"], "972507322341")
+        self.assertEqual(send.call_args.kwargs["message_text"], "You have a meeting with bisi")
+        self.assertNotIn("template_name", send.call_args.kwargs)
+        self.assertEqual(saved["payload"]["deliveredVia"], "whatsapp")
+        self.assertEqual(saved["payload"]["whatsappSendMode"], "text")
+        self.assertEqual(saved["providerMessageId"], "wamid.plain-text-1")
+
+    def test_a_reminder_set_for_the_next_day_uses_the_template(self) -> None:
+        self.database.save_whatsapp_agent_message(
+            user_id=int(self.user["id"]), role="user", text="Remind me tomorrow to call the bank"
+        )
+        self._backdate_last_message(hours=30)
+        action = self._whatsapp_reminder("Call the bank")
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            return_value="wamid.template-1",
+        ) as send:
+            self._scheduler().run_pending(now=datetime.now(timezone.utc))
+
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["template_name"], "notification_message")
+        self.assertEqual(saved["payload"]["whatsappSendMode"], "template")
+
+    def test_a_reminder_at_the_edge_of_the_window_uses_the_template(self) -> None:
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="Remind me")
+        self._backdate_last_message(hours=23.95)
+        self._whatsapp_reminder()
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            return_value="wamid.template-2",
+        ) as send:
+            self._scheduler().run_pending(now=datetime.now(timezone.utc))
+
+        self.assertEqual(send.call_args.kwargs["template_name"], "notification_message")
+
+    def test_the_agents_own_replies_do_not_open_the_window(self) -> None:
+        # Only what the person wrote counts; the assistant talking does not
+        # keep Meta's window open.
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="assistant", text="Set.")
+        self._whatsapp_reminder()
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            return_value="wamid.template-3",
+        ) as send:
+            self._scheduler().run_pending(now=datetime.now(timezone.utc))
+
+        self.assertEqual(send.call_args.kwargs["template_name"], "notification_message")
+
+    def test_a_refused_plain_text_send_is_retried_as_the_template(self) -> None:
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="Remind me")
+        action = self._whatsapp_reminder()
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            side_effect=[RuntimeError("WhatsApp rejected the message: window closed"), "wamid.template-4"],
+        ) as send:
+            summary = self._scheduler().run_pending(now=datetime.now(timezone.utc))
+
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(send.call_count, 2)
+        self.assertNotIn("template_name", send.call_args_list[0].kwargs)
+        self.assertEqual(send.call_args_list[1].kwargs["template_name"], "notification_message")
+        self.assertEqual(saved["payload"]["deliveredVia"], "whatsapp")
+        self.assertEqual(saved["payload"]["whatsappSendMode"], "template")
+        self.assertEqual(saved["providerMessageId"], "wamid.template-4")
+
+    def test_a_reminder_that_reaches_neither_way_says_why_in_the_log_and_the_record(self) -> None:
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="Remind me")
+        action = self._whatsapp_reminder()
+
+        output = io.StringIO()
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            side_effect=[
+                RuntimeError("WhatsApp rejected the message: (#131047) window closed"),
+                RuntimeError("WhatsApp rejected the message: (#132001) template does not exist"),
+            ],
+        ), contextlib.redirect_stdout(output):
+            summary = self._scheduler().run_pending(now=datetime.now(timezone.utc))
+
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(summary["fallback"], 1)
+        self.assertEqual(saved["payload"]["deliveredVia"], "portal_fallback")
+        error = saved["payload"]["whatsappDeliveryError"]
+        self.assertIn("plain text: WhatsApp rejected the message: (#131047)", error)
+        self.assertIn("template notification_message (en_US): WhatsApp rejected the message: (#132001)", error)
+        logged = output.getvalue()
+        self.assertIn(f"action={action['id']}", logged)
+        self.assertIn("delivered to the in-app feed instead", logged)
+        self.assertIn("#132001", logged)
 
     def test_an_older_action_without_a_stored_recipient_reaches_a_linked_phone(self) -> None:
         self.database.link_user_whatsapp_number(user_id=int(self.user["id"]), wa_id="972501234567")

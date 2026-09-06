@@ -33,6 +33,39 @@ which calls `receipt_manager.store_collected_receipts`):
   run refreshes what it read - subject, file - but never what the owner
   decided: their yes or no, the kind they chose, an amount they typed.
 
+## What a search reads twice, and what it does not
+
+A search lists the month's mail every time: that is how mail that arrived
+since, or a mailbox connected since, gets found. It does not download or
+judge a message twice. `receipt_mail_reads` (portal_db) keeps one row per
+message the judge ruled on - the fields the row is rebuilt from and the
+verdict - and `packages/infrastructure/receipt_ledger.py` is what reads
+and writes it:
+
+- The mailbox readers take a `known` callback. Given the listed ids, it
+  returns the messages the ledger holds, marked `fromLedger`; those are not
+  downloaded (Gmail) and do not count against the download ceiling. The
+  ceiling (`AGENT_RECEIPT_ANSWER_MAX_MESSAGES`) is on downloads per run, so
+  a month with more matching mail than one run may download is finished
+  by the next run rather than cut off at its newest end.
+- `_judge_receipt_items` hands only messages without a verdict to the
+  model and writes down every message the model ruled on. A message a
+  failed batch left without a verdict is not written, so it is read again.
+- A search for one vendor still reads and judges the whole window, so a
+  later search for the whole month reuses all of it. Only what the
+  question named ends up on the receipts page, both times.
+- Rows carry the fingerprint of the judgement wording
+  (`receipt_ledger.judge_version`). Change the prompt and every row is
+  stale: the next search reads the month in full once and rewrites them.
+- Deleting a receipt from the page marks its message `dismissed` in the
+  ledger, and `_keep_search_receipts` leaves dismissed messages out, so a
+  later search does not put it back. The answer in chat still counts it.
+- A bundle run (the export with files) reads every message, because the
+  files have to land in its folder, but it skips the judging the same way.
+
+The run's response carries `mailReads`: how many messages came from the
+ledger, how many were downloaded, how many were judged.
+
 The files: a bundle run saves attachments as it reads, and those are kept
 as they are. An answer run saves nothing, so for each stored receipt whose
 email carried a file, the server goes back to the mailbox once

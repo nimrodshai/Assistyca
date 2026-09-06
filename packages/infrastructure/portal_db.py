@@ -168,6 +168,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_account_receipts_message
 ON account_receipts(user_id, message_id) WHERE message_id <> '';
 """
 
+RECEIPT_MAIL_READS_TABLE_SQL = """
+-- What receipt searches have already read: one row per message the judge
+-- ruled on, with what was read off it and the verdict, tied to the wording
+-- of the judgement it was ruled under. A later search skips the download
+-- and the judging for every message here. A receipt the owner deleted from
+-- the receipts page is marked dismissed so a search does not put it back.
+CREATE TABLE IF NOT EXISTS receipt_mail_reads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    mailbox TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL,
+    judge_version TEXT NOT NULL DEFAULT '',
+    verdict_json TEXT NOT NULL DEFAULT '{}',
+    item_json TEXT NOT NULL DEFAULT '{}',
+    read_at TEXT NOT NULL,
+    dismissed_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_receipt_mail_reads_message
+ON receipt_mail_reads(user_id, mailbox, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_receipt_mail_reads_dismissed
+ON receipt_mail_reads(user_id, dismissed_at);
+"""
+
+# Rows per account before the oldest reads are let go. A busy mailbox is a
+# few hundred matching messages a month, so this is years of searches.
+RECEIPT_MAIL_READS_MAX_ROWS = 20000
+RECEIPT_MAIL_READS_QUERY_CHUNK = 400
+
 ACCOUNT_RECEIPT_STATUSES = ("confirmed", "unsure", "rejected")
 ACCOUNT_RECEIPT_KINDS = ("receipt", "invoice")
 ACCOUNT_RECEIPT_MAX_ROWS = 5000
@@ -227,6 +258,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_turns_user_created ON agent_turns(user_id, 
 
 USER_OWNED_TABLES = (
     "account_receipts",
+    "receipt_mail_reads",
     "agent_turns",
     "notifications",
     "feature_activation_events",
@@ -1190,6 +1222,7 @@ class PortalDatabase:
                 self._ensure_agent_turns_table(conn)
                 self._ensure_account_lists_tables(conn)
                 conn.executescript(ACCOUNT_RECEIPTS_TABLE_SQL)
+                conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -7139,6 +7172,150 @@ class PortalDatabase:
             row = conn.execute("SELECT * FROM account_receipts WHERE id = ?", (int(existing["id"]),)).fetchone()
             return self._receipt_row_to_record(row) or {}, False
 
+    # -- receipt mail reads: what searches have already read ------------------
+
+    def get_receipt_mail_reads(
+        self,
+        *,
+        user_id: int,
+        mailbox: str,
+        message_ids: list[str],
+        judge_version: str,
+    ) -> dict[str, dict[str, Any]]:
+        """The remembered reads among these messages, judged under this wording.
+
+        A row judged under other wording is left out, so it reads as unknown
+        and the message is read and judged afresh.
+        """
+
+        ids = [normalize_text(value) for value in message_ids]
+        ids = [value for value in ids if value]
+        if int(user_id or 0) <= 0 or not ids:
+            return {}
+        found: dict[str, dict[str, Any]] = {}
+        with self._connection() as conn:
+            for start in range(0, len(ids), RECEIPT_MAIL_READS_QUERY_CHUNK):
+                chunk = ids[start:start + RECEIPT_MAIL_READS_QUERY_CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT message_id, verdict_json, item_json, read_at, dismissed_at
+                    FROM receipt_mail_reads
+                    WHERE user_id = ? AND mailbox = ? AND judge_version = ? AND message_id IN ({placeholders})
+                    """,
+                    (int(user_id), normalize_text(mailbox), normalize_text(judge_version), *chunk),
+                ).fetchall()
+                for row in rows:
+                    try:
+                        verdict = json.loads(row["verdict_json"] or "{}")
+                        item = json.loads(row["item_json"] or "{}")
+                    except (TypeError, ValueError):
+                        continue
+                    found[str(row["message_id"])] = {
+                        "verdict": verdict if isinstance(verdict, dict) else {},
+                        "item": item if isinstance(item, dict) else {},
+                        "readAt": str(row["read_at"] or ""),
+                        "dismissedAt": str(row["dismissed_at"] or ""),
+                    }
+        return found
+
+    def save_receipt_mail_reads(self, *, user_id: int, entries: list[dict[str, Any]]) -> int:
+        """Write down messages a search read and judged. Returns how many were written.
+
+        A message read before is overwritten with this reading; a dismissal
+        the owner made stays either way.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        now = now_iso()
+        written = 0
+        with self._connection() as conn:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                message_id = normalize_text(entry.get("messageId"))
+                if not message_id:
+                    continue
+                verdict = entry.get("verdict") if isinstance(entry.get("verdict"), dict) else {}
+                item = entry.get("item") if isinstance(entry.get("item"), dict) else {}
+                conn.execute(
+                    """
+                    INSERT INTO receipt_mail_reads (
+                        user_id, mailbox, message_id, judge_version, verdict_json, item_json, read_at, dismissed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(user_id, mailbox, message_id) DO UPDATE SET
+                        judge_version = excluded.judge_version,
+                        verdict_json = excluded.verdict_json,
+                        item_json = excluded.item_json,
+                        read_at = excluded.read_at
+                    """,
+                    (
+                        int(user_id),
+                        normalize_text(entry.get("mailbox")),
+                        message_id,
+                        normalize_text(entry.get("judgeVersion")),
+                        json.dumps(verdict, ensure_ascii=True, sort_keys=True),
+                        json.dumps(item, ensure_ascii=True, sort_keys=True),
+                        now,
+                    ),
+                )
+                written += 1
+            if written:
+                total = int(conn.execute(
+                    "SELECT COUNT(*) FROM receipt_mail_reads WHERE user_id = ?", (int(user_id),)
+                ).fetchone()[0] or 0)
+                excess = total - RECEIPT_MAIL_READS_MAX_ROWS
+                if excess > 0:
+                    # The oldest reads go; a dismissal is the owner's choice and stays.
+                    conn.execute(
+                        """
+                        DELETE FROM receipt_mail_reads
+                        WHERE id IN (
+                            SELECT id FROM receipt_mail_reads
+                            WHERE user_id = ? AND dismissed_at IS NULL
+                            ORDER BY read_at ASC, id ASC
+                            LIMIT ?
+                        )
+                        """,
+                        (int(user_id), excess),
+                    )
+        return written
+
+    def count_receipt_mail_reads(self, *, user_id: int) -> int:
+        with self._connection() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM receipt_mail_reads WHERE user_id = ?", (int(user_id),)
+            ).fetchone()[0] or 0)
+
+    def dismiss_receipt_mail_read(self, *, user_id: int, mailbox: str, message_id: str) -> None:
+        """Mark a message the owner removed from the receipts page, so no search puts it back."""
+
+        message = normalize_text(message_id)
+        if int(user_id or 0) <= 0 or not message:
+            return
+        now = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO receipt_mail_reads (
+                    user_id, mailbox, message_id, judge_version, verdict_json, item_json, read_at, dismissed_at
+                ) VALUES (?, ?, ?, '', '{}', '{}', ?, ?)
+                ON CONFLICT(user_id, mailbox, message_id) DO UPDATE SET dismissed_at = excluded.dismissed_at
+                """,
+                (int(user_id), normalize_text(mailbox), message, now, now),
+            )
+
+    def list_dismissed_receipt_messages(self, *, user_id: int) -> list[str]:
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT message_id FROM receipt_mail_reads WHERE user_id = ? AND dismissed_at IS NOT NULL",
+                (int(user_id),),
+            ).fetchall()
+        return [str(row["message_id"]) for row in rows if row["message_id"]]
+
     def create_account_receipt(self, *, user_id: int, record: dict[str, Any]) -> dict[str, Any]:
         """A receipt the owner typed in by hand: no email behind it."""
 
@@ -7962,6 +8139,55 @@ class PortalDatabase:
             params.append(json.dumps(payload, ensure_ascii=True, sort_keys=True))
         params.append(int(action_id))
 
+        with self._connection() as conn:
+            conn.execute(
+                f"""
+                UPDATE scheduled_actions
+                SET {", ".join(fields)}
+                WHERE id = ?
+                """,
+                tuple(params),
+            )
+            row = conn.execute(
+                "SELECT * FROM scheduled_actions WHERE id = ? LIMIT 1",
+                (int(action_id),),
+            ).fetchone()
+        return self._load_scheduled_action_row(row)
+
+    def reschedule_scheduled_action(
+        self,
+        *,
+        action_id: int,
+        run_at: str | datetime,
+        payload: dict[str, Any] | None = None,
+        last_error: str = "",
+    ) -> dict[str, Any] | None:
+        """Put a standing action back in the queue for its next occurrence.
+
+        The row keeps its id and history; the claim, the attempt count and
+        the provider id of the run that just finished are cleared so the next
+        run starts clean and a late delivery receipt cannot close the row.
+        """
+
+        if int(action_id or 0) <= 0:
+            return None
+        run_at_value = parse_datetime(run_at).astimezone(timezone.utc).isoformat()
+        now = now_iso()
+        fields = [
+            "status = 'pending'",
+            "run_at = ?",
+            "attempt_count = 0",
+            "claimed_at = NULL",
+            "completed_at = NULL",
+            "provider_message_id = ''",
+            "last_error = ?",
+            "updated_at = ?",
+        ]
+        params: list[Any] = [run_at_value, normalize_text(last_error)[:2000], now]
+        if payload is not None:
+            fields.append("payload_json = ?")
+            params.append(json.dumps(payload, ensure_ascii=True, sort_keys=True))
+        params.append(int(action_id))
         with self._connection() as conn:
             conn.execute(
                 f"""

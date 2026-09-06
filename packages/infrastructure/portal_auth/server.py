@@ -189,6 +189,7 @@ from packages.infrastructure.receipt_collector import merge_receipt_amount_entri
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
 from packages.infrastructure import receipt_manager
+from packages.infrastructure import receipt_ledger
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_judge import judge_receipt_items
@@ -200,6 +201,14 @@ from packages.infrastructure.list_due_nudges import ListDueNudger
 from packages.infrastructure.list_due_nudges import load_list_due_nudge_config
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
+from packages.infrastructure.standing_tasks import MAX_TASK_INSTRUCTION_LENGTH
+from packages.infrastructure.standing_tasks import MAX_TASK_TITLE_LENGTH
+from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.standing_tasks import SUPPORTED_TASK_CHANNELS
+from packages.infrastructure.standing_tasks import StandingTaskRunner
+from packages.infrastructure.standing_tasks import describe_task_schedule
+from packages.infrastructure.standing_tasks import next_task_run_at
+from packages.infrastructure.standing_tasks import normalize_task_schedule
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_INTERVAL_MINUTES
 from packages.infrastructure.source_actions import SOURCE_ACTION_MIN_INTERVAL_MINUTES
@@ -6864,6 +6873,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # alike. The answers this message carries are written down here,
             # so they hold for this run and for every run after it.
             receipt_decisions = self._receipt_decisions(session.email, payload)
+            # What earlier searches already read and judged. A message in
+            # the ledger is neither downloaded nor judged again; the mailbox
+            # is still listed, which is how new mail gets found.
+            read_ledger = self._mail_read_ledger(session.email) if result_header == "Receipt search" else None
             # A run picked up after a question was answered. The mail behind it
             # was read and judged when the question was asked, so it is counted
             # again with the answer applied rather than read again.
@@ -6955,6 +6968,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             include_attachments=receipt_attachment_dir is not None,
                             attachment_output_dir=receipt_attachment_dir,
                             attachment_url_prefix=receipt_attachment_url_prefix,
+                            # A bundle saves every file to its own folder, so
+                            # it reads every message; only an answer run can
+                            # take a message from the ledger instead.
+                            known=(
+                                read_ledger.known_messages(mailbox_name)
+                                if read_ledger is not None and receipt_attachment_dir is None
+                                else None
+                            ),
                         )
                     except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
                         self._flag_mailbox_needs_attention(session.email, record, record_provider)
@@ -6987,15 +7008,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     )
                     email_provider = record_provider
                     mailbox_items = result.get("items") if isinstance(result.get("items"), list) else []
-                    if len(mailbox_items) > search_max_results:
+                    # The ceiling is on what was downloaded this run. Messages
+                    # the ledger supplied cost nothing and all stay; of the
+                    # rest the newest are kept, which is the order the
+                    # providers return them in, so a capped month is the
+                    # recent end of itself rather than an arbitrary slice.
+                    kept_items, was_capped = receipt_ledger.cap_fresh_items(mailbox_items, search_max_results)
+                    if was_capped:
                         capped_mailboxes.append({"mailbox": mailbox_name, "limit": search_max_results})
-                        # The newest are kept, which is the order the providers
-                        # return them in, so a capped month is the recent end of
-                        # itself rather than an arbitrary slice.
                         result = {
                             **result,
-                            "items": mailbox_items[:search_max_results],
-                            "messageCount": search_max_results,
+                            "items": kept_items,
+                            "messageCount": len(kept_items),
                         }
                     mailbox_results.append({"mailbox": mailbox_name, "result": result})
                 # A read that found nothing is worth asking again. A read that
@@ -7060,6 +7084,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         "items": self._judge_receipt_items(
                             result.get("items") if isinstance(result.get("items"), list) else [],
                             billing_email=session.email,
+                            ledger=read_ledger,
                         ),
                     }
                 if result_header == "Receipt search" and answer_mode:
@@ -7166,6 +7191,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             response_payload = {
                 "ok": True,
                 "message": str(result.get("message") or f"{mailbox_label} digest complete."),
+                # How many messages this run took from the ledger, downloaded,
+                # and judged: what a repeat of the same question cost.
+                **(
+                    {"mailReads": receipt_ledger.count_reads(result.get("items") or [])}
+                    if result_header == "Receipt search"
+                    else {}
+                ),
                 "summary": str(result.get("summary") or result.get("message") or ""),
                 "messageCount": int(result.get("messageCount") or 0),
                 "items": result.get("items") if isinstance(result.get("items"), list) else [],
@@ -8442,6 +8474,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         ]
         if user_id <= 0 or not (rows or skipped):
             return {}
+        # A receipt the owner deleted from the page stays deleted.
+        dismissed = receipt_ledger.MailReadLedger(self.database, user_id=user_id).dismissed()
+        if dismissed:
+            rows = [row for row in rows if str(row.get("sourceRef") or "") not in dismissed]
+            skipped = [row for row in skipped if str(row.get("sourceRef") or "") not in dismissed]
         try:
             outcome = receipt_manager.store_collected_receipts(
                 self.database,
@@ -8515,6 +8552,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         items: list[dict[str, Any]],
         *,
         billing_email: str,
+        ledger: "receipt_ledger.MailReadLedger | None" = None,
     ) -> list[dict[str, Any]]:
         """Tell the receipts in a search's results apart from everything else.
 
@@ -8533,7 +8571,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if not items:
             return items
-        return judge_receipt_items(items, ask=self._receipt_prompt_ask(
+        ask = self._receipt_prompt_ask(
             billing_email=billing_email,
             tool_name="portal_receipt_judge",
             model_env="PORTAL_RECEIPT_JUDGE_MODEL",
@@ -8541,7 +8579,26 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             instructions=RECEIPT_JUDGE_INSTRUCTIONS,
             max_output_tokens=RECEIPT_JUDGE_MAX_OUTPUT_TOKENS,
             failure_label="Receipt judgement",
-        ))
+        )
+        if ledger is None:
+            return judge_receipt_items(items, ask=ask)
+        # What the ledger already ruled on keeps its verdict; only the rest
+        # goes to the model, and what the model ruled on is written down.
+        judged = receipt_ledger.judge_only_new(
+            ledger.attach_verdicts(items),
+            judge=lambda pending: judge_receipt_items(pending, ask=ask),
+        )
+        ledger.remember(judged)
+        return judged
+
+    def _mail_read_ledger(self, email: str) -> receipt_ledger.MailReadLedger | None:
+        """This account's record of what receipt searches have already read."""
+
+        user = self.database.get_user(email) or {}
+        user_id = int(user.get("id") or 0)
+        if user_id <= 0:
+            return None
+        return receipt_ledger.MailReadLedger(self.database, user_id=user_id)
 
     def _receipt_decisions(self, email: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Every receipt pair this owner has ruled on, answers included.
@@ -10008,11 +10065,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or action_payload.get("text")
         )
 
+        if action_type == STANDING_TASK_ACTION_TYPE:
+            self._create_standing_task(session, user, payload, action_payload)
+            return
         if action_type != "send_message":
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "unsupported_action_type",
-                "message": "Only scheduled send_message actions are supported right now.",
+                "message": "Only scheduled messages and standing actions are supported right now.",
             })
             return
         if channel != "whatsapp":
@@ -10108,6 +10168,143 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "message": "Scheduled WhatsApp message saved.",
             "action": self._serialize_scheduled_action_for_client(action),
+        })
+
+    def _reachable_whatsapp_numbers(self, session: PortalSession, user_id: int) -> list[str]:
+        """Every phone a scheduled message may go to: the notification number
+        from the older single-connection setup, then the phones linked to the
+        account by signup or a link code."""
+
+        connection = self.database.get_whatsapp_connection(session.email)
+        owner_wa_id = normalize_whatsapp_lookup_id((connection or {}).get("ownerWaId"))
+        linked_numbers = [
+            normalize_whatsapp_lookup_id(record.get("waId"))
+            for record in self.database.list_user_whatsapp_numbers(user_id=user_id)
+        ]
+        return [number for number in [owner_wa_id, *linked_numbers] if number]
+
+    def _create_standing_task(
+        self,
+        session: PortalSession,
+        user: dict[str, Any],
+        payload: dict[str, Any],
+        action_payload: dict[str, Any],
+    ) -> None:
+        """Save a standing action: something the assistant does on a schedule.
+
+        The server works out the first run from the schedule and the
+        person's timezone; the caller never sends an instant. The result of
+        each run goes to the phone that asked, or to the in-app feed.
+        """
+
+        instruction = normalize_contact_message(
+            payload.get("instruction") or action_payload.get("instruction"),
+            MAX_TASK_INSTRUCTION_LENGTH,
+        )
+        title = normalize_contact_single_line(payload.get("title") or action_payload.get("title"), MAX_TASK_TITLE_LENGTH)
+        schedule = normalize_task_schedule(payload.get("schedule") or action_payload.get("schedule"))
+        timezone_name = normalize_contact_single_line(
+            payload.get("timezone") or payload.get("timeZone") or payload.get("scheduleTimezone"), 120
+        ) or "UTC"
+        channel = normalize_text(payload.get("channel")).lower() or "whatsapp"
+        if not instruction:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_instruction",
+                "message": "A standing action needs to say what to do each time.",
+            })
+            return
+        if schedule is None:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_schedule",
+                "message": (
+                    "A standing action needs a frequency (daily, weekly or monthly), a time as HH:MM, "
+                    "the weekday for weekly, and the day of the month for monthly."
+                ),
+            })
+            return
+        if channel not in SUPPORTED_TASK_CHANNELS:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "unsupported_channel",
+                "message": "A standing action reports over WhatsApp or in the portal.",
+            })
+            return
+
+        user_id = int(user.get("id") or 0)
+        recipient_wa_id = ""
+        if channel == "whatsapp":
+            reachable = self._reachable_whatsapp_numbers(session, user_id)
+            requested_wa_id = normalize_whatsapp_lookup_id(action_payload.get("recipientWaId"))
+            if requested_wa_id and requested_wa_id not in reachable:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "recipient_not_linked",
+                    "message": "That WhatsApp number is not linked to this account.",
+                })
+                return
+            recipient_wa_id = requested_wa_id or (reachable[0] if reachable else "")
+            if not recipient_wa_id:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "missing_whatsapp_recipient",
+                    "message": "Link the WhatsApp number that should receive scheduled notifications.",
+                })
+                return
+            if not resolve_whatsapp_sender_access_token() or not resolve_whatsapp_sender_phone_number_id():
+                json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                    "ok": False,
+                    "error": "whatsapp_delivery_not_configured",
+                    "message": "Assistyca WhatsApp delivery is not configured on the server.",
+                })
+                return
+
+        next_run = next_task_run_at(schedule, timezone_name=timezone_name)
+        if next_run is None:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_schedule",
+                "message": "The schedule has no next occurrence.",
+            })
+            return
+
+        scheduled_payload = {
+            **{key: value for key, value in action_payload.items() if key not in {"recipientWaId", "recipient_wa_id"}},
+            "instruction": instruction,
+            "title": title or "Standing action",
+            "summary": instruction,
+            "schedule": schedule,
+            "frequency": describe_task_schedule(schedule),
+            "source": normalize_text(payload.get("source")) or "portal_agent",
+            "nextRunAt": next_run.isoformat(),
+            "runCount": 0,
+        }
+        if recipient_wa_id:
+            scheduled_payload["recipientWaId"] = recipient_wa_id
+        try:
+            action = self.database.create_scheduled_action(
+                user_id=user_id,
+                action_type=STANDING_TASK_ACTION_TYPE,
+                channel=channel,
+                recipient_ref="owner",
+                run_at=next_run,
+                timezone_name=timezone_name,
+                payload=scheduled_payload,
+            )
+        except (KeyError, ValueError) as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_scheduled_action",
+                "message": str(exc),
+            })
+            return
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Standing action saved.",
+            "action": self._serialize_scheduled_action_for_client(action),
+            "nextRunAt": next_run.isoformat(),
+            "runs": describe_task_schedule(schedule),
         })
 
     def _handle_scheduled_actions_delete(self, parsed: urllib_parse.ParseResult) -> None:
@@ -12834,7 +13031,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if receipt_id <= 0:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
+        record = self.database.get_account_receipt(user_id=user_id, receipt_id=receipt_id) or {}
         deleted = self.database.delete_account_receipt(user_id=user_id, receipt_id=receipt_id)
+        if deleted and normalize_text(record.get("messageId")):
+            # The email stays in the mailbox and the next search will list
+            # it again; this is what keeps the search from putting it back.
+            self.database.dismiss_receipt_mail_read(
+                user_id=user_id,
+                mailbox=normalize_text(record.get("mailbox")),
+                message_id=normalize_text(record.get("messageId")),
+            )
         json_response(self, HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND, {"ok": deleted, "deleted": deleted})
 
     # -- lists API ---------------------------------------------------------
@@ -13048,19 +13254,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         minutes rather than months.
         """
 
-        secret = self.store.session_secret
-        if not secret:
-            raise WhatsAppAgentChatError(
-                "PORTAL_SESSION_SECRET is required for the WhatsApp agent conversation."
-            )
-        now = time.time()
-        session = PortalSession(
-            token="",
-            email=normalize_email(email),
-            issued_at=now,
-            expires_at=now + 900,
-        )
-        return create_session_token(session, secret)
+        return mint_agent_session_token(self.store, email)
 
     def _handle_whatsapp_agent_chat_message(
         self,
@@ -15444,6 +15638,27 @@ def drain_in_flight_requests(server: ThreadingHTTPServer, grace_seconds: float) 
     return False
 
 
+def mint_agent_session_token(store: PortalAuthStore, email: str) -> str:
+    """A short-lived signed session for an account the server itself acts for:
+    the WhatsApp webhook, or a standing action firing on its schedule. The
+    token only lets that authority pass through the loopback API, where every
+    handler applies its usual checks. It expires in minutes, not months."""
+
+    secret = store.session_secret
+    if not secret:
+        raise WhatsAppAgentChatError(
+            "PORTAL_SESSION_SECRET is required for the WhatsApp agent conversation."
+        )
+    now = time.time()
+    session = PortalSession(
+        token="",
+        email=normalize_email(email),
+        issued_at=now,
+        expires_at=now + 900,
+    )
+    return create_session_token(session, secret)
+
+
 def create_server(host: str, port: int, root: Path, config: PortalConfig) -> ThreadingHTTPServer:
     handler = partial(PortalAuthHandler, directory=str(root))
     server = ThreadingHTTPServer((host, port), handler)
@@ -15758,9 +15973,17 @@ def main() -> int:
     scheduled_action_stop_event = threading.Event()
     scheduled_action_thread: threading.Thread | None = None
     if scheduled_action_config.enabled:
+        # A standing action runs through the same loop as a chat message,
+        # over loopback with a short-lived session for its account.
+        task_runner = StandingTaskRunner(
+            database=server.database,  # type: ignore[attr-defined]
+            base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
+            session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+        )
         scheduled_actions = ScheduledActionScheduler(
             server.database,  # type: ignore[attr-defined]
             config=scheduled_action_config,
+            task_runner=task_runner.run,
         )
         scheduled_action_thread = threading.Thread(
             target=scheduled_actions.serve_forever,
