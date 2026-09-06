@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Register | Assistyca</title>
+    <title>An assistant designed for businesses | Assistyca</title>
     <meta
       name="description"
-      content="Tell Assistyca a little about yourself and your assistant will text you on WhatsApp."
+      content="An assistant designed for businesses. Tell Assistyca a little about yourself and your assistant will text you on WhatsApp."
     />
     <meta name="robots" content="noindex" />
     <link rel="canonical" href="https://assistyca.com/register" />
@@ -66,6 +66,7 @@
           linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
         line-height: 1.55;
         -webkit-font-smoothing: antialiased;
+        overflow-x: hidden;
       }
 
       .page {
@@ -95,15 +96,119 @@
         font-weight: 700;
       }
 
-      .intro {
-        margin: 2rem 0 1.5rem;
+      .hero {
+        position: relative;
+        isolation: isolate;
+        margin: 3.25rem 0 2.5rem;
+        padding-right: 4.5rem;
+        animation: rise-in 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+
+      .hero::before {
+        content: "";
+        position: absolute;
+        z-index: -1;
+        top: -2.4rem;
+        right: -2.8rem;
+        width: 10rem;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(106, 167, 163, 0.24), rgba(106, 167, 163, 0) 68%);
+      }
+
+      .hero-kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        margin: 0 0 1rem;
+        color: var(--accent-deep);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .hero-kicker::before {
+        content: "";
+        width: 0.5rem;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background: var(--accent-deep);
+        box-shadow: 0 0 0 0.35rem var(--accent-soft);
       }
 
       h1 {
-        font-size: clamp(1.7rem, 4vw, 2.2rem);
+        max-width: 10ch;
+        font-size: clamp(2.65rem, 9vw, 4rem);
+        line-height: 0.98;
+        margin: 0;
+        letter-spacing: -0.055em;
+        text-wrap: balance;
+      }
+
+      .hero-highlight {
+        position: relative;
+        display: inline-block;
+        color: var(--accent-deep);
+      }
+
+      .hero-highlight::after {
+        content: "";
+        position: absolute;
+        z-index: -1;
+        right: -0.06em;
+        bottom: 0.02em;
+        left: -0.04em;
+        height: 0.18em;
+        border-radius: 999px;
+        background: rgba(106, 167, 163, 0.24);
+        transform: rotate(-1.5deg);
+      }
+
+      .hero-signal {
+        position: absolute;
+        top: 2.35rem;
+        right: 0.25rem;
+        width: 3.5rem;
+        aspect-ratio: 1;
+        border: 1px solid rgba(79, 146, 144, 0.34);
+        border-radius: 1.05rem;
+        transform: rotate(10deg);
+      }
+
+      .hero-signal::before,
+      .hero-signal::after {
+        content: "";
+        position: absolute;
+        border-radius: 50%;
+      }
+
+      .hero-signal::before {
+        inset: 0.72rem;
+        border: 1px solid rgba(79, 146, 144, 0.48);
+      }
+
+      .hero-signal::after {
+        width: 0.55rem;
+        aspect-ratio: 1;
+        top: calc(50% - 0.275rem);
+        left: calc(50% - 0.275rem);
+        background: var(--accent-deep);
+        box-shadow: 0 0 0 0.42rem var(--accent-soft);
+      }
+
+      .intro {
+        margin: 0 0 1.5rem;
+        padding-top: 1.35rem;
+        border-top: 1px solid var(--line);
+        animation: rise-in 560ms 80ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+
+      .intro h2 {
+        font-size: clamp(1.45rem, 4vw, 1.8rem);
         line-height: 1.15;
-        margin: 0 0 0.6rem;
-        letter-spacing: -0.02em;
+        margin: 0 0 0.55rem;
+        letter-spacing: -0.025em;
       }
 
       .intro p {
@@ -119,6 +224,19 @@
         box-shadow: var(--shadow);
         padding: 1.6rem;
         backdrop-filter: blur(12px);
+        animation: rise-in 560ms 150ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+
+      @keyframes rise-in {
+        from {
+          opacity: 0;
+          transform: translateY(0.65rem);
+        }
+
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
       }
 
       .field {
@@ -321,8 +439,27 @@
           border-radius: 1.1rem;
         }
 
+        .hero {
+          margin: 2.6rem 0 2.1rem;
+          padding-right: 3.25rem;
+        }
+
+        .hero-signal {
+          right: 0;
+          width: 2.85rem;
+          border-radius: 0.85rem;
+        }
+
         .phone-row {
           grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .hero,
+        .intro,
+        .card {
+          animation: none;
         }
       }
     </style>
@@ -334,8 +471,14 @@
         <span>Assistyca</span>
       </a>
 
+      <header class="hero">
+        <p class="hero-kicker">Your assistant, on WhatsApp</p>
+        <h1>An assistant designed for <span class="hero-highlight">businesses</span></h1>
+        <span class="hero-signal" aria-hidden="true"></span>
+      </header>
+
       <div class="intro">
-        <h1>Tell me a little about yourself.</h1>
+        <h2>Tell me a little about yourself.</h2>
         <p>When you're done I'll text you on WhatsApp and we'll get started from there.</p>
       </div>
 
