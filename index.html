@@ -497,8 +497,9 @@
         opacity: 0.45;
       }
 
+      /* No counter-skew: the rows run along the band's own slant */
       .say-inner {
-        transform: skewY(2.5deg);
+        padding: 0.35rem 0;
       }
 
       .say-rows {
@@ -520,38 +521,51 @@
         animation-duration: 54s;
       }
 
+      /* Each prompt is an outgoing WhatsApp bubble, dark-theme colours */
       .say-row span {
         flex: none;
         display: inline-flex;
-        align-items: center;
-        gap: 0.65rem;
-        padding: 0.78rem 1.25rem;
-        border-radius: 999px;
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.14),
-          0 10px 30px -18px rgba(0, 0, 0, 0.8);
-        color: rgba(255, 255, 255, 0.94);
-        font-weight: 500;
-        font-size: 0.97rem;
-        letter-spacing: -0.005em;
+        align-items: flex-end;
+        gap: 0.55rem;
+        padding: 0.55rem 0.7rem 0.5rem 0.8rem;
+        border-radius: 0.85rem;
+        border-top-right-radius: 0.2rem;
+        background: #005c4b;
+        box-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+        color: #e9edef;
+        font-weight: 400;
+        font-size: 0.95rem;
+        line-height: 1.38;
+        letter-spacing: 0;
         white-space: nowrap;
       }
 
-      .say-row span::before {
-        content: "";
-        width: 0.42rem;
-        height: 0.42rem;
-        border-radius: 50%;
-        background: var(--teal-bright);
-        box-shadow: 0 0 10px 1px rgba(142, 209, 203, 0.8);
+      .say-row span::before,
+      .say-row span::after {
+        order: 1;
+        font-size: 0.66rem;
+        line-height: 1;
+        padding-bottom: 0.1rem;
       }
 
-      .say-row span.alt {
-        background: linear-gradient(180deg, rgba(142, 209, 203, 0.22), rgba(142, 209, 203, 0.1));
-        border-color: rgba(142, 209, 203, 0.36);
+      .say-row span::before {
+        content: "10:12";
+        margin-left: 0.25rem;
+        color: rgba(233, 237, 239, 0.62);
       }
+
+      .say-row span::after {
+        content: "\2713\2713";
+        margin-left: -0.3rem;
+        letter-spacing: -0.12em;
+        color: var(--wa-tick);
+      }
+
+      .say-row span:nth-child(6n + 2)::before { content: "10:14"; }
+      .say-row span:nth-child(6n + 3)::before { content: "11:03"; }
+      .say-row span:nth-child(6n + 4)::before { content: "13:27"; }
+      .say-row span:nth-child(6n + 5)::before { content: "15:48"; }
+      .say-row span:nth-child(6n)::before { content: "17:05"; }
 
       @keyframes drift {
         from { transform: translateX(0); }
@@ -783,8 +797,8 @@
         }
 
         .say-row span {
-          font-size: 1.05rem;
-          padding: 0.9rem 1.4rem;
+          font-size: 1.02rem;
+          padding: 0.6rem 0.8rem 0.55rem 0.9rem;
         }
 
         .tiles {
@@ -884,30 +898,30 @@
             <div class="say-rows" aria-hidden="true">
           <div class="say-row">
             <span>Did the plumber ever send the invoice?</span>
-            <span class="alt">What's on tomorrow?</span>
+            <span>What's on tomorrow?</span>
             <span>Put last month's receipts in a folder for the accountant</span>
             <span>Every Friday, remind me to send the weekly report</span>
-            <span class="alt">Find me a free hour with Yael next week</span>
+            <span>Find me a free hour with Yael next week</span>
             <span>What did I spend on software last month?</span>
             <span>Did the plumber ever send the invoice?</span>
-            <span class="alt">What's on tomorrow?</span>
+            <span>What's on tomorrow?</span>
             <span>Put last month's receipts in a folder for the accountant</span>
             <span>Every Friday, remind me to send the weekly report</span>
-            <span class="alt">Find me a free hour with Yael next week</span>
+            <span>Find me a free hour with Yael next week</span>
             <span>What did I spend on software last month?</span>
           </div>
           <div class="say-row reverse">
             <span>Add renew the insurance to my to-dos, due Tuesday</span>
-            <span class="alt">Summarise that long thread from the supplier</span>
+            <span>Summarise that long thread from the supplier</span>
             <span>Text me at 7 with what's on</span>
             <span>Who haven't I replied to this week?</span>
-            <span class="alt">Tell me when the venue posts new dates</span>
+            <span>Tell me when the venue posts new dates</span>
             <span>Did the deposit come in?</span>
             <span>Add renew the insurance to my to-dos, due Tuesday</span>
-            <span class="alt">Summarise that long thread from the supplier</span>
+            <span>Summarise that long thread from the supplier</span>
             <span>Text me at 7 with what's on</span>
             <span>Who haven't I replied to this week?</span>
-            <span class="alt">Tell me when the venue posts new dates</span>
+            <span>Tell me when the venue posts new dates</span>
             <span>Did the deposit come in?</span>
           </div>
             </div>
