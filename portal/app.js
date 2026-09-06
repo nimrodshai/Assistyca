@@ -36568,6 +36568,13 @@ function handleMenuAction(action) {
     return;
   }
 
+  if (action === "receipts") {
+    // The receipt manager is the same kind of page: every receipt and
+    // invoice a search pulled, with the files and the accountant's export.
+    window.location.assign("/receipts");
+    return;
+  }
+
   if (action === "billing") {
     setActiveTab("billing");
     return;

@@ -131,6 +131,49 @@ CREATE TABLE IF NOT EXISTS account_list_nudges (
 );
 """
 
+ACCOUNT_RECEIPTS_TABLE_SQL = """
+-- The receipt manager: every receipt and invoice a mailbox search pulled,
+-- with what was read off it and the file the vendor attached. A search
+-- writes here; the receipts page reads, confirms, corrects and exports.
+-- One row per email, so a search run twice never keeps a receipt twice.
+CREATE TABLE IF NOT EXISTS account_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    message_id TEXT NOT NULL DEFAULT '',
+    mailbox TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'confirmed',
+    kind TEXT NOT NULL DEFAULT 'receipt',
+    vendor TEXT NOT NULL DEFAULT '',
+    paid_to TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    mail_date TEXT NOT NULL DEFAULT '',
+    receipt_date TEXT NOT NULL DEFAULT '',
+    amount TEXT NOT NULL DEFAULT '',
+    currency TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    snippet TEXT NOT NULL DEFAULT '',
+    attachments_json TEXT NOT NULL DEFAULT '[]',
+    manual_amount INTEGER NOT NULL DEFAULT 0,
+    decided_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_receipts_user_date
+ON account_receipts(user_id, receipt_date DESC, id DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_receipts_message
+ON account_receipts(user_id, message_id) WHERE message_id <> '';
+"""
+
+ACCOUNT_RECEIPT_STATUSES = ("confirmed", "unsure", "rejected")
+ACCOUNT_RECEIPT_KINDS = ("receipt", "invoice")
+ACCOUNT_RECEIPT_MAX_ROWS = 5000
+ACCOUNT_RECEIPT_TEXT_LENGTH = 300
+ACCOUNT_RECEIPT_NOTES_LENGTH = 600
+
 _LIST_NAME_NOISE = {"the", "my", "list", "lists", "of", "for", "a", "an", "to", "and"}
 
 def normalize_due_on(value: Any) -> str:
@@ -183,6 +226,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_turns_user_created ON agent_turns(user_id, 
 """
 
 USER_OWNED_TABLES = (
+    "account_receipts",
     "agent_turns",
     "notifications",
     "feature_activation_events",
@@ -1145,6 +1189,7 @@ class PortalDatabase:
                 self._ensure_contact_opportunities_indexes(conn)
                 self._ensure_agent_turns_table(conn)
                 self._ensure_account_lists_tables(conn)
+                conn.executescript(ACCOUNT_RECEIPTS_TABLE_SQL)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -6922,6 +6967,342 @@ class PortalDatabase:
         }
 
     # -- lists -----------------------------------------------------------------
+
+    # -- receipt manager --------------------------------------------------
+
+    def _receipt_row_to_record(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            attachments = json.loads(row["attachments_json"] or "[]")
+        except (TypeError, ValueError):
+            attachments = []
+        return {
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "status": str(row["status"] or "confirmed"),
+            "kind": str(row["kind"] or "receipt"),
+            "vendor": str(row["vendor"] or ""),
+            "paidTo": str(row["paid_to"] or ""),
+            "subject": str(row["subject"] or ""),
+            "mailbox": str(row["mailbox"] or ""),
+            "messageId": str(row["message_id"] or ""),
+            "mailDate": str(row["mail_date"] or ""),
+            "receiptDate": str(row["receipt_date"] or ""),
+            "amount": str(row["amount"] or ""),
+            "currency": str(row["currency"] or ""),
+            "reason": str(row["reason"] or ""),
+            "notes": str(row["notes"] or ""),
+            "snippet": str(row["snippet"] or ""),
+            "attachments": attachments if isinstance(attachments, list) else [],
+            "manualAmount": bool(row["manual_amount"]),
+            "decidedAt": str(row["decided_at"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    @staticmethod
+    def _receipt_field(record: dict[str, Any], key: str, limit: int = ACCOUNT_RECEIPT_TEXT_LENGTH) -> str:
+        return normalize_text(record.get(key))[:limit]
+
+    @staticmethod
+    def _receipt_status(value: Any) -> str:
+        status = normalize_text(value).lower()
+        return status if status in ACCOUNT_RECEIPT_STATUSES else ""
+
+    @staticmethod
+    def _receipt_kind(value: Any) -> str:
+        kind = normalize_text(value).lower()
+        return kind if kind in ACCOUNT_RECEIPT_KINDS else ""
+
+    def get_account_receipt(self, *, user_id: int, receipt_id: int) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM account_receipts WHERE user_id = ? AND id = ? LIMIT 1",
+                (int(user_id), int(receipt_id)),
+            ).fetchone()
+        return self._receipt_row_to_record(row)
+
+    def find_account_receipt_by_message(self, *, user_id: int, message_id: str) -> dict[str, Any] | None:
+        key = normalize_text(message_id)
+        if not key:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM account_receipts WHERE user_id = ? AND message_id = ? LIMIT 1",
+                (int(user_id), key),
+            ).fetchone()
+        return self._receipt_row_to_record(row)
+
+    def count_account_receipts(self, *, user_id: int) -> int:
+        with self._connection() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM account_receipts WHERE user_id = ?", (int(user_id),)
+            ).fetchone()[0] or 0)
+
+    def upsert_account_receipt(self, *, user_id: int, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Keep one receipt a search read, or refresh the one already kept.
+
+        The email is the key. A search run twice reads the same email twice
+        and must not keep it twice. What the owner has ruled on - the yes or
+        no, the kind, an amount they typed - stays as they left it; what the
+        search read afresh - the subject, the file it fetched - is updated.
+        Returns the record and whether it was new.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        status = self._receipt_status(record.get("status")) or "confirmed"
+        kind = self._receipt_kind(record.get("kind")) or "receipt"
+        message_id = self._receipt_field(record, "messageId")
+        attachments = record.get("attachments") if isinstance(record.get("attachments"), list) else []
+        attachments_json = json.dumps(attachments, ensure_ascii=True, sort_keys=True)
+        values = {
+            "mailbox": self._receipt_field(record, "mailbox"),
+            "vendor": self._receipt_field(record, "vendor"),
+            "paid_to": self._receipt_field(record, "paidTo"),
+            "subject": self._receipt_field(record, "subject"),
+            "mail_date": self._receipt_field(record, "mailDate"),
+            "receipt_date": self._receipt_field(record, "receiptDate", 10),
+            "amount": self._receipt_field(record, "amount", 24),
+            "currency": self._receipt_field(record, "currency", 8).upper(),
+            "reason": self._receipt_field(record, "reason"),
+            "notes": self._receipt_field(record, "notes", ACCOUNT_RECEIPT_NOTES_LENGTH),
+            "snippet": self._receipt_field(record, "snippet", ACCOUNT_RECEIPT_NOTES_LENGTH),
+        }
+        now = now_iso()
+        with self._connection() as conn:
+            existing = None
+            if message_id:
+                existing = conn.execute(
+                    "SELECT * FROM account_receipts WHERE user_id = ? AND message_id = ? LIMIT 1",
+                    (int(user_id), message_id),
+                ).fetchone()
+            if existing is None:
+                count = int(conn.execute(
+                    "SELECT COUNT(*) FROM account_receipts WHERE user_id = ?", (int(user_id),)
+                ).fetchone()[0] or 0)
+                if count >= ACCOUNT_RECEIPT_MAX_ROWS:
+                    raise ValueError("This account already keeps as many receipts as it can.")
+                cursor = conn.execute(
+                    """
+                    INSERT INTO account_receipts (
+                        user_id, message_id, mailbox, status, kind, vendor, paid_to, subject,
+                        mail_date, receipt_date, amount, currency, reason, notes, snippet,
+                        attachments_json, manual_amount, decided_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                    """,
+                    (
+                        int(user_id), message_id, values["mailbox"], status, kind, values["vendor"],
+                        values["paid_to"], values["subject"], values["mail_date"], values["receipt_date"],
+                        values["amount"], values["currency"], values["reason"], values["notes"],
+                        values["snippet"], attachments_json, now, now,
+                    ),
+                )
+                receipt_id = int(cursor.lastrowid or 0)
+                row = conn.execute("SELECT * FROM account_receipts WHERE id = ?", (receipt_id,)).fetchone()
+                return self._receipt_row_to_record(row) or {}, True
+
+            decided = bool(existing["decided_at"])
+            manual = bool(existing["manual_amount"])
+            try:
+                kept_files = json.loads(existing["attachments_json"] or "[]")
+            except (TypeError, ValueError):
+                kept_files = []
+            conn.execute(
+                """
+                UPDATE account_receipts
+                SET mailbox = ?, vendor = ?, paid_to = ?, subject = ?, mail_date = ?,
+                    receipt_date = CASE WHEN receipt_date = '' THEN ? ELSE receipt_date END,
+                    status = ?, kind = ?, amount = ?, currency = ?, reason = ?, snippet = ?,
+                    attachments_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    values["mailbox"] or existing["mailbox"],
+                    values["vendor"] or existing["vendor"],
+                    values["paid_to"] or existing["paid_to"],
+                    values["subject"] or existing["subject"],
+                    values["mail_date"] or existing["mail_date"],
+                    values["receipt_date"],
+                    existing["status"] if decided else status,
+                    existing["kind"] if decided else kind,
+                    existing["amount"] if manual else (values["amount"] or existing["amount"]),
+                    existing["currency"] if manual else (values["currency"] or existing["currency"]),
+                    values["reason"] or existing["reason"],
+                    values["snippet"] or existing["snippet"],
+                    attachments_json if attachments else json.dumps(kept_files if isinstance(kept_files, list) else [], ensure_ascii=True, sort_keys=True),
+                    now,
+                    int(existing["id"]),
+                ),
+            )
+            row = conn.execute("SELECT * FROM account_receipts WHERE id = ?", (int(existing["id"]),)).fetchone()
+            return self._receipt_row_to_record(row) or {}, False
+
+    def create_account_receipt(self, *, user_id: int, record: dict[str, Any]) -> dict[str, Any]:
+        """A receipt the owner typed in by hand: no email behind it."""
+
+        entered = {key: value for key, value in record.items() if key != "messageId"}
+        entered["messageId"] = ""
+        stored, _ = self.upsert_account_receipt(user_id=user_id, record=entered)
+        if not stored:
+            return {}
+        # A typed-in amount is the owner's, and the kind is their ruling.
+        return self.update_account_receipt(
+            user_id=user_id, receipt_id=int(stored["id"]),
+            status=stored.get("status") or "confirmed", kind=stored.get("kind") or "receipt",
+            amount=stored.get("amount") or "", currency=stored.get("currency") or "",
+        ) or stored
+
+    def set_account_receipt_attachments(
+        self, *, user_id: int, receipt_id: int, attachments: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        payload = json.dumps(attachments if isinstance(attachments, list) else [], ensure_ascii=True, sort_keys=True)
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE account_receipts SET attachments_json = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (payload, now_iso(), int(user_id), int(receipt_id)),
+            )
+        return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id)
+
+    def update_account_receipt(
+        self,
+        *,
+        user_id: int,
+        receipt_id: int,
+        status: str | None = None,
+        kind: str | None = None,
+        amount: str | None = None,
+        currency: str | None = None,
+        vendor: str | None = None,
+        paid_to: str | None = None,
+        receipt_date: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        """What the owner changes on the page: a yes or a no, the kind, the
+        amount, the vendor, the date, a note. Each is remembered as theirs, so
+        a later search never writes over it."""
+
+        assignments: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            kept = self._receipt_status(status)
+            if not kept:
+                raise ValueError("A receipt is confirmed, unsure, or rejected.")
+            assignments.append("status = ?")
+            params.append(kept)
+            assignments.append("decided_at = ?")
+            params.append(now_iso() if kept != "unsure" else None)
+        if kind is not None:
+            kept_kind = self._receipt_kind(kind)
+            if not kept_kind:
+                raise ValueError("A document is a receipt or an invoice.")
+            assignments.append("kind = ?")
+            params.append(kept_kind)
+            assignments.append("decided_at = COALESCE(decided_at, ?)")
+            params.append(now_iso())
+        if amount is not None or currency is not None:
+            if amount is not None:
+                text = normalize_text(amount).replace(",", "")
+                if text:
+                    try:
+                        float(text)
+                    except ValueError as exc:
+                        raise ValueError("The amount has to be a number.") from exc
+                assignments.append("amount = ?")
+                params.append(text[:24])
+            if currency is not None:
+                code = normalize_text(currency).upper()[:8]
+                assignments.append("currency = ?")
+                params.append(code)
+            assignments.append("manual_amount = 1")
+        if vendor is not None:
+            assignments.append("vendor = ?")
+            params.append(normalize_text(vendor)[:ACCOUNT_RECEIPT_TEXT_LENGTH])
+        if paid_to is not None:
+            assignments.append("paid_to = ?")
+            params.append(normalize_text(paid_to)[:ACCOUNT_RECEIPT_TEXT_LENGTH])
+        if receipt_date is not None:
+            text = normalize_text(receipt_date)[:10]
+            if text:
+                try:
+                    datetime.strptime(text, "%Y-%m-%d")
+                except ValueError as exc:
+                    raise ValueError("The date has to be YYYY-MM-DD.") from exc
+            assignments.append("receipt_date = ?")
+            params.append(text)
+        if notes is not None:
+            assignments.append("notes = ?")
+            params.append(normalize_text(notes)[:ACCOUNT_RECEIPT_NOTES_LENGTH])
+        if not assignments:
+            return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id)
+        assignments.append("updated_at = ?")
+        params.append(now_iso())
+        params.extend([int(user_id), int(receipt_id)])
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE account_receipts SET {', '.join(assignments)} WHERE user_id = ? AND id = ?",
+                params,
+            )
+            if int(cursor.rowcount or 0) == 0:
+                return None
+        return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id)
+
+    def delete_account_receipt(self, *, user_id: int, receipt_id: int) -> bool:
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM account_receipts WHERE user_id = ? AND id = ?", (int(user_id), int(receipt_id)),
+            )
+            return int(cursor.rowcount or 0) > 0
+
+    def list_account_receipts(
+        self,
+        *,
+        user_id: int,
+        status: str | None = None,
+        kind: str | None = None,
+        date_from: str = "",
+        date_to: str = "",
+        limit: int = ACCOUNT_RECEIPT_MAX_ROWS,
+    ) -> list[dict[str, Any]]:
+        """The receipts in a date range, newest first.
+
+        A range keeps only dated receipts inside it. Without one, everything
+        the account keeps comes back, undated receipts last.
+        """
+
+        clauses = ["user_id = ?"]
+        params: list[Any] = [int(user_id)]
+        kept_status = self._receipt_status(status) if status else ""
+        if kept_status:
+            clauses.append("status = ?")
+            params.append(kept_status)
+        kept_kind = self._receipt_kind(kind) if kind else ""
+        if kept_kind:
+            clauses.append("kind = ?")
+            params.append(kept_kind)
+        start = normalize_text(date_from)[:10]
+        end = normalize_text(date_to)[:10]
+        if start:
+            clauses.append("receipt_date >= ?")
+            params.append(start)
+        if end:
+            clauses.append("receipt_date <> '' AND receipt_date <= ?")
+            params.append(end)
+        params.append(max(1, int(limit)))
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM account_receipts
+                WHERE {' AND '.join(clauses)}
+                ORDER BY CASE WHEN receipt_date = '' THEN 1 ELSE 0 END, receipt_date DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [record for record in (self._receipt_row_to_record(row) for row in rows) if record]
+
+    # -- lists -------------------------------------------------------------
 
     def create_account_list(
         self,

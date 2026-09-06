@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Assistyca | Receipts</title>
+    <meta name="description" content="Every receipt and invoice Assistyca pulled from your mail, with the files, the totals, and an export for your accountant." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <script src="/portal/theme-init.js?v=1"></script>
+    <link rel="stylesheet" href="/portal/receipts.css?v=1" />
+  </head>
+  <body data-view="loading">
+    <header class="topbar">
+      <button id="backButton" class="icon-button is-hidden" type="button" aria-label="Back to all receipts">
+        <span aria-hidden="true">&#8592;</span>
+      </button>
+      <h1 id="pageTitle" class="topbar-title">Receipts</h1>
+      <button id="exportButton" class="topbar-link is-hidden" type="button">Export</button>
+    </header>
+
+    <main id="app" class="shell">
+      <section id="loadingView" class="view" aria-live="polite" aria-busy="true">
+        <div class="spinner" aria-hidden="true"></div>
+        <span class="sr-only">Loading receipts</span>
+      </section>
+
+      <section id="signedOutView" class="view is-hidden">
+        <div class="card notice">
+          <h2>Sign in to see your receipts</h2>
+          <p>Your receipts live with your Assistyca account. Sign in from the portal and come back here.</p>
+          <a class="button primary" href="/portal/">Sign in</a>
+        </div>
+      </section>
+
+      <section id="homeView" class="view is-hidden">
+        <form id="rangeForm" class="card range-card" autocomplete="off">
+          <div class="range-row">
+            <label class="field range-preset">
+              <span class="field-label">Period</span>
+              <select id="rangePreset">
+                <option value="month">This month</option>
+                <option value="last-month">Last month</option>
+                <option value="3-months" selected>Last 3 months</option>
+                <option value="quarter">This quarter</option>
+                <option value="year">This year</option>
+                <option value="last-year">Last year</option>
+                <option value="all">All dates</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <label class="field range-date is-hidden">
+              <span class="field-label">From</span>
+              <input id="rangeFrom" type="date" />
+            </label>
+            <label class="field range-date is-hidden">
+              <span class="field-label">To</span>
+              <input id="rangeTo" type="date" />
+            </label>
+          </div>
+          <div class="chip-row" role="radiogroup" aria-label="Show">
+            <label class="chip"><input type="radio" name="filter" value="all" checked /><span>All</span></label>
+            <label class="chip"><input type="radio" name="filter" value="receipt" /><span>Receipts</span></label>
+            <label class="chip"><input type="radio" name="filter" value="invoice" /><span>Invoices</span></label>
+            <label class="chip"><input type="radio" name="filter" value="unsure" /><span>Needs a look <b id="unsureBadge" class="chip-count is-hidden"></b></span></label>
+          </div>
+        </form>
+
+        <section id="summaryCard" class="card summary" aria-live="polite">
+          <div id="summaryTotals" class="summary-totals"></div>
+          <p id="summaryMeta" class="summary-meta"></p>
+        </section>
+
+        <section id="unsureSection" class="is-hidden" aria-labelledby="unsureTitle">
+          <h2 id="unsureTitle" class="section-title">Is this a receipt or an invoice?</h2>
+          <p class="section-help">Assistyca was not sure about these. Say yes to keep one and give it an amount; say no and it stays out of the totals.</p>
+          <div id="unsureCards" class="cards"></div>
+        </section>
+
+        <section id="receiptsSection" aria-labelledby="receiptsTitle">
+          <h2 id="receiptsTitle" class="section-title">Receipts and invoices</h2>
+          <div id="monthGroups" class="months"></div>
+          <p id="emptyHome" class="empty is-hidden">Nothing here yet. Ask Assistyca in chat: "pull my receipts from last month", and they will show up here with their files.</p>
+        </section>
+
+        <details id="rejectedSection" class="archived is-hidden">
+          <summary>Not receipts (<span id="rejectedCount">0</span>)</summary>
+          <div id="rejectedCards" class="cards"></div>
+        </details>
+
+        <button id="addManualButton" class="text-button" type="button">Add a receipt by hand</button>
+        <form id="manualForm" class="card manual-form is-hidden" autocomplete="off">
+          <h3>Add a receipt by hand</h3>
+          <label class="field"><span class="field-label">Vendor</span><input id="manualVendor" type="text" maxlength="120" required /></label>
+          <div class="field-row">
+            <label class="field"><span class="field-label">Amount</span><input id="manualAmount" type="text" inputmode="decimal" maxlength="24" /></label>
+            <label class="field"><span class="field-label">Currency</span><input id="manualCurrency" type="text" maxlength="8" placeholder="ILS" /></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span class="field-label">Date</span><input id="manualDate" type="date" /></label>
+            <label class="field"><span class="field-label">Type</span>
+              <select id="manualKind"><option value="receipt">Receipt</option><option value="invoice">Invoice</option></select>
+            </label>
+          </div>
+          <label class="field"><span class="field-label">Note</span><input id="manualNotes" type="text" maxlength="300" /></label>
+          <div class="button-row">
+            <button class="button primary" type="submit">Add</button>
+            <button id="manualCancel" class="button" type="button">Cancel</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="detailView" class="view is-hidden">
+        <div class="card detail-head">
+          <p class="detail-kicker"><span id="detailKind" class="badge"></span> <span id="detailStatus" class="badge muted"></span></p>
+          <h2 id="detailVendor" class="detail-vendor"></h2>
+          <p id="detailSubject" class="detail-subject"></p>
+          <p id="detailAmount" class="detail-amount"></p>
+          <p id="detailMeta" class="detail-meta"></p>
+          <p id="detailReason" class="detail-reason is-hidden"></p>
+        </div>
+
+        <div id="detailFiles" class="card files is-hidden">
+          <h3>Files from the email</h3>
+          <ul id="fileList" class="file-list"></ul>
+        </div>
+
+        <form id="detailForm" class="card detail-form" autocomplete="off">
+          <h3>Details</h3>
+          <div class="field-row">
+            <label class="field"><span class="field-label">Amount</span><input id="detailAmountInput" type="text" inputmode="decimal" maxlength="24" /></label>
+            <label class="field"><span class="field-label">Currency</span><input id="detailCurrencyInput" type="text" maxlength="8" /></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span class="field-label">Date</span><input id="detailDateInput" type="date" /></label>
+            <label class="field"><span class="field-label">Type</span>
+              <select id="detailKindInput"><option value="receipt">Receipt</option><option value="invoice">Invoice</option></select>
+            </label>
+          </div>
+          <label class="field"><span class="field-label">Vendor</span><input id="detailVendorInput" type="text" maxlength="120" /></label>
+          <label class="field"><span class="field-label">Paid to</span><input id="detailPaidToInput" type="text" maxlength="120" /></label>
+          <label class="field"><span class="field-label">Note for the accountant</span><input id="detailNotesInput" type="text" maxlength="300" /></label>
+          <div class="button-row">
+            <button class="button primary" type="submit">Save</button>
+          </div>
+        </form>
+
+        <div id="detailSnippetCard" class="card is-hidden">
+          <h3>From the email</h3>
+          <p id="detailSnippet" class="detail-snippet"></p>
+        </div>
+
+        <div class="tools detail-tools">
+          <button id="detailConfirmButton" class="button primary is-hidden" type="button">Yes, it is a receipt</button>
+          <button id="detailRejectButton" class="button is-hidden" type="button">Not a receipt</button>
+          <button id="detailRestoreButton" class="button is-hidden" type="button">It is a receipt after all</button>
+          <button id="detailDeleteButton" class="text-button danger" type="button">Delete</button>
+        </div>
+      </section>
+    </main>
+
+    <div id="exportSheet" class="sheet is-hidden" role="dialog" aria-modal="true" aria-labelledby="exportTitle">
+      <div class="sheet-panel">
+        <h2 id="exportTitle">Export for your accountant</h2>
+        <p id="exportRangeText" class="section-help"></p>
+        <p class="section-help">Confirmed receipts and invoices only, with totals by currency, type, month and vendor.</p>
+        <div class="button-row">
+          <a id="exportXlsx" class="button primary" href="#">Excel</a>
+          <a id="exportCsv" class="button" href="#">CSV</a>
+          <a id="exportPdf" class="button" href="#">PDF</a>
+        </div>
+        <button id="exportClose" class="text-button" type="button">Close</button>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/portal/receipts.js?v=1"></script>
+  </body>
+</html>

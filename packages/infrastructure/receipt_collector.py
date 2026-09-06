@@ -298,6 +298,9 @@ def create_receipt_bundle(
         url_prefix=url_prefix,
     )
     return {
+        # The rows themselves, for whatever keeps them beyond this bundle.
+        "rows": rows,
+        "skippedRows": skipped_rows,
         "outputFolder": logical_folder,
         "folderPath": str(folder_path),
         "receiptCount": len(rows),
@@ -457,12 +460,17 @@ def answer_receipt_question(
     """
 
     collected = collect_receipt_rows(items, ask=ask, decisions=decisions)
-    return answer_receipt_rows(
+    answer = answer_receipt_rows(
         collected.receipts,
         vendor=vendor,
         month_label=month_label,
         questions=collected.questions,
     )
+    # Every row the read produced, before the vendor filter: the receipt
+    # manager keeps all of them, not only the ones this question was about.
+    answer["rows"] = collected.receipts
+    answer["skippedRows"] = collected.skipped
+    return answer
 
 
 def answer_receipt_rows(
@@ -942,6 +950,19 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Who the money reached, where the sender only passed it on. A
             # payment service's receipt is from the service and to the shop.
             "paidTo": paid_to,
+            # What the reading made of the message and how sure it was. The
+            # receipt manager keeps a low-confidence reading as a question
+            # for the owner rather than as a verdict.
+            "reason": _clean_text(verdict.get("reason")),
+            "confidence": _clean_text(verdict.get("confidence")).lower() if judged is not None else "",
+            # The files the message carried, by name, whether or not this
+            # run saved them. A later fetch knows from these whether the
+            # mailbox is worth another call.
+            "attachmentNames": [
+                _clean_text(name)
+                for name in (source.get("attachmentNames") if isinstance(source.get("attachmentNames"), list) else [])
+                if _clean_text(name)
+            ],
             "subject": subject,
             # Which mailbox this arrived in, so a receipt can still be fetched
             # again later from the account that holds it.

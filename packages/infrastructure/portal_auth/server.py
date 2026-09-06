@@ -188,6 +188,7 @@ from packages.infrastructure.receipt_collector import format_receipt_month_label
 from packages.infrastructure.receipt_collector import merge_receipt_amount_entries
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
+from packages.infrastructure import receipt_manager
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_judge import judge_receipt_items
@@ -892,6 +893,7 @@ STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
     "/register": Path("portal/register.html"),
     "/lists": Path("portal/lists.html"),
+    "/receipts": Path("portal/receipts.html"),
 }
 # The public, read-only view of one shared list. The token is the rest of
 # the path; the page reads it from its own address and asks the API.
@@ -4137,6 +4139,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/threads")
             or path == "/api/lists"
             or path.startswith("/api/lists/")
+            or path == "/api/receipts"
+            or path.startswith("/api/receipts/")
             or path.startswith("/api/public/lists/")
         ):
             self.send_response(HTTPStatus.NO_CONTENT)
@@ -4174,6 +4178,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/threads")
             or path == "/api/lists"
             or path.startswith("/api/lists/")
+            or path == "/api/receipts"
+            or path.startswith("/api/receipts/")
             or path.startswith("/api/public/lists/")
         ):
             self._handle_api_get(parsed)
@@ -4226,6 +4232,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/approvals")
             or path == "/api/lists"
             or path.startswith("/api/lists/")
+            or path == "/api/receipts"
+            or path.startswith("/api/receipts/")
         ):
             try:
                 self._handle_api_post(parsed)
@@ -4256,6 +4264,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/notifications/")
             or path.startswith("/api/whatsapp/history/")
             or path.startswith("/api/lists/")
+            or path.startswith("/api/receipts/")
         ):
             try:
                 self._handle_api_delete(parsed)
@@ -4323,6 +4332,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/lists" or path.startswith("/api/lists/"):
             self._handle_lists_get(parsed)
+            return
+        if path == "/api/receipts" or path.startswith("/api/receipts/"):
+            self._handle_receipts_get(parsed)
             return
         if path.startswith("/api/public/lists/"):
             self._handle_public_list_get(parsed)
@@ -4592,6 +4604,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if path == "/api/lists" or path.startswith("/api/lists/"):
             self._handle_lists_post(parsed)
             return
+        if path == "/api/receipts" or path.startswith("/api/receipts/"):
+            self._handle_receipts_post(parsed)
+            return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
             return
@@ -4642,6 +4657,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/lists/"):
             self._handle_lists_delete(parsed)
+            return
+        if path.startswith("/api/receipts/"):
+            self._handle_receipts_delete(parsed)
             return
         if path.startswith("/api/scheduled-actions/"):
             self._handle_scheduled_actions_delete(parsed)
@@ -6806,6 +6824,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # to find out whether it left anything behind.
             probe_max_results = search_max_results + 1 if is_custom_google_batch else search_max_results
             receipt_bundle: Optional[dict[str, Any]] = None
+            # What the receipt manager kept of this run, when it was a receipt run.
+            receipt_manager_summary: Optional[dict[str, Any]] = None
             result_header = get_custom_google_batch_result_header(fields) if is_custom_google_batch else ""
             answer_month: tuple[int, int] | None = answer_months[0] if len(answer_months) == 1 else None
             receipt_month: tuple[int, int] | None = None
@@ -7088,6 +7108,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             "message": pending_questions[0]["question"],
                         })
                         return
+                    # The rows are settled, so they are kept: on the receipts
+                    # page, with the files the vendors attached.
+                    receipt_manager_summary = self._keep_search_receipts(
+                        session,
+                        answers=receipt_month_answers or ([receipt_answer] if receipt_answer else []),
+                    )
                 elif result_header == "Receipt search":
                     receipt_items = result.get("items") if isinstance(result.get("items"), list) else []
                     try:
@@ -7112,6 +7138,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
                     receipt_count = int(receipt_bundle.get("receiptCount") or 0)
                     review_count = int(receipt_bundle.get("reviewCount") or 0)
+                    receipt_manager_summary = self._keep_search_receipts(session, answers=[receipt_bundle])
                     result["summary"] = f"Receipt search - {receipt_count} candidate receipt(s)"
                     # The notification says it is ready and offers the download.
                     # Counts, folder and review details live in the PDF itself.
@@ -7152,6 +7179,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 response_payload["skippedMailboxes"] = summarize_mailbox_failures(mailbox_failures)
             if capped_mailboxes:
                 response_payload["cappedMailboxes"] = capped_mailboxes
+            if receipt_manager_summary:
+                response_payload["receiptManager"] = receipt_manager_summary
             if receipt_month_answers:
                 # A run of months answers one month at a time. The chat adds
                 # them up into one reply and draws the comparison, so what it
@@ -8225,48 +8254,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         result: dict[str, Any] = {"files": [], "missedCount": 0, "folders": []}
         if not sources:
             return result
-        vault = self.credential_vault
-        records = self.database.list_platform_connection_secret_records(
-            session.email,
-            EMAIL_PLATFORM,
-            include_statuses=("connected", "needs_attention"),
-        )
-        if not records or vault is None:
+        records, mailbox_name_for, reader_for = self._mailbox_readers(session)
+        if not records:
             print("Keeping receipts failed: no mailbox is connected to fetch them from.", flush=True)
             result["missedCount"] = len(sources)
             return result
-
-        names = mailbox_display_names(records)
-
-        def mailbox_name_for(record: dict[str, Any]) -> str:
-            return names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
-
-        readers: dict[str, tuple[Any, str] | None] = {}
-
-        def reader_for(record: dict[str, Any]) -> tuple[Any, str] | None:
-            """The runner and token for one mailbox, opened once per save."""
-
-            record_id = normalize_text(record.get("id"))
-            if record_id in readers:
-                return readers[record_id]
-            try:
-                stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")
-                record_provider = self._saved_email_provider(stored_email_secret)
-                access_token, _ = self._resolve_email_access_token(
-                    stored_email_secret,
-                    provider=record_provider,
-                )
-            except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                print(f"Keeping receipts from {mailbox_name_for(record)} failed: {exc}", flush=True)
-                readers[record_id] = None
-                return None
-            runner = (
-                OutlookDigestRunner()
-                if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
-                else GmailDigestRunner()
-            )
-            readers[record_id] = (runner, access_token)
-            return readers[record_id]
 
         saved_files: list[dict[str, Any]] = []
         # Tags are written once per folder at the end, so two receipts from
@@ -8366,6 +8358,151 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             for logical_folder, count in folder_counts.items()
         ]
         return result
+
+    def _mailbox_readers(
+        self,
+        session: Any,
+    ) -> tuple[list[dict[str, Any]], Callable[[dict[str, Any]], str], Callable[[dict[str, Any]], tuple[Any, str] | None]]:
+        """Every connected mailbox, and a way to open each one once.
+
+        Returns the connection records, a function naming a record the way
+        the run named its mailbox, and a function that opens a record into a
+        runner and token - or nothing, when the mailbox refuses - keeping
+        each open mailbox for the next message from it.
+        """
+
+        vault = self.credential_vault
+        records = self.database.list_platform_connection_secret_records(
+            session.email,
+            EMAIL_PLATFORM,
+            include_statuses=("connected", "needs_attention"),
+        )
+        if vault is None:
+            records = []
+        names = mailbox_display_names(records)
+
+        def mailbox_name_for(record: dict[str, Any]) -> str:
+            return names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
+
+        readers: dict[str, tuple[Any, str] | None] = {}
+
+        def reader_for(record: dict[str, Any]) -> tuple[Any, str] | None:
+            record_id = normalize_text(record.get("id"))
+            if record_id in readers:
+                return readers[record_id]
+            try:
+                stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")  # type: ignore[union-attr]
+                record_provider = self._saved_email_provider(stored_email_secret)
+                access_token, _ = self._resolve_email_access_token(
+                    stored_email_secret,
+                    provider=record_provider,
+                )
+            except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                print(f"Keeping receipts from {mailbox_name_for(record)} failed: {exc}", flush=True)
+                readers[record_id] = None
+                return None
+            runner = (
+                OutlookDigestRunner()
+                if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
+                else GmailDigestRunner()
+            )
+            readers[record_id] = (runner, access_token)
+            return readers[record_id]
+
+        return records, mailbox_name_for, reader_for
+
+    def _keep_search_receipts(self, session: Any, *, answers: list[dict[str, Any]]) -> dict[str, Any]:
+        """Keep what a receipt search read, on the receipts page.
+
+        Every answer (one per month, or the bundle) carries the rows it was
+        built from. They go into the store, and a receipt whose email carried
+        a file the run never saved gets the file fetched now, into the
+        manager's own folder, so the page can open it.
+        """
+
+        user = self.database.get_user(session.email) or {}
+        user_id = int(user.get("id") or 0)
+        rows = [
+            row
+            for answer in answers
+            if isinstance(answer, dict)
+            for row in (answer.get("rows") if isinstance(answer.get("rows"), list) else [])
+        ]
+        skipped = [
+            row
+            for answer in answers
+            if isinstance(answer, dict)
+            for row in (answer.get("skippedRows") if isinstance(answer.get("skippedRows"), list) else [])
+        ]
+        if user_id <= 0 or not (rows or skipped):
+            return {}
+        try:
+            outcome = receipt_manager.store_collected_receipts(
+                self.database,
+                user_id=user_id,
+                receipts=rows,
+                skipped=skipped,
+                fetch_files=self._receipt_manager_fetcher(session),
+            )
+        except Exception as exc:  # Keeping is a courtesy on top of the answer; the answer still goes out.
+            print(f"Receipt manager could not keep this search: {exc}", flush=True)
+            return {}
+        return {
+            "stored": int(outcome.get("stored") or 0),
+            "added": int(outcome.get("added") or 0),
+            "unsure": int(outcome.get("unsure") or 0),
+            "filesSaved": int(outcome.get("filesSaved") or 0),
+            "url": f"{self._public_base_url()}/receipts",
+        }
+
+    def _receipt_manager_fetcher(self, session: Any) -> Callable[[dict[str, Any]], list[dict[str, Any]]]:
+        """A function that fetches the files behind one stored receipt.
+
+        The mailboxes are opened lazily and once, so a search that keeps
+        thirty receipts opens the mailbox one time, not thirty.
+        """
+
+        owner_key = build_agent_receipt_owner_key(session.email)
+        output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+        opened: dict[str, Any] = {}
+
+        def fetch(record: dict[str, Any]) -> list[dict[str, Any]]:
+            if "readers" not in opened:
+                opened["readers"] = self._mailbox_readers(session)
+            records, mailbox_name_for, reader_for = opened["readers"]
+            message_id = normalize_text(record.get("messageId"))
+            if not records or not message_id:
+                return []
+            month = normalize_text(record.get("receiptDate"))[:7] or "Undated"
+            logical_folder = f"{receipt_manager.RECEIPT_MANAGER_FOLDER}/{month}"
+            folder_path = resolve_receipt_bundle_folder(output_root, owner_key=owner_key, output_folder=logical_folder)
+            base_url = build_receipt_bundle_base_url(owner_key=owner_key, output_folder=logical_folder)
+            mailbox = normalize_text(record.get("mailbox")).lower()
+            matched = [entry for entry in records if mailbox_name_for(entry).lower() == mailbox]
+            for entry in matched or list(records):
+                reader = reader_for(entry)
+                if reader is None:
+                    continue
+                runner, access_token = reader
+                try:
+                    return runner.save_message_attachments(
+                        access_token,
+                        message_id=message_id,
+                        output_dir=folder_path,
+                        url_prefix=base_url,
+                        filename_prefix=normalize_text(record.get("vendor")),
+                    )
+                except (
+                    GmailAuthorizationError,
+                    OutlookAuthorizationError,
+                    GmailSummaryError,
+                    OutlookSummaryError,
+                ) as exc:
+                    print(f"Fetching a receipt file from {mailbox_name_for(entry)} failed: {exc}", flush=True)
+                    continue
+            return []
+
+        return fetch
 
     def _judge_receipt_items(
         self,
@@ -12513,6 +12650,149 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_header("Set-Cookie", self._build_session_cookie(str(issued.get("token") or "")))
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    # -- receipts API ------------------------------------------------------
+
+    def _receipts_path_parts(self, parsed: urllib_parse.ParseResult) -> list[str]:
+        return [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part][2:]
+
+    def _serialize_receipt_for_owner(self, record: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in record.items() if key != "userId"}
+
+    def _receipt_not_found(self) -> None:
+        json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "receipt_not_found", "message": "That receipt is not here."})
+
+    def _handle_receipts_get(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        parts = self._receipts_path_parts(parsed)
+        query = urllib_parse.parse_qs(parsed.query)
+
+        def first(name: str) -> str:
+            return normalize_text(query.get(name, [""])[0])
+
+        if parts == ["export"]:
+            self._handle_receipts_export(user_id, query)
+            return
+        if not parts:
+            start, end = receipt_manager.parse_date_range(first("from"), first("to"))
+            records = self.database.list_account_receipts(
+                user_id=user_id,
+                status=first("status") or None,
+                kind=first("kind") or None,
+                date_from=start,
+                date_to=end,
+            )
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "receipts": [self._serialize_receipt_for_owner(record) for record in records],
+                "summary": receipt_manager.summarize_receipt_records(records),
+                "range": {"from": start, "to": end},
+                # How many are waiting for a yes or no across every date, so
+                # the page can say so whatever range it is showing.
+                "unsureTotal": len(self.database.list_account_receipts(user_id=user_id, status="unsure")),
+            })
+            return
+        receipt_id = self._parse_list_id(parts[0])
+        record = self.database.get_account_receipt(user_id=user_id, receipt_id=receipt_id) if receipt_id else None
+        if record is None:
+            self._receipt_not_found()
+            return
+        json_response(self, HTTPStatus.OK, {"ok": True, "receipt": self._serialize_receipt_for_owner(record)})
+
+    def _handle_receipts_export(self, user_id: int, query: dict[str, list[str]]) -> None:
+        """The confirmed receipts in a range, as a file for an accountant."""
+
+        def first(name: str) -> str:
+            return normalize_text(query.get(name, [""])[0])
+
+        start, end = receipt_manager.parse_date_range(first("from"), first("to"))
+        fmt = first("format").lower() or "xlsx"
+        if fmt not in receipt_manager.EXPORT_FORMATS:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_format", "message": "Exports come as xlsx, csv or pdf."})
+            return
+        records = self.database.list_account_receipts(user_id=user_id, status="confirmed", date_from=start, date_to=end)
+        body, content_type = receipt_manager.write_receipt_export(
+            records, fmt=fmt, range_label=receipt_manager.describe_date_range(start, end),
+        )
+        filename = receipt_manager.export_filename(start, end, fmt)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_receipts_post(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        parts = self._receipts_path_parts(parsed)
+        try:
+            if not parts:
+                # A receipt typed in by hand: a cash receipt, a paper invoice.
+                if not (normalize_text(payload.get("vendor")) or normalize_text(payload.get("subject"))):
+                    raise ValueError("A receipt needs at least a vendor.")
+                record = self.database.create_account_receipt(user_id=user_id, record={
+                    "status": "confirmed",
+                    "kind": normalize_text(payload.get("kind")) or "receipt",
+                    "vendor": normalize_text(payload.get("vendor")),
+                    "subject": normalize_text(payload.get("subject")),
+                    "receiptDate": receipt_manager.normalize_receipt_date(payload.get("receiptDate")),
+                    "amount": receipt_manager.normalize_amount(payload.get("amount")),
+                    "currency": normalize_text(payload.get("currency")).upper(),
+                    "notes": normalize_text(payload.get("notes")),
+                })
+                json_response(self, HTTPStatus.OK, {"ok": True, "receipt": self._serialize_receipt_for_owner(record)})
+                return
+            receipt_id = self._parse_list_id(parts[0])
+            if len(parts) != 1 or receipt_id <= 0:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            record = self.database.update_account_receipt(
+                user_id=user_id,
+                receipt_id=receipt_id,
+                status=normalize_text(payload.get("status")) if "status" in payload else None,
+                kind=normalize_text(payload.get("kind")) if "kind" in payload else None,
+                amount=str(payload.get("amount") if payload.get("amount") is not None else "") if "amount" in payload else None,
+                currency=normalize_text(payload.get("currency")) if "currency" in payload else None,
+                vendor=normalize_text(payload.get("vendor")) if "vendor" in payload else None,
+                paid_to=normalize_text(payload.get("paidTo")) if "paidTo" in payload else None,
+                receipt_date=normalize_text(payload.get("receiptDate")) if "receiptDate" in payload else None,
+                notes=normalize_text(payload.get("notes")) if "notes" in payload else None,
+            )
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_receipt", "message": str(exc)})
+            return
+        if record is None:
+            self._receipt_not_found()
+            return
+        json_response(self, HTTPStatus.OK, {"ok": True, "receipt": self._serialize_receipt_for_owner(record)})
+
+    def _handle_receipts_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        parts = self._receipts_path_parts(parsed)
+        receipt_id = self._parse_list_id(parts[0]) if len(parts) == 1 else 0
+        if receipt_id <= 0:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        deleted = self.database.delete_account_receipt(user_id=user_id, receipt_id=receipt_id)
+        json_response(self, HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND, {"ok": deleted, "deleted": deleted})
 
     # -- lists API ---------------------------------------------------------
 

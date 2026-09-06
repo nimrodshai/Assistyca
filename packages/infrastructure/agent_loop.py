@@ -261,6 +261,21 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
     grouped = _group_records(records)
     if grouped:
         data["groupedFigures"] = grouped
+    manager = response.get("receiptManager") if isinstance(response.get("receiptManager"), dict) else {}
+    if manager:
+        # The receipts this search read are now kept on the receipts page,
+        # with the files the vendors attached. The model says so, and on a
+        # channel with a browser session it hands over the page itself.
+        stored = int(manager.get("stored") or 0)
+        unsure = int(manager.get("unsure") or 0)
+        note = f"{stored} receipt(s) from this search are kept on the receipts page in the Assistyca portal."
+        if unsure:
+            note += f" {unsure} of them are waiting for a yes or no from the person on whether they are receipts at all."
+        data["receiptsPageNote"] = note
+        link = str(manager.get("url") or "").strip()
+        if link and context.channel != "whatsapp":
+            data["receiptsPage"] = link
+            _offer_link(context, link, "Open receipts")
     return _ok(data)
 
 
@@ -1142,6 +1157,11 @@ AGENT_LOOP_INSTRUCTIONS = (
     "lists link. A to-do item with a deadline gets due as YYYY-MM-DD, from CONTEXT.today and todayWeekday: "
     "'renew the insurance by Friday' is add with due set. Every morning the person is nudged about items due "
     "today, due tomorrow, or overdue, so do not schedule a reminder for a dated item unless they ask. A "
+    "Receipts: every search_receipts result that ran is also kept on the receipts page (the result's "
+    "receiptsPageNote says how many, and receiptsPage is the link when there is one): amounts, dates, the "
+    "vendor's own PDF, and a yes/no question for anything the reading was not sure about, with exports for "
+    "an accountant. Mention it in one short sentence after a receipt answer, and put receiptsPage on its "
+    "own line exactly as given when it is there. A "
     "reminder about a list is schedule_message with list_name set; the items are read when it fires, so never "
     "copy them into message_text.\n"
     "knownFacts is what the account already told you about how their business works; read it before asking "
