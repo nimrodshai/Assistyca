@@ -722,14 +722,36 @@
     }, "The receipt could not be deleted");
   });
 
+  // Sheets fade and slide: `is-hidden` (display none) comes off first, the
+  // next frame adds `is-open` so the transition runs, and closing waits for the
+  // exit transition before hiding again.
+  const SHEET_EXIT_MS = 240;
+  function openSheet(sheet) {
+    window.clearTimeout(sheet.closeTimer);
+    sheet.classList.remove("is-closing");
+    sheet.classList.remove("is-hidden");
+    void sheet.offsetWidth;
+    sheet.classList.add("is-open");
+  }
+  function closeSheet(sheet) {
+    if (sheet.classList.contains("is-hidden")) return;
+    sheet.classList.remove("is-open");
+    sheet.classList.add("is-closing");
+    window.clearTimeout(sheet.closeTimer);
+    sheet.closeTimer = window.setTimeout(() => {
+      sheet.classList.remove("is-closing");
+      sheet.classList.add("is-hidden");
+    }, SHEET_EXIT_MS);
+  }
+
   function openManual() {
     elements.manualForm.reset();
     elements.manualDate.value = isoDate(new Date());
-    elements.manualSheet.classList.remove("is-hidden");
+    openSheet(elements.manualSheet);
     elements.manualVendor.focus();
   }
   function closeManual() {
-    elements.manualSheet.classList.add("is-hidden");
+    closeSheet(elements.manualSheet);
   }
   elements.addManualButton.addEventListener("click", openManual);
   elements.manualCancel.addEventListener("click", closeManual);
@@ -767,16 +789,16 @@
     elements.exportCsv.href = `${base}csv`;
     elements.exportPdf.href = `${base}pdf`;
     elements.exportRangeText.textContent = `Period: ${describeRange()}.`;
-    elements.exportSheet.classList.remove("is-hidden");
+    openSheet(elements.exportSheet);
   }
   elements.exportButton.addEventListener("click", openExport);
-  elements.exportClose.addEventListener("click", () => elements.exportSheet.classList.add("is-hidden"));
+  elements.exportClose.addEventListener("click", () => closeSheet(elements.exportSheet));
   elements.exportSheet.addEventListener("click", (event) => {
-    if (event.target === elements.exportSheet) elements.exportSheet.classList.add("is-hidden");
+    if (event.target === elements.exportSheet) closeSheet(elements.exportSheet);
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    elements.exportSheet.classList.add("is-hidden");
+    closeSheet(elements.exportSheet);
     closeManual();
   });
 
