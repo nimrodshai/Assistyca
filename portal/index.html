@@ -124,22 +124,11 @@
         <div class="agent-tools-head agent-actions-head agent-panel-mode-head">
           <div id="agentPanelModeSwitch" class="agent-panel-mode-switch" role="tablist" aria-label="Agent panel mode">
             <button
-              id="agentPanelChatsModeButton"
+              id="agentPanelActionsModeButton"
               class="agent-panel-mode-button is-active"
               type="button"
               role="tab"
               aria-selected="true"
-              aria-controls="agentChatsListView"
-              data-agent-panel-mode="chats"
-            >
-              Chats
-            </button>
-            <button
-              id="agentPanelActionsModeButton"
-              class="agent-panel-mode-button"
-              type="button"
-              role="tab"
-              aria-selected="false"
               aria-controls="agentActionsListView"
               data-agent-panel-mode="actions"
             >
@@ -187,15 +176,6 @@
               </div>
               <div id="agentToolShelf" class="agent-tool-shelf"></div>
             </section>
-          </div>
-
-          <div id="agentChatsListView" class="agent-chats-list-view is-hidden" aria-label="Chats">
-            <div class="agent-chats-list-head">
-              <button id="agentNewChatButton" class="primary-button small" type="button">
-                New chat
-              </button>
-            </div>
-            <div id="agentChatList" class="agent-chat-list" role="list"></div>
           </div>
 
           <div id="agentFoldersListView" class="agent-folders-list-view is-hidden" aria-labelledby="agentFoldersTitle">

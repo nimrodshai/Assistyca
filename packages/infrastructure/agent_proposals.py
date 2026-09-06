@@ -8,7 +8,9 @@ import re
 from typing import Any
 
 
-AGENT_PROPOSAL_REVISION_MAX_MESSAGES = 12
+# The portal chat sends its last hundred messages with every turn; the cap
+# matches so the model sees the whole chat and nothing past it.
+AGENT_PROPOSAL_REVISION_MAX_MESSAGES = 100
 AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH = 900
 # Output budgets include the model's own thinking on a reasoning model. A
 # turn's visible reply is a few hundred tokens; the rest is room to think,
