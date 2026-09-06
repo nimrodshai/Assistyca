@@ -572,11 +572,13 @@ schema the API enforces (`REPLY_TEXT_FORMAT`, strict), so a reply that cannot
 be read is impossible by construction. Six tool calls per turn; past that the
 model is told the budget is spent and writes from what it has.
 
-**Actions that need a yes** (`disconnect`, `sign_out`, `delete_account`,
-`schedule_message`) pause the
+**Actions that need a yes** (`disconnect`, `sign_out`, `delete_account`)
+pause the
 turn: the first call returns `confirmation_required` with what exactly would
 happen, the model asks for a plain yes, and the chat stores the call itself
-as `pending_json` of kind `tool_confirmation`. A whole-phrase yes runs the
+as `pending_json` of kind `tool_confirmation`. A reminder is not one of
+them: `schedule_message` only sends the person their own words back at the
+time they named, so it runs on the first call and the reply says it is set. A whole-phrase yes runs the
 stored call - never a fresh decision - and the model is handed the result as
 `confirmedAction` to report; a no is handed over as `declinedAction`;
 anything else goes to the model with `openQuestion` in view. A calendar

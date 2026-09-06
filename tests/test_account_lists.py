@@ -291,21 +291,17 @@ class ListToolTests(unittest.TestCase):
         self.database.create_account_list(user_id=self.user_id, name="Groceries", items=["Milk"])
         model = ScriptedModel([
             _model_round(_call("schedule_message", "c1", time_local="18:00", date_policy="today", delay_minutes=None, message_text="Time to shop", list_name="groceries")),
-            _model_round(reply=_reply("I can text you at 18:00 with what's still on Groceries. Yes?")),
+            _model_round(reply=_reply("Set: at 18:00 you'll get what's still on Groceries.", claimsCompleted=["schedule_message"])),
         ])
         result = run_agent_loop(context=self._context(), call_model=model, user_message="remind me at 6 about groceries", conversation=[], today="2026-09-05")
-        asked = self._last_output(model)
-        self.assertEqual(asked["error"]["code"], "confirmation_required")
-        self.assertIn("Groceries", asked["error"]["whatHappened"])
-
-        model = ScriptedModel([_model_round(reply=_reply("Set.", claimsCompleted=["schedule_message"]))])
-        run_agent_loop(context=self._context(), call_model=model, user_message="yes", conversation=[], today="2026-09-05", confirmed_call=result.pending_confirmation)
+        self.assertIsNone(result.pending_confirmation)
+        self.assertTrue(self._last_output(model)["ok"])
         payload = self.api.calls[0][2]["payload"]
         self.assertEqual(payload["listName"], "Groceries")
         self.assertGreater(payload["listId"], 0)
         self.assertNotIn("Milk", json.dumps(payload))
 
-    def test_a_reminder_about_a_list_nobody_has_is_never_asked_about(self) -> None:
+    def test_a_reminder_about_a_list_nobody_has_is_not_set(self) -> None:
         model = ScriptedModel([
             _model_round(_call("schedule_message", "c1", time_local="18:00", date_policy="today", delay_minutes=None, message_text="Shop", list_name="groceries")),
             _model_round(reply=_reply("You don't have a groceries list yet - want me to start one?")),

@@ -151,32 +151,50 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertEqual(result.links, [{"url": link, "label": "Connect Google"}])
 
     def test_a_confirm_tool_pauses_the_turn_and_a_yes_resumes_the_stored_call(self) -> None:
-        api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
+        api = FakeApi({"/api/account": ({"ok": True}, 200)})
         model = ScriptedModel([
-            _model_round(_call("schedule_message", "c1", time_local="07:30", date_policy="tomorrow", message_text="Call the accountant")),
-            _model_round(reply=_reply("I can text you tomorrow at 07:30: Call the accountant. Say yes and it's set.")),
+            _model_round(_call("delete_account", "c1")),
+            _model_round(reply=_reply("This erases your whole account for good. Do you understand and want to go ahead?")),
         ])
-        result = run_agent_loop(context=_context(api), call_model=model, user_message="text me at 7:30 tomorrow to call the accountant", conversation=[], today="2026-09-04")
+        result = run_agent_loop(context=_context(api), call_model=model, user_message="delete my account", conversation=[], today="2026-09-04")
 
         self.assertEqual(api.calls, [])
-        self.assertEqual(result.pending_confirmation["tool"], "schedule_message")
-        self.assertEqual(result.pending_confirmation["arguments"]["time_local"], "07:30")
+        self.assertEqual(result.pending_confirmation["tool"], "delete_account")
         asked = json.loads(model.inputs[1][-1]["output"])
         self.assertEqual(asked["error"]["code"], "confirmation_required")
-        self.assertIn("07:30", asked["error"]["whatHappened"])
+        self.assertIn("owner@example.com", asked["error"]["whatHappened"])
 
         # The yes: the stored call runs first, and the model reports it.
-        model = ScriptedModel([_model_round(reply=_reply("Done, it's set for tomorrow at 07:30.", claimsCompleted=["schedule_message"]))])
+        model = ScriptedModel([_model_round(reply=_reply("Done. Everything is gone.", claimsCompleted=["delete_account"]))])
         resumed = run_agent_loop(
             context=_context(api), call_model=model, user_message="yes", conversation=[], today="2026-09-04",
             confirmed_call=result.pending_confirmation,
         )
-        self.assertEqual(api.calls[0][1], "/api/scheduled-actions")
-        self.assertEqual(api.calls[0][2]["messageText"], "Call the accountant")
-        self.assertEqual(resumed.completed, ["schedule_message"])
+        self.assertEqual(api.calls[0][:2], ("DELETE", "/api/account"))
+        self.assertEqual(resumed.completed, ["delete_account"])
         context_text = model.inputs[0][0]["content"]
         self.assertIn('"confirmedAction"', context_text)
-        self.assertIn('"scheduledFor"', context_text)
+        self.assertIn('"deleted":true', context_text)
+
+    def test_a_reminder_is_set_on_the_first_call_and_nobody_is_asked_for_a_yes(self) -> None:
+        # Setting a reminder changes nothing but the person's own future
+        # inbox, so it runs at once: no held question, no "say yes".
+        api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
+        model = ScriptedModel([
+            _model_round(_call("schedule_message", "c1", time_local="07:30", date_policy="tomorrow", message_text="Call the accountant")),
+            _model_round(reply=_reply("Done, I'll remind you tomorrow at 07:30: Call the accountant.", claimsCompleted=["schedule_message"])),
+        ])
+        result = run_agent_loop(context=_context(api), call_model=model, user_message="text me at 7:30 tomorrow to call the accountant", conversation=[], today="2026-09-04")
+
+        self.assertIsNone(result.pending_confirmation)
+        self.assertEqual(api.calls[0][1], "/api/scheduled-actions")
+        self.assertEqual(api.calls[0][2]["messageText"], "Call the accountant")
+        self.assertEqual(result.completed, ["schedule_message"])
+        told = json.loads(model.inputs[1][-1]["output"])
+        self.assertTrue(told["ok"])
+        self.assertIn("scheduledForLocal", told)
+        self.assertEqual(result.reply, "Done, I'll remind you tomorrow at 07:30: Call the accountant.")
+        self.assertNotIn("confirmation_required", json.dumps(model.inputs[1]))
 
     def test_a_reminder_asked_for_over_whatsapp_goes_back_to_the_phone_that_asked(self) -> None:
         api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
@@ -184,15 +202,9 @@ class LoopMechanicsTests(unittest.TestCase):
         context.sender_wa_id = "972501234567"
         model = ScriptedModel([
             _model_round(_call("schedule_message", "c1", time_local="16:00", date_policy="next_occurrence", message_text="take my kid to drum lesson")),
-            _model_round(reply=_reply("Say yes and I'll remind you at 16:00.")),
+            _model_round(reply=_reply("Set for 16:00.", claimsCompleted=["schedule_message"])),
         ])
-        asked = run_agent_loop(context=context, call_model=model, user_message="remind me at 16:00", conversation=[], today="2026-09-04")
-
-        model = ScriptedModel([_model_round(reply=_reply("Set for 16:00.", claimsCompleted=["schedule_message"]))])
-        run_agent_loop(
-            context=context, call_model=model, user_message="yes", conversation=[], today="2026-09-04",
-            confirmed_call=asked.pending_confirmation,
-        )
+        run_agent_loop(context=context, call_model=model, user_message="remind me at 16:00", conversation=[], today="2026-09-04")
 
         self.assertEqual(api.calls[0][1], "/api/scheduled-actions")
         self.assertEqual(api.calls[0][2]["payload"]["recipientWaId"], "972501234567")
@@ -201,7 +213,7 @@ class LoopMechanicsTests(unittest.TestCase):
         api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
         model = ScriptedModel([
             _model_round(_call("schedule_message", "c1", time_local=None, date_policy="today", delay_minutes=10, message_text="Get back to me")),
-            _model_round(reply=_reply("I'll text you in 10 minutes: Get back to me. Yes?")),
+            _model_round(reply=_reply("Done, in 10 minutes.", claimsCompleted=["schedule_message"])),
         ])
         result = run_agent_loop(
             context=_context(api), call_model=model, user_message="get back to me in 10 minutes", conversation=[],
@@ -209,22 +221,15 @@ class LoopMechanicsTests(unittest.TestCase):
         )
         context_text = model.inputs[0][0]["content"]
         self.assertIn('"now":"23:24"', context_text)
-        self.assertEqual(api.calls, [])
-        self.assertEqual(result.pending_confirmation["arguments"]["delay_minutes"], 10)
-        asked = json.loads(model.inputs[1][-1]["output"])
-        self.assertIn("in 10 minutes", asked["error"]["whatHappened"])
-
-        model = ScriptedModel([_model_round(reply=_reply("Done, in 10 minutes.", claimsCompleted=["schedule_message"]))])
-        run_agent_loop(
-            context=_context(api), call_model=model, user_message="yes", conversation=[], today="2026-09-05", now="23:25",
-            confirmed_call=result.pending_confirmation,
-        )
+        self.assertIsNone(result.pending_confirmation)
         self.assertEqual(api.calls[0][1], "/api/scheduled-actions")
         self.assertTrue(api.calls[0][2]["runAt"])
-        self.assertIn('"scheduledForLocal"', model.inputs[0][0]["content"])
+        told = json.loads(model.inputs[1][-1]["output"])
+        self.assertTrue(told["ok"])
+        self.assertTrue(told["scheduledForLocal"])
 
     def test_the_model_can_read_a_yes_the_parser_could_not(self) -> None:
-        open_question = {"kind": "confirmation", "tool": "schedule_message", "question": "Text you at 07:30?"}
+        open_question = {"kind": "confirmation", "tool": "sign_out", "question": "Sign this phone out?"}
         model = ScriptedModel([_model_round(reply=_reply("Great.", answersOpenQuestion="yes"))])
         result = run_agent_loop(context=_context(), call_model=model, user_message="sure thing boss", conversation=[], today="2026-09-05", open_question=open_question)
         self.assertEqual(result.answers_open_question, "yes")
