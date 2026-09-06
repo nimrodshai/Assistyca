@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 import os
 import threading
@@ -26,6 +27,13 @@ DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en_US"
 # 12:40" a promise about the phone, not the portal.
 SUPPORTED_SEND_CHANNELS = {"portal", "whatsapp"}
 OWNER_RECIPIENT_REFS = {"", "me", "owner", "you", "connected_owner", "account_owner"}
+# Meta answers a person's message with plain text for 24 hours after it; past
+# that only an approved template gets through. "Remind me in ten minutes" is
+# well inside the window, so it goes out the same way the chat's own replies
+# do, and the template is kept for the reminder set for next week. The margin
+# keeps a reminder due at the very edge of the window on the template.
+WHATSAPP_SERVICE_WINDOW = timedelta(hours=24)
+WHATSAPP_SERVICE_WINDOW_MARGIN = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -124,6 +132,7 @@ class ScheduledActionScheduler:
         processed = 0
         sent = 0
         failed = 0
+        fallback = 0
 
         for due_action in actions:
             claimed = self.database.claim_scheduled_action(int(due_action.get("id") or 0))
@@ -147,6 +156,9 @@ class ScheduledActionScheduler:
                 continue
 
             sent += 1
+            claimed_payload = claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {}
+            if claimed_payload.get("deliveredVia") == "portal_fallback":
+                fallback += 1
             self.database.finish_scheduled_action(
                 action_id=int(claimed.get("id") or 0),
                 status="sent",
@@ -163,6 +175,7 @@ class ScheduledActionScheduler:
             "processed": processed,
             "sent": sent,
             "failed": failed,
+            "fallback": fallback,
             "recovered": recovered,
         }
 
@@ -187,8 +200,16 @@ class ScheduledActionScheduler:
                 # A configured send that fails should still reach the owner.
                 # The feed is durable and always available, and the payload
                 # says openly which channel actually carried the message.
+                # The log says so too: a reminder that lands in the feed
+                # instead of on the phone looks exactly like a lost one to
+                # the person, and "sent=1" on its own hid that for a morning.
                 payload["deliveredVia"] = "portal_fallback"
                 payload["whatsappDeliveryError"] = str(exc)
+                print(
+                    f"[scheduled-actions] action={action.get('id')} WhatsApp send failed, "
+                    f"delivered to the in-app feed instead: {exc}",
+                    flush=True,
+                )
                 return self._deliver_in_app(action, message_text)
 
         payload["deliveredVia"] = "portal"
@@ -210,18 +231,45 @@ class ScheduledActionScheduler:
             return f"{message_text}\n\n(The list this was about is no longer there.)"
         return f"{message_text}\n\n{describe_list_for_message(record)}"
 
+    def _service_window_open(self, user_id: int, *, now: datetime | None = None) -> bool:
+        """True while Meta still takes plain text for this person: they wrote
+        to the Assistyca number less than a day ago."""
+
+        if user_id <= 0:
+            return False
+        try:
+            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50)
+        except Exception:  # noqa: BLE001 - no history means no window, not no reminder
+            return False
+        latest = ""
+        for message in history:
+            if str(message.get("role") or "") == "user":
+                latest = max(latest, str(message.get("createdAt") or ""))
+        if not latest:
+            return False
+        try:
+            written_at = datetime.fromisoformat(latest)
+        except ValueError:
+            return False
+        if written_at.tzinfo is None:
+            written_at = written_at.replace(tzinfo=timezone.utc)
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        elapsed = reference - written_at
+        return timedelta(0) <= elapsed < WHATSAPP_SERVICE_WINDOW - WHATSAPP_SERVICE_WINDOW_MARGIN
+
     def _deliver_whatsapp(self, action: dict[str, Any], message_text: str) -> str:
         """Send the scheduled message to the owner over WhatsApp.
 
-        Uses the approved scheduled-notification template so the send works
-        outside Meta's 24-hour service window, which is the normal case for a
-        message scheduled hours ahead.
+        Inside Meta's 24-hour service window the message goes as plain text,
+        exactly like the chat's own replies. Outside it, or when plain text
+        is refused, the approved scheduled-notification template carries it.
+        Every refusal is kept, so a message that reaches neither says why.
         """
 
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        user_id = int(action.get("userId") or 0)
         recipient_ref = normalize_text(payload.get("recipientWaId") or action.get("recipientRef"))
         if recipient_ref.lower() in OWNER_RECIPIENT_REFS:
-            user_id = int(action.get("userId") or 0)
             if user_id <= 0:
                 raise RuntimeError("Scheduled WhatsApp message is missing a user id.")
             connection = self.database.get_whatsapp_connection_by_user_id(user_id)
@@ -237,12 +285,32 @@ class ScheduledActionScheduler:
         if not recipient_ref:
             raise RuntimeError("WhatsApp recipient is missing.")
 
-        return send_whatsapp_notification(
-            recipient_wa_id=recipient_ref,
-            message_text=message_text,
-            template_name=self.config.whatsapp_template_name,
-            template_language=self.config.whatsapp_template_language,
-        )
+        refusals: list[str] = []
+        if self._service_window_open(user_id):
+            try:
+                provider_message_id = send_whatsapp_notification(
+                    recipient_wa_id=recipient_ref,
+                    message_text=message_text,
+                )
+                payload["whatsappSendMode"] = "text"
+                return provider_message_id
+            except Exception as exc:  # noqa: BLE001 - the template is the next thing to try
+                refusals.append(f"plain text: {exc}")
+        try:
+            provider_message_id = send_whatsapp_notification(
+                recipient_wa_id=recipient_ref,
+                message_text=message_text,
+                template_name=self.config.whatsapp_template_name,
+                template_language=self.config.whatsapp_template_language,
+            )
+            payload["whatsappSendMode"] = "template"
+            return provider_message_id
+        except Exception as exc:  # noqa: BLE001 - reported with whatever failed before it
+            refusals.append(
+                f"template {self.config.whatsapp_template_name} "
+                f"({self.config.whatsapp_template_language}): {exc}"
+            )
+        raise RuntimeError("; ".join(refusals))
 
     def _deliver_in_app(self, action: dict[str, Any], message_text: str) -> str:
         """Deliver the result to the owner's in-app notification feed."""
@@ -288,7 +356,8 @@ class ScheduledActionScheduler:
                 if int(summary.get("processed") or 0) > 0:
                     logger(
                         "[scheduled-actions] "
-                        f"processed={summary.get('processed')} sent={summary.get('sent')} failed={summary.get('failed')}"
+                        f"processed={summary.get('processed')} sent={summary.get('sent')} "
+                        f"failed={summary.get('failed')} fallback={summary.get('fallback')}"
                     )
             except Exception as exc:  # noqa: BLE001 - keep the scheduler alive
                 logger(f"[scheduled-actions] error: {exc}")
