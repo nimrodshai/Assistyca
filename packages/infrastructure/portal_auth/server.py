@@ -189,6 +189,7 @@ from packages.infrastructure.receipt_collector import merge_receipt_amount_entri
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
 from packages.infrastructure import receipt_manager
+from packages.infrastructure import receipt_ledger
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_judge import judge_receipt_items
@@ -6864,6 +6865,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # alike. The answers this message carries are written down here,
             # so they hold for this run and for every run after it.
             receipt_decisions = self._receipt_decisions(session.email, payload)
+            # What earlier searches already read and judged. A message in
+            # the ledger is neither downloaded nor judged again; the mailbox
+            # is still listed, which is how new mail gets found.
+            read_ledger = self._mail_read_ledger(session.email) if result_header == "Receipt search" else None
             # A run picked up after a question was answered. The mail behind it
             # was read and judged when the question was asked, so it is counted
             # again with the answer applied rather than read again.
@@ -6955,6 +6960,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             include_attachments=receipt_attachment_dir is not None,
                             attachment_output_dir=receipt_attachment_dir,
                             attachment_url_prefix=receipt_attachment_url_prefix,
+                            # A bundle saves every file to its own folder, so
+                            # it reads every message; only an answer run can
+                            # take a message from the ledger instead.
+                            known=(
+                                read_ledger.known_messages(mailbox_name)
+                                if read_ledger is not None and receipt_attachment_dir is None
+                                else None
+                            ),
                         )
                     except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
                         self._flag_mailbox_needs_attention(session.email, record, record_provider)
@@ -6987,15 +7000,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     )
                     email_provider = record_provider
                     mailbox_items = result.get("items") if isinstance(result.get("items"), list) else []
-                    if len(mailbox_items) > search_max_results:
+                    # The ceiling is on what was downloaded this run. Messages
+                    # the ledger supplied cost nothing and all stay; of the
+                    # rest the newest are kept, which is the order the
+                    # providers return them in, so a capped month is the
+                    # recent end of itself rather than an arbitrary slice.
+                    kept_items, was_capped = receipt_ledger.cap_fresh_items(mailbox_items, search_max_results)
+                    if was_capped:
                         capped_mailboxes.append({"mailbox": mailbox_name, "limit": search_max_results})
-                        # The newest are kept, which is the order the providers
-                        # return them in, so a capped month is the recent end of
-                        # itself rather than an arbitrary slice.
                         result = {
                             **result,
-                            "items": mailbox_items[:search_max_results],
-                            "messageCount": search_max_results,
+                            "items": kept_items,
+                            "messageCount": len(kept_items),
                         }
                     mailbox_results.append({"mailbox": mailbox_name, "result": result})
                 # A read that found nothing is worth asking again. A read that
@@ -7060,6 +7076,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         "items": self._judge_receipt_items(
                             result.get("items") if isinstance(result.get("items"), list) else [],
                             billing_email=session.email,
+                            ledger=read_ledger,
                         ),
                     }
                 if result_header == "Receipt search" and answer_mode:
@@ -7166,6 +7183,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             response_payload = {
                 "ok": True,
                 "message": str(result.get("message") or f"{mailbox_label} digest complete."),
+                # How many messages this run took from the ledger, downloaded,
+                # and judged: what a repeat of the same question cost.
+                **(
+                    {"mailReads": receipt_ledger.count_reads(result.get("items") or [])}
+                    if result_header == "Receipt search"
+                    else {}
+                ),
                 "summary": str(result.get("summary") or result.get("message") or ""),
                 "messageCount": int(result.get("messageCount") or 0),
                 "items": result.get("items") if isinstance(result.get("items"), list) else [],
@@ -8442,6 +8466,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         ]
         if user_id <= 0 or not (rows or skipped):
             return {}
+        # A receipt the owner deleted from the page stays deleted.
+        dismissed = receipt_ledger.MailReadLedger(self.database, user_id=user_id).dismissed()
+        if dismissed:
+            rows = [row for row in rows if str(row.get("sourceRef") or "") not in dismissed]
+            skipped = [row for row in skipped if str(row.get("sourceRef") or "") not in dismissed]
         try:
             outcome = receipt_manager.store_collected_receipts(
                 self.database,
@@ -8515,6 +8544,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         items: list[dict[str, Any]],
         *,
         billing_email: str,
+        ledger: "receipt_ledger.MailReadLedger | None" = None,
     ) -> list[dict[str, Any]]:
         """Tell the receipts in a search's results apart from everything else.
 
@@ -8533,7 +8563,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if not items:
             return items
-        return judge_receipt_items(items, ask=self._receipt_prompt_ask(
+        ask = self._receipt_prompt_ask(
             billing_email=billing_email,
             tool_name="portal_receipt_judge",
             model_env="PORTAL_RECEIPT_JUDGE_MODEL",
@@ -8541,7 +8571,26 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             instructions=RECEIPT_JUDGE_INSTRUCTIONS,
             max_output_tokens=RECEIPT_JUDGE_MAX_OUTPUT_TOKENS,
             failure_label="Receipt judgement",
-        ))
+        )
+        if ledger is None:
+            return judge_receipt_items(items, ask=ask)
+        # What the ledger already ruled on keeps its verdict; only the rest
+        # goes to the model, and what the model ruled on is written down.
+        judged = receipt_ledger.judge_only_new(
+            ledger.attach_verdicts(items),
+            judge=lambda pending: judge_receipt_items(pending, ask=ask),
+        )
+        ledger.remember(judged)
+        return judged
+
+    def _mail_read_ledger(self, email: str) -> receipt_ledger.MailReadLedger | None:
+        """This account's record of what receipt searches have already read."""
+
+        user = self.database.get_user(email) or {}
+        user_id = int(user.get("id") or 0)
+        if user_id <= 0:
+            return None
+        return receipt_ledger.MailReadLedger(self.database, user_id=user_id)
 
     def _receipt_decisions(self, email: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Every receipt pair this owner has ruled on, answers included.
@@ -12834,7 +12883,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if receipt_id <= 0:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
+        record = self.database.get_account_receipt(user_id=user_id, receipt_id=receipt_id) or {}
         deleted = self.database.delete_account_receipt(user_id=user_id, receipt_id=receipt_id)
+        if deleted and normalize_text(record.get("messageId")):
+            # The email stays in the mailbox and the next search will list
+            # it again; this is what keeps the search from putting it back.
+            self.database.dismiss_receipt_mail_read(
+                user_id=user_id,
+                mailbox=normalize_text(record.get("mailbox")),
+                message_id=normalize_text(record.get("messageId")),
+            )
         json_response(self, HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND, {"ok": deleted, "deleted": deleted})
 
     # -- lists API ---------------------------------------------------------

@@ -281,7 +281,18 @@ class GmailDigestRunner:
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
+        known: "Callable[[list[str]], dict[str, dict[str, Any]]] | None" = None,
     ) -> list[dict[str, Any]]:
+        """Read the messages a query matches.
+
+        ``known`` is asked, with every listed id, which messages a previous
+        run already read; those come back as it hands them over, without a
+        download, and they do not count against ``max_results``. The listing
+        then runs to the search ceiling rather than the download ceiling, so
+        a month read in earlier runs is read to the end rather than to the
+        newest ``max_results`` of it.
+        """
+
         token = str(access_token or "").strip()
         if not token:
             raise GmailAuthorizationError(
@@ -292,17 +303,34 @@ class GmailDigestRunner:
         want_body = bool(include_body or include_attachments)
         safe_query = resolve_gmail_query(query)[:200]
         safe_max = max(1, min(GMAIL_MAX_SEARCH_MESSAGES, int(max_results or GMAIL_MAX_DIGEST_MESSAGES)))
-        raw_messages = self._list_message_ids(token, query=safe_query, max_results=safe_max)
+        list_max = safe_max if known is None else GMAIL_MAX_SEARCH_PAGES * GMAIL_LIST_PAGE_SIZE
+        raw_messages = self._list_message_ids(token, query=safe_query, max_results=list_max)
+        listed_ids = [
+            str(raw.get("id") or "").strip()
+            for raw in raw_messages
+            if isinstance(raw, dict) and str(raw.get("id") or "").strip()
+        ]
+        remembered = known(listed_ids) if known is not None and listed_ids else {}
         summaries: list[dict[str, Any]] = []
+        fetched = 0
         output_dir = Path(attachment_output_dir) if attachment_output_dir else None
         if include_attachments and output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
-        for raw_message in raw_messages[:safe_max]:
+        for raw_message in raw_messages:
             if not isinstance(raw_message, dict):
                 continue
             message_id = str(raw_message.get("id") or "").strip()
             if not message_id:
                 continue
+            cached = remembered.get(message_id)
+            if isinstance(cached, dict):
+                summaries.append({**cached, "id": message_id})
+                continue
+            if fetched >= safe_max:
+                # Past the download ceiling. Older messages the ledger holds
+                # are still gathered above; the rest wait for the next run.
+                continue
+            fetched += 1
             encoded_message_id = urllib_parse.quote(message_id, safe="")
             detail_params = urllib_parse.urlencode(
                 [("format", "full")]
@@ -481,6 +509,7 @@ class GmailDigestRunner:
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
+        known: "Callable[[list[str]], dict[str, dict[str, Any]]] | None" = None,
     ) -> dict[str, Any]:
         items = self.fetch_message_summaries(
             access_token,
@@ -490,6 +519,7 @@ class GmailDigestRunner:
             include_attachments=include_attachments,
             attachment_output_dir=attachment_output_dir,
             attachment_url_prefix=attachment_url_prefix,
+            known=known,
         )
         header = "Gmail digest"
         if not items:

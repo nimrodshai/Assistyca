@@ -321,7 +321,17 @@ class OutlookDigestRunner:
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
+        known: "Callable[[list[str]], dict[str, dict[str, Any]]] | None" = None,
     ) -> list[dict[str, Any]]:
+        """Read the messages a query matches.
+
+        Graph hands the body back on the listing page, so a message read
+        before costs nothing extra to read again. ``known`` still matters: a
+        message it names carries its earlier verdict, is marked as supplied
+        by the ledger, and does not count against ``max_results``, so a month
+        read in earlier runs is read to the end.
+        """
+
         token = str(access_token or "").strip()
         if not token:
             raise OutlookAuthorizationError(
@@ -339,17 +349,25 @@ class OutlookDigestRunner:
             output_dir.mkdir(parents=True, exist_ok=True)
 
         summaries: list[dict[str, Any]] = []
+        fetched = 0
         url = self._first_page_url(query, GRAPH_PAGE_SIZE, include_body=want_body)
         for _ in range(GRAPH_MAX_PAGES):
             payload = self._get_json(url, token)
             raw_messages = payload.get("value") if isinstance(payload.get("value"), list) else []
+            page_ids = [
+                str(raw.get("id") or "").strip()
+                for raw in raw_messages
+                if isinstance(raw, dict) and str(raw.get("id") or "").strip()
+            ]
+            remembered = known(page_ids) if known is not None and page_ids else {}
             for raw_message in raw_messages:
-                if len(summaries) >= safe_max:
-                    break
                 if not isinstance(raw_message, dict):
                     continue
                 message_id = str(raw_message.get("id") or "").strip()
                 if not message_id:
+                    continue
+                cached = remembered.get(message_id)
+                if fetched >= safe_max and not isinstance(cached, dict):
                     continue
                 # A draft reply quotes the message it answers, so a receipt
                 # someone started replying to would come back a second time,
@@ -383,6 +401,12 @@ class OutlookDigestRunner:
                 }
                 if want_body:
                     item["bodyText"] = _extract_body_text(raw_message)
+                if isinstance(cached, dict):
+                    for key in ("receiptVerdict", "fromLedger"):
+                        if key in cached:
+                            item[key] = cached[key]
+                else:
+                    fetched += 1
                 if include_attachments:
                     item["attachments"] = (
                         self._save_receipt_attachments(
@@ -410,7 +434,9 @@ class OutlookDigestRunner:
                 summaries.append(item)
 
             next_link = str(payload.get("@odata.nextLink") or "").strip()
-            if len(summaries) >= safe_max or not next_link:
+            # With a ledger the listing runs on past the download ceiling,
+            # so the older messages earlier runs read are gathered too.
+            if (known is None and len(summaries) >= safe_max) or not next_link:
                 break
             url = next_link
         return summaries
@@ -552,6 +578,7 @@ class OutlookDigestRunner:
         include_attachments: bool = False,
         attachment_output_dir: Path | str | None = None,
         attachment_url_prefix: str = "",
+        known: "Callable[[list[str]], dict[str, dict[str, Any]]] | None" = None,
     ) -> dict[str, Any]:
         items = self.fetch_message_summaries(
             access_token,
@@ -561,6 +588,7 @@ class OutlookDigestRunner:
             include_attachments=include_attachments,
             attachment_output_dir=attachment_output_dir,
             attachment_url_prefix=attachment_url_prefix,
+            known=known,
         )
         header = "Outlook digest"
         if not items:
