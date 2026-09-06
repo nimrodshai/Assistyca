@@ -642,3 +642,32 @@ assistant's own words (situation `unsupported_message`, outcome
 photo does. A voice note answering a held question (a yes to a proposed
 action, a calendar choice) is read like a typed answer, because by the time
 the pending check runs it already is text.
+
+## Standing actions
+
+A **standing action** is something the assistant does on a schedule without
+being asked each time: "a summary of my meetings every morning", "pull my
+receipts on the first of the month". It is not a reminder (a reminder sends
+the person's own words back at one time); it runs a whole turn of the
+assistant and sends what it wrote.
+
+* The chat tool `schedule_task` (in `agent_loop.py`) saves one through
+  `POST /api/scheduled-actions` with `actionType: run_task`, the
+  `instruction` in the person's words, a `title`, and a `schedule`
+  (`daily`/`weekly`/`monthly`, `timeLocal` HH:MM, `weekday` or
+  `dayOfMonth`). The server works out the first run in the person's
+  timezone (`packages/infrastructure/standing_tasks.py`). `show_scheduled`
+  lists reminders and standing actions; `cancel_scheduled` ends one
+  (`DELETE /api/scheduled-actions/<id>`, the same cancel the Actions panel uses).
+* When it is due, the scheduled-actions worker hands the row to
+  `StandingTaskRunner`, which runs `/api/agent/loop` over loopback with a
+  short-lived session for the account, the account's sources and recent
+  transcript, and a message that says nobody is typing. The reply is
+  delivered exactly like a reminder (plain text inside the WhatsApp window,
+  the template outside it, the in-app feed as the fallback) and joins the
+  WhatsApp transcript.
+* The row is then moved on to its next occurrence under the same id
+  (`reschedule_scheduled_action`): `payload.lastRunAt`, `lastRunStatus`,
+  `runCount` and `nextRunAt` record each run, and the Actions panel shows
+  them. A failed run is written on the row and the action runs again next
+  time; it never ends on its own.

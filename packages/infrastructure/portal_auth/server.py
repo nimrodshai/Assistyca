@@ -201,6 +201,14 @@ from packages.infrastructure.list_due_nudges import ListDueNudger
 from packages.infrastructure.list_due_nudges import load_list_due_nudge_config
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.scheduled_actions import load_scheduled_action_config
+from packages.infrastructure.standing_tasks import MAX_TASK_INSTRUCTION_LENGTH
+from packages.infrastructure.standing_tasks import MAX_TASK_TITLE_LENGTH
+from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.standing_tasks import SUPPORTED_TASK_CHANNELS
+from packages.infrastructure.standing_tasks import StandingTaskRunner
+from packages.infrastructure.standing_tasks import describe_task_schedule
+from packages.infrastructure.standing_tasks import next_task_run_at
+from packages.infrastructure.standing_tasks import normalize_task_schedule
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_BYTES
 from packages.infrastructure.source_actions import SOURCE_ACTION_MAX_INTERVAL_MINUTES
 from packages.infrastructure.source_actions import SOURCE_ACTION_MIN_INTERVAL_MINUTES
@@ -10057,11 +10065,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or action_payload.get("text")
         )
 
+        if action_type == STANDING_TASK_ACTION_TYPE:
+            self._create_standing_task(session, user, payload, action_payload)
+            return
         if action_type != "send_message":
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
                 "error": "unsupported_action_type",
-                "message": "Only scheduled send_message actions are supported right now.",
+                "message": "Only scheduled messages and standing actions are supported right now.",
             })
             return
         if channel != "whatsapp":
@@ -10157,6 +10168,143 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "message": "Scheduled WhatsApp message saved.",
             "action": self._serialize_scheduled_action_for_client(action),
+        })
+
+    def _reachable_whatsapp_numbers(self, session: PortalSession, user_id: int) -> list[str]:
+        """Every phone a scheduled message may go to: the notification number
+        from the older single-connection setup, then the phones linked to the
+        account by signup or a link code."""
+
+        connection = self.database.get_whatsapp_connection(session.email)
+        owner_wa_id = normalize_whatsapp_lookup_id((connection or {}).get("ownerWaId"))
+        linked_numbers = [
+            normalize_whatsapp_lookup_id(record.get("waId"))
+            for record in self.database.list_user_whatsapp_numbers(user_id=user_id)
+        ]
+        return [number for number in [owner_wa_id, *linked_numbers] if number]
+
+    def _create_standing_task(
+        self,
+        session: PortalSession,
+        user: dict[str, Any],
+        payload: dict[str, Any],
+        action_payload: dict[str, Any],
+    ) -> None:
+        """Save a standing action: something the assistant does on a schedule.
+
+        The server works out the first run from the schedule and the
+        person's timezone; the caller never sends an instant. The result of
+        each run goes to the phone that asked, or to the in-app feed.
+        """
+
+        instruction = normalize_contact_message(
+            payload.get("instruction") or action_payload.get("instruction"),
+            MAX_TASK_INSTRUCTION_LENGTH,
+        )
+        title = normalize_contact_single_line(payload.get("title") or action_payload.get("title"), MAX_TASK_TITLE_LENGTH)
+        schedule = normalize_task_schedule(payload.get("schedule") or action_payload.get("schedule"))
+        timezone_name = normalize_contact_single_line(
+            payload.get("timezone") or payload.get("timeZone") or payload.get("scheduleTimezone"), 120
+        ) or "UTC"
+        channel = normalize_text(payload.get("channel")).lower() or "whatsapp"
+        if not instruction:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "missing_instruction",
+                "message": "A standing action needs to say what to do each time.",
+            })
+            return
+        if schedule is None:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_schedule",
+                "message": (
+                    "A standing action needs a frequency (daily, weekly or monthly), a time as HH:MM, "
+                    "the weekday for weekly, and the day of the month for monthly."
+                ),
+            })
+            return
+        if channel not in SUPPORTED_TASK_CHANNELS:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "unsupported_channel",
+                "message": "A standing action reports over WhatsApp or in the portal.",
+            })
+            return
+
+        user_id = int(user.get("id") or 0)
+        recipient_wa_id = ""
+        if channel == "whatsapp":
+            reachable = self._reachable_whatsapp_numbers(session, user_id)
+            requested_wa_id = normalize_whatsapp_lookup_id(action_payload.get("recipientWaId"))
+            if requested_wa_id and requested_wa_id not in reachable:
+                json_response(self, HTTPStatus.BAD_REQUEST, {
+                    "ok": False,
+                    "error": "recipient_not_linked",
+                    "message": "That WhatsApp number is not linked to this account.",
+                })
+                return
+            recipient_wa_id = requested_wa_id or (reachable[0] if reachable else "")
+            if not recipient_wa_id:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "missing_whatsapp_recipient",
+                    "message": "Link the WhatsApp number that should receive scheduled notifications.",
+                })
+                return
+            if not resolve_whatsapp_sender_access_token() or not resolve_whatsapp_sender_phone_number_id():
+                json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                    "ok": False,
+                    "error": "whatsapp_delivery_not_configured",
+                    "message": "Assistyca WhatsApp delivery is not configured on the server.",
+                })
+                return
+
+        next_run = next_task_run_at(schedule, timezone_name=timezone_name)
+        if next_run is None:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_schedule",
+                "message": "The schedule has no next occurrence.",
+            })
+            return
+
+        scheduled_payload = {
+            **{key: value for key, value in action_payload.items() if key not in {"recipientWaId", "recipient_wa_id"}},
+            "instruction": instruction,
+            "title": title or "Standing action",
+            "summary": instruction,
+            "schedule": schedule,
+            "frequency": describe_task_schedule(schedule),
+            "source": normalize_text(payload.get("source")) or "portal_agent",
+            "nextRunAt": next_run.isoformat(),
+            "runCount": 0,
+        }
+        if recipient_wa_id:
+            scheduled_payload["recipientWaId"] = recipient_wa_id
+        try:
+            action = self.database.create_scheduled_action(
+                user_id=user_id,
+                action_type=STANDING_TASK_ACTION_TYPE,
+                channel=channel,
+                recipient_ref="owner",
+                run_at=next_run,
+                timezone_name=timezone_name,
+                payload=scheduled_payload,
+            )
+        except (KeyError, ValueError) as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_scheduled_action",
+                "message": str(exc),
+            })
+            return
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "message": "Standing action saved.",
+            "action": self._serialize_scheduled_action_for_client(action),
+            "nextRunAt": next_run.isoformat(),
+            "runs": describe_task_schedule(schedule),
         })
 
     def _handle_scheduled_actions_delete(self, parsed: urllib_parse.ParseResult) -> None:
@@ -13106,19 +13254,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         minutes rather than months.
         """
 
-        secret = self.store.session_secret
-        if not secret:
-            raise WhatsAppAgentChatError(
-                "PORTAL_SESSION_SECRET is required for the WhatsApp agent conversation."
-            )
-        now = time.time()
-        session = PortalSession(
-            token="",
-            email=normalize_email(email),
-            issued_at=now,
-            expires_at=now + 900,
-        )
-        return create_session_token(session, secret)
+        return mint_agent_session_token(self.store, email)
 
     def _handle_whatsapp_agent_chat_message(
         self,
@@ -15502,6 +15638,27 @@ def drain_in_flight_requests(server: ThreadingHTTPServer, grace_seconds: float) 
     return False
 
 
+def mint_agent_session_token(store: PortalAuthStore, email: str) -> str:
+    """A short-lived signed session for an account the server itself acts for:
+    the WhatsApp webhook, or a standing action firing on its schedule. The
+    token only lets that authority pass through the loopback API, where every
+    handler applies its usual checks. It expires in minutes, not months."""
+
+    secret = store.session_secret
+    if not secret:
+        raise WhatsAppAgentChatError(
+            "PORTAL_SESSION_SECRET is required for the WhatsApp agent conversation."
+        )
+    now = time.time()
+    session = PortalSession(
+        token="",
+        email=normalize_email(email),
+        issued_at=now,
+        expires_at=now + 900,
+    )
+    return create_session_token(session, secret)
+
+
 def create_server(host: str, port: int, root: Path, config: PortalConfig) -> ThreadingHTTPServer:
     handler = partial(PortalAuthHandler, directory=str(root))
     server = ThreadingHTTPServer((host, port), handler)
@@ -15816,9 +15973,17 @@ def main() -> int:
     scheduled_action_stop_event = threading.Event()
     scheduled_action_thread: threading.Thread | None = None
     if scheduled_action_config.enabled:
+        # A standing action runs through the same loop as a chat message,
+        # over loopback with a short-lived session for its account.
+        task_runner = StandingTaskRunner(
+            database=server.database,  # type: ignore[attr-defined]
+            base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
+            session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+        )
         scheduled_actions = ScheduledActionScheduler(
             server.database,  # type: ignore[attr-defined]
             config=scheduled_action_config,
+            task_runner=task_runner.run,
         )
         scheduled_action_thread = threading.Thread(
             target=scheduled_actions.serve_forever,

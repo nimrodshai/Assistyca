@@ -8154,6 +8154,55 @@ class PortalDatabase:
             ).fetchone()
         return self._load_scheduled_action_row(row)
 
+    def reschedule_scheduled_action(
+        self,
+        *,
+        action_id: int,
+        run_at: str | datetime,
+        payload: dict[str, Any] | None = None,
+        last_error: str = "",
+    ) -> dict[str, Any] | None:
+        """Put a standing action back in the queue for its next occurrence.
+
+        The row keeps its id and history; the claim, the attempt count and
+        the provider id of the run that just finished are cleared so the next
+        run starts clean and a late delivery receipt cannot close the row.
+        """
+
+        if int(action_id or 0) <= 0:
+            return None
+        run_at_value = parse_datetime(run_at).astimezone(timezone.utc).isoformat()
+        now = now_iso()
+        fields = [
+            "status = 'pending'",
+            "run_at = ?",
+            "attempt_count = 0",
+            "claimed_at = NULL",
+            "completed_at = NULL",
+            "provider_message_id = ''",
+            "last_error = ?",
+            "updated_at = ?",
+        ]
+        params: list[Any] = [run_at_value, normalize_text(last_error)[:2000], now]
+        if payload is not None:
+            fields.append("payload_json = ?")
+            params.append(json.dumps(payload, ensure_ascii=True, sort_keys=True))
+        params.append(int(action_id))
+        with self._connection() as conn:
+            conn.execute(
+                f"""
+                UPDATE scheduled_actions
+                SET {", ".join(fields)}
+                WHERE id = ?
+                """,
+                tuple(params),
+            )
+            row = conn.execute(
+                "SELECT * FROM scheduled_actions WHERE id = ? LIMIT 1",
+                (int(action_id),),
+            ).fetchone()
+        return self._load_scheduled_action_row(row)
+
     def update_scheduled_action_delivery_status(
         self,
         *,

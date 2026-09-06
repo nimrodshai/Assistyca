@@ -15,6 +15,9 @@ from packages.infrastructure.notification_delivery import deliver_portal_notific
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.standing_tasks import is_standing_task
+from packages.infrastructure.standing_tasks import next_task_run_at
 
 
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
@@ -110,9 +113,14 @@ class ScheduledActionScheduler:
         database: PortalDatabase,
         *,
         config: ScheduledActionConfig | None = None,
+        task_runner: Callable[[dict[str, Any]], str] | None = None,
     ) -> None:
         self.database = database
         self.config = config or load_scheduled_action_config()
+        # Runs a standing action through the assistant and returns what it
+        # wrote. The server wires one in; without it a standing action fails
+        # plainly instead of pretending.
+        self.task_runner = task_runner
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -140,10 +148,17 @@ class ScheduledActionScheduler:
                 continue
 
             processed += 1
+            standing = is_standing_task(claimed)
             try:
                 provider_message_id = self._dispatch(claimed)
             except Exception as exc:  # noqa: BLE001 - keep later due actions moving
                 failed += 1
+                if standing:
+                    # One bad morning does not end a standing action: the
+                    # problem is written on the row and it runs again next time.
+                    print(f"[scheduled-actions] action={claimed.get('id')} standing action failed: {exc}", flush=True)
+                    self._reschedule(claimed, error=str(exc), now=reference)
+                    continue
                 self.database.finish_scheduled_action(
                     action_id=int(claimed.get("id") or 0),
                     status="failed",
@@ -159,6 +174,9 @@ class ScheduledActionScheduler:
             claimed_payload = claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {}
             if claimed_payload.get("deliveredVia") == "portal_fallback":
                 fallback += 1
+            if standing:
+                self._reschedule(claimed, provider_message_id=provider_message_id, now=reference)
+                continue
             self.database.finish_scheduled_action(
                 action_id=int(claimed.get("id") or 0),
                 status="sent",
@@ -179,17 +197,71 @@ class ScheduledActionScheduler:
             "recovered": recovered,
         }
 
+    def _reschedule(
+        self,
+        action: dict[str, Any],
+        *,
+        provider_message_id: str = "",
+        error: str = "",
+        now: datetime,
+    ) -> None:
+        """Move a standing action on to its next occurrence.
+
+        The row keeps its id, so the Actions panel and "stop the morning
+        summary" always find the same thing. What this run did is written on
+        the payload; the provider id moves aside so a delivery receipt for
+        this run cannot mark the whole action delivered.
+        """
+
+        payload = dict(action.get("payload") if isinstance(action.get("payload"), dict) else {})
+        action_id = int(action.get("id") or 0)
+        next_run = next_task_run_at(
+            payload.get("schedule") or {},
+            timezone_name=normalize_text(action.get("timezone")) or "UTC",
+            after=now,
+        )
+        if next_run is None:
+            self.database.finish_scheduled_action(
+                action_id=action_id,
+                status="failed",
+                last_error="The schedule on this standing action could not be read.",
+                payload=payload,
+            )
+            return
+        payload.pop("sentAt", None)
+        payload.pop("failedAt", None)
+        payload.update({
+            "lastRunAt": now.isoformat(),
+            "lastRunStatus": "failed" if error else "success",
+            "runCount": int(payload.get("runCount") or 0) + 1,
+            "nextRunAt": next_run.isoformat(),
+        })
+        if provider_message_id:
+            payload["lastProviderMessageId"] = provider_message_id
+        self.database.reschedule_scheduled_action(
+            action_id=action_id,
+            run_at=next_run,
+            payload=payload,
+            last_error=error,
+        )
+
     def _dispatch(self, action: dict[str, Any]) -> str:
         action_type = normalize_text(action.get("actionType")).lower()
         channel = normalize_text(action.get("channel")).lower()
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
-        if action_type != "send_message":
+        if action_type == STANDING_TASK_ACTION_TYPE:
+            if self.task_runner is None:
+                raise RuntimeError("Standing actions are not enabled on this server.")
+            message_text = normalize_text(self.task_runner(action))
+            if not message_text:
+                raise RuntimeError("The standing action produced nothing to send.")
+        elif action_type == "send_message":
+            message_text = normalize_text(payload.get("messageText") or payload.get("text"))
+            if not message_text:
+                raise RuntimeError("Scheduled message text is missing.")
+            message_text = self._attach_list(action, payload, message_text)
+        else:
             raise RuntimeError(f"Unsupported scheduled action type: {action_type}")
-
-        message_text = normalize_text(payload.get("messageText") or payload.get("text"))
-        if not message_text:
-            raise RuntimeError("Scheduled message text is missing.")
-        message_text = self._attach_list(action, payload, message_text)
 
         if channel == "whatsapp":
             try:
@@ -334,7 +406,12 @@ class ScheduledActionScheduler:
             feature_id=normalize_text(payload.get("featureId")),
             action_id=action_id,
             result_url=normalize_text(payload.get("resultUrl")),
-            dedupe_key=f"scheduled-action:{action_id}" if action_id else "",
+            # Each run of a standing action is its own notification; a
+            # reminder is one message and keeps one row.
+            dedupe_key=(
+                f"scheduled-action:{action_id}:run{int(payload.get('runCount') or 0)}" if is_standing_task(action)
+                else f"scheduled-action:{action_id}"
+            ) if action_id else "",
             metadata={
                 "runAt": action.get("runAt"),
                 "timezone": normalize_text(action.get("timezone")),

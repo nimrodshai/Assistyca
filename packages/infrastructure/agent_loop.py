@@ -39,6 +39,10 @@ from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
+from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.standing_tasks import WEEKDAY_NAMES
+from packages.infrastructure.standing_tasks import describe_task_schedule
+from packages.infrastructure.standing_tasks import normalize_task_schedule
 from packages.infrastructure.whatsapp_agent_chat import connection_display_name
 from packages.infrastructure.whatsapp_agent_chat import connections_for_disconnect
 from packages.infrastructure.whatsapp_agent_chat import describe_local_time
@@ -641,6 +645,175 @@ _SCHEDULE_FAILURE_WORDS = {
 }
 
 
+_TASK_SCHEDULE_NEEDED = (
+    "An exact schedule is needed: frequency daily, weekly or monthly; time_local as HH:MM in 24-hour form; "
+    "the weekday for weekly; the day of the month for monthly."
+)
+
+
+def _tool_schedule_task(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    instruction = str(args.get("instruction") or "").strip()
+    title = str(args.get("title") or "").strip()
+    schedule = normalize_task_schedule({
+        "frequency": args.get("frequency"),
+        "timeLocal": args.get("time_local"),
+        "weekday": args.get("weekday"),
+        "dayOfMonth": args.get("day_of_month"),
+    })
+    if not instruction:
+        return _error("choice_required", "What to do each time is needed, in the person's words.")
+    if schedule is None:
+        return _error("choice_required", _TASK_SCHEDULE_NEEDED)
+    payload: dict[str, Any] = {}
+    if context.channel == "whatsapp" and str(context.sender_wa_id or "").strip():
+        # The phone that asked is the phone that gets the results.
+        payload["recipientWaId"] = str(context.sender_wa_id).strip()
+    response, status = context.api(
+        "POST",
+        "/api/scheduled-actions",
+        {
+            "actionType": STANDING_TASK_ACTION_TYPE,
+            "channel": "whatsapp" if context.channel == "whatsapp" else "portal",
+            "recipientRef": "owner",
+            "timezone": context.timezone_name,
+            "instruction": instruction,
+            "title": title,
+            "schedule": schedule,
+            "source": f"{context.channel}_agent",
+            "payload": payload,
+        },
+    )
+    if status == 200 and response.get("ok"):
+        action = response.get("action") if isinstance(response.get("action"), dict) else {}
+        first_run = str(response.get("nextRunAt") or action.get("runAt") or "")
+        return _ok({
+            "taskId": int(action.get("id") or 0),
+            "title": title or str((action.get("payload") or {}).get("title") or ""),
+            "does": instruction,
+            "runs": describe_task_schedule(schedule),
+            "firstRunLocal": describe_local_time(first_run, context.timezone_name),
+            "timezone": context.timezone_name,
+            "note": (
+                "Say it is set: what it will do, how often (runs) and when it first runs (firstRunLocal), "
+                "and that saying 'stop the " + (title or "action") + "' ends it."
+            ),
+        })
+    code = str(response.get("error") or "") if isinstance(response, dict) else ""
+    detail = str(response.get("message") or "") if isinstance(response, dict) else ""
+    print(f"agent.loop.schedule_task_failed status={status} error={code or '-'} message={detail!r}", flush=True)
+    why = _SCHEDULE_FAILURE_WORDS.get(code) or detail or "The standing action could not be set up just now."
+    return _error(code or "internal", why, can_retry=code not in _SCHEDULE_FAILURE_WORDS)
+
+
+def _active_scheduled(context: LoopContext) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    response, status = context.api("GET", "/api/scheduled-actions")
+    if status != 200 or not response.get("ok"):
+        return [], _error("internal", "Could not read what is scheduled just now.", can_retry=True)
+    actions = [
+        action for action in (response.get("actions") or [])
+        if isinstance(action, dict) and str(action.get("status") or "").lower() in {"pending", "running"}
+    ]
+    return actions, None
+
+
+def _describe_scheduled(context: LoopContext, action: dict[str, Any]) -> dict[str, Any]:
+    """One scheduled thing in the person's terms: a reminder with its time,
+    or a standing action with what it does and when it runs."""
+
+    payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+    run_at = str(action.get("runAt") or "")
+    if str(action.get("actionType") or "") == STANDING_TASK_ACTION_TYPE:
+        entry: dict[str, Any] = {
+            "id": int(action.get("id") or 0),
+            "kind": "standing action",
+            "title": str(payload.get("title") or ""),
+            "does": str(payload.get("instruction") or ""),
+            "runs": str(payload.get("frequency") or describe_task_schedule(payload.get("schedule"))),
+            "nextRunLocal": describe_local_time(run_at, context.timezone_name),
+        }
+        if payload.get("lastRunAt"):
+            entry["lastRunLocal"] = describe_local_time(str(payload.get("lastRunAt")), context.timezone_name)
+            entry["lastRunStatus"] = str(payload.get("lastRunStatus") or "")
+        return entry
+    return {
+        "id": int(action.get("id") or 0),
+        "kind": "reminder",
+        "text": str(payload.get("messageText") or payload.get("text") or ""),
+        "sendsAtLocal": describe_local_time(run_at, context.timezone_name),
+    }
+
+
+_CANCEL_STOP_WORDS = {
+    "the", "and", "that", "this", "one", "stop", "cancel", "end", "remove", "delete", "please", "for", "with",
+    "action", "reminder", "task", "standing", "scheduled", "send", "sending", "from", "about", "dont", "don't",
+    "anymore", "more", "again", "automatic", "automatically", "summary",
+}
+
+
+def _match_scheduled(actions: list[dict[str, Any]], what: str, wanted_id: int) -> list[dict[str, Any]]:
+    if wanted_id > 0:
+        return [action for action in actions if int(action.get("id") or 0) == wanted_id]
+    words = [w for w in re.findall(r"[\w']+", what.lower()) if len(w) > 2 and w not in _CANCEL_STOP_WORDS]
+    if not words:
+        return list(actions)
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for action in actions:
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        haystack = " ".join(
+            str(payload.get(key) or "") for key in ("title", "instruction", "messageText", "text", "frequency")
+        ).lower()
+        hits = sum(1 for word in words if word in haystack)
+        if hits:
+            scored.append((hits, action))
+    if not scored:
+        return []
+    best = max(hits for hits, _ in scored)
+    return [action for hits, action in scored if hits == best]
+
+
+def _tool_show_scheduled(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    actions, problem = _active_scheduled(context)
+    if problem is not None:
+        return problem
+    return _ok({
+        "scheduled": [_describe_scheduled(context, action) for action in actions],
+        "note": (
+            "Standing actions run on their own and report by message; reminders are one message at one time. "
+            "The person can stop any of them by saying so."
+        ),
+    })
+
+
+def _tool_cancel_scheduled(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    actions, problem = _active_scheduled(context)
+    if problem is not None:
+        return problem
+    if not actions:
+        return _error("nothing_found", "Nothing is scheduled right now, so there is nothing to cancel.")
+    try:
+        wanted_id = int(args.get("id") or 0)
+    except (TypeError, ValueError):
+        wanted_id = 0
+    matches = _match_scheduled(actions, str(args.get("what") or ""), wanted_id)
+    if not matches:
+        return _error(
+            "nothing_found",
+            "Nothing scheduled matches that. These are the things that are set; ask which one they mean.",
+            candidates=[_describe_scheduled(context, action) for action in actions],
+        )
+    if len(matches) > 1:
+        return _error(
+            "choice_required",
+            "More than one scheduled thing matches; ask which one they mean, naming each.",
+            candidates=[_describe_scheduled(context, action) for action in matches],
+        )
+    target = matches[0]
+    response, status = context.api("DELETE", f"/api/scheduled-actions/{int(target.get('id') or 0)}")
+    if status != 200 or not response.get("ok"):
+        return _error("internal", "Could not cancel that just now.", can_retry=True)
+    return _ok({"cancelled": _describe_scheduled(context, target)})
+
+
 def _tool_remember_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     key = str(args.get("key") or "").strip().lower()
     fact = str(args.get("fact") or "").strip()
@@ -1082,6 +1255,58 @@ TOOLS: list[ToolSpec] = [
         run=_tool_schedule_message,
     ),
     ToolSpec(
+        name="schedule_task",
+        description=(
+            "Set up a standing action: something to do for the person again and again on a schedule, without "
+            "them asking each time - a summary of the day's meetings every morning, last month's receipts pulled "
+            "and totalled on the first of the month, the week's inbox every Friday. instruction is what to do "
+            "each time, in their words, complete enough to run on its own: name the source and the period "
+            "('read today's calendar and summarise the meetings, clashes and gaps', 'pull last month's receipts, "
+            "total them and keep them on the receipts page'). title names it in a few words. frequency is daily, "
+            "weekly or monthly; time_local is HH:MM in 24-hour form in their timezone; weekday is the day for "
+            "weekly and day_of_month is 1-31 for monthly, null otherwise. 'Every morning' with no time is 08:00; "
+            "'monthly' with no day is the 1st; 'weekly' with no day is monday. The result of each run reaches "
+            "them as a message at that time. Not for one message at one time: that is schedule_message."
+        ),
+        parameters=_params({
+            "instruction": {"type": "string"},
+            "title": {"type": "string"},
+            "frequency": {"type": "string", "enum": ["daily", "weekly", "monthly"]},
+            "time_local": {"type": "string"},
+            "weekday": {"type": ["string", "null"], "enum": [*WEEKDAY_NAMES, None]},
+            "day_of_month": {"type": ["integer", "null"]},
+        }),
+        # The person asked for it in so many words, and it can be stopped
+        # with a sentence: it runs on the first call, like a reminder.
+        side_effect=True,
+        run=_tool_schedule_task,
+    ),
+    ToolSpec(
+        name="show_scheduled",
+        description=(
+            "List what is set to happen: the person's pending reminders and their standing actions, with when "
+            "each runs and what it does. For 'what do I have scheduled', 'what reminders are set', 'what runs "
+            "automatically', 'is the morning summary on'."
+        ),
+        parameters=_params({}),
+        run=_tool_show_scheduled,
+    ),
+    ToolSpec(
+        name="cancel_scheduled",
+        description=(
+            "End a reminder or a standing action. what is the person's words for it; id is its number from "
+            "show_scheduled when known, else null. For 'stop the morning summary', 'cancel that reminder', "
+            "'don't send me the receipts anymore', 'turn off the daily meetings'. The result names what was "
+            "cancelled, or lists the candidates when more than one matches."
+        ),
+        parameters=_params({
+            "what": {"type": "string"},
+            "id": {"type": ["integer", "null"]},
+        }),
+        side_effect=True,
+        run=_tool_cancel_scheduled,
+    ),
+    ToolSpec(
         name="create_list",
         description=(
             "Start a list for the person. kind is todo for things to tick off, general for a plain list such as "
@@ -1178,7 +1403,8 @@ AGENT_LOOP_INSTRUCTIONS = (
     "When the person asks what you can do, what actions there are, or how this works, answer from that, "
     "shaped by what is connected and by what knownFacts says they do - every example you offer is one "
     "someone in their line of work would actually send - and cover every kind of thing they have: the diary, the mail, the receipts "
-    "and what they add up to, reminders, and their lists. Lists and receipts are each a page of the person's "
+    "and what they add up to, reminders, standing actions that run on a schedule, and their lists. Lists and "
+    "receipts are each a page of the person's "
     "own that they may not know they have, so name both every time, and put CONTEXT.listsPage and "
     "CONTEXT.receiptsPage each on its own line so they can open them.\n"
     "You have tools. Call one when the answer needs a look at the person's sources or an action on their "
@@ -1200,7 +1426,12 @@ AGENT_LOOP_INSTRUCTIONS = (
     "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
     "that depends on the time of day, and never guess the time.\n"
     "A reminder needs no yes: schedule_message runs on the first call, so never ask the person to confirm "
-    "one; call it, then say it is set, repeating scheduledForLocal and the text. Actions that need a yes: "
+    "one; call it, then say it is set, repeating scheduledForLocal and the text. A standing action is "
+    "something they want done again and again without asking - 'every morning', 'each Monday', 'monthly', "
+    "'automatically', 'as a scheduled task', 'on a regular basis': schedule_task sets it up on the first call, "
+    "no yes needed, and it can do anything you can do in this chat. Never say a scheduled or automatic action "
+    "cannot be set up here. A reminder, by contrast, is one message at one time. show_scheduled lists what is "
+    "set and cancel_scheduled ends one; a person who says stop is not asking for a yes. Actions that need a yes: "
     "disconnect, sign_out and delete_account return "
     "confirmation_required the first time. Then ask for a plain yes in the same message, naming exactly what "
     "will happen - which accounts, what is signed out or erased - and nothing else. For sign_out say in one line that "
