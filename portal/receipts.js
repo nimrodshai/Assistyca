@@ -41,6 +41,7 @@
     rejectedCount: $("rejectedCount"),
     rejectedCards: $("rejectedCards"),
     addManualButton: $("addManualButton"),
+    manualSheet: $("manualSheet"),
     manualForm: $("manualForm"),
     manualVendor: $("manualVendor"),
     manualAmount: $("manualAmount"),
@@ -721,15 +722,19 @@
     }, "The receipt could not be deleted");
   });
 
-  elements.addManualButton.addEventListener("click", () => {
-    elements.manualForm.classList.remove("is-hidden");
-    elements.addManualButton.classList.add("is-hidden");
+  function openManual() {
+    elements.manualForm.reset();
     elements.manualDate.value = isoDate(new Date());
+    elements.manualSheet.classList.remove("is-hidden");
     elements.manualVendor.focus();
-  });
-  elements.manualCancel.addEventListener("click", () => {
-    elements.manualForm.classList.add("is-hidden");
-    elements.addManualButton.classList.remove("is-hidden");
+  }
+  function closeManual() {
+    elements.manualSheet.classList.add("is-hidden");
+  }
+  elements.addManualButton.addEventListener("click", openManual);
+  elements.manualCancel.addEventListener("click", closeManual);
+  elements.manualSheet.addEventListener("click", (event) => {
+    if (event.target === elements.manualSheet) closeManual();
   });
   elements.manualForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -747,9 +752,7 @@
           notes: elements.manualNotes.value.trim(),
         },
       });
-      elements.manualForm.reset();
-      elements.manualForm.classList.add("is-hidden");
-      elements.addManualButton.classList.remove("is-hidden");
+      closeManual();
       toast("Added");
       await loadHome();
     }, "The receipt could not be added");
@@ -772,7 +775,9 @@
     if (event.target === elements.exportSheet) elements.exportSheet.classList.add("is-hidden");
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") elements.exportSheet.classList.add("is-hidden");
+    if (event.key !== "Escape") return;
+    elements.exportSheet.classList.add("is-hidden");
+    closeManual();
   });
 
   window.addEventListener("hashchange", () => void route());

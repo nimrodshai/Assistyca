@@ -8,7 +8,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
     <script src="/portal/theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="/portal/receipts.css?v=1" />
+    <link rel="stylesheet" href="/portal/receipts.css?v=2" />
   </head>
   <body data-view="loading">
     <header class="topbar">
@@ -89,25 +89,6 @@
         </details>
 
         <button id="addManualButton" class="text-button" type="button">Add a receipt by hand</button>
-        <form id="manualForm" class="card manual-form is-hidden" autocomplete="off">
-          <h3>Add a receipt by hand</h3>
-          <label class="field"><span class="field-label">Vendor</span><input id="manualVendor" type="text" maxlength="120" required /></label>
-          <div class="field-row">
-            <label class="field"><span class="field-label">Amount</span><input id="manualAmount" type="text" inputmode="decimal" maxlength="24" /></label>
-            <label class="field"><span class="field-label">Currency</span><input id="manualCurrency" type="text" maxlength="8" placeholder="ILS" /></label>
-          </div>
-          <div class="field-row">
-            <label class="field"><span class="field-label">Date</span><input id="manualDate" type="date" /></label>
-            <label class="field"><span class="field-label">Type</span>
-              <select id="manualKind"><option value="receipt">Receipt</option><option value="invoice">Invoice</option></select>
-            </label>
-          </div>
-          <label class="field"><span class="field-label">Note</span><input id="manualNotes" type="text" maxlength="300" /></label>
-          <div class="button-row">
-            <button class="button primary" type="submit">Add</button>
-            <button id="manualCancel" class="button" type="button">Cancel</button>
-          </div>
-        </form>
       </section>
 
       <section id="detailView" class="view is-hidden">
@@ -173,7 +154,31 @@
       </div>
     </div>
 
+    <div id="manualSheet" class="sheet is-hidden" role="dialog" aria-modal="true" aria-labelledby="manualTitle">
+      <div class="sheet-panel">
+        <form id="manualForm" class="manual-form" autocomplete="off">
+          <h2 id="manualTitle">Add a receipt by hand</h2>
+          <label class="field"><span class="field-label">Vendor</span><input id="manualVendor" type="text" maxlength="120" required /></label>
+          <div class="field-row">
+            <label class="field"><span class="field-label">Amount</span><input id="manualAmount" type="text" inputmode="decimal" maxlength="24" /></label>
+            <label class="field"><span class="field-label">Currency</span><input id="manualCurrency" type="text" maxlength="8" placeholder="ILS" /></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span class="field-label">Date</span><input id="manualDate" type="date" /></label>
+            <label class="field"><span class="field-label">Type</span>
+              <select id="manualKind"><option value="receipt">Receipt</option><option value="invoice">Invoice</option></select>
+            </label>
+          </div>
+          <label class="field"><span class="field-label">Note</span><input id="manualNotes" type="text" maxlength="300" /></label>
+          <div class="button-row">
+            <button class="button primary" type="submit">Add</button>
+            <button id="manualCancel" class="button" type="button">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/portal/receipts.js?v=1"></script>
+    <script src="/portal/receipts.js?v=2"></script>
   </body>
 </html>
