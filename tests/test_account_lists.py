@@ -197,9 +197,11 @@ class ListToolTests(unittest.TestCase):
         # or that there is a page for them. The pitch and the instructions
         # both say so now, and the answer carries the page.
         self.assertIn("lists", ASSISTANT_CAPABILITIES_PITCH)
-        self.assertIn("receipts", ASSISTANT_CAPABILITIES_PITCH)
-        self.assertIn("what you can do here at all", AGENT_LOOP_INSTRUCTIONS)
-        self.assertIn("The lists are a page of their own", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("receipts page", ASSISTANT_CAPABILITIES_PITCH)
+        self.assertNotIn("folder", ASSISTANT_CAPABILITIES_PITCH)
+        self.assertEqual(AGENT_LOOP_INSTRUCTIONS.count("what you can do here at all"), 2)
+        self.assertIn("Lists and receipts are each a page of the person's own", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("CONTEXT.listsPage and CONTEXT.receiptsPage each on its own line", AGENT_LOOP_INSTRUCTIONS)
 
         home = LINK.format(id=0).replace("#/list/0", "")
         model = ScriptedModel([_model_round(reply=_reply(f"Diary, mail, receipts, reminders and your lists - here is that page:\n{home}"))])

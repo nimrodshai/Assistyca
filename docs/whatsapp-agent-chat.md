@@ -449,12 +449,13 @@ The capability pitch lives once, in `ASSISTANT_CAPABILITIES_PITCH`, and both
 the concierge and the working agent describe the same product from it.
 "What actions can I do here?" (2026-09-06) was answered with the diary, the
 mail and the receipts pile and never mentioned that the person keeps lists,
-or that lists have a page of their own. The pitch now names the lists page
-and the receipt totals, the loop instructions say a what-can-you-do answer
+or that lists and receipts each have a page of their own. The pitch now
+names both pages (and no longer speaks of a receipts folder, which the
+receipts page replaced), the loop instructions say a what-can-you-do answer
 covers every kind of thing the person has - diary, mail, receipts, reminders,
-lists - and carries `listsPage` on its own line (a button on WhatsApp), and
-the WhatsApp example prompts are spread across those rather than all drawn
-from the mailbox.
+lists - and carries `listsPage` and `receiptsPage` each on its own line
+(buttons on WhatsApp), and the WhatsApp example prompts are spread across
+those rather than all drawn from the mailbox.
 
 ## When something gets in the way
 
