@@ -99,8 +99,8 @@
       .hero {
         position: relative;
         isolation: isolate;
-        margin: 3.25rem 0 2.5rem;
-        padding-right: 4.5rem;
+        margin: 2.5rem 0 1.5rem;
+        padding-right: 3.75rem;
         animation: rise-in 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
 
@@ -116,33 +116,12 @@
         background: radial-gradient(circle, rgba(106, 167, 163, 0.24), rgba(106, 167, 163, 0) 68%);
       }
 
-      .hero-kicker {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.55rem;
-        margin: 0 0 1rem;
-        color: var(--accent-deep);
-        font-size: 0.72rem;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-      }
-
-      .hero-kicker::before {
-        content: "";
-        width: 0.5rem;
-        aspect-ratio: 1;
-        border-radius: 50%;
-        background: var(--accent-deep);
-        box-shadow: 0 0 0 0.35rem var(--accent-soft);
-      }
-
       h1 {
-        max-width: 10ch;
-        font-size: clamp(2.65rem, 9vw, 4rem);
-        line-height: 0.98;
+        max-width: 100%;
+        font-size: clamp(2.2rem, 7vw, 3rem);
+        line-height: 1.02;
         margin: 0;
-        letter-spacing: -0.055em;
+        letter-spacing: -0.045em;
         text-wrap: balance;
       }
 
@@ -167,12 +146,12 @@
 
       .hero-signal {
         position: absolute;
-        top: 2.35rem;
+        top: 0.3rem;
         right: 0.25rem;
-        width: 3.5rem;
+        width: 3rem;
         aspect-ratio: 1;
         border: 1px solid rgba(79, 146, 144, 0.34);
-        border-radius: 1.05rem;
+        border-radius: 0.9rem;
         transform: rotate(10deg);
       }
 
@@ -197,24 +176,11 @@
         box-shadow: 0 0 0 0.42rem var(--accent-soft);
       }
 
-      .intro {
-        margin: 0 0 1.5rem;
-        padding-top: 1.35rem;
-        border-top: 1px solid var(--line);
-        animation: rise-in 560ms 80ms cubic-bezier(0.22, 1, 0.36, 1) both;
-      }
-
-      .intro h2 {
-        font-size: clamp(1.45rem, 4vw, 1.8rem);
-        line-height: 1.15;
-        margin: 0 0 0.55rem;
-        letter-spacing: -0.025em;
-      }
-
-      .intro p {
-        margin: 0;
+      .hero-copy {
+        max-width: 31rem;
+        margin: 1rem 0 0;
         color: var(--muted);
-        font-size: 1.05rem;
+        font-size: 0.98rem;
       }
 
       .card {
@@ -224,7 +190,7 @@
         box-shadow: var(--shadow);
         padding: 1.6rem;
         backdrop-filter: blur(12px);
-        animation: rise-in 560ms 150ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        animation: rise-in 560ms 90ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
 
       @keyframes rise-in {
@@ -440,14 +406,14 @@
         }
 
         .hero {
-          margin: 2.6rem 0 2.1rem;
-          padding-right: 3.25rem;
+          margin: 2rem 0 1.25rem;
+          padding-right: 2.8rem;
         }
 
         .hero-signal {
           right: 0;
-          width: 2.85rem;
-          border-radius: 0.85rem;
+          width: 2.35rem;
+          border-radius: 0.7rem;
         }
 
         .phone-row {
@@ -457,7 +423,6 @@
 
       @media (prefers-reduced-motion: reduce) {
         .hero,
-        .intro,
         .card {
           animation: none;
         }
@@ -472,15 +437,10 @@
       </a>
 
       <header class="hero">
-        <p class="hero-kicker">Your assistant, on WhatsApp</p>
         <h1>An assistant designed for <span class="hero-highlight">businesses</span></h1>
+        <p class="hero-copy">When you're done I'll text you on WhatsApp and we'll get started from there.</p>
         <span class="hero-signal" aria-hidden="true"></span>
       </header>
-
-      <div class="intro">
-        <h2>Tell me a little about yourself.</h2>
-        <p>When you're done I'll text you on WhatsApp and we'll get started from there.</p>
-      </div>
 
       <section class="card">
         <form data-register-form novalidate>
