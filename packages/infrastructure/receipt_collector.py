@@ -466,10 +466,11 @@ def answer_receipt_question(
         month_label=month_label,
         questions=collected.questions,
     )
-    # Every row the read produced, before the vendor filter: the receipt
-    # manager keeps all of them, not only the ones this question was about.
-    answer["rows"] = collected.receipts
-    answer["skippedRows"] = collected.skipped
+    # The rows this question was about, and only those: the mailbox search
+    # casts a wide net, and a person who asked for one vendor's receipt does
+    # not expect four other vendors to turn up on their receipts page.
+    answer["rows"] = filter_receipt_rows_by_vendor(collected.receipts, vendor)
+    answer["skippedRows"] = filter_receipt_rows_by_vendor(collected.skipped, vendor)
     return answer
 
 

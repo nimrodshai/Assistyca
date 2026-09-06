@@ -1,6 +1,7 @@
 # Receipts
 
-The receipt manager keeps every receipt and invoice a mailbox search pulled:
+The receipt manager keeps the receipts and invoices a mailbox search was
+asked for:
 the amount, the date, who was paid, whether it calls itself a receipt or an
 invoice, and the file the vendor attached. The page at `/receipts` shows
 them by period, asks the owner about the ones the reading was not sure of,
@@ -13,7 +14,9 @@ where the receipts behind the answer end up.
 Every receipt search (`search_receipts` from chat, or the "pull my
 receipts" action) already reads the mailbox, judges each message
 (`packages/infrastructure/receipt_judge.py`) and pairs duplicates. Once the
-rows are settled, the portal server keeps them
+rows are settled and narrowed to the vendor the question named (a question
+naming no vendor keeps everything the search found), the portal server keeps
+them
 (`_keep_search_receipts` in `packages/infrastructure/portal_auth/server.py`,
 which calls `receipt_manager.store_collected_receipts`):
 

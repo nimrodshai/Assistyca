@@ -99,14 +99,26 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(receipt_manager.describe_row_kind(receipt), "receipt")
         self.assertEqual(receipt_manager.describe_row_kind(plain), "receipt")
 
-    def test_the_answer_carries_every_row_it_read_not_only_the_vendors(self) -> None:
+    def test_the_answer_keeps_only_the_vendor_it_was_asked_about(self) -> None:
+        items = [
+            message("m1", verdict={"isReceipt": True}),
+            message("m2", sender="Apple <no_reply@apple.com>", subject="Your receipt from Apple", body="Total ILS 39.90", verdict={"isReceipt": True}),
+            message("m3", sender="Shop <deals@shop.com>", subject="Sale", body="Save $5", verdict={"isReceipt": False, "confidence": "low"}),
+            message("m4", sender="Render <billing@render.com>", subject="Your Render order", body="Thanks", verdict={"isReceipt": False, "confidence": "low"}),
+        ]
+        answer = answer_receipt_question(items, vendor="Render")
+        self.assertEqual(answer["receiptCount"], 1)
+        self.assertEqual([row["sourceRef"] for row in answer["rows"]], ["m1"])
+        self.assertEqual([row["sourceRef"] for row in answer["skippedRows"]], ["m4"])
+
+    def test_a_question_naming_no_vendor_keeps_every_row_it_read(self) -> None:
         items = [
             message("m1", verdict={"isReceipt": True}),
             message("m2", sender="Apple <no_reply@apple.com>", subject="Your receipt from Apple", body="Total ILS 39.90", verdict={"isReceipt": True}),
             message("m3", sender="Shop <deals@shop.com>", subject="Sale", body="Save $5", verdict={"isReceipt": False, "confidence": "low"}),
         ]
-        answer = answer_receipt_question(items, vendor="Render")
-        self.assertEqual(answer["receiptCount"], 1)
+        answer = answer_receipt_question(items)
+        self.assertEqual(answer["receiptCount"], 2)
         self.assertEqual({row["sourceRef"] for row in answer["rows"]}, {"m1", "m2"})
         self.assertEqual([row["sourceRef"] for row in answer["skippedRows"]], ["m3"])
 

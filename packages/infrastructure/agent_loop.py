@@ -334,7 +334,7 @@ def _tool_open_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str,
         "byVendor": by_vendor[:MAX_RECEIPT_VENDORS_TO_MODEL],
         "note": (
             "These are the receipts and invoices already kept on the receipts page: every one a mailbox "
-            "search pulled, with the vendor's file, plus any added by hand. The page is where the person "
+            "search was asked for, with the vendor's file, plus any added by hand. The page is where the person "
             "sees them, answers the yes/no questions, corrects amounts and exports for an accountant. To "
             "pull new receipts from the mailbox, use search_receipts."
         ),
@@ -1232,7 +1232,7 @@ AGENT_LOOP_INSTRUCTIONS = (
     "lists link. A to-do item with a deadline gets due as YYYY-MM-DD, from CONTEXT.today and todayWeekday: "
     "'renew the insurance by Friday' is add with due set. Every morning the person is nudged about items due "
     "today, due tomorrow, or overdue, so do not schedule a reminder for a dated item unless they ask. A "
-    "Receipts: every search_receipts result that ran is also kept on the receipts page (the result's "
+    "Receipts: the receipts a search_receipts call was about are also kept on the receipts page (the result's "
     "receiptsPageNote says how many, and receiptsPage is the link when there is one): amounts, dates, the "
     "vendor's own PDF, and a yes/no question for anything the reading was not sure about, with exports for "
     "an accountant. Mention it in one short sentence after a receipt answer, and put receiptsPage on its "
