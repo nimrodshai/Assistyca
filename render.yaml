@@ -1,10 +1,18 @@
+# This blueprint describes the STAGING service only.
+#
+# assistyca-portal deploys from the `staging` branch with WhatsApp and every
+# background scheduler switched off: it answers no phone and sends nothing.
+# Production is the separate service assistyca-portal-prod, which deploys from
+# `main` and is kept out of this file on purpose (two blueprint instances sync
+# it, and a service listed here would be created twice). Pushing `main` is the
+# production deploy; do it only when Nimrod says to push prod.
 services:
   - type: web
     name: assistyca-portal
     env: python
     plan: starter
     autoDeploy: true
-    branch: main
+    branch: staging
     buildCommand: python3 -m pip install -r requirements.txt
     startCommand: python3 -u scripts/run_portal_server.py --host 0.0.0.0 --port $PORT
     healthCheckPath: /portal/
@@ -34,7 +42,7 @@ services:
       - key: TOKEN_PRICES_API_OPENAI_PRICES_URL
         value: https://token-prices-api.onrender.com/api/openai/prices
       - key: PORTAL_WHATSAPP_REENGAGEMENT_ENABLED
-        value: "1"
+        value: "0"
       - key: PORTAL_WHATSAPP_REENGAGEMENT_TIMEZONE
         value: Asia/Jerusalem
       - key: PORTAL_WHATSAPP_REENGAGEMENT_WEEKDAY
@@ -46,7 +54,7 @@ services:
       - key: PORTAL_WHATSAPP_REENGAGEMENT_INACTIVITY_MONTHS
         value: "6"
       - key: PORTAL_SCHEDULED_MONITOR_ENABLED
-        value: "1"
+        value: "0"
       - key: PORTAL_SCHEDULED_MONITOR_POLL_SECONDS
         value: "300"
       - key: PORTAL_SCHEDULED_MONITOR_SEARCH_CONTEXT_SIZE
@@ -56,9 +64,18 @@ services:
       - key: PORTAL_SCHEDULED_MONITOR_MAX_ITEMS_PER_RUN
         value: "5"
       - key: PORTAL_SCHEDULED_ACTIONS_ENABLED
-        value: "1"
+        value: "0"
       - key: PORTAL_SCHEDULED_ACTIONS_POLL_SECONDS
         value: "10"
+      # Staging never talks to a phone and never runs a background job.
+      - key: WHATSAPP_AGENT_CHAT_ENABLED
+        value: "0"
+      - key: PORTAL_LIST_NUDGES_ENABLED
+        value: "0"
+      - key: PORTAL_SOURCE_ACTIONS_ENABLED
+        value: "0"
+      - key: PORTAL_AGENT_TURN_SAMPLING_ENABLED
+        value: "0"
       - key: OPENAI_API_KEY
         sync: false
       # Required in practice: with no secret the server falls back to ephemeral
@@ -100,7 +117,7 @@ services:
       # how many may start in a day. The free trial bounds each account; these
       # bound how many accounts a day can open.
       - key: PORTAL_WHATSAPP_SIGNUP_ENABLED
-        value: "1"
+        value: "0"
       - key: PORTAL_WHATSAPP_SIGNUP_DAILY_CAP
         value: "50"
       # How many free days a newly created account starts with.

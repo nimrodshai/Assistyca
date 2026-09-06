@@ -72,7 +72,8 @@ When working here:
 
 ## Git Workflow
 
-- In every thread, if you make a repo change, finish by staging, committing, pushing, and deploying it before you hand back unless the user explicitly asks you not to.
+- In every thread, if you make a repo change, finish by committing it and pushing it to the `staging` branch before you hand back unless the user explicitly asks you not to. Render deploys `staging` to the staging service automatically.
+- `main` is production: the production service deploys from it automatically, so a push to `main` is a production deploy. Merge `staging` into `main` only when Nimrod says to push prod, never on your own.
 - Use focused commits with short, specific messages.
 - If a change must stay local, say so clearly before you leave it uncommitted.
 
