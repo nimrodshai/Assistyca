@@ -1336,27 +1336,32 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         texts = [call.kwargs["message_text"] for call in self.sent.call_args_list if call.kwargs.get("message_text")]
         self.assertEqual(texts[-1], f"Tap the button below.\n{link}")
 
-    def test_a_reminder_is_set_on_the_first_message_and_nobody_is_asked_for_a_yes(self) -> None:
+    def test_a_schedule_is_asked_for_a_yes_and_the_yes_runs_the_stored_call(self) -> None:
         rounds = [
             _loop_round(_tool_call("schedule_message", "c1", time_local="12:40", date_policy="tomorrow", message_text="Stand up and stretch.")),
-            _loop_round(reply={"reply": "Done, I'll remind you tomorrow at 12:40: Stand up and stretch.", "claimsCompleted": ["schedule_message"]}),
+            _loop_round(reply={"reply": "I can text you tomorrow at 12:40: Stand up and stretch. Say yes and it's set."}),
         ]
-        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds) as model:
-            response = self._post_webhook(inbound_text_payload("text me at 12:40 tomorrow to stretch", message_id="wamid.loop-3"))
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds):
+            first = self._post_webhook(inbound_text_payload("text me at 12:40 tomorrow to stretch", message_id="wamid.loop-3"))
 
-        self.assertEqual(self._reply(response), "Done, I'll remind you tomorrow at 12:40: Stand up and stretch.")
+        self.assertIn("Say yes", self._reply(first))
+        pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
+        self.assertEqual(pending["kind"], "tool_confirmation")
+        self.assertEqual(pending["tool"], "schedule_message")
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=[_loop_round(reply={"reply": "Done, it's set for tomorrow at 12:40.", "claimsCompleted": ["schedule_message"]})],
+        ) as model:
+            second = self._post_webhook(inbound_text_payload("yes", message_id="wamid.loop-4"))
+
+        self.assertEqual(self._reply(second), "Done, it's set for tomorrow at 12:40.")
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
-        self.assertEqual(model.call_count, 2)
-        told = json.loads(model.call_args_list[1].kwargs["input"][-1]["output"])
-        self.assertTrue(told["ok"])
-        actions = self.database.list_scheduled_actions_for_user(int(self.user["id"]))
-        self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0]["payload"]["messageText"], "Stand up and stretch.")
+        context_text = model.call_args.kwargs["input"][0]["content"]
+        self.assertIn('"confirmedAction"', context_text)
+        self.assertIn('"scheduledFor"', context_text)
 
     def _hold_a_schedule(self) -> None:
-        # A reminder no longer waits for a yes, but a held call of any tool
-        # exercises the same hold-and-answer machinery, and this one is the
-        # simplest to run and to check.
         self.database.save_whatsapp_agent_pending(
             user_id=int(self.user["id"]),
             pending={"kind": "tool_confirmation", "tool": "schedule_message",

@@ -402,6 +402,19 @@ def _schedule_details(context: LoopContext, args: dict[str, Any]) -> dict[str, A
     }
 
 
+def _preflight_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
+    if not resolve_scheduled_message_run_at(_schedule_details(context, args)):
+        return _error("choice_required", _SCHEDULE_TIME_NEEDED)
+    if not str(args.get("message_text") or "").strip():
+        return _error("choice_required", "The message text is needed.")
+    list_name = str(args.get("list_name") or "").strip()
+    if list_name:
+        _record, problem = _resolve_list(context, list_name)
+        if problem:
+            return problem
+    return None
+
+
 def describe_disconnect(context: LoopContext, args: dict[str, Any]) -> str:
     """What a disconnect would remove, named exactly, for the question that asks for a yes."""
 
@@ -993,10 +1006,10 @@ TOOLS: list[ToolSpec] = [
             "message_text": {"type": "string"},
             "list_name": {"type": ["string", "null"]},
         }),
-        # A reminder is the person's own words sent back to them at the time
-        # they named, and nothing else changes: it runs on the first call.
         side_effect=True,
+        confirm=True,
         run=_tool_schedule_message,
+        preflight=_preflight_schedule_message,
     ),
     ToolSpec(
         name="create_list",
@@ -1110,11 +1123,9 @@ AGENT_LOOP_INSTRUCTIONS = (
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
     "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
     "that depends on the time of day, and never guess the time.\n"
-    "A reminder needs no yes: schedule_message runs on the first call, so never ask the person to confirm "
-    "one; call it, then say it is set, repeating scheduledForLocal and the text. Actions that need a yes: "
-    "disconnect, sign_out and delete_account return "
+    "Actions that need a yes: disconnect, schedule_message, sign_out and delete_account return "
     "confirmation_required the first time. Then ask for a plain yes in the same message, naming exactly what "
-    "will happen - which accounts, what is signed out or erased - and nothing else. For sign_out say in one line that "
+    "will happen - which accounts, what time, what text - and nothing else. For sign_out say in one line that "
     "only this phone is signed out and the account and its data stay. For delete_account the person must "
     "understand what they are agreeing to before they say yes: spell out, in their words, that the whole "
     "account and every piece of data in it will be erased for good, that connected sign-ins are revoked and "
@@ -1453,6 +1464,14 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
         return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}"
     if tool.name == "delete_account":
         return describe_delete_account(context)
+    if tool.name == "schedule_message":
+        about = ""
+        if args.get("list_name"):
+            record, _problem = _resolve_list(context, str(args.get("list_name") or ""))
+            about = f" with what is still on the list {str(record.get('name') or args.get('list_name'))!r}"
+        if args.get("delay_minutes"):
+            return f"a message in {args.get('delay_minutes')} minutes saying: {args.get('message_text')}{about}"
+        return f"a message at {args.get('time_local')} ({args.get('date_policy')}) saying: {args.get('message_text')}{about}"
     return ""
 
 
