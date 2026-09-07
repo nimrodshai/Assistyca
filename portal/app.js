@@ -412,7 +412,10 @@ const DEFAULT_SIMULATOR = {
 };
 
 const AGENT_INITIAL_MESSAGE = "";
-const AGENT_MAX_MESSAGES = 40;
+// There is one chat, like WhatsApp, and it keeps the last hundred messages.
+// Every one of them goes to the model with each turn: the chat on screen is
+// exactly the context the assistant answers from.
+const AGENT_MAX_MESSAGES = 100;
 // Nothing is ever removed from the feed, so the portal holds every notification
 // it has loaded and only bounds what it writes to browser storage.
 const AGENT_PERSISTED_NOTIFICATIONS = 100;
@@ -453,7 +456,6 @@ const AGENT_MAX_FOLDERS = 80;
 // vendor is well inside this; the ceiling is there so a stored folder cannot
 // grow without limit.
 const AGENT_MAX_FOLDER_TAGS = 40;
-const AGENT_CHAT_IDLE_MS = 4 * 60 * 60 * 1000;
 const AGENT_ACTION_CHOICE_LIMIT = 20;
 // A folder listing is longer than a panel of folders is, so its picker
 // offers more. The server caps a delete request at the same number.
@@ -461,7 +463,7 @@ const AGENT_FILE_CHOICE_LIMIT = 40;
 // Files travel only for the folders the chat has already opened.
 const AGENT_FILE_CONTEXT_FOLDER_LIMIT = 4;
 const AGENT_COMPOSER_MAX_LINES = 5;
-const VALID_AGENT_PANEL_MODES = new Set(["actions", "chats", "folders"]);
+const VALID_AGENT_PANEL_MODES = new Set(["actions", "folders"]);
 const VALID_AGENT_FOLDER_SORTS = new Set(["recent", "name", "type", "count"]);
 const AGENT_FOLDER_TYPES = [
   { value: "general", label: "General" },
@@ -1318,7 +1320,7 @@ const state = {
   featureActivationInitialLoadPending: false,
   featureActivationLoadedAt: 0,
   selectedScheduledActionId: "",
-  agentPanelMode: "chats",
+  agentPanelMode: "actions",
   agentFolderSearch: "",
   agentFolderSort: "recent",
   agentFolderCreateOpen: false,
@@ -1527,13 +1529,9 @@ const elements = {
   agentActionsPanelBody: document.querySelector("#agentActionsPanelBody"),
   agentPanelModeSwitch: document.querySelector("#agentPanelModeSwitch"),
   agentPanelActionsModeButton: document.querySelector("#agentPanelActionsModeButton"),
-  agentPanelChatsModeButton: document.querySelector("#agentPanelChatsModeButton"),
   agentPanelFoldersModeButton: document.querySelector("#agentPanelFoldersModeButton"),
   agentActionsListView: document.querySelector("#agentActionsListView"),
-  agentChatsListView: document.querySelector("#agentChatsListView"),
   agentFoldersListView: document.querySelector("#agentFoldersListView"),
-  agentChatList: document.querySelector("#agentChatList"),
-  agentNewChatButton: document.querySelector("#agentNewChatButton"),
   agentFolderCreateToggleButton: document.querySelector("#agentFolderCreateToggleButton"),
   agentFolderFilterButton: document.querySelector("#agentFolderFilterButton"),
   agentFolderSortButton: document.querySelector("#agentFolderSortButton"),
@@ -4692,9 +4690,9 @@ function normalizeAgentMessage(value = {}) {
 
 function normalizeAgentPanelMode(value) {
   const mode = String(value || "").trim().toLowerCase();
-  // Chats is where the panel opens, so it is also where an unreadable saved
+  // Actions is where the panel opens, so it is also where an unreadable saved
   // mode lands.
-  return VALID_AGENT_PANEL_MODES.has(mode) ? mode : "chats";
+  return VALID_AGENT_PANEL_MODES.has(mode) ? mode : "actions";
 }
 
 function parseAgentTimestamp(value) {
@@ -15217,15 +15215,6 @@ function prepareAgentWorkspaceForPersistence(agent = getAgentWorkspace()) {
   return clientState.agent;
 }
 
-function getAgentChatIdleReferenceAt(chat) {
-  return Math.max(
-    parseAgentTimestamp(chat?.lastClientActivityAt),
-    parseAgentTimestamp(chat?.lastOpenedAt),
-    parseAgentTimestamp(chat?.updatedAt),
-    parseAgentTimestamp(chat?.createdAt),
-  );
-}
-
 function archiveAgentChat(chat, archivedAt = new Date().toISOString()) {
   if (!chat) {
     return;
@@ -15249,45 +15238,28 @@ function createAndActivateAgentChat(agent = getAgentWorkspace(), options = {}) {
   return chat;
 }
 
-function rollOverIdleAgentChatIfNeeded(agent = getAgentWorkspace(), nowMs = Date.now()) {
-  const chat = getActiveAgentChat(agent);
-  if (!chat) {
-    return false;
-  }
-
-  const now = new Date(nowMs).toISOString();
-  const idleReferenceAt = getAgentChatIdleReferenceAt(chat);
-  if (!chat.messages.length || !idleReferenceAt || nowMs - idleReferenceAt < AGENT_CHAT_IDLE_MS) {
-    chat.lastOpenedAt = now;
-    return false;
-  }
-
-  archiveAgentChat(chat, now);
-  createAndActivateAgentChat(agent, { title: "New chat" });
-  return true;
-}
-
+// One chat, like WhatsApp: opening the portal never starts a new one, it only
+// notes when the chat was last looked at.
 function recordAgentPortalOpened(options = {}) {
   if (!clientState?.agent) {
-    return false;
+    return;
   }
 
-  const agent = getAgentWorkspace();
-  const didRollOver = rollOverIdleAgentChatIfNeeded(agent);
+  const chat = getActiveAgentChat(getAgentWorkspace());
+  if (chat) {
+    chat.lastOpenedAt = new Date().toISOString();
+  }
   if (options.persist !== false) {
     persistClientState();
   }
-  return didRollOver;
 }
 
 function syncAgentStateFromClientState(options = {}) {
   const agent = getAgentWorkspace();
-  // The panel opens on Chats every time the portal opens. Which tab someone
-  // left it on is where they were, not where they want to start: a saved
-  // Actions from a week ago kept greeting them with the emptiest thing the
-  // account owns. The tab is view state for as long as the page is open, and
-  // nothing outlives the page.
-  state.agentPanelMode = "chats";
+  // The panel opens on Actions every time the portal opens. Which tab someone
+  // left it on is where they were, not where they want to start. The tab is
+  // view state for as long as the page is open, and nothing outlives the page.
+  state.agentPanelMode = "actions";
   state.agentFolderSort = normalizeAgentFolderSort(agent.folderSort || state.agentFolderSort);
   if (options.recordOpen) {
     recordAgentPortalOpened({ persist: options.persistOpen !== false });
@@ -15308,122 +15280,6 @@ function touchActiveAgentChat(options = {}) {
   return chat;
 }
 
-function startNewAgentChat() {
-  const agent = getAgentWorkspace();
-  const activeChat = getActiveAgentChat(agent);
-  if (activeChat) {
-    archiveAgentChat(activeChat);
-  }
-  createAndActivateAgentChat(agent, { title: "New chat" });
-  state.agentPanelMode = "chats";
-  elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
-  persistClientState();
-  renderApp({ preserveStatus: true });
-  window.requestAnimationFrame(() => {
-    elements.agentComposerInput?.focus();
-  });
-}
-
-function selectAgentChat(chatId) {
-  const agent = getAgentWorkspace();
-  const chat = agent.chats.find((candidate) => candidate.id === chatId);
-  if (!chat) {
-    return;
-  }
-
-  syncActiveAgentChatFromWorkspace(agent);
-  const previousChat = getActiveAgentChat(agent);
-  if (previousChat && previousChat.id !== chat.id) {
-    archiveAgentChat(previousChat);
-  }
-  agent.activeChatId = chat.id;
-  agent.messages = chat.messages;
-  chat.status = "active";
-  chat.lastOpenedAt = new Date().toISOString();
-  state.agentPanelMode = "chats";
-  elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
-  persistClientState();
-  renderApp({ preserveStatus: true });
-}
-
-// The rest of the portal confirms destructive actions with the in-app dialog,
-// and this used to be the one caller of window.confirm(). Native dialogs are
-// suppressed outright in some mobile browsers and in-app webviews, where
-// confirm() returns false without ever showing anything -- the delete button
-// looked dead. Use the same dialog every other delete uses.
-function deleteAgentChat(chatId, options = {}) {
-  const agent = getAgentWorkspace();
-  const chat = agent.chats.find((candidate) => candidate.id === chatId);
-  if (!chat) {
-    return;
-  }
-
-  const title = getAgentChatTitle(chat);
-  const isActive = chat.id === agent.activeChatId;
-  const body = `Delete “${title}”? This conversation will be removed from your chat history.`;
-  openAuthAlert(
-    "Delete conversation?",
-    isActive ? `${body} You’ll be left on an empty chat.` : body,
-    {
-      eyebrow: "Delete conversation",
-      icon: "!",
-      tone: "warning",
-      buttonLabel: "Delete",
-      primaryTone: "danger",
-      secondaryButtonLabel: "Cancel",
-      focusTarget: "secondary",
-      returnFocus: options.returnFocus || elements.agentNewChatButton,
-      onPrimary: () => {
-        confirmAgentChatDelete(chat.id);
-      },
-    },
-  );
-}
-
-function confirmAgentChatDelete(chatId) {
-  const agent = getAgentWorkspace();
-  const chat = agent.chats.find((candidate) => candidate.id === chatId);
-  if (!chat) {
-    return;
-  }
-
-  const wasActive = chat.id === agent.activeChatId;
-  agent.chats = agent.chats.filter((candidate) => candidate.id !== chat.id);
-  // A question waiting on a connection belongs to the chat it was asked in.
-  // Once that chat is gone there is nowhere to answer it, so it goes too.
-  if (agent.pendingAnswerRun?.chatId === chat.id) {
-    agent.pendingAnswerRun = null;
-  }
-  if (!wasActive) {
-    persistClientState();
-    renderAgentChats();
-    setStatus("Conversation deleted");
-    return;
-  }
-
-  // Deleting the open chat opens an empty one in its place, rather than
-  // dropping you into somebody else's conversation. Build it here instead of
-  // through createAndActivateAgentChat: that one first flushes agent.messages
-  // into whatever chat is active, and the active one just stopped existing --
-  // the flush would land on the next chat in the list and wipe it. An empty
-  // chat stays out of the list until the first message is sent, so a client
-  // who deletes their last conversation is left with an empty list and the
-  // empty chat page.
-  const replacement = createAgentChat([], {
-    title: "New chat",
-    status: "active",
-    lastOpenedAt: new Date().toISOString(),
-  });
-  agent.chats.unshift(replacement);
-  agent.chats = sortAgentChats(agent.chats).slice(0, AGENT_MAX_CHATS);
-  agent.activeChatId = replacement.id;
-  agent.messages = replacement.messages;
-  elements.agentMessageList?.removeAttribute("data-agent-message-render-signature");
-  persistClientState();
-  renderApp({ preserveStatus: true });
-  setStatus("Conversation deleted");
-}
-
 function setAgentPanelMode(mode) {
   state.agentPanelMode = normalizeAgentPanelMode(mode);
   updateAgentWorkspace();
@@ -15432,7 +15288,6 @@ function setAgentPanelMode(mode) {
 function getAgentPanelModeControls() {
   return [
     [elements.agentPanelActionsModeButton, "actions"],
-    [elements.agentPanelChatsModeButton, "chats"],
     [elements.agentPanelFoldersModeButton, "folders"],
   ].filter(([button]) => Boolean(button));
 }
@@ -19028,136 +18883,6 @@ function renderAgentMessages() {
   }
 }
 
-function getAgentChatTitle(chat) {
-  const explicitTitle = String(chat?.title || "").trim();
-  if (explicitTitle && explicitTitle.toLowerCase() !== "new chat") {
-    return explicitTitle;
-  }
-
-  const firstUserMessage = chat?.messages?.find((message) => message.role === "user");
-  const sourceText = String(firstUserMessage?.text || chat?.messages?.[0]?.text || "").trim();
-  if (!sourceText) {
-    return "New chat";
-  }
-  return sourceText.length > 46 ? `${sourceText.slice(0, 43).trim()}…` : sourceText;
-}
-
-function getAgentChatPreview(chat) {
-  const latestMessage = Array.isArray(chat?.messages) ? chat.messages.at(-1) : null;
-  const text = String(latestMessage?.text || "").trim();
-  if (!text) {
-    return "No messages yet.";
-  }
-  const speaker = latestMessage.role === "user" ? "You" : "Assistyca";
-  const preview = text.replace(/\s+/g, " ");
-  return `${speaker}: ${preview.length > 72 ? `${preview.slice(0, 69).trim()}…` : preview}`;
-}
-
-function formatAgentChatTime(chat) {
-  const timestamp = parseAgentTimestamp(chat?.updatedAt || chat?.createdAt);
-  if (!timestamp) {
-    return "";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
-}
-
-function createAgentChatItem(chat, activeChatId) {
-  const item = document.createElement("article");
-  item.className = "agent-chat-item";
-  item.dataset.agentChatId = chat.id;
-  item.setAttribute("role", "listitem");
-  const isActive = chat.id === activeChatId;
-  item.classList.toggle("is-active", isActive);
-
-  const openButton = document.createElement("button");
-  openButton.type = "button";
-  openButton.className = "agent-chat-item-open";
-  openButton.setAttribute("aria-current", isActive ? "true" : "false");
-  openButton.setAttribute("aria-label", `${isActive ? "Current chat" : "Open chat"}: ${getAgentChatTitle(chat)}`);
-
-  const head = document.createElement("div");
-  head.className = "agent-chat-item-head";
-  const title = document.createElement("strong");
-  title.textContent = getAgentChatTitle(chat);
-  const badge = document.createElement("span");
-  badge.className = "agent-chat-status";
-  badge.textContent = isActive ? "Current" : "Saved";
-  head.append(title, badge);
-
-  const time = document.createElement("p");
-  time.className = "agent-chat-time";
-  time.textContent = formatAgentChatTime(chat);
-
-  const preview = document.createElement("p");
-  preview.className = "agent-chat-preview";
-  preview.textContent = getAgentChatPreview(chat);
-
-  openButton.append(head, time, preview);
-  item.append(openButton);
-
-  // The chat you are reading is deletable like any other. Being open is not a
-  // reason to keep something you asked to throw away -- deleting it leaves you
-  // on an empty chat, the same place "New chat" puts you.
-  const deleteButton = document.createElement("button");
-  deleteButton.type = "button";
-  deleteButton.className = "agent-chat-delete";
-  deleteButton.dataset.agentChatDelete = chat.id;
-  deleteButton.setAttribute("aria-label", `Delete conversation: ${getAgentChatTitle(chat)}`);
-  deleteButton.title = "Delete conversation";
-  deleteButton.append(
-    createSvgElement("svg", {
-      viewBox: "0 0 24 24",
-      width: "16",
-      height: "16",
-      fill: "none",
-      "aria-hidden": "true",
-      focusable: "false",
-    }),
-  );
-  const deleteIcon = deleteButton.firstElementChild;
-  deleteIcon.append(
-    createSvgElement("path", {
-      d: "M5 7.5h14M9 7.5V5h6v2.5M7 7.5l.8 11.5h8.4L17 7.5M10 11v5M14 11v5",
-      stroke: "currentColor",
-      "stroke-width": "1.8",
-      "stroke-linecap": "round",
-      "stroke-linejoin": "round",
-    }),
-  );
-  item.append(deleteButton);
-
-  return item;
-}
-
-function renderAgentChats() {
-  if (!elements.agentChatList) {
-    return;
-  }
-
-  const agent = getAgentWorkspace();
-  syncActiveAgentChatFromWorkspace(agent);
-  // A chat only earns a card once something has been said in it, so the fresh
-  // one you are typing into stays out of the list until you send.
-  const chats = sortAgentChats(agent.chats).filter((chat) => chat?.messages?.length);
-  if (!chats.length) {
-    const empty = document.createElement("p");
-    empty.className = "agent-action-empty";
-    empty.textContent = "Your chats will appear here.";
-    elements.agentChatList.replaceChildren(empty);
-    return;
-  }
-
-  elements.agentChatList.replaceChildren(
-    ...chats.map((chat) => createAgentChatItem(chat, agent.activeChatId)),
-  );
-}
-
 function formatAgentFolderItemCount(count) {
   const total = Math.max(0, Number.parseInt(count, 10) || 0);
   return `${total} item${total === 1 ? "" : "s"}`;
@@ -21255,7 +20980,6 @@ function syncAgentFolderNodes(list, nodes) {
 function syncAgentPanelModeControls() {
   const mode = normalizeAgentPanelMode(state.agentPanelMode);
   elements.agentActionsListView?.classList.toggle("is-hidden", mode !== "actions");
-  elements.agentChatsListView?.classList.toggle("is-hidden", mode !== "chats");
   elements.agentFoldersListView?.classList.toggle("is-hidden", mode !== "folders");
   elements.agentActionDetailView?.classList.add("is-hidden");
   elements.agentPanelModeSwitch?.setAttribute("data-agent-panel-current-mode", mode);
@@ -26366,7 +26090,6 @@ function updateAgentWorkspace() {
 
   renderAgentMessages();
   renderAgentActions();
-  renderAgentChats();
   renderAgentFolders();
   syncAgentPanelModeControls();
   if (elements.agentComposerInput) {
@@ -29001,7 +28724,8 @@ async function handleAgentUserText(text) {
     : {});
   const agent = getAgentWorkspace();
   const activeProposal = getActiveAgentProposal();
-  const conversation = agent.messages.slice(-12).filter((message) => !message.metadata?.excludeFromModel).map((message) => ({
+  // The whole chat goes with the turn: the messages kept are the context.
+  const conversation = agent.messages.filter((message) => !message.metadata?.excludeFromModel).map((message) => ({
     role: message.role,
     text: describeAgentMessageForModel(message),
   }));
@@ -31228,11 +30952,9 @@ function setAgentToolsOpen(open) {
   if (elements.agentToolsToggleButton) {
     const upcomingCount = getRenderableAgentActions().filter((action) => isActiveAgentActionStatus(action.status, action)).length;
     const folderCount = getAgentWorkspace().folders.length;
-    const closedLabel = state.agentPanelMode === "chats"
-      ? "View chats"
-      : (state.agentPanelMode === "folders"
-        ? (folderCount ? `Folders (${folderCount})` : "View folders")
-        : (upcomingCount ? `Actions (${upcomingCount})` : "View actions"));
+    const closedLabel = state.agentPanelMode === "folders"
+      ? (folderCount ? `Folders (${folderCount})` : "View folders")
+      : (upcomingCount ? `Actions (${upcomingCount})` : "View actions");
     elements.agentToolsToggleButton.textContent = isOpen
       ? "Close panel"
       : closedLabel;
@@ -37338,30 +37060,6 @@ function bindEvents() {
     });
   }
 
-  if (elements.agentNewChatButton) {
-    elements.agentNewChatButton.addEventListener("click", startNewAgentChat);
-  }
-
-  if (elements.agentChatList) {
-    elements.agentChatList.addEventListener("click", (event) => {
-      const target = getEventTargetElement(event);
-      const deleteButton = target?.closest("[data-agent-chat-delete]");
-      if (deleteButton) {
-        event.preventDefault();
-        event.stopPropagation();
-        deleteAgentChat(deleteButton.dataset.agentChatDelete || "", { returnFocus: deleteButton });
-        return;
-      }
-
-      const openButton = target?.closest(".agent-chat-item-open");
-      const item = openButton?.closest("[data-agent-chat-id]");
-      if (!item) {
-        return;
-      }
-      selectAgentChat(item.dataset.agentChatId || "");
-    });
-  }
-
   if (elements.agentFolderList) {
     // A press that lifted a row, carried it somewhere, or opened its menu has
     // already spent the click that ends it. Swallowing it here, before
@@ -37527,7 +37225,6 @@ function bindEvents() {
     if (document.visibilityState === "visible" && isSignedIn()) {
       recordAgentPortalOpened();
       renderAgentMessages();
-      renderAgentChats();
       void refreshScheduledActions();
     }
   });

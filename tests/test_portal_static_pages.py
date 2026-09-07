@@ -868,12 +868,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Ask me for something once, then save it here to run again.", script)
         self.assertNotIn("`Action ${action.id}`", script)
         self.assertIn("SCHEDULED_ACTIONS_POLL_MS", script)
-        self.assertIn("AGENT_CHAT_IDLE_MS", script)
-        self.assertIn("4 * 60 * 60 * 1000", script)
-        self.assertIn("function rollOverIdleAgentChatIfNeeded", script)
-        self.assertIn("function startNewAgentChat", script)
-        self.assertIn("function selectAgentChat", script)
-        self.assertIn("function renderAgentChats", script)
+        # One chat, like WhatsApp: nothing rolls it over, starts another or
+        # lists old ones, and the last hundred messages are the context.
+        self.assertNotIn("AGENT_CHAT_IDLE_MS", script)
+        self.assertNotIn("function rollOverIdleAgentChatIfNeeded", script)
+        self.assertNotIn("function startNewAgentChat", script)
+        self.assertNotIn("function selectAgentChat", script)
+        self.assertNotIn("function renderAgentChats", script)
+        self.assertIn("const AGENT_MAX_MESSAGES = 100;", script)
+        self.assertNotIn("agent.messages.slice(-12)", script)
         self.assertIn("function renderAgentFolders", script)
         self.assertIn("function addAgentFolder", script)
         self.assertIn("function sortAgentFolders", script)
@@ -881,7 +884,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function setAgentFolderFilterOpen", script)
         self.assertIn("function setAgentFolderSortOpen", script)
         self.assertIn("function syncAgentFolderDisclosureControls", script)
-        self.assertIn('const VALID_AGENT_PANEL_MODES = new Set(["actions", "chats", "folders"]);', script)
+        self.assertIn('const VALID_AGENT_PANEL_MODES = new Set(["actions", "folders"]);', script)
         self.assertIn("AGENT_FOLDER_TYPES", script)
         self.assertIn("function setAgentPanelMode", script)
         self.assertIn('id="agentActionsPanel"', html)
@@ -891,30 +894,18 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('id="agentActionsStatus"', html)
         self.assertNotIn('class="agent-actions-sync-row"', html)
         self.assertIn('id="agentPanelActionsModeButton"', html)
-        self.assertIn('id="agentPanelChatsModeButton"', html)
-        # Chats leads the switch and opens selected; the tab is the only place
-        # the list is named, so its head carries the new chat button alone.
-        self.assertLess(
-            html.index('id="agentPanelChatsModeButton"'),
-            html.index('id="agentPanelActionsModeButton"'),
-        )
-        chats_head = html[
-            html.index('<div id="agentChatsListView"'):
-            html.index('<div id="agentChatList"')
-        ]
-        self.assertIn('is-active', chats_head[:0] + html[
-            html.index('id="agentPanelChatsModeButton"'):
-            html.index('id="agentPanelActionsModeButton"')
+        self.assertNotIn('id="agentPanelChatsModeButton"', html)
+        # Actions leads the switch and opens selected.
+        self.assertIn("is-active", html[
+            html.index('id="agentPanelActionsModeButton"'):
+            html.index('id="agentPanelFoldersModeButton"')
         ])
-        self.assertNotIn("<h3", chats_head)
-        self.assertNotIn("Chat history", chats_head)
-        self.assertIn('id="agentNewChatButton"', chats_head)
         self.assertIn('id="agentPanelFoldersModeButton"', html)
         self.assertIn('id="agentPanelModeSwitch"', html)
         self.assertIn('role="tablist" aria-label="Agent panel mode"', html)
-        self.assertIn('id="agentChatsListView"', html)
-        self.assertIn('id="agentNewChatButton"', html)
-        self.assertIn('id="agentChatList"', html)
+        self.assertNotIn('id="agentChatsListView"', html)
+        self.assertNotIn('id="agentNewChatButton"', html)
+        self.assertNotIn('id="agentChatList"', html)
         self.assertIn('id="agentFoldersListView"', html)
         self.assertIn('id="agentFolderCreateToggleButton"', html)
         self.assertIn('id="agentFolderFilterButton"', html)
@@ -944,7 +935,7 @@ class PortalStaticPageTests(unittest.TestCase):
         # lists and nothing else. (Billing keeps its own unrelated History card.)
         actions_list_view = html[
             html.index('<div id="agentActionsListView"'):
-            html.index('<div id="agentChatsListView"')
+            html.index('<div id="agentFoldersListView"')
         ]
         self.assertNotIn(">History<", actions_list_view)
         self.assertNotIn("agentCompletedActionList", html)
@@ -976,11 +967,12 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('<div id="agentAddToolMenu" class="agent-add-tool-menu is-hidden"', html)
         self.assertIn(".agent-action-error", styles)
         self.assertIn(".agent-panel-mode-switch", styles)
-        # Chats sits at index 0 now, so it is the modes after it that offset
-        # the sliding pill.
-        self.assertIn('.agent-panel-mode-switch[data-agent-panel-current-mode="actions"]', styles)
+        # Actions sits at index 0, so Folders is the one mode that offsets the
+        # sliding pill, and the pill is half of a two-tab switch.
+        self.assertNotIn('.agent-panel-mode-switch[data-agent-panel-current-mode="actions"]', styles)
         self.assertIn('.agent-panel-mode-switch[data-agent-panel-current-mode="folders"]', styles)
-        self.assertIn(".agent-chats-list-head .primary-button", styles)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", styles)
+        self.assertNotIn(".agent-chats-list-head", styles)
         self.assertIn(".agent-panel-mode-switch::before", styles)
         self.assertIn(".agent-panel-mode-button.is-active", styles)
         self.assertIn(".agent-panel-mode-button.is-guided", styles)
@@ -1024,8 +1016,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("rgba(124, 245, 233, 0.54) 44%", styles)
         self.assertNotIn("@keyframes agent-action-spotlight-dot", styles)
         self.assertNotIn("agent-action-card-border-pulse", styles)
-        self.assertIn(".agent-chat-item", styles)
-        self.assertIn(".agent-chat-item.is-active", styles)
+        self.assertNotIn(".agent-chat-item", styles)
         self.assertIn(".agent-action-detail-actions", styles)
         self.assertIn(".agent-action-danger-button", styles)
         self.assertIn(".agent-action-stop-button", styles)
@@ -1492,33 +1483,15 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("def normalize_schedule_start_at", monitor_source)
         self.assertIn("        if start_at > current_time:\n            return start_at", monitor_source)
 
-    def test_saved_chats_can_actually_be_deleted(self) -> None:
+    def test_the_panel_opens_on_actions_no_matter_which_tab_was_left_open(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
 
-        # The trash button renders on every chat, the open one included, so
-        # neither the prompt nor the delete may refuse a chat for being open.
-        # A visible button that silently does nothing is the older bug here.
-        self.assertNotIn("if (!chat || chat.id === agent.activeChatId) {", script)
-        self.assertNotIn('chat.id === agent.activeChatId || chat.status === "active"', script)
-
-        # Deleting the open chat leaves an empty one behind rather than
-        # dropping the client into the next conversation in the list.
-        self.assertIn("const wasActive = chat.id === agent.activeChatId;", script)
-        self.assertIn("agent.activeChatId = replacement.id;", script)
-        self.assertIn("agent.messages = replacement.messages;", script)
-
-        # status is re-anchored to activeChatId so the two cannot drift apart.
-        self.assertIn('chat.status = chat.id === activeChat?.id ? "active" : "historical";', script)
-
-    def test_the_panel_opens_on_chats_no_matter_which_tab_was_left_open(self) -> None:
-        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
-
-        # Defaulting the panel to Chats was not enough on its own: the tab
-        # someone last clicked was saved with the workspace, so an Actions from
-        # a previous visit was restored over the default at every sign in. The
-        # tab is view state for as long as the page is open and nothing more,
-        # so nothing writes it down and nothing reads it back.
-        self.assertIn('  state.agentPanelMode = "chats";\n', script)
+        # Defaulting the panel was not enough on its own: the tab someone last
+        # clicked was saved with the workspace, so a Folders from a previous
+        # visit was restored over the default at every sign in. The tab is
+        # view state for as long as the page is open and nothing more, so
+        # nothing writes it down and nothing reads it back.
+        self.assertIn('  state.agentPanelMode = "actions";\n', script)
         self.assertNotIn("agent.panelMode", script)
         self.assertNotIn("panel_mode", script)
         self.assertIn(
