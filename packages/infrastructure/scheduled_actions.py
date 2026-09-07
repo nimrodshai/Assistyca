@@ -23,7 +23,7 @@ from packages.infrastructure.standing_tasks import next_task_run_at
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
 DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME = "notification_message"
-DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en_US"
+DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en"
 # A message the owner asked to receive on WhatsApp goes out on WhatsApp; the
 # in-app feed carries everything else and is the fallback when WhatsApp
 # delivery is not configured. The WhatsApp agent conversation made "text me at

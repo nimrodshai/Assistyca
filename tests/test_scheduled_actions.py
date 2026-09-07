@@ -257,7 +257,7 @@ class ScheduledActionTests(unittest.TestCase):
         self.assertEqual(saved["payload"]["deliveredVia"], "portal_fallback")
         error = saved["payload"]["whatsappDeliveryError"]
         self.assertIn("plain text: WhatsApp rejected the message: (#131047)", error)
-        self.assertIn("template notification_message (en_US): WhatsApp rejected the message: (#132001)", error)
+        self.assertIn("template notification_message (en): WhatsApp rejected the message: (#132001)", error)
         logged = output.getvalue()
         self.assertIn(f"action={action['id']}", logged)
         self.assertIn("delivered to the in-app feed instead", logged)
