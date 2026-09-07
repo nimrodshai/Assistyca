@@ -688,9 +688,11 @@ def color_dot(hex_color: Any) -> str:
 
 CALENDAR_PICK_ALL = f"{CALENDAR_PICK_PREFIX}all"
 CALENDAR_PICK_DONE = f"{CALENDAR_PICK_PREFIX}done"
+CALENDAR_PICK_MORE = f"{CALENDAR_PICK_PREFIX}more"
 _ROW_TITLE_MAX = 24
 _ROW_DESCRIPTION_MAX = 72
-_MAX_CALENDAR_ROWS = 8  # ten rows in a WhatsApp list, minus All and Done
+_MAX_CALENDAR_ROWS = 9  # ten rows in a WhatsApp list, minus All
+_BUTTON_BODY_MAX = 1024
 
 
 def _calendar_row_label(entry: dict[str, Any]) -> tuple[str, str]:
@@ -731,8 +733,9 @@ def build_calendar_choice_interactive(
 
     WhatsApp's list picks one row per tap and cannot be edited afterwards, so
     several calendars are chosen by tapping one at a time: each tap toggles
-    it and a fresh picker arrives with the ticks updated, and Done confirms.
-    All calendars is one tap.
+    it, and what is chosen so far comes back with two buttons under it, Add
+    another calendar and Done (see build_calendar_confirm_buttons). Done
+    never sits inside the list itself. All calendars is one tap.
     """
 
     options = [entry for entry in calendars[:_MAX_CALENDAR_ROWS] if isinstance(entry, dict)]
@@ -742,9 +745,6 @@ def build_calendar_choice_interactive(
     chosen_set = set(chosen)
 
     rows: list[dict[str, str]] = []
-    if chosen:
-        names = ", ".join(_calendar_row_label(e)[0] for e in options if normalize_text(e.get("id")) in chosen_set)
-        rows.append({"id": CALENDAR_PICK_DONE, "title": "✅ Done", "description": f"Read: {names}"[:_ROW_DESCRIPTION_MAX]})
     for index, entry in enumerate(options, start=1):
         short, full = _calendar_row_label(entry)
         picked = normalize_text(entry.get("id")) in chosen_set
@@ -757,10 +757,10 @@ def build_calendar_choice_interactive(
     rows.append({"id": CALENDAR_PICK_ALL, "title": "All calendars"})
 
     if chosen:
-        body = "Tap another to add it, tap a ticked one to remove it, or tap Done."
+        body = "Tap another to add it, or tap a ticked one to remove it."
     else:
         body = "Tap the calendars I should read - one at a time, I'll keep track. Or tap All calendars."
-    if resuming:
+    if resuming and not chosen:
         body += " Then I'll answer your question straight away."
     return {
         "type": "list",
@@ -768,6 +768,68 @@ def build_calendar_choice_interactive(
         "body": {"text": body},
         "action": {"button": "Choose calendars", "sections": [{"title": "Your calendars", "rows": rows}]},
     }
+
+
+def _selected_names(calendars: list[dict[str, Any]], selected: list[str] | None) -> list[str]:
+    chosen = set(cid for cid in (selected or []) if cid)
+    return [_calendar_row_label(e)[0] for e in calendars if isinstance(e, dict) and normalize_text(e.get("id")) in chosen]
+
+
+def build_calendar_confirm_buttons(
+    calendars: list[dict[str, Any]],
+    *,
+    selected: list[str] | None,
+    resuming: str = "",
+) -> dict[str, Any] | None:
+    """What is chosen so far, with Add another calendar and Done under it.
+
+    Sent after each tap on the picker. Add another calendar brings the
+    picker back with the ticks kept; Done saves the choice.
+    """
+
+    names = _selected_names(calendars, selected)
+    if not names:
+        return None
+    body = f"I'll read {_join_names(names)}."
+    if resuming:
+        body += " Tap Done and I'll answer your question straight away."
+    return {
+        "type": "button",
+        "body": {"text": body[:_BUTTON_BODY_MAX]},
+        "action": {
+            "buttons": [
+                {"type": "reply", "reply": {"id": CALENDAR_PICK_MORE, "title": "Add another calendar"}},
+                {"type": "reply", "reply": {"id": CALENDAR_PICK_DONE, "title": "Done"}},
+            ]
+        },
+    }
+
+
+def build_calendar_confirm_text(calendars: list[dict[str, Any]], *, selected: list[str] | None, resuming: str = "") -> str:
+    """The words-only fallback, for when the two buttons cannot be sent."""
+
+    names = _selected_names(calendars, selected)
+    text = f"I'll read {_join_names(names)}. Reply *done* to confirm, or send the numbers or names of the calendars I should read instead."
+    if resuming:
+        text += " Then I'll answer your question straight away."
+    return text
+
+
+# A whole message that confirms the calendars chosen so far, in place of the
+# Done button. Only counts while something is chosen.
+_DONE_PHRASES = frozenset({
+    "done", "that's it", "thats it", "that's all", "thats all", "that is all", "finished", "enough", "no more",
+    "זהו", "סיימתי", "זה הכל", "מספיק",
+})
+
+
+def confirms_calendar_choice(pending: dict[str, Any], text: Any) -> bool:
+    """Whether words alone mean Done for the calendars chosen so far."""
+
+    if not [cid for cid in (pending.get("selected") or []) if cid]:
+        return False
+    body = normalize_text(text).lower().strip(" .!,")
+    return body in _DONE_PHRASES or parse_yes_no(body) == "yes"
 
 
 def parse_calendar_choice(
@@ -1469,6 +1531,15 @@ class WhatsAppAgentChat:
             return message_id
         return self._send_owner_text(build_calendar_choice_text(calendars, resuming=question, selected=selected))
 
+    def _send_calendar_confirm(self, calendars: list[dict[str, Any]], *, selected: list[str], question: str) -> str:
+        """The chosen calendars with Add another calendar and Done, or the words if the buttons cannot go."""
+
+        payload = build_calendar_confirm_buttons(calendars, selected=selected, resuming=question)
+        message_id = self._send_owner_interactive(payload)
+        if message_id:
+            return message_id
+        return self._send_owner_text(build_calendar_confirm_text(calendars, selected=selected, resuming=question))
+
     def _ask_calendar_choice(self, calendars: list[dict[str, Any]], *, question: str) -> None:
         """Hold the question and put the picker in front of the person."""
 
@@ -1493,19 +1564,30 @@ class WhatsAppAgentChat:
         question = normalize_text(pending.get("question"))
         tapped = normalize_text(interactive_id)
 
-        # A tap on one calendar toggles it and shows the picker again with
-        # the ticks updated. Nothing is saved until Done or All.
+        # Add another calendar brings the picker back, ticks kept.
+        if tapped == CALENDAR_PICK_MORE:
+            message_id = self._send_calendar_picker(calendars, selected=selected, question=question)
+            return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_more",
+                    "selected": selected, "message_id": message_id}
+
+        # A tap on one calendar toggles it; what is chosen so far comes back
+        # with Add another calendar and Done under it. Nothing is saved
+        # until Done or All. Once the last tick is gone the plain picker
+        # returns, since there is nothing left to confirm.
         if tapped.startswith(CALENDAR_PICK_PREFIX) and tapped not in {CALENDAR_PICK_ALL, CALENDAR_PICK_DONE}:
             toggled = parse_calendar_choice("", calendars, interactive_id=tapped)
             if toggled:
                 cid = normalize_text(toggled[0].get("id"))
                 selected = [c for c in selected if c != cid] if cid in selected else selected + [cid]
                 self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending={**pending, "selected": selected})
-                message_id = self._send_calendar_picker(calendars, selected=selected, question=question)
+                if selected:
+                    message_id = self._send_calendar_confirm(calendars, selected=selected, question=question)
+                else:
+                    message_id = self._send_calendar_picker(calendars, selected=selected, question=question)
                 return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_toggled",
                         "selected": selected, "message_id": message_id}
 
-        if tapped == CALENDAR_PICK_DONE:
+        if tapped == CALENDAR_PICK_DONE or (not tapped and confirms_calendar_choice(pending, text)):
             chosen = [e for e in calendars if normalize_text(e.get("id")) in set(selected)]
         else:
             chosen = parse_calendar_choice(text, calendars, interactive_id=tapped)
@@ -2182,7 +2264,11 @@ class WhatsAppAgentChat:
             if answer == "no":
                 self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
                 return self._reply_and_log("Okay - nothing changed. Everything stays connected.", outcome="disconnect_declined")
-        if pending_choice and (interactive_id or parse_calendar_choice(text, _pending_calendars(pending_choice))):
+        if pending_choice and (
+            interactive_id
+            or parse_calendar_choice(text, _pending_calendars(pending_choice))
+            or confirms_calendar_choice(pending_choice, text)
+        ):
             return self._answer_calendar_choice(pending_choice, text=text, interactive_id=interactive_id)
         # Any other words go to the model with the open question in view. It
         # tells a pick the parser could not read ("the first one") from a new
@@ -2343,9 +2429,13 @@ __all__ = [
     "REGISTRATION_WELCOME_TEXT",
     "build_connect_links_line",
     "build_calendar_choice_interactive",
+    "build_calendar_confirm_buttons",
+    "build_calendar_confirm_text",
+    "confirms_calendar_choice",
     "calendars_missing_colour",
     "CALENDAR_PICK_ALL",
     "CALENDAR_PICK_DONE",
+    "CALENDAR_PICK_MORE",
     "build_calendar_choice_text",
     "color_dot",
     "looks_like_a_question",

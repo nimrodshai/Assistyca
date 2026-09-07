@@ -345,12 +345,20 @@ if the picker itself cannot be.
 WhatsApp's list picks one row per tap and cannot be edited afterwards, and
 Meta offers no multi-select list (the real checkbox UI is a WhatsApp Flow,
 which needs a published Flow and so sits behind business verification). So
-the picker **behaves like checkboxes**: each tap toggles a calendar and a
-fresh picker arrives with the ticks updated and a "✅ Done" row on top whose
-description names the current choice; "All calendars" is one tap; Done saves.
-Nothing is saved until Done or All. Words still work too - `1, 3`, the names,
-or `all`. Row titles are capped at 24 characters, so an address-labelled
-calendar shows the part before the `@` with the full address beneath.
+the picker **behaves like checkboxes**: each tap toggles a calendar, and what
+is chosen so far comes back as a small message - "I'll read Work and Family" -
+with two reply buttons under it, **Add another calendar** and **Done**
+(`calpick:more`, `calpick:done`). Add another calendar brings the picker back
+with the ticks kept, so a ticked calendar can be tapped again to remove it;
+"All calendars" is one row-tap; Done saves. Done never sits inside the list
+itself, which leaves nine rows for calendars. Nothing is saved until Done or
+All; once the last tick is removed the plain picker returns. Words still work
+too - `1, 3`, the names, or `all`, and while something is ticked a whole
+message of "done", "that's it" or a plain yes stands in for the Done button
+(`confirms_calendar_choice`), which is also how the words-only fallback is
+confirmed when the buttons cannot be sent. Row titles are capped at 24
+characters, so an address-labelled calendar shows the part before the `@`
+with the full address beneath.
 
 It is asked at the natural moment: when Google connects and returns more than
 one calendar, the "connected" message is followed by the picker rather than
