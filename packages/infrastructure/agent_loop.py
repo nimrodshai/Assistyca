@@ -167,6 +167,11 @@ class LoopContext:
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
+    # When the person asked to change the choice themselves (choose_calendars)
+    # rather than a lookup stumbling on a missing one: the picker opens with
+    # these ticked, and there is no interrupted question to answer after it.
+    calendar_choice_selected: list[str] = field(default_factory=list)
+    calendar_choice_requested: bool = False
     # Builds the link to one list on the lists page, signed in for the
     # channel that has no browser session. The server knows the public
     # address and the session secret; the loop only hands the link on.
@@ -186,6 +191,8 @@ class LoopResult:
     tool_calls: list[dict[str, Any]]
     pending_confirmation: dict[str, Any] | None = None
     calendar_choice: list[dict[str, Any]] | None = None
+    calendar_choice_selected: list[str] = field(default_factory=list)
+    calendar_choice_requested: bool = False
     remember_fact: dict[str, str] | None = None
     forget_fact: str = ""
     # What the model made of an open confirmation: "yes", "no", or "" when
@@ -398,6 +405,130 @@ def _tool_read_inbox(context: LoopContext, args: dict[str, Any]) -> dict[str, An
 
 def _tool_read_calendar(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     return _run_lookup(context, "calendar-summary", _fields(timeWindow=args.get("time_window") or "today"))
+
+
+def _calendar_names(entries: list[dict[str, Any]]) -> list[str]:
+    return [str(entry.get("label") or entry.get("id") or "").strip() for entry in entries]
+
+
+def _match_calendar(name: str, available: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The calendars a name in the person's words could mean.
+
+    The full label, the part before the @ of an address, or a whole label
+    that contains the words - so 'work' finds 'Work (shared)' but a single
+    letter never finds anything.
+    """
+
+    wanted = " ".join(str(name or "").split()).lower()
+    if not wanted:
+        return []
+    exact: list[dict[str, Any]] = []
+    loose: list[dict[str, Any]] = []
+    for entry in available:
+        label = " ".join(str(entry.get("label") or "").split()).lower()
+        short = label.split("@", 1)[0] if "@" in label else label
+        if wanted in {label, short}:
+            exact.append(entry)
+        elif len(wanted) >= 3 and wanted in label:
+            loose.append(entry)
+    return exact or loose
+
+
+def _tool_choose_calendars(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Show or change which of the account's calendars are read.
+
+    With names it saves the change here and now. Without names it reports
+    the current choice and, on WhatsApp, has the picker shown with the
+    current calendars ticked, so the person can add or remove by tapping.
+    """
+
+    response, status = context.api("GET", "/api/platform-connections/calendars")
+    sources = [entry for entry in (response.get("sources") or []) if isinstance(entry, dict)] if status == 200 else []
+    if not sources:
+        return _error("source_not_connected", "The calendar is not connected, so there are no calendars to choose from.", source="calendar")
+    source = sources[0]
+    available = [entry for entry in (source.get("calendars") or []) if isinstance(entry, dict) and entry.get("id")]
+    if str(source.get("status") or "") != "ok" or not available:
+        return _error(
+            "unavailable",
+            str(source.get("message") or "The list of calendars could not be read just now.").strip(),
+            can_retry=True,
+        )
+    by_id = {str(entry.get("id")): entry for entry in available}
+    selected = [
+        by_id.get(str(entry.get("id")), entry)
+        for entry in (source.get("selectedCalendars") or [])
+        if isinstance(entry, dict) and entry.get("id")
+    ]
+    add = [str(name) for name in (args.get("add") or []) if isinstance(name, str) and name.strip()]
+    remove = [str(name) for name in (args.get("remove") or []) if isinstance(name, str) and name.strip()]
+    current = {"readCalendars": _calendar_names(selected), "availableCalendars": _calendar_names(available)}
+
+    if not add and not remove:
+        if context.channel == "whatsapp" and len(available) > 1:
+            context.calendar_choice = available
+            context.calendar_choice_selected = [str(entry.get("id")) for entry in selected]
+            context.calendar_choice_requested = True
+            note = (
+                "The list of their calendars is being shown under your reply, with the ones read now ticked. "
+                "Say in one short line that they can tap a calendar to add or remove it and then Done; do not "
+                "list the calendars yourself."
+            )
+        elif len(available) == 1:
+            note = "The account holds only this one calendar, so there is nothing else to choose."
+        else:
+            note = (
+                "To change them, the person names the calendars to add or remove here, or opens the Google "
+                "Calendar tool in the Assistyca portal and chooses 'Choose calendars'."
+            )
+        return _ok({**current, "note": note})
+
+    unknown: list[str] = []
+    ambiguous: list[str] = []
+    to_add: list[dict[str, Any]] = []
+    to_remove: list[dict[str, Any]] = []
+    for names, target in ((add, to_add), (remove, to_remove)):
+        for name in names:
+            matches = _match_calendar(name, available)
+            if len(matches) == 1:
+                target.append(matches[0])
+            elif matches:
+                ambiguous.append(name)
+            else:
+                unknown.append(name)
+    if unknown or ambiguous:
+        parts = []
+        if unknown:
+            parts.append(f"There is no calendar called {', '.join(unknown)}.")
+        if ambiguous:
+            parts.append(f"More than one calendar could be {', '.join(ambiguous)}.")
+        parts.append(f"The calendars are: {', '.join(current['availableCalendars'])}.")
+        return _error("choice_required", " ".join(parts), **current)
+
+    remove_ids = {str(entry.get("id")) for entry in to_remove}
+    chosen = [entry for entry in selected if str(entry.get("id")) not in remove_ids]
+    for entry in to_add:
+        if str(entry.get("id")) not in {str(e.get("id")) for e in chosen}:
+            chosen.append(entry)
+    if not chosen:
+        return _error(
+            "choice_required",
+            "At least one calendar has to stay read; ask which one to read instead.",
+            **current,
+        )
+    saved, status = context.api(
+        "POST",
+        "/api/platform-connections/calendars",
+        {"calendars": [{"id": e.get("id"), "label": e.get("label"), "color": e.get("color")} for e in chosen]},
+    )
+    if status != 200 or not saved.get("ok"):
+        return _error("internal", "The choice could not be saved just now.", can_retry=True)
+    return _ok({
+        "readCalendars": _calendar_names(chosen),
+        "availableCalendars": current["availableCalendars"],
+        "added": _calendar_names(to_add),
+        "removed": _calendar_names(to_remove),
+    })
 
 
 def _tool_search_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -1133,6 +1264,24 @@ TOOLS: list[ToolSpec] = [
         run=_tool_read_calendar,
     ),
     ToolSpec(
+        name="choose_calendars",
+        description=(
+            "Show or change which of the person's calendars are read. Their Google account holds several - "
+            "their own, the ones under 'My calendars', the ones shared with them - and only the chosen ones "
+            "are read; they can change that whenever they like. Call it for 'add another calendar', 'read my "
+            "Work calendar too', 'stop reading Family', 'which calendars do you read'. add and remove are "
+            "calendar names in the person's words, or empty arrays. With both empty the current choice comes "
+            "back and, on WhatsApp, the list of calendars is shown for them to tick."
+        ),
+        parameters=_params({
+            "add": {"type": "array", "items": {"type": "string"}},
+            "remove": {"type": "array", "items": {"type": "string"}},
+        }),
+        requires=LOOKUP_SOURCE_REQUIREMENTS["calendar-summary"],
+        side_effect=True,
+        run=_tool_choose_calendars,
+    ),
+    ToolSpec(
         name="search_receipts",
         description=(
             "Search the mailbox for receipts, invoices, bills and charges and get back the items with totals "
@@ -1427,6 +1576,10 @@ AGENT_LOOP_INSTRUCTIONS = (
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
     "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
     "that depends on the time of day, and never guess the time.\n"
+    "Which of the person's calendars are read is theirs to change at any moment: for 'add another calendar', "
+    "'read my Work calendar too', 'stop reading Family' or 'which calendars do you read', call "
+    "choose_calendars - with the names when they gave them, with empty arrays when they did not - and never "
+    "say there is no way to pick a calendar here.\n"
     "A reminder needs no yes: schedule_message runs on the first call, so never ask the person to confirm "
     "one; call it, then say it is set, repeating scheduledForLocal and the text. The reminder is a message "
     "from you to the person, so its text speaks to them: 'You have a meeting with Dana', never 'I have a "
@@ -1727,6 +1880,8 @@ def run_agent_loop(
         links=links_in_reply,
         pending_confirmation=pending,
         calendar_choice=context.calendar_choice,
+        calendar_choice_selected=list(context.calendar_choice_selected),
+        calendar_choice_requested=context.calendar_choice_requested,
         remember_fact={"key": str(remember.get("key") or ""), "fact": str(remember.get("fact") or "")} if remember else None,
         forget_fact=str(reply_payload.get("forgetFact") or ""),
         answers_open_question=_parse_open_answer(reply_payload.get("answersOpenQuestion")),

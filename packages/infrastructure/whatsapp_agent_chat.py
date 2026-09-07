@@ -1540,23 +1540,30 @@ class WhatsAppAgentChat:
             return message_id
         return self._send_owner_text(build_calendar_confirm_text(calendars, selected=selected, resuming=question))
 
-    def _ask_calendar_choice(self, calendars: list[dict[str, Any]], *, question: str) -> None:
-        """Hold the question and put the picker in front of the person."""
+    def _ask_calendar_choice(self, calendars: list[dict[str, Any]], *, question: str, selected: list[str] | None = None) -> None:
+        """Hold the question and put the picker in front of the person.
 
+        selected is what is read now, ticked from the start, for when the
+        person asked to change the choice rather than a lookup needing one.
+        """
+
+        shown = calendars[:_MAX_CALENDAR_ROWS]
+        shown_ids = {normalize_text(entry.get("id")) for entry in shown}
+        ticked = [normalize_text(cid) for cid in (selected or []) if normalize_text(cid) in shown_ids]
         self.database.save_whatsapp_agent_pending(
             user_id=self.user_id,
             pending={
                 "kind": "calendar_choice",
                 "calendars": [
                     {"id": entry.get("id"), "label": entry.get("label"), "color": entry.get("color")}
-                    for entry in calendars[:_MAX_CALENDAR_ROWS]
+                    for entry in shown
                 ],
-                "selected": [],
+                "selected": ticked,
                 "question": normalize_text(question),
                 "askedAt": datetime.now(timezone.utc).isoformat(),
             },
         )
-        self._send_calendar_picker(calendars, selected=[], question=normalize_text(question))
+        self._send_calendar_picker(calendars, selected=ticked, question=normalize_text(question))
 
     def _answer_calendar_choice(self, pending: dict[str, Any], *, text: str, interactive_id: str) -> dict[str, Any]:
         calendars = [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]
@@ -1910,7 +1917,20 @@ class WhatsAppAgentChat:
                         },
                     )
                 calendars = turn.get("calendarChoice") if isinstance(turn.get("calendarChoice"), list) else None
-                if calendars:
+                if calendars and turn.get("calendarChoiceRequested"):
+                    # The person asked to change which calendars are read:
+                    # the picker opens with today's choice ticked, and there
+                    # is no interrupted question to answer after Done.
+                    available = [entry for entry in calendars if isinstance(entry, dict)]
+                    ticked = [str(cid) for cid in (turn.get("calendarChoiceSelected") or []) if isinstance(cid, str)]
+                    if available and not open_question:
+                        if reply:
+                            self._send_owner_text(format_agent_reply_for_whatsapp(reply))
+                            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+                        self._ask_calendar_choice(available, question="", selected=ticked)
+                        return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice",
+                                "reply_text": reply, "message_id": ""}
+                elif calendars:
                     available = [entry for entry in calendars if isinstance(entry, dict)]
                     if len(available) == 1 and self._save_calendar_selection(available):
                         # One calendar is not a choice: read it and run the turn again.

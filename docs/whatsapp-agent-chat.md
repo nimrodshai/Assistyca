@@ -360,6 +360,17 @@ confirmed when the buttons cannot be sent. Row titles are capped at 24
 characters, so an address-labelled calendar shows the part before the `@`
 with the full address beneath.
 
+The choice is the person's to change at any moment. "Add another calendar",
+"read my Work calendar too", "stop reading Family" or "which calendars do you
+read" go to the `choose_calendars` tool: with names it saves the change there
+and then (`add` / `remove`, matched against the account's calendars by label);
+with none it reports what is read now and, on WhatsApp, opens the same picker
+with today's choice already ticked (`calendarChoiceRequested` on the turn,
+`calendarChoiceSelected` for the ticks). No question is held behind a picker
+opened this way, so Done just confirms. The system prompt says outright that
+there is always a way to pick a calendar here, which is what the model once
+denied in chat.
+
 It is asked at the natural moment: when Google connects and returns more than
 one calendar, the "connected" message is followed by the picker rather than
 letting the first real question run into it; one calendar is selected

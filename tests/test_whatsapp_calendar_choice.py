@@ -396,6 +396,72 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in self._chosen], ["work@group.calendar.google.com"])
         self.assertIn("4 meetings", self._texts()[-1])
 
+    def _listing_the_calendars(self):
+        """The portal endpoint that lists the account's calendars, with what is read now."""
+
+        patcher = mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_get", autospec=True)
+
+        def _list(handler):
+            from packages.infrastructure.portal_auth.server import json_response
+            from http import HTTPStatus
+            chosen = getattr(self, "_chosen", None) or [CALENDARS[0]]
+            json_response(handler, HTTPStatus.OK, {"ok": True, "sources": [{"status": "ok", "calendars": self.available, "selectedCalendars": chosen}]})
+
+        patcher.start().side_effect = _list
+        self.addCleanup(patcher.stop)
+
+    def test_asking_to_add_a_calendar_opens_the_picker_with_todays_choice_ticked(self) -> None:
+        # 2026-09-07: "I wanted to add another calendar from my calendars" was
+        # told there is no way to pick one here. There is: the same picker,
+        # with what is read now already ticked.
+        self._listing_the_calendars()
+        self._saving_the_choice()
+        self.model.side_effect = [
+            _loop_round(_tool_call("choose_calendars", "cc1", add=[], remove=[])),
+            _loop_round(reply={"reply": "Sure - tap the ones I should read, then Done."}),
+        ]
+        result = self._post("I wanted to add another calendar from my calendars", message_id="wamid.add1")
+        self.assertEqual(result["results"][0]["outcome"], "calendar_choice")
+        shown = _tool_outputs(self.model.call_args)[0]
+        self.assertTrue(shown["ok"])
+        self.assertEqual(shown["readCalendars"], ["Nimrod"])
+        self.assertIn("tap the ones", self._texts()[-1])
+        picker = self._interactives()[-1]
+        self.assertEqual(picker["type"], "list")
+        rows = picker["action"]["sections"][0]["rows"]
+        self.assertTrue(rows[0]["title"].startswith("✓ 🔵"), "what is read today is ticked from the start")
+        self.assertFalse(rows[1]["title"].startswith("✓"))
+        pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
+        self.assertEqual(pending["selected"], ["primary"])
+        self.assertEqual(pending["question"], "", "nothing was interrupted, so nothing is held")
+
+        rounds = self.model.call_count
+        self._post(message_id="wamid.add2", interactive_id="calpick:2")
+        confirm = self._interactives()[-1]
+        self.assertEqual(confirm["body"]["text"], "I'll read Nimrod and Work.")
+        done = self._post(message_id="wamid.add3", interactive_id="calpick:done", reply_kind="button_reply")
+        self.assertEqual(done["results"][0]["outcome"], "calendar_choice_saved")
+        self.assertEqual([c["id"] for c in self._chosen], ["primary", "work@group.calendar.google.com"])
+        self.assertEqual(self._texts()[-1], "Got it - I'll read Nimrod, Work. Ask me anything about your schedule.")
+        self.assertEqual(self.model.call_count, rounds, "Done needs no model round when no question was held")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+
+    def test_naming_a_calendar_changes_the_choice_without_a_picker(self) -> None:
+        self._listing_the_calendars()
+        self._saving_the_choice()
+        self.model.side_effect = [
+            _loop_round(_tool_call("choose_calendars", "cc1", add=["work"], remove=[])),
+            _loop_round(reply={"reply": "Done - I now read Nimrod and Work.", "claimsCompleted": ["choose_calendars"]}),
+        ]
+        result = self._post("read my work calendar too", message_id="wamid.name1")
+        self.assertEqual(result["results"][0]["outcome"], "message")
+        self.assertEqual([c["id"] for c in self._chosen], ["primary", "work@group.calendar.google.com"])
+        shown = _tool_outputs(self.model.call_args)[0]
+        self.assertEqual(shown["readCalendars"], ["Nimrod", "Work"])
+        self.assertEqual(self._texts()[-1], "Done - I now read Nimrod and Work.")
+        self.assertEqual(self._interactives(), [], "no picker when the name was given")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+
     def test_all_calendars_is_one_tap(self) -> None:
         self._post("what's on next week?", message_id="wamid.all1")
         self._saving_the_choice()
