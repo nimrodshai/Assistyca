@@ -26,6 +26,7 @@ import hmac
 import hashlib
 import html
 import zipfile
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -46,6 +47,7 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
 from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_INSTRUCTIONS
@@ -207,6 +209,9 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_INSTRUCTIONS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
+from packages.infrastructure import mailbox_findings
+from packages.infrastructure.mailbox_finding_scans import FindingScanScheduler
+from packages.infrastructure.mailbox_finding_scans import load_finding_scan_config
 from packages.infrastructure.list_due_nudges import ListDueNudger
 from packages.infrastructure.list_due_nudges import load_list_due_nudge_config
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
@@ -408,6 +413,9 @@ AGENT_RECOVERY_COMPLEXITY = TaskComplexity.MEDIUM
 # that; the cheapest one sorts by vocabulary, which is the mistake this step
 # exists to stop.
 AGENT_RECEIPT_JUDGE_COMPLEXITY = TaskComplexity.MEDIUM
+# Reading one message down to a kind, a party, an amount and a date is
+# constrained extraction over a fixed shape.
+AGENT_MAILBOX_FINDINGS_COMPLEXITY = TaskComplexity.MEDIUM
 # Telling one payment reported twice from two payments of the same price is
 # the same kind of work: everything mechanical about the two messages already
 # matches, and what separates them is what they are about. The same tier reads
@@ -4303,6 +4311,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/lists/")
             or path == "/api/receipts"
             or path.startswith("/api/receipts/")
+            or path == "/api/findings/scan"
         ):
             try:
                 self._handle_api_post(parsed)
@@ -4683,6 +4692,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/receipts" or path.startswith("/api/receipts/"):
             self._handle_receipts_post(parsed)
+            return
+        if path == "/api/findings/scan":
+            self._handle_findings_scan_post()
             return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
@@ -5763,6 +5775,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 connection_status="connected",
             )
             connections.append(connection)
+        if "gmail" in granted_scope_ids:
+            self._schedule_first_findings_scan(session.email)
         return connections
 
     def _save_google_calendar_oauth_connection(
@@ -5944,7 +5958,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         encrypted_secret = self.credential_vault.encrypt(self._build_microsoft_oauth_secret(refresh_token))
         secret_fingerprint = self.credential_vault.fingerprint(refresh_token)
         now = datetime.now(timezone.utc).isoformat()
-        return self.database.save_platform_connection(
+        connection = self.database.save_platform_connection(
             session.email,
             platform=EMAIL_PLATFORM,
             provider=MICROSOFT_OUTLOOK_OAUTH_PROVIDER,
@@ -5965,6 +5979,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             },
             connection_status="connected",
         )
+        self._schedule_first_findings_scan(session.email)
+        return connection
 
     def _handle_microsoft_email_oauth_start(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
@@ -8879,6 +8895,152 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return readers[record_id]
 
         return records, mailbox_name_for, reader_for
+
+    def _handle_findings_scan_post(self) -> None:
+        """Read the connected mailboxes for what the person should be told.
+
+        Run by the findings scheduler over loopback a few minutes after a
+        mailbox connects and every morning after; a browser session may
+        call it too. It reads, remembers, derives and stores; what to tell
+        and when is the scheduler's.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, user = authenticated
+        if not self._require_active_trial(user):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_JSON_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        kind = normalize_text(payload.get("kind")).lower() or "daily"
+        if kind not in mailbox_findings.SCAN_KINDS:
+            kind = "daily"
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        today = datetime.now(zone).date()
+        result = self._scan_mailbox_findings(session, user_id=int(user.get("id") or 0), kind=kind, today=today)
+        json_response(self, HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
+
+    def _scan_mailbox_findings(self, session: Any, *, user_id: int, kind: str, today: date) -> dict[str, Any]:
+        records, mailbox_name_for, reader_for = self._mailbox_readers(session)
+        if not records or user_id <= 0:
+            return {
+                "ok": False,
+                "error": "mailbox_not_connected",
+                "message": "No mailbox is connected, so there is nothing to read.",
+            }
+        version = mailbox_findings.facts_version()
+        ledger = mailbox_findings.FindingsLedger(self.database, user_id=user_id, version=version)
+        first = kind == "first"
+        query = mailbox_findings.build_scan_query(
+            mailbox_findings.FIRST_SCAN_DAYS if first else mailbox_findings.DAILY_SCAN_DAYS
+        )
+        ask = self._receipt_prompt_ask(
+            billing_email=session.email,
+            tool_name="mailbox_findings",
+            model_env="OPENAI_MAILBOX_FINDINGS_MODEL",
+            complexity=AGENT_MAILBOX_FINDINGS_COMPLEXITY,
+            instructions=mailbox_findings.FINDINGS_INSTRUCTIONS,
+            max_output_tokens=mailbox_findings.FACTS_MAX_OUTPUT_TOKENS,
+            failure_label="Mailbox findings reading",
+        )
+        owner_addresses = [mailbox_name_for(record) for record in records]
+        read = {"fromLedger": 0, "fetched": 0, "withFacts": 0}
+        failures: list[dict[str, str]] = []
+        for record in records:
+            mailbox_name = mailbox_name_for(record)
+            reader = reader_for(record)
+            if reader is None:
+                failures.append({"mailbox": mailbox_name, "message": "The saved connection could not be opened."})
+                continue
+            runner, access_token = reader
+            passes = mailbox_findings.FIRST_SCAN_MAX_PASSES if first else 1
+            for _ in range(passes):
+                try:
+                    result = runner.run(
+                        access_token,
+                        query=query,
+                        max_results=mailbox_findings.SCAN_DOWNLOADS_PER_PASS,
+                        # An amount and a due date live in the body, not the subject.
+                        include_body=True,
+                        known=ledger.known_messages(mailbox_name),
+                    )
+                except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError) as exc:
+                    failures.append({"mailbox": mailbox_name, "message": str(exc)})
+                    break
+                items = [
+                    {**item, "mailbox": mailbox_name}
+                    for item in (result.get("items") or [])
+                    if isinstance(item, dict)
+                ]
+                fresh = [item for item in items if not item.get(mailbox_findings.FROM_LEDGER_KEY)]
+                read["fromLedger"] += len(items) - len(fresh)
+                read["fetched"] += len(fresh)
+                if fresh:
+                    with_facts = mailbox_findings.extract_mail_facts(fresh, ask=ask, owner_addresses=owner_addresses)
+                    read["withFacts"] += ledger.remember(with_facts)
+                # A pass that downloaded less than its ceiling has reached
+                # the end of what the mailbox lists; another would read nothing.
+                if len(fresh) < mailbox_findings.SCAN_DOWNLOADS_PER_PASS:
+                    break
+        since = (today - timedelta(days=mailbox_findings.FIRST_SCAN_DAYS)).isoformat()
+        facts = self.database.list_mail_facts(user_id=user_id, since=since, facts_version=version)
+        findings = mailbox_findings.derive_findings(facts, today=today)
+        subscriptions = mailbox_findings.summarize_subscriptions(facts, today=today)
+        new_keys = self.database.upsert_account_findings(user_id=user_id, findings=findings)
+        resolved = self.database.resolve_missing_account_findings(
+            user_id=user_id, active_keys=[str(finding.get("key") or "") for finding in findings],
+        )
+        stored = self.database.list_account_findings(user_id=user_id, statuses=("new", "told"))
+        print(json.dumps({
+            "event": "mailbox_findings_scan", "kind": kind, "mailboxes": len(records), "read": read,
+            "facts": len(facts), "findings": len(findings), "new": len(new_keys), "resolved": resolved,
+            "failures": len(failures),
+        }, ensure_ascii=True, sort_keys=True), flush=True)
+        return {
+            "ok": True,
+            "kind": kind,
+            "mailboxes": len(records),
+            "read": read,
+            "factCount": len(facts),
+            "findings": stored,
+            "newKeys": new_keys,
+            "resolved": resolved,
+            "subscriptions": subscriptions,
+            "failures": failures,
+        }
+
+    def _schedule_first_findings_scan(self, email: str) -> None:
+        """A mailbox has just been connected: line up the look through its
+        last year, a couple of minutes from now. Never raises - a scan that
+        cannot be queued must not undo a connection that just succeeded."""
+
+        try:
+            config = load_finding_scan_config()
+            if not config.enabled:
+                return
+            user = self.database.get_user(email) or {}
+            user_id = int(user.get("id") or 0)
+            if user_id <= 0:
+                return
+            scan = self.database.schedule_finding_scan(
+                user_id=user_id,
+                kind="first",
+                run_at=datetime.now(timezone.utc) + timedelta(minutes=config.first_delay_minutes),
+            )
+            print(json.dumps({
+                "event": "mailbox_findings_scan_scheduled", "scanId": int((scan or {}).get("id") or 0),
+                "kind": normalize_text((scan or {}).get("kind")),
+            }, ensure_ascii=True, sort_keys=True), flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"The first mailbox scan could not be scheduled: {exc}", flush=True)
 
     def _keep_search_receipts(self, session: Any, *, answers: list[dict[str, Any]]) -> dict[str, Any]:
         """Keep what a receipt search read, on the receipts page.
@@ -11962,6 +12124,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             finish(False, "That Assistyca account isn't available any more.")
             return
         session = PortalSession(token="", email=email, issued_at=time.time(), expires_at=time.time() + 600)
+        mailbox_connected = False
 
         try:
             if provider == "google":
@@ -11975,6 +12138,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         return
                 self._save_google_oauth_connections(session, token_payload, scope_ids=scope_ids)
                 connected = "Gmail and calendar are"
+                mailbox_connected = "gmail" in scope_ids
             else:
                 token_payload = self._exchange_microsoft_oauth_code(code)
                 if purpose == "link_account":
@@ -11985,6 +12149,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         return
                 self._save_microsoft_oauth_connection(session, token_payload)
                 connected = "Outlook is"
+                mailbox_connected = True
         except Exception as exc:  # noqa: BLE001 - said once to the person, in full to the log
             print(f"WhatsApp {provider} sign-in failed for a linked phone: {exc}", flush=True)
             finish(False, f"{label} couldn't be connected just now. Tap the link again in a moment.")
@@ -12037,7 +12202,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._send_whatsapp_oauth_page(ok=True, message="Connected. Back in WhatsApp, tell me which calendars to read.")
             return
 
-        finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.")
+        # The mailbox is read now, unasked, so the person hears that the
+        # silence of the next few minutes is work rather than absence.
+        looking = (
+            " I'm looking through the last year of your mail now; if I spot something worth knowing, I'll write in a few minutes."
+            if mailbox_connected and load_finding_scan_config().enabled
+            else ""
+        )
+        finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.{looking}")
 
     def _build_google_calendar_oauth_state(
         self,
@@ -16451,6 +16623,35 @@ def main() -> int:
     else:
         print("To-do due-date nudges are disabled.", flush=True)
 
+    finding_scan_config = load_finding_scan_config()
+    finding_scan_stop_event = threading.Event()
+    finding_scan_thread: threading.Thread | None = None
+    if finding_scan_config.enabled and scheduled_action_config.enabled:
+        # A scan reads the mailboxes over loopback with a short-lived session
+        # for its account, and what it finds goes out as a one-off standing
+        # action, so the same worker delivers it.
+        finding_scans = FindingScanScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=finding_scan_config,
+            base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
+            session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+        )
+        finding_scan_thread = threading.Thread(
+            target=finding_scans.serve_forever,
+            args=(finding_scan_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="mailbox-finding-scans",
+        )
+        finding_scan_thread.start()
+        print(
+            f"Mailbox findings enabled. First scan {finding_scan_config.first_delay_minutes} minutes after a mailbox "
+            f"connects, then every morning at {finding_scan_config.hour:02d}:00 local time.",
+            flush=True,
+        )
+    else:
+        print("Mailbox findings are disabled.", flush=True)
+
     source_action_config = load_source_action_config()
     source_action_stop_event = threading.Event()
     source_action_thread: threading.Thread | None = None
@@ -16531,6 +16732,9 @@ def main() -> int:
         source_action_stop_event.set()
         if source_action_thread is not None:
             source_action_thread.join(timeout=1.0)
+        finding_scan_stop_event.set()
+        if finding_scan_thread is not None:
+            finding_scan_thread.join(timeout=1.0)
         sampling_stop_event.set()
         if sampling_thread is not None:
             sampling_thread.join(timeout=1.0)

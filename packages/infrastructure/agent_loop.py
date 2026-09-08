@@ -37,6 +37,7 @@ from packages.infrastructure.agent_proposals import connected_sources
 from packages.infrastructure.agent_proposals import describe_agent_photo_context
 from packages.infrastructure.calendar_write import build_event_times
 from packages.infrastructure.gmail_send import normalize_addresses
+from packages.infrastructure.mailbox_findings import describe_finding
 from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
@@ -959,6 +960,62 @@ def _tool_remember_fact(context: LoopContext, args: dict[str, Any]) -> dict[str,
     return _ok({"key": key, "fact": fact})
 
 
+def _tool_show_findings(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """What the mailbox scans found and have not been told to go away."""
+
+    try:
+        findings = context.database.list_account_findings(user_id=context.user_id, statuses=("new", "told"))
+        scans = context.database.list_finding_scans_for_user(user_id=context.user_id, limit=1)
+    except Exception:  # noqa: BLE001
+        return _error("internal", "Could not read what the mailbox scans found just now.", can_retry=True)
+    last = scans[0] if scans else {}
+    note = (
+        "These come from reading the mailbox itself: invoices the person sent with no payment found after them, "
+        "bills and renewals coming due, and recurring charges that went up. 'told' means the person was already "
+        "messaged about it. If the person says one is settled or not a thing, call dismiss_finding with its id."
+    )
+    if not findings:
+        return _ok({
+            "findings": [],
+            "note": "Nothing is waiting right now. " + note,
+            "lastScan": {"kind": last.get("kind"), "status": last.get("status"), "finishedAt": last.get("finishedAt")} if last else None,
+        })
+    return _ok({
+        "findings": [
+            {
+                "id": int(finding.get("id") or 0),
+                "kind": str(finding.get("detector") or ""),
+                "status": str(finding.get("status") or ""),
+                "summary": describe_finding(finding),
+                "amount": finding.get("amount"),
+                "currency": finding.get("currency"),
+                "dueOn": finding.get("dueOn") or None,
+                "emails": [str(source.get("subject") or "") for source in (finding.get("sources") or []) if isinstance(source, dict)][:3],
+            }
+            for finding in findings[:MAX_RECORDS_TO_MODEL]
+        ],
+        "note": note,
+        "lastScan": {"kind": last.get("kind"), "status": last.get("status"), "finishedAt": last.get("finishedAt")} if last else None,
+    })
+
+
+def _tool_dismiss_finding(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        finding_id = int(args.get("id") or 0)
+    except (TypeError, ValueError):
+        finding_id = 0
+    if finding_id <= 0:
+        return _error("nothing_found", "Which finding to drop was not said: id is its number from show_findings.")
+    try:
+        finding = context.database.get_account_finding(user_id=context.user_id, finding_id=finding_id)
+        if finding is None:
+            return _error("nothing_found", "There is no finding with that number.")
+        context.database.set_account_finding_status(user_id=context.user_id, finding_id=finding_id, status="dismissed")
+    except Exception:  # noqa: BLE001
+        return _error("internal", "Could not drop that finding just now.", can_retry=True)
+    return _ok({"dismissed": finding_id, "summary": describe_finding(finding)})
+
+
 def _tool_forget_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     key = str(args.get("key") or "").strip().lower()
     if not key:
@@ -1830,6 +1887,28 @@ TOOLS: list[ToolSpec] = [
         parameters=_params({"key": {"type": "string"}}),
         side_effect=True,
         run=_tool_forget_fact,
+    ),
+    ToolSpec(
+        name="show_findings",
+        description=(
+            "What Assistyca noticed on its own while reading the person's mailbox: invoices they sent with no "
+            "payment found after them, bills and renewals coming due, and recurring charges that went up. "
+            "For 'what did you find in my mail', 'anything I should know', 'which invoices are unpaid', 'what's "
+            "renewing', 'did my subscriptions go up'."
+        ),
+        parameters=_params({}),
+        requires=LOOKUP_SOURCE_REQUIREMENTS["custom"],
+        run=_tool_show_findings,
+    ),
+    ToolSpec(
+        name="dismiss_finding",
+        description=(
+            "Drop one finding from show_findings because the person says it is settled or not a thing: 'that "
+            "one was paid in cash', 'I cancelled that policy', 'ignore that'. id is its number from show_findings."
+        ),
+        parameters=_params({"id": {"type": "integer"}}),
+        side_effect=True,
+        run=_tool_dismiss_finding,
     ),
 ]
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}

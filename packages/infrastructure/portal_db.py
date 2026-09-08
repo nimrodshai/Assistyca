@@ -194,6 +194,81 @@ CREATE INDEX IF NOT EXISTS idx_receipt_mail_reads_dismissed
 ON receipt_mail_reads(user_id, dismissed_at);
 """
 
+MAILBOX_FINDINGS_TABLE_SQL = """
+-- What mailbox scans have read: one row per message the model gave a fact
+-- for (an invoice sent, a payment received, a bill, a charge, a renewal),
+-- tied to the wording it was read under. Findings are derived from these
+-- rows, so a scan only pays for mail it has not read.
+CREATE TABLE IF NOT EXISTS mail_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    mailbox TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL,
+    facts_version TEXT NOT NULL DEFAULT '',
+    message_date TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'none',
+    facts_json TEXT NOT NULL DEFAULT '{}',
+    read_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_facts_message
+ON mail_facts(user_id, mailbox, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_mail_facts_user_date
+ON mail_facts(user_id, message_date);
+
+-- What the scans found worth telling: one row per finding, keyed so the
+-- same finding found again is the same row. new = not yet told; told =
+-- the person was messaged; dismissed = the person said it is not a thing;
+-- resolved = a later scan no longer finds it (the payment arrived).
+CREATE TABLE IF NOT EXISTS account_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    finding_key TEXT NOT NULL,
+    detector TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'new',
+    title TEXT NOT NULL DEFAULT '',
+    amount TEXT NOT NULL DEFAULT '',
+    currency TEXT NOT NULL DEFAULT '',
+    due_on TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    first_seen_at TEXT NOT NULL,
+    told_at TEXT,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_findings_key
+ON account_findings(user_id, finding_key);
+
+-- The scans themselves: one row per scan due to run, claimed by the worker
+-- like a scheduled action and finished with what it found.
+CREATE TABLE IF NOT EXISTS account_finding_scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'daily',
+    status TEXT NOT NULL DEFAULT 'pending',
+    run_at TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT,
+    finished_at TEXT,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_finding_scans_due
+ON account_finding_scans(status, run_at ASC, id ASC);
+"""
+
+MAIL_FACTS_MAX_ROWS = 20000
+ACCOUNT_FINDING_STATUSES = ("new", "told", "dismissed", "resolved")
+ACCOUNT_FINDING_SCAN_STATUSES = ("pending", "running", "done", "failed")
+
 # Rows per account before the oldest reads are let go. A busy mailbox is a
 # few hundred matching messages a month, so this is years of searches.
 RECEIPT_MAIL_READS_MAX_ROWS = 20000
@@ -1223,6 +1298,7 @@ class PortalDatabase:
                 self._ensure_account_lists_tables(conn)
                 conn.executescript(ACCOUNT_RECEIPTS_TABLE_SQL)
                 conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
+                conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -7315,6 +7391,490 @@ class PortalDatabase:
                 (int(user_id),),
             ).fetchall()
         return [str(row["message_id"]) for row in rows if row["message_id"]]
+
+    # -- mailbox findings -----------------------------------------------------
+
+    def get_mail_facts(
+        self,
+        *,
+        user_id: int,
+        mailbox: str,
+        message_ids: list[str],
+        facts_version: str,
+    ) -> dict[str, dict[str, Any]]:
+        """The remembered facts among these messages, read under this wording."""
+
+        ids = [normalize_text(value) for value in message_ids]
+        ids = [value for value in ids if value]
+        if int(user_id or 0) <= 0 or not ids:
+            return {}
+        found: dict[str, dict[str, Any]] = {}
+        with self._connection() as conn:
+            for start in range(0, len(ids), RECEIPT_MAIL_READS_QUERY_CHUNK):
+                chunk = ids[start:start + RECEIPT_MAIL_READS_QUERY_CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT message_id, facts_json, read_at
+                    FROM mail_facts
+                    WHERE user_id = ? AND mailbox = ? AND facts_version = ? AND message_id IN ({placeholders})
+                    """,
+                    (int(user_id), normalize_text(mailbox), normalize_text(facts_version), *chunk),
+                ).fetchall()
+                for row in rows:
+                    try:
+                        facts = json.loads(row["facts_json"] or "{}")
+                    except (TypeError, ValueError):
+                        continue
+                    found[str(row["message_id"])] = {
+                        "facts": facts if isinstance(facts, dict) else {},
+                        "readAt": str(row["read_at"] or ""),
+                    }
+        return found
+
+    def save_mail_facts(self, *, user_id: int, entries: list[dict[str, Any]]) -> int:
+        """Write down messages a scan read. A message read before is
+        overwritten with this reading. Returns how many were written."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        now = now_iso()
+        written = 0
+        fact_keys = ("kind", "counterparty", "amount", "currency", "documentDate", "dueOn", "reference", "recurring", "subject", "from")
+        with self._connection() as conn:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                message_id = normalize_text(entry.get("messageId"))
+                if not message_id:
+                    continue
+                facts = {key: entry.get(key) for key in fact_keys if key in entry}
+                conn.execute(
+                    """
+                    INSERT INTO mail_facts (
+                        user_id, mailbox, message_id, facts_version, message_date, kind, facts_json, read_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, mailbox, message_id) DO UPDATE SET
+                        facts_version = excluded.facts_version,
+                        message_date = excluded.message_date,
+                        kind = excluded.kind,
+                        facts_json = excluded.facts_json,
+                        read_at = excluded.read_at
+                    """,
+                    (
+                        int(user_id),
+                        normalize_text(entry.get("mailbox")),
+                        message_id,
+                        normalize_text(entry.get("factsVersion")),
+                        normalize_text(entry.get("messageDate"))[:10],
+                        normalize_text(entry.get("kind")) or "none",
+                        json.dumps(facts, ensure_ascii=True, sort_keys=True),
+                        now,
+                    ),
+                )
+                written += 1
+            if written:
+                total = int(conn.execute(
+                    "SELECT COUNT(*) FROM mail_facts WHERE user_id = ?", (int(user_id),)
+                ).fetchone()[0] or 0)
+                excess = total - MAIL_FACTS_MAX_ROWS
+                if excess > 0:
+                    conn.execute(
+                        """
+                        DELETE FROM mail_facts
+                        WHERE id IN (
+                            SELECT id FROM mail_facts WHERE user_id = ?
+                            ORDER BY message_date ASC, id ASC LIMIT ?
+                        )
+                        """,
+                        (int(user_id), excess),
+                    )
+        return written
+
+    def list_mail_facts(self, *, user_id: int, since: str = "", facts_version: str = "") -> list[dict[str, Any]]:
+        """Every remembered fact for the account from ``since`` on, flat,
+        oldest first. Facts read under other wording are left out."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        clauses = ["user_id = ?", "kind <> 'none'"]
+        params: list[Any] = [int(user_id)]
+        if normalize_text(since):
+            clauses.append("message_date >= ?")
+            params.append(normalize_text(since)[:10])
+        if normalize_text(facts_version):
+            clauses.append("facts_version = ?")
+            params.append(normalize_text(facts_version))
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT mailbox, message_id, message_date, kind, facts_json
+                FROM mail_facts WHERE {' AND '.join(clauses)}
+                ORDER BY message_date ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+        entries: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                facts = json.loads(row["facts_json"] or "{}")
+            except (TypeError, ValueError):
+                facts = {}
+            entries.append({
+                **(facts if isinstance(facts, dict) else {}),
+                "mailbox": str(row["mailbox"] or ""),
+                "messageId": str(row["message_id"] or ""),
+                "messageDate": str(row["message_date"] or ""),
+                "kind": str(row["kind"] or ""),
+            })
+        return entries
+
+    def count_mail_facts(self, *, user_id: int) -> int:
+        with self._connection() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM mail_facts WHERE user_id = ?", (int(user_id),)
+            ).fetchone()[0] or 0)
+
+    @staticmethod
+    def _finding_row_to_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        return {
+            **(payload if isinstance(payload, dict) else {}),
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "key": str(row["finding_key"] or ""),
+            "detector": str(row["detector"] or ""),
+            "status": str(row["status"] or "new"),
+            "title": str(row["title"] or ""),
+            "amount": (float(row["amount"]) if str(row["amount"] or "").strip() else None),
+            "currency": str(row["currency"] or ""),
+            "dueOn": str(row["due_on"] or ""),
+            "firstSeenAt": str(row["first_seen_at"] or ""),
+            "toldAt": str(row["told_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def upsert_account_findings(self, *, user_id: int, findings: list[dict[str, Any]]) -> list[str]:
+        """Keep what a scan derived. Returns the keys that are new to the
+        account. A finding seen before keeps its status and gets its figures
+        refreshed; a resolved one that comes back is new again."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        now = now_iso()
+        new_keys: list[str] = []
+        with self._connection() as conn:
+            for finding in findings:
+                if not isinstance(finding, dict):
+                    continue
+                key = normalize_text(finding.get("key"))[:200]
+                if not key:
+                    continue
+                amount = finding.get("amount")
+                amount_text = f"{float(amount):.2f}" if isinstance(amount, (int, float)) and not isinstance(amount, bool) else ""
+                payload = {name: value for name, value in finding.items() if name not in {"id", "userId", "status", "firstSeenAt", "toldAt", "updatedAt"}}
+                existing = conn.execute(
+                    "SELECT id, status FROM account_findings WHERE user_id = ? AND finding_key = ? LIMIT 1",
+                    (int(user_id), key),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO account_findings (
+                            user_id, finding_key, detector, status, title, amount, currency, due_on,
+                            payload_json, first_seen_at, told_at, updated_at
+                        ) VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, NULL, ?)
+                        """,
+                        (
+                            int(user_id), key, normalize_text(finding.get("detector")), normalize_text(finding.get("title"))[:300],
+                            amount_text, normalize_text(finding.get("currency"))[:3], normalize_text(finding.get("dueOn"))[:10],
+                            json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str), now, now,
+                        ),
+                    )
+                    new_keys.append(key)
+                    continue
+                status = str(existing["status"] or "new")
+                revived = status == "resolved"
+                conn.execute(
+                    """
+                    UPDATE account_findings
+                    SET detector = ?, title = ?, amount = ?, currency = ?, due_on = ?, payload_json = ?,
+                        status = CASE WHEN status = 'resolved' THEN 'new' ELSE status END,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalize_text(finding.get("detector")), normalize_text(finding.get("title"))[:300],
+                        amount_text, normalize_text(finding.get("currency"))[:3], normalize_text(finding.get("dueOn"))[:10],
+                        json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str), now, int(existing["id"]),
+                    ),
+                )
+                if revived:
+                    new_keys.append(key)
+        return new_keys
+
+    def resolve_missing_account_findings(self, *, user_id: int, active_keys: list[str]) -> int:
+        """A finding a fresh scan no longer derives has gone away - the
+        payment came, the renewal passed. Mark it resolved; a dismissal stays."""
+
+        if int(user_id or 0) <= 0:
+            return 0
+        keep = {normalize_text(key) for key in active_keys if normalize_text(key)}
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT id, finding_key FROM account_findings WHERE user_id = ? AND status IN ('new', 'told')",
+                (int(user_id),),
+            ).fetchall()
+            stale = [int(row["id"]) for row in rows if str(row["finding_key"] or "") not in keep]
+            now = now_iso()
+            for finding_id in stale:
+                conn.execute(
+                    "UPDATE account_findings SET status = 'resolved', updated_at = ? WHERE id = ?",
+                    (now, finding_id),
+                )
+        return len(stale)
+
+    def list_account_findings(
+        self,
+        *,
+        user_id: int,
+        statuses: tuple[str, ...] = ("new", "told"),
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """The account's findings in these statuses, best first."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        wanted = [status for status in statuses if status in ACCOUNT_FINDING_STATUSES] or ["new", "told"]
+        placeholders = ",".join("?" for _ in wanted)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM account_findings
+                WHERE user_id = ? AND status IN ({placeholders})
+                ORDER BY updated_at DESC, id DESC LIMIT ?
+                """,
+                (int(user_id), *wanted, max(1, int(limit))),
+            ).fetchall()
+        records = [record for record in (self._finding_row_to_record(row) for row in rows) if record]
+        records.sort(key=lambda record: (-float(record.get("score") or 0), record["id"]))
+        return records
+
+    def get_account_finding(self, *, user_id: int, finding_id: int) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM account_findings WHERE user_id = ? AND id = ? LIMIT 1",
+                (int(user_id), int(finding_id)),
+            ).fetchone()
+        return self._finding_row_to_record(row)
+
+    def mark_account_findings_told(self, *, user_id: int, keys: list[str]) -> int:
+        wanted = [normalize_text(key) for key in keys if normalize_text(key)]
+        if int(user_id or 0) <= 0 or not wanted:
+            return 0
+        now = now_iso()
+        placeholders = ",".join("?" for _ in wanted)
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE account_findings
+                SET status = 'told', told_at = ?, updated_at = ?
+                WHERE user_id = ? AND status = 'new' AND finding_key IN ({placeholders})
+                """,
+                (now, now, int(user_id), *wanted),
+            )
+        return int(cursor.rowcount or 0)
+
+    def set_account_finding_status(self, *, user_id: int, finding_id: int, status: str) -> bool:
+        wanted = normalize_text(status).lower()
+        if wanted not in ACCOUNT_FINDING_STATUSES:
+            raise ValueError("Unknown finding status.")
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "UPDATE account_findings SET status = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (wanted, now_iso(), int(user_id), int(finding_id)),
+            )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _finding_scan_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            summary = json.loads(row["summary_json"] or "{}")
+        except (TypeError, ValueError):
+            summary = {}
+        return {
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "kind": str(row["kind"] or "daily"),
+            "status": str(row["status"] or "pending"),
+            "runAt": str(row["run_at"] or ""),
+            "timezone": str(row["timezone"] or ""),
+            "attemptCount": int(row["attempt_count"] or 0),
+            "claimedAt": str(row["claimed_at"] or ""),
+            "finishedAt": str(row["finished_at"] or ""),
+            "summary": summary if isinstance(summary, dict) else {},
+            "lastError": str(row["last_error"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+        }
+
+    def schedule_finding_scan(
+        self,
+        *,
+        user_id: int,
+        kind: str,
+        run_at: str | datetime,
+        timezone_name: str = "",
+        after_scan_id: int = 0,
+    ) -> dict[str, Any] | None:
+        """Put a scan on the queue for this account.
+
+        One scan waits per account. A first scan asked for while a morning
+        scan is waiting takes that row over, since a first scan reads
+        everything a morning scan would; any other repeat leaves the
+        waiting row as it is and returns it. ``after_scan_id`` is the scan
+        lining up its own successor, still marked running while it does.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        wanted = normalize_text(kind).lower() or "daily"
+        run_at_text = parse_datetime(run_at).astimezone(timezone.utc).isoformat()
+        now = now_iso()
+        with self._connection() as conn:
+            waiting = conn.execute(
+                """
+                SELECT * FROM account_finding_scans
+                WHERE user_id = ? AND status IN ('pending', 'running') AND id <> ?
+                ORDER BY id ASC LIMIT 1
+                """,
+                (int(user_id), int(after_scan_id or 0)),
+            ).fetchone()
+            if waiting is not None:
+                if wanted == "first" and str(waiting["kind"]) != "first" and str(waiting["status"]) == "pending":
+                    conn.execute(
+                        "UPDATE account_finding_scans SET kind = 'first', run_at = ?, timezone = ?, updated_at = ? WHERE id = ?",
+                        (run_at_text, normalize_text(timezone_name), now, int(waiting["id"])),
+                    )
+                    row = conn.execute("SELECT * FROM account_finding_scans WHERE id = ?", (int(waiting["id"]),)).fetchone()
+                    return self._finding_scan_row(row)
+                return self._finding_scan_row(waiting)
+            cursor = conn.execute(
+                """
+                INSERT INTO account_finding_scans (
+                    user_id, kind, status, run_at, timezone, attempt_count, summary_json, last_error, created_at, updated_at
+                ) VALUES (?, ?, 'pending', ?, ?, 0, '{}', '', ?, ?)
+                """,
+                (int(user_id), wanted, run_at_text, normalize_text(timezone_name), now, now),
+            )
+            row = conn.execute("SELECT * FROM account_finding_scans WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
+        return self._finding_scan_row(row)
+
+    def list_due_finding_scans(self, *, now: str | datetime | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM account_finding_scans
+                WHERE status = 'pending' AND run_at <= ?
+                ORDER BY run_at ASC, id ASC LIMIT ?
+                """,
+                (reference, max(1, int(limit))),
+            ).fetchall()
+        return [record for record in (self._finding_scan_row(row) for row in rows) if record]
+
+    def list_finding_scans_for_user(self, *, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM account_finding_scans WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                (int(user_id), max(1, int(limit))),
+            ).fetchall()
+        return [record for record in (self._finding_scan_row(row) for row in rows) if record]
+
+    def claim_finding_scan(self, scan_id: int) -> dict[str, Any] | None:
+        if int(scan_id or 0) <= 0:
+            return None
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE account_finding_scans
+                SET status = 'running', attempt_count = attempt_count + 1, claimed_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (now, now, int(scan_id)),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            row = conn.execute("SELECT * FROM account_finding_scans WHERE id = ?", (int(scan_id),)).fetchone()
+        return self._finding_scan_row(row)
+
+    def finish_finding_scan(
+        self,
+        *,
+        scan_id: int,
+        status: str,
+        summary: dict[str, Any] | None = None,
+        last_error: str = "",
+    ) -> None:
+        wanted = normalize_text(status).lower()
+        if wanted not in {"done", "failed", "pending"}:
+            raise ValueError("Unknown scan status.")
+        now = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE account_finding_scans
+                SET status = ?, finished_at = ?, summary_json = ?, last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    wanted,
+                    now if wanted != "pending" else None,
+                    json.dumps(summary or {}, ensure_ascii=True, sort_keys=True, default=str),
+                    normalize_text(last_error)[:600],
+                    now,
+                    int(scan_id),
+                ),
+            )
+
+    def requeue_stale_finding_scans(
+        self,
+        *,
+        older_than_seconds: int = STALE_CLAIM_SECONDS * 2,
+        max_attempts: int = MAX_SCHEDULED_ACTION_ATTEMPTS,
+        now: str | datetime | None = None,
+    ) -> int:
+        """Return scans abandoned mid-run to pending, and fail the ones that
+        have used up their attempts."""
+
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc)
+        cutoff = (reference - timedelta(seconds=max(1, int(older_than_seconds)))).isoformat()
+        timestamp = reference.isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                UPDATE account_finding_scans
+                SET status = 'failed', last_error = 'Abandoned while running and out of retry attempts.', updated_at = ?
+                WHERE status = 'running' AND claimed_at IS NOT NULL AND claimed_at <= ? AND attempt_count >= ?
+                """,
+                (timestamp, cutoff, max(1, int(max_attempts))),
+            )
+            cursor = conn.execute(
+                """
+                UPDATE account_finding_scans
+                SET status = 'pending', claimed_at = NULL, updated_at = ?
+                WHERE status = 'running' AND claimed_at IS NOT NULL AND claimed_at <= ?
+                """,
+                (timestamp, cutoff),
+            )
+        return int(cursor.rowcount or 0)
 
     def create_account_receipt(self, *, user_id: int, record: dict[str, Any]) -> dict[str, Any]:
         """A receipt the owner typed in by hand: no email behind it."""

@@ -252,9 +252,25 @@ class ScheduledActionScheduler:
         if action_type == STANDING_TASK_ACTION_TYPE:
             if self.task_runner is None:
                 raise RuntimeError("Standing actions are not enabled on this server.")
-            message_text = normalize_text(self.task_runner(action))
-            if not message_text:
-                raise RuntimeError("The standing action produced nothing to send.")
+            try:
+                message_text = normalize_text(self.task_runner(action))
+                if not message_text:
+                    raise RuntimeError("The standing action produced nothing to send.")
+            except Exception as exc:  # noqa: BLE001 - a one-off with figures in hand still goes
+                # A one-off queued by the server (what a mailbox scan found)
+                # carries the plain sentence its figures make on their own.
+                # When the model cannot write the message, that sentence is
+                # sent rather than nothing: the figures are the point.
+                fallback = normalize_text(payload.get("fallbackText"))
+                if not fallback or is_standing_task(action):
+                    raise
+                print(
+                    f"[scheduled-actions] action={action.get('id')} the assistant could not write the message, "
+                    f"sending the plain one instead: {exc}",
+                    flush=True,
+                )
+                payload["taskRunnerError"] = str(exc)
+                message_text = fallback
         elif action_type == "send_message":
             message_text = normalize_text(payload.get("messageText") or payload.get("text"))
             if not message_text:
