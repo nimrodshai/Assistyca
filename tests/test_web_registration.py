@@ -163,7 +163,8 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(first["results"][0]["action"], "signup_started")
         concierge_prompt = self.model.call_args.kwargs["prompt"]
         self.assertIn('"registeredOnTheWebsite":{"name":"Dana Levi","whatTheyDo":"I run a small architecture studio"}', concierge_prompt)
-        self.assertIn("make every example fit their line of work", concierge_prompt)
+        self.assertIn("do not offer examples again", concierge_prompt)
+        self.assertIn("never repeat what your earlier messages", concierge_prompt)
         self.assertIn("What email should I set the account up with?", self.replies()[-1])
         self.assertIsNone(self.database.get_user("dana@example.com"))
 
@@ -270,6 +271,40 @@ class RegistrationWelcomeTextTests(unittest.TestCase):
     def test_the_signup_prompt_is_unchanged_for_a_stranger(self) -> None:
         prompt = build_signup_concierge_prompt(user_message="hi", transcript=[], attempt=1)
         self.assertNotIn("registered on the Assistyca website first", prompt)
+        self.assertIn("offer three or four concrete things they could say to you", prompt)
+
+    def test_a_reply_to_the_welcome_is_not_pitched_again(self) -> None:
+        # The welcome already said what Assistyca does and offered examples
+        # that fit the work; "Sure" is an answer to it, not a stranger's hello.
+        registration = {"name": "Stav Shai", "business": "I do it all"}
+        transcript = [{"role": "assistant", "text": "Hey Stav! I'm Assistyca ... Reply here and we'll get you set up."}]
+        for reply in ("Sure", "Yes! Let's do the tile supplier"):
+            prompt = build_signup_concierge_prompt(
+                user_message=reply, transcript=transcript, attempt=1, registration=registration,
+            )
+            self.assertIn("Do not introduce yourself again", prompt)
+            self.assertIn("do not offer examples again", prompt)
+            self.assertNotIn("offer three or four concrete things", prompt)
+            self.assertIn("need an email address to set up their account", prompt)
+            self.assertIn("address them by first name", prompt)
+
+    def test_a_registrant_who_asks_a_question_gets_it_answered(self) -> None:
+        prompt = build_signup_concierge_prompt(
+            user_message="What can you actually do for a plumber?",
+            transcript=[{"role": "assistant", "text": "Hey Stav! ..."}],
+            attempt=1,
+            registration={"name": "Stav Shai", "business": "Plumber"},
+        )
+        self.assertIn("Answer whatever they said or asked", prompt)
+        self.assertIn("never repeat what your earlier messages", prompt)
+        self.assertNotIn("Do not introduce yourself again", prompt)
+
+    def test_the_prompt_never_tells_the_model_how_the_address_is_read(self) -> None:
+        # "the app will detect it automatically" once leaked into a reply,
+        # straight from the rule that described the mechanism.
+        prompt = build_signup_concierge_prompt(user_message="Sure", transcript=[], attempt=1)
+        self.assertNotIn("detects the address itself", prompt)
+        self.assertIn("do not explain how the address will be read", prompt)
 
     def test_a_template_parameter_is_one_line(self) -> None:
         self.assertEqual(flatten_for_template("Hi\n\nthere\t  friend  "), "Hi there friend")
