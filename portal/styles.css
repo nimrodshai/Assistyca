@@ -3294,6 +3294,13 @@ body[data-modal="billing"] .app-shell {
   font-weight: 600;
 }
 
+/* What the permission allows, beside its name: "read & send", "read only". */
+.google-access-chip-mode {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
 /* Giving one permission back. It sits on the chip because that is where the
    permission is: a row of its own for each would rebuild the list this card
    just stopped being. */

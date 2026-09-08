@@ -61,6 +61,14 @@ from packages.infrastructure.agent_proposals import normalize_agent_file_context
 from packages.infrastructure.agent_proposals import normalize_agent_folder_context
 from packages.infrastructure.agent_proposals import normalize_agent_pending_choice
 from packages.infrastructure.agent_proposals import normalize_agent_tool_context
+from packages.infrastructure.calendar_write import CALENDAR_WRITE_OAUTH_SCOPE
+from packages.infrastructure.calendar_write import CalendarEventNotFoundError
+from packages.infrastructure.calendar_write import CalendarWritePermissionError
+from packages.infrastructure.calendar_write import CalendarWriter
+from packages.infrastructure.gmail_send import GMAIL_SEND_OAUTH_SCOPE
+from packages.infrastructure.gmail_send import GmailSendPermissionError
+from packages.infrastructure.gmail_send import GmailSender
+from packages.infrastructure.gmail_send import normalize_addresses
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
@@ -76,6 +84,8 @@ from packages.infrastructure.calendar_summary import CalendarListUnavailableErro
 from packages.infrastructure.calendar_summary import CalendarSummaryError
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import CALENDAR_MAX_CALENDARS
+from packages.infrastructure.calendar_summary import CALENDAR_ID_PATTERN
+from packages.infrastructure.calendar_summary import PRIMARY_CALENDAR_ID
 from packages.infrastructure.calendar_summary import calendar_field_names_a_calendar
 from packages.infrastructure.calendar_summary import normalize_selected_calendar_ids
 from packages.infrastructure.calendar_summary import parse_calendar_ids
@@ -474,6 +484,19 @@ GOOGLE_OAUTH_SCOPE_BY_ID = {
 GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID = {
     "calendar": (GOOGLE_CALENDAR_LIST_OAUTH_SCOPE,),
 }
+# What lets Assistyca write, asked for beside the read grant: sending from
+# Gmail, adding to and changing the calendar. Google grants each separately,
+# so a connection made before these were requested keeps reading exactly as
+# it did, and the row's grantedScope says whether it can also write. Drive
+# has nothing that writes to it yet, so it asks for nothing more.
+GOOGLE_OAUTH_WRITE_SCOPE_BY_ID = {
+    "calendar": CALENDAR_WRITE_OAUTH_SCOPE,
+    "gmail": GMAIL_SEND_OAUTH_SCOPE,
+}
+# A write scope that already covers reading: calendar.events includes what
+# calendar.events.readonly allows, so asking for both would put the same
+# permission on Google's consent screen twice.
+GOOGLE_OAUTH_WRITE_SCOPES_COVERING_READ = {"calendar"}
 GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID = {
     "calendar": CALENDAR_PLATFORM,
     "gmail": EMAIL_PLATFORM,
@@ -572,6 +595,31 @@ def normalize_calendar_selection(value: Any) -> list[dict[str, str]]:
         if len(selection) >= CALENDAR_MAX_CALENDARS:
             break
     return selection
+
+
+def google_scope_grants_write(granted_scope: Any, scope_id: str) -> bool:
+    """Whether a granted scope string lets this permission write."""
+
+    write_scope = GOOGLE_OAUTH_WRITE_SCOPE_BY_ID.get(scope_id, "")
+    if not write_scope:
+        return False
+    granted = {normalize_text(scope) for scope in re.split(r"\s+", normalize_text(granted_scope)) if normalize_text(scope)}
+    return write_scope in granted
+
+
+def google_connection_write_access(connection: dict[str, Any] | None, scope_id: str) -> bool:
+    """Whether a saved Google connection may write: send, add a meeting.
+
+    Answered from the grant Google reported when the row was saved, never
+    from the row's label: a mailbox connected before sending was asked for
+    reads as it always did and says no here.
+    """
+
+    record = connection if isinstance(connection, dict) else {}
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    if "grantedScope" in metadata:
+        return google_scope_grants_write(metadata.get("grantedScope"), scope_id)
+    return metadata.get("writeAccess") is True
 
 
 def connection_calendar_selection(connection: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -1413,6 +1461,8 @@ def build_mail_answer_records(items: Any) -> list[dict[str, str]]:
             "subject": normalize_text(item.get("subject")),
             "detail": normalize_text(item.get("snippet")),
             "mailbox": normalize_text(item.get("mailbox")),
+            # Which message this is, so a reply can be threaded onto it.
+            "messageId": normalize_text(item.get("id")),
         }
         trimmed = {key: value for key, value in record.items() if value}
         if len(trimmed) > 1:
@@ -4137,6 +4187,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/files/delete"
             or path == "/api/agent/files/move"
             or path == "/api/agent/folders/move"
+            or path == "/api/agent/email/send"
+            or path == "/api/agent/calendar/events"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -4233,6 +4285,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/files/delete"
             or path == "/api/agent/files/move"
             or path == "/api/agent/folders/move"
+            or path == "/api/agent/email/send"
+            or path == "/api/agent/calendar/events"
             or path == "/api/platform-connections"
             or path == "/api/platform-connections/calendars"
             or path.startswith("/api/admin/")
@@ -4596,6 +4650,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_platform_connection_calendars_post()
             return
 
+        if path == "/api/agent/email/send":
+            self._handle_agent_email_send_post()
+            return
+
+        if path == "/api/agent/calendar/events":
+            self._handle_agent_calendar_event_post()
+            return
+
         if path == "/api/whatsapp/test":
             self._handle_whatsapp_test()
             return
@@ -4755,7 +4817,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if scope_id not in GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID:
             return ()
-        return (GOOGLE_OAUTH_SCOPE_BY_ID[scope_id], *GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID.get(scope_id, ()))
+        write_scope = GOOGLE_OAUTH_WRITE_SCOPE_BY_ID.get(scope_id, "")
+        read_scopes: tuple[str, ...] = (GOOGLE_OAUTH_SCOPE_BY_ID[scope_id],)
+        if write_scope and scope_id in GOOGLE_OAUTH_WRITE_SCOPES_COVERING_READ:
+            read_scopes = ()
+        return (
+            *read_scopes,
+            *GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID.get(scope_id, ()),
+            *((write_scope,) if write_scope else ()),
+        )
 
     def _google_oauth_scope_text_for_id(self, scope_id: str) -> str:
         return " ".join(self._google_oauth_scopes_for_id(scope_id))
@@ -4785,10 +4855,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # Only the defining scope decides whether a permission connected. A
         # declined extra - the calendar list, say - leaves the connection
         # working and simply removes what that extra would have offered.
+        # A write grant covers reading where Google defines it so, which is
+        # why calendar.events alone connects the calendar.
         return tuple(
             scope_id
             for scope_id in requested_scope_ids
             if GOOGLE_OAUTH_SCOPE_BY_ID.get(scope_id) in granted_scopes
+            or (
+                scope_id in GOOGLE_OAUTH_WRITE_SCOPES_COVERING_READ
+                and GOOGLE_OAUTH_WRITE_SCOPE_BY_ID.get(scope_id) in granted_scopes
+            )
         )
 
     def _google_oauth_connected_message(self, connections: list[dict[str, Any]]) -> str:
@@ -4919,6 +4995,358 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "sources": sources,
         })
+
+    def _with_google_write_access(self, email: str, tool_context: dict[str, Any]) -> dict[str, Any]:
+        """The tool context with what each Google connection may write.
+
+        The browser and the WhatsApp channel both describe what is connected;
+        neither is trusted on what a grant allows. That is read from the saved
+        rows here, once per turn, so a tool that writes is offered exactly
+        when Google said it could.
+        """
+
+        context = dict(tool_context) if isinstance(tool_context, dict) else {}
+        try:
+            records = self.database.list_platform_connections(email)
+        except Exception:  # noqa: BLE001 - a store that cannot be read leaves the writes unavailable
+            return context
+        statuses = {"connected", "needs_attention"}
+        gmail_can_send = False
+        gmail_seen = False
+        calendar_can_write: bool | None = None
+        for record in records:
+            if normalize_text(record.get("connectionStatus")).lower() not in statuses:
+                continue
+            platform = normalize_text(record.get("platform")).lower()
+            provider = resolved_connection_provider(record)
+            if platform == CALENDAR_PLATFORM and provider == GOOGLE_CALENDAR_OAUTH_PROVIDER:
+                calendar_can_write = bool(calendar_can_write) or google_connection_write_access(record, "calendar")
+            elif platform == EMAIL_PLATFORM and provider == GOOGLE_GMAIL_OAUTH_PROVIDER:
+                gmail_seen = True
+                gmail_can_send = gmail_can_send or google_connection_write_access(record, "gmail")
+        if calendar_can_write is not None and isinstance(context.get("calendar"), dict):
+            context["calendar"] = {**context["calendar"], "writeAccess": calendar_can_write}
+        if gmail_seen and isinstance(context.get("gmail"), dict):
+            context["gmail"] = {**context["gmail"], "writeAccess": gmail_can_send}
+        return context
+
+    def _handle_agent_email_send_post(self) -> None:
+        """Send one email from a connected Gmail mailbox.
+
+        Called by the agent's send_email tool over loopback, after the person
+        said yes. With ``check`` true it settles which mailbox would send and
+        whether it may, and sends nothing: that is what the question asking
+        for the yes is built on.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        check_only = payload.get("check") is True
+        recipients = normalize_addresses(payload.get("to"))
+        copies = normalize_addresses(payload.get("cc"))
+        subject = normalize_contact_single_line(payload.get("subject"), 300)
+        body_text = normalize_contact_message(payload.get("body"), 20_000)
+        reply_to_message_id = normalize_contact_single_line(payload.get("replyToMessageId"), 200)
+        mailbox_selection = normalize_text(payload.get("mailboxAccount"))
+        if not recipients and not reply_to_message_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_recipient", "message": "At least one recipient email address is needed."})
+            return
+        if not body_text:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_body", "message": "The text of the email is needed."})
+            return
+        if not subject and not reply_to_message_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_subject", "message": "A subject line is needed."})
+            return
+
+        vault = self.credential_vault
+        records = [
+            record
+            for record in self.database.list_platform_connection_secret_records(
+                session.email, EMAIL_PLATFORM, include_statuses=("connected", "needs_attention"),
+            )
+            if (resolved_connection_provider(record) or GOOGLE_GMAIL_OAUTH_PROVIDER) == GOOGLE_GMAIL_OAUTH_PROVIDER
+        ]
+        if not records or vault is None:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "gmail_not_connected",
+                "message": "No Gmail mailbox is connected, so there is nothing to send from. Connect Google first.",
+            })
+            return
+        senders = [record for record in records if google_connection_write_access(record, "gmail")]
+        if not senders:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "gmail_send_permission_required",
+                "message": GmailSendPermissionError().args[0],
+            })
+            return
+        names = mailbox_display_names(senders)
+
+        def name_of(record: dict[str, Any]) -> str:
+            return names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
+
+        if mailbox_selection:
+            chosen = [record for record in senders if mailbox_matches_selection(record, mailbox_selection)]
+            if not chosen:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "mailbox_not_connected",
+                    "message": f"{describe_mailbox_selection(mailbox_selection)} is not a connected Gmail mailbox that can send. The ones that can: {', '.join(name_of(r) for r in senders)}.",
+                    "mailboxes": [name_of(record) for record in senders],
+                })
+                return
+        elif len(senders) == 1:
+            chosen = senders
+        else:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "mailbox_choice_required",
+                "message": f"More than one Gmail mailbox can send. Ask which one: {', '.join(name_of(r) for r in senders)}.",
+                "mailboxes": [name_of(record) for record in senders],
+            })
+            return
+        record = chosen[0]
+        mailbox_name = name_of(record)
+        if check_only:
+            json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "mailbox": mailbox_name})
+            return
+
+        try:
+            access_token, _ = self._resolve_gmail_access_token(vault.decrypt(record.get("secretCiphertext") or ""))
+            sent = GmailSender().send(
+                access_token,
+                to=recipients,
+                cc=copies,
+                subject=subject,
+                body_text=body_text,
+                reply_to_message_id=reply_to_message_id,
+                from_address=normalize_text(record.get("accountAddress")),
+            )
+        except CredentialVaultError:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "email_setup_required",
+                "message": f"The saved connection for {mailbox_name} could not be opened securely. Reconnect it and try again.",
+            })
+            return
+        except GmailSendPermissionError as exc:
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except GmailAuthorizationError as exc:
+            self._flag_mailbox_needs_attention(session.email, record, GOOGLE_GMAIL_OAUTH_PROVIDER)
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_email", "message": str(exc)})
+            return
+        except GmailSummaryError as exc:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+
+        print(json.dumps({
+            "event": "agent_email_sent",
+            "userEmail": session.email,
+            "mailbox": mailbox_name,
+            "recipientCount": len(sent.get("to") or []),
+            "isReply": bool(sent.get("isReply")),
+        }), flush=True)
+        json_response(self, HTTPStatus.OK, {"ok": True, "sent": sent, "mailbox": mailbox_name})
+
+    def _resolve_calendar_for_write(
+        self,
+        record: dict[str, Any],
+        requested: str,
+    ) -> tuple[str, str, dict[str, Any] | None]:
+        """Which calendar a write goes to: its id, its label, or the refusal.
+
+        A name in the person's words is matched against the calendars the
+        account holds. With no name, the one calendar they chose to read is
+        the one written to; several chosen is a question, and none chosen
+        means the account's own.
+        """
+
+        available = normalize_calendar_selection(
+            (record.get("metadata") or {}).get(CALENDAR_AVAILABLE_METADATA_KEY)
+            if isinstance(record.get("metadata"), dict)
+            else []
+        )
+        selected = connection_calendar_selection(record)
+        known = {entry["id"]: entry for entry in [*selected, *available]}
+        wanted = " ".join(str(requested or "").split())
+        if wanted:
+            lowered = wanted.lower()
+            if lowered == "primary" or lowered in known:
+                entry = known.get(lowered) or {"id": lowered, "label": "My calendar" if lowered == "primary" else lowered}
+                return entry["id"], entry["label"], None
+            exact = [entry for entry in known.values() if entry["label"].lower() == lowered]
+            loose = [entry for entry in known.values() if len(lowered) >= 3 and lowered in entry["label"].lower()]
+            matches = exact or loose
+            if len(matches) == 1:
+                return matches[0]["id"], matches[0]["label"], None
+            if not matches and CALENDAR_ID_PATTERN.match(lowered):
+                return lowered, lowered, None
+            known_names = ", ".join(entry["label"] for entry in known.values()) or "only the account's own"
+            match_names = ", ".join(entry["label"] for entry in matches)
+            return "", "", {
+                "ok": False,
+                "error": "calendar_not_found" if not matches else "calendar_choice_required",
+                "message": (
+                    f"No calendar called '{wanted}' is in this Google account. The calendars: {known_names}."
+                    if not matches
+                    else f"'{wanted}' could mean more than one calendar: {match_names}. Ask which."
+                ),
+                "calendars": [entry["label"] for entry in (matches or known.values())],
+            }
+        if len(selected) == 1:
+            return selected[0]["id"], selected[0]["label"], None
+        if len(selected) > 1:
+            return "", "", {
+                "ok": False,
+                "error": "calendar_choice_required",
+                "message": f"The person reads more than one calendar; ask which one this goes in: {', '.join(e['label'] for e in selected)}.",
+                "calendars": [entry["label"] for entry in selected],
+            }
+        return PRIMARY_CALENDAR_ID, "My calendar", None
+
+    def _handle_agent_calendar_event_post(self) -> None:
+        """Add, change or cancel a meeting in the connected Google Calendar.
+
+        Called by the agent's calendar tools over loopback after the person
+        said yes. ``check`` true settles the calendar and the permission and
+        writes nothing.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        action = normalize_text(payload.get("action")).lower() or "create"
+        if action not in {"create", "update", "cancel"}:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_action", "message": "action is create, update or cancel."})
+            return
+        check_only = payload.get("check") is True
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        event_id = normalize_contact_single_line(payload.get("eventId"), 200)
+        if action != "create" and not event_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_event", "message": "Which meeting is meant is needed: its eventId from the calendar read."})
+            return
+
+        record = self._calendar_connection_record(session.email)
+        vault = self.credential_vault
+        if record is None or vault is None:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_setup_required",
+                "message": "No calendar is connected, so nothing can be added to it. Connect Google first.",
+            })
+            return
+        if not google_connection_write_access(record, "calendar"):
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_write_permission_required",
+                "message": CalendarWritePermissionError().args[0],
+            })
+            return
+        calendar_id, calendar_label, refusal = self._resolve_calendar_for_write(record, normalize_text(payload.get("calendar")))
+        if refusal is not None:
+            json_response(self, HTTPStatus.CONFLICT, refusal)
+            return
+        if check_only:
+            json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "calendar": calendar_label, "calendarId": calendar_id})
+            return
+
+        ciphertext = normalize_text(self.database.get_platform_connection_ciphertext(
+            session.email, CALENDAR_PLATFORM, include_statuses=("connected", "needs_verification", "needs_attention"),
+        ) or "")
+
+        def text_or_none(key: str) -> str | None:
+            value = payload.get(key)
+            return None if value is None else normalize_contact_single_line(value, 300)
+
+        try:
+            access_token, _ = self._resolve_calendar_access_token(vault.decrypt(ciphertext))
+            writer = CalendarWriter()
+            if action == "create":
+                event = writer.create_event(
+                    access_token,
+                    calendar_id=calendar_id,
+                    title=normalize_contact_single_line(payload.get("title"), 300),
+                    date_text=normalize_text(payload.get("date")),
+                    start_time=normalize_text(payload.get("startTime")) or None,
+                    end_time=normalize_text(payload.get("endTime")) or None,
+                    timezone_name=timezone_name,
+                    location=normalize_contact_single_line(payload.get("location"), 300),
+                    description=normalize_contact_message(payload.get("description"), 4000),
+                    attendees=normalize_addresses(payload.get("attendees")),
+                )
+            elif action == "update":
+                event = writer.update_event(
+                    access_token,
+                    calendar_id=calendar_id,
+                    event_id=event_id,
+                    title=text_or_none("title"),
+                    date_text=normalize_text(payload.get("date")) or None,
+                    start_time=normalize_text(payload.get("startTime")) or None,
+                    end_time=normalize_text(payload.get("endTime")) or None,
+                    location=text_or_none("location"),
+                    description=None if payload.get("description") is None else normalize_contact_message(payload.get("description"), 4000),
+                    timezone_name=timezone_name,
+                )
+            else:
+                event = writer.cancel_event(access_token, calendar_id=calendar_id, event_id=event_id)
+        except CredentialVaultError:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_setup_required",
+                "message": "The saved calendar connection could not be opened securely. Reconnect it and try again.",
+            })
+            return
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_event", "message": str(exc)})
+            return
+        except CalendarWritePermissionError as exc:
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except CalendarEventNotFoundError as exc:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except CalendarAuthorizationError as exc:
+            self.database.update_platform_connection_status(
+                session.email, platform=CALENDAR_PLATFORM, connection_status="needs_attention",
+                metadata_updates={"validationStatus": "failed", "lastError": str(exc)},
+            )
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": getattr(exc, "code", "calendar_authorization_failed"), "message": str(exc)})
+            return
+        except CalendarSummaryError as exc:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+
+        print(json.dumps({
+            "event": "agent_calendar_event_written",
+            "userEmail": session.email,
+            "action": action,
+            "calendar": calendar_label,
+        }), flush=True)
+        json_response(self, HTTPStatus.OK, {"ok": True, "action": action, "event": event, "calendar": calendar_label, "calendarId": calendar_id})
 
     def _handle_platform_connection_calendars_post(self) -> None:
         """Save which of the account's calendars Assistyca may read.
@@ -5249,7 +5677,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         granted_scope_ids = self._granted_google_oauth_scope_ids(granted_scope, requested_scope_ids)
         if not granted_scope_ids:
-            raise CalendarAuthorizationError("Google did not grant the selected read-only access. Try connecting Google again.")
+            raise CalendarAuthorizationError("Google did not grant the selected access. Try connecting Google again.")
 
         validation_results: dict[str, dict[str, Any]] = {}
         if "calendar" in granted_scope_ids:
@@ -5326,6 +5754,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "validationStatus": "verified",
                     "scope": self._google_oauth_scope_text_for_id(scope_id),
                     "grantedScope": granted_scope,
+                    # Read by the portal card and the agent's tool context;
+                    # grantedScope above is what it is derived from.
+                    "writeAccess": google_scope_grants_write(granted_scope, scope_id),
                     "validatedAt": now,
                     **validation_results.get(scope_id, {}),
                 },
@@ -9416,7 +9847,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         conversation = normalize_agent_proposal_revision_conversation(payload.get("conversation"))
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         channel = normalize_contact_single_line(payload.get("channel"), 20).lower() or "portal"
-        tool_context = normalize_agent_tool_context(payload.get("toolContext"))
+        tool_context = self._with_google_write_access(session.email, normalize_agent_tool_context(payload.get("toolContext")))
         confirmed_call = payload.get("confirmedCall") if isinstance(payload.get("confirmedCall"), dict) else None
         declined_call = payload.get("declinedCall") if isinstance(payload.get("declinedCall"), dict) else None
         open_question = payload.get("openQuestion") if isinstance(payload.get("openQuestion"), dict) else None

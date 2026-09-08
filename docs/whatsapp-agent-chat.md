@@ -589,7 +589,8 @@ to "I'm checking now" before anything was checked.
 The tools are the registry in `agent_loop.py`: `read_inbox`, `read_calendar`,
 `search_receipts`, `exchange_rate`, `open_receipts`, `connect_link`,
 `disconnect`, `sign_out`, `delete_account`, `schedule_message`, `remember_fact`,
-`forget_fact`. Each
+`forget_fact`, and the three that write to Google: `send_email`,
+`create_calendar_event`, `update_calendar_event`. Each
 declares what it needs connected (`LOOKUP_SOURCE_REQUIREMENTS`), whether it
 changes anything, and whether it needs a yes. A tool whose source is not
 connected is shown to the model as UNAVAILABLE with the reason and the way
@@ -603,7 +604,8 @@ schema the API enforces (`REPLY_TEXT_FORMAT`, strict), so a reply that cannot
 be read is impossible by construction. Six tool calls per turn; past that the
 model is told the budget is spent and writes from what it has.
 
-**Actions that need a yes** (`disconnect`, `sign_out`, `delete_account`)
+**Actions that need a yes** (`disconnect`, `sign_out`, `delete_account`,
+`send_email`, `create_calendar_event`, `update_calendar_event`)
 pause the
 turn: the first call returns `confirmation_required` with what exactly would
 happen, the model asks for a plain yes, and the chat stores the call itself
@@ -615,6 +617,18 @@ stored call - never a fresh decision - and the model is handed the result as
 anything else goes to the model with `openQuestion` in view. A calendar
 choice a tool asks for comes back as `calendarChoice` and the chat shows the
 picker it already had.
+
+**Writing to Google** needs the write grant beside the read one
+(`docs/platform-connections.md`, "Writing through Google"). A mailbox or
+calendar connected for reading only leaves the write tools UNAVAILABLE with
+the reason and `connect_link` as the way round it; the WhatsApp sign-in link
+asks for the write scopes, so reconnecting from the chat adds them. The tools
+run a `check` against the endpoint before the question is asked, so the yes
+is only ever asked for something that can happen, and the question names the
+recipient, subject and text of an email, or the title, day, time, calendar
+and guests of a meeting. `reply_to_message_id` is the `messageId` a
+`read_inbox` record now carries; `event_id` and `calendar_id` are the
+`eventId` and `calendarId` a `read_calendar` record now carries.
 
 **The clock is a fact code holds.** The model has no clock, so `CONTEXT`
 carries `today` and `now` (the date and the HH:MM where the person is,
