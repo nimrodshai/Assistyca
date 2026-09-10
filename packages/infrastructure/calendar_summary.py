@@ -632,6 +632,11 @@ def describe_calendar_records(events: list[dict[str, Any]]) -> list[dict[str, st
             "title": str(event.get("title") or "").strip(),
             "location": str(event.get("location") or "").strip(),
             "detail": re.sub(r"\s+", " ", str(event.get("description") or "")).strip()[:240],
+            # Which meeting this is, so "move my 3pm to 4" can name it to
+            # Google without a second read. An id alone is not enough: the
+            # calendar it lives in is part of the address.
+            "eventId": str(event.get("id") or "").strip(),
+            "calendarId": str(event.get("calendarId") or "").strip(),
         }
         records.append({key: value for key, value in record.items() if value})
     return records
@@ -979,7 +984,7 @@ class CalendarSummaryRunner:
         )
         raw_events = payload.get("items") if isinstance(payload.get("items"), list) else []
         events = [
-            normalized
+            {**normalized, "calendarId": safe_calendar_id}
             for item in raw_events
             if isinstance(item, dict)
             for normalized in [normalize_calendar_event(item, timezone_name=str(date_range.start.tzinfo or "UTC"))]

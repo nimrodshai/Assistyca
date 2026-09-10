@@ -79,6 +79,48 @@ comes back with `status: "needs_reconnect"` and an empty calendar list rather
 than an error. The editor keeps its address box for that case, and for a
 calendar that was shared but never added to the account's own list.
 
+## Writing through Google
+
+Reading and writing are separate grants at Google, and connecting asks for
+both: `gmail.send` beside `gmail.readonly`, and `calendar.events` in place of
+`calendar.events.readonly` (the write scope covers reading, so the read scope
+is not put on the consent screen twice). Drive asks for nothing more, because
+nothing writes to it yet.
+
+Whether a row can write is derived from `metadata.grantedScope`, the scope
+string Google returned when the row was saved, and repeated as
+`metadata.writeAccess` for the portal card. A connection made before writing
+was asked for reads exactly as it always did and says `writeAccess: false`;
+the Google card names it as "read only" and says a reconnect adds the
+permission. The WhatsApp sign-in link asks for the write scopes too, so a
+reconnect from the chat is enough.
+
+`google_connection_write_access(record, scope_id)` in `server.py` is the one
+place that answers the question, and `_with_google_write_access` puts the
+answer into the agent's tool context once per turn, from the rows rather than
+from what the browser claims. `connected_sources` then reports `gmail_send`
+and `calendar_write` as sources of their own, which is what the write tools
+require.
+
+The writes themselves are `POST /api/agent/email/send` (`gmail_send.py`,
+`GmailSender`) and `POST /api/agent/calendar/events` with `action` create,
+update or cancel (`calendar_write.py`, `CalendarWriter`). Both accept
+`check: true`, which settles the mailbox or calendar and the permission and
+writes nothing; the agent's tools call that before asking the person for a
+yes, so a question is only ever asked about something that can happen. An
+email leaves from the one Gmail mailbox that can send, or from the one named
+by `mailboxAccount`; two that can send and none named is
+`mailbox_choice_required`. A meeting goes into the one calendar the account
+chose to read, or the one named in the person's words matched against the
+calendars the account holds; several chosen and none named is
+`calendar_choice_required`. Attendees are told by Google (`sendUpdates=all`),
+the way they would be if the person had done it by hand.
+
+Google's OAuth consent screen has to list the two new scopes
+(`.../auth/gmail.send`, `.../auth/calendar.events`) for the grant to be
+offered; `gmail.send` is a restricted scope like `gmail.readonly`, so an app
+verified for one needs the other added to its verification.
+
 ## Email providers
 
 A user may connect several mailboxes, in any mix of the two providers. Each
@@ -86,7 +128,7 @@ one is its own `email` connection row, identified by its address:
 
 | Provider | `metadata.provider` | Grant | Reader |
 | --- | --- | --- | --- |
-| Gmail | `google_gmail` | `gmail.readonly` | `gmail_summary.py` |
+| Gmail | `google_gmail` | `gmail.readonly` + `gmail.send` | `gmail_summary.py` (reads), `gmail_send.py` (sends) |
 | Outlook / Microsoft 365 | `microsoft_outlook` | `Mail.Read` + `User.Read` + `offline_access` | `outlook_summary.py` |
 
 Both readers return the same per-message shape (`id`, `threadId`, `from`,

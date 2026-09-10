@@ -35,6 +35,9 @@ from packages.infrastructure.agent_proposals import LOOKUP_SOURCE_REQUIREMENTS
 from packages.infrastructure.agent_proposals import build_agent_turn_input
 from packages.infrastructure.agent_proposals import connected_sources
 from packages.infrastructure.agent_proposals import describe_agent_photo_context
+from packages.infrastructure.calendar_write import build_event_times
+from packages.infrastructure.gmail_send import normalize_addresses
+from packages.infrastructure.mailbox_findings import describe_finding
 from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
@@ -167,6 +170,11 @@ class LoopContext:
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
+    # When the person asked to change the choice themselves (choose_calendars)
+    # rather than a lookup stumbling on a missing one: the picker opens with
+    # these ticked, and there is no interrupted question to answer after it.
+    calendar_choice_selected: list[str] = field(default_factory=list)
+    calendar_choice_requested: bool = False
     # Builds the link to one list on the lists page, signed in for the
     # channel that has no browser session. The server knows the public
     # address and the session secret; the loop only hands the link on.
@@ -186,6 +194,8 @@ class LoopResult:
     tool_calls: list[dict[str, Any]]
     pending_confirmation: dict[str, Any] | None = None
     calendar_choice: list[dict[str, Any]] | None = None
+    calendar_choice_selected: list[str] = field(default_factory=list)
+    calendar_choice_requested: bool = False
     remember_fact: dict[str, str] | None = None
     forget_fact: str = ""
     # What the model made of an open confirmation: "yes", "no", or "" when
@@ -398,6 +408,130 @@ def _tool_read_inbox(context: LoopContext, args: dict[str, Any]) -> dict[str, An
 
 def _tool_read_calendar(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     return _run_lookup(context, "calendar-summary", _fields(timeWindow=args.get("time_window") or "today"))
+
+
+def _calendar_names(entries: list[dict[str, Any]]) -> list[str]:
+    return [str(entry.get("label") or entry.get("id") or "").strip() for entry in entries]
+
+
+def _match_calendar(name: str, available: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The calendars a name in the person's words could mean.
+
+    The full label, the part before the @ of an address, or a whole label
+    that contains the words - so 'work' finds 'Work (shared)' but a single
+    letter never finds anything.
+    """
+
+    wanted = " ".join(str(name or "").split()).lower()
+    if not wanted:
+        return []
+    exact: list[dict[str, Any]] = []
+    loose: list[dict[str, Any]] = []
+    for entry in available:
+        label = " ".join(str(entry.get("label") or "").split()).lower()
+        short = label.split("@", 1)[0] if "@" in label else label
+        if wanted in {label, short}:
+            exact.append(entry)
+        elif len(wanted) >= 3 and wanted in label:
+            loose.append(entry)
+    return exact or loose
+
+
+def _tool_choose_calendars(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Show or change which of the account's calendars are read.
+
+    With names it saves the change here and now. Without names it reports
+    the current choice and, on WhatsApp, has the picker shown with the
+    current calendars ticked, so the person can add or remove by tapping.
+    """
+
+    response, status = context.api("GET", "/api/platform-connections/calendars")
+    sources = [entry for entry in (response.get("sources") or []) if isinstance(entry, dict)] if status == 200 else []
+    if not sources:
+        return _error("source_not_connected", "The calendar is not connected, so there are no calendars to choose from.", source="calendar")
+    source = sources[0]
+    available = [entry for entry in (source.get("calendars") or []) if isinstance(entry, dict) and entry.get("id")]
+    if str(source.get("status") or "") != "ok" or not available:
+        return _error(
+            "unavailable",
+            str(source.get("message") or "The list of calendars could not be read just now.").strip(),
+            can_retry=True,
+        )
+    by_id = {str(entry.get("id")): entry for entry in available}
+    selected = [
+        by_id.get(str(entry.get("id")), entry)
+        for entry in (source.get("selectedCalendars") or [])
+        if isinstance(entry, dict) and entry.get("id")
+    ]
+    add = [str(name) for name in (args.get("add") or []) if isinstance(name, str) and name.strip()]
+    remove = [str(name) for name in (args.get("remove") or []) if isinstance(name, str) and name.strip()]
+    current = {"readCalendars": _calendar_names(selected), "availableCalendars": _calendar_names(available)}
+
+    if not add and not remove:
+        if context.channel == "whatsapp" and len(available) > 1:
+            context.calendar_choice = available
+            context.calendar_choice_selected = [str(entry.get("id")) for entry in selected]
+            context.calendar_choice_requested = True
+            note = (
+                "The list of their calendars is being shown under your reply, with the ones read now ticked. "
+                "Say in one short line that they can tap a calendar to add or remove it and then Done; do not "
+                "list the calendars yourself."
+            )
+        elif len(available) == 1:
+            note = "The account holds only this one calendar, so there is nothing else to choose."
+        else:
+            note = (
+                "To change them, the person names the calendars to add or remove here, or opens the Google "
+                "Calendar tool in the Assistyca portal and chooses 'Choose calendars'."
+            )
+        return _ok({**current, "note": note})
+
+    unknown: list[str] = []
+    ambiguous: list[str] = []
+    to_add: list[dict[str, Any]] = []
+    to_remove: list[dict[str, Any]] = []
+    for names, target in ((add, to_add), (remove, to_remove)):
+        for name in names:
+            matches = _match_calendar(name, available)
+            if len(matches) == 1:
+                target.append(matches[0])
+            elif matches:
+                ambiguous.append(name)
+            else:
+                unknown.append(name)
+    if unknown or ambiguous:
+        parts = []
+        if unknown:
+            parts.append(f"There is no calendar called {', '.join(unknown)}.")
+        if ambiguous:
+            parts.append(f"More than one calendar could be {', '.join(ambiguous)}.")
+        parts.append(f"The calendars are: {', '.join(current['availableCalendars'])}.")
+        return _error("choice_required", " ".join(parts), **current)
+
+    remove_ids = {str(entry.get("id")) for entry in to_remove}
+    chosen = [entry for entry in selected if str(entry.get("id")) not in remove_ids]
+    for entry in to_add:
+        if str(entry.get("id")) not in {str(e.get("id")) for e in chosen}:
+            chosen.append(entry)
+    if not chosen:
+        return _error(
+            "choice_required",
+            "At least one calendar has to stay read; ask which one to read instead.",
+            **current,
+        )
+    saved, status = context.api(
+        "POST",
+        "/api/platform-connections/calendars",
+        {"calendars": [{"id": e.get("id"), "label": e.get("label"), "color": e.get("color")} for e in chosen]},
+    )
+    if status != 200 or not saved.get("ok"):
+        return _error("internal", "The choice could not be saved just now.", can_retry=True)
+    return _ok({
+        "readCalendars": _calendar_names(chosen),
+        "availableCalendars": current["availableCalendars"],
+        "added": _calendar_names(to_add),
+        "removed": _calendar_names(to_remove),
+    })
 
 
 def _tool_search_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -826,6 +960,62 @@ def _tool_remember_fact(context: LoopContext, args: dict[str, Any]) -> dict[str,
     return _ok({"key": key, "fact": fact})
 
 
+def _tool_show_findings(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """What the mailbox scans found and have not been told to go away."""
+
+    try:
+        findings = context.database.list_account_findings(user_id=context.user_id, statuses=("new", "told"))
+        scans = context.database.list_finding_scans_for_user(user_id=context.user_id, limit=1)
+    except Exception:  # noqa: BLE001
+        return _error("internal", "Could not read what the mailbox scans found just now.", can_retry=True)
+    last = scans[0] if scans else {}
+    note = (
+        "These come from reading the mailbox itself: invoices the person sent with no payment found after them, "
+        "bills and renewals coming due, and recurring charges that went up. 'told' means the person was already "
+        "messaged about it. If the person says one is settled or not a thing, call dismiss_finding with its id."
+    )
+    if not findings:
+        return _ok({
+            "findings": [],
+            "note": "Nothing is waiting right now. " + note,
+            "lastScan": {"kind": last.get("kind"), "status": last.get("status"), "finishedAt": last.get("finishedAt")} if last else None,
+        })
+    return _ok({
+        "findings": [
+            {
+                "id": int(finding.get("id") or 0),
+                "kind": str(finding.get("detector") or ""),
+                "status": str(finding.get("status") or ""),
+                "summary": describe_finding(finding),
+                "amount": finding.get("amount"),
+                "currency": finding.get("currency"),
+                "dueOn": finding.get("dueOn") or None,
+                "emails": [str(source.get("subject") or "") for source in (finding.get("sources") or []) if isinstance(source, dict)][:3],
+            }
+            for finding in findings[:MAX_RECORDS_TO_MODEL]
+        ],
+        "note": note,
+        "lastScan": {"kind": last.get("kind"), "status": last.get("status"), "finishedAt": last.get("finishedAt")} if last else None,
+    })
+
+
+def _tool_dismiss_finding(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        finding_id = int(args.get("id") or 0)
+    except (TypeError, ValueError):
+        finding_id = 0
+    if finding_id <= 0:
+        return _error("nothing_found", "Which finding to drop was not said: id is its number from show_findings.")
+    try:
+        finding = context.database.get_account_finding(user_id=context.user_id, finding_id=finding_id)
+        if finding is None:
+            return _error("nothing_found", "There is no finding with that number.")
+        context.database.set_account_finding_status(user_id=context.user_id, finding_id=finding_id, status="dismissed")
+    except Exception:  # noqa: BLE001
+        return _error("internal", "Could not drop that finding just now.", can_retry=True)
+    return _ok({"dismissed": finding_id, "summary": describe_finding(finding)})
+
+
 def _tool_forget_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     key = str(args.get("key") or "").strip().lower()
     if not key:
@@ -1095,6 +1285,240 @@ def _tool_show_lists(context: LoopContext, args: dict[str, Any]) -> dict[str, An
 def _lists_home_link(context: LoopContext) -> str:
     return _list_link(context, {"id": 0})
 
+# -- writing to the person's accounts ------------------------------------------
+
+
+def _write_failure(response: dict[str, Any], status: int, *, source: str) -> dict[str, Any]:
+    """A write endpoint's refusal, read into the envelope the model knows."""
+
+    code = str(response.get("error") or "").strip().lower()
+    message = str(response.get("message") or "").strip()
+    if code in {"gmail_send_permission_required", "calendar_write_permission_required"}:
+        return _error("source_not_connected", message, source=source)
+    if code in {"gmail_not_connected", "mailbox_not_connected", "email_setup_required", "calendar_setup_required", "calendar_not_connected"}:
+        return _error("source_not_connected", message or "That account is not connected.", source=source)
+    if code in {"mailbox_choice_required", "calendar_choice_required", "calendar_not_found"}:
+        extra: dict[str, Any] = {}
+        for key in ("mailboxes", "calendars"):
+            if isinstance(response.get(key), list):
+                extra[key] = [str(item) for item in response[key]][:8]
+        return _error("choice_required", message, **extra)
+    if code.startswith("invalid_") or status == 400:
+        return _error("choice_required", message or "Something in the request was missing or malformed.")
+    if code in {"gmail_message_not_found", "calendar_event_not_found"}:
+        return _error("nothing_found", message)
+    if status == 402:
+        return _error("not_supported", message or "The trial has ended.")
+    if status == 429:
+        return _error("rate_limited", "Too many requests at once; this one was not taken.", can_retry=True)
+    return _error("provider_unavailable", message or "That could not be done just now.", can_retry=True)
+
+
+def _send_email_payload(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "to": [str(item) for item in (args.get("to") or []) if str(item or "").strip()],
+        "cc": [str(item) for item in (args.get("cc") or []) if str(item or "").strip()],
+        "subject": str(args.get("subject") or "").strip(),
+        "body": str(args.get("body") or "").strip(),
+        "replyToMessageId": str(args.get("reply_to_message_id") or "").strip(),
+        "mailboxAccount": str(args.get("mailbox") or "").strip(),
+    }
+
+
+def _preflight_send_email(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
+    payload = _send_email_payload(context, args)
+    if payload["to"] and not normalize_addresses(payload["to"]):
+        return _error("choice_required", "None of the recipients is an email address. Ask the person for the address to send it to.")
+    if not payload["to"] and not payload["replyToMessageId"]:
+        return _error("choice_required", "Who the email goes to is needed, as an email address; ask the person.")
+    if not payload["body"]:
+        return _error("choice_required", "The text of the email is needed before it can be sent.")
+    if not payload["subject"] and not payload["replyToMessageId"]:
+        return _error("choice_required", "A subject line is needed.")
+    # The mailbox it would leave from is settled before the question is
+    # asked, so a person with two Gmail accounts is asked which one rather
+    # than saying yes to a send that then stops to ask.
+    response, status = context.api("POST", "/api/agent/email/send", {**payload, "check": True})
+    if status != 200 or not response.get("ok"):
+        return _write_failure(response, status, source="gmail_send")
+    return None
+
+
+def _tool_send_email(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    payload = _send_email_payload(context, args)
+    response, status = context.api("POST", "/api/agent/email/send", payload)
+    if status == 200 and response.get("ok"):
+        sent = response.get("sent") if isinstance(response.get("sent"), dict) else {}
+        return _ok({
+            "sent": {
+                "to": [str(item) for item in (sent.get("to") or [])],
+                "cc": [str(item) for item in (sent.get("cc") or [])],
+                "subject": str(sent.get("subject") or ""),
+                "isReply": bool(sent.get("isReply")),
+            },
+            "mailbox": str(response.get("mailbox") or ""),
+        })
+    return _write_failure(response, status, source="gmail_send")
+
+
+def _describe_send_email(context: LoopContext, args: dict[str, Any]) -> str:
+    payload = _send_email_payload(context, args)
+    recipients = normalize_addresses(payload["to"])
+    mailbox = payload["mailboxAccount"]
+    if not mailbox:
+        gmail = [
+            str(entry.get("name") or "")
+            for entry in (context.tool_context.get("mailboxes") or [])
+            if isinstance(entry, dict) and str(entry.get("provider") or "").lower() == "gmail" and entry.get("name")
+        ]
+        mailbox = gmail[0] if len(gmail) == 1 else ""
+    if payload["replyToMessageId"]:
+        who = ", ".join(recipients) if recipients else "the sender"
+        what = f"reply by email to {who}"
+        if payload["subject"]:
+            what += f" with the subject '{payload['subject']}'"
+    else:
+        what = f"send an email to {', '.join(recipients)} with the subject '{payload['subject']}'"
+    if payload["cc"]:
+        what += f", copying {', '.join(normalize_addresses(payload['cc']))}"
+    if mailbox:
+        what += f", from {mailbox}"
+    preview = " ".join(payload["body"].split())
+    if len(preview) > 160:
+        preview = preview[:157].rstrip() + "..."
+    return f"{what}, saying: {preview}"
+
+
+def _event_payload(context: LoopContext, args: dict[str, Any], *, action: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "action": action,
+        "timezone": context.timezone_name,
+        "eventId": str(args.get("event_id") or "").strip(),
+        "calendar": str(args.get("calendar") or args.get("calendar_id") or "").strip(),
+    }
+    for key, name in (("title", "title"), ("date", "date"), ("start_time", "startTime"), ("end_time", "endTime"), ("location", "location"), ("description", "description")):
+        value = args.get(key)
+        if value is not None:
+            payload[name] = str(value).strip()
+    attendees = args.get("attendees")
+    if isinstance(attendees, list):
+        payload["attendees"] = [str(item) for item in attendees if str(item or "").strip()]
+    return payload
+
+
+def _describe_event_times(payload: dict[str, Any], timezone_name: str) -> str:
+    """The day and hours in words, or the reason they cannot be read."""
+
+    times = build_event_times(
+        date_text=payload.get("date"),
+        start_time=payload.get("startTime") or None,
+        end_time=payload.get("endTime") or None,
+        timezone_name=timezone_name,
+    )
+    if times["allDay"]:
+        return f"all day on {payload.get('date')}"
+    start = str(times["start"]["dateTime"])[11:16]
+    end = str(times["end"]["dateTime"])[11:16]
+    return f"on {payload.get('date')} from {start} to {end}"
+
+
+def _preflight_create_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
+    payload = _event_payload(context, args, action="create")
+    if not payload.get("title"):
+        return _error("choice_required", "The meeting needs a title.")
+    try:
+        _describe_event_times(payload, context.timezone_name)
+    except ValueError as exc:
+        return _error("choice_required", f"{exc} Ask the person for the day and time.")
+    if payload.get("attendees") and not normalize_addresses(payload["attendees"]):
+        return _error("choice_required", "None of the attendees is an email address; invitations need addresses, or leave attendees empty.")
+    response, status = context.api("POST", "/api/agent/calendar/events", {**payload, "check": True})
+    if status != 200 or not response.get("ok"):
+        return _write_failure(response, status, source="calendar_write")
+    return None
+
+
+def _tool_create_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    payload = _event_payload(context, args, action="create")
+    response, status = context.api("POST", "/api/agent/calendar/events", payload)
+    if status == 200 and response.get("ok"):
+        event = response.get("event") if isinstance(response.get("event"), dict) else {}
+        return _ok({"event": _trim_records([event])[0] if event else {}, "calendar": str(response.get("calendar") or "")})
+    return _write_failure(response, status, source="calendar_write")
+
+
+def _describe_create_calendar_event(context: LoopContext, args: dict[str, Any]) -> str:
+    payload = _event_payload(context, args, action="create")
+    try:
+        when = _describe_event_times(payload, context.timezone_name)
+    except ValueError:
+        when = f"on {payload.get('date')}"
+    what = f"add '{payload.get('title')}' {when}"
+    if payload.get("location"):
+        what += f" at {payload['location']}"
+    what += f" to the {payload['calendar']} calendar" if payload.get("calendar") else " to the calendar"
+    guests = normalize_addresses(payload.get("attendees") or [])
+    if guests:
+        what += f", inviting {', '.join(guests)}"
+    return what
+
+
+def _preflight_update_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
+    payload = _event_payload(context, args, action="cancel" if args.get("cancel") else "update")
+    if not payload["eventId"]:
+        return _error("choice_required", "Which meeting is meant is not known: read the calendar first and pass the record's eventId and calendarId.")
+    if payload["action"] == "update":
+        changes = [key for key in ("title", "date", "startTime", "endTime", "location", "description") if payload.get(key)]
+        if not changes:
+            return _error("choice_required", "Nothing to change was given: a new title, day, time or place.")
+        if payload.get("date") or payload.get("startTime") or payload.get("endTime"):
+            try:
+                _describe_event_times({**payload, "date": payload.get("date") or "2000-01-01"}, context.timezone_name)
+            except ValueError as exc:
+                return _error("choice_required", f"{exc} Ask the person for the day and time.")
+    response, status = context.api("POST", "/api/agent/calendar/events", {**payload, "check": True})
+    if status != 200 or not response.get("ok"):
+        return _write_failure(response, status, source="calendar_write")
+    return None
+
+
+def _tool_update_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    payload = _event_payload(context, args, action="cancel" if args.get("cancel") else "update")
+    response, status = context.api("POST", "/api/agent/calendar/events", payload)
+    if status == 200 and response.get("ok"):
+        event = response.get("event") if isinstance(response.get("event"), dict) else {}
+        return _ok({
+            "action": payload["action"],
+            "event": _trim_records([event])[0] if event else {},
+            "calendar": str(response.get("calendar") or ""),
+        })
+    return _write_failure(response, status, source="calendar_write")
+
+
+def _describe_update_calendar_event(context: LoopContext, args: dict[str, Any]) -> str:
+    payload = _event_payload(context, args, action="cancel" if args.get("cancel") else "update")
+    if payload["action"] == "cancel":
+        return "cancel that meeting and take it off the calendar; anyone invited is told"
+    parts: list[str] = []
+    if payload.get("title"):
+        parts.append(f"rename it to '{payload['title']}'")
+    if payload.get("date") or payload.get("startTime") or payload.get("endTime"):
+        if payload.get("date"):
+            try:
+                parts.append(f"move it to {_describe_event_times(payload, context.timezone_name)}")
+            except ValueError:
+                parts.append(f"move it to {payload.get('date')}")
+        else:
+            clock = payload.get("startTime") or ""
+            if payload.get("endTime"):
+                clock = f"{clock} to {payload['endTime']}" if clock else f"until {payload['endTime']}"
+            parts.append(f"move it to {clock} the same day")
+    if payload.get("location"):
+        parts.append(f"hold it at {payload['location']}")
+    if payload.get("description"):
+        parts.append("change its notes")
+    return "change that meeting: " + ", ".join(parts)
+
 
 def _params(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     # Strict function schemas: every property listed as required, optional
@@ -1131,6 +1555,24 @@ TOOLS: list[ToolSpec] = [
         parameters=_params({"time_window": {"type": "string"}}),
         requires=LOOKUP_SOURCE_REQUIREMENTS["calendar-summary"],
         run=_tool_read_calendar,
+    ),
+    ToolSpec(
+        name="choose_calendars",
+        description=(
+            "Show or change which of the person's calendars are read. Their Google account holds several - "
+            "their own, the ones under 'My calendars', the ones shared with them - and only the chosen ones "
+            "are read; they can change that whenever they like. Call it for 'add another calendar', 'read my "
+            "Work calendar too', 'stop reading Family', 'which calendars do you read'. add and remove are "
+            "calendar names in the person's words, or empty arrays. With both empty the current choice comes "
+            "back and, on WhatsApp, the list of calendars is shown for them to tick."
+        ),
+        parameters=_params({
+            "add": {"type": "array", "items": {"type": "string"}},
+            "remove": {"type": "array", "items": {"type": "string"}},
+        }),
+        requires=LOOKUP_SOURCE_REQUIREMENTS["calendar-summary"],
+        side_effect=True,
+        run=_tool_choose_calendars,
     ),
     ToolSpec(
         name="search_receipts",
@@ -1309,6 +1751,81 @@ TOOLS: list[ToolSpec] = [
         run=_tool_cancel_scheduled,
     ),
     ToolSpec(
+        name="send_email",
+        description=(
+            "Send an email from the person's Gmail. to is the recipient addresses; cc is copies, or an empty "
+            "array. subject and body are the finished email in the person's voice and language, complete "
+            "and ready to go, signed with their name when known. To answer an email they read, pass "
+            "reply_to_message_id as the messageId from the read_inbox record: the reply lands in the same "
+            "thread, and to and subject may then be empty and null. mailbox is the Gmail address to send "
+            "from when they have more than one, else null."
+        ),
+        parameters=_params({
+            "to": {"type": "array", "items": {"type": "string"}},
+            "cc": {"type": "array", "items": {"type": "string"}},
+            "subject": {"type": ["string", "null"]},
+            "body": {"type": "string"},
+            "reply_to_message_id": {"type": ["string", "null"]},
+            "mailbox": {"type": ["string", "null"]},
+        }),
+        requires=("gmail_send",),
+        side_effect=True,
+        confirm=True,
+        run=_tool_send_email,
+        preflight=_preflight_send_email,
+    ),
+    ToolSpec(
+        name="create_calendar_event",
+        description=(
+            "Add a meeting to the person's Google Calendar. title is what it is called; date is YYYY-MM-DD "
+            "worked out from CONTEXT.today and todayWeekday; start_time and end_time are HH:MM in 24-hour "
+            "form - no start_time makes it all day, no end_time makes it an hour long. calendar is the "
+            "calendar's name in their words when they named one, else null. location, description and "
+            "attendees (email addresses to invite; an empty array invites nobody) are optional."
+        ),
+        parameters=_params({
+            "title": {"type": "string"},
+            "date": {"type": "string"},
+            "start_time": {"type": ["string", "null"]},
+            "end_time": {"type": ["string", "null"]},
+            "calendar": {"type": ["string", "null"]},
+            "location": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "attendees": {"type": "array", "items": {"type": "string"}},
+        }),
+        requires=("calendar_write",),
+        side_effect=True,
+        confirm=True,
+        run=_tool_create_calendar_event,
+        preflight=_preflight_create_calendar_event,
+    ),
+    ToolSpec(
+        name="update_calendar_event",
+        description=(
+            "Move, rename, relocate or cancel a meeting in the person's Google Calendar. event_id and "
+            "calendar_id are the eventId and calendarId from a read_calendar record; read the calendar "
+            "first when you do not have them. cancel true removes the meeting. Otherwise pass only what "
+            "changes and null for the rest: title, date (YYYY-MM-DD), start_time and end_time (HH:MM; a "
+            "time without a date keeps the day), location, description."
+        ),
+        parameters=_params({
+            "event_id": {"type": "string"},
+            "calendar_id": {"type": ["string", "null"]},
+            "cancel": {"type": "boolean"},
+            "title": {"type": ["string", "null"]},
+            "date": {"type": ["string", "null"]},
+            "start_time": {"type": ["string", "null"]},
+            "end_time": {"type": ["string", "null"]},
+            "location": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+        }),
+        requires=("calendar_write",),
+        side_effect=True,
+        confirm=True,
+        run=_tool_update_calendar_event,
+        preflight=_preflight_update_calendar_event,
+    ),
+    ToolSpec(
         name="create_list",
         description=(
             "Start a list for the person. kind is todo for things to tick off, general for a plain list such as "
@@ -1371,10 +1888,41 @@ TOOLS: list[ToolSpec] = [
         side_effect=True,
         run=_tool_forget_fact,
     ),
+    ToolSpec(
+        name="show_findings",
+        description=(
+            "What Assistyca noticed on its own while reading the person's mailbox: invoices they sent with no "
+            "payment found after them, bills and renewals coming due, and recurring charges that went up. "
+            "For 'what did you find in my mail', 'anything I should know', 'which invoices are unpaid', 'what's "
+            "renewing', 'did my subscriptions go up'."
+        ),
+        parameters=_params({}),
+        requires=LOOKUP_SOURCE_REQUIREMENTS["custom"],
+        run=_tool_show_findings,
+    ),
+    ToolSpec(
+        name="dismiss_finding",
+        description=(
+            "Drop one finding from show_findings because the person says it is settled or not a thing: 'that "
+            "one was paid in cash', 'I cancelled that policy', 'ignore that'. id is its number from show_findings."
+        ),
+        parameters=_params({"id": {"type": "integer"}}),
+        side_effect=True,
+        run=_tool_dismiss_finding,
+    ),
 ]
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
-_SOURCE_WORDS = {"mailbox": "no mailbox is connected", "calendar": "the calendar is not connected", "drive": "Google Drive is not connected"}
+_SOURCE_WORDS = {
+    "mailbox": "no mailbox is connected",
+    "calendar": "the calendar is not connected",
+    "drive": "Google Drive is not connected",
+    # Reading and writing are separate grants at Google. A mailbox connected
+    # before sending was asked for reads as it always did, and connecting
+    # Google again is what adds the permission.
+    "gmail_send": "Gmail is not connected with permission to send; connecting Google again with connect_link asks for it",
+    "calendar_write": "Google Calendar is not connected with permission to add or change meetings; connecting Google again with connect_link asks for it",
+}
 
 
 def tool_definitions(tool_context: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -1427,6 +1975,10 @@ AGENT_LOOP_INSTRUCTIONS = (
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
     "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
     "that depends on the time of day, and never guess the time.\n"
+    "Which of the person's calendars are read is theirs to change at any moment: for 'add another calendar', "
+    "'read my Work calendar too', 'stop reading Family' or 'which calendars do you read', call "
+    "choose_calendars - with the names when they gave them, with empty arrays when they did not - and never "
+    "say there is no way to pick a calendar here.\n"
     "A reminder needs no yes: schedule_message runs on the first call, so never ask the person to confirm "
     "one; call it, then say it is set, repeating scheduledForLocal and the text. The reminder is a message "
     "from you to the person, so its text speaks to them: 'You have a meeting with Dana', never 'I have a "
@@ -1436,7 +1988,7 @@ AGENT_LOOP_INSTRUCTIONS = (
     "no yes needed, and it can do anything you can do in this chat. Never say a scheduled or automatic action "
     "cannot be set up here. A reminder, by contrast, is one message at one time. show_scheduled lists what is "
     "set and cancel_scheduled ends one; a person who says stop is not asking for a yes. Actions that need a yes: "
-    "disconnect, sign_out and delete_account return "
+    "disconnect, sign_out, delete_account, send_email, create_calendar_event and update_calendar_event return "
     "confirmation_required the first time. Then ask for a plain yes in the same message, naming exactly what "
     "will happen - which accounts, what is signed out or erased - and nothing else. For sign_out say in one line that "
     "only this phone is signed out and the account and its data stay. For delete_account the person must "
@@ -1453,6 +2005,17 @@ AGENT_LOOP_INSTRUCTIONS = (
     "shown, so keep it to a word. A message that does something else leaves answersOpenQuestion null: "
     "answer the message and leave the "
     "question open.\n"
+    "Writing to their accounts: send_email sends from their Gmail, create_calendar_event adds a meeting, "
+    "update_calendar_event moves, renames or cancels one. Each needs the yes described above, and the "
+    "question that asks for it names exactly what will go out: for an email the recipient, the subject and "
+    "the text itself, quoted in full when it is not the person's own words, so nothing they have not seen "
+    "is sent; for a meeting its title, day, time and calendar, and who is invited. Write the email in the "
+    "person's voice and in the language they wrote in, complete and ready to send, signed with their name "
+    "when you know it. To answer an email they read, pass reply_to_message_id from the read_inbox record's "
+    "messageId; read the inbox first when you do not have it. To change or cancel a meeting, pass eventId "
+    "and calendarId from a read_calendar record; read the calendar first when you do not have them. When "
+    "send_email or a calendar write is UNAVAILABLE because the permission was not granted, say that reading "
+    "still works and that connecting Google again adds it, and give the connect_link.\n"
     "Lists: the person can keep lists - a to-do list with things to tick off, or a general list such as "
     "shopping, packing, ideas, names. create_list starts one, update_list changes one, show_lists reads one or "
     "all of them; read before answering what is on a list. Name the list the way the person did; the tool says "
@@ -1727,6 +2290,8 @@ def run_agent_loop(
         links=links_in_reply,
         pending_confirmation=pending,
         calendar_choice=context.calendar_choice,
+        calendar_choice_selected=list(context.calendar_choice_selected),
+        calendar_choice_requested=context.calendar_choice_requested,
         remember_fact={"key": str(remember.get("key") or ""), "fact": str(remember.get("fact") or "")} if remember else None,
         forget_fact=str(reply_payload.get("forgetFact") or ""),
         answers_open_question=_parse_open_answer(reply_payload.get("answersOpenQuestion")),
@@ -1801,6 +2366,12 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
         return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}"
     if tool.name == "delete_account":
         return describe_delete_account(context)
+    if tool.name == "send_email":
+        return _describe_send_email(context, args)
+    if tool.name == "create_calendar_event":
+        return _describe_create_calendar_event(context, args)
+    if tool.name == "update_calendar_event":
+        return _describe_update_calendar_event(context, args)
     return ""
 
 

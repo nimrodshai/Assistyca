@@ -228,7 +228,7 @@ def _normalize_safe_connection_context(value: Any) -> dict[str, Any]:
         source.get("validationStatus") or source.get("validation_status"),
         40,
     ).lower() or "unknown"
-    return {
+    context = {
         "platformConnected": bool(
             source.get("platformConnected") is True
             if "platformConnected" in source
@@ -237,6 +237,13 @@ def _normalize_safe_connection_context(value: Any) -> dict[str, Any]:
         "connectionStatus": connection_status,
         "validationStatus": validation_status,
     }
+    # Whether the grant behind the connection lets Assistyca write - send
+    # from the mailbox, add to the calendar. Reading and writing are separate
+    # permissions at Google, and a connection made before writing was asked
+    # for reads exactly as it always did.
+    if "writeAccess" in source:
+        context["writeAccess"] = source.get("writeAccess") is True
+    return context
 
 
 def normalize_agent_action_context(value: Any) -> list[dict[str, str]]:
@@ -435,6 +442,10 @@ def connected_sources(tool_context: dict[str, Any] | None) -> set[str]:
         entry = context.get(key)
         return isinstance(entry, dict) and entry.get("platformConnected") is True
 
+    def writable(key: str) -> bool:
+        entry = context.get(key)
+        return connected(key) and isinstance(entry, dict) and entry.get("writeAccess") is True
+
     sources: set[str] = set()
     if connected("gmail") or connected("outlook"):
         sources.add("mailbox")
@@ -442,6 +453,12 @@ def connected_sources(tool_context: dict[str, Any] | None) -> set[str]:
         sources.add("calendar")
     if connected("drive"):
         sources.add("drive")
+    # Writing is its own source: a mailbox that can be read is not yet one
+    # that can send, and the tools that write say which grant they lack.
+    if writable("gmail"):
+        sources.add("gmail_send")
+    if writable("calendar"):
+        sources.add("calendar_write")
     return sources
 
 

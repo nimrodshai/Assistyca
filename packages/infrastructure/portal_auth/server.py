@@ -26,6 +26,7 @@ import hmac
 import hashlib
 import html
 import zipfile
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -46,6 +47,7 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
 from packages.infrastructure.agent_proposals import AGENT_PROPOSAL_REVISION_INSTRUCTIONS
@@ -61,6 +63,14 @@ from packages.infrastructure.agent_proposals import normalize_agent_file_context
 from packages.infrastructure.agent_proposals import normalize_agent_folder_context
 from packages.infrastructure.agent_proposals import normalize_agent_pending_choice
 from packages.infrastructure.agent_proposals import normalize_agent_tool_context
+from packages.infrastructure.calendar_write import CALENDAR_WRITE_OAUTH_SCOPE
+from packages.infrastructure.calendar_write import CalendarEventNotFoundError
+from packages.infrastructure.calendar_write import CalendarWritePermissionError
+from packages.infrastructure.calendar_write import CalendarWriter
+from packages.infrastructure.gmail_send import GMAIL_SEND_OAUTH_SCOPE
+from packages.infrastructure.gmail_send import GmailSendPermissionError
+from packages.infrastructure.gmail_send import GmailSender
+from packages.infrastructure.gmail_send import normalize_addresses
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_revision
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
@@ -74,8 +84,11 @@ from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.calendar_summary import CalendarAuthorizationError
 from packages.infrastructure.calendar_summary import CalendarListUnavailableError
 from packages.infrastructure.calendar_summary import CalendarSummaryError
+from packages.infrastructure.calendar_summary import CalendarDateRange
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import CALENDAR_MAX_CALENDARS
+from packages.infrastructure.calendar_summary import CALENDAR_ID_PATTERN
+from packages.infrastructure.calendar_summary import PRIMARY_CALENDAR_ID
 from packages.infrastructure.calendar_summary import calendar_field_names_a_calendar
 from packages.infrastructure.calendar_summary import normalize_selected_calendar_ids
 from packages.infrastructure.calendar_summary import parse_calendar_ids
@@ -197,6 +210,12 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_INSTRUCTIONS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
+from packages.infrastructure import inbox_watch
+from packages.infrastructure import mailbox_findings
+from packages.infrastructure.inbox_watch_polls import InboxWatchScheduler
+from packages.infrastructure.inbox_watch_polls import load_inbox_watch_config
+from packages.infrastructure.mailbox_finding_scans import FindingScanScheduler
+from packages.infrastructure.mailbox_finding_scans import load_finding_scan_config
 from packages.infrastructure.list_due_nudges import ListDueNudger
 from packages.infrastructure.list_due_nudges import load_list_due_nudge_config
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
@@ -398,6 +417,15 @@ AGENT_RECOVERY_COMPLEXITY = TaskComplexity.MEDIUM
 # that; the cheapest one sorts by vocabulary, which is the mistake this step
 # exists to stop.
 AGENT_RECEIPT_JUDGE_COMPLEXITY = TaskComplexity.MEDIUM
+# Reading one message down to a kind, a party, an amount and a date is
+# constrained extraction over a fixed shape.
+AGENT_MAILBOX_FINDINGS_COMPLEXITY = TaskComplexity.MEDIUM
+# Reading one new email down to what it asks and by when is the same
+# constrained extraction.
+AGENT_INBOX_WATCH_COMPLEXITY = TaskComplexity.MEDIUM
+# Access tokens for the inbox watch, shared across polls so a mailbox
+# polled every three minutes refreshes its token once an hour.
+INBOX_WATCH_TOKEN_CACHE = inbox_watch.AccessTokenCache()
 # Telling one payment reported twice from two payments of the same price is
 # the same kind of work: everything mechanical about the two messages already
 # matches, and what separates them is what they are about. The same tier reads
@@ -474,6 +502,19 @@ GOOGLE_OAUTH_SCOPE_BY_ID = {
 GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID = {
     "calendar": (GOOGLE_CALENDAR_LIST_OAUTH_SCOPE,),
 }
+# What lets Assistyca write, asked for beside the read grant: sending from
+# Gmail, adding to and changing the calendar. Google grants each separately,
+# so a connection made before these were requested keeps reading exactly as
+# it did, and the row's grantedScope says whether it can also write. Drive
+# has nothing that writes to it yet, so it asks for nothing more.
+GOOGLE_OAUTH_WRITE_SCOPE_BY_ID = {
+    "calendar": CALENDAR_WRITE_OAUTH_SCOPE,
+    "gmail": GMAIL_SEND_OAUTH_SCOPE,
+}
+# A write scope that already covers reading: calendar.events includes what
+# calendar.events.readonly allows, so asking for both would put the same
+# permission on Google's consent screen twice.
+GOOGLE_OAUTH_WRITE_SCOPES_COVERING_READ = {"calendar"}
 GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID = {
     "calendar": CALENDAR_PLATFORM,
     "gmail": EMAIL_PLATFORM,
@@ -572,6 +613,31 @@ def normalize_calendar_selection(value: Any) -> list[dict[str, str]]:
         if len(selection) >= CALENDAR_MAX_CALENDARS:
             break
     return selection
+
+
+def google_scope_grants_write(granted_scope: Any, scope_id: str) -> bool:
+    """Whether a granted scope string lets this permission write."""
+
+    write_scope = GOOGLE_OAUTH_WRITE_SCOPE_BY_ID.get(scope_id, "")
+    if not write_scope:
+        return False
+    granted = {normalize_text(scope) for scope in re.split(r"\s+", normalize_text(granted_scope)) if normalize_text(scope)}
+    return write_scope in granted
+
+
+def google_connection_write_access(connection: dict[str, Any] | None, scope_id: str) -> bool:
+    """Whether a saved Google connection may write: send, add a meeting.
+
+    Answered from the grant Google reported when the row was saved, never
+    from the row's label: a mailbox connected before sending was asked for
+    reads as it always did and says no here.
+    """
+
+    record = connection if isinstance(connection, dict) else {}
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    if "grantedScope" in metadata:
+        return google_scope_grants_write(metadata.get("grantedScope"), scope_id)
+    return metadata.get("writeAccess") is True
 
 
 def connection_calendar_selection(connection: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -1413,6 +1479,8 @@ def build_mail_answer_records(items: Any) -> list[dict[str, str]]:
             "subject": normalize_text(item.get("subject")),
             "detail": normalize_text(item.get("snippet")),
             "mailbox": normalize_text(item.get("mailbox")),
+            # Which message this is, so a reply can be threaded onto it.
+            "messageId": normalize_text(item.get("id")),
         }
         trimmed = {key: value for key, value in record.items() if value}
         if len(trimmed) > 1:
@@ -3279,6 +3347,17 @@ def connection_vendor(record: dict[str, Any]) -> str:
     return CONNECTION_VENDOR_BY_PROVIDER.get(resolved_connection_provider(record), "")
 
 
+def _parse_iso_instant(value: Any) -> datetime | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def mailbox_display_name(record: dict[str, Any]) -> str:
     """Name one mailbox for a person: its address, else a label, else provider."""
 
@@ -4137,6 +4216,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/files/delete"
             or path == "/api/agent/files/move"
             or path == "/api/agent/folders/move"
+            or path == "/api/agent/email/send"
+            or path == "/api/agent/calendar/events"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
             or path.startswith("/api/admin/")
@@ -4233,6 +4314,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/files/delete"
             or path == "/api/agent/files/move"
             or path == "/api/agent/folders/move"
+            or path == "/api/agent/email/send"
+            or path == "/api/agent/calendar/events"
             or path == "/api/platform-connections"
             or path == "/api/platform-connections/calendars"
             or path.startswith("/api/admin/")
@@ -4249,6 +4332,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/lists/")
             or path == "/api/receipts"
             or path.startswith("/api/receipts/")
+            or path == "/api/findings/scan"
+            or path == "/api/inbox-watch/poll"
         ):
             try:
                 self._handle_api_post(parsed)
@@ -4596,6 +4681,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_platform_connection_calendars_post()
             return
 
+        if path == "/api/agent/email/send":
+            self._handle_agent_email_send_post()
+            return
+
+        if path == "/api/agent/calendar/events":
+            self._handle_agent_calendar_event_post()
+            return
+
         if path == "/api/whatsapp/test":
             self._handle_whatsapp_test()
             return
@@ -4621,6 +4714,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/receipts" or path.startswith("/api/receipts/"):
             self._handle_receipts_post(parsed)
+            return
+        if path == "/api/findings/scan":
+            self._handle_findings_scan_post()
+            return
+        if path == "/api/inbox-watch/poll":
+            self._handle_inbox_watch_poll_post()
             return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
@@ -4755,7 +4854,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if scope_id not in GOOGLE_OAUTH_PLATFORM_BY_SCOPE_ID:
             return ()
-        return (GOOGLE_OAUTH_SCOPE_BY_ID[scope_id], *GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID.get(scope_id, ()))
+        write_scope = GOOGLE_OAUTH_WRITE_SCOPE_BY_ID.get(scope_id, "")
+        read_scopes: tuple[str, ...] = (GOOGLE_OAUTH_SCOPE_BY_ID[scope_id],)
+        if write_scope and scope_id in GOOGLE_OAUTH_WRITE_SCOPES_COVERING_READ:
+            read_scopes = ()
+        return (
+            *read_scopes,
+            *GOOGLE_OAUTH_EXTRA_SCOPES_BY_ID.get(scope_id, ()),
+            *((write_scope,) if write_scope else ()),
+        )
 
     def _google_oauth_scope_text_for_id(self, scope_id: str) -> str:
         return " ".join(self._google_oauth_scopes_for_id(scope_id))
@@ -4785,10 +4892,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # Only the defining scope decides whether a permission connected. A
         # declined extra - the calendar list, say - leaves the connection
         # working and simply removes what that extra would have offered.
+        # A write grant covers reading where Google defines it so, which is
+        # why calendar.events alone connects the calendar.
         return tuple(
             scope_id
             for scope_id in requested_scope_ids
             if GOOGLE_OAUTH_SCOPE_BY_ID.get(scope_id) in granted_scopes
+            or (
+                scope_id in GOOGLE_OAUTH_WRITE_SCOPES_COVERING_READ
+                and GOOGLE_OAUTH_WRITE_SCOPE_BY_ID.get(scope_id) in granted_scopes
+            )
         )
 
     def _google_oauth_connected_message(self, connections: list[dict[str, Any]]) -> str:
@@ -4919,6 +5032,358 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "sources": sources,
         })
+
+    def _with_google_write_access(self, email: str, tool_context: dict[str, Any]) -> dict[str, Any]:
+        """The tool context with what each Google connection may write.
+
+        The browser and the WhatsApp channel both describe what is connected;
+        neither is trusted on what a grant allows. That is read from the saved
+        rows here, once per turn, so a tool that writes is offered exactly
+        when Google said it could.
+        """
+
+        context = dict(tool_context) if isinstance(tool_context, dict) else {}
+        try:
+            records = self.database.list_platform_connections(email)
+        except Exception:  # noqa: BLE001 - a store that cannot be read leaves the writes unavailable
+            return context
+        statuses = {"connected", "needs_attention"}
+        gmail_can_send = False
+        gmail_seen = False
+        calendar_can_write: bool | None = None
+        for record in records:
+            if normalize_text(record.get("connectionStatus")).lower() not in statuses:
+                continue
+            platform = normalize_text(record.get("platform")).lower()
+            provider = resolved_connection_provider(record)
+            if platform == CALENDAR_PLATFORM and provider == GOOGLE_CALENDAR_OAUTH_PROVIDER:
+                calendar_can_write = bool(calendar_can_write) or google_connection_write_access(record, "calendar")
+            elif platform == EMAIL_PLATFORM and provider == GOOGLE_GMAIL_OAUTH_PROVIDER:
+                gmail_seen = True
+                gmail_can_send = gmail_can_send or google_connection_write_access(record, "gmail")
+        if calendar_can_write is not None and isinstance(context.get("calendar"), dict):
+            context["calendar"] = {**context["calendar"], "writeAccess": calendar_can_write}
+        if gmail_seen and isinstance(context.get("gmail"), dict):
+            context["gmail"] = {**context["gmail"], "writeAccess": gmail_can_send}
+        return context
+
+    def _handle_agent_email_send_post(self) -> None:
+        """Send one email from a connected Gmail mailbox.
+
+        Called by the agent's send_email tool over loopback, after the person
+        said yes. With ``check`` true it settles which mailbox would send and
+        whether it may, and sends nothing: that is what the question asking
+        for the yes is built on.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        check_only = payload.get("check") is True
+        recipients = normalize_addresses(payload.get("to"))
+        copies = normalize_addresses(payload.get("cc"))
+        subject = normalize_contact_single_line(payload.get("subject"), 300)
+        body_text = normalize_contact_message(payload.get("body"), 20_000)
+        reply_to_message_id = normalize_contact_single_line(payload.get("replyToMessageId"), 200)
+        mailbox_selection = normalize_text(payload.get("mailboxAccount"))
+        if not recipients and not reply_to_message_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_recipient", "message": "At least one recipient email address is needed."})
+            return
+        if not body_text:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_body", "message": "The text of the email is needed."})
+            return
+        if not subject and not reply_to_message_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_subject", "message": "A subject line is needed."})
+            return
+
+        vault = self.credential_vault
+        records = [
+            record
+            for record in self.database.list_platform_connection_secret_records(
+                session.email, EMAIL_PLATFORM, include_statuses=("connected", "needs_attention"),
+            )
+            if (resolved_connection_provider(record) or GOOGLE_GMAIL_OAUTH_PROVIDER) == GOOGLE_GMAIL_OAUTH_PROVIDER
+        ]
+        if not records or vault is None:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "gmail_not_connected",
+                "message": "No Gmail mailbox is connected, so there is nothing to send from. Connect Google first.",
+            })
+            return
+        senders = [record for record in records if google_connection_write_access(record, "gmail")]
+        if not senders:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "gmail_send_permission_required",
+                "message": GmailSendPermissionError().args[0],
+            })
+            return
+        names = mailbox_display_names(senders)
+
+        def name_of(record: dict[str, Any]) -> str:
+            return names.get(normalize_text(record.get("id"))) or mailbox_display_name(record)
+
+        if mailbox_selection:
+            chosen = [record for record in senders if mailbox_matches_selection(record, mailbox_selection)]
+            if not chosen:
+                json_response(self, HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "error": "mailbox_not_connected",
+                    "message": f"{describe_mailbox_selection(mailbox_selection)} is not a connected Gmail mailbox that can send. The ones that can: {', '.join(name_of(r) for r in senders)}.",
+                    "mailboxes": [name_of(record) for record in senders],
+                })
+                return
+        elif len(senders) == 1:
+            chosen = senders
+        else:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "mailbox_choice_required",
+                "message": f"More than one Gmail mailbox can send. Ask which one: {', '.join(name_of(r) for r in senders)}.",
+                "mailboxes": [name_of(record) for record in senders],
+            })
+            return
+        record = chosen[0]
+        mailbox_name = name_of(record)
+        if check_only:
+            json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "mailbox": mailbox_name})
+            return
+
+        try:
+            access_token, _ = self._resolve_gmail_access_token(vault.decrypt(record.get("secretCiphertext") or ""))
+            sent = GmailSender().send(
+                access_token,
+                to=recipients,
+                cc=copies,
+                subject=subject,
+                body_text=body_text,
+                reply_to_message_id=reply_to_message_id,
+                from_address=normalize_text(record.get("accountAddress")),
+            )
+        except CredentialVaultError:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "email_setup_required",
+                "message": f"The saved connection for {mailbox_name} could not be opened securely. Reconnect it and try again.",
+            })
+            return
+        except GmailSendPermissionError as exc:
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except GmailAuthorizationError as exc:
+            self._flag_mailbox_needs_attention(session.email, record, GOOGLE_GMAIL_OAUTH_PROVIDER)
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_email", "message": str(exc)})
+            return
+        except GmailSummaryError as exc:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+
+        print(json.dumps({
+            "event": "agent_email_sent",
+            "userEmail": session.email,
+            "mailbox": mailbox_name,
+            "recipientCount": len(sent.get("to") or []),
+            "isReply": bool(sent.get("isReply")),
+        }), flush=True)
+        json_response(self, HTTPStatus.OK, {"ok": True, "sent": sent, "mailbox": mailbox_name})
+
+    def _resolve_calendar_for_write(
+        self,
+        record: dict[str, Any],
+        requested: str,
+    ) -> tuple[str, str, dict[str, Any] | None]:
+        """Which calendar a write goes to: its id, its label, or the refusal.
+
+        A name in the person's words is matched against the calendars the
+        account holds. With no name, the one calendar they chose to read is
+        the one written to; several chosen is a question, and none chosen
+        means the account's own.
+        """
+
+        available = normalize_calendar_selection(
+            (record.get("metadata") or {}).get(CALENDAR_AVAILABLE_METADATA_KEY)
+            if isinstance(record.get("metadata"), dict)
+            else []
+        )
+        selected = connection_calendar_selection(record)
+        known = {entry["id"]: entry for entry in [*selected, *available]}
+        wanted = " ".join(str(requested or "").split())
+        if wanted:
+            lowered = wanted.lower()
+            if lowered == "primary" or lowered in known:
+                entry = known.get(lowered) or {"id": lowered, "label": "My calendar" if lowered == "primary" else lowered}
+                return entry["id"], entry["label"], None
+            exact = [entry for entry in known.values() if entry["label"].lower() == lowered]
+            loose = [entry for entry in known.values() if len(lowered) >= 3 and lowered in entry["label"].lower()]
+            matches = exact or loose
+            if len(matches) == 1:
+                return matches[0]["id"], matches[0]["label"], None
+            if not matches and CALENDAR_ID_PATTERN.match(lowered):
+                return lowered, lowered, None
+            known_names = ", ".join(entry["label"] for entry in known.values()) or "only the account's own"
+            match_names = ", ".join(entry["label"] for entry in matches)
+            return "", "", {
+                "ok": False,
+                "error": "calendar_not_found" if not matches else "calendar_choice_required",
+                "message": (
+                    f"No calendar called '{wanted}' is in this Google account. The calendars: {known_names}."
+                    if not matches
+                    else f"'{wanted}' could mean more than one calendar: {match_names}. Ask which."
+                ),
+                "calendars": [entry["label"] for entry in (matches or known.values())],
+            }
+        if len(selected) == 1:
+            return selected[0]["id"], selected[0]["label"], None
+        if len(selected) > 1:
+            return "", "", {
+                "ok": False,
+                "error": "calendar_choice_required",
+                "message": f"The person reads more than one calendar; ask which one this goes in: {', '.join(e['label'] for e in selected)}.",
+                "calendars": [entry["label"] for entry in selected],
+            }
+        return PRIMARY_CALENDAR_ID, "My calendar", None
+
+    def _handle_agent_calendar_event_post(self) -> None:
+        """Add, change or cancel a meeting in the connected Google Calendar.
+
+        Called by the agent's calendar tools over loopback after the person
+        said yes. ``check`` true settles the calendar and the permission and
+        writes nothing.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        action = normalize_text(payload.get("action")).lower() or "create"
+        if action not in {"create", "update", "cancel"}:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_action", "message": "action is create, update or cancel."})
+            return
+        check_only = payload.get("check") is True
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        event_id = normalize_contact_single_line(payload.get("eventId"), 200)
+        if action != "create" and not event_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_event", "message": "Which meeting is meant is needed: its eventId from the calendar read."})
+            return
+
+        record = self._calendar_connection_record(session.email)
+        vault = self.credential_vault
+        if record is None or vault is None:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_setup_required",
+                "message": "No calendar is connected, so nothing can be added to it. Connect Google first.",
+            })
+            return
+        if not google_connection_write_access(record, "calendar"):
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_write_permission_required",
+                "message": CalendarWritePermissionError().args[0],
+            })
+            return
+        calendar_id, calendar_label, refusal = self._resolve_calendar_for_write(record, normalize_text(payload.get("calendar")))
+        if refusal is not None:
+            json_response(self, HTTPStatus.CONFLICT, refusal)
+            return
+        if check_only:
+            json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "calendar": calendar_label, "calendarId": calendar_id})
+            return
+
+        ciphertext = normalize_text(self.database.get_platform_connection_ciphertext(
+            session.email, CALENDAR_PLATFORM, include_statuses=("connected", "needs_verification", "needs_attention"),
+        ) or "")
+
+        def text_or_none(key: str) -> str | None:
+            value = payload.get(key)
+            return None if value is None else normalize_contact_single_line(value, 300)
+
+        try:
+            access_token, _ = self._resolve_calendar_access_token(vault.decrypt(ciphertext))
+            writer = CalendarWriter()
+            if action == "create":
+                event = writer.create_event(
+                    access_token,
+                    calendar_id=calendar_id,
+                    title=normalize_contact_single_line(payload.get("title"), 300),
+                    date_text=normalize_text(payload.get("date")),
+                    start_time=normalize_text(payload.get("startTime")) or None,
+                    end_time=normalize_text(payload.get("endTime")) or None,
+                    timezone_name=timezone_name,
+                    location=normalize_contact_single_line(payload.get("location"), 300),
+                    description=normalize_contact_message(payload.get("description"), 4000),
+                    attendees=normalize_addresses(payload.get("attendees")),
+                )
+            elif action == "update":
+                event = writer.update_event(
+                    access_token,
+                    calendar_id=calendar_id,
+                    event_id=event_id,
+                    title=text_or_none("title"),
+                    date_text=normalize_text(payload.get("date")) or None,
+                    start_time=normalize_text(payload.get("startTime")) or None,
+                    end_time=normalize_text(payload.get("endTime")) or None,
+                    location=text_or_none("location"),
+                    description=None if payload.get("description") is None else normalize_contact_message(payload.get("description"), 4000),
+                    timezone_name=timezone_name,
+                )
+            else:
+                event = writer.cancel_event(access_token, calendar_id=calendar_id, event_id=event_id)
+        except CredentialVaultError:
+            json_response(self, HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "calendar_setup_required",
+                "message": "The saved calendar connection could not be opened securely. Reconnect it and try again.",
+            })
+            return
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_event", "message": str(exc)})
+            return
+        except CalendarWritePermissionError as exc:
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except CalendarEventNotFoundError as exc:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+        except CalendarAuthorizationError as exc:
+            self.database.update_platform_connection_status(
+                session.email, platform=CALENDAR_PLATFORM, connection_status="needs_attention",
+                metadata_updates={"validationStatus": "failed", "lastError": str(exc)},
+            )
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": getattr(exc, "code", "calendar_authorization_failed"), "message": str(exc)})
+            return
+        except CalendarSummaryError as exc:
+            json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": exc.code, "message": str(exc)})
+            return
+
+        print(json.dumps({
+            "event": "agent_calendar_event_written",
+            "userEmail": session.email,
+            "action": action,
+            "calendar": calendar_label,
+        }), flush=True)
+        json_response(self, HTTPStatus.OK, {"ok": True, "action": action, "event": event, "calendar": calendar_label, "calendarId": calendar_id})
 
     def _handle_platform_connection_calendars_post(self) -> None:
         """Save which of the account's calendars Assistyca may read.
@@ -5249,7 +5714,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         granted_scope_ids = self._granted_google_oauth_scope_ids(granted_scope, requested_scope_ids)
         if not granted_scope_ids:
-            raise CalendarAuthorizationError("Google did not grant the selected read-only access. Try connecting Google again.")
+            raise CalendarAuthorizationError("Google did not grant the selected access. Try connecting Google again.")
 
         validation_results: dict[str, dict[str, Any]] = {}
         if "calendar" in granted_scope_ids:
@@ -5326,12 +5791,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "validationStatus": "verified",
                     "scope": self._google_oauth_scope_text_for_id(scope_id),
                     "grantedScope": granted_scope,
+                    # Read by the portal card and the agent's tool context;
+                    # grantedScope above is what it is derived from.
+                    "writeAccess": google_scope_grants_write(granted_scope, scope_id),
                     "validatedAt": now,
                     **validation_results.get(scope_id, {}),
                 },
                 connection_status="connected",
             )
             connections.append(connection)
+        if "gmail" in granted_scope_ids:
+            self._schedule_first_findings_scan(session.email)
         return connections
 
     def _save_google_calendar_oauth_connection(
@@ -5513,7 +5983,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         encrypted_secret = self.credential_vault.encrypt(self._build_microsoft_oauth_secret(refresh_token))
         secret_fingerprint = self.credential_vault.fingerprint(refresh_token)
         now = datetime.now(timezone.utc).isoformat()
-        return self.database.save_platform_connection(
+        connection = self.database.save_platform_connection(
             session.email,
             platform=EMAIL_PLATFORM,
             provider=MICROSOFT_OUTLOOK_OAUTH_PROVIDER,
@@ -5534,6 +6004,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             },
             connection_status="connected",
         )
+        self._schedule_first_findings_scan(session.email)
+        return connection
 
     def _handle_microsoft_email_oauth_start(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
@@ -8400,6 +8872,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _mailbox_readers(
         self,
         session: Any,
+        *,
+        token_cache: inbox_watch.AccessTokenCache | None = None,
     ) -> tuple[list[dict[str, Any]], Callable[[dict[str, Any]], str], Callable[[dict[str, Any]], tuple[Any, str] | None]]:
         """Every connected mailbox, and a way to open each one once.
 
@@ -8428,17 +8902,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             record_id = normalize_text(record.get("id"))
             if record_id in readers:
                 return readers[record_id]
-            try:
-                stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")  # type: ignore[union-attr]
-                record_provider = self._saved_email_provider(stored_email_secret)
-                access_token, _ = self._resolve_email_access_token(
-                    stored_email_secret,
-                    provider=record_provider,
-                )
-            except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                print(f"Keeping receipts from {mailbox_name_for(record)} failed: {exc}", flush=True)
-                readers[record_id] = None
-                return None
+            fingerprint = normalize_text(record.get("secretFingerprint"))
+            cached = token_cache.get(record_id, fingerprint=fingerprint) if token_cache is not None else None
+            if cached is not None:
+                record_provider, access_token = cached
+            else:
+                try:
+                    stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")  # type: ignore[union-attr]
+                    record_provider = self._saved_email_provider(stored_email_secret)
+                    access_token, _ = self._resolve_email_access_token(
+                        stored_email_secret,
+                        provider=record_provider,
+                    )
+                except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                    print(f"Opening {mailbox_name_for(record)} failed: {exc}", flush=True)
+                    readers[record_id] = None
+                    return None
+                if token_cache is not None:
+                    token_cache.put(record_id, fingerprint=fingerprint, provider=record_provider, access_token=access_token)
             runner = (
                 OutlookDigestRunner()
                 if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
@@ -8448,6 +8929,365 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return readers[record_id]
 
         return records, mailbox_name_for, reader_for
+
+    def _handle_findings_scan_post(self) -> None:
+        """Read the connected mailboxes for what the person should be told.
+
+        Run by the findings scheduler over loopback a few minutes after a
+        mailbox connects and every morning after; a browser session may
+        call it too. It reads, remembers, derives and stores; what to tell
+        and when is the scheduler's.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, user = authenticated
+        if not self._require_active_trial(user):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_JSON_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        kind = normalize_text(payload.get("kind")).lower() or "daily"
+        if kind not in mailbox_findings.SCAN_KINDS:
+            kind = "daily"
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        today = datetime.now(zone).date()
+        result = self._scan_mailbox_findings(session, user_id=int(user.get("id") or 0), kind=kind, today=today)
+        json_response(self, HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
+
+    def _scan_mailbox_findings(self, session: Any, *, user_id: int, kind: str, today: date) -> dict[str, Any]:
+        records, mailbox_name_for, reader_for = self._mailbox_readers(session)
+        if not records or user_id <= 0:
+            return {
+                "ok": False,
+                "error": "mailbox_not_connected",
+                "message": "No mailbox is connected, so there is nothing to read.",
+            }
+        version = mailbox_findings.facts_version()
+        ledger = mailbox_findings.FindingsLedger(self.database, user_id=user_id, version=version)
+        first = kind == "first"
+        query = mailbox_findings.build_scan_query(
+            mailbox_findings.FIRST_SCAN_DAYS if first else mailbox_findings.DAILY_SCAN_DAYS
+        )
+        ask = self._receipt_prompt_ask(
+            billing_email=session.email,
+            tool_name="mailbox_findings",
+            model_env="OPENAI_MAILBOX_FINDINGS_MODEL",
+            complexity=AGENT_MAILBOX_FINDINGS_COMPLEXITY,
+            instructions=mailbox_findings.FINDINGS_INSTRUCTIONS,
+            max_output_tokens=mailbox_findings.FACTS_MAX_OUTPUT_TOKENS,
+            failure_label="Mailbox findings reading",
+        )
+        owner_addresses = [mailbox_name_for(record) for record in records]
+        read = {"fromLedger": 0, "fetched": 0, "withFacts": 0}
+        failures: list[dict[str, str]] = []
+        for record in records:
+            mailbox_name = mailbox_name_for(record)
+            reader = reader_for(record)
+            if reader is None:
+                failures.append({"mailbox": mailbox_name, "message": "The saved connection could not be opened."})
+                continue
+            runner, access_token = reader
+            passes = mailbox_findings.FIRST_SCAN_MAX_PASSES if first else 1
+            for _ in range(passes):
+                try:
+                    result = runner.run(
+                        access_token,
+                        query=query,
+                        max_results=mailbox_findings.SCAN_DOWNLOADS_PER_PASS,
+                        # An amount and a due date live in the body, not the subject.
+                        include_body=True,
+                        known=ledger.known_messages(mailbox_name),
+                    )
+                except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError) as exc:
+                    failures.append({"mailbox": mailbox_name, "message": str(exc)})
+                    break
+                items = [
+                    {**item, "mailbox": mailbox_name}
+                    for item in (result.get("items") or [])
+                    if isinstance(item, dict)
+                ]
+                fresh = [item for item in items if not item.get(mailbox_findings.FROM_LEDGER_KEY)]
+                read["fromLedger"] += len(items) - len(fresh)
+                read["fetched"] += len(fresh)
+                if fresh:
+                    with_facts = mailbox_findings.extract_mail_facts(fresh, ask=ask, owner_addresses=owner_addresses)
+                    read["withFacts"] += ledger.remember(with_facts)
+                # A pass that downloaded less than its ceiling has reached
+                # the end of what the mailbox lists; another would read nothing.
+                if len(fresh) < mailbox_findings.SCAN_DOWNLOADS_PER_PASS:
+                    break
+        since = (today - timedelta(days=mailbox_findings.FIRST_SCAN_DAYS)).isoformat()
+        facts = self.database.list_mail_facts(user_id=user_id, since=since, facts_version=version)
+        findings = mailbox_findings.derive_findings(facts, today=today)
+        subscriptions = mailbox_findings.summarize_subscriptions(facts, today=today)
+        new_keys = self.database.upsert_account_findings(user_id=user_id, findings=findings)
+        resolved = self.database.resolve_missing_account_findings(
+            user_id=user_id, active_keys=[str(finding.get("key") or "") for finding in findings],
+        )
+        stored = self.database.list_account_findings(user_id=user_id, statuses=("new", "told"))
+        print(json.dumps({
+            "event": "mailbox_findings_scan", "kind": kind, "mailboxes": len(records), "read": read,
+            "facts": len(facts), "findings": len(findings), "new": len(new_keys), "resolved": resolved,
+            "failures": len(failures),
+        }, ensure_ascii=True, sort_keys=True), flush=True)
+        return {
+            "ok": True,
+            "kind": kind,
+            "mailboxes": len(records),
+            "read": read,
+            "factCount": len(facts),
+            "findings": stored,
+            "newKeys": new_keys,
+            "resolved": resolved,
+            "subscriptions": subscriptions,
+            "failures": failures,
+        }
+
+    def _schedule_first_findings_scan(self, email: str) -> None:
+        """A mailbox has just been connected: line up the look through its
+        last year, a couple of minutes from now. Never raises - a scan that
+        cannot be queued must not undo a connection that just succeeded."""
+
+        try:
+            config = load_finding_scan_config()
+            if not config.enabled:
+                return
+            user = self.database.get_user(email) or {}
+            user_id = int(user.get("id") or 0)
+            if user_id <= 0:
+                return
+            scan = self.database.schedule_finding_scan(
+                user_id=user_id,
+                kind="first",
+                run_at=datetime.now(timezone.utc) + timedelta(minutes=config.first_delay_minutes),
+            )
+            print(json.dumps({
+                "event": "mailbox_findings_scan_scheduled", "scanId": int((scan or {}).get("id") or 0),
+                "kind": normalize_text((scan or {}).get("kind")),
+            }, ensure_ascii=True, sort_keys=True), flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"The first mailbox scan could not be scheduled: {exc}", flush=True)
+
+    def _handle_inbox_watch_poll_post(self) -> None:
+        """Read what arrived in the connected mailboxes since the last poll,
+        decide what cannot wait, and tell the person once they have had a
+        chance to see it themselves. Run by the inbox watch over loopback."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, user = authenticated
+        if not self._require_active_trial(user):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_JSON_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        result = self._poll_inbox_watch(session, user_id=int(user.get("id") or 0), zone=zone, timezone_name=timezone_name)
+        json_response(self, HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
+
+    def _poll_inbox_watch(self, session: Any, *, user_id: int, zone: ZoneInfo, timezone_name: str) -> dict[str, Any]:
+        config = load_inbox_watch_config()
+        now = datetime.now(timezone.utc)
+        local_now = now.astimezone(zone)
+        records, mailbox_name_for, reader_for = self._mailbox_readers(session, token_cache=INBOX_WATCH_TOKEN_CACHE)
+        if not records or user_id <= 0:
+            return {"ok": False, "error": "mailbox_not_connected", "message": "No mailbox is connected, so there is nothing to watch."}
+        owner_addresses = [mailbox_name_for(record) for record in records]
+        ask = self._receipt_prompt_ask(
+            billing_email=session.email,
+            tool_name="inbox_watch",
+            model_env="OPENAI_INBOX_WATCH_MODEL",
+            complexity=AGENT_INBOX_WATCH_COMPLEXITY,
+            instructions=inbox_watch.INBOX_WATCH_INSTRUCTIONS,
+            max_output_tokens=inbox_watch.READ_MAX_OUTPUT_TOKENS,
+            failure_label="Inbox watch reading",
+        )
+        counts = {"new": 0, "read": 0, "held": 0, "skipped": 0, "notified": 0, "released": 0, "deferred": 0, "started": 0}
+        failures: list[dict[str, str]] = []
+        readers_by_mailbox: dict[str, tuple[Any, str]] = {}
+        hold = timedelta(minutes=config.hold_minutes)
+        for record in records:
+            mailbox_name = mailbox_name_for(record)
+            connection_id = normalize_text(record.get("id"))
+            reader = reader_for(record)
+            if reader is None:
+                failures.append({"mailbox": mailbox_name, "message": "The saved connection could not be opened."})
+                continue
+            runner, access_token = reader
+            readers_by_mailbox[mailbox_name] = (runner, access_token)
+            stored = self.database.get_inbox_watch_cursor(user_id=user_id, connection_id=connection_id)
+            try:
+                if stored is None or not stored.get("cursor"):
+                    # A watch starts from now: what arrived before the
+                    # mailbox was connected is the first scan's business.
+                    cursor = runner.read_change_cursor(access_token)
+                    self.database.save_inbox_watch_cursor(user_id=user_id, connection_id=connection_id, mailbox=mailbox_name, cursor=cursor)
+                    counts["started"] += 1
+                    continue
+                changes = runner.list_changes(access_token, cursor=stored["cursor"])
+                if changes.get("reset"):
+                    cursor = runner.read_change_cursor(access_token)
+                    self.database.save_inbox_watch_cursor(
+                        user_id=user_id, connection_id=connection_id, mailbox=mailbox_name, cursor=cursor,
+                        error="The provider no longer held the change cursor; started again from now.",
+                    )
+                    continue
+                ids = [str(value) for value in (changes.get("messageIds") or [])]
+                known = self.database.known_inbox_watch_message_ids(user_id=user_id, mailbox=mailbox_name, message_ids=ids)
+                fresh_ids = [value for value in ids if value not in known][: inbox_watch.MAX_MESSAGES_PER_POLL]
+                items: list[dict[str, Any]] = []
+                for message_id in fresh_ids:
+                    item = runner.fetch_message(access_token, message_id)
+                    if item is not None:
+                        items.append({**item, "mailbox": mailbox_name})
+                counts["new"] += len(items)
+                to_read: list[dict[str, Any]] = []
+                for item in items:
+                    reason = inbox_watch.skip_reason(item, owner_addresses=owner_addresses)
+                    if reason:
+                        counts["skipped"] += 1
+                        self.database.record_inbox_watch_message(user_id=user_id, entry={**item, "messageId": item["id"], "status": "skipped", "reason": reason})
+                    else:
+                        to_read.append(item)
+                if to_read:
+                    counts["read"] += len(to_read)
+                    read_items = inbox_watch.read_new_mail(
+                        to_read, ask=ask, now_local=local_now.strftime("%Y-%m-%d %H:%M (%A)"), owner_addresses=owner_addresses,
+                    )
+                    for item in read_items:
+                        read = item.get(inbox_watch.READ_KEY) if isinstance(item.get(inbox_watch.READ_KEY), dict) else {}
+                        received = _parse_iso_instant(item.get("receivedAt")) or now
+                        decision = inbox_watch.decide(read, received_at=received, now=now, zone=zone, hold=hold)
+                        if decision.get("action") == "notify":
+                            counts["held"] += 1
+                            self.database.record_inbox_watch_message(user_id=user_id, entry={
+                                **item, "messageId": item["id"], "status": "held", "reason": "same_day" if decision.get("sameDay") else "held",
+                                "read": read, "notifyAfter": decision.get("notifyAfter"),
+                            })
+                        else:
+                            counts["skipped"] += 1
+                            self.database.record_inbox_watch_message(user_id=user_id, entry={
+                                **item, "messageId": item["id"], "status": "skipped", "reason": normalize_text(decision.get("reason")), "read": read,
+                            })
+                self.database.save_inbox_watch_cursor(user_id=user_id, connection_id=connection_id, mailbox=mailbox_name, cursor=str(changes.get("cursor") or stored["cursor"]))
+            except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                INBOX_WATCH_TOKEN_CACHE.forget(connection_id)
+                failures.append({"mailbox": mailbox_name, "message": str(exc)})
+            except (GmailSummaryError, OutlookSummaryError) as exc:
+                failures.append({"mailbox": mailbox_name, "message": str(exc)})
+
+        # What has waited long enough. In quiet hours it waits for the morning.
+        due = self.database.list_held_inbox_watch_messages(user_id=user_id, due_by=now)
+        to_tell: list[dict[str, Any]] = []
+        if due and inbox_watch.in_quiet_hours(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour):
+            morning = inbox_watch.quiet_hours_end(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour)
+            for row in due:
+                self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="held", reason="quiet_hours", notify_after=morning)
+            counts["deferred"] = len(due)
+            due = []
+        if due:
+            day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            remaining = max(0, config.daily_cap - self.database.count_inbox_watch_notified_since(user_id=user_id, since=day_start))
+            events = self._upcoming_calendar_events(session, zone=zone, days=inbox_watch.ALERT_HORIZON_DAYS)
+            for row in due:
+                reader = readers_by_mailbox.get(str(row.get("mailbox") or ""))
+                unread: bool | None = True
+                if reader is not None:
+                    try:
+                        unread = reader[0].is_unread(reader[1], row["messageId"])
+                    except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError):
+                        unread = True
+                if unread is None:
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="gone")
+                    counts["released"] += 1
+                    continue
+                if unread is False:
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="read_by_person")
+                    counts["released"] += 1
+                    continue
+                if inbox_watch.on_calendar(row.get("read") or {}, events):
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="on_calendar")
+                    counts["released"] += 1
+                    continue
+                if len(to_tell) >= remaining:
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="daily_cap")
+                    counts["released"] += 1
+                    continue
+                to_tell.append(row)
+        if to_tell:
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+            owner_wa_id = normalize_text(connection.get("ownerWaId"))
+            if not owner_wa_id:
+                linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
+                owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
+            self.database.create_scheduled_action(
+                user_id=user_id,
+                action_type=STANDING_TASK_ACTION_TYPE,
+                channel="whatsapp" if owner_wa_id else "portal",
+                recipient_ref="owner",
+                run_at=now,
+                timezone_name=timezone_name,
+                payload={
+                    "title": inbox_watch.ALERT_TITLE,
+                    "instruction": inbox_watch.build_alert_instruction(to_tell, hold_minutes=config.hold_minutes),
+                    "fallbackText": inbox_watch.build_alert_fallback_text(to_tell),
+                    "oneOff": True,
+                    "source": "inbox_watch",
+                    "messageIds": [str(row.get("messageId") or "") for row in to_tell],
+                },
+            )
+            for row in to_tell:
+                self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="notified", reason="", notified=True)
+            counts["notified"] = len(to_tell)
+        if counts["new"] or counts["notified"] or failures:
+            print(json.dumps({"event": "inbox_watch_poll", "mailboxes": len(records), **counts, "failures": len(failures)}, ensure_ascii=True, sort_keys=True), flush=True)
+        return {"ok": True, "mailboxes": len(records), **counts, "failures": failures}
+
+    def _upcoming_calendar_events(self, session: Any, *, zone: ZoneInfo, days: int) -> list[dict[str, Any]]:
+        """The next days of the person's chosen calendars as title and day,
+        for telling an invitation already accepted from one still waiting.
+        Best effort: a calendar that cannot be read reads as empty."""
+
+        try:
+            vault = self.credential_vault
+            records = self.database.list_platform_connection_secret_records(
+                session.email, CALENDAR_PLATFORM, include_statuses=("connected",),
+            )
+            if vault is None or not records:
+                return []
+            secret = vault.decrypt(records[0].get("secretCiphertext") or "")
+            access_token, _ = self._resolve_calendar_access_token(secret)
+            selection = connection_calendar_selection(self._calendar_connection_record(session.email))
+            calendar_ids = [normalize_text(entry.get("id")) for entry in selection if normalize_text(entry.get("id"))][:5] or ["primary"]
+            start = datetime.now(zone)
+            date_range = CalendarDateRange(label="inbox watch", start=start, end=start + timedelta(days=max(1, int(days))))
+            events, _skipped = CalendarSummaryRunner().fetch_calendar_events(access_token, calendar_ids=calendar_ids, date_range=date_range)
+            return [
+                {
+                    "title": normalize_text(event.get("title")),
+                    "start": event["start"].isoformat() if isinstance(event.get("start"), datetime) else normalize_text(event.get("start")),
+                }
+                for event in events
+                if isinstance(event, dict)
+            ]
+        except Exception as exc:  # noqa: BLE001 - the calendar is a courtesy check, never a blocker
+            print(f"Inbox watch could not read the calendar: {exc}", flush=True)
+            return []
 
     def _keep_search_receipts(self, session: Any, *, answers: list[dict[str, Any]]) -> dict[str, Any]:
         """Keep what a receipt search read, on the receipts page.
@@ -9416,7 +10256,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         conversation = normalize_agent_proposal_revision_conversation(payload.get("conversation"))
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         channel = normalize_contact_single_line(payload.get("channel"), 20).lower() or "portal"
-        tool_context = normalize_agent_tool_context(payload.get("toolContext"))
+        tool_context = self._with_google_write_access(session.email, normalize_agent_tool_context(payload.get("toolContext")))
         confirmed_call = payload.get("confirmedCall") if isinstance(payload.get("confirmedCall"), dict) else None
         declined_call = payload.get("declinedCall") if isinstance(payload.get("declinedCall"), dict) else None
         open_question = payload.get("openQuestion") if isinstance(payload.get("openQuestion"), dict) else None
@@ -9583,6 +10423,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "pendingConfirmation": result.pending_confirmation,
             "answersOpenQuestion": result.answers_open_question,
             "calendarChoice": result.calendar_choice,
+            "calendarChoiceSelected": result.calendar_choice_selected,
+            "calendarChoiceRequested": result.calendar_choice_requested,
             "links": result.links,
             "fallbackUsed": result.fallback_used,
         })
@@ -11529,6 +12371,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             finish(False, "That Assistyca account isn't available any more.")
             return
         session = PortalSession(token="", email=email, issued_at=time.time(), expires_at=time.time() + 600)
+        mailbox_connected = False
 
         try:
             if provider == "google":
@@ -11542,6 +12385,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         return
                 self._save_google_oauth_connections(session, token_payload, scope_ids=scope_ids)
                 connected = "Gmail and calendar are"
+                mailbox_connected = "gmail" in scope_ids
             else:
                 token_payload = self._exchange_microsoft_oauth_code(code)
                 if purpose == "link_account":
@@ -11552,6 +12396,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         return
                 self._save_microsoft_oauth_connection(session, token_payload)
                 connected = "Outlook is"
+                mailbox_connected = True
         except Exception as exc:  # noqa: BLE001 - said once to the person, in full to the log
             print(f"WhatsApp {provider} sign-in failed for a linked phone: {exc}", flush=True)
             finish(False, f"{label} couldn't be connected just now. Tap the link again in a moment.")
@@ -11604,7 +12449,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._send_whatsapp_oauth_page(ok=True, message="Connected. Back in WhatsApp, tell me which calendars to read.")
             return
 
-        finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.")
+        # The mailbox is read now, unasked, so the person hears that the
+        # silence of the next few minutes is work rather than absence.
+        looking = (
+            " I'm looking through the last year of your mail now; if I spot something worth knowing, I'll write in a few minutes."
+            if mailbox_connected and load_finding_scan_config().enabled
+            else ""
+        )
+        finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.{looking}")
 
     def _build_google_calendar_oauth_state(
         self,
@@ -16018,6 +16870,63 @@ def main() -> int:
     else:
         print("To-do due-date nudges are disabled.", flush=True)
 
+    finding_scan_config = load_finding_scan_config()
+    finding_scan_stop_event = threading.Event()
+    finding_scan_thread: threading.Thread | None = None
+    if finding_scan_config.enabled and scheduled_action_config.enabled:
+        # A scan reads the mailboxes over loopback with a short-lived session
+        # for its account, and what it finds goes out as a one-off standing
+        # action, so the same worker delivers it.
+        finding_scans = FindingScanScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=finding_scan_config,
+            base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
+            session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+        )
+        finding_scan_thread = threading.Thread(
+            target=finding_scans.serve_forever,
+            args=(finding_scan_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="mailbox-finding-scans",
+        )
+        finding_scan_thread.start()
+        print(
+            f"Mailbox findings enabled. First scan {finding_scan_config.first_delay_minutes} minutes after a mailbox "
+            f"connects, then every morning at {finding_scan_config.hour:02d}:00 local time.",
+            flush=True,
+        )
+    else:
+        print("Mailbox findings are disabled.", flush=True)
+
+    inbox_watch_config = load_inbox_watch_config()
+    inbox_watch_stop_event = threading.Event()
+    inbox_watch_thread: threading.Thread | None = None
+    if inbox_watch_config.enabled and scheduled_action_config.enabled:
+        # Each account's inbox is polled over loopback with a short-lived
+        # session; what cannot wait goes out as a one-off standing action.
+        inbox_watcher = InboxWatchScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=inbox_watch_config,
+            base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
+            session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+        )
+        inbox_watch_thread = threading.Thread(
+            target=inbox_watcher.serve_forever,
+            args=(inbox_watch_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="inbox-watch",
+        )
+        inbox_watch_thread.start()
+        print(
+            f"Inbox watch enabled. Polls every {inbox_watch_config.day_poll_seconds} seconds by day and "
+            f"{inbox_watch_config.night_poll_seconds} at night; holds {inbox_watch_config.hold_minutes} minutes before an alert.",
+            flush=True,
+        )
+    else:
+        print("Inbox watch is disabled.", flush=True)
+
     source_action_config = load_source_action_config()
     source_action_stop_event = threading.Event()
     source_action_thread: threading.Thread | None = None
@@ -16098,6 +17007,12 @@ def main() -> int:
         source_action_stop_event.set()
         if source_action_thread is not None:
             source_action_thread.join(timeout=1.0)
+        finding_scan_stop_event.set()
+        if finding_scan_thread is not None:
+            finding_scan_thread.join(timeout=1.0)
+        inbox_watch_stop_event.set()
+        if inbox_watch_thread is not None:
+            inbox_watch_thread.join(timeout=1.0)
         sampling_stop_event.set()
         if sampling_thread is not None:
             sampling_thread.join(timeout=1.0)

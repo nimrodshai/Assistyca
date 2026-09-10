@@ -475,22 +475,31 @@ const AGENT_RECEIPT_RECURRING_OUTPUT_FOLDER = "Receipts/{RunMonth}/";
 const GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly";
 const GOOGLE_GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+// The write scopes are asked for beside the read ones; the server decides the
+// exact scope text. A connection made before writing was asked for reads as it
+// always did, and its row's metadata.writeAccess says it cannot yet write.
+const GOOGLE_CALENDAR_EVENTS_WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
   {
     id: "calendar",
     platformId: "calendar",
     label: "Calendar",
-    detail: "Read event titles, times, attendees, and locations when an action runs.",
+    detail: "Read your meetings, and add, move or cancel one when you ask.",
     scope: GOOGLE_CALENDAR_EVENTS_READONLY_SCOPE,
-    accessLabel: "Read-only",
+    writeScope: GOOGLE_CALENDAR_EVENTS_WRITE_SCOPE,
+    accessLabel: "Read & write",
+    writeLabel: "read & write",
   },
   {
     id: "gmail",
     platformId: "email",
     label: "Email",
-    detail: "Read Gmail messages when an action runs.",
+    detail: "Read Gmail messages, and send an email or a reply when you ask.",
     scope: GOOGLE_GMAIL_READONLY_SCOPE,
-    accessLabel: "Read-only",
+    writeScope: GOOGLE_GMAIL_SEND_SCOPE,
+    accessLabel: "Read & send",
+    writeLabel: "read & send",
   },
   {
     id: "drive",
@@ -498,7 +507,9 @@ const GOOGLE_CONNECTION_SCOPE_OPTIONS = [
     label: "Drive",
     detail: "Read Google Drive files when an action runs.",
     scope: GOOGLE_DRIVE_READONLY_SCOPE,
+    writeScope: "",
     accessLabel: "Read-only",
+    writeLabel: "",
   },
 ];
 const AGENT_ADD_TOOL_OPTIONS = [
@@ -7889,11 +7900,15 @@ function createGoogleOAuthPermissionSummary(googleCardFlow = {}) {
 
   const heading = document.createElement("p");
   heading.className = "connection-section-label";
-  heading.textContent = "Read-only access";
+  heading.textContent = "Access";
 
   const list = document.createElement("ul");
   list.className = "google-access-chips";
   const missing = [];
+  // Permissions that read but cannot yet write: connected before writing was
+  // asked for. Named below the chips, because the fix is a reconnect and the
+  // person cannot see that from a chip alone.
+  const readOnlyOnly = [];
   for (const scopeOption of GOOGLE_CONNECTION_SCOPE_OPTIONS) {
     const permissionState = getGoogleOAuthPermissionState(scopeOption, { readOnly: true });
     if (!permissionState.checked) {
@@ -7905,6 +7920,16 @@ function createGoogleOAuthPermissionSummary(googleCardFlow = {}) {
     const name = document.createElement("span");
     name.textContent = scopeOption.label;
     chip.append(name);
+    // What the permission allows, in two words: a chip that only names
+    // Calendar says nothing about whether meetings can be added to it.
+    const access = document.createElement("span");
+    access.className = "google-access-chip-mode";
+    const canWrite = Boolean(scopeOption.writeScope) && getGoogleOAuthPermissionWriteAccess(scopeOption);
+    access.textContent = canWrite ? scopeOption.writeLabel : "read only";
+    chip.append(access);
+    if (scopeOption.writeScope && !canWrite) {
+      readOnlyOnly.push(scopeOption.label);
+    }
     // A permission this account granted can be given back on its own, so the
     // chip carries the way to do it. A chip is the permission, so Email's is
     // every Gmail mailbox at once; removing one of several is a different
@@ -7947,7 +7972,29 @@ function createGoogleOAuthPermissionSummary(googleCardFlow = {}) {
     note.textContent = `Not connected: ${missing.join(" and ")}.`;
     wrapper.append(note);
   }
+  if (readOnlyOnly.length) {
+    const abilities = readOnlyOnly.map((label) => (label === "Email" ? "send email" : "add meetings"));
+    const note = document.createElement("p");
+    note.className = "connection-section-note";
+    note.textContent = `${readOnlyOnly.join(" and ")} ${readOnlyOnly.length === 1 ? "was" : "were"} connected for reading only. Connect Google again to let Assistyca ${abilities.join(" and ")} when you ask.`;
+    wrapper.append(note);
+  }
   return wrapper;
+}
+
+// Whether the grant behind a connected Google permission lets Assistyca write.
+// The server derives metadata.writeAccess from the scopes Google actually
+// granted when the row was saved; a row from before writing was asked for has
+// no such flag and reads as read-only.
+function getGoogleOAuthPermissionWriteAccess(scopeOption) {
+  const scopeConnections = scopeOption.platformId === EMAIL_PLATFORM
+    ? getConnectedGmailConnections()
+    : [getSinglePlatformConnection(scopeOption.platformId)];
+  return scopeConnections.some((scopeConnection) => (
+    scopeConnection
+    && isPlatformConnectionConnected(scopeConnection)
+    && String(scopeConnection.metadata?.writeAccess ?? "").toLowerCase() === "true"
+  ));
 }
 
 function getSelectedGoogleOAuthScopeIds(container) {
@@ -8378,18 +8425,18 @@ function openCalendarOAuthConnection(option, flowOptions = {}) {
       ? "Here is what Assistyca reads from this account."
       : "Choose the Google access Assistyca can use.");
   const assistantSuccessMessage = isEmailConnection
-    ? "Gmail is connected with read-only access. You can use it for email digest actions."
-    : "Google is connected with the selected read-only access. You can use it in actions.";
+    ? "Gmail is connected. Assistyca can read it, and send from it when you ask."
+    : "Google is connected with the selected access. You can use it in actions.";
 
   const intro = document.createElement("p");
   intro.className = "calendar-oauth-copy";
   intro.textContent = isEmailConnection
     ? (gmailCount
-      ? "Sign in with Google to add another Gmail mailbox. Actions read it alongside the mailboxes already connected, and access stays read-only."
-      : "Sign in with Google so Assistyca can read your Gmail for email digest and receipt actions. Access is read-only.")
+      ? "Sign in with Google to add another Gmail mailbox. Actions read it alongside the mailboxes already connected, and Assistyca sends from it only when you ask."
+      : "Sign in with Google so Assistyca can read your Gmail for email digest and receipt actions, and send an email when you ask.")
     : (isConnected
-      ? "Connected Google permissions are read-only. Disconnect Google to remove this access from Assistyca."
-      : "Sign in with Google so Assistyca can use the selected read-only Google permissions.");
+      ? "Here is what Google lets Assistyca do. Disconnect Google to remove this access from Assistyca."
+      : "Sign in with Google so Assistyca can use the selected Google permissions. Nothing is sent or added to your calendar without your yes.");
 
   const { status, setStatus } = createCalendarOAuthStatusNode();
   if (!storageAvailable) {
@@ -12446,7 +12493,7 @@ function consumeCalendarOAuthReturn() {
   const succeeded = status === "success";
   const startedFromChat = wasPlatformConnectionStartedFromChat();
   const message = rawMessage || (succeeded
-    ? "Google is connected with the selected read-only access."
+    ? "Google is connected with the selected access."
     : "Google could not be connected. Try again from Google setup.");
 
   if (succeeded && resumeAgentProposalAfterConnectedPlatforms(["google"], {

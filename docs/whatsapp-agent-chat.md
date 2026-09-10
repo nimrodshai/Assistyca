@@ -345,12 +345,31 @@ if the picker itself cannot be.
 WhatsApp's list picks one row per tap and cannot be edited afterwards, and
 Meta offers no multi-select list (the real checkbox UI is a WhatsApp Flow,
 which needs a published Flow and so sits behind business verification). So
-the picker **behaves like checkboxes**: each tap toggles a calendar and a
-fresh picker arrives with the ticks updated and a "✅ Done" row on top whose
-description names the current choice; "All calendars" is one tap; Done saves.
-Nothing is saved until Done or All. Words still work too - `1, 3`, the names,
-or `all`. Row titles are capped at 24 characters, so an address-labelled
-calendar shows the part before the `@` with the full address beneath.
+the picker **behaves like checkboxes**: each tap toggles a calendar, and what
+is chosen so far comes back as a small message - "I'll read Work and Family" -
+with two reply buttons under it, **Add another calendar** and **Done**
+(`calpick:more`, `calpick:done`). Add another calendar brings the picker back
+with the ticks kept, so a ticked calendar can be tapped again to remove it;
+"All calendars" is one row-tap; Done saves. Done never sits inside the list
+itself, which leaves nine rows for calendars. Nothing is saved until Done or
+All; once the last tick is removed the plain picker returns. Words still work
+too - `1, 3`, the names, or `all`, and while something is ticked a whole
+message of "done", "that's it" or a plain yes stands in for the Done button
+(`confirms_calendar_choice`), which is also how the words-only fallback is
+confirmed when the buttons cannot be sent. Row titles are capped at 24
+characters, so an address-labelled calendar shows the part before the `@`
+with the full address beneath.
+
+The choice is the person's to change at any moment. "Add another calendar",
+"read my Work calendar too", "stop reading Family" or "which calendars do you
+read" go to the `choose_calendars` tool: with names it saves the change there
+and then (`add` / `remove`, matched against the account's calendars by label);
+with none it reports what is read now and, on WhatsApp, opens the same picker
+with today's choice already ticked (`calendarChoiceRequested` on the turn,
+`calendarChoiceSelected` for the ticks). No question is held behind a picker
+opened this way, so Done just confirms. The system prompt says outright that
+there is always a way to pick a calendar here, which is what the model once
+denied in chat.
 
 It is asked at the natural moment: when Google connects and returns more than
 one calendar, the "connected" message is followed by the picker rather than
@@ -570,7 +589,8 @@ to "I'm checking now" before anything was checked.
 The tools are the registry in `agent_loop.py`: `read_inbox`, `read_calendar`,
 `search_receipts`, `exchange_rate`, `open_receipts`, `connect_link`,
 `disconnect`, `sign_out`, `delete_account`, `schedule_message`, `remember_fact`,
-`forget_fact`. Each
+`forget_fact`, and the three that write to Google: `send_email`,
+`create_calendar_event`, `update_calendar_event`. Each
 declares what it needs connected (`LOOKUP_SOURCE_REQUIREMENTS`), whether it
 changes anything, and whether it needs a yes. A tool whose source is not
 connected is shown to the model as UNAVAILABLE with the reason and the way
@@ -584,7 +604,8 @@ schema the API enforces (`REPLY_TEXT_FORMAT`, strict), so a reply that cannot
 be read is impossible by construction. Six tool calls per turn; past that the
 model is told the budget is spent and writes from what it has.
 
-**Actions that need a yes** (`disconnect`, `sign_out`, `delete_account`)
+**Actions that need a yes** (`disconnect`, `sign_out`, `delete_account`,
+`send_email`, `create_calendar_event`, `update_calendar_event`)
 pause the
 turn: the first call returns `confirmation_required` with what exactly would
 happen, the model asks for a plain yes, and the chat stores the call itself
@@ -596,6 +617,18 @@ stored call - never a fresh decision - and the model is handed the result as
 anything else goes to the model with `openQuestion` in view. A calendar
 choice a tool asks for comes back as `calendarChoice` and the chat shows the
 picker it already had.
+
+**Writing to Google** needs the write grant beside the read one
+(`docs/platform-connections.md`, "Writing through Google"). A mailbox or
+calendar connected for reading only leaves the write tools UNAVAILABLE with
+the reason and `connect_link` as the way round it; the WhatsApp sign-in link
+asks for the write scopes, so reconnecting from the chat adds them. The tools
+run a `check` against the endpoint before the question is asked, so the yes
+is only ever asked for something that can happen, and the question names the
+recipient, subject and text of an email, or the title, day, time, calendar
+and guests of a meeting. `reply_to_message_id` is the `messageId` a
+`read_inbox` record now carries; `event_id` and `calendar_id` are the
+`eventId` and `calendarId` a `read_calendar` record now carries.
 
 **The clock is a fact code holds.** The model has no clock, so `CONTEXT`
 carries `today` and `now` (the date and the HH:MM where the person is,

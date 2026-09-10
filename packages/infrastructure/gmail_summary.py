@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib import error as urllib_error
@@ -19,6 +21,11 @@ GMAIL_MESSAGES_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/message
 # Reading the mailbox address is what lets a user tell two connected Gmail
 # accounts apart. gmail.readonly already covers this, so no extra consent.
 GMAIL_PROFILE_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+GMAIL_HISTORY_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/history"
+# How many history pages one change check reads. A mailbox that receives
+# more than this between two checks is caught up over the next ones.
+GMAIL_HISTORY_MAX_PAGES = 5
+GMAIL_WATCH_HEADERS = ("From", "To", "Subject", "Date", "List-Unsubscribe", "Precedence", "Auto-Submitted")
 GMAIL_TIMEOUT_SECONDS = 20
 GMAIL_MAX_DIGEST_MESSAGES = 10
 # A digest shows the newest handful. A receipt search has to see the whole
@@ -199,7 +206,11 @@ class GmailDigestRunner:
         self._opener = opener or urllib_request.urlopen
         self.timeout_seconds = max(3, min(60, int(timeout_seconds)))
 
-    def _get_json(self, url: str, access_token: str) -> dict[str, Any]:
+    def _get_json(self, url: str, access_token: str, *, missing: tuple[int, ...] = ()) -> dict[str, Any]:
+        """One GET as JSON. A status in ``missing`` comes back as an empty
+        dict rather than an error: a message deleted before it was read, a
+        history cursor Gmail no longer holds."""
+
         request = urllib_request.Request(
             url,
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -210,6 +221,8 @@ class GmailDigestRunner:
                 raw = response.read()
                 payload = json.loads(raw.decode("utf-8")) if raw else {}
         except urllib_error.HTTPError as exc:
+            if exc.code in missing:
+                return {}
             if exc.code in {401, 403}:
                 raise GmailAuthorizationError(
                     "Gmail access needs attention: Google rejected the saved credential or its permissions. Reconnect Gmail with read-only access, then try again."
@@ -236,6 +249,94 @@ class GmailDigestRunner:
                 code="gmail_provider_error",
             )
         return payload
+
+    # -- watching for new mail ------------------------------------------------
+
+    def read_change_cursor(self, access_token: str) -> str:
+        """Where the mailbox is now, as Gmail's history id. A change check
+        started from here reports only what arrives after this moment."""
+
+        payload = self._get_json(GMAIL_PROFILE_API_URL, str(access_token or "").strip())
+        return str(payload.get("historyId") or "").strip()
+
+    def list_changes(self, access_token: str, *, cursor: str) -> dict[str, Any]:
+        """The messages added to the inbox since ``cursor``.
+
+        Returns ``messageIds`` in the order Gmail reports them, the ``cursor``
+        to check from next time, and ``reset`` when Gmail no longer holds
+        history back to the cursor (it keeps about a week), in which case the
+        caller starts again from ``read_change_cursor`` and the gap is lost
+        rather than guessed at.
+        """
+
+        token = str(access_token or "").strip()
+        start = str(cursor or "").strip()
+        if not start:
+            return {"messageIds": [], "cursor": "", "reset": True}
+        seen: list[str] = []
+        latest = start
+        page_token = ""
+        for _ in range(GMAIL_HISTORY_MAX_PAGES):
+            params = [("startHistoryId", start), ("historyTypes", "messageAdded"), ("labelId", "INBOX"), ("maxResults", "100")]
+            if page_token:
+                params.append(("pageToken", page_token))
+            payload = self._get_json(f"{GMAIL_HISTORY_API_URL}?{urllib_parse.urlencode(params)}", token, missing=(404,))
+            if not payload:
+                return {"messageIds": [], "cursor": "", "reset": True}
+            for record in payload.get("history") if isinstance(payload.get("history"), list) else []:
+                if not isinstance(record, dict):
+                    continue
+                for added in record.get("messagesAdded") if isinstance(record.get("messagesAdded"), list) else []:
+                    message = added.get("message") if isinstance(added, dict) and isinstance(added.get("message"), dict) else {}
+                    message_id = str(message.get("id") or "").strip()
+                    if message_id and message_id not in seen:
+                        seen.append(message_id)
+            latest = str(payload.get("historyId") or latest).strip() or latest
+            page_token = str(payload.get("nextPageToken") or "").strip()
+            if not page_token:
+                break
+        return {"messageIds": seen, "cursor": latest, "reset": False}
+
+    def fetch_message(self, access_token: str, message_id: str) -> dict[str, Any] | None:
+        """One message in full, or None when it is gone. Carries what a watch
+        needs beyond a digest: who it was sent to, whether it is still
+        unread, its labels, and whether it announces itself as bulk mail."""
+
+        token = str(access_token or "").strip()
+        encoded = urllib_parse.quote(str(message_id or "").strip(), safe="")
+        if not encoded:
+            return None
+        message = self._get_json(f"{GMAIL_MESSAGES_API_URL}/{encoded}?format=full", token, missing=(404,))
+        if not message or _is_draft(message):
+            return None
+        labels = [str(label) for label in (message.get("labelIds") or []) if isinstance(label, str)]
+        return {
+            "id": str(message.get("id") or message_id).strip(),
+            "threadId": str(message.get("threadId") or "").strip(),
+            "from": _header_value(message, "From"),
+            "to": _header_value(message, "To"),
+            "subject": _header_value(message, "Subject"),
+            "date": _header_value(message, "Date"),
+            "receivedAt": _internal_date(message),
+            "snippet": str(message.get("snippet") or "").strip(),
+            "bodyText": _extract_body_text(message),
+            "labels": labels,
+            "unread": "UNREAD" in labels,
+            "bulk": _announces_bulk(message),
+        }
+
+    def is_unread(self, access_token: str, message_id: str) -> bool | None:
+        """Whether the person has opened the message yet; None when it is gone."""
+
+        token = str(access_token or "").strip()
+        encoded = urllib_parse.quote(str(message_id or "").strip(), safe="")
+        if not encoded:
+            return None
+        message = self._get_json(f"{GMAIL_MESSAGES_API_URL}/{encoded}?format=minimal", token, missing=(404,))
+        if not message:
+            return None
+        labels = [str(label) for label in (message.get("labelIds") or []) if isinstance(label, str)]
+        return "UNREAD" in labels
 
     def _list_message_ids(
         self,
@@ -540,6 +641,28 @@ class GmailDigestRunner:
             "messageCount": len(items),
             "items": items,
         }
+
+
+def _internal_date(message: dict[str, Any]) -> str:
+    """When Gmail received the message, as an ISO instant in UTC."""
+
+    raw = str(message.get("internalDate") or "").strip()
+    if not raw.isdigit():
+        return ""
+    return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc).isoformat()
+
+
+def _announces_bulk(message: dict[str, Any]) -> bool:
+    """Whether the sender marked this as a mailing rather than a letter:
+    an unsubscribe header, a bulk or list precedence, or auto-submitted."""
+
+    if _header_value(message, "List-Unsubscribe"):
+        return True
+    precedence = _header_value(message, "Precedence").lower()
+    if precedence in {"bulk", "list", "junk"}:
+        return True
+    auto = _header_value(message, "Auto-Submitted").lower()
+    return bool(auto) and auto != "no"
 
 
 def _is_draft(message: dict[str, Any]) -> bool:

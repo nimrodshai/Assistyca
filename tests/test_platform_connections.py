@@ -17,6 +17,7 @@ from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_LIST_OAUT
 from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_DRIVE_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_GMAIL_OAUTH_SCOPE
+from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_WRITE_SCOPE_BY_ID
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_REVOKE_URL
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_TOKEN_URL
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -27,7 +28,11 @@ from packages.infrastructure.portal_db import PortalDatabase
 # Connecting Calendar asks for two grants: reading events, and seeing which
 # calendars the account holds. Only the first decides whether the permission
 # connected, which is why the token responses below still grant it alone.
-GOOGLE_CALENDAR_REQUESTED_SCOPE_TEXT = f"{GOOGLE_CALENDAR_OAUTH_SCOPE} {GOOGLE_CALENDAR_LIST_OAUTH_SCOPE}"
+# Connecting asks for writing as well as reading. calendar.events covers what
+# calendar.events.readonly allows, so the read scope is not asked for twice;
+# gmail.send covers nothing of reading, so Gmail asks for both.
+GOOGLE_CALENDAR_REQUESTED_SCOPE_TEXT = f"{GOOGLE_CALENDAR_LIST_OAUTH_SCOPE} {GOOGLE_OAUTH_WRITE_SCOPE_BY_ID['calendar']}"
+GOOGLE_GMAIL_REQUESTED_SCOPE_TEXT = f"{GOOGLE_GMAIL_OAUTH_SCOPE} {GOOGLE_OAUTH_WRITE_SCOPE_BY_ID['gmail']}"
 
 
 class _JsonResponse:
@@ -509,7 +514,7 @@ class PlatformConnectionTests(unittest.TestCase):
             self.assertEqual(payload["connection"]["authType"], "oauth")
             self.assertEqual(payload["connection"]["connectionStatus"], "connected")
             self.assertEqual(payload["connection"]["metadata"]["provider"], "google_gmail")
-            self.assertEqual(payload["connection"]["metadata"]["scope"], GOOGLE_GMAIL_OAUTH_SCOPE)
+            self.assertEqual(payload["connection"]["metadata"]["scope"], GOOGLE_GMAIL_REQUESTED_SCOPE_TEXT)
             # The address is stored lowercased so it can key the connection.
             self.assertEqual(payload["connection"]["accountAddress"], "popup.owner@gmail.com")
             self.assertNotIn("popup-gmail-refresh-token-that-stays-encrypted", json.dumps(payload))
@@ -611,7 +616,7 @@ class PlatformConnectionTests(unittest.TestCase):
             self.assertEqual(set(connections), {"calendar", "email", "drive"})
             self.assertEqual(connections["calendar"]["metadata"]["scope"], GOOGLE_CALENDAR_REQUESTED_SCOPE_TEXT)
             self.assertEqual(connections["email"]["metadata"]["provider"], "google_gmail")
-            self.assertEqual(connections["email"]["metadata"]["scope"], GOOGLE_GMAIL_OAUTH_SCOPE)
+            self.assertEqual(connections["email"]["metadata"]["scope"], GOOGLE_GMAIL_REQUESTED_SCOPE_TEXT)
             self.assertEqual(connections["drive"]["metadata"]["provider"], "google_drive")
             self.assertEqual(connections["drive"]["metadata"]["scope"], GOOGLE_DRIVE_OAUTH_SCOPE)
             self.assertNotIn("popup-google-multi-refresh-token-that-stays-encrypted", json.dumps(payload))

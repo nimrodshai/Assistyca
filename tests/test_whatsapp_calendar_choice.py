@@ -20,6 +20,9 @@ from packages.infrastructure.whatsapp_agent_chat import (
     connections_for_disconnect,
     parse_yes_no,
     build_calendar_choice_interactive,
+    build_calendar_confirm_buttons,
+    build_calendar_confirm_text,
+    confirms_calendar_choice,
     build_calendar_choice_text,
     calendars_missing_colour,
     color_dot,
@@ -63,11 +66,33 @@ class HelperTests(unittest.TestCase):
 
         partial = build_calendar_choice_interactive(CALENDARS, selected=["work@group.calendar.google.com"])
         rows = partial["action"]["sections"][0]["rows"]
-        self.assertEqual(rows[0]["id"], "calpick:done")
-        self.assertIn("Work", rows[0]["description"])
-        self.assertTrue(rows[2]["title"].startswith("✓ 🔴"), rows[2]["title"])
-        self.assertFalse(rows[1]["title"].startswith("✓"))
+        self.assertEqual([r["id"] for r in rows], ["calpick:1", "calpick:2", "calpick:3", "calpick:all"],
+                         "Done lives on a button under the chosen calendars, never inside the list")
+        self.assertTrue(rows[1]["title"].startswith("✓ 🔴"), rows[1]["title"])
+        self.assertFalse(rows[0]["title"].startswith("✓"))
         self.assertEqual(partial["header"]["text"], "Which calendars should I read?")
+        self.assertIn("tap a ticked one to remove it", partial["body"]["text"])
+
+    def test_the_chosen_calendars_come_back_with_two_buttons(self) -> None:
+        chosen = ["work@group.calendar.google.com", "family@group.calendar.google.com"]
+        message = build_calendar_confirm_buttons(CALENDARS, selected=chosen, resuming="what's on next week")
+        self.assertEqual(message["type"], "button")
+        self.assertEqual(message["body"]["text"], "I'll read Work and Family. Tap Done and I'll answer your question straight away.")
+        buttons = [b["reply"] for b in message["action"]["buttons"]]
+        self.assertEqual(buttons, [{"id": "calpick:more", "title": "Add another calendar"}, {"id": "calpick:done", "title": "Done"}])
+        self.assertTrue(all(len(b["title"]) <= 20 for b in buttons), "WhatsApp allows twenty characters on a reply button")
+        self.assertIsNone(build_calendar_confirm_buttons(CALENDARS, selected=[]), "nothing chosen, nothing to confirm")
+
+        words = build_calendar_confirm_text(CALENDARS, selected=chosen)
+        self.assertIn("I'll read Work and Family.", words)
+        self.assertIn("*done*", words)
+
+    def test_words_can_stand_in_for_the_done_button(self) -> None:
+        pending = {"selected": ["work@group.calendar.google.com"]}
+        for words in ("done", "Done.", "that's it", "yes", "ok", "זהו"):
+            self.assertTrue(confirms_calendar_choice(pending, words), words)
+        self.assertFalse(confirms_calendar_choice(pending, "done with work, what about family?"))
+        self.assertFalse(confirms_calendar_choice({"selected": []}, "done"), "nothing chosen yet, so done means nothing")
 
     def test_an_address_label_is_shortened_for_the_row_and_kept_in_full_beneath(self) -> None:
         picker = build_calendar_choice_interactive([{"id": "primary", "label": "nimrod.shai@gmail.com", "color": "#039BE5"}])
@@ -243,10 +268,10 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
             return
         json_response(handler, HTTPStatus.OK, {"ok": True, "answer": f"4 meetings across {len(chosen)} calendar(s).", "answerRecords": []})
 
-    def _post(self, text=None, *, message_id, interactive_id=""):
+    def _post(self, text=None, *, message_id, interactive_id="", reply_kind="list_reply"):
         message = {"from": PHONE, "id": message_id, "timestamp": "1756700000"}
         if interactive_id:
-            message.update({"type": "interactive", "interactive": {"type": "list_reply", "list_reply": {"id": interactive_id, "title": "x"}}})
+            message.update({"type": "interactive", "interactive": {"type": reply_kind, reply_kind: {"id": interactive_id, "title": "x"}}})
         else:
             message.update({"type": "text", "text": {"body": text}})
         payload = {"object": "whatsapp_business_account", "entry": [{"id": "waba-1", "changes": [{"field": "messages", "value": {
@@ -317,24 +342,125 @@ class CalendarChoiceOverWhatsAppTests(unittest.TestCase):
         first = self._post(message_id="wamid.m2", interactive_id="calpick:2")
         self.assertEqual(first["results"][0]["outcome"], "calendar_choice_toggled")
         self.assertEqual(first["results"][0]["selected"], ["work@group.calendar.google.com"])
-        picker = self._interactives()[-1]
-        rows = picker["action"]["sections"][0]["rows"]
-        self.assertEqual(rows[0]["id"], "calpick:done")
-        self.assertTrue(rows[2]["title"].startswith("✓"))
+        # The tap is answered with what is chosen so far and two buttons.
+        confirm = self._interactives()[-1]
+        self.assertEqual(confirm["type"], "button")
+        self.assertEqual(confirm["body"]["text"], "I'll read Work. Tap Done and I'll answer your question straight away.")
+        self.assertEqual([b["reply"]["title"] for b in confirm["action"]["buttons"]], ["Add another calendar", "Done"])
         save.assert_not_called()
+
+        # Add another calendar brings the picker back, with Work ticked and no Done row in it.
+        more = self._post(message_id="wamid.m2b", interactive_id="calpick:more", reply_kind="button_reply")
+        self.assertEqual(more["results"][0]["outcome"], "calendar_choice_more")
+        picker = self._interactives()[-1]
+        self.assertEqual(picker["type"], "list")
+        rows = picker["action"]["sections"][0]["rows"]
+        self.assertEqual([r["id"] for r in rows], ["calpick:1", "calpick:2", "calpick:3", "calpick:all"])
+        self.assertTrue(rows[1]["title"].startswith("✓"))
 
         second = self._post(message_id="wamid.m3", interactive_id="calpick:3")
         self.assertEqual(second["results"][0]["selected"], ["work@group.calendar.google.com", "family@group.calendar.google.com"])
+        self.assertEqual(self._interactives()[-1]["body"]["text"], "I'll read Work and Family. Tap Done and I'll answer your question straight away.")
         # Tapping a ticked one again removes it.
+        self._post(message_id="wamid.m3b", interactive_id="calpick:more", reply_kind="button_reply")
         third = self._post(message_id="wamid.m4", interactive_id="calpick:2")
         self.assertEqual(third["results"][0]["selected"], ["family@group.calendar.google.com"])
         self.assertEqual(self.model.call_count, rounds, "a tap is settled by code, never by the model")
 
-        done = self._post(message_id="wamid.m5", interactive_id="calpick:done")
+        done = self._post(message_id="wamid.m5", interactive_id="calpick:done", reply_kind="button_reply")
         self.assertEqual(done["results"][0]["outcome"], "calendar_choice_saved")
         self.assertEqual([c["id"] for c in self._chosen], ["family@group.calendar.google.com"])
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
         self.assertIn("4 meetings", self._texts()[-1], "the interrupted question is answered, not asked for again")
+
+    def test_removing_the_last_tick_brings_the_plain_picker_back(self) -> None:
+        self._post("what's on next week?", message_id="wamid.u1")
+        self._saving_the_choice()
+        self._post(message_id="wamid.u2", interactive_id="calpick:2")
+        self._post(message_id="wamid.u3", interactive_id="calpick:more", reply_kind="button_reply")
+        result = self._post(message_id="wamid.u4", interactive_id="calpick:2")
+        self.assertEqual(result["results"][0]["selected"], [])
+        picker = self._interactives()[-1]
+        self.assertEqual(picker["type"], "list", "nothing is chosen, so there is nothing to confirm")
+        self.assertFalse(any(r["title"].startswith("✓") for r in picker["action"]["sections"][0]["rows"]))
+
+    def test_when_the_buttons_cannot_be_sent_the_words_go_and_done_is_typed(self) -> None:
+        self._post("what's on next week?", message_id="wamid.bw1")
+        self._saving_the_choice()
+        with mock.patch("packages.infrastructure.whatsapp_agent_chat.send_assistyca_interactive", return_value=""):
+            self._post(message_id="wamid.bw2", interactive_id="calpick:2")
+        self.assertIn("I'll read Work. Reply *done* to confirm", self._texts()[-1])
+        rounds = self.model.call_count
+        result = self._post("done", message_id="wamid.bw3")
+        self.assertEqual(result["results"][0]["outcome"], "calendar_choice_saved")
+        self.assertEqual([c["id"] for c in self._chosen], ["work@group.calendar.google.com"])
+        self.assertIn("4 meetings", self._texts()[-1])
+
+    def _listing_the_calendars(self):
+        """The portal endpoint that lists the account's calendars, with what is read now."""
+
+        patcher = mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._handle_platform_connection_calendars_get", autospec=True)
+
+        def _list(handler):
+            from packages.infrastructure.portal_auth.server import json_response
+            from http import HTTPStatus
+            chosen = getattr(self, "_chosen", None) or [CALENDARS[0]]
+            json_response(handler, HTTPStatus.OK, {"ok": True, "sources": [{"status": "ok", "calendars": self.available, "selectedCalendars": chosen}]})
+
+        patcher.start().side_effect = _list
+        self.addCleanup(patcher.stop)
+
+    def test_asking_to_add_a_calendar_opens_the_picker_with_todays_choice_ticked(self) -> None:
+        # 2026-09-07: "I wanted to add another calendar from my calendars" was
+        # told there is no way to pick one here. There is: the same picker,
+        # with what is read now already ticked.
+        self._listing_the_calendars()
+        self._saving_the_choice()
+        self.model.side_effect = [
+            _loop_round(_tool_call("choose_calendars", "cc1", add=[], remove=[])),
+            _loop_round(reply={"reply": "Sure - tap the ones I should read, then Done."}),
+        ]
+        result = self._post("I wanted to add another calendar from my calendars", message_id="wamid.add1")
+        self.assertEqual(result["results"][0]["outcome"], "calendar_choice")
+        shown = _tool_outputs(self.model.call_args)[0]
+        self.assertTrue(shown["ok"])
+        self.assertEqual(shown["readCalendars"], ["Nimrod"])
+        self.assertIn("tap the ones", self._texts()[-1])
+        picker = self._interactives()[-1]
+        self.assertEqual(picker["type"], "list")
+        rows = picker["action"]["sections"][0]["rows"]
+        self.assertTrue(rows[0]["title"].startswith("✓ 🔵"), "what is read today is ticked from the start")
+        self.assertFalse(rows[1]["title"].startswith("✓"))
+        pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
+        self.assertEqual(pending["selected"], ["primary"])
+        self.assertEqual(pending["question"], "", "nothing was interrupted, so nothing is held")
+
+        rounds = self.model.call_count
+        self._post(message_id="wamid.add2", interactive_id="calpick:2")
+        confirm = self._interactives()[-1]
+        self.assertEqual(confirm["body"]["text"], "I'll read Nimrod and Work.")
+        done = self._post(message_id="wamid.add3", interactive_id="calpick:done", reply_kind="button_reply")
+        self.assertEqual(done["results"][0]["outcome"], "calendar_choice_saved")
+        self.assertEqual([c["id"] for c in self._chosen], ["primary", "work@group.calendar.google.com"])
+        self.assertEqual(self._texts()[-1], "Got it - I'll read Nimrod, Work. Ask me anything about your schedule.")
+        self.assertEqual(self.model.call_count, rounds, "Done needs no model round when no question was held")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
+
+    def test_naming_a_calendar_changes_the_choice_without_a_picker(self) -> None:
+        self._listing_the_calendars()
+        self._saving_the_choice()
+        self.model.side_effect = [
+            _loop_round(_tool_call("choose_calendars", "cc1", add=["work"], remove=[])),
+            _loop_round(reply={"reply": "Done - I now read Nimrod and Work.", "claimsCompleted": ["choose_calendars"]}),
+        ]
+        result = self._post("read my work calendar too", message_id="wamid.name1")
+        self.assertEqual(result["results"][0]["outcome"], "message")
+        self.assertEqual([c["id"] for c in self._chosen], ["primary", "work@group.calendar.google.com"])
+        shown = _tool_outputs(self.model.call_args)[0]
+        self.assertEqual(shown["readCalendars"], ["Nimrod", "Work"])
+        self.assertEqual(self._texts()[-1], "Done - I now read Nimrod and Work.")
+        self.assertEqual(self._interactives(), [], "no picker when the name was given")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
 
     def test_all_calendars_is_one_tap(self) -> None:
         self._post("what's on next week?", message_id="wamid.all1")

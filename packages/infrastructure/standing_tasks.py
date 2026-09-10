@@ -191,18 +191,25 @@ def is_standing_task(action: dict[str, Any] | None) -> bool:
     )
 
 
-def build_task_run_message(*, title: str, instruction: str, schedule_text: str) -> str:
+def build_task_run_message(*, title: str, instruction: str, schedule_text: str, standing: bool = True) -> str:
     """What the loop is asked when a standing action fires.
 
     The model is told plainly that nobody is typing: the reply is the
     message the person will find, so there is nothing to ask and nothing
-    to set up, only the work itself.
+    to set up, only the work itself. A one-off run - something the server
+    queued once, such as what a mailbox scan found - says so instead of
+    claiming a schedule it does not have.
     """
 
-    name = normalize_text(title) or "standing action"
+    name = normalize_text(title) or ("standing action" if standing else "action")
     when = f" ({schedule_text})" if schedule_text else ""
+    opening = (
+        f"The standing action \"{name}\"{when} is running now on its schedule."
+        if standing
+        else f"The one-off action \"{name}\" is running now."
+    )
     return (
-        f"The standing action \"{name}\"{when} is running now on its schedule. The person is not writing; "
+        f"{opening} The person is not writing; "
         "they will read your reply as a message on its own, so write it as the finished result and "
         "nothing else: no questions, no offers, nothing set up or scheduled. Do this now: "
         f"{normalize_text(instruction)}"
@@ -274,6 +281,7 @@ class StandingTaskRunner:
                 title=normalize_text(payload.get("title")),
                 instruction=instruction,
                 schedule_text=describe_task_schedule(payload.get("schedule")),
+                standing=is_standing_task(action),
             ),
             "conversation": conversation,
             "timezone": timezone_name,

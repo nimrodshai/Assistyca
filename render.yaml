@@ -72,6 +72,12 @@ services:
         value: "0"
       - key: PORTAL_LIST_NUDGES_ENABLED
         value: "0"
+      - key: PORTAL_MAILBOX_FINDINGS_ENABLED
+        value: "0"
+      - key: PORTAL_MAILBOX_FINDINGS_HOUR
+        value: "8"
+      - key: PORTAL_INBOX_WATCH_ENABLED
+        value: "0"
       - key: PORTAL_SOURCE_ACTIONS_ENABLED
         value: "0"
       - key: PORTAL_AGENT_TURN_SAMPLING_ENABLED
