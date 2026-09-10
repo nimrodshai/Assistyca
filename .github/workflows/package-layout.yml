@@ -49,6 +49,8 @@ jobs:
             tests.test_standing_tasks \
             tests.test_mailbox_findings \
             tests.test_mailbox_finding_scans \
+            tests.test_inbox_watch \
+            tests.test_inbox_watch_polls \
             tests.test_source_actions \
             tests.test_whatsapp_reengagement \
             tests.test_whatsapp_calendar_choice \

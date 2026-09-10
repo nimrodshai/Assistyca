@@ -266,6 +266,68 @@ ON account_finding_scans(status, run_at ASC, id ASC);
 """
 
 MAIL_FACTS_MAX_ROWS = 20000
+
+INBOX_WATCH_TABLE_SQL = """
+-- The inbox watch: which accounts are polled and when next, where each
+-- mailbox's change cursor stands, and every new message the watch has
+-- looked at, with what was read off it and what was done about it.
+CREATE TABLE IF NOT EXISTS inbox_watch_accounts (
+    user_id INTEGER PRIMARY KEY,
+    next_poll_at TEXT NOT NULL DEFAULT '',
+    last_polled_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    failures INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS inbox_watch_cursors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    connection_id TEXT NOT NULL,
+    mailbox TEXT NOT NULL DEFAULT '',
+    cursor TEXT NOT NULL DEFAULT '',
+    polled_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_watch_cursors_connection
+ON inbox_watch_cursors(user_id, connection_id);
+
+-- status: held (waiting to see whether the person opens it), notified,
+-- skipped (with the reason: bulk mail, nothing to do, read by the person).
+CREATE TABLE IF NOT EXISTS inbox_watch_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    mailbox TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'skipped',
+    reason TEXT NOT NULL DEFAULT '',
+    read_json TEXT NOT NULL DEFAULT '{}',
+    notify_after TEXT NOT NULL DEFAULT '',
+    notified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_watch_messages_message
+ON inbox_watch_messages(user_id, mailbox, message_id);
+
+CREATE INDEX IF NOT EXISTS idx_inbox_watch_messages_due
+ON inbox_watch_messages(user_id, status, notify_after);
+"""
+
+INBOX_WATCH_MESSAGE_STATUSES = ("held", "notified", "skipped")
+INBOX_WATCH_MAX_ROWS = 5000
 ACCOUNT_FINDING_STATUSES = ("new", "told", "dismissed", "resolved")
 ACCOUNT_FINDING_SCAN_STATUSES = ("pending", "running", "done", "failed")
 
@@ -1299,6 +1361,7 @@ class PortalDatabase:
                 conn.executescript(ACCOUNT_RECEIPTS_TABLE_SQL)
                 conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
                 conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
+                conn.executescript(INBOX_WATCH_TABLE_SQL)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -7875,6 +7938,260 @@ class PortalDatabase:
                 (timestamp, cutoff),
             )
         return int(cursor.rowcount or 0)
+
+    # -- inbox watch ------------------------------------------------------------
+
+    def list_inbox_watch_due_accounts(self, *, now: str | datetime | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Active accounts with a connected mailbox whose next poll is due,
+        or that have never been polled, soonest first."""
+
+        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT u.id AS user_id, u.email AS email, w.next_poll_at AS next_poll_at, w.failures AS failures
+                FROM users AS u
+                JOIN (
+                    SELECT DISTINCT user_id FROM platform_connections
+                    WHERE platform = 'email' AND connection_status = 'connected'
+                ) AS m ON m.user_id = u.id
+                LEFT JOIN inbox_watch_accounts AS w ON w.user_id = u.id
+                WHERE u.is_active = 1 AND (w.next_poll_at IS NULL OR w.next_poll_at = '' OR w.next_poll_at <= ?)
+                ORDER BY COALESCE(NULLIF(w.next_poll_at, ''), '') ASC, u.id ASC
+                LIMIT ?
+                """,
+                (reference, max(1, int(limit))),
+            ).fetchall()
+        return [
+            {
+                "userId": int(row["user_id"]),
+                "email": str(row["email"] or ""),
+                "nextPollAt": str(row["next_poll_at"] or ""),
+                "failures": int(row["failures"] or 0),
+            }
+            for row in rows
+        ]
+
+    def set_inbox_watch_next_poll(self, *, user_id: int, next_poll_at: str | datetime, error: str = "") -> None:
+        """Write when this account is polled next, and how the last poll went."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        now = now_iso()
+        next_text = parse_datetime(next_poll_at).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO inbox_watch_accounts (user_id, next_poll_at, last_polled_at, last_error, failures, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    next_poll_at = excluded.next_poll_at,
+                    last_polled_at = excluded.last_polled_at,
+                    last_error = excluded.last_error,
+                    failures = CASE WHEN excluded.last_error = '' THEN 0 ELSE inbox_watch_accounts.failures + 1 END,
+                    updated_at = excluded.updated_at
+                """,
+                (int(user_id), next_text, now, normalize_text(error)[:600], 1 if normalize_text(error) else 0, now, now),
+            )
+
+    def get_inbox_watch_account(self, *, user_id: int) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM inbox_watch_accounts WHERE user_id = ?", (int(user_id),)).fetchone()
+        if row is None:
+            return None
+        return {
+            "userId": int(row["user_id"]),
+            "nextPollAt": str(row["next_poll_at"] or ""),
+            "lastPolledAt": str(row["last_polled_at"] or ""),
+            "lastError": str(row["last_error"] or ""),
+            "failures": int(row["failures"] or 0),
+        }
+
+    def get_inbox_watch_cursor(self, *, user_id: int, connection_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM inbox_watch_cursors WHERE user_id = ? AND connection_id = ? LIMIT 1",
+                (int(user_id), normalize_text(connection_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "connectionId": str(row["connection_id"] or ""),
+            "mailbox": str(row["mailbox"] or ""),
+            "cursor": str(row["cursor"] or ""),
+            "polledAt": str(row["polled_at"] or ""),
+            "lastError": str(row["last_error"] or ""),
+        }
+
+    def save_inbox_watch_cursor(self, *, user_id: int, connection_id: str, mailbox: str, cursor: str, error: str = "") -> None:
+        if int(user_id or 0) <= 0 or not normalize_text(connection_id):
+            raise ValueError("User id and connection id are required.")
+        now = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO inbox_watch_cursors (user_id, connection_id, mailbox, cursor, polled_at, last_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, connection_id) DO UPDATE SET
+                    mailbox = excluded.mailbox,
+                    cursor = excluded.cursor,
+                    polled_at = excluded.polled_at,
+                    last_error = excluded.last_error,
+                    updated_at = excluded.updated_at
+                """,
+                (int(user_id), normalize_text(connection_id), normalize_text(mailbox), str(cursor or ""), now, normalize_text(error)[:600], now, now),
+            )
+
+    def known_inbox_watch_message_ids(self, *, user_id: int, mailbox: str, message_ids: list[str]) -> set[str]:
+        ids = [normalize_text(value) for value in message_ids if normalize_text(value)]
+        if int(user_id or 0) <= 0 or not ids:
+            return set()
+        found: set[str] = set()
+        with self._connection() as conn:
+            for start in range(0, len(ids), RECEIPT_MAIL_READS_QUERY_CHUNK):
+                chunk = ids[start:start + RECEIPT_MAIL_READS_QUERY_CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT message_id FROM inbox_watch_messages WHERE user_id = ? AND mailbox = ? AND message_id IN ({placeholders})",
+                    (int(user_id), normalize_text(mailbox), *chunk),
+                ).fetchall()
+                found.update(str(row["message_id"]) for row in rows)
+        return found
+
+    @staticmethod
+    def _inbox_watch_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            read = json.loads(row["read_json"] or "{}")
+        except (TypeError, ValueError):
+            read = {}
+        return {
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "mailbox": str(row["mailbox"] or ""),
+            "messageId": str(row["message_id"] or ""),
+            "threadId": str(row["thread_id"] or ""),
+            "subject": str(row["subject"] or ""),
+            "from": str(row["sender"] or ""),
+            "receivedAt": str(row["received_at"] or ""),
+            "status": str(row["status"] or ""),
+            "reason": str(row["reason"] or ""),
+            "read": read if isinstance(read, dict) else {},
+            "notifyAfter": str(row["notify_after"] or ""),
+            "notifiedAt": str(row["notified_at"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+        }
+
+    def record_inbox_watch_message(self, *, user_id: int, entry: dict[str, Any]) -> bool:
+        """Write down one new message the watch looked at. False when it was
+        already there, so a message is never judged or told twice."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        message_id = normalize_text(entry.get("messageId"))
+        if not message_id:
+            return False
+        status = normalize_text(entry.get("status")).lower()
+        if status not in INBOX_WATCH_MESSAGE_STATUSES:
+            status = "skipped"
+        now = now_iso()
+        read = entry.get("read") if isinstance(entry.get("read"), dict) else {}
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO inbox_watch_messages (
+                    user_id, mailbox, message_id, thread_id, subject, sender, received_at, status, reason,
+                    read_json, notify_after, notified_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                """,
+                (
+                    int(user_id), normalize_text(entry.get("mailbox")), message_id, normalize_text(entry.get("threadId")),
+                    normalize_text(entry.get("subject"))[:300], normalize_text(entry.get("from"))[:200],
+                    normalize_text(entry.get("receivedAt")), status, normalize_text(entry.get("reason"))[:80],
+                    json.dumps(read, ensure_ascii=True, sort_keys=True), normalize_text(entry.get("notifyAfter")), now, now,
+                ),
+            )
+            inserted = cursor.rowcount > 0
+            if inserted:
+                total = int(conn.execute(
+                    "SELECT COUNT(*) FROM inbox_watch_messages WHERE user_id = ?", (int(user_id),)
+                ).fetchone()[0] or 0)
+                excess = total - INBOX_WATCH_MAX_ROWS
+                if excess > 0:
+                    conn.execute(
+                        """
+                        DELETE FROM inbox_watch_messages WHERE id IN (
+                            SELECT id FROM inbox_watch_messages WHERE user_id = ? AND status <> 'held'
+                            ORDER BY id ASC LIMIT ?
+                        )
+                        """,
+                        (int(user_id), excess),
+                    )
+        return inserted
+
+    def list_held_inbox_watch_messages(self, *, user_id: int, due_by: str | datetime | None = None) -> list[dict[str, Any]]:
+        """Messages waiting to be told, oldest first; with ``due_by``, only
+        those whose hold has run out by then."""
+
+        params: list[Any] = [int(user_id)]
+        clause = ""
+        if due_by is not None:
+            clause = " AND notify_after <= ?"
+            params.append(parse_datetime(due_by).astimezone(timezone.utc).isoformat())
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM inbox_watch_messages WHERE user_id = ? AND status = 'held'{clause} ORDER BY notify_after ASC, id ASC",
+                params,
+            ).fetchall()
+        return [record for record in (self._inbox_watch_row(row) for row in rows) if record]
+
+    def update_inbox_watch_message(
+        self,
+        *,
+        user_id: int,
+        row_id: int,
+        status: str,
+        reason: str = "",
+        notify_after: str | datetime | None = None,
+        notified: bool = False,
+    ) -> bool:
+        wanted = normalize_text(status).lower()
+        if wanted not in INBOX_WATCH_MESSAGE_STATUSES:
+            raise ValueError("Unknown inbox watch status.")
+        now = now_iso()
+        sets = ["status = ?", "reason = ?", "updated_at = ?"]
+        params: list[Any] = [wanted, normalize_text(reason)[:80], now]
+        if notify_after is not None:
+            sets.append("notify_after = ?")
+            params.append(parse_datetime(notify_after).astimezone(timezone.utc).isoformat())
+        if notified:
+            sets.append("notified_at = ?")
+            params.append(now)
+        params.extend([int(user_id), int(row_id)])
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE inbox_watch_messages SET {', '.join(sets)} WHERE user_id = ? AND id = ?", params,
+            )
+        return cursor.rowcount > 0
+
+    def count_inbox_watch_notified_since(self, *, user_id: int, since: str | datetime) -> int:
+        cutoff = parse_datetime(since).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) FROM inbox_watch_messages WHERE user_id = ? AND status = 'notified' AND notified_at >= ?",
+                (int(user_id), cutoff),
+            ).fetchone()[0] or 0)
+
+    def list_inbox_watch_messages(self, *, user_id: int, statuses: tuple[str, ...] = ("notified",), limit: int = 50) -> list[dict[str, Any]]:
+        wanted = [status for status in statuses if status in INBOX_WATCH_MESSAGE_STATUSES] or ["notified"]
+        placeholders = ",".join("?" for _ in wanted)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM inbox_watch_messages WHERE user_id = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+                (int(user_id), *wanted, max(1, int(limit))),
+            ).fetchall()
+        return [record for record in (self._inbox_watch_row(row) for row in rows) if record]
 
     def create_account_receipt(self, *, user_id: int, record: dict[str, Any]) -> dict[str, Any]:
         """A receipt the owner typed in by hand: no email behind it."""

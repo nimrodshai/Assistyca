@@ -31,6 +31,11 @@ GRAPH_ME_API_URL = "https://graph.microsoft.com/v1.0/me"
 # Gmail's ``in:inbox`` has no KQL equivalent, so the inbox is a different
 # collection instead. Without this a digest would also read Sent and Archive.
 GRAPH_INBOX_MESSAGES_API_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
+GRAPH_INBOX_DELTA_API_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta"
+GRAPH_DELTA_MAX_PAGES = 5
+GRAPH_WATCH_MESSAGE_FIELDS = (
+    "id,conversationId,subject,from,toRecipients,receivedDateTime,bodyPreview,body,isRead,isDraft,internetMessageHeaders"
+)
 GRAPH_TIMEOUT_SECONDS = 20
 GRAPH_MAX_DIGEST_MESSAGES = 10
 # A digest shows the newest handful; a receipt search has to see the whole
@@ -99,7 +104,12 @@ def _graph_request(
     access_token: str,
     *,
     timeout_seconds: int,
+    missing: tuple[int, ...] = (),
 ) -> dict[str, Any]:
+    """One GET as JSON. A status in ``missing`` comes back as an empty dict
+    rather than an error: a message deleted before it was read, a delta
+    link Graph no longer honours."""
+
     request = urllib_request.Request(
         url,
         headers={
@@ -116,6 +126,8 @@ def _graph_request(
             raw = response.read()
             payload = json.loads(raw.decode("utf-8")) if raw else {}
     except urllib_error.HTTPError as exc:
+        if exc.code in missing:
+            return {}
         _log_graph_failure(url, exc.code, _read_error_body(exc))
         if exc.code in {401, 403}:
             raise OutlookAuthorizationError(
@@ -287,13 +299,107 @@ class OutlookDigestRunner:
         self._opener = opener or urllib_request.urlopen
         self.timeout_seconds = max(3, min(60, int(timeout_seconds)))
 
-    def _get_json(self, url: str, access_token: str) -> dict[str, Any]:
+    def _get_json(self, url: str, access_token: str, *, missing: tuple[int, ...] = ()) -> dict[str, Any]:
         return _graph_request(
             self._opener,
             url,
             access_token,
             timeout_seconds=self.timeout_seconds,
+            missing=missing,
         )
+
+    # -- watching for new mail ------------------------------------------------
+
+    def read_change_cursor(self, access_token: str) -> str:
+        """Where the inbox is now, as a Graph delta link. Asking for the
+        latest token skips the enumeration and returns the link straight
+        away, so a watch starts from this moment without reading the past."""
+
+        params = urllib_parse.urlencode([("$select", "id"), ("$deltatoken", "latest")])
+        payload = self._get_json(f"{GRAPH_INBOX_DELTA_API_URL}?{params}", str(access_token or "").strip())
+        return str(payload.get("@odata.deltaLink") or "").strip()
+
+    def list_changes(self, access_token: str, *, cursor: str) -> dict[str, Any]:
+        """The inbox messages created or changed since ``cursor``.
+
+        Graph reports a read-state change the same way as an arrival, so the
+        caller tells new mail from old by what it has already seen. ``reset``
+        says the link is no longer honoured and the watch starts again from
+        ``read_change_cursor``.
+        """
+
+        token = str(access_token or "").strip()
+        url = str(cursor or "").strip()
+        if not url.startswith("https://graph.microsoft.com/"):
+            return {"messageIds": [], "cursor": "", "reset": True}
+        seen: list[str] = []
+        delta_link = ""
+        for _ in range(GRAPH_DELTA_MAX_PAGES):
+            payload = self._get_json(url, token, missing=(400, 404, 410))
+            if not payload:
+                return {"messageIds": [], "cursor": "", "reset": True}
+            for raw in payload.get("value") if isinstance(payload.get("value"), list) else []:
+                if not isinstance(raw, dict) or "@removed" in raw:
+                    continue
+                message_id = str(raw.get("id") or "").strip()
+                if message_id and message_id not in seen:
+                    seen.append(message_id)
+            delta_link = str(payload.get("@odata.deltaLink") or "").strip()
+            next_link = str(payload.get("@odata.nextLink") or "").strip()
+            if delta_link or not next_link:
+                break
+            url = next_link
+        return {"messageIds": seen, "cursor": delta_link or url, "reset": False}
+
+    def fetch_message(self, access_token: str, message_id: str) -> dict[str, Any] | None:
+        """One message in full, or None when it is gone. Carries what a watch
+        needs beyond a digest: who it was sent to, whether it is still
+        unread, and whether it announces itself as bulk mail."""
+
+        token = str(access_token or "").strip()
+        encoded = urllib_parse.quote(str(message_id or "").strip(), safe="")
+        if not encoded:
+            return None
+        params = urllib_parse.urlencode([("$select", GRAPH_WATCH_MESSAGE_FIELDS)])
+        message = self._get_json(f"{GRAPH_MESSAGES_API_URL}/{encoded}?{params}", token, missing=(404,))
+        if not message or bool(message.get("isDraft")):
+            return None
+        received = _parse_received(message.get("receivedDateTime"))
+        headers = {
+            str(entry.get("name") or "").strip().lower(): str(entry.get("value") or "").strip()
+            for entry in (message.get("internetMessageHeaders") or [])
+            if isinstance(entry, dict)
+        }
+        precedence = headers.get("precedence", "").lower()
+        auto = headers.get("auto-submitted", "").lower()
+        recipients = message.get("toRecipients") if isinstance(message.get("toRecipients"), list) else []
+        return {
+            "id": str(message.get("id") or message_id).strip(),
+            "threadId": str(message.get("conversationId") or "").strip(),
+            "from": _format_sender(message),
+            "to": ", ".join(
+                _format_sender({"from": recipient}) for recipient in recipients if isinstance(recipient, dict)
+            ),
+            "subject": str(message.get("subject") or "").strip(),
+            "date": _format_date_header(received, message.get("receivedDateTime")),
+            "receivedAt": received.astimezone(timezone.utc).isoformat() if received else "",
+            "snippet": str(message.get("bodyPreview") or "").strip(),
+            "bodyText": _extract_body_text(message),
+            "labels": [],
+            "unread": not bool(message.get("isRead")),
+            "bulk": bool(headers.get("list-unsubscribe")) or precedence in {"bulk", "list", "junk"} or (bool(auto) and auto != "no"),
+        }
+
+    def is_unread(self, access_token: str, message_id: str) -> bool | None:
+        token = str(access_token or "").strip()
+        encoded = urllib_parse.quote(str(message_id or "").strip(), safe="")
+        if not encoded:
+            return None
+        params = urllib_parse.urlencode([("$select", "id,isRead")])
+        message = self._get_json(f"{GRAPH_MESSAGES_API_URL}/{encoded}?{params}", token, missing=(404,))
+        if not message:
+            return None
+        return not bool(message.get("isRead"))
 
     def _first_page_url(self, query: MailQuery, page_size: int, *, include_body: bool = False) -> str:
         search = to_graph_search(query)

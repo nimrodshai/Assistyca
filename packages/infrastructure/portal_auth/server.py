@@ -84,6 +84,7 @@ from packages.infrastructure.billing_ledger import load_billing_report
 from packages.infrastructure.calendar_summary import CalendarAuthorizationError
 from packages.infrastructure.calendar_summary import CalendarListUnavailableError
 from packages.infrastructure.calendar_summary import CalendarSummaryError
+from packages.infrastructure.calendar_summary import CalendarDateRange
 from packages.infrastructure.calendar_summary import CalendarSummaryRunner
 from packages.infrastructure.calendar_summary import CALENDAR_MAX_CALENDARS
 from packages.infrastructure.calendar_summary import CALENDAR_ID_PATTERN
@@ -209,7 +210,10 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_INSTRUCTIONS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
+from packages.infrastructure import inbox_watch
 from packages.infrastructure import mailbox_findings
+from packages.infrastructure.inbox_watch_polls import InboxWatchScheduler
+from packages.infrastructure.inbox_watch_polls import load_inbox_watch_config
 from packages.infrastructure.mailbox_finding_scans import FindingScanScheduler
 from packages.infrastructure.mailbox_finding_scans import load_finding_scan_config
 from packages.infrastructure.list_due_nudges import ListDueNudger
@@ -416,6 +420,12 @@ AGENT_RECEIPT_JUDGE_COMPLEXITY = TaskComplexity.MEDIUM
 # Reading one message down to a kind, a party, an amount and a date is
 # constrained extraction over a fixed shape.
 AGENT_MAILBOX_FINDINGS_COMPLEXITY = TaskComplexity.MEDIUM
+# Reading one new email down to what it asks and by when is the same
+# constrained extraction.
+AGENT_INBOX_WATCH_COMPLEXITY = TaskComplexity.MEDIUM
+# Access tokens for the inbox watch, shared across polls so a mailbox
+# polled every three minutes refreshes its token once an hour.
+INBOX_WATCH_TOKEN_CACHE = inbox_watch.AccessTokenCache()
 # Telling one payment reported twice from two payments of the same price is
 # the same kind of work: everything mechanical about the two messages already
 # matches, and what separates them is what they are about. The same tier reads
@@ -3337,6 +3347,17 @@ def connection_vendor(record: dict[str, Any]) -> str:
     return CONNECTION_VENDOR_BY_PROVIDER.get(resolved_connection_provider(record), "")
 
 
+def _parse_iso_instant(value: Any) -> datetime | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def mailbox_display_name(record: dict[str, Any]) -> str:
     """Name one mailbox for a person: its address, else a label, else provider."""
 
@@ -4312,6 +4333,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/receipts"
             or path.startswith("/api/receipts/")
             or path == "/api/findings/scan"
+            or path == "/api/inbox-watch/poll"
         ):
             try:
                 self._handle_api_post(parsed)
@@ -4695,6 +4717,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/findings/scan":
             self._handle_findings_scan_post()
+            return
+        if path == "/api/inbox-watch/poll":
+            self._handle_inbox_watch_poll_post()
             return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
@@ -8847,6 +8872,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _mailbox_readers(
         self,
         session: Any,
+        *,
+        token_cache: inbox_watch.AccessTokenCache | None = None,
     ) -> tuple[list[dict[str, Any]], Callable[[dict[str, Any]], str], Callable[[dict[str, Any]], tuple[Any, str] | None]]:
         """Every connected mailbox, and a way to open each one once.
 
@@ -8875,17 +8902,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             record_id = normalize_text(record.get("id"))
             if record_id in readers:
                 return readers[record_id]
-            try:
-                stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")  # type: ignore[union-attr]
-                record_provider = self._saved_email_provider(stored_email_secret)
-                access_token, _ = self._resolve_email_access_token(
-                    stored_email_secret,
-                    provider=record_provider,
-                )
-            except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                print(f"Keeping receipts from {mailbox_name_for(record)} failed: {exc}", flush=True)
-                readers[record_id] = None
-                return None
+            fingerprint = normalize_text(record.get("secretFingerprint"))
+            cached = token_cache.get(record_id, fingerprint=fingerprint) if token_cache is not None else None
+            if cached is not None:
+                record_provider, access_token = cached
+            else:
+                try:
+                    stored_email_secret = vault.decrypt(record.get("secretCiphertext") or "")  # type: ignore[union-attr]
+                    record_provider = self._saved_email_provider(stored_email_secret)
+                    access_token, _ = self._resolve_email_access_token(
+                        stored_email_secret,
+                        provider=record_provider,
+                    )
+                except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                    print(f"Opening {mailbox_name_for(record)} failed: {exc}", flush=True)
+                    readers[record_id] = None
+                    return None
+                if token_cache is not None:
+                    token_cache.put(record_id, fingerprint=fingerprint, provider=record_provider, access_token=access_token)
             runner = (
                 OutlookDigestRunner()
                 if record_provider == MICROSOFT_OUTLOOK_OAUTH_PROVIDER
@@ -9041,6 +9075,219 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             }, ensure_ascii=True, sort_keys=True), flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"The first mailbox scan could not be scheduled: {exc}", flush=True)
+
+    def _handle_inbox_watch_poll_post(self) -> None:
+        """Read what arrived in the connected mailboxes since the last poll,
+        decide what cannot wait, and tell the person once they have had a
+        chance to see it themselves. Run by the inbox watch over loopback."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, user = authenticated
+        if not self._require_active_trial(user):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_JSON_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        result = self._poll_inbox_watch(session, user_id=int(user.get("id") or 0), zone=zone, timezone_name=timezone_name)
+        json_response(self, HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
+
+    def _poll_inbox_watch(self, session: Any, *, user_id: int, zone: ZoneInfo, timezone_name: str) -> dict[str, Any]:
+        config = load_inbox_watch_config()
+        now = datetime.now(timezone.utc)
+        local_now = now.astimezone(zone)
+        records, mailbox_name_for, reader_for = self._mailbox_readers(session, token_cache=INBOX_WATCH_TOKEN_CACHE)
+        if not records or user_id <= 0:
+            return {"ok": False, "error": "mailbox_not_connected", "message": "No mailbox is connected, so there is nothing to watch."}
+        owner_addresses = [mailbox_name_for(record) for record in records]
+        ask = self._receipt_prompt_ask(
+            billing_email=session.email,
+            tool_name="inbox_watch",
+            model_env="OPENAI_INBOX_WATCH_MODEL",
+            complexity=AGENT_INBOX_WATCH_COMPLEXITY,
+            instructions=inbox_watch.INBOX_WATCH_INSTRUCTIONS,
+            max_output_tokens=inbox_watch.READ_MAX_OUTPUT_TOKENS,
+            failure_label="Inbox watch reading",
+        )
+        counts = {"new": 0, "read": 0, "held": 0, "skipped": 0, "notified": 0, "released": 0, "deferred": 0, "started": 0}
+        failures: list[dict[str, str]] = []
+        readers_by_mailbox: dict[str, tuple[Any, str]] = {}
+        hold = timedelta(minutes=config.hold_minutes)
+        for record in records:
+            mailbox_name = mailbox_name_for(record)
+            connection_id = normalize_text(record.get("id"))
+            reader = reader_for(record)
+            if reader is None:
+                failures.append({"mailbox": mailbox_name, "message": "The saved connection could not be opened."})
+                continue
+            runner, access_token = reader
+            readers_by_mailbox[mailbox_name] = (runner, access_token)
+            stored = self.database.get_inbox_watch_cursor(user_id=user_id, connection_id=connection_id)
+            try:
+                if stored is None or not stored.get("cursor"):
+                    # A watch starts from now: what arrived before the
+                    # mailbox was connected is the first scan's business.
+                    cursor = runner.read_change_cursor(access_token)
+                    self.database.save_inbox_watch_cursor(user_id=user_id, connection_id=connection_id, mailbox=mailbox_name, cursor=cursor)
+                    counts["started"] += 1
+                    continue
+                changes = runner.list_changes(access_token, cursor=stored["cursor"])
+                if changes.get("reset"):
+                    cursor = runner.read_change_cursor(access_token)
+                    self.database.save_inbox_watch_cursor(
+                        user_id=user_id, connection_id=connection_id, mailbox=mailbox_name, cursor=cursor,
+                        error="The provider no longer held the change cursor; started again from now.",
+                    )
+                    continue
+                ids = [str(value) for value in (changes.get("messageIds") or [])]
+                known = self.database.known_inbox_watch_message_ids(user_id=user_id, mailbox=mailbox_name, message_ids=ids)
+                fresh_ids = [value for value in ids if value not in known][: inbox_watch.MAX_MESSAGES_PER_POLL]
+                items: list[dict[str, Any]] = []
+                for message_id in fresh_ids:
+                    item = runner.fetch_message(access_token, message_id)
+                    if item is not None:
+                        items.append({**item, "mailbox": mailbox_name})
+                counts["new"] += len(items)
+                to_read: list[dict[str, Any]] = []
+                for item in items:
+                    reason = inbox_watch.skip_reason(item, owner_addresses=owner_addresses)
+                    if reason:
+                        counts["skipped"] += 1
+                        self.database.record_inbox_watch_message(user_id=user_id, entry={**item, "messageId": item["id"], "status": "skipped", "reason": reason})
+                    else:
+                        to_read.append(item)
+                if to_read:
+                    counts["read"] += len(to_read)
+                    read_items = inbox_watch.read_new_mail(
+                        to_read, ask=ask, now_local=local_now.strftime("%Y-%m-%d %H:%M (%A)"), owner_addresses=owner_addresses,
+                    )
+                    for item in read_items:
+                        read = item.get(inbox_watch.READ_KEY) if isinstance(item.get(inbox_watch.READ_KEY), dict) else {}
+                        received = _parse_iso_instant(item.get("receivedAt")) or now
+                        decision = inbox_watch.decide(read, received_at=received, now=now, zone=zone, hold=hold)
+                        if decision.get("action") == "notify":
+                            counts["held"] += 1
+                            self.database.record_inbox_watch_message(user_id=user_id, entry={
+                                **item, "messageId": item["id"], "status": "held", "reason": "same_day" if decision.get("sameDay") else "held",
+                                "read": read, "notifyAfter": decision.get("notifyAfter"),
+                            })
+                        else:
+                            counts["skipped"] += 1
+                            self.database.record_inbox_watch_message(user_id=user_id, entry={
+                                **item, "messageId": item["id"], "status": "skipped", "reason": normalize_text(decision.get("reason")), "read": read,
+                            })
+                self.database.save_inbox_watch_cursor(user_id=user_id, connection_id=connection_id, mailbox=mailbox_name, cursor=str(changes.get("cursor") or stored["cursor"]))
+            except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
+                INBOX_WATCH_TOKEN_CACHE.forget(connection_id)
+                failures.append({"mailbox": mailbox_name, "message": str(exc)})
+            except (GmailSummaryError, OutlookSummaryError) as exc:
+                failures.append({"mailbox": mailbox_name, "message": str(exc)})
+
+        # What has waited long enough. In quiet hours it waits for the morning.
+        due = self.database.list_held_inbox_watch_messages(user_id=user_id, due_by=now)
+        to_tell: list[dict[str, Any]] = []
+        if due and inbox_watch.in_quiet_hours(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour):
+            morning = inbox_watch.quiet_hours_end(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour)
+            for row in due:
+                self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="held", reason="quiet_hours", notify_after=morning)
+            counts["deferred"] = len(due)
+            due = []
+        if due:
+            day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            remaining = max(0, config.daily_cap - self.database.count_inbox_watch_notified_since(user_id=user_id, since=day_start))
+            events = self._upcoming_calendar_events(session, zone=zone, days=inbox_watch.ALERT_HORIZON_DAYS)
+            for row in due:
+                reader = readers_by_mailbox.get(str(row.get("mailbox") or ""))
+                unread: bool | None = True
+                if reader is not None:
+                    try:
+                        unread = reader[0].is_unread(reader[1], row["messageId"])
+                    except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError):
+                        unread = True
+                if unread is None:
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="gone")
+                    counts["released"] += 1
+                    continue
+                if unread is False:
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="read_by_person")
+                    counts["released"] += 1
+                    continue
+                if inbox_watch.on_calendar(row.get("read") or {}, events):
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="on_calendar")
+                    counts["released"] += 1
+                    continue
+                if len(to_tell) >= remaining:
+                    self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="skipped", reason="daily_cap")
+                    counts["released"] += 1
+                    continue
+                to_tell.append(row)
+        if to_tell:
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+            owner_wa_id = normalize_text(connection.get("ownerWaId"))
+            if not owner_wa_id:
+                linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
+                owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
+            self.database.create_scheduled_action(
+                user_id=user_id,
+                action_type=STANDING_TASK_ACTION_TYPE,
+                channel="whatsapp" if owner_wa_id else "portal",
+                recipient_ref="owner",
+                run_at=now,
+                timezone_name=timezone_name,
+                payload={
+                    "title": inbox_watch.ALERT_TITLE,
+                    "instruction": inbox_watch.build_alert_instruction(to_tell, hold_minutes=config.hold_minutes),
+                    "fallbackText": inbox_watch.build_alert_fallback_text(to_tell),
+                    "oneOff": True,
+                    "source": "inbox_watch",
+                    "messageIds": [str(row.get("messageId") or "") for row in to_tell],
+                },
+            )
+            for row in to_tell:
+                self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="notified", reason="", notified=True)
+            counts["notified"] = len(to_tell)
+        if counts["new"] or counts["notified"] or failures:
+            print(json.dumps({"event": "inbox_watch_poll", "mailboxes": len(records), **counts, "failures": len(failures)}, ensure_ascii=True, sort_keys=True), flush=True)
+        return {"ok": True, "mailboxes": len(records), **counts, "failures": failures}
+
+    def _upcoming_calendar_events(self, session: Any, *, zone: ZoneInfo, days: int) -> list[dict[str, Any]]:
+        """The next days of the person's chosen calendars as title and day,
+        for telling an invitation already accepted from one still waiting.
+        Best effort: a calendar that cannot be read reads as empty."""
+
+        try:
+            vault = self.credential_vault
+            records = self.database.list_platform_connection_secret_records(
+                session.email, CALENDAR_PLATFORM, include_statuses=("connected",),
+            )
+            if vault is None or not records:
+                return []
+            secret = vault.decrypt(records[0].get("secretCiphertext") or "")
+            access_token, _ = self._resolve_calendar_access_token(secret)
+            selection = connection_calendar_selection(self._calendar_connection_record(session.email))
+            calendar_ids = [normalize_text(entry.get("id")) for entry in selection if normalize_text(entry.get("id"))][:5] or ["primary"]
+            start = datetime.now(zone)
+            date_range = CalendarDateRange(label="inbox watch", start=start, end=start + timedelta(days=max(1, int(days))))
+            events, _skipped = CalendarSummaryRunner().fetch_calendar_events(access_token, calendar_ids=calendar_ids, date_range=date_range)
+            return [
+                {
+                    "title": normalize_text(event.get("title")),
+                    "start": event["start"].isoformat() if isinstance(event.get("start"), datetime) else normalize_text(event.get("start")),
+                }
+                for event in events
+                if isinstance(event, dict)
+            ]
+        except Exception as exc:  # noqa: BLE001 - the calendar is a courtesy check, never a blocker
+            print(f"Inbox watch could not read the calendar: {exc}", flush=True)
+            return []
 
     def _keep_search_receipts(self, session: Any, *, answers: list[dict[str, Any]]) -> dict[str, Any]:
         """Keep what a receipt search read, on the receipts page.
@@ -16652,6 +16899,34 @@ def main() -> int:
     else:
         print("Mailbox findings are disabled.", flush=True)
 
+    inbox_watch_config = load_inbox_watch_config()
+    inbox_watch_stop_event = threading.Event()
+    inbox_watch_thread: threading.Thread | None = None
+    if inbox_watch_config.enabled and scheduled_action_config.enabled:
+        # Each account's inbox is polled over loopback with a short-lived
+        # session; what cannot wait goes out as a one-off standing action.
+        inbox_watcher = InboxWatchScheduler(
+            server.database,  # type: ignore[attr-defined]
+            config=inbox_watch_config,
+            base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
+            session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+        )
+        inbox_watch_thread = threading.Thread(
+            target=inbox_watcher.serve_forever,
+            args=(inbox_watch_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="inbox-watch",
+        )
+        inbox_watch_thread.start()
+        print(
+            f"Inbox watch enabled. Polls every {inbox_watch_config.day_poll_seconds} seconds by day and "
+            f"{inbox_watch_config.night_poll_seconds} at night; holds {inbox_watch_config.hold_minutes} minutes before an alert.",
+            flush=True,
+        )
+    else:
+        print("Inbox watch is disabled.", flush=True)
+
     source_action_config = load_source_action_config()
     source_action_stop_event = threading.Event()
     source_action_thread: threading.Thread | None = None
@@ -16735,6 +17010,9 @@ def main() -> int:
         finding_scan_stop_event.set()
         if finding_scan_thread is not None:
             finding_scan_thread.join(timeout=1.0)
+        inbox_watch_stop_event.set()
+        if inbox_watch_thread is not None:
+            inbox_watch_thread.join(timeout=1.0)
         sampling_stop_event.set()
         if sampling_thread is not None:
             sampling_thread.join(timeout=1.0)
