@@ -167,6 +167,10 @@ class LoopContext:
     # What each offered link is for, in a few words, so a channel that can
     # show a button under the reply has something to write on it.
     link_labels: dict[str, str] = field(default_factory=dict)
+    # Some recovery links are not optional prose. If a provider rejected the
+    # saved sign-in, the client needs the newly minted link even when the
+    # language model forgets to repeat it.
+    required_links: list[str] = field(default_factory=list)
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
@@ -431,6 +435,8 @@ def _mailbox_failure_options(
         link = str(context.connect_links.get(provider) or "").strip()
         if link:
             _offer_link(context, link, label)
+            if link not in context.required_links:
+                context.required_links.append(link)
         options.append(make_option("reconnect", provider=provider, label=label, link=link))
     if include_retry and any(failure.get("action") == "retry" for failure in failures):
         options.append(make_option("retry"))
@@ -2403,6 +2409,7 @@ def run_agent_loop(
         reply_payload = {"reply": reply_text, "claimsCompleted": [], "rememberFact": None, "forgetFact": None}
 
     reply = _guard_reply(str(reply_payload.get("reply") or ""), context.links_offered)
+    reply = _append_required_links(reply, context.required_links)
     links_in_reply = _links_in_reply(reply, context)
     claims = [str(c) for c in (reply_payload.get("claimsCompleted") or []) if isinstance(c, str)]
     overclaimed = [c for c in claims if c not in completed]
@@ -2559,6 +2566,18 @@ def _links_in_reply(reply: str, context: LoopContext) -> list[dict[str, str]]:
             seen.add(bare)
             found.append({"url": bare, "label": context.link_labels.get(bare) or "Open"})
     return found
+
+
+def _append_required_links(reply: str, required_links: list[str]) -> str:
+    """Keep a required recovery link even when generated prose omitted it."""
+
+    missing = [link for link in required_links if link and link not in reply]
+    if not missing:
+        return reply
+    suffix = "\n".join(missing)
+    room = max(0, MAX_REPLY_LENGTH - len(suffix) - 1)
+    prefix = reply[:room].rstrip()
+    return f"{prefix}\n{suffix}".strip()
 
 
 def _guard_reply(reply: str, links_offered: list[str]) -> str:

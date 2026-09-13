@@ -332,7 +332,9 @@ class LoopMechanicsTests(unittest.TestCase):
         })
         model = ScriptedModel([
             _model_round(_call("search_receipts", "c1", what="Apple receipts in August", vendor="Apple", months="2026-08")),
-            _model_round(reply=_reply(f"Google rejected the saved sign-in for personal@gmail.com. Please sign in again here:\n{GOOGLE}")),
+            # The reconnect link is required recovery data, so the loop must
+            # retain it even if generated prose forgets to repeat it.
+            _model_round(reply=_reply("Google rejected the saved sign-in for personal@gmail.com. Please sign in again.")),
         ])
         result = run_agent_loop(
             context=_context(api, connected={"gmail": True}, links={"google": GOOGLE}),
