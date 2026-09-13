@@ -41,6 +41,7 @@ When working here:
 - Build reusable capabilities around stable workflows such as intake, scheduling, quoting, follow-up, handoff, and knowledge retrieval.
 - Keep shared capabilities generic and parameterized.
 - Avoid embedding client names, client secrets, or client-specific assumptions in shared code.
+- For insurance, keep the supplied policy wording as the authority and its structured coverage as a versioned index. Never overwrite an earlier version, never present a summary-only receipt match as confirmed coverage, and always retain the evidence pointer behind a source-backed match.
 
 ## OpenAI Access
 

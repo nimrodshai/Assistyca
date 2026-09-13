@@ -19,6 +19,10 @@ from typing import Any
 from typing import Iterable
 
 from packages.infrastructure.feature_catalog import load_default_feature_catalog
+from packages.infrastructure.insurance_manager import INSURANCE_POLICY_STATUSES
+from packages.infrastructure.insurance_manager import choose_applicable_version
+from packages.infrastructure.insurance_manager import match_expense_to_policies
+from packages.infrastructure.insurance_manager import normalize_policy_version
 
 
 DEFAULT_DB_PATH = Path("portal/portal.db")
@@ -393,10 +397,64 @@ CREATE INDEX IF NOT EXISTS idx_agent_turns_created ON agent_turns(created_at DES
 CREATE INDEX IF NOT EXISTS idx_agent_turns_user_created ON agent_turns(user_id, created_at DESC);
 """
 
+INSURANCE_TABLES_SQL = """
+-- A policy is the stable thing the owner recognises. Its wording is never
+-- overwritten: every renewal or endorsement is a new immutable version.
+CREATE TABLE IF NOT EXISTS insurance_policies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    insurer TEXT NOT NULL DEFAULT '',
+    policy_number_hint TEXT NOT NULL DEFAULT '',
+    policy_type TEXT NOT NULL DEFAULT 'other',
+    covered_subject TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    archived_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- source_bytes/source_text preserve what was supplied. summary and
+-- coverages_json are a searchable interpretation and are never treated as
+-- replacing that source.
+CREATE TABLE IF NOT EXISTS insurance_policy_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_id INTEGER NOT NULL,
+    version_number INTEGER NOT NULL,
+    effective_from TEXT NOT NULL,
+    effective_to TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    coverages_json TEXT NOT NULL DEFAULT '[]',
+    review_status TEXT NOT NULL DEFAULT 'unreviewed',
+    source_name TEXT NOT NULL DEFAULT '',
+    source_mime_type TEXT NOT NULL DEFAULT '',
+    source_reference TEXT NOT NULL DEFAULT '',
+    source_bytes BLOB,
+    source_text TEXT NOT NULL DEFAULT '',
+    source_size INTEGER NOT NULL DEFAULT 0,
+    source_sha256 TEXT NOT NULL DEFAULT '',
+    version_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(policy_id, version_number),
+    UNIQUE(policy_id, version_fingerprint),
+    FOREIGN KEY(policy_id) REFERENCES insurance_policies(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_insurance_policies_user_status
+ON insurance_policies(user_id, archived_at, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_insurance_policy_versions_dates
+ON insurance_policy_versions(policy_id, effective_from DESC, effective_to);
+"""
+
+INSURANCE_SOURCE_MAX_BYTES = 15 * 1024 * 1024
+
 USER_OWNED_TABLES = (
     "account_receipts",
     "receipt_mail_reads",
     "agent_turns",
+    "insurance_policies",
     "notifications",
     "feature_activation_events",
     "feature_activations",
@@ -1363,6 +1421,7 @@ class PortalDatabase:
                 conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
                 conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
                 conn.executescript(INBOX_WATCH_TABLE_SQL)
+                self._ensure_insurance_tables(conn)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -1377,6 +1436,11 @@ class PortalDatabase:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_list_items)").fetchall()}
         if "due_on" not in columns:
             conn.execute("ALTER TABLE account_list_items ADD COLUMN due_on TEXT")
+
+    def _ensure_insurance_tables(self, conn: sqlite3.Connection) -> None:
+        """The versioned policy store, kept separate from short account facts."""
+
+        conn.executescript(INSURANCE_TABLES_SQL)
 
     def _ensure_agent_turns_table(self, conn: sqlite3.Connection) -> None:
         """One row per assistant turn, written whether the turn went well or not.
@@ -7062,6 +7126,281 @@ class PortalDatabase:
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
+
+    # -- insurance policies ---------------------------------------------------
+
+    def save_insurance_policy_version(
+        self,
+        *,
+        user_id: int,
+        policy: dict[str, Any],
+        version: dict[str, Any],
+        source_document: bytes | bytearray | None = None,
+    ) -> dict[str, Any]:
+        """Keep a policy and append an immutable wording version.
+
+        ``source_document`` is the original file when one was supplied. The
+        public record only reports that it exists; callers must deliberately
+        request the source through ``get_insurance_policy_source`` to read it.
+        Repeating the same normalized version is idempotent.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        raw_policy = policy if isinstance(policy, dict) else {}
+        name = normalize_text(raw_policy.get("name"))[:240]
+        insurer = normalize_text(raw_policy.get("insurer"))[:240]
+        policy_type = re.sub(r"[^a-z0-9]+", "_", normalize_text(raw_policy.get("policyType")).casefold()).strip("_")[:80]
+        covered_subject = normalize_text(raw_policy.get("coveredSubject"))[:240]
+        status = normalize_text(raw_policy.get("status")).casefold() or "active"
+        if not name or not policy_type:
+            raise ValueError("A policy needs a name and policy type.")
+        if status not in INSURANCE_POLICY_STATUSES:
+            raise ValueError(f"Policy status must be one of: {', '.join(INSURANCE_POLICY_STATUSES)}.")
+
+        raw_number = normalize_text(raw_policy.get("policyNumber"))[:100]
+        policy_number_hint = raw_number if len(raw_number) <= 4 else f"••••{raw_number[-4:]}"
+        normalized_version = normalize_policy_version(version)
+        source = bytes(source_document or b"")
+        if len(source) > INSURANCE_SOURCE_MAX_BYTES:
+            raise ValueError(f"An insurance source document can be at most {INSURANCE_SOURCE_MAX_BYTES // (1024 * 1024)} MB.")
+        source_text = normalized_version.pop("sourceText")
+        source_payload = source or source_text.encode("utf-8")
+        source_sha256 = hashlib.sha256(source_payload).hexdigest() if source_payload else ""
+        fingerprint_payload = {
+            **normalized_version,
+            "sourceSha256": source_sha256,
+        }
+        version_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        now = now_iso()
+
+        with self._connection() as conn:
+            requested_id = int(raw_policy.get("id") or 0)
+            row = None
+            if requested_id > 0:
+                row = conn.execute(
+                    "SELECT * FROM insurance_policies WHERE id = ? AND user_id = ? LIMIT 1",
+                    (requested_id, int(user_id)),
+                ).fetchone()
+                if row is None:
+                    raise KeyError("That insurance policy is not here.")
+            elif policy_number_hint and insurer:
+                row = conn.execute(
+                    """
+                    SELECT * FROM insurance_policies
+                    WHERE user_id = ? AND lower(insurer) = lower(?) AND policy_number_hint = ?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (int(user_id), insurer, policy_number_hint),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT * FROM insurance_policies
+                    WHERE user_id = ? AND lower(name) = lower(?) AND lower(insurer) = lower(?)
+                        AND lower(covered_subject) = lower(?)
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (int(user_id), name, insurer, covered_subject),
+                ).fetchone()
+
+            if row is None:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO insurance_policies (
+                        user_id, name, insurer, policy_number_hint, policy_type,
+                        covered_subject, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(user_id), name, insurer, policy_number_hint, policy_type,
+                        covered_subject, status, now, now,
+                    ),
+                )
+                policy_id = int(cursor.lastrowid or 0)
+            else:
+                policy_id = int(row["id"])
+                conn.execute(
+                    """
+                    UPDATE insurance_policies
+                    SET name = ?, insurer = ?, policy_number_hint = ?, policy_type = ?,
+                        covered_subject = ?, status = ?, archived_at = NULL, updated_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (
+                        name, insurer, policy_number_hint or str(row["policy_number_hint"] or ""),
+                        policy_type, covered_subject, status, now, policy_id, int(user_id),
+                    ),
+                )
+
+            existing = conn.execute(
+                """
+                SELECT id FROM insurance_policy_versions
+                WHERE policy_id = ? AND version_fingerprint = ? LIMIT 1
+                """,
+                (policy_id, version_fingerprint),
+            ).fetchone()
+            was_created = existing is None
+            if existing is None:
+                version_number = int(conn.execute(
+                    "SELECT COALESCE(MAX(version_number), 0) + 1 AS next_version FROM insurance_policy_versions WHERE policy_id = ?",
+                    (policy_id,),
+                ).fetchone()["next_version"])
+                conn.execute(
+                    """
+                    INSERT INTO insurance_policy_versions (
+                        policy_id, version_number, effective_from, effective_to, summary,
+                        coverages_json, review_status, source_name, source_mime_type,
+                        source_reference, source_bytes, source_text, source_size,
+                        source_sha256, version_fingerprint, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        policy_id,
+                        version_number,
+                        normalized_version["effectiveFrom"],
+                        normalized_version["effectiveTo"],
+                        normalized_version["summary"],
+                        json.dumps(normalized_version["coverages"], ensure_ascii=False, separators=(",", ":")),
+                        normalized_version["reviewStatus"],
+                        normalized_version["sourceName"],
+                        normalized_version["sourceMimeType"],
+                        normalized_version["sourceReference"],
+                        source or None,
+                        source_text,
+                        len(source_payload),
+                        source_sha256,
+                        version_fingerprint,
+                        now,
+                    ),
+                )
+                conn.execute("UPDATE insurance_policies SET updated_at = ? WHERE id = ?", (now, policy_id))
+
+        record = self.get_insurance_policy(user_id=user_id, policy_id=policy_id) or {}
+        record["versionCreated"] = was_created
+        return record
+
+    def list_insurance_policies(self, *, user_id: int, include_archived: bool = False) -> list[dict[str, Any]]:
+        if int(user_id or 0) <= 0:
+            return []
+        where = "user_id = ?" if include_archived else "user_id = ? AND archived_at IS NULL"
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM insurance_policies WHERE {where} ORDER BY updated_at DESC, id DESC",
+                (int(user_id),),
+            ).fetchall()
+        return [
+            record
+            for record in (self.get_insurance_policy(user_id=user_id, policy_id=int(row["id"])) for row in rows)
+            if record is not None
+        ]
+
+    def get_insurance_policy(self, *, user_id: int, policy_id: int) -> dict[str, Any] | None:
+        if int(user_id or 0) <= 0 or int(policy_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            policy_row = conn.execute(
+                "SELECT * FROM insurance_policies WHERE id = ? AND user_id = ? LIMIT 1",
+                (int(policy_id), int(user_id)),
+            ).fetchone()
+            if policy_row is None:
+                return None
+            version_rows = conn.execute(
+                """
+                SELECT * FROM insurance_policy_versions
+                WHERE policy_id = ? ORDER BY effective_from DESC, version_number DESC
+                """,
+                (int(policy_id),),
+            ).fetchall()
+
+        versions = [self._load_insurance_policy_version_row(row) for row in version_rows]
+        record = {
+            "id": int(policy_row["id"]),
+            "name": str(policy_row["name"] or ""),
+            "insurer": str(policy_row["insurer"] or ""),
+            "policyNumberHint": str(policy_row["policy_number_hint"] or ""),
+            "policyType": str(policy_row["policy_type"] or ""),
+            "coveredSubject": str(policy_row["covered_subject"] or ""),
+            "status": str(policy_row["status"] or ""),
+            "archivedAt": str(policy_row["archived_at"] or ""),
+            "createdAt": str(policy_row["created_at"] or ""),
+            "updatedAt": str(policy_row["updated_at"] or ""),
+            "versions": versions,
+        }
+        record["latestVersion"] = versions[0] if versions else None
+        record["currentVersion"] = choose_applicable_version(
+            versions,
+            datetime.now(timezone.utc).date().isoformat(),
+        ) or record["latestVersion"]
+        return record
+
+    def _load_insurance_policy_version_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            coverages = json.loads(row["coverages_json"] or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            coverages = []
+        return {
+            "id": int(row["id"]),
+            "versionNumber": int(row["version_number"]),
+            "effectiveFrom": str(row["effective_from"] or ""),
+            "effectiveTo": str(row["effective_to"] or ""),
+            "summary": str(row["summary"] or ""),
+            "coverages": coverages if isinstance(coverages, list) else [],
+            "reviewStatus": str(row["review_status"] or ""),
+            "sourceName": str(row["source_name"] or ""),
+            "sourceMimeType": str(row["source_mime_type"] or ""),
+            "sourceReference": str(row["source_reference"] or ""),
+            "sourceStored": bool(row["source_bytes"] or row["source_text"]),
+            "sourceSize": int(row["source_size"] or 0),
+            "sourceSha256": str(row["source_sha256"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+        }
+
+    def get_insurance_policy_source(self, *, user_id: int, version_id: int) -> dict[str, Any] | None:
+        """Read an original only through an owner-scoped lookup."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT v.source_name, v.source_mime_type, v.source_reference,
+                       v.source_bytes, v.source_text, v.source_size, v.source_sha256
+                FROM insurance_policy_versions v
+                JOIN insurance_policies p ON p.id = v.policy_id
+                WHERE v.id = ? AND p.user_id = ? LIMIT 1
+                """,
+                (int(version_id or 0), int(user_id or 0)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "sourceName": str(row["source_name"] or ""),
+            "sourceMimeType": str(row["source_mime_type"] or ""),
+            "sourceReference": str(row["source_reference"] or ""),
+            "sourceDocument": bytes(row["source_bytes"] or b""),
+            "sourceText": str(row["source_text"] or ""),
+            "sourceSize": int(row["source_size"] or 0),
+            "sourceSha256": str(row["source_sha256"] or ""),
+        }
+
+    def archive_insurance_policy(self, *, user_id: int, policy_id: int) -> bool:
+        if int(user_id or 0) <= 0 or int(policy_id or 0) <= 0:
+            return False
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE insurance_policies SET archived_at = ?, updated_at = ?
+                WHERE id = ? AND user_id = ? AND archived_at IS NULL
+                """,
+                (now, now, int(policy_id), int(user_id)),
+            )
+        return cursor.rowcount > 0
+
+    def check_insurance_expense(self, *, user_id: int, expense: dict[str, Any]) -> dict[str, Any]:
+        policies = self.list_insurance_policies(user_id=user_id)
+        return match_expense_to_policies(policies, expense)
 
     def save_account_fact(self, *, user_id: int, key: str, fact: str) -> dict[str, Any]:
         """Remember one thing the owner told us about how their business works.

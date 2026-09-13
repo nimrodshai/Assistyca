@@ -2825,6 +2825,7 @@ def answer_receipt_months(
     months: list[tuple[int, int]],
     ask: Callable[[str], str] | None = None,
     decisions: Any = None,
+    insurance_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """One answer per month, all of them from a single read of the mailbox.
 
@@ -2846,6 +2847,7 @@ def answer_receipt_months(
             month_label=format_receipt_month_label(month),
             ask=ask,
             decisions=decisions,
+            insurance_check=insurance_check,
         )
         for month in months
     ]
@@ -7198,6 +7200,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "answerRecords": [fx_rates.describe_rate_record(rate)],
         })
 
+    def _insurance_receipt_check(self, email: str) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+        """The owner-scoped screen shared by live answers and saved bundles."""
+
+        user = self.database.get_user(email)
+        user_id = int((user or {}).get("id") or 0)
+        if user_id <= 0:
+            return None
+
+        def check(expense: dict[str, Any]) -> dict[str, Any]:
+            return self.database.check_insurance_expense(user_id=user_id, expense=expense)
+
+        return check
+
     def _answer_from_saved_files(self, session: Any, fields: dict[str, Any], payload: dict[str, Any]) -> None:
         """Answer from the folders the account already keeps.
 
@@ -7276,7 +7291,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        answer = answer_receipt_rows(rows, vendor=vendor, month_label=month_label)
+        answer = answer_receipt_rows(
+            rows,
+            vendor=vendor,
+            month_label=month_label,
+            insurance_check=self._insurance_receipt_check(session.email),
+        )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
             "answer": answer["answer"],
@@ -7290,6 +7310,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "vendor": answer["vendor"],
             "monthLabel": answer["monthLabel"],
             "missingAmountCount": answer["missingAmountCount"],
+            "insurancePotentialClaimCount": answer["insurancePotentialClaimCount"],
+            "insuranceChecks": answer["insuranceChecks"],
             # The receipts themselves, so why-questions are answered from the
             # rows rather than from the total standing over them.
             "answerRecords": answer["records"][:ANSWER_COMPOSER_MAX_RECORDS],
@@ -7718,6 +7740,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     # a receipt. Counting them all is a month that never
                     # happened, so they are paired before they are added up.
                     pairing_ask = self._receipt_pairing_ask(billing_email=session.email)
+                    insurance_check = self._insurance_receipt_check(session.email)
                     if len(answer_months) > 1:
                         receipt_month_answers, undated_count = answer_receipt_months(
                             answer_items,
@@ -7725,6 +7748,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             months=answer_months,
                             ask=pairing_ask,
                             decisions=receipt_decisions,
+                            insurance_check=insurance_check,
                         )
                     else:
                         receipt_answer = answer_receipt_question(
@@ -7733,6 +7757,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             month_label=format_receipt_month_label(answer_month) if answer_month else "",
                             ask=pairing_ask,
                             decisions=receipt_decisions,
+                            insurance_check=insurance_check,
                         )
                         result["summary"] = receipt_answer["answer"]
                         result["message"] = receipt_answer["answer"]
@@ -7780,6 +7805,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             query=mail_query.describe(),
                             ask=self._receipt_pairing_ask(billing_email=session.email),
                             decisions=receipt_decisions,
+                            insurance_check=self._insurance_receipt_check(session.email),
                         )
                     except Exception as exc:
                         print(f"Receipt export failed: {exc}", flush=True)
@@ -7797,7 +7823,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     # The notification says it is ready and offers the download.
                     # Counts, folder and review details live in the PDF itself.
                     result["message"] = (
-                        "Your receipts are ready to download."
+                        (
+                            "Your receipts are ready to download. "
+                            f"{int(receipt_bundle.get('insurancePotentialClaimCount') or 0)} may match a saved insurance policy."
+                            if int(receipt_bundle.get("insurancePotentialClaimCount") or 0) > 0
+                            else "Your receipts are ready to download."
+                        )
                         if receipt_count
                         else "No receipts found for that month."
                     )
@@ -7857,6 +7888,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         "converted": answer.get("converted") or {},
                         "vendor": answer["vendor"],
                         "missingAmountCount": answer["missingAmountCount"],
+                        "insurancePotentialClaimCount": answer["insurancePotentialClaimCount"],
+                        "insuranceChecks": answer["insuranceChecks"],
                         "receiptSources": answer["sources"][:AGENT_SAVED_ANSWER_SOURCE_LIMIT],
                         "answerRecords": answer["records"][:ANSWER_COMPOSER_MAX_RECORDS],
                     }
@@ -7909,6 +7942,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 response_payload["vendor"] = receipt_answer["vendor"]
                 response_payload["monthLabel"] = receipt_answer["monthLabel"]
                 response_payload["missingAmountCount"] = receipt_answer["missingAmountCount"]
+                response_payload["insurancePotentialClaimCount"] = receipt_answer["insurancePotentialClaimCount"]
+                response_payload["insuranceChecks"] = receipt_answer["insuranceChecks"]
                 # Nothing was written, so the receipts themselves are still in
                 # the mailbox. These name them, which is what lets the chat
                 # offer to keep the actual receipt and not only the sentence.
@@ -7926,6 +7961,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "outputFolder": str(receipt_bundle.get("outputFolder") or ""),
                     "receiptCount": int(receipt_bundle.get("receiptCount") or 0),
                     "reviewCount": int(receipt_bundle.get("reviewCount") or 0),
+                    "insuranceScreenedCount": int(receipt_bundle.get("insuranceScreenedCount") or 0),
+                    "insurancePotentialClaimCount": int(receipt_bundle.get("insurancePotentialClaimCount") or 0),
+                    "insuranceMatches": receipt_bundle.get("insuranceMatches") if isinstance(receipt_bundle.get("insuranceMatches"), list) else [],
                     "artifacts": receipt_bundle.get("artifacts") if isinstance(receipt_bundle.get("artifacts"), dict) else {},
                     "resultUrl": str((receipt_bundle.get("artifacts") or {}).get("pdf", {}).get("url") or ""),
                     "hrefLabel": "Open PDF",
@@ -10561,6 +10599,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             list_link=self._lists_link_builder(session.email, channel),
             receipts_link=self._receipts_link_builder(session.email, channel),
             sender_wa_id=sender_wa_id,
+            attached_photo=photo_context,
         )
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
 
