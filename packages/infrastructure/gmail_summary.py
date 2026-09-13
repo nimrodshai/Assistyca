@@ -56,13 +56,27 @@ class GmailAuthorizationError(RuntimeError):
 
     code = "gmail_authorization_failed"
 
+    def __init__(self, message: str, *, provider_code: str = "", provider_subtype: str = "") -> None:
+        super().__init__(message)
+        self.provider_code = str(provider_code or "").strip().lower()
+        self.provider_subtype = str(provider_subtype or "").strip().lower()
+
 
 class GmailSummaryError(RuntimeError):
     """Raised when Gmail cannot be reached or returns an unusable response."""
 
-    def __init__(self, message: str, *, code: str = "gmail_summary_failed") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "gmail_summary_failed",
+        provider_code: str = "",
+        provider_subtype: str = "",
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.provider_code = str(provider_code or "").strip().lower()
+        self.provider_subtype = str(provider_subtype or "").strip().lower()
 
 
 class GmailAccessValidator:

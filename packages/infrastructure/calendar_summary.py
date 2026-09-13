@@ -56,16 +56,30 @@ CALENDAR_COLOR_PATTERN = re.compile(r"^#[0-9a-f]{6}$")
 class CalendarSummaryError(RuntimeError):
     """A safe, user-facing calendar runner error."""
 
-    def __init__(self, message: str, *, code: str = "calendar_summary_failed") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "calendar_summary_failed",
+        provider_code: str = "",
+        provider_subtype: str = "",
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.provider_code = str(provider_code or "").strip().lower()
+        self.provider_subtype = str(provider_subtype or "").strip().lower()
 
 
 class CalendarAuthorizationError(CalendarSummaryError):
     """The stored credential cannot read calendar events."""
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message, code="calendar_authorization_failed")
+    def __init__(self, message: str, *, provider_code: str = "", provider_subtype: str = "") -> None:
+        super().__init__(
+            message,
+            code="calendar_authorization_failed",
+            provider_code=provider_code,
+            provider_subtype=provider_subtype,
+        )
 
 
 class CalendarListUnavailableError(CalendarSummaryError):

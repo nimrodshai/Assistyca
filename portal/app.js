@@ -31751,9 +31751,12 @@ function createTurnsTable(turns) {
       row.classList.add("is-fallback");
     }
     const toolCalls = Array.isArray(turn.toolCalls) ? turn.toolCalls : [];
-    const failed = toolCalls.filter((call) => !call.ok);
     const toolsText = toolCalls.length
-      ? `${toolCalls.map((call) => call.name).join(", ")}${failed.length ? ` (${failed.map((call) => call.code || "failed").join(", ")})` : ""}`
+      ? toolCalls.map((call) => {
+        const status = call.ok ? "" : (call.code || "failed");
+        const diagnostic = call.detail || status;
+        return `${call.name}${diagnostic ? ` (${diagnostic})` : ""}`;
+      }).join(", ")
       : "";
     const outcomeText = turn.fallbackUsed ? `${turn.outcome || "fallback"} · ${turn.fallbackReason || "fallback"}` : (turn.outcome || "");
     row.append(

@@ -264,7 +264,7 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
             f"{first} Telling them apart takes a decision that can only be collected in the Assistyca portal chat for now.".strip(),
         )
     if status != 200:
-        return _lookup_failure(response, status, proposal_type)
+        return _lookup_failure(context, response, status, proposal_type)
     records = response.get("answerRecords") if isinstance(response.get("answerRecords"), list) else []
     data: dict[str, Any] = {
         "summary": str(response.get("answer") or response.get("summary") or response.get("message") or "").strip()[:2000],
@@ -279,6 +279,15 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
     grouped = _group_records(records)
     if grouped:
         data["groupedFigures"] = grouped
+    mailbox_failures = _normalize_mailbox_failures(response)
+    if mailbox_failures:
+        # One mailbox may fail while another still answers. The total is real
+        # for what was read, but incomplete for the account, so the model gets
+        # both the warning and the exact next step instead of silently
+        # presenting a partial total as the whole one.
+        data["answerIsPartial"] = True
+        data["mailboxFailures"] = mailbox_failures
+        data["nextSteps"] = _mailbox_failure_options(context, mailbox_failures, include_retry=True)
     manager = response.get("receiptManager") if isinstance(response.get("receiptManager"), dict) else {}
     if manager:
         # The receipts this search read are now kept on the receipts page,
@@ -360,9 +369,78 @@ def _tool_open_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str,
     return _ok(data)
 
 
-def _lookup_failure(response: dict[str, Any], status: int, proposal_type: str) -> dict[str, Any]:
+_MAILBOX_AUTHORIZATION_ERRORS = frozenset({"gmail_authorization_failed", "outlook_authorization_failed"})
+_MAILBOX_CONFIGURATION_ERRORS = frozenset({
+    "google_oauth_configuration_error",
+    "microsoft_oauth_configuration_error",
+})
+
+
+def _mailbox_provider(value: Any, error: str = "") -> str:
+    provider = str(value or "").strip().lower()
+    code = str(error or "").strip().lower()
+    if "microsoft" in provider or "outlook" in provider or code.startswith("outlook_") or code.startswith("microsoft_"):
+        return "microsoft"
+    if "google" in provider or "gmail" in provider or code.startswith("gmail_") or code.startswith("google_"):
+        return "google"
+    return ""
+
+
+def _normalize_mailbox_failures(response: dict[str, Any]) -> list[dict[str, str]]:
+    raw_failures = response.get("skippedMailboxes") if isinstance(response.get("skippedMailboxes"), list) else []
+    failures: list[dict[str, str]] = []
+    for raw in raw_failures[:8]:
+        if not isinstance(raw, dict):
+            continue
+        code = str(raw.get("code") or "").strip().lower()
+        provider = _mailbox_provider(raw.get("provider"), code)
+        action = (
+            "reconnect"
+            if code in _MAILBOX_AUTHORIZATION_ERRORS or (code == "email_setup_required" and provider)
+            else "contact_support"
+            if code in _MAILBOX_CONFIGURATION_ERRORS
+            else "retry"
+        )
+        failure: dict[str, str] = {
+            "mailbox": " ".join(str(raw.get("mailbox") or "").split())[:160],
+            "provider": provider,
+            "code": code,
+            "providerCode": str(raw.get("providerCode") or "").strip().lower()[:80],
+            "providerSubtype": str(raw.get("providerSubtype") or "").strip().lower()[:80],
+            "whatHappened": " ".join(str(raw.get("message") or "").split())[:400],
+            "action": action,
+        }
+        failures.append({key: value for key, value in failure.items() if value})
+    return failures
+
+
+def _mailbox_failure_options(
+    context: LoopContext,
+    failures: list[dict[str, str]],
+    *,
+    include_retry: bool,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for failure in failures:
+        provider = failure.get("provider", "")
+        if failure.get("action") != "reconnect" or not provider or provider in seen:
+            continue
+        seen.add(provider)
+        label = "Reconnect Google" if provider == "google" else "Reconnect Microsoft"
+        link = str(context.connect_links.get(provider) or "").strip()
+        if link:
+            _offer_link(context, link, label)
+        options.append(make_option("reconnect", provider=provider, label=label, link=link))
+    if include_retry and any(failure.get("action") == "retry" for failure in failures):
+        options.append(make_option("retry"))
+    return options
+
+
+def _lookup_failure(context: LoopContext, response: dict[str, Any], status: int, proposal_type: str) -> dict[str, Any]:
     error = str(response.get("error") or "").strip().lower()
-    if error in {"email_setup_required", "mailbox_not_connected"}:
+    mailbox_failures = _normalize_mailbox_failures(response)
+    if error in {"email_setup_required", "mailbox_not_connected"} and not mailbox_failures:
         return _error("source_not_connected", "No mailbox is connected, so the inbox cannot be read.", source="mailbox")
     if error == "calendar_setup_required":
         return _error("source_not_connected", "The calendar is not connected, so it cannot be read.", source="calendar")
@@ -372,7 +450,50 @@ def _lookup_failure(response: dict[str, Any], status: int, proposal_type: str) -
         return _error("rate_limited", "Too many requests at once; this one was not taken.", can_retry=True)
     if error in {"delivery_not_supported", "proposal_runner_not_found", "folder_required"}:
         return _error("not_supported", "That kind of lookup cannot run from here yet.")
-    return _error("provider_unavailable", f"The {proposal_type} lookup could not be completed just now.", can_retry=True)
+    if not mailbox_failures and proposal_type in {"custom", "email-digest"}:
+        provider = _mailbox_provider("", error)
+        action = (
+            "reconnect"
+            if error in _MAILBOX_AUTHORIZATION_ERRORS
+            else "contact_support"
+            if error in _MAILBOX_CONFIGURATION_ERRORS
+            else "retry"
+        )
+        mailbox_failures = [{
+            "provider": provider,
+            "code": error,
+            "whatHappened": " ".join(str(response.get("message") or "").split())[:400],
+            "action": action,
+        }]
+        mailbox_failures = [{key: value for key, value in failure.items() if value} for failure in mailbox_failures]
+    if mailbox_failures:
+        actions = {failure.get("action") for failure in mailbox_failures}
+        code = "source_needs_attention" if actions == {"reconnect"} else "provider_unavailable"
+        can_retry = "retry" in actions
+        upstream_code = next((failure.get("providerCode", "") for failure in mailbox_failures if failure.get("providerCode")), "")
+        upstream_subtype = next((failure.get("providerSubtype", "") for failure in mailbox_failures if failure.get("providerSubtype")), "")
+        what_happened = " ".join(str(response.get("message") or "").split())[:400]
+        if not what_happened:
+            what_happened = "None of the connected mailboxes could be read."
+        return _error(
+            code,
+            what_happened,
+            can_retry=can_retry,
+            options=_mailbox_failure_options(context, mailbox_failures, include_retry=can_retry),
+            source="mailbox",
+            backendCode=error,
+            providerCode=upstream_code,
+            providerSubtype=upstream_subtype,
+            mailboxFailures=mailbox_failures,
+        )
+    return _error(
+        "provider_unavailable",
+        " ".join(str(response.get("message") or "").split())[:400]
+        or f"The {proposal_type} lookup could not be completed just now.",
+        can_retry=True,
+        backendCode=error,
+        providerCode=str(response.get("providerCode") or "").strip().lower(),
+    )
 
 
 def _trim_records(records: list[Any]) -> list[dict[str, str]]:
@@ -1961,7 +2082,12 @@ AGENT_LOOP_INSTRUCTIONS = (
     "account; do not call one for small talk or a question you can answer from the conversation. Read every "
     "result before you write. A result with ok=true holds what was read or done. A result with ok=false says "
     "what got in the way: tell the person in their terms and offer the way forward the result names, such as "
-    "the connect_link. A tool marked UNAVAILABLE will not work; do not call it, call connect_link instead and "
+    "the connect_link. When a mailbox result says source_needs_attention or a mailboxFailures entry says "
+    "action=reconnect, the saved sign-in was rejected: never tell the person to retry it. Ask them to sign in "
+    "again, name the affected mailbox, and put the reconnect option's link in the reply exactly as given. When "
+    "an otherwise successful result has answerIsPartial=true, answer from what was read but plainly say the "
+    "total is incomplete and follow every mailboxFailures next step. A tool marked UNAVAILABLE will not work; "
+    "do not call it, call connect_link instead and "
     "give the link. Never say you are checking, never promise to do something later, never invent a result: "
     "do it now with a tool, or say why you cannot. Never say something was done, scheduled, sent or "
     "disconnected unless a tool result in this turn says ok, and list those tools in claimsCompleted.\n"
@@ -2325,12 +2451,32 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
     ok = bool(outcome.get("ok"))
     if ok and tool.side_effect:
         completed.append(tool.name)
-    tool_calls.append({
+    error_data = outcome.get("error") if isinstance(outcome.get("error"), dict) else {}
+    diagnostic_data = error_data or outcome
+    diagnostic_parts: list[str] = []
+    provider_code = str(diagnostic_data.get("providerCode") or "").strip()
+    if provider_code:
+        diagnostic_parts.append(provider_code)
+    mailbox_failures = diagnostic_data.get("mailboxFailures")
+    if isinstance(mailbox_failures, list):
+        for failure in mailbox_failures[:8]:
+            if not isinstance(failure, dict):
+                continue
+            failure_detail = ":".join(
+                str(failure.get(key) or "").strip()
+                for key in ("code", "providerCode", "providerSubtype")
+            ).strip(":")
+            if failure_detail and failure_detail not in diagnostic_parts:
+                diagnostic_parts.append(failure_detail)
+    call_record = {
         "name": tool.name,
         "ok": ok,
-        "code": "" if ok else str((outcome.get("error") or {}).get("code") or ""),
+        "code": "" if ok else str(error_data.get("code") or ""),
         "ms": int((time.monotonic() - started) * 1000),
-    })
+    }
+    if diagnostic_parts:
+        call_record["detail"] = ", ".join(diagnostic_parts)[:240]
+    tool_calls.append(call_record)
     return outcome
 
 

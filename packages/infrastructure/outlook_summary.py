@@ -60,13 +60,27 @@ class OutlookAuthorizationError(RuntimeError):
 
     code = "outlook_authorization_failed"
 
+    def __init__(self, message: str, *, provider_code: str = "", provider_subtype: str = "") -> None:
+        super().__init__(message)
+        self.provider_code = str(provider_code or "").strip().lower()
+        self.provider_subtype = str(provider_subtype or "").strip().lower()
+
 
 class OutlookSummaryError(RuntimeError):
     """Raised when Graph cannot be reached or returns an unusable response."""
 
-    def __init__(self, message: str, *, code: str = "outlook_summary_failed") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "outlook_summary_failed",
+        provider_code: str = "",
+        provider_subtype: str = "",
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.provider_code = str(provider_code or "").strip().lower()
+        self.provider_subtype = str(provider_subtype or "").strip().lower()
 
 
 def _log_graph_failure(url: str, status: Any, detail: Any) -> None:

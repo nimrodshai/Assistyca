@@ -552,6 +552,19 @@ MICROSOFT_OAUTH_STATE_TTL_SECONDS = 10 * 60
 WHATSAPP_OAUTH_STATE_TTL_SECONDS = 30 * 60
 MICROSOFT_OAUTH_TOKEN_TIMEOUT_SECONDS = 20
 MICROSOFT_OAUTH_SECRET_TYPE = "microsoft_refresh_token"
+# OAuth token endpoints use the same small error vocabulary. Only a rejected
+# grant means the person's saved sign-in is no longer usable. A provider
+# outage must stay transient, and an invalid client belongs to our deployment,
+# not to the person who connected their mailbox.
+OAUTH_TRANSIENT_ERROR_CODES = frozenset({"server_error", "temporarily_unavailable", "timeout"})
+OAUTH_CONFIGURATION_ERROR_CODES = frozenset({
+    "deleted_client",
+    "invalid_client",
+    "invalid_request",
+    "invalid_scope",
+    "unauthorized_client",
+    "unsupported_grant_type",
+})
 # What a mailbox is called on screen. The provider itself lives on the
 # connection, in the column connection_provider reads; the secret payload
 # repeats it so the run that opens a credential can pick a reader from the
@@ -560,6 +573,21 @@ EMAIL_PROVIDER_LABELS = {
     GOOGLE_GMAIL_OAUTH_PROVIDER: "Gmail",
     MICROSOFT_OUTLOOK_OAUTH_PROVIDER: "Outlook",
 }
+
+
+def classify_oauth_token_failure(provider_code: Any, status: Any) -> str:
+    """Whether a token failure needs retry, operator work, or a fresh sign-in."""
+
+    code = normalize_text(provider_code).lower()
+    try:
+        http_status = int(status or 0)
+    except (TypeError, ValueError):
+        http_status = 0
+    if code in OAUTH_TRANSIENT_ERROR_CODES or http_status == HTTPStatus.TOO_MANY_REQUESTS or http_status >= 500:
+        return "transient"
+    if code in OAUTH_CONFIGURATION_ERROR_CODES:
+        return "configuration"
+    return "reauthorize"
 # Google is the only calendar provider wired up. The lookup exists so a second
 # one names itself in the picker instead of inheriting Google's label.
 CALENDAR_PROVIDER_LABELS = {
@@ -3418,15 +3446,53 @@ def join_with_and(names: list[str]) -> str:
 
 
 def summarize_mailbox_failures(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Name each mailbox that could not be read, with its own reason."""
+    """Name each failed mailbox and retain safe provider diagnostics."""
 
-    return [
-        {
+    summarized: list[dict[str, Any]] = []
+    for failure in failures:
+        entry = {
             "mailbox": normalize_text(failure.get("mailbox")),
+            "provider": normalize_text(failure.get("provider")).lower(),
+            "code": normalize_text(failure.get("error")).lower(),
+            "providerCode": normalize_text(failure.get("providerCode")).lower(),
+            "providerSubtype": normalize_text(failure.get("providerSubtype")).lower(),
             "message": normalize_text(failure.get("message")),
         }
-        for failure in failures
-    ]
+        summarized.append({key: value for key, value in entry.items() if value})
+    return summarized
+
+
+def mailbox_failure_record(
+    *,
+    mailbox: str,
+    provider: str,
+    status: HTTPStatus,
+    error: str,
+    message: str,
+    exception: Exception | None = None,
+) -> dict[str, Any]:
+    """One safe failure for the response, connection state, and operator log."""
+
+    provider_code = normalize_text(getattr(exception, "provider_code", "")).lower()
+    provider_subtype = normalize_text(getattr(exception, "provider_subtype", "")).lower()
+    record = {
+        "mailbox": normalize_text(mailbox),
+        "provider": normalize_text(provider).lower(),
+        "status": status,
+        "error": normalize_text(error).lower(),
+        "providerCode": provider_code,
+        "providerSubtype": provider_subtype,
+        "message": normalize_text(message),
+    }
+    print(json.dumps({
+        "event": "mailbox.read_failed",
+        "provider": record["provider"],
+        "status": int(status),
+        "code": record["error"],
+        "providerCode": provider_code,
+        "providerSubtype": provider_subtype,
+    }, ensure_ascii=True), flush=True)
+    return record
 
 
 def describe_mailbox_failures(failures: list[dict[str, Any]]) -> str:
@@ -5910,8 +5976,45 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 raw = response.read()
                 parsed = json.loads(raw.decode("utf-8")) if raw else {}
         except urllib_error.HTTPError as exc:
+            provider_code = ""
+            provider_subtype = ""
+            try:
+                body = exc.read().decode("utf-8")
+                problem = json.loads(body) if body else {}
+                if isinstance(problem, dict):
+                    provider_code = normalize_text(problem.get("error")).lower()
+                    raw_codes = problem.get("error_codes") if isinstance(problem.get("error_codes"), list) else []
+                    provider_subtype = ",".join(str(code) for code in raw_codes[:4])
+            except Exception:
+                pass
+            failure_kind = classify_oauth_token_failure(provider_code, exc.code)
+            print(json.dumps({
+                "event": "oauth.token_failed",
+                "provider": "microsoft",
+                "grantType": normalize_text(payload.get("grant_type")),
+                "status": int(exc.code),
+                "providerCode": provider_code or "unknown",
+                "providerSubtype": provider_subtype,
+                "kind": failure_kind,
+            }, ensure_ascii=True), flush=True)
+            if failure_kind == "transient":
+                raise OutlookSummaryError(
+                    "Microsoft's sign-in service is temporarily unavailable. Try the mailbox again in a moment.",
+                    code="outlook_oauth_provider_error",
+                    provider_code=provider_code,
+                    provider_subtype=provider_subtype,
+                ) from exc
+            if failure_kind == "configuration":
+                raise OutlookSummaryError(
+                    "Assistyca's Microsoft sign-in setup was rejected. Support needs to check the connection settings.",
+                    code="microsoft_oauth_configuration_error",
+                    provider_code=provider_code,
+                    provider_subtype=provider_subtype,
+                ) from exc
             raise OutlookAuthorizationError(
-                "Microsoft rejected the sign-in. Try connecting Outlook again."
+                "Microsoft says the saved Outlook sign-in expired or was revoked. Reconnect Outlook and try again.",
+                provider_code=provider_code,
+                provider_subtype=provider_subtype,
             ) from exc
         except (urllib_error.URLError, TimeoutError, OSError) as exc:
             raise OutlookSummaryError(
@@ -5919,9 +6022,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 code="outlook_network_error",
             ) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise OutlookAuthorizationError("Microsoft returned an unreadable sign-in response.") from exc
+            raise OutlookSummaryError(
+                "Microsoft returned an unreadable sign-in response. Try the mailbox again in a moment.",
+                code="outlook_oauth_provider_error",
+            ) from exc
         if not isinstance(parsed, dict):
-            raise OutlookAuthorizationError("Microsoft returned an invalid sign-in response.")
+            raise OutlookSummaryError(
+                "Microsoft returned an invalid sign-in response. Try the mailbox again in a moment.",
+                code="outlook_oauth_provider_error",
+            )
         return parsed
 
     def _exchange_microsoft_oauth_code(self, code: str, *, redirect_uri: str = "") -> dict[str, Any]:
@@ -5936,9 +6045,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def _refresh_microsoft_access_token(self, refresh_token: str) -> str:
         if not normalize_text(self.config.microsoft_oauth_client_id) or not normalize_text(self.config.microsoft_oauth_client_secret):
-            raise OutlookAuthorizationError(
-                "Outlook access needs attention: Microsoft OAuth is not configured on the server. "
-                "Add the Microsoft client ID and secret, then reconnect Outlook."
+            raise OutlookSummaryError(
+                "Assistyca's Microsoft sign-in setup is incomplete. Support needs to check the connection settings.",
+                code="microsoft_oauth_configuration_error",
             )
         payload = self._post_microsoft_oauth_token_request({
             "refresh_token": normalize_text(refresh_token),
@@ -5949,8 +6058,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
         access_token = normalize_text(payload.get("access_token"))
         if not access_token:
-            raise OutlookAuthorizationError(
-                "Microsoft did not return a usable Outlook access token. Reconnect Outlook and try again."
+            raise OutlookSummaryError(
+                "Microsoft did not return a usable Outlook access token. Try the mailbox again in a moment.",
+                code="outlook_oauth_provider_error",
             )
         return access_token
 
@@ -7402,22 +7512,46 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             stored_email_secret,
                             provider=record_provider,
                         )
-                    except CredentialVaultError:
-                        mailbox_failures.append({
-                            "mailbox": mailbox_name,
-                            "status": HTTPStatus.CONFLICT,
-                            "error": "email_setup_required",
-                            "message": f"The saved connection for {mailbox_name} could not be opened securely. Reconnect it and try again.",
-                        })
+                    except CredentialVaultError as exc:
+                        mailbox_failures.append(mailbox_failure_record(
+                            mailbox=mailbox_name,
+                            provider=record_provider,
+                            status=HTTPStatus.CONFLICT,
+                            error="email_setup_required",
+                            message=f"The saved connection for {mailbox_name} could not be opened securely. Reconnect it and try again.",
+                            exception=exc,
+                        ))
                         continue
                     except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                        self._flag_mailbox_needs_attention(session.email, record, record_provider)
-                        mailbox_failures.append({
-                            "mailbox": mailbox_name,
-                            "status": HTTPStatus.CONFLICT,
-                            "error": exc.code,
-                            "message": str(exc),
-                        })
+                        self._flag_mailbox_needs_attention(
+                            session.email,
+                            record,
+                            record_provider,
+                            error_code=exc.code,
+                            error_message=str(exc),
+                            provider_code=getattr(exc, "provider_code", ""),
+                            provider_subtype=getattr(exc, "provider_subtype", ""),
+                        )
+                        mailbox_failures.append(mailbox_failure_record(
+                            mailbox=mailbox_name,
+                            provider=record_provider,
+                            status=HTTPStatus.CONFLICT,
+                            error=exc.code,
+                            message=str(exc),
+                            exception=exc,
+                        ))
+                        continue
+                    except (GmailSummaryError, OutlookSummaryError) as exc:
+                        # A token-service outage is not a revoked connection.
+                        # Keep the row connected so the next run can recover.
+                        mailbox_failures.append(mailbox_failure_record(
+                            mailbox=mailbox_name,
+                            provider=record_provider,
+                            status=HTTPStatus.BAD_GATEWAY,
+                            error=exc.code,
+                            message=str(exc),
+                            exception=exc,
+                        ))
                         continue
 
                     runner = (
@@ -7451,21 +7585,33 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             ),
                         )
                     except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                        self._flag_mailbox_needs_attention(session.email, record, record_provider)
-                        mailbox_failures.append({
-                            "mailbox": mailbox_name,
-                            "status": HTTPStatus.CONFLICT,
-                            "error": exc.code,
-                            "message": str(exc),
-                        })
+                        self._flag_mailbox_needs_attention(
+                            session.email,
+                            record,
+                            record_provider,
+                            error_code=exc.code,
+                            error_message=str(exc),
+                            provider_code=getattr(exc, "provider_code", ""),
+                            provider_subtype=getattr(exc, "provider_subtype", ""),
+                        )
+                        mailbox_failures.append(mailbox_failure_record(
+                            mailbox=mailbox_name,
+                            provider=record_provider,
+                            status=HTTPStatus.CONFLICT,
+                            error=exc.code,
+                            message=str(exc),
+                            exception=exc,
+                        ))
                         continue
                     except (GmailSummaryError, OutlookSummaryError) as exc:
-                        mailbox_failures.append({
-                            "mailbox": mailbox_name,
-                            "status": HTTPStatus.BAD_GATEWAY,
-                            "error": exc.code,
-                            "message": str(exc),
-                        })
+                        mailbox_failures.append(mailbox_failure_record(
+                            mailbox=mailbox_name,
+                            provider=record_provider,
+                            status=HTTPStatus.BAD_GATEWAY,
+                            error=exc.code,
+                            message=str(exc),
+                            exception=exc,
+                        ))
                         continue
 
                     self.database.update_platform_connection_status(
@@ -7475,6 +7621,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         metadata_updates={
                             "provider": record_provider,
                             "validationStatus": "verified",
+                            "validationErrorCode": "",
+                            "validationError": "",
+                            "providerErrorCode": "",
+                            "providerErrorSubtype": "",
                             "credentialSource": credential_source,
                             "validatedAt": datetime.now(timezone.utc).isoformat(),
                         },
@@ -12616,16 +12766,50 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             with urllib_request.urlopen(request, timeout=GOOGLE_OAUTH_TOKEN_TIMEOUT_SECONDS) as response:
                 raw = response.read()
         except urllib_error.HTTPError as exc:
-            detail = ""
+            provider_code = ""
+            provider_subtype = ""
             try:
                 body = exc.read().decode("utf-8")
-                parsed = json.loads(body) if body else {}
-                if isinstance(parsed, dict):
-                    detail = normalize_text(parsed.get("error_description") or parsed.get("error"))
+                problem = json.loads(body) if body else {}
+                if isinstance(problem, dict):
+                    provider_code = normalize_text(problem.get("error")).lower()
+                    provider_subtype = normalize_text(problem.get("error_subtype")).lower()
             except Exception:
-                detail = ""
-            message = detail or f"Google returned HTTP {exc.code}."
-            raise CalendarAuthorizationError(f"Google Calendar connection failed: {message}") from exc
+                pass
+            failure_kind = classify_oauth_token_failure(provider_code, exc.code)
+            print(json.dumps({
+                "event": "oauth.token_failed",
+                "provider": "google",
+                "grantType": normalize_text(payload.get("grant_type")),
+                "status": int(exc.code),
+                "providerCode": provider_code or "unknown",
+                "providerSubtype": provider_subtype,
+                "kind": failure_kind,
+            }, ensure_ascii=True), flush=True)
+            if failure_kind == "transient":
+                raise CalendarSummaryError(
+                    "Google's sign-in service is temporarily unavailable. Try again in a moment.",
+                    code="google_oauth_provider_error",
+                    provider_code=provider_code,
+                    provider_subtype=provider_subtype,
+                ) from exc
+            if failure_kind == "configuration":
+                raise CalendarSummaryError(
+                    "Assistyca's Google sign-in setup was rejected. Support needs to check the connection settings.",
+                    code="google_oauth_configuration_error",
+                    provider_code=provider_code,
+                    provider_subtype=provider_subtype,
+                ) from exc
+            reason = (
+                "Google requires a fresh sign-in because the Workspace session policy expired."
+                if provider_subtype == "invalid_rapt"
+                else "Google says the saved sign-in expired or was revoked."
+            )
+            raise CalendarAuthorizationError(
+                f"{reason} Reconnect Google and try again.",
+                provider_code=provider_code,
+                provider_subtype=provider_subtype,
+            ) from exc
         except (urllib_error.URLError, TimeoutError, OSError) as exc:
             raise CalendarSummaryError(
                 "I couldn’t reach Google to finish the Calendar connection. Try again in a moment.",
@@ -12746,8 +12930,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def _refresh_google_access_token(self, refresh_token: str, *, access_label: str = "Google") -> str:
         if not normalize_text(self.config.google_oauth_client_id) or not normalize_text(self.config.google_oauth_client_secret):
-            raise CalendarAuthorizationError(
-                f"{access_label} access needs attention: Google OAuth is not configured on the server. Add the Google client ID and secret, then reconnect Google."
+            raise CalendarSummaryError(
+                "Assistyca's Google sign-in setup is incomplete. Support needs to check the connection settings.",
+                code="google_oauth_configuration_error",
             )
         payload = self._post_google_oauth_token_request({
             "refresh_token": normalize_text(refresh_token),
@@ -12757,7 +12942,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
         access_token = normalize_text(payload.get("access_token"))
         if not access_token:
-            raise CalendarAuthorizationError(f"Google did not return a usable {access_label} access token. Reconnect Google and try again.")
+            raise CalendarSummaryError(
+                f"Google did not return a usable {access_label} access token. Try again in a moment.",
+                code="google_oauth_provider_error",
+            )
         return access_token
 
     def _refresh_google_calendar_access_token(self, refresh_token: str) -> str:
@@ -12812,7 +13000,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         try:
             return self._refresh_google_access_token(refresh_token, access_label="Gmail"), "google_oauth_refresh_token"
         except CalendarAuthorizationError as exc:
-            raise GmailAuthorizationError(str(exc)) from exc
+            raise GmailAuthorizationError(
+                str(exc),
+                provider_code=getattr(exc, "provider_code", ""),
+                provider_subtype=getattr(exc, "provider_subtype", ""),
+            ) from exc
+        except CalendarSummaryError as exc:
+            raise GmailSummaryError(
+                str(exc),
+                code=exc.code,
+                provider_code=getattr(exc, "provider_code", ""),
+                provider_subtype=getattr(exc, "provider_subtype", ""),
+            ) from exc
 
     def _saved_email_provider(self, decrypted_secret: str) -> str:
         """Which reader can use this credential, read from the credential.
@@ -12862,8 +13061,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         owner_email: str,
         record: dict[str, Any],
         provider: str,
+        *,
+        error_code: str = "",
+        error_message: str = "",
+        provider_code: str = "",
+        provider_subtype: str = "",
     ) -> None:
-        """Mark one mailbox as needing attention, leaving the others alone."""
+        """Mark one mailbox and retain why a fresh sign-in is required."""
 
         self.database.update_platform_connection_status(
             owner_email,
@@ -12872,6 +13076,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             metadata_updates={
                 "provider": provider,
                 "validationStatus": "failed",
+                "validationErrorCode": normalize_text(error_code).lower(),
+                "validationError": normalize_text(error_message)[:300],
+                "providerErrorCode": normalize_text(provider_code).lower(),
+                "providerErrorSubtype": normalize_text(provider_subtype).lower(),
                 "validatedAt": datetime.now(timezone.utc).isoformat(),
             },
         )

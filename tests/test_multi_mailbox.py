@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.gmail_summary import GmailAuthorizationError
+from packages.infrastructure.gmail_summary import GmailSummaryError
 from packages.infrastructure.outlook_summary import OutlookSummaryError
 from packages.infrastructure.portal_auth.server import GOOGLE_OAUTH_SECRET_TYPE
 from packages.infrastructure.portal_auth.server import MICROSOFT_OAUTH_SECRET_TYPE
@@ -369,27 +370,65 @@ class MultiMailboxTests(unittest.TestCase):
         self._save_gmail("personal@gmail.com")
         self._save_outlook("work@contoso.com")
 
-        with mock.patch(f"{SERVER_MODULE}.GmailDigestRunner.run", side_effect=GmailAuthorizationError("Gmail access needs attention.")):
+        problem = GmailAuthorizationError(
+            "Gmail access needs attention.",
+            provider_code="invalid_grant",
+            provider_subtype="invalid_rapt",
+        )
+        with mock.patch(f"{SERVER_MODULE}.GmailDigestRunner.run", side_effect=problem):
             with mock.patch(f"{SERVER_MODULE}.OutlookDigestRunner.run", return_value={"messageCount": 1, "items": []}):
                 payload = self._run_receipts({"deliveryChannel": "portal"})
 
         skipped = payload["skippedMailboxes"]
         self.assertEqual([entry["mailbox"] for entry in skipped], ["personal@gmail.com"])
+        self.assertEqual(skipped[0]["provider"], "google_gmail")
+        self.assertEqual(skipped[0]["code"], "gmail_authorization_failed")
+        self.assertEqual(skipped[0]["providerCode"], "invalid_grant")
+        self.assertEqual(skipped[0]["providerSubtype"], "invalid_rapt")
 
     def test_only_the_broken_mailbox_is_flagged_for_attention(self) -> None:
         self._save_gmail("personal@gmail.com")
         self._save_outlook("work@contoso.com")
 
-        with mock.patch(f"{SERVER_MODULE}.GmailDigestRunner.run", side_effect=GmailAuthorizationError("Gmail access needs attention.")):
+        problem = GmailAuthorizationError(
+            "Gmail access needs attention.",
+            provider_code="invalid_grant",
+            provider_subtype="invalid_rapt",
+        )
+        with mock.patch(f"{SERVER_MODULE}.GmailDigestRunner.run", side_effect=problem):
             with mock.patch(f"{SERVER_MODULE}.OutlookDigestRunner.run", return_value={"messageCount": 1, "items": []}):
                 self._run_receipts({"deliveryChannel": "portal"})
 
-        statuses = {
-            item["accountAddress"]: item["connectionStatus"]
+        connections = {
+            item["accountAddress"]: item
             for item in self.server.database.list_platform_connections("owner@example.com")
         }
-        self.assertEqual(statuses["personal@gmail.com"], "needs_attention")
-        self.assertEqual(statuses["work@contoso.com"], "connected")
+        self.assertEqual(connections["personal@gmail.com"]["connectionStatus"], "needs_attention")
+        self.assertEqual(connections["work@contoso.com"]["connectionStatus"], "connected")
+        metadata = connections["personal@gmail.com"]["metadata"]
+        self.assertEqual(metadata["validationErrorCode"], "gmail_authorization_failed")
+        self.assertEqual(metadata["providerErrorCode"], "invalid_grant")
+        self.assertEqual(metadata["providerErrorSubtype"], "invalid_rapt")
+
+    def test_a_temporary_mailbox_failure_does_not_mark_it_disconnected(self) -> None:
+        self._save_gmail("personal@gmail.com")
+
+        with mock.patch(
+            f"{SERVER_MODULE}.GmailDigestRunner.run",
+            side_effect=GmailSummaryError(
+                "Google is temporarily unavailable.",
+                code="gmail_oauth_provider_error",
+                provider_code="temporarily_unavailable",
+            ),
+        ):
+            with self.assertRaises(urllib_error.HTTPError) as caught:
+                self._run_receipts({"deliveryChannel": "portal"})
+
+        payload = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(caught.exception.code, 502)
+        self.assertEqual(payload["skippedMailboxes"][0]["providerCode"], "temporarily_unavailable")
+        connection = self.server.database.list_platform_connections("owner@example.com")[0]
+        self.assertEqual(connection["connectionStatus"], "connected")
 
     def test_the_run_fails_only_when_every_mailbox_fails(self) -> None:
         self._save_gmail("personal@gmail.com")
