@@ -5,6 +5,7 @@ export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/tmp/assistyca-python-cache}"
 
 python3 scripts/check_package_layout.py
 node --check portal/app.js
+node --check portal/receipts.js
 python3 -m unittest \
   tests.test_task_complexity \
   tests.test_calendar_summary \
@@ -14,6 +15,7 @@ python3 -m unittest \
   tests.test_receipt_pairing \
   tests.test_receipt_grouping \
   tests.test_insurance_manager \
+  tests.test_receipt_manager \
   tests.test_agent_proposals \
   tests.test_account_facts \
   tests.test_agent_folder_contents \

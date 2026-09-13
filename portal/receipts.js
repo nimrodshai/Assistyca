@@ -59,6 +59,10 @@
     detailReason: $("detailReason"),
     detailFiles: $("detailFiles"),
     fileList: $("fileList"),
+    detailInsurance: $("detailInsurance"),
+    detailInsuranceTitle: $("detailInsuranceTitle"),
+    detailInsuranceSummary: $("detailInsuranceSummary"),
+    detailInsuranceFacts: $("detailInsuranceFacts"),
     detailForm: $("detailForm"),
     detailAmountInput: $("detailAmountInput"),
     detailCurrencyInput: $("detailCurrencyInput"),
@@ -275,6 +279,23 @@
     return link;
   }
 
+  function insuranceMatch(record) {
+    if (!record || record.status !== "confirmed") return null;
+    const check = record.insuranceCheck || {};
+    const matches = Array.isArray(check.matches) ? check.matches : [];
+    return matches[0] || null;
+  }
+
+  function insuranceBadge(record) {
+    const match = insuranceMatch(record);
+    if (!match) return null;
+    const badge = document.createElement("span");
+    badge.className = "badge small claim-badge";
+    badge.textContent = match.status === "deductible_may_exceed_expense" ? "Check deductible" : "Potential claim";
+    badge.title = match.policyName ? `Possible match: ${match.policyName}` : "Possible insurance match";
+    return badge;
+  }
+
   function renderReceiptRow(record) {
     const row = document.createElement("button");
     row.type = "button";
@@ -300,6 +321,8 @@
     badge.className = `badge small kind-${record.kind}`;
     badge.textContent = kindLabel(record.kind);
     side.append(amount, badge);
+    const claim = insuranceBadge(record);
+    if (claim) side.append(claim);
     const file = fileLink(record);
     if (file) side.append(file);
     row.append(when, body, side);
@@ -525,6 +548,31 @@
     elements.detailMeta.textContent = meta.join(" · ");
     elements.detailReason.textContent = record.reason ? `Assistyca read this as ${record.reason}.` : "";
     elements.detailReason.classList.toggle("is-hidden", !record.reason);
+
+    const insurance = insuranceMatch(record);
+    elements.detailInsurance.classList.toggle("is-hidden", !insurance);
+    if (insurance) {
+      const titles = {
+        likely_worth_claiming: "This may be worth claiming",
+        possible_more_information_needed: "A policy may apply — check the details",
+        deductible_may_exceed_expense: "The deductible may be higher than this receipt",
+      };
+      elements.detailInsuranceTitle.textContent = titles[insurance.status] || "Potential insurance claim";
+      elements.detailInsuranceSummary.textContent = [insurance.coverageSummary, insurance.policyName]
+        .filter(Boolean).join(" · ");
+      const facts = [];
+      if (insurance.deductibleAmount) facts.push(`Deductible ${formatMoney(insurance.deductibleAmount, insurance.currency)}`);
+      if (insurance.limitAmount) facts.push(`Recorded limit ${formatMoney(insurance.limitAmount, insurance.currency)}`);
+      if (insurance.claimDeadlineEstimate) facts.push(`Estimated filing date ${insurance.claimDeadlineEstimate}`);
+      const evidence = insurance.evidence || {};
+      if (insurance.evidenceStatus === "source_backed") {
+        const pointer = [evidence.section, evidence.pages ? `pages ${evidence.pages}` : ""].filter(Boolean).join(", ");
+        facts.push(pointer ? `Policy source: ${pointer}` : "Original policy stored");
+      } else {
+        facts.push("Summary match — original wording still needed");
+      }
+      elements.detailInsuranceFacts.textContent = facts.join(" · ");
+    }
 
     const files = Array.isArray(record.attachments) ? record.attachments : [];
     elements.detailFiles.classList.toggle("is-hidden", files.length === 0);
@@ -763,7 +811,7 @@
     const vendor = elements.manualVendor.value.trim();
     if (!vendor) return;
     void withBusy(async () => {
-      await api("/api/receipts", {
+      const payload = await api("/api/receipts", {
         method: "POST",
         body: {
           vendor,
@@ -775,7 +823,7 @@
         },
       });
       closeManual();
-      toast("Added");
+      toast(insuranceMatch(payload.receipt) ? "Added · possible insurance match" : "Added");
       await loadHome();
     }, "The receipt could not be added");
   });

@@ -126,6 +126,7 @@ from packages.infrastructure.gmail_summary import GmailAccessValidator
 from packages.infrastructure.gmail_summary import GmailAuthorizationError
 from packages.infrastructure.gmail_summary import GmailDigestRunner
 from packages.infrastructure.gmail_summary import GmailSummaryError
+from packages.infrastructure.insurance_manager import match_expense_to_policies
 from packages.infrastructure.openai_api import OpenAIConfigurationError
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import call_openai_response
@@ -14085,6 +14086,56 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _serialize_receipt_for_owner(self, record: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in record.items() if key != "userId"}
 
+    def _screen_account_receipts_for_owner(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        user_id: int,
+    ) -> list[dict[str, Any]]:
+        """Screen receipts-page records with one owner-scoped policy read.
+
+        The screen is calculated when the receipt is shown or exported, so a
+        policy saved later can still reveal a claim on an older receipt.
+        Unconfirmed mail is not screened until the owner says it is a receipt.
+        """
+
+        try:
+            policies = self.database.list_insurance_policies(user_id=user_id)
+        except Exception:  # noqa: BLE001 - the receipt remains usable if screening is unavailable
+            policies = []
+        screened: list[dict[str, Any]] = []
+        for original in records:
+            record = dict(original)
+            if normalize_text(record.get("status")).lower() != "confirmed":
+                record["insuranceCheck"] = {
+                    "status": "not_screened_unconfirmed",
+                    "matchCount": 0,
+                    "matches": [],
+                    "guidance": "Confirm that this is a receipt before screening it against insurance.",
+                }
+                screened.append(record)
+                continue
+            try:
+                result = match_expense_to_policies(policies, {
+                    "date": record.get("receiptDate") or record.get("mailDate"),
+                    "amount": record.get("amount"),
+                    "currency": record.get("currency"),
+                    "description": record.get("notes") or record.get("snippet"),
+                    "vendor": record.get("paidTo") or record.get("vendor"),
+                    "subject": record.get("subject"),
+                    "receiptReference": record.get("messageId") or record.get("id"),
+                })
+            except ValueError:
+                result = match_expense_to_policies(policies, {
+                    "description": record.get("notes") or record.get("snippet"),
+                    "vendor": record.get("paidTo") or record.get("vendor"),
+                    "subject": record.get("subject"),
+                    "receiptReference": record.get("messageId") or record.get("id"),
+                })
+            record["insuranceCheck"] = result
+            screened.append(record)
+        return screened
+
     def _receipt_not_found(self) -> None:
         json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "receipt_not_found", "message": "That receipt is not here."})
 
@@ -14112,6 +14163,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 date_from=start,
                 date_to=end,
             )
+            records = self._screen_account_receipts_for_owner(records, user_id=user_id)
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
                 "receipts": [self._serialize_receipt_for_owner(record) for record in records],
@@ -14120,6 +14172,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # How many are waiting for a yes or no across every date, so
                 # the page can say so whatever range it is showing.
                 "unsureTotal": len(self.database.list_account_receipts(user_id=user_id, status="unsure")),
+                "insurancePotentialClaimCount": sum(
+                    1 for record in records
+                    if int((record.get("insuranceCheck") or {}).get("matchCount") or 0) > 0
+                ),
             })
             return
         receipt_id = self._parse_list_id(parts[0])
@@ -14127,6 +14183,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if record is None:
             self._receipt_not_found()
             return
+        record = self._screen_account_receipts_for_owner([record], user_id=user_id)[0]
         json_response(self, HTTPStatus.OK, {"ok": True, "receipt": self._serialize_receipt_for_owner(record)})
 
     def _handle_receipts_export(self, user_id: int, query: dict[str, list[str]]) -> None:
@@ -14141,6 +14198,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_format", "message": "Exports come as xlsx, csv or pdf."})
             return
         records = self.database.list_account_receipts(user_id=user_id, status="confirmed", date_from=start, date_to=end)
+        records = self._screen_account_receipts_for_owner(records, user_id=user_id)
         body, content_type = receipt_manager.write_receipt_export(
             records, fmt=fmt, range_label=receipt_manager.describe_date_range(start, end),
         )
@@ -14180,6 +14238,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "currency": normalize_text(payload.get("currency")).upper(),
                     "notes": normalize_text(payload.get("notes")),
                 })
+                record = self._screen_account_receipts_for_owner([record], user_id=user_id)[0]
                 json_response(self, HTTPStatus.OK, {"ok": True, "receipt": self._serialize_receipt_for_owner(record)})
                 return
             receipt_id = self._parse_list_id(parts[0])
@@ -14204,6 +14263,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if record is None:
             self._receipt_not_found()
             return
+        record = self._screen_account_receipts_for_owner([record], user_id=user_id)[0]
         json_response(self, HTTPStatus.OK, {"ok": True, "receipt": self._serialize_receipt_for_owner(record)})
 
     def _handle_receipts_delete(self, parsed: urllib_parse.ParseResult) -> None:

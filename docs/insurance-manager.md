@@ -43,6 +43,9 @@ against the account's saved policies. Screening:
 
 The manifest stores an `insuranceCheck` beside every documented receipt, even
 when there is no match. Excel and PDF exports include potential-claim notices.
+Receipts kept on the receipts page are screened again when they are shown or
+exported, so a policy saved later can reveal a potential claim on an older
+receipt. Manually entered receipts follow the same path.
 
 ## Result meanings
 

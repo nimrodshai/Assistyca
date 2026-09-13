@@ -15,6 +15,8 @@
   --invoice-soft: rgba(124, 58, 237, 0.1);
   --warn: #cc5c31;
   --warn-soft: rgba(204, 92, 49, 0.1);
+  --claim: #2468a2;
+  --claim-soft: rgba(36, 104, 162, 0.1);
   --shadow: 0 10px 28px rgba(25, 38, 54, 0.06);
   --radius-lg: 18px;
   --radius-md: 13px;
@@ -39,6 +41,8 @@
   --invoice-soft: rgba(183, 148, 246, 0.15);
   --warn: #ff9b69;
   --warn-soft: rgba(255, 155, 105, 0.15);
+  --claim: #74b7ee;
+  --claim-soft: rgba(116, 183, 238, 0.14);
   --shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
 }
 
@@ -556,6 +560,11 @@ body {
   color: var(--muted);
 }
 
+.claim-badge {
+  background: var(--claim-soft);
+  color: var(--claim);
+}
+
 .file-chip {
   display: inline-flex;
   align-items: center;
@@ -665,6 +674,61 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.insurance-callout {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--claim) 34%, transparent);
+  background:
+    radial-gradient(circle at 100% 0, var(--claim-soft), transparent 46%),
+    var(--surface);
+}
+
+.insurance-callout::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--claim);
+}
+
+.insurance-kicker {
+  margin: 0 0 5px;
+  color: var(--claim);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.insurance-callout h3 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+}
+
+.insurance-summary,
+.insurance-facts,
+.insurance-caveat {
+  margin: 0;
+}
+
+.insurance-summary {
+  font-weight: 600;
+}
+
+.insurance-facts {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.insurance-caveat {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .file-list li {
@@ -800,4 +864,3 @@ body {
   opacity: 1;
   transform: translate(-50%, 0);
 }
-

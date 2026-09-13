@@ -8,7 +8,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
     <script src="/portal/theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="/portal/receipts.css?v=3" />
+    <link rel="stylesheet" href="/portal/receipts.css?v=4" />
   </head>
   <body data-view="loading">
     <header class="topbar">
@@ -106,6 +106,14 @@
           <ul id="fileList" class="file-list"></ul>
         </div>
 
+        <section id="detailInsurance" class="card insurance-callout is-hidden" aria-labelledby="detailInsuranceTitle">
+          <p class="insurance-kicker">Insurance screen</p>
+          <h3 id="detailInsuranceTitle"></h3>
+          <p id="detailInsuranceSummary" class="insurance-summary"></p>
+          <p id="detailInsuranceFacts" class="insurance-facts"></p>
+          <p class="insurance-caveat">This is a screening result, not a coverage decision. Confirm the event facts and policy wording before filing.</p>
+        </section>
+
         <form id="detailForm" class="card detail-form" autocomplete="off">
           <h3>Details</h3>
           <div class="field-row">
@@ -179,6 +187,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/portal/receipts.js?v=3"></script>
+    <script src="/portal/receipts.js?v=4"></script>
   </body>
 </html>
