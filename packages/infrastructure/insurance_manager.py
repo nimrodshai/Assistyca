@@ -372,21 +372,24 @@ def match_expense_to_policy(policy: dict[str, Any], version: dict[str, Any], exp
 
 
 def match_expense_to_policies(policies: list[dict[str, Any]], expense: dict[str, Any]) -> dict[str, Any]:
-    """Find potential claims while preserving the no-match reason."""
+    """Find potential claims among policies that are active today."""
 
     normalized_expense = normalize_expense(expense)
     matches: list[dict[str, Any]] = []
     inactive_for_date: list[str] = []
+    today = date.today().isoformat()
     for policy in policies:
         if not isinstance(policy, dict):
             continue
-        # "expired" is its status now, not its status on an old receipt.
-        # With no event date there is no honest way to select it; with one,
-        # the immutable version dates decide.
-        if clean_text(policy.get("status"), 20) != "active" and not normalized_expense.get("date"):
+        if clean_text(policy.get("status"), 20) != "active" or policy.get("archivedAt"):
             continue
         versions = [entry for entry in (policy.get("versions") or []) if isinstance(entry, dict)]
-        selection_date = normalized_expense.get("date") or date.today().isoformat()
+        # A forgotten status update must not leave a date-ended policy matching
+        # receipts forever. Historical versions stay available only when the
+        # policy itself still has a version in force today.
+        if choose_applicable_version(versions, today) is None:
+            continue
+        selection_date = normalized_expense.get("date") or today
         version = choose_applicable_version(versions, selection_date)
         if version is None:
             inactive_for_date.append(clean_text(policy.get("name"), 240))

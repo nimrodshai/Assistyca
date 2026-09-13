@@ -7175,6 +7175,7 @@ class PortalDatabase:
             json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         now = now_iso()
+        replaced_policy_id = 0
 
         with self._connection() as conn:
             requested_id = int(raw_policy.get("id") or 0)
@@ -7186,6 +7187,14 @@ class PortalDatabase:
                 ).fetchone()
                 if row is None:
                     raise KeyError("That insurance policy is not here.")
+                existing_insurer = normalize_text(row["insurer"]).casefold()
+                if insurer and existing_insurer and insurer.casefold() != existing_insurer:
+                    replaced_policy_id = int(row["id"])
+                    conn.execute(
+                        "UPDATE insurance_policies SET archived_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                        (now, now, replaced_policy_id, int(user_id)),
+                    )
+                    row = None
             elif policy_number_hint and insurer:
                 row = conn.execute(
                     """
@@ -7280,6 +7289,7 @@ class PortalDatabase:
 
         record = self.get_insurance_policy(user_id=user_id, policy_id=policy_id) or {}
         record["versionCreated"] = was_created
+        record["replacedPolicyId"] = replaced_policy_id or None
         return record
 
     def list_insurance_policies(self, *, user_id: int, include_archived: bool = False) -> list[dict[str, Any]]:
@@ -7291,11 +7301,14 @@ class PortalDatabase:
                 f"SELECT id FROM insurance_policies WHERE {where} ORDER BY updated_at DESC, id DESC",
                 (int(user_id),),
             ).fetchall()
-        return [
+        records = [
             record
             for record in (self.get_insurance_policy(user_id=user_id, policy_id=int(row["id"])) for row in rows)
             if record is not None
         ]
+        if include_archived:
+            return records
+        return [record for record in records if record.get("isCurrentlyActive")]
 
     def get_insurance_policy(self, *, user_id: int, policy_id: int) -> dict[str, Any] | None:
         if int(user_id or 0) <= 0 or int(policy_id or 0) <= 0:
@@ -7333,7 +7346,12 @@ class PortalDatabase:
         record["currentVersion"] = choose_applicable_version(
             versions,
             datetime.now(timezone.utc).date().isoformat(),
-        ) or record["latestVersion"]
+        )
+        record["isCurrentlyActive"] = bool(
+            record["status"] == "active"
+            and not record["archivedAt"]
+            and record["currentVersion"] is not None
+        )
         return record
 
     def _load_insurance_policy_version_row(self, row: sqlite3.Row) -> dict[str, Any]:
